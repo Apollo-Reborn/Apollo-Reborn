@@ -433,7 +433,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     switch (section) {
         case TranslationSettingsSectionGeneral:
-            return @"When enabled, loaded comments are translated in-place. You can optionally translate post titles in feeds and thread headers. The native per-comment Translate action is hidden to avoid duplicate flows.";
+            return @"When enabled, loaded comments are translated in-place. You can optionally translate post titles in feeds and thread headers. The native per-comment Translate action is hidden to avoid duplicate flows.\n\nAuto Translate by Default controls whether feeds and threads open already translated. When off, the globe button is still shown but content stays in its original language until you tap it.";
         case TranslationSettingsSectionSkip:
             return @"Posts and comments detected as one of these languages will be left in their original form. Mixed-language text is still translated so embedded foreign words come through.";
         case TranslationSettingsSectionLibre:
@@ -453,7 +453,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
                                                action:@selector(enableBulkTranslationSwitchToggled:)];
             case 1: {
                 UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_Translation_Auto"
-                                                                 label:@"Auto Translate on Scroll"
+                                                                 label:@"Auto Translate by Default"
                                                                     on:sAutoTranslateOnAppear
                                                                 action:@selector(autoTranslateSwitchToggled:)];
                 cell.textLabel.enabled = sEnableBulkTranslation;
