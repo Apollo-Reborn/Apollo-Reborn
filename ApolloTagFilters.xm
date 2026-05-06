@@ -45,10 +45,11 @@ extern NSString *const ApolloTagFiltersChangedNotification;
 
 // MARK: - Helpers
 
-static const void *kApolloTagDecisionKey = &kApolloTagDecisionKey;       // NSString @"hide"|@"blur"|@"none"
+static const void *kApolloTagDecisionKey = &kApolloTagDecisionKey;        // NSString @"hide"|@"blur"|@"none"
 static const void *kApolloTagOverlaysKey = &kApolloTagOverlaysKey;        // NSArray<UIVisualEffectView *>
-static const void *kApolloTagRevealedKey = &kApolloTagRevealedKey;        // NSNumber BOOL
+static const void *kApolloTagRevealedKindsKey = &kApolloTagRevealedKindsKey; // NSMutableSet<NSString *> of revealed kinds (@"title", @"media")
 static const void *kApolloTagAppliedLinkKey = &kApolloTagAppliedLinkKey;  // NSValue (non-retained pointer to current link, used to detect cell reuse)
+static const void *kApolloTagOverlayKindKey = &kApolloTagOverlayKindKey;  // NSString on overlay: @"title" or @"media"
 
 static id ApolloTagIvarValueByName(id obj, const char *name) {
     if (!obj || !name) return nil;
@@ -129,42 +130,176 @@ static UIView *ApolloTagViewForNode(id node) {
     return nil;
 }
 
-// Collect the subviews we want to blur for a given cell.
-// Compact cells: thumbnailNode + titleNode (Apollo already blurs spoiler video
-//   thumbnails natively; our blur on top is harmless and keeps things consistent).
-// Large cells: crosspostNode contains title + rich media + body for both regular
-//   posts and crossposts. If unavailable, fall back to titleNode + thumbnailNode.
-static NSArray<UIView *> *ApolloTagBlurTargetsForCell(id cell) {
-    NSMutableArray<UIView *> *targets = [NSMutableArray array];
+// MARK: - Blur target geometry
+//
+// Compact cells: blur thumbnailNode + titleNode separately (these are already
+//   the only on-screen content above the action row, and Apollo natively blurs
+//   spoiler video thumbnails so a harmless extra blur on top is fine).
+//
+// Large cells: build TWO overlays — one over the title area, one over the
+//   media area — so users can tap-reveal either independently. Each overlay
+//   gets its own "kind" (@"title" / @"media"); tapping reveals only that part.
+//
+//   For SPOILER-only posts whose media is a video, Apollo already shows its
+//   own native "Spoiler — Contains spoiler – tap to watch" overlay on the
+//   video, so the media overlay is suppressed (only the title is covered).
+//   For NSFW posts, we always cover both regardless of media type.
+//
+//   Coverage uses the actual subnode frames (richMediaNode / thumbnailNode /
+//   crosspostNode→richMediaNode) extended horizontally to the cell width so
+//   gallery thumbnails that scroll past the cell edges don't bleed through.
+
+// Returns the title subnode's view, if loaded and visible.
+static UIView *ApolloTagTitleViewForCell(id cell) {
+    id node = ApolloTagIvarValueByName(cell, "titleNode");
+    UIView *v = ApolloTagViewForNode(node);
+    if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) return v;
+    return nil;
+}
+
+// Returns the media subnode's view (gallery / image / video container) and
+// optionally the underlying richMediaNode (for video detection). Tries the
+// richMediaNode-bearing ivars first, then falls back to thumbnailNode.
+static UIView *ApolloTagMediaViewForCell(id cell, id *outRichMediaNode) {
+    if (outRichMediaNode) *outRichMediaNode = nil;
+    id richMedia = ApolloTagIvarValueByName(cell, "richMediaNode");
+    if (!richMedia) {
+        id cross = ApolloTagIvarValueByName(cell, "crosspostNode");
+        if (cross) richMedia = ApolloTagIvarValueByName(cross, "richMediaNode");
+    }
+    if (richMedia) {
+        UIView *v = ApolloTagViewForNode(richMedia);
+        if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) {
+            if (outRichMediaNode) *outRichMediaNode = richMedia;
+            return v;
+        }
+    }
+    // Large Thumbnails / link-card variants: media lives on thumbnailNode.
+    id thumb = ApolloTagIvarValueByName(cell, "thumbnailNode");
+    UIView *tv = ApolloTagViewForNode(thumb);
+    if (tv && !tv.isHidden && tv.bounds.size.width > 4 && tv.bounds.size.height > 4) {
+        return tv;
+    }
+    return nil;
+}
+
+// Detect whether the rich media node currently represents a video. Apollo
+// populates the videoNode ivar on RichMediaNode for v.redd.it / Streamable /
+// hosted video / GIF posts.
+static BOOL ApolloTagMediaIsVideo(id richMediaNode) {
+    if (!richMediaNode) return NO;
+    id vn = ApolloTagIvarValueByName(richMediaNode, "videoNode");
+    return vn != nil;
+}
+
+// Returns an array of NSDictionary entries: @{ @"rect": NSValue<CGRect>, @"kind": NSString }.
+// Rects are in cellView coordinates. `kind` is one of @"title" or @"media".
+static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *link) {
+    UIView *cellView = ApolloTagCellView(cell);
+    if (!cellView || cellView.bounds.size.width < 8 || cellView.bounds.size.height < 8) return @[];
+
     Class compactCls = objc_getClass("_TtC6Apollo19CompactPostCellNode");
     BOOL isCompact = compactCls && [cell isKindOfClass:compactCls];
 
-    if (!isCompact) {
-        id cross = ApolloTagIvarValueByName(cell, "crosspostNode");
-        UIView *cv = ApolloTagViewForNode(cross);
-        if (cv && !cv.isHidden && cv.bounds.size.width > 4 && cv.bounds.size.height > 4) {
-            [targets addObject:cv];
-            return targets;
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+
+    if (isCompact) {
+        // Compact: blur titleNode + (usually) thumbnailNode at their actual
+        // frames. Pill only on the title (the thumbnail is too small to wear
+        // it). For SPOILER-only posts the thumbnail is suppressed because
+        // Apollo already natively blurs spoiler thumbnails in compact mode;
+        // covering it again would just stack two grey rectangles. NSFW posts
+        // always get both.
+        BOOL compactIsNSFW = NO, compactIsSpoiler = NO;
+        @try { compactIsNSFW = link.isNSFW; } @catch (__unused id e) {}
+        @try { compactIsSpoiler = link.isSpoiler; } @catch (__unused id e) {}
+        BOOL skipCompactThumb = (!compactIsNSFW && compactIsSpoiler);
+        for (NSString *name in @[@"thumbnailNode", @"titleNode"]) {
+            BOOL isTitle = [name isEqualToString:@"titleNode"];
+            if (!isTitle && skipCompactThumb) continue;
+            id node = ApolloTagIvarValueByName(cell, name.UTF8String);
+            UIView *v = ApolloTagViewForNode(node);
+            if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) {
+                CGRect f = [v.superview convertRect:v.frame toView:cellView];
+                NSString *kind = isTitle ? @"title" : @"media";
+                [entries addObject:@{ @"rect": [NSValue valueWithCGRect:f],
+                                      @"kind": kind,
+                                      @"corner": @8.0,
+                                      @"pill": @(isTitle) }];
+            }
+        }
+        return entries;
+    }
+
+    // Large path.
+    BOOL isNSFW = NO, isSpoiler = NO;
+    @try { isNSFW = link.isNSFW; } @catch (__unused id e) {}
+    @try { isSpoiler = link.isSpoiler; } @catch (__unused id e) {}
+
+    UIView *titleView = ApolloTagTitleViewForCell(cell);
+    id richMediaNode = nil;
+    UIView *mediaView = ApolloTagMediaViewForCell(cell, &richMediaNode);
+
+    // Title overlay: title's frame stretched to full cell width so any
+    // trailing tag pills are also covered. Rounded corners look right here
+    // because the title sits inside the card padding.
+    if (titleView) {
+        CGRect tf = [titleView.superview convertRect:titleView.frame toView:cellView];
+        const CGFloat vPad = 4.0;
+        CGRect rect = CGRectMake(0,
+                                 MAX(0, CGRectGetMinY(tf) - vPad),
+                                 cellView.bounds.size.width,
+                                 CGRectGetHeight(tf) + 2 * vPad);
+        if (rect.size.width >= 40 && rect.size.height >= 16) {
+            [entries addObject:@{ @"rect": [NSValue valueWithCGRect:rect],
+                                  @"kind": @"title",
+                                  @"corner": @8.0,
+                                  @"pill": @YES }];
         }
     }
 
-    for (NSString *name in @[@"thumbnailNode", @"titleNode"]) {
-        id node = ApolloTagIvarValueByName(cell, name.UTF8String);
-        UIView *v = ApolloTagViewForNode(node);
-        if (v && !v.isHidden && v.bounds.size.width > 4 && v.bounds.size.height > 4) {
-            [targets addObject:v];
+    // Media overlay: only build it unless this is a SPOILER-only video post
+    // (Apollo's native spoiler overlay already covers the player). Square
+    // corners — the media area runs edge-to-edge and any rounding leaves a
+    // sliver of the underlying image visible in the corners.
+    BOOL skipMedia = (!isNSFW && isSpoiler && ApolloTagMediaIsVideo(richMediaNode));
+    if (!skipMedia && mediaView) {
+        CGRect mf = [mediaView.superview convertRect:mediaView.frame toView:cellView];
+        // Stretch horizontally to full cell width so a horizontally-scrollable
+        // gallery doesn't bleed past the overlay edges.
+        CGRect rect = CGRectMake(0,
+                                 CGRectGetMinY(mf),
+                                 cellView.bounds.size.width,
+                                 CGRectGetHeight(mf));
+        if (rect.size.width >= 40 && rect.size.height >= 40) {
+            [entries addObject:@{ @"rect": [NSValue valueWithCGRect:rect],
+                                  @"kind": @"media",
+                                  @"corner": @0.0,
+                                  @"pill": @YES }];
         }
     }
-    return targets;
+
+    return entries;
 }
 
-static UIVisualEffectView *ApolloTagBuildBlurOverlay(void) {
+static UIVisualEffectView *ApolloTagBuildBlurOverlay(CGFloat cornerRadius) {
     UIBlurEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark];
     UIVisualEffectView *overlay = [[UIVisualEffectView alloc] initWithEffect:effect];
     overlay.userInteractionEnabled = YES;
-    overlay.layer.cornerRadius = 8;
-    overlay.layer.masksToBounds = YES;
+    overlay.layer.cornerRadius = cornerRadius;
+    overlay.layer.masksToBounds = (cornerRadius > 0);
     return overlay;
+}
+
+// Returns the set of kinds (@"title" / @"media") the user has individually
+// revealed on this cell. Lazily created.
+static NSMutableSet<NSString *> *ApolloTagRevealedKindsForCell(id cell, BOOL create) {
+    NSMutableSet *set = objc_getAssociatedObject(cell, kApolloTagRevealedKindsKey);
+    if (!set && create) {
+        set = [NSMutableSet set];
+        objc_setAssociatedObject(cell, kApolloTagRevealedKindsKey, set, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return set;
 }
 
 // Pill: NSFW = red bg / white text. SPOILER = grey bg / white text.
@@ -199,46 +334,59 @@ static void ApolloTagInstallBlurOverlay(id cell, RDKLink *link) {
     UIView *cellView = ApolloTagCellView(cell);
     if (!cellView) return;
 
-    NSArray<UIView *> *targets = ApolloTagBlurTargetsForCell(cell);
-    if (targets.count == 0) {
+    NSArray<NSDictionary *> *entries = ApolloTagBlurEntriesForCell(cell, link);
+    if (entries.count == 0) {
         // Defer: layout may not have produced subviews yet. We'll retry on next layout pass.
         return;
     }
 
+    // Suppress kinds the user has already individually revealed.
+    NSSet<NSString *> *revealedKinds = [ApolloTagRevealedKindsForCell(cell, NO) copy] ?: [NSSet set];
+    if (revealedKinds.count > 0) {
+        NSMutableArray<NSDictionary *> *filtered = [NSMutableArray arrayWithCapacity:entries.count];
+        for (NSDictionary *e in entries) {
+            if (![revealedKinds containsObject:e[@"kind"]]) [filtered addObject:e];
+        }
+        entries = filtered;
+    }
+    if (entries.count == 0) {
+        // Everything is revealed — tear down anything we still have on the cell.
+        NSArray<UIVisualEffectView *> *existing = ApolloTagOverlaysForCell(cell);
+        for (UIVisualEffectView *ov in existing) [ov removeFromSuperview];
+        objc_setAssociatedObject(cell, kApolloTagOverlaysKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+
+    // Reuse path: same set of kinds → just resync frames.
     NSArray<UIVisualEffectView *> *existing = ApolloTagOverlaysForCell(cell);
-    if (existing.count == targets.count) {
-        // Reuse existing overlays; just resync frames + ensure pill stays on top.
-        for (NSUInteger i = 0; i < targets.count; i++) {
-            UIView *target = targets[i];
+    BOOL canReuse = (existing.count == entries.count);
+    if (canReuse) {
+        for (NSUInteger i = 0; i < entries.count; i++) {
+            NSString *existingKind = objc_getAssociatedObject(existing[i], kApolloTagOverlayKindKey);
+            if (![existingKind isEqualToString:entries[i][@"kind"]]) { canReuse = NO; break; }
+        }
+    }
+    if (canReuse) {
+        for (NSUInteger i = 0; i < entries.count; i++) {
             UIVisualEffectView *ov = existing[i];
-            CGRect f = [target.superview convertRect:target.frame toView:cellView];
-            ov.frame = f;
+            ov.frame = [entries[i][@"rect"] CGRectValue];
             ov.hidden = NO;
             [cellView bringSubviewToFront:ov];
         }
         return;
     }
 
-    // Tear down and rebuild if count changed.
+    // Tear down and rebuild.
     for (UIVisualEffectView *ov in existing) [ov removeFromSuperview];
 
-    // Pick the largest target for the pill so it lands on the title area for
-    // both layouts (large: crosspostNode body; compact: titleNode is wider than thumbnail).
-    NSUInteger pillIndex = 0;
-    CGFloat bestArea = 0;
-    for (NSUInteger i = 0; i < targets.count; i++) {
-        CGSize sz = targets[i].bounds.size;
-        CGFloat area = sz.width * sz.height;
-        if (area > bestArea) { bestArea = area; pillIndex = i; }
-    }
-
-    NSMutableArray<UIVisualEffectView *> *fresh = [NSMutableArray arrayWithCapacity:targets.count];
-    for (NSUInteger i = 0; i < targets.count; i++) {
-        UIView *target = targets[i];
-        UIVisualEffectView *overlay = ApolloTagBuildBlurOverlay();
-        CGRect f = [target.superview convertRect:target.frame toView:cellView];
-        overlay.frame = f;
-        if (i == pillIndex) {
+    NSMutableArray<UIVisualEffectView *> *fresh = [NSMutableArray arrayWithCapacity:entries.count];
+    for (NSUInteger i = 0; i < entries.count; i++) {
+        NSDictionary *entry = entries[i];
+        CGFloat corner = [entry[@"corner"] doubleValue];
+        UIVisualEffectView *overlay = ApolloTagBuildBlurOverlay(corner);
+        overlay.frame = [entry[@"rect"] CGRectValue];
+        objc_setAssociatedObject(overlay, kApolloTagOverlayKindKey, entry[@"kind"], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if ([entry[@"pill"] boolValue]) {
             UILabel *pill = ApolloTagBuildPillForLink(link);
             if (pill) {
                 [overlay.contentView addSubview:pill];
@@ -271,21 +419,15 @@ static void ApolloTagApplyDecisionToCell(id cell) {
     RDKLink *link = ApolloTagLinkFromCell(cell);
     NSString *decision = ApolloTagFilterDecisionForLink(link);
 
-    // Reset reveal flag if cell was reused for a different link.
+    // Reset per-overlay revealed kinds if cell was reused for a different link.
     void *appliedLinkPtr = (__bridge void *)link;
     NSValue *prevValue = objc_getAssociatedObject(cell, kApolloTagAppliedLinkKey);
     void *prevPtr = prevValue ? [prevValue pointerValue] : NULL;
     if (prevPtr != appliedLinkPtr) {
-        objc_setAssociatedObject(cell, kApolloTagRevealedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(cell, kApolloTagRevealedKindsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(cell, kApolloTagAppliedLinkKey,
                                  [NSValue valueWithPointer:appliedLinkPtr],
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    BOOL revealed = [objc_getAssociatedObject(cell, kApolloTagRevealedKey) boolValue];
-    if (revealed) {
-        // User long-pressed; treat as no decision until cell is reused.
-        decision = @"none";
     }
 
     objc_setAssociatedObject(cell, kApolloTagDecisionKey, decision, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -318,34 +460,61 @@ static UIViewController *ApolloTagPresenterForCell(id cell) {
     return [window visibleViewController];
 }
 
-static void ApolloTagRevealCell(id cell) {
-    objc_setAssociatedObject(cell, kApolloTagRevealedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(cell, kApolloTagDecisionKey, @"none", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSArray<UIVisualEffectView *> *overlays = ApolloTagOverlaysForCell(cell);
-    if (overlays.count > 0) {
+// Reveal a single overlay (by kind). The kind is added to the cell's revealed
+// set so cell-reuse / re-layout passes won't put it back. Other overlays on the
+// same cell remain.
+static void ApolloTagRevealOverlay(id cell, UIVisualEffectView *overlay, NSString *kind) {
+    if (kind.length > 0) {
+        NSMutableSet *revealed = ApolloTagRevealedKindsForCell(cell, YES);
+        [revealed addObject:kind];
+    }
+    if (overlay) {
         [UIView animateWithDuration:0.18 animations:^{
-            for (UIVisualEffectView *ov in overlays) ov.alpha = 0.0;
+            overlay.alpha = 0.0;
         } completion:^(BOOL finished) {
-            ApolloTagRemoveBlurOverlay(cell);
+            [overlay removeFromSuperview];
+            // Drop it from the cached overlays array.
+            NSArray<UIVisualEffectView *> *existing = ApolloTagOverlaysForCell(cell);
+            if (existing) {
+                NSMutableArray *remaining = [existing mutableCopy];
+                [remaining removeObject:overlay];
+                objc_setAssociatedObject(cell, kApolloTagOverlaysKey,
+                                         remaining.count > 0 ? [remaining copy] : nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            // If nothing's covered anymore, downgrade decision so future
+            // layouts don't re-evaluate as "blur" pointlessly.
+            NSArray<UIVisualEffectView *> *after = ApolloTagOverlaysForCell(cell);
+            if (after.count == 0) {
+                objc_setAssociatedObject(cell, kApolloTagDecisionKey, @"none", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         }];
     }
 }
 
-static void ApolloTagPresentConfirmAlertForCell(id cell) {
+static void ApolloTagPresentConfirmAlertForOverlay(id cell, UIVisualEffectView *overlay) {
+    NSString *kind = objc_getAssociatedObject(overlay, kApolloTagOverlayKindKey);
     UIViewController *presenter = ApolloTagPresenterForCell(cell);
     if (!presenter) {
         // No presenter — just reveal as a fallback.
-        ApolloTagRevealCell(cell);
+        ApolloTagRevealOverlay(cell, overlay, kind);
         return;
     }
 
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"View hidden post?"
-                                                                   message:@"This post is filtered by your tag-filter settings. Open it anyway?"
+    NSString *title = @"View hidden post?";
+    NSString *message = @"This post is filtered by your tag-filter settings. Reveal it anyway?";
+    if ([kind isEqualToString:@"title"]) {
+        message = @"Reveal the title of this filtered post?";
+    } else if ([kind isEqualToString:@"media"]) {
+        message = @"Reveal the media of this filtered post?";
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"View" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        // Reveal only — leave navigation to the user's next tap on the now-visible cell.
-        ApolloTagRevealCell(cell);
+    [alert addAction:[UIAlertAction actionWithTitle:@"Reveal" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        ApolloTagRevealOverlay(cell, overlay, kind);
     }]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
@@ -389,7 +558,9 @@ static void ApolloTagRefreshAllVisibleCells(void) {
 %new
 - (void)apollo_tagFilterCellTapped:(UITapGestureRecognizer *)tap {
     if (tap.state != UIGestureRecognizerStateRecognized) return;
-    ApolloTagPresentConfirmAlertForCell(self);
+    UIVisualEffectView *overlay = nil;
+    if ([tap.view isKindOfClass:[UIVisualEffectView class]]) overlay = (UIVisualEffectView *)tap.view;
+    ApolloTagPresentConfirmAlertForOverlay(self, overlay);
 }
 
 %end
@@ -409,7 +580,9 @@ static void ApolloTagRefreshAllVisibleCells(void) {
 %new
 - (void)apollo_tagFilterCellTapped:(UITapGestureRecognizer *)tap {
     if (tap.state != UIGestureRecognizerStateRecognized) return;
-    ApolloTagPresentConfirmAlertForCell(self);
+    UIVisualEffectView *overlay = nil;
+    if ([tap.view isKindOfClass:[UIVisualEffectView class]]) overlay = (UIVisualEffectView *)tap.view;
+    ApolloTagPresentConfirmAlertForOverlay(self, overlay);
 }
 
 %end
