@@ -186,6 +186,31 @@ static NSCache<NSString *, NSString *> *subredditListCache;
     return customUA;
 }
 
+// Defensive guard: bail out if the response isn't a dictionary. Apollo otherwise
+// crashes with "unrecognized selector" when it does `response[@"kind"]` on a string.
+- (NSArray *)objectsFromListingResponse:(id)response {
+    if (![response isKindOfClass:[NSDictionary class]]) {
+        ApolloLog(@"[ListingResponse] Non-dict response of class %@; returning nil to avoid crash", NSStringFromClass([response class]));
+        return nil;
+    }
+    return %orig;
+}
+
+%end
+
+// Same defensive guard for the sibling pagination call. Apollo's listing block calls
+// both +[RDKPagination paginationFromListingResponse:] and the above on the same
+// response; pagination crashes on `[response valueForKeyPath:@"data.before"]`.
+%hook RDKPagination
+
++ (instancetype)paginationFromListingResponse:(id)response {
+    if (![response isKindOfClass:[NSDictionary class]]) {
+        ApolloLog(@"[ListingResponse] Non-dict response of class %@; skipping pagination", NSStringFromClass([response class]));
+        return nil;
+    }
+    return %orig;
+}
+
 %end
 
 // Randomise the trending subreddits list
@@ -312,6 +337,38 @@ static void StripRapidAPIHeaders(NSMutableURLRequest *request) {
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
     NSURL *url = [request URL];
     NSURL *subredditListURL;
+
+    // Reroute URL-shaped search queries to /api/info?url=<URL>. Reddit's /search.json
+    // 302-redirects URL-shaped queries to /submit.json (and on to /login), producing
+    // a non-Listing response that crashes Apollo's parser. /api/info returns a proper
+    // Listing for both Reddit and external URLs.
+    BOOL isPostSearch = [url.host isEqualToString:@"oauth.reddit.com"] &&
+        ([url.path isEqualToString:@"/search.json"] ||
+         ([url.path hasPrefix:@"/r/"] && [url.path hasSuffix:@"/search.json"]));
+    if (isPostSearch) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        NSString *q = nil;
+        for (NSURLQueryItem *item in components.queryItems) {
+            if ([item.name isEqualToString:@"q"]) {
+                q = item.value;
+                break;
+            }
+        }
+        if (q.length > 0 && ([q hasPrefix:@"http://"] || [q hasPrefix:@"https://"])) {
+            NSURLComponents *rewritten = [[NSURLComponents alloc] init];
+            rewritten.scheme = @"https";
+            rewritten.host = @"oauth.reddit.com";
+            rewritten.path = @"/api/info.json";
+            rewritten.queryItems = @[
+                [NSURLQueryItem queryItemWithName:@"url" value:q],
+                [NSURLQueryItem queryItemWithName:@"raw_json" value:@"1"],
+            ];
+            NSMutableURLRequest *modifiedRequest = [request mutableCopy];
+            [modifiedRequest setURL:rewritten.URL];
+            ApolloLog(@"[URLSearch] Rerouting URL search to /api/info.json. Original: %@ Rewritten: %@", url.absoluteString, rewritten.URL.absoluteString);
+            return %orig(modifiedRequest);
+        }
+    }
 
     // Determine whether request is for random subreddit
     if ([url.host isEqualToString:@"oauth.reddit.com"] && [url.path hasPrefix:@"/r/random/"]) {

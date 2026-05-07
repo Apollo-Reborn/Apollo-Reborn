@@ -10,6 +10,11 @@
 + (instancetype)sharedClient;
 - (id)currentUser;
 - (void)thingsByFullNames:(NSArray *)fullNames completion:(void(^)(NSArray *, NSError *))completion;
+- (NSArray *)objectsFromListingResponse:(id)response;
+@end
+
+@interface RDKPagination : NSObject
++ (instancetype)paginationFromListingResponse:(id)response;
 @end
 
 @class RDKLinkPreviewMedia;
