@@ -198,7 +198,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 7;
-        case SectionMedia: return 3;
+        case SectionMedia: return 4;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
         case SectionCredits: return 3;
@@ -531,6 +531,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         }
         case 2:
+            return [self switchCellWithIdentifier:@"Cell_Media_RedditNativeUpload"
+                                            label:@"Upload Images to Reddit"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseRedditNativeImageUpload]
+                                           action:@selector(redditNativeImageUploadSwitchToggled:)];
+        case 3:
             return [self switchCellWithIdentifier:@"Cell_Media_ProxyImgur"
                                             label:@"Proxy Imgur via DuckDuckGo"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG]
@@ -687,7 +692,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             attributes:plainAttrs]];
     } else if (section == SectionMedia) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Proxying routes Imgur image requests through DuckDuckGo to bypass regional blocks. Albums and uploads are unsupported."
+            initWithString:@"Reddit image upload is experimental and uses Apollo's signed-in Reddit session. Imgur remains the default. Proxying routes Imgur image requests through DuckDuckGo to bypass regional blocks; albums and uploads are unsupported by the proxy."
             attributes:plainAttrs];
     } else {
         return nil;
@@ -1044,6 +1049,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
 }
 
+- (void)redditNativeImageUploadSwitchToggled:(UISwitch *)sender {
+    sUseRedditNativeImageUpload = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sUseRedditNativeImageUpload forKey:UDKeyUseRedditNativeImageUpload];
+}
+
 #pragma mark - Backup / Restore
 
 static NSString *const kMainPlistFilename = @"preferences.plist";
@@ -1247,6 +1257,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sShowRecentlyReadThumbnails = [defaults boolForKey:UDKeyShowRecentlyReadThumbnails];
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
+    sUseRedditNativeImageUpload = [defaults boolForKey:UDKeyUseRedditNativeImageUpload];
     sEnableBulkTranslation = [defaults boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [defaults boolForKey:UDKeyAutoTranslateOnAppear];
 

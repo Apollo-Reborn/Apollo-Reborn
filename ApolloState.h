@@ -19,6 +19,7 @@ extern NSInteger sReadPostMaxCount;
 extern NSInteger sUnmuteCommentsVideos;
 
 extern BOOL sProxyImgurDDG;
+extern BOOL sUseRedditNativeImageUpload;
 
 extern BOOL sEnableBulkTranslation;
 extern BOOL sAutoTranslateOnAppear;

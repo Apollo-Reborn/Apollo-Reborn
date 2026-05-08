@@ -16,6 +16,7 @@ SSZIPARCHIVE_FILES = $(wildcard ZipArchive/SSZipArchive/*.m) \
 ApolloImprovedCustomApi_FILES = \
     Tweak.xm \
     ApolloCommon.m \
+    ApolloRedditMediaUpload.m \
     ApolloState.m \
     ApolloShareLinks.xm \
     ApolloMedia.xm \
