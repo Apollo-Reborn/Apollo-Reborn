@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## 
+## [v2.8.0] - 2026-05-08
+
+- New **Image Upload Host** option to upload images directly to Reddit instead of Imgur (thanks @icpryde for the implementation!)
+    - Configure in **Settings > Custom API > Media > Image Upload Host**
+    - Reddit image upload is **experimental** and does not currently support multi-image uploads or videos
+        - Right after posting, Apollo may briefly show a generic preview icon while Reddit finishes processing the image. Pull to refresh and the real thumbnail should appear
+
 ## [v2.7.2] - 2026-05-07
 
 - Bulk translation: add Bosnian language support (thanks @hllvc!)
@@ -339,6 +345,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.8.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.2...v2.8.0
 [v2.7.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.1...v2.7.2
 [v2.7.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.0...v2.7.1
 [v2.7.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.6.1...v2.7.0
