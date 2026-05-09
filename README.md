@@ -14,7 +14,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - Use Apollo with your own Reddit and Imgur API keys ([don't have one?](#dont-have-an-api-key))
 - Customizable redirect URI and user agent
 - Fully working Imgur integration (view, delete, upload single and multi-image albums)
-- Native Reddit image uploads (Imgur still supported)
+- Native Reddit image upload support
 - Liquid Glass UI enhancements for iOS 26
 - Suppress wallpaper popups and in-app announcements
 - Pixel Pals support on newer iPhone models
@@ -45,6 +45,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 ## Known Issues
 
 - Long-tapping share links open in the in-app browser
+- Native Reddit multi-image and video uploads are not yet supported
 
 ## Safari integration
 
