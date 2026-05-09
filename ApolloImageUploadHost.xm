@@ -1,12 +1,15 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <ImageIO/ImageIO.h>
+#import <CoreFoundation/CoreFoundation.h>
 
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloImageUploadHost.h"
 #import "ApolloState.h"
 #import "Defaults.h"
+#import "fishhook.h"
 
 // MARK: - Private state
 
@@ -25,10 +28,8 @@ static NSObject *ApolloRedditUploadAssetMapLock(void) {
     return lock;
 }
 
-// Bounded delays for permalink resolution. The websocket usually delivers in <2s; the
-// listing fallback covers the case where the connection drops or the message is
-// missed. We cap the user-perceived wait at ~12s — past that, we deliver Reddit's
-// original response and let Apollo handle whatever Reddit returned.
+// User-perceived wait cap for permalink resolution. Past this, we deliver Reddit's
+// original response and let Apollo handle whatever it returned.
 static NSTimeInterval const kApolloSubmitWebsocketTimeout = 8.0;
 static NSTimeInterval const kApolloSubmitListingMaxWait = 12.0;
 static NSTimeInterval const kApolloSubmitListingPollDelays[] = { 2.0, 4.0, 7.0, 11.0 };
@@ -207,10 +208,9 @@ static NSRegularExpression *ApolloRedditUploadedMediaURLRegex(void) {
 
 // MARK: - Request identification
 
-// Matches both new-comment (/api/comment) and edit-existing-comment-or-selftext
-// (/api/editusertext). Both endpoints accept the same text/richtext_json/return_rtjson
-// form and return the same {json:{errors,data:{things:[{kind,data}]}}} envelope, so
-// our rewrite + response transform applies identically.
+// Matches /api/comment (new comments) and /api/editusertext (edits to existing
+// comments and self-text post bodies). Both accept the same form fields and return
+// the same envelope.
 static BOOL ApolloIsRedditCommentRequest(NSURLRequest *request) {
     if (![request isKindOfClass:[NSURLRequest class]]) return NO;
     NSURL *url = request.URL;
@@ -239,8 +239,8 @@ BOOL ApolloRedditIsSubmitTask(NSURLSessionTask *task) {
 
 // MARK: - Submit context extraction
 
-// Extracts subreddit/title/asset ID from a /api/submit request body that already
-// contains a staged Reddit-uploaded media URL (i.e. one we just uploaded).
+// Extracts subreddit/title/asset ID from a /api/submit body that contains a staged
+// upload URL.
 static NSDictionary *ApolloRedditMediaSubmitContextFromRequest(NSURLRequest *request) {
     if (!ApolloIsRedditSubmitRequest(request)) return nil;
     NSData *bodyData = request.HTTPBody;
@@ -431,9 +431,8 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
 
 // MARK: - LinkID resolution (websocket + listing)
 
-// Reddit's image-submit websocket sends a JSON message of the form:
-//   {"type":"success","payload":{"redirect":"https://www.reddit.com/r/SUB/comments/abc123/title/"}}
-// Extract "abc123" -> linkID. Returns nil if the URL doesn't match.
+// Reddit's image-submit websocket sends {"type":"success","payload":{"redirect":URL}}
+// where URL contains the new post's linkID. Returns nil if no linkID found.
 static NSString *ApolloRedditExtractLinkIDFromPostURL(NSString *urlString) {
     if (urlString.length == 0) return nil;
     NSURLComponents *components = [NSURLComponents componentsWithString:urlString];
@@ -593,7 +592,7 @@ static void ApolloRedditPollListingForLinkID(NSDictionary *context, NSUInteger a
     }] resume];
 }
 
-// Race websocket vs listing-poll. First non-nil linkID wins; if both fail, completion(nil, nil).
+// Race websocket against listing-poll. First non-nil linkID wins.
 static void ApolloRedditResolveSubmittedLinkID(NSString *webSocketURL, NSDictionary *context, ApolloRedditLinkIDResolution completion) {
     __block BOOL completed = NO;
     void (^deliver)(NSString *, NSString *) = ^(NSString *linkID, NSString *postURL) {
@@ -632,8 +631,7 @@ static void ApolloRedditResolveSubmittedLinkID(NSString *webSocketURL, NSDiction
 
 // MARK: - Submit response synthesis
 
-// Synthesize a Reddit-style success JSON that Apollo's PostSubmitWatcher recognizes:
-// {"json":{"errors":[],"data":{"id":"abc123","name":"t3_abc123","url":"...","drafts_count":0}}}
+// Synthesize the success JSON Apollo's submit-completion path expects.
 static NSData *ApolloRedditSynthesizeSubmitSuccessResponseData(NSString *linkID, NSString *postURL, NSDictionary *context) {
     if (linkID.length == 0) return nil;
     NSString *fullName = [linkID hasPrefix:@"t3_"] ? linkID : [@"t3_" stringByAppendingString:linkID];
@@ -650,7 +648,7 @@ static NSData *ApolloRedditSynthesizeSubmitSuccessResponseData(NSString *linkID,
     return [NSJSONSerialization dataWithJSONObject:root options:0 error:nil];
 }
 
-// Extracts the websocket URL and user-submitted-page from Reddit's image-submit response.
+// Pulls the websocket URL and user-submitted-page out of Reddit's image-submit response.
 static NSDictionary *ApolloRedditParseSubmitResponseLinks(NSData *data) {
     if (data.length == 0) return nil;
     id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -834,10 +832,8 @@ static void ApolloRedditPopulateAndDeliverComment(NSMutableDictionary *comment, 
     completion(wrapped.length > 0 ? wrapped : nil);
 }
 
-// Recursive async polling: try /api/info up to N times via dispatch_after, then deliver
-// either the hydrated comment (if media validates) or the original comment with a
-// fallback URL substituted in. Never blocks the calling thread.
-// Cumulative worst-case delay: sum of kApolloCommentHydrationPollDelays (~6.2s).
+// Async-poll /api/info up to N times, then deliver the hydrated comment (or the
+// original with a fallback URL). Never blocks the caller. Worst case ~6.2s.
 static void ApolloRedditHydrateAndDeliverComment(NSMutableDictionary *comment, NSUInteger attemptIndex, ApolloRedditResponseDataCompletion completion) {
     NSString *fullName = [comment[@"name"] isKindOfClass:[NSString class]] ? comment[@"name"] : nil;
     NSString *currentMediaURL = ApolloBestDisplayURLForRedditComment(comment, NO, NULL, NULL);
@@ -941,9 +937,8 @@ void ApolloRedditInstallResponseTransformerForDelegate(id delegate) {
     IMP originalDidCompleteIMP = didCompleteMethod ? method_getImplementation(didCompleteMethod) : NULL;
     const char *didCompleteTypes = didCompleteMethod ? method_getTypeEncoding(didCompleteMethod) : "v@:@@@";
 
-    // Re-deliver the buffered, transformed response to Apollo's delegate. To preserve
-    // Apollo's queue affinity, dispatch onto the session's delegate queue rather than
-    // the (utility) queue our async resolver fires on.
+    // Re-deliver on the session's delegateQueue to preserve queue affinity for
+    // Apollo's delegate callbacks.
     void (^dispatchOriginalDelivery)(NSURLSession *, NSURLSessionTask *, NSData *, NSError *, id) = ^(NSURLSession *session, NSURLSessionTask *task, NSData *data, NSError *error, id selfObject) {
         void (^run)(void) = ^{
             if (data.length > 0 && originalDidReceiveDataIMP) {
@@ -1109,3 +1104,67 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
 }
 
 %end
+
+// MARK: - Bypass Apollo's pre-upload image downscale (full-resolution uploads)
+//
+// Apollo conservatively caps uploads at 2000 px max dimension and 0.75 JPEG quality.
+// These limits are anachronistic — Imgur now accepts 50 MB and Reddit native ~20 MB.
+// We rebind the two ImageIO C functions Apollo uses for upload prep and rewrite their
+// options dicts so the resulting CGImage is full-resolution and the JPEG is full
+// quality. The hooks only mutate dicts that already opted into the constrained
+// behavior, so non-upload ImageIO callers (which don't pass these keys) are untouched.
+// EXIF orientation handling is preserved.
+
+static CGImageRef (*orig_CGImageSourceCreateThumbnailAtIndex)(CGImageSourceRef, size_t, CFDictionaryRef) = NULL;
+static bool (*orig_CGImageDestinationAddImage)(CGImageDestinationRef, CGImageRef, CFDictionaryRef) = NULL;
+
+static CFDictionaryRef ApolloCopyOptionsWithReplacement(CFDictionaryRef options, CFStringRef key, CFTypeRef newValue) {
+    if (!options || !key || !newValue) return options ? (CFDictionaryRef)CFRetain(options) : NULL;
+    CFMutableDictionaryRef mutableCopy = CFDictionaryCreateMutableCopy(NULL, 0, options);
+    CFDictionarySetValue(mutableCopy, key, newValue);
+    return mutableCopy;
+}
+
+static CGImageRef hooked_CGImageSourceCreateThumbnailAtIndex(CGImageSourceRef isrc, size_t index, CFDictionaryRef options) {
+    if (!options || !CFDictionaryContainsKey(options, kCGImageSourceThumbnailMaxPixelSize)) {
+        return orig_CGImageSourceCreateThumbnailAtIndex(isrc, index, options);
+    }
+
+    int largeMax = 32768;
+    CFNumberRef largeMaxRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &largeMax);
+    CFDictionaryRef newOptions = ApolloCopyOptionsWithReplacement(options, kCGImageSourceThumbnailMaxPixelSize, largeMaxRef);
+    CFRelease(largeMaxRef);
+
+    ApolloLog(@"[ImageUploadHost] Bypassing Apollo's 2000px image-prep cap for full-resolution upload");
+    CGImageRef result = orig_CGImageSourceCreateThumbnailAtIndex(isrc, index, newOptions);
+    if (newOptions) CFRelease(newOptions);
+    return result;
+}
+
+static bool hooked_CGImageDestinationAddImage(CGImageDestinationRef destination, CGImageRef image, CFDictionaryRef properties) {
+    if (!properties || !CFDictionaryContainsKey(properties, kCGImageDestinationLossyCompressionQuality)) {
+        return orig_CGImageDestinationAddImage(destination, image, properties);
+    }
+
+    double full = 1.0;
+    CFNumberRef fullRef = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &full);
+    CFDictionaryRef newProperties = ApolloCopyOptionsWithReplacement(properties, kCGImageDestinationLossyCompressionQuality, fullRef);
+    CFRelease(fullRef);
+
+    ApolloLog(@"[ImageUploadHost] Bumping Apollo's image-prep JPEG quality from 0.75 to 1.0 for full-fidelity upload");
+    bool result = orig_CGImageDestinationAddImage(destination, image, newProperties);
+    if (newProperties) CFRelease(newProperties);
+    return result;
+}
+
+__attribute__((constructor))
+static void ApolloImageUploadHostInstallImageIOHooks(void) {
+    rebind_symbols((struct rebinding[2]) {
+        {"CGImageSourceCreateThumbnailAtIndex",
+            (void *)hooked_CGImageSourceCreateThumbnailAtIndex,
+            (void **)&orig_CGImageSourceCreateThumbnailAtIndex},
+        {"CGImageDestinationAddImage",
+            (void *)hooked_CGImageDestinationAddImage,
+            (void **)&orig_CGImageDestinationAddImage},
+    }, 2);
+}
