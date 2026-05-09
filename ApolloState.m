@@ -18,6 +18,7 @@ NSInteger sReadPostMaxCount = 0;
 NSInteger sUnmuteCommentsVideos = 0; // 0=Default, 1=Remember from Full Screen, 2=Always
 
 BOOL sProxyImgurDDG = NO;
+BOOL sEnableInlineImages = NO;
 NSInteger sImageUploadProvider = ImageUploadProviderImgur;
 
 NSString *sLatestRedditBearerToken = nil;
