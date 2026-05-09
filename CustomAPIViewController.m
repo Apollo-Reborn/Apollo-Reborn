@@ -178,6 +178,49 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+- (NSString *)imageUploadProviderText {
+    switch (sImageUploadProvider) {
+        case ImageUploadProviderReddit: return @"Reddit";
+        case ImageUploadProviderImgur:
+        default:                        return @"Imgur";
+    }
+}
+
+- (void)setImageUploadProvider:(NSInteger)provider {
+    sImageUploadProvider = provider;
+    [[NSUserDefaults standardUserDefaults] setInteger:sImageUploadProvider forKey:UDKeyImageUploadProvider];
+
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:2 inSection:SectionMedia];
+    if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    }
+}
+
+- (void)presentImageUploadProviderSheetFromSourceView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Image Upload Host"
+                                                                   message:@"Where to upload images attached to posts and comments."
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSString *imgurTitle = (sImageUploadProvider == ImageUploadProviderImgur) ? @"Imgur (Current)" : @"Imgur";
+    NSString *redditTitle = (sImageUploadProvider == ImageUploadProviderReddit) ? @"Reddit (Current)" : @"Reddit";
+
+    [sheet addAction:[UIAlertAction actionWithTitle:imgurTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setImageUploadProvider:ImageUploadProviderImgur];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:redditTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setImageUploadProvider:ImageUploadProviderReddit];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 #pragma mark - View Lifecycle
 
 - (void)viewDidLoad {
@@ -530,11 +573,18 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 2:
-            return [self switchCellWithIdentifier:@"Cell_Media_RedditNativeUpload"
-                                            label:@"Upload Images to Reddit"
-                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseRedditNativeImageUpload]
-                                           action:@selector(redditNativeImageUploadSwitchToggled:)];
+        case 2: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ImageHost"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_ImageHost"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Image Upload Host";
+            cell.detailTextLabel.text = [self imageUploadProviderText];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
         case 3:
             return [self switchCellWithIdentifier:@"Cell_Media_ProxyImgur"
                                             label:@"Proxy Imgur via DuckDuckGo"
@@ -692,7 +742,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             attributes:plainAttrs]];
     } else if (section == SectionMedia) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Reddit image upload is experimental and uses Apollo's signed-in Reddit session. Imgur remains the default. Proxying routes Imgur image requests through DuckDuckGo to bypass regional blocks; albums and uploads are unsupported by the proxy."
+            initWithString:@"Image Upload Host selects where Apollo uploads images attached to posts and comments. \"Reddit\" is experimental and does not support multi-image or video uploads.\n\nProxying routes Imgur image requests through DuckDuckGo to bypass regional blocks; albums and uploads are unsupported by the proxy."
             attributes:plainAttrs];
     } else {
         return nil;
@@ -766,6 +816,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self presentPreferredGIFFallbackFormatSheetFromSourceView:cell];
         } else if (indexPath.row == 1) {
             [self presentUnmuteCommentsVideosModeSheetFromSourceView:cell];
+        } else if (indexPath.row == 2) {
+            [self presentImageUploadProviderSheetFromSourceView:cell];
         }
     } else if (indexPath.section == SectionCredits) {
         switch (indexPath.row) {
@@ -785,7 +837,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 4 || indexPath.row == 5)) return YES;
-    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1)) return YES;
+    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1)) return YES;
     if (indexPath.section == SectionCredits) return YES;
     return NO;
@@ -1049,11 +1101,6 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
 }
 
-- (void)redditNativeImageUploadSwitchToggled:(UISwitch *)sender {
-    sUseRedditNativeImageUpload = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sUseRedditNativeImageUpload forKey:UDKeyUseRedditNativeImageUpload];
-}
-
 #pragma mark - Backup / Restore
 
 static NSString *const kMainPlistFilename = @"preferences.plist";
@@ -1257,7 +1304,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sShowRecentlyReadThumbnails = [defaults boolForKey:UDKeyShowRecentlyReadThumbnails];
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
-    sUseRedditNativeImageUpload = [defaults boolForKey:UDKeyUseRedditNativeImageUpload];
+    sImageUploadProvider = [defaults integerForKey:UDKeyImageUploadProvider];
     sEnableBulkTranslation = [defaults boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [defaults boolForKey:UDKeyAutoTranslateOnAppear];
 

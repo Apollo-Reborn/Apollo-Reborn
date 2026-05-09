@@ -18,7 +18,7 @@ static NSString *const UDKeyOpenLinksInSteamApp = @"OpenLinksInSteamApp";
 static NSString *const UDKeyCollapsePinnedComments = @"CollapsePinnedComments";
 static NSString *const UDKeyFilterNSFWRecentlyRead = @"FilterNSFWRecentlyRead";
 static NSString *const UDKeyProxyImgurDDG = @"ProxyImgurDDG";
-static NSString *const UDKeyUseRedditNativeImageUpload = @"UseRedditNativeImageUpload";
+static NSString *const UDKeyImageUploadProvider = @"ImageUploadProvider";
 
 // Bulk translation feature
 static NSString *const UDKeyEnableBulkTranslation = @"EnableBulkTranslation";

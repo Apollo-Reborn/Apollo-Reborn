@@ -19,7 +19,19 @@ extern NSInteger sReadPostMaxCount;
 extern NSInteger sUnmuteCommentsVideos;
 
 extern BOOL sProxyImgurDDG;
-extern BOOL sUseRedditNativeImageUpload;
+
+// Image upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
+// session to upload directly to Reddit's media storage.
+typedef NS_ENUM(NSInteger, ImageUploadProvider) {
+    ImageUploadProviderImgur = 0,
+    ImageUploadProviderReddit = 1,
+};
+extern NSInteger sImageUploadProvider;
+
+// Most recently observed Reddit bearer token, captured from outgoing Authorization
+// headers. Used by the native Reddit image upload path. nil if Apollo hasn't made an
+// authenticated Reddit API call yet.
+extern NSString *sLatestRedditBearerToken;
 
 extern BOOL sEnableBulkTranslation;
 extern BOOL sAutoTranslateOnAppear;

@@ -2,6 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
+## 
 ## [v2.7.2] - 2026-05-07
 
 - Bulk translation: add Bosnian language support (thanks @hllvc!)

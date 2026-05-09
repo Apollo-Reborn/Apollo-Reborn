@@ -17,6 +17,7 @@ ApolloImprovedCustomApi_FILES = \
     Tweak.xm \
     ApolloCommon.m \
     ApolloRedditMediaUpload.m \
+    ApolloImageUploadHost.xm \
     ApolloState.m \
     ApolloShareLinks.xm \
     ApolloMedia.xm \
