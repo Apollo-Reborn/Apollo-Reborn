@@ -16,4 +16,10 @@ BOOL IsLiquidGlass(void);
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
 void ApolloFlushReadPostIDsToDefaults(void);
+
+// Returns the URL string a LinkButtonNode is presenting, by reading either
+// the obj-c .url getter (older iOS) or the urlTextNode's attributed text
+// (iOS 26+ where the Swift URL ivar is no longer ObjC-bridged). May return
+// nil if neither path yields a usable string.
+NSString *ApolloGetLinkButtonNodeURLString(id linkButtonNode);
 __END_DECLS

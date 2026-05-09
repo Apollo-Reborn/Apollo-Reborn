@@ -18,18 +18,32 @@
 //      TextNode) and configured via the same property sequence Apollo's
 //      markdown parser uses (longPressCancelsTouches, userInteractionEnabled,
 //      delegate, passthroughNonlinkTouches, linkAttributeNames,
-//      maximumNumberOfLines, attributedText), so non-image links continue
+//      maximumNumberOfLines, attributedText) so non-image links continue
 //      to dispatch through Apollo's normal tap path.
 //   3. Return a new ASStackLayoutSpec mirroring orig's params with the
 //      augmented children.
 //
-// Caching: the decomposition (text segments + image leaves) is cached on the
-// MarkdownNode by element-pointer identity of the orig children. Apollo's
-// Swift impl bridges its `[ASDisplayNode]` to a fresh NSArray each layout
-// pass, so the wrapping array pointer differs every call — but the element
-// pointers are reused while content is unchanged, giving us a stable cache
-// invariant. Without this, the cache thrashed and triggered a relayout
-// storm + blank body.
+// Aspect-ratio handling: imageNodes start with ratio = nil (unknown) unless
+// the URL carries width=&height= query params. ApolloWrapImageNodeForLayout
+// returns nil for unknown-ratio images, causing them to be OMITTED from the
+// initial layout pass entirely. When ASNetworkImageNode's didLoadImage:
+// fires, we record the natural ratio and call _u_setNeedsLayoutFromAbove on
+// the imageNode — Texture's internal "intrinsic size changed" hook that
+// walks up to the root signaling the table/collection to re-measure the
+// row. The next layout pass includes the image at the correct clamped
+// container size. This avoids the wrong-ratio-then-correct race that
+// previously caused gaps above/below the image when the cell measurement
+// captured an in-flight wrong-ratio value.
+//
+// Caching: the decomposition (text segments + image leaves) is cached on
+// the MarkdownNode by element-pointer identity of the orig children. Apollo
+// bridges its Swift `[ASDisplayNode]` to a fresh NSArray on each
+// layoutSpecThatFits: call, so the wrapping array pointer differs every
+// call but the element pointers are reused while content is unchanged.
+// Image nodes are additionally reused by URL within a MarkdownNode's
+// lifetime (NSMutableDictionary<URL, ASNetworkImageNode>) so that rapid
+// rebuilds during cell collapse/uncollapse don't recreate-and-orphan
+// imageNodes.
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
@@ -84,6 +98,7 @@ typedef NS_ENUM(unsigned char, ApolloASStackLayoutAlignSelf) {
 
 @interface ASDisplayNode : NSObject
 - (void)addSubnode:(ASDisplayNode *)subnode;
+- (void)removeFromSupernode;
 - (ASDisplayNode *)supernode;
 - (void)setNeedsLayout;
 - (void)invalidateCalculatedLayout;
@@ -153,9 +168,10 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 
 static char kApolloDecompositionMapKey;        // NSDictionary<NSValue (non-retained orig text node ptr), NSArray<id leaf>>
 static char kApolloCachedOrigChildrenKey;      // NSArray (held strongly so element pointers stay valid for compare)
+static char kApolloImageNodesByURLKey;         // NSMutableDictionary<NSString URL, ASNetworkImageNode> per-MarkdownNode reuse cache
 static char kApolloImageURLKey;                // NSURL on the imageNode AND mirrored on the imageNode's view
 static char kApolloHostMarkdownNodeKey;        // weak ref (assign association) to the host MarkdownNode
-static char kApolloAspectRatioKey;             // NSNumber height/width
+static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
 
 // MARK: - Class lookups (cached)
@@ -353,32 +369,28 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
     if (cur && fabs(newRatio - [cur doubleValue]) < 0.01) return;
     objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(newRatio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // Walk up from the imageNode invalidating each ancestor's calculated
-    // layout so the surrounding cell re-measures with the new container
-    // ratio. Without bubbling up to the cell, the MarkdownNode's own
-    // setNeedsLayout doesn't trigger a row-height re-measure, leaving the
-    // cell stuck at the dimensions from the initial layout (where we'd
-    // guessed ratio=1.0 because preview.redd.it URLs only carry width=,
-    // not height=). The cache fix in layoutSpecThatFits ensures this walk
-    // doesn't trigger a relayout storm — we re-emit but don't re-decompose.
+    // Trigger an upward re-measurement so the surrounding cell picks up the
+    // new image-included content height. _u_setNeedsLayoutFromAbove is
+    // Texture's internal hook for "this node's intrinsic size changed,
+    // please re-layout from a higher level" — it walks up calling
+    // setNeedsLayout on each supernode until reaching the root, signaling
+    // the table/collection to re-measure.
+    SEL sel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+    if (![imageNode respondsToSelector:sel]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        id node = imageNode;
-        for (int hops = 0; node && hops < 12; hops++) {
-            if ([node respondsToSelector:@selector(invalidateCalculatedLayout)]) {
-                [node performSelector:@selector(invalidateCalculatedLayout)];
-            }
-            if ([node respondsToSelector:@selector(setNeedsLayout)]) {
-                [node performSelector:@selector(setNeedsLayout)];
-            }
-            if (![node respondsToSelector:@selector(supernode)]) break;
-            node = [node performSelector:@selector(supernode)];
-        }
+        ((void (*)(id, SEL))objc_msgSend)(imageNode, sel);
     });
 }
 
 @end
 
 // MARK: - Image-node construction
+
+// Forward decl: defined further down (after layout helpers). Used by
+// ApolloBuildLeavesForTextNode below to look up or create the imageNode for
+// a given URL via the per-MarkdownNode reuse cache.
+static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
+                                                   ASDisplayNode *hostMarkdownNode);
 
 static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
                                                       ASDisplayNode *hostMarkdownNode) {
@@ -400,10 +412,13 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     imageNode.placeholderFadeDuration = 0.2;
     imageNode.cornerRadius = 8.0;
     imageNode.clipsToBounds = YES;
-    // Thin grey border so the tappable image-area boundary is distinguishable
-    // from regular cell background.
-    imageNode.borderWidth = 1.0;
-    imageNode.borderColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor;
+    // Border is conditionally applied per-layout in ApolloWrapImageNodeForLayout
+    // based on whether the image is clamped (= letterboxed inside its
+    // container). When natural ratio fits within bounds, the image fills
+    // the container with no letterbox space, so we don't render a border
+    // (avoiding the visual overlap with the image content). Initialize to
+    // off here; the wrapper toggles per layout pass.
+    imageNode.borderWidth = 0.0;
     imageNode.delegate = [ApolloInlineImageDispatcher shared];
 
     // Tap → ASControlNode TouchUpInside. ASNetworkImageNode IS-A ASControlNode
@@ -417,13 +432,18 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     [[imageNode style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
 
     CGFloat ratio = ApolloAspectRatioFromURL(normalizedURL);
-    // Square (1:1) is a friendlier initial fallback than 16:9 — tall images
-    // don't get stretched into a wide letterbox before they load.
-    if (ratio <= 0) ratio = 1.0;
+    // Note: we set kApolloAspectRatioKey only when we have real ratio info
+    // (from URL query params). If we don't, kApolloAspectRatioKey stays nil
+    // and ApolloWrapImageNodeForLayout returns nil → image is OMITTED from
+    // the layout. Once DIDLOAD fires, the key is populated and the image is
+    // included in the next layout pass at the correct ratio. This avoids
+    // the wrong-ratio-then-correct flicker / cell-measurement race.
 
     objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
-    objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (ratio > 0) {
+        objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     // Long-press: install a UIContextMenuInteraction once the imageNode's
     // backing view exists. Native iOS routes context menus to the deepest
@@ -436,8 +456,6 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         if ([objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) return;
         UIView *v = [img view];
         if (!v) return;
-        // Mirror the URL onto the view so the context menu delegate can
-        // fetch it from interaction.view without per-image delegate state.
         objc_setAssociatedObject(v, &kApolloImageURLKey, img.URL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         UIContextMenuInteraction *menu = [[UIContextMenuInteraction alloc]
             initWithDelegate:[ApolloInlineImageDispatcher shared]];
@@ -452,53 +470,68 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 
 // Bounds for the container's aspect ratio (height / width). Images outside
 // these bounds get a clamped container with the image aspect-fit inside —
-// preserves natural proportions, gives a tappable hitbox bounded to the
-// container, and prevents extremely tall images from making cells span
-// multiple screens.
+// preserves natural proportions and prevents extremely tall images from
+// making cells span multiple screens.
 static const CGFloat kApolloMaxContainerRatio = 1.5;  // tallest container: ~3:4.5 portrait
 static const CGFloat kApolloMinContainerRatio = 0.3;  // shortest container: ~10:3 landscape
 
-// When the image is clamped (very tall / very wide), inset the container
-// horizontally by this much per side so taps in the left/right edge
-// margins fall through to the cell (which collapses on tap). 56pt per side
-// gives users a comfortable "outside the image" zone — wide enough that
-// thumb-tapping at the cell edge reliably misses the image.
-static const CGFloat kApolloClampedHorizontalInset = 56.0;
+// For very tall images (container clamped at the max ratio), inset the
+// container horizontally by this much per side so taps in the left/right
+// margins fall through to the cell (which collapses on tap). Without this,
+// a tall image fills the full cell width and there's no way to tap the cell
+// to collapse without hitting the image. Wide / normal-aspect images are
+// NOT inset — they render full-width.
+static const CGFloat kApolloTallImageHorizontalInset = 48.0;
 
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode) {
     NSNumber *ratioNum = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
-    CGFloat naturalRatio = ratioNum ? [ratioNum doubleValue] : 1.0;
+    if (!ratioNum) {
+        // Ratio is genuinely unknown: no URL params and DIDLOAD hasn't fired.
+        // Omit the image from this layout pass entirely. Including it with a
+        // guessed ratio would cause the cell to measure with the wrong size,
+        // then race with DIDLOAD's relayout-from-above. DIDLOAD will trigger
+        // _u_setNeedsLayoutFromAbove once the natural ratio is known, and
+        // the next layout pass will include the image at the correct size.
+        return nil;
+    }
+    CGFloat naturalRatio = [ratioNum doubleValue];
     if (naturalRatio <= 0) naturalRatio = 1.0;
 
     CGFloat containerRatio = naturalRatio;
-    BOOL clamped = NO;
+    BOOL isVeryTall = NO;
+    BOOL isLetterboxed = NO;
     if (containerRatio > kApolloMaxContainerRatio) {
         containerRatio = kApolloMaxContainerRatio;
-        clamped = YES;
+        isVeryTall = YES;
+        isLetterboxed = YES;
     } else if (containerRatio < kApolloMinContainerRatio) {
         containerRatio = kApolloMinContainerRatio;
-        clamped = YES;
+        isLetterboxed = YES;
+        // Wide images stay full-width; no inset.
     }
-    // contentMode is set once at imageNode creation (aspectFit always) — we
-    // intentionally don't toggle based on clamping. aspectFit guarantees the
-    // entire image is visible regardless of how the container ratio compares
-    // to the natural image ratio, which avoids cropping when our guessed
-    // ratio (1.0 fallback if no height query param) differs from reality.
+
+    // Border only when the image is letterboxed inside its container
+    // (i.e. natural ratio doesn't match container ratio due to clamping).
+    // When natural fits within bounds, the image fills the container on all
+    // four sides and a border would overlap the image content — drop it.
+    if (isLetterboxed) {
+        imageNode.borderWidth = 0.75;
+        imageNode.borderColor = [UIColor separatorColor].CGColor;
+    } else {
+        imageNode.borderWidth = 0.0;
+    }
 
     ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
-    [[ratioSpec style] setValue:@(1.0) forKey:@"flexGrow"];
 
-    // Vertical breathing room always; horizontal inset only for clamped images
-    // so the cell-collapse tap zone has somewhere to land. For natural-ratio
-    // images we keep the container full-width (no UX regression vs prior).
+    // Vertical breathing room always; horizontal inset only for very tall
+    // images so the cell-collapse tap zone has somewhere to land.
     UIEdgeInsets insets = UIEdgeInsetsMake(8,
-                                            clamped ? kApolloClampedHorizontalInset : 0,
+                                            isVeryTall ? kApolloTallImageHorizontalInset : 0,
                                             8,
-                                            clamped ? kApolloClampedHorizontalInset : 0);
+                                            isVeryTall ? kApolloTallImageHorizontalInset : 0);
     ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
-    [[insetSpec style] setValue:@(1.0) forKey:@"flexGrow"];
     return insetSpec;
 }
 
@@ -603,10 +636,11 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
         NSRange r = [ranges[iNum.unsignedIntegerValue] rangeValue];
         appendTextSegment(NSMakeRange(cursor, (r.location > cursor ? r.location - cursor : 0)));
 
-        ASNetworkImageNode *img = ApolloMakeInlineImageNode(urls[iNum.unsignedIntegerValue], hostMarkdownNode);
+        // Reuse imageNode by URL to avoid recreate-on-every-rebuild flicker.
+        // ApolloImageNodeForURL handles addSubnode + cache registration.
+        ASNetworkImageNode *img = ApolloImageNodeForURL(urls[iNum.unsignedIntegerValue], hostMarkdownNode);
         if (img) {
             [leaves addObject:img];
-            [hostMarkdownNode addSubnode:img];
         }
 
         cursor = NSMaxRange(r);
@@ -617,6 +651,37 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
     return leaves.count > 0 ? [leaves copy] : nil;
 }
 
+// Look up an imageNode for `normalizedURL` from the host MarkdownNode's
+// per-instance URL cache. Reuses an existing imageNode if present (preserves
+// its asynchronous display lifecycle, cached aspect ratio, and any installed
+// gestures); otherwise creates a fresh one and registers it. This is the
+// load-bearing fix for the gap-on-rapid-rebuild issue: when Apollo rebuilds
+// `displayNodes` repeatedly during cell collapse/uncollapse, we'd otherwise
+// create-then-remove imageNodes faster than Texture's display pipeline can
+// settle, leaving stale frames or partially-displayed bitmaps visible.
+static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
+                                                   ASDisplayNode *hostMarkdownNode) {
+    NSMutableDictionary *cache = objc_getAssociatedObject(hostMarkdownNode, &kApolloImageNodesByURLKey);
+    if (!cache) {
+        cache = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(hostMarkdownNode, &kApolloImageNodesByURLKey, cache, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSString *key = [normalizedURL absoluteString];
+    ASNetworkImageNode *existing = key ? cache[key] : nil;
+    if (existing) {
+        // Reuse: ensure the host association is still up to date in case
+        // (somehow) it pointed elsewhere previously.
+        objc_setAssociatedObject(existing, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
+        return existing;
+    }
+
+    ASNetworkImageNode *imageNode = ApolloMakeInlineImageNode(normalizedURL, hostMarkdownNode);
+    if (!imageNode) return nil;
+    [hostMarkdownNode addSubnode:imageNode];
+    if (key) cache[key] = imageNode;
+    return imageNode;
+}
 // Compare two children arrays by element-pointer identity. Apollo's Swift
 // MarkdownNode.layoutSpecThatFits: builds a NEW NSArray each call but the
 // underlying ASDisplayNode element pointers are reused across passes when the
@@ -645,40 +710,68 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     NSArray *origChildren = stack.children;
     if (origChildren.count == 0) return origSpec;
 
-    // Look up cached decomposition. The cache key is element-pointer identity
-    // of origChildren — see ApolloChildrenIdentityMatches.
     NSArray *cachedOrigChildren = objc_getAssociatedObject(self, &kApolloCachedOrigChildrenKey);
     NSDictionary *decomp = objc_getAssociatedObject(self, &kApolloDecompositionMapKey);
 
     if (!ApolloChildrenIdentityMatches(cachedOrigChildren, origChildren)) {
         // Content changed — rebuild the decomposition map. Each text node
         // child with image URLs maps to its [textSegment, imageNode, ...] leaves.
+        //
+        // Note we deliberately do NOT removeFromSupernode the imageNodes from
+        // the previous decomp here — ApolloImageNodeForURL reuses them by
+        // URL. Recreating-and-removing on every rebuild caused visible flicker
+        // / vertical gaps because new ASNetworkImageNode instances start with
+        // no cached image, no aspect ratio, and a separate display pipeline
+        // that races with the previous instance's removal. Reusing avoids
+        // both. Text segments are still recreated (they're cheap and have
+        // varying attributedText that's fragile to retro-fit).
         NSMutableDictionary *newDecomp = [NSMutableDictionary dictionary];
+        NSMutableSet<NSString *> *referencedURLs = [NSMutableSet set];
         Class textNodeCls = ApolloASTextNodeClass();
+        Class imageNodeCls = ApolloASNetworkImageNodeClass();
         for (id child in origChildren) {
             if (![child isKindOfClass:textNodeCls]) continue;
             NSArray *leaves = ApolloBuildLeavesForTextNode((ASTextNode *)child, (ASDisplayNode *)self);
             if (leaves.count > 0) {
                 NSValue *k = [NSValue valueWithNonretainedObject:child];
                 newDecomp[k] = leaves;
+                for (id leaf in leaves) {
+                    if ([leaf isKindOfClass:imageNodeCls]) {
+                        NSString *abs = [((ASNetworkImageNode *)leaf).URL absoluteString];
+                        if (abs) [referencedURLs addObject:abs];
+                    }
+                }
             }
         }
+
+        // Garbage-collect imageNodes whose URL no longer appears in the new
+        // decomposition (e.g., the comment was edited and the URL removed).
+        NSMutableDictionary *imageCache = objc_getAssociatedObject(self, &kApolloImageNodesByURLKey);
+        if (imageCache.count > 0) {
+            NSArray *cachedURLs = [imageCache.allKeys copy];
+            for (NSString *cachedURL in cachedURLs) {
+                if (![referencedURLs containsObject:cachedURL]) {
+                    [imageCache[cachedURL] removeFromSupernode];
+                    [imageCache removeObjectForKey:cachedURL];
+                }
+            }
+        }
+
         // Always save the orig children (even when no decomposition needed) so
         // we can short-circuit subsequent calls that match this content.
         objc_setAssociatedObject(self, &kApolloCachedOrigChildrenKey, origChildren, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, &kApolloDecompositionMapKey, newDecomp.count > 0 ? newDecomp : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         decomp = newDecomp.count > 0 ? newDecomp : nil;
-        if (decomp) {
-            ApolloLog(@"[InlineImages] MarkdownNode %p: decomposition rebuilt (%lu source children, %lu decomposed)",
-                      self, (unsigned long)origChildren.count, (unsigned long)decomp.count);
-        }
     }
 
     if (decomp.count == 0) return origSpec;
 
     // Build augmented children: replace each decomposed text node with its
     // leaves (wrapping each image node in a fresh ratio+inset spec so updated
-    // aspect ratios are picked up on every layout pass).
+    // aspect ratios are picked up on every layout pass). Image nodes whose
+    // ratio is still unknown (no URL params + no DIDLOAD yet) get omitted
+    // entirely from this pass; DIDLOAD will trigger a layout-from-above and
+    // they'll appear at the correct size on the next pass.
     NSMutableArray *augmented = [NSMutableArray arrayWithCapacity:origChildren.count];
     Class imageNodeCls = ApolloASNetworkImageNodeClass();
     for (id child in origChildren) {
@@ -689,7 +782,8 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
         }
         for (id leaf in leaves) {
             if ([leaf isKindOfClass:imageNodeCls]) {
-                [augmented addObject:ApolloWrapImageNodeForLayout((ASNetworkImageNode *)leaf)];
+                ASLayoutSpec *wrapped = ApolloWrapImageNodeForLayout((ASNetworkImageNode *)leaf);
+                if (wrapped) [augmented addObject:wrapped];
             } else {
                 [augmented addObject:leaf];
             }
@@ -698,13 +792,50 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
 
     ASStackLayoutSpec *newSpec = [ApolloASStackLayoutSpecClass() stackLayoutSpecWithDirection:stack.direction
                                                                                       spacing:stack.spacing
-                                                                               justifyContent:stack.justifyContent
+                                                                               // Override Apollo's justifyContent (spaceBetween, fine for a
+                                                                               // single child but spreads our multi-child augmented layout
+                                                                               // apart when the stack has extra vertical space, leaving gaps
+                                                                               // around inline images).
+                                                                               justifyContent:ApolloASStackLayoutJustifyContentStart
                                                                                    alignItems:stack.alignItems
                                                                                      children:augmented];
     newSpec.flexWrap = stack.flexWrap;
     newSpec.alignContent = stack.alignContent;
     newSpec.lineSpacing = stack.lineSpacing;
     return newSpec;
+}
+
+%end
+
+// MARK: - %hook _TtC6Apollo14LinkButtonNode
+
+// Hides the inline link-card preview that Apollo renders below the comment
+// text when the URL has been inlined as an image elsewhere. Returns an empty
+// zero-size layout spec so the LinkButtonNode reserves no vertical space.
+//
+// We only hide nodes whose URL would be inline-rendered (image URLs on
+// Reddit / Imgur hosts) AND only when the inline-images feature is on.
+// Non-image LinkButtonNodes (tweets, articles, etc.) are unaffected.
+
+%hook _TtC6Apollo14LinkButtonNode
+
+- (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
+    if (!sEnableInlineImages) return %orig;
+
+    NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
+    if (!urlString) return %orig;
+
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!ApolloIsInlineRenderableImageURL(url)) return %orig;
+
+    // Empty layout spec with zero preferredSize. The LinkButtonNode itself
+    // remains in the cell's subnode tree (we don't want to fight Apollo's
+    // ownership), but contributes no visible content or vertical space.
+    Class layoutSpecCls = NSClassFromString(@"ASLayoutSpec");
+    if (!layoutSpecCls) return %orig;
+    ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
+    [[empty style] setValue:[NSValue valueWithCGSize:CGSizeZero] forKey:@"preferredSize"];
+    return empty;
 }
 
 %end

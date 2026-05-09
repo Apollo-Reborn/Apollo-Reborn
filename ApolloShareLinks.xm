@@ -142,52 +142,6 @@ static void ApolloEnqueueShareURLsFromHTMLIfNeeded(NSString *htmlString) {
     }
 }
 
-// Extract URL string from a LinkButtonNode, with iOS 26 fallback.
-// On iOS < 26 the Swift URL struct's first field was an NSURL*, so the ObjC getter
-// returned a usable NSURL. On iOS 26, Foundation.URL's internal layout changed
-// (swift-foundation #1238) and ObjC access no longer works. We fall back to reading
-// the urlTextNode's attributedText — a plain ObjC ASTextNode displaying the URL string.
-static NSString *ApolloGetLinkButtonNodeURLString(id linkButtonNode) {
-    if (!linkButtonNode) {
-        return nil;
-    }
-
-    // Primary path: try ObjC getter + absoluteString (works on iOS < 26)
-    @try {
-        SEL getter = @selector(url);
-        if ([linkButtonNode respondsToSelector:getter]) {
-            id value = ((id (*)(id, SEL))objc_msgSend)(linkButtonNode, getter);
-            if (value && value != [NSNull null] && [value respondsToSelector:@selector(absoluteString)]) {
-                NSString *str = [value absoluteString];
-                if ([str isKindOfClass:[NSString class]] && str.length > 0) {
-                    return str;
-                }
-            }
-        }
-    } @catch (NSException *e) {
-    }
-
-    // iOS 26 fallback: read the displayed URL text from the urlTextNode ivar.
-    // attributedText stores the full string (truncation is visual only).
-    // The displayed text typically omits the scheme, so we prepend "https://" if needed.
-    @try {
-        Ivar ivar = class_getInstanceVariable([linkButtonNode class], "urlTextNode");
-        id urlTextNode = ivar ? object_getIvar(linkButtonNode, ivar) : nil;
-        if (urlTextNode && [urlTextNode respondsToSelector:@selector(attributedText)]) {
-            NSString *text = [[urlTextNode attributedText] string];
-            if ([text isKindOfClass:[NSString class]] && text.length > 0) {
-                if (![text hasPrefix:@"http://"] && ![text hasPrefix:@"https://"]) {
-                    text = [@"https://" stringByAppendingString:text];
-                }
-                return text;
-            }
-        }
-    } @catch (NSException *e) {
-    }
-
-    return nil;
-}
-
 /// Helper functions for resolving share URLs
 
 static BOOL ApolloIsYouTubeHost(NSString *host) {
