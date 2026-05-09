@@ -97,6 +97,7 @@ typedef NS_ENUM(unsigned char, ApolloASStackLayoutAlignSelf) {
 @property (nonatomic) BOOL clipsToBounds;
 @property (nonatomic) CGFloat borderWidth;
 @property (nonatomic) CGColorRef borderColor;
+@property (nullable) id animatedImage;
 - (void)addTarget:(id)target action:(SEL)action forControlEvents:(ApolloASControlNodeEvent)events;
 @end
 
@@ -180,14 +181,32 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     static NSSet *imageExts;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        imageExts = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"webp", nil];
+        imageExts = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"webp", @"gif", nil];
     });
     if (![imageExts containsObject:ext]) return NO;
 
-    if ([host isEqualToString:@"i.redd.it"]) return YES;
-    if ([host isEqualToString:@"preview.redd.it"]) return YES;
-    if ([host isEqualToString:@"i.imgur.com"]) return YES;
-    return YES;
+    // Skip Reddit's pseudo-MP4 GIFs — the path ends in .gif but the query
+    // says format=mp4, so the bytes returned are MP4 video, not a GIF.
+    // PINRemoteImage can't decode them as image or animated image, leaving
+    // an empty grey container. Let the LinkButtonNode preview handle these.
+    NSString *q = [[url query] lowercaseString];
+    if ([q containsString:@"format=mp4"]) return NO;
+
+    // Allowlist: only inline known image hosts. Other hosts may have a
+    // matching extension by coincidence (e.g. tracking redirectors) but
+    // serve non-image bytes.
+    static NSSet *allowedHosts;
+    static dispatch_once_t hostsOnce;
+    dispatch_once(&hostsOnce, ^{
+        allowedHosts = [NSSet setWithObjects:
+                        @"i.redd.it",
+                        @"preview.redd.it",
+                        @"external-preview.redd.it",
+                        @"i.imgur.com",
+                        @"media.giphy.com",
+                        nil];
+    });
+    return [allowedHosts containsObject:host];
 }
 
 static NSURL *ApolloNormalizeInlineImageURL(NSURL *url) {
@@ -210,10 +229,10 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     if (w.length == 0 || h.length == 0) return 0;
     double wv = [w doubleValue], hv = [h doubleValue];
     if (wv <= 0 || hv <= 0) return 0;
-    CGFloat ratio = (CGFloat)(hv / wv);
-    if (ratio < 0.1) ratio = 0.1;
-    if (ratio > 4.0) ratio = 4.0;
-    return ratio;
+    // No clamping here — the layout-time wrapper applies the real bounds
+    // (kApolloMin/MaxContainerRatio). Returning the raw ratio also lets
+    // the wrapper detect "letterboxed" correctly for the border toggle.
+    return (CGFloat)(hv / wv);
 }
 
 // MARK: - Tap dispatcher + UIContextMenuInteraction delegate (singleton)
@@ -222,6 +241,7 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
 + (instancetype)shared;
 - (void)imageNodeTapped:(id)sender;
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image;
+- (void)updateAspectRatioForImageNode:(id)imageNode imageSize:(CGSize)size;
 @end
 
 @implementation ApolloInlineImageDispatcher
@@ -328,14 +348,27 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
 }
 
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image {
+    ApolloLog(@"[InlineImages] DIDLOAD imageNode=%p hasImage=%d size=%@ url=%@",
+              imageNode, image != nil, image ? NSStringFromCGSize(image.size) : @"nil",
+              [imageNode respondsToSelector:@selector(URL)] ? [(ASNetworkImageNode *)imageNode URL] : nil);
     if (!image || image.size.width <= 0 || image.size.height <= 0) return;
-    CGFloat newRatio = image.size.height / image.size.width;
+    [self updateAspectRatioForImageNode:imageNode imageSize:image.size];
+}
+
+// Update cached aspect ratio + trigger layout-from-above if it changed.
+// Called from didLoadImage: (static images) and from our _locked_setAnimatedImage:
+// hook below (GIFs / animated images, where didLoadImage: doesn't fire).
+- (void)updateAspectRatioForImageNode:(id)imageNode imageSize:(CGSize)size {
+    if (size.width <= 0 || size.height <= 0) return;
+    CGFloat newRatio = size.height / size.width;
     NSNumber *cur = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
     if (cur && fabs(newRatio - [cur doubleValue]) < 0.01) return;
     objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(newRatio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[InlineImages] ratio set imageNode=%p ratio=%.3f size=%@",
+              imageNode, newRatio, NSStringFromCGSize(size));
 
-    // Texture's internal hook for "intrinsic size changed" — walks up to
-    // the root signaling the table/collection to re-measure the row.
+    // Texture's internal "intrinsic size changed" hook; walks up to the
+    // root signaling the table/collection to re-measure the row.
     SEL sel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
     if (![imageNode respondsToSelector:sel]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -344,6 +377,63 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
 }
 
 @end
+
+// MARK: - %hook ASImageNode (animated image — GIF support)
+//
+// ASNetworkImageNode bypasses the public setAnimatedImage: setter and calls
+// _locked_setAnimatedImage: directly (Texture/Source/ASNetworkImageNode.mm
+// lines 769, 822). Hooking the public setter never fires for GIFs. We hook
+// the private locked setter, then defer our state mutation to the main
+// queue so we don't touch ratio/layout while Texture holds the node lock.
+
+%hook ASImageNode
+
+- (void)_locked_setAnimatedImage:(id)animatedImage {
+    %orig;
+    if (!animatedImage) return;
+    // Only act on imageNodes we created — Apollo's own GIFs (e.g. in the
+    // MediaViewer) lack the host association and pass through unchanged.
+    if (!objc_getAssociatedObject(self, &kApolloHostMarkdownNodeKey)) return;
+
+    __weak ASImageNode *weakSelf = self;
+    __weak id weakAnim = animatedImage;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ASImageNode *strong = weakSelf;
+        id anim = weakAnim;
+        if (!strong || !anim) return;
+
+        UIImage *cover = nil;
+        BOOL ready = YES;
+        if ([anim respondsToSelector:@selector(coverImageReady)]) {
+            ready = [[anim valueForKey:@"coverImageReady"] boolValue];
+        }
+        if (ready && [anim respondsToSelector:@selector(coverImage)]) {
+            cover = [anim valueForKey:@"coverImage"];
+        }
+        ApolloLog(@"[InlineImages] _locked_setAnimatedImage imageNode=%p ready=%d coverSize=%@",
+                  strong, ready, cover ? NSStringFromCGSize(cover.size) : @"nil");
+
+        if (cover && cover.size.width > 0 && cover.size.height > 0) {
+            [[ApolloInlineImageDispatcher shared] updateAspectRatioForImageNode:strong imageSize:cover.size];
+            return;
+        }
+        // Cover not ready yet — install the protocol's ready callback.
+        if ([anim respondsToSelector:@selector(setCoverImageReadyCallback:)]) {
+            void (^cb)(UIImage *) = ^(UIImage *coverImage) {
+                ApolloLog(@"[InlineImages] coverImageReadyCallback imageNode=%p coverSize=%@",
+                          weakSelf, coverImage ? NSStringFromCGSize(coverImage.size) : @"nil");
+                ASImageNode *s = weakSelf;
+                if (!s || !coverImage || coverImage.size.width <= 0) return;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[ApolloInlineImageDispatcher shared] updateAspectRatioForImageNode:s imageSize:coverImage.size];
+                });
+            };
+            [anim performSelector:@selector(setCoverImageReadyCallback:) withObject:cb];
+        }
+    });
+}
+
+%end
 
 // MARK: - Image-node construction
 
