@@ -421,10 +421,10 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 
 // Bounds for the container's aspect ratio (height / width). Images outside
 // these bounds get a clamped container with the image aspect-fit inside —
-// preserves natural proportions and prevents extremely tall images from
-// making cells span multiple screens.
-static const CGFloat kApolloMaxContainerRatio = 1.5;  // tallest container: ~3:4.5 portrait
-static const CGFloat kApolloMinContainerRatio = 0.3;  // shortest container: ~10:3 landscape
+// preserves natural proportions and avoids degenerate sizes (extremely
+// tall cells spanning multiple screens; near-zero-height slivers).
+static const CGFloat kApolloMaxContainerRatio = 1.65;  // tallest: ~3:5 portrait
+static const CGFloat kApolloMinContainerRatio = 0.15;  // shortest: ~6.7:1 landscape
 
 // For very tall images (clamped at the max ratio), inset horizontally so
 // taps in the left/right margins fall through to the cell (which collapses
