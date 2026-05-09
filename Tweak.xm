@@ -865,7 +865,7 @@ static void initializeRandomSources() {
                                     UDKeyPreferredGIFFallbackFormat: @1,
                                     UDKeyUnmuteCommentsVideos: @0,
                                     UDKeyProxyImgurDDG: @NO,
-                                    UDKeyEnableInlineImages: @NO,
+                                    UDKeyEnableInlineImages: @YES,
                                     UDKeyImageUploadProvider: @(ImageUploadProviderImgur),
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,

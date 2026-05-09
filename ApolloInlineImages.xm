@@ -45,6 +45,10 @@
 // include path). Just declare the methods/classes we need; the runtime resolves
 // to the real Apollo-bundled implementations.
 
+typedef NS_OPTIONS(NSUInteger, ApolloASControlNodeEvent) {
+    ApolloASControlNodeEventTouchUpInside = 1 << 4,
+};
+
 typedef NS_ENUM(unsigned char, ApolloASStackLayoutDirection) {
     ApolloASStackLayoutDirectionVertical = 0,
     ApolloASStackLayoutDirectionHorizontal = 1,
@@ -109,6 +113,7 @@ typedef NS_ENUM(unsigned char, ApolloASStackLayoutAlignSelf) {
 @property (nonatomic) CGFloat placeholderFadeDuration;
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL clipsToBounds;
+- (void)addTarget:(id)target action:(SEL)action forControlEvents:(ApolloASControlNodeEvent)events;
 @end
 
 @interface ASLayoutSpec : NSObject
@@ -230,7 +235,7 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
 
 @interface ApolloInlineImageDispatcher : NSObject <UIContextMenuInteractionDelegate>
 + (instancetype)shared;
-- (void)imageNodeViewTapped:(UITapGestureRecognizer *)gr;
+- (void)imageNodeTapped:(id)sender;
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image;
 @end
 
@@ -255,13 +260,10 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
     return nil;
 }
 
-- (void)imageNodeViewTapped:(UITapGestureRecognizer *)gr {
-    if (gr.state != UIGestureRecognizerStateRecognized) return;
-    UIView *v = gr.view;
-    NSURL *url = objc_getAssociatedObject(v, &kApolloImageURLKey);
+- (void)imageNodeTapped:(id)imageNode {
+    NSURL *url = objc_getAssociatedObject(imageNode, &kApolloImageURLKey);
     if (![url isKindOfClass:[NSURL class]]) return;
 
-    id imageNode = objc_getAssociatedObject(gr, &kApolloImageURLKey);
     ASDisplayNode *host = objc_getAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey);
     SEL sel = @selector(textNode:tappedLinkAttribute:value:atPoint:textRange:);
     id target = ApolloFindResponderForSelector(sel, imageNode) ?: ([host respondsToSelector:sel] ? host : nil);
@@ -271,11 +273,10 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
     }
 
     // Apollo's MarkdownNode handler (sub_10042ddf8) checks the attr argument
-    // against TWO swift_once-initialized Swift String constants: "ApolloLink"
-    // (routes to delegate → URL dispatcher → MediaViewer) and "Spoiler"
+    // against TWO swift_once-initialized Swift String constants: @"ApolloLink"
+    // (routes to delegate → URL dispatcher → MediaViewer) and @"Spoiler"
     // (inline spoiler reveal). Any other key (including NSLinkAttributeName)
-    // is silently ignored. Pass "ApolloLink" so the tap reaches the URL
-    // dispatcher and opens the native viewer.
+    // is silently ignored. @"ApolloLink" is what we want.
     id textArg = host ?: target;
     void (*msgSend)(id, SEL, id, id, id, CGPoint, NSRange) =
         (void (*)(id, SEL, id, id, id, CGPoint, NSRange))objc_msgSend;
@@ -387,6 +388,14 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     imageNode.clipsToBounds = YES;
     imageNode.delegate = [ApolloInlineImageDispatcher shared];
 
+    // Tap → ASControlNode TouchUpInside. ASNetworkImageNode IS-A ASControlNode
+    // and is view-backed by default, so this fires correctly. (The byline/
+    // meta-row layer-backed addTarget no-op gotcha in AGENTS.md applies to
+    // PostInfoNode children, not to MarkdownNode subnodes.)
+    [imageNode addTarget:[ApolloInlineImageDispatcher shared]
+                  action:@selector(imageNodeTapped:)
+        forControlEvents:ApolloASControlNodeEventTouchUpInside];
+
     [[imageNode style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
 
     CGFloat ratio = ApolloAspectRatioFromURL(normalizedURL);
@@ -398,14 +407,10 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
     objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // Tap + long-press are wired in onDidLoad once the imageNode's backing
-    // view exists. We use a UITapGestureRecognizer (not ASControlNode's
-    // addTarget:action:forControlEvents:) because Apollo's body subnodes can
-    // end up layer-backed in some configurations, where addTarget is a
-    // no-op. UIContextMenuInteraction handles long-press; both gestures
-    // coexist (tap fires immediately, context menu after long-press delay).
-    // Native iOS routes context menus to the deepest interaction-bearing
-    // view, so this wins over Apollo's cell-level menu.
+    // Long-press: install a UIContextMenuInteraction once the imageNode's
+    // backing view exists. Native iOS routes context menus to the deepest
+    // interaction-bearing view, so this wins over Apollo's cell-level
+    // upvote/save/reply menu when the touch is inside the image bounds.
     __weak ASNetworkImageNode *weakImage = imageNode;
     [imageNode onDidLoad:^(__kindof ASDisplayNode *node) {
         ASNetworkImageNode *img = weakImage;
@@ -413,19 +418,12 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         if ([objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) return;
         UIView *v = [img view];
         if (!v) return;
+        // Mirror the URL onto the view so the context menu delegate can
+        // fetch it from interaction.view without per-image delegate state.
         objc_setAssociatedObject(v, &kApolloImageURLKey, img.URL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        v.userInteractionEnabled = YES;
-
-        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
-            initWithTarget:[ApolloInlineImageDispatcher shared]
-                    action:@selector(imageNodeViewTapped:)];
-        objc_setAssociatedObject(tap, &kApolloImageURLKey, img, OBJC_ASSOCIATION_ASSIGN);
-        [v addGestureRecognizer:tap];
-
         UIContextMenuInteraction *menu = [[UIContextMenuInteraction alloc]
             initWithDelegate:[ApolloInlineImageDispatcher shared]];
         [v addInteraction:menu];
-
         objc_setAssociatedObject(img, &kApolloLongPressInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }];
 

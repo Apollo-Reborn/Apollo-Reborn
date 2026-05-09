@@ -20,8 +20,9 @@ extern NSInteger sUnmuteCommentsVideos;
 
 extern BOOL sProxyImgurDDG;
 
-// Render image URLs inline in post selftext and comments. When NO, Apollo's native
-// behavior (text link + optional link card) is preserved. See ApolloInlineImages.xm.
+// Render image URLs inline in post selftext and comments. Defaults to YES on
+// fresh installs (registerDefaults). When NO, Apollo's native behavior (text
+// link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
 
 // Image upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
