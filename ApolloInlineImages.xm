@@ -192,9 +192,12 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     NSString *q = [[url query] lowercaseString];
     if ([q containsString:@"format=mp4"]) return NO;
 
-    // Allowlist: only inline known image hosts. Other hosts may have a
-    // matching extension by coincidence (e.g. tracking redirectors) but
-    // serve non-image bytes.
+    // Allowlist with subdomain-stripped tolerance: a candidate matches if
+    // it equals an allowed host OR an allowed host has it as a parent
+    // domain. The latter handles iOS 26 where Apollo cosmetically strips
+    // common subdomains from displayed link text (e.g. "i.redd.it/foo.gif"
+    // → "redd.it/foo.gif"), and our LinkButtonNode hide hook only sees
+    // the displayed text.
     static NSSet *allowedHosts;
     static dispatch_once_t hostsOnce;
     dispatch_once(&hostsOnce, ^{
@@ -206,7 +209,12 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
                         @"media.giphy.com",
                         nil];
     });
-    return [allowedHosts containsObject:host];
+    NSString *parentSuffix = [@"." stringByAppendingString:host];
+    for (NSString *allowed in allowedHosts) {
+        if ([allowed isEqualToString:host]) return YES;
+        if ([allowed hasSuffix:parentSuffix]) return YES;
+    }
+    return NO;
 }
 
 static NSURL *ApolloNormalizeInlineImageURL(NSURL *url) {
@@ -513,16 +521,16 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 // these bounds get a clamped container with the image aspect-fit inside —
 // preserves natural proportions and avoids degenerate sizes (extremely
 // tall cells spanning multiple screens; near-zero-height slivers).
-static const CGFloat kApolloMaxContainerRatio = 1.65;  // tallest: ~3:5 portrait
+static const CGFloat kApolloMaxContainerRatio = 0.825; // tallest: ~6:5 portrait
 static const CGFloat kApolloMinContainerRatio = 0.15;  // shortest: ~6.7:1 landscape
 
-// For very tall images (clamped at the max ratio), inset horizontally so
-// taps in the left/right margins fall through to the cell (which collapses
-// on tap). Wide / normal-aspect images are NOT inset — they render
-// full-width.
-static const CGFloat kApolloTallImageHorizontalInset = 48.0;
+// Floor for the container width when shrinking tall images to image-tight
+// width. ~2 thumb widths — keeps super-narrow images from collapsing into
+// a sliver. Below this, the image letterboxes inside a min-width container.
+static const CGFloat kApolloMinTallImageWidth = 100.0;
 
-static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode) {
+static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
+                                                   CGFloat rowMaxWidth) {
     NSNumber *ratioNum = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
     if (!ratioNum) {
         // Unknown ratio → omit from layout. Including with a guessed ratio
@@ -534,22 +542,36 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode)
     if (naturalRatio <= 0) naturalRatio = 1.0;
 
     CGFloat containerRatio = naturalRatio;
-    BOOL isVeryTall = NO;
+    CGFloat containerWidth = rowMaxWidth;  // default: span full row
     BOOL isLetterboxed = NO;
-    if (containerRatio > kApolloMaxContainerRatio) {
-        containerRatio = kApolloMaxContainerRatio;
-        isVeryTall = YES;
-        isLetterboxed = YES;
-    } else if (containerRatio < kApolloMinContainerRatio) {
+
+    if (naturalRatio > kApolloMaxContainerRatio) {
+        // Tall image. Cap height at rowMaxWidth × maxContainerRatio. Within
+        // that cap, shrink container width to image-tight (no letterbox)
+        // unless that would make the container too narrow, in which case
+        // pin to a min width and letterbox inside (still height-capped).
+        CGFloat maxContainerHeight = rowMaxWidth * kApolloMaxContainerRatio;
+        CGFloat tightWidth = maxContainerHeight / naturalRatio;
+        if (tightWidth >= kApolloMinTallImageWidth) {
+            containerWidth = tightWidth;
+            containerRatio = naturalRatio;
+        } else {
+            containerWidth = kApolloMinTallImageWidth;
+            // Container ratio derived so height equals maxContainerHeight.
+            containerRatio = maxContainerHeight / kApolloMinTallImageWidth;
+            isLetterboxed = YES;
+        }
+    } else if (naturalRatio < kApolloMinContainerRatio) {
+        // Wide image: keep full row width, letterbox inside a clamped
+        // min-ratio container.
+        containerWidth = rowMaxWidth;
         containerRatio = kApolloMinContainerRatio;
         isLetterboxed = YES;
-        // Wide images stay full-width; no inset.
     }
 
-    // Border only when the image is letterboxed inside its container
-    // (i.e. natural ratio doesn't match container ratio due to clamping).
-    // When natural fits within bounds, the image fills the container on all
-    // four sides and a border would overlap the image content — drop it.
+    // Border only when letterboxed (natural ratio doesn't match container
+    // ratio). Tightly-wrapped tall images have the image at the container
+    // edge — a border there would overlap image content.
     if (isLetterboxed) {
         imageNode.borderWidth = 0.75;
         imageNode.borderColor = [UIColor separatorColor].CGColor;
@@ -560,12 +582,9 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode)
     ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
 
-    // Vertical breathing room always; horizontal inset only for very tall
-    // images so the cell-collapse tap zone has somewhere to land.
-    UIEdgeInsets insets = UIEdgeInsetsMake(8,
-                                            isVeryTall ? kApolloTallImageHorizontalInset : 0,
-                                            8,
-                                            isVeryTall ? kApolloTallImageHorizontalInset : 0);
+    // Center the (possibly narrower) container horizontally.
+    CGFloat horizontalInset = MAX(0.0, (rowMaxWidth - containerWidth) * 0.5);
+    UIEdgeInsets insets = UIEdgeInsetsMake(8, horizontalInset, 8, horizontalInset);
     ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     return insetSpec;
@@ -788,6 +807,7 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     // from-above and they'll appear on the next pass.
     NSMutableArray *augmented = [NSMutableArray arrayWithCapacity:origChildren.count];
     Class imageNodeCls = ApolloASNetworkImageNodeClass();
+    CGFloat rowMaxWidth = constrainedSize.max.width;
     for (id child in origChildren) {
         NSArray *leaves = decomp[[NSValue valueWithNonretainedObject:child]];
         if (!leaves) {
@@ -796,7 +816,7 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
         }
         for (id leaf in leaves) {
             if ([leaf isKindOfClass:imageNodeCls]) {
-                ASLayoutSpec *wrapped = ApolloWrapImageNodeForLayout((ASNetworkImageNode *)leaf);
+                ASLayoutSpec *wrapped = ApolloWrapImageNodeForLayout((ASNetworkImageNode *)leaf, rowMaxWidth);
                 if (wrapped) [augmented addObject:wrapped];
             } else {
                 [augmented addObject:leaf];
@@ -833,7 +853,6 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
 
     NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
     if (!urlString) return %orig;
-
     NSURL *url = [NSURL URLWithString:urlString];
     if (!ApolloIsInlineRenderableImageURL(url)) return %orig;
 
