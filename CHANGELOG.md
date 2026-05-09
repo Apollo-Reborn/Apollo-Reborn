@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 - New **Image Upload Host** option to upload images directly to Reddit instead of Imgur (thanks @icpryde for the implementation!)
     - Configure in **Settings > Custom API > Media > Image Upload Host**
-    - Reddit image upload is **experimental** and does not currently support multi-image uploads or videos
+    - Reddit image upload is **experimental** and does not currently support multi-image or video uploads
         - Right after posting, Apollo may briefly show a generic preview icon while Reddit finishes processing the image. Pull to refresh and the real thumbnail should appear
 
 ## [v2.7.2] - 2026-05-07
