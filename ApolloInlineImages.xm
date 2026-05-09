@@ -113,6 +113,8 @@ typedef NS_ENUM(unsigned char, ApolloASStackLayoutAlignSelf) {
 @property (nonatomic) CGFloat placeholderFadeDuration;
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL clipsToBounds;
+@property (nonatomic) CGFloat borderWidth;
+@property (nonatomic) CGColorRef borderColor;
 - (void)addTarget:(id)target action:(SEL)action forControlEvents:(ApolloASControlNodeEvent)events;
 @end
 
@@ -351,16 +353,26 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
     if (cur && fabs(newRatio - [cur doubleValue]) < 0.01) return;
     objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(newRatio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    ASDisplayNode *host = objc_getAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey);
-    if (!host) return;
-
-    // Trigger one relayout pass on the host MarkdownNode; Texture's normal
-    // propagation will bubble the size change up to the cell. Walking the
-    // supernode chain explicitly here was previously contributing to layout
-    // storms — host invalidation alone is sufficient.
+    // Walk up from the imageNode invalidating each ancestor's calculated
+    // layout so the surrounding cell re-measures with the new container
+    // ratio. Without bubbling up to the cell, the MarkdownNode's own
+    // setNeedsLayout doesn't trigger a row-height re-measure, leaving the
+    // cell stuck at the dimensions from the initial layout (where we'd
+    // guessed ratio=1.0 because preview.redd.it URLs only carry width=,
+    // not height=). The cache fix in layoutSpecThatFits ensures this walk
+    // doesn't trigger a relayout storm — we re-emit but don't re-decompose.
     dispatch_async(dispatch_get_main_queue(), ^{
-        [host invalidateCalculatedLayout];
-        [host setNeedsLayout];
+        id node = imageNode;
+        for (int hops = 0; node && hops < 12; hops++) {
+            if ([node respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+                [node performSelector:@selector(invalidateCalculatedLayout)];
+            }
+            if ([node respondsToSelector:@selector(setNeedsLayout)]) {
+                [node performSelector:@selector(setNeedsLayout)];
+            }
+            if (![node respondsToSelector:@selector(supernode)]) break;
+            node = [node performSelector:@selector(supernode)];
+        }
     });
 }
 
@@ -376,16 +388,22 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
     imageNode.URL = normalizedURL;
     imageNode.shouldRenderProgressImages = YES;
-    // aspectFill so the image fills the ratio frame; once we've snapped the
-    // frame's ratio to the natural image ratio, the result is identical to
-    // aspectFit (no cropping). Before load, fill avoids visible placeholder
-    // bars at the borders.
-    imageNode.contentMode = UIViewContentModeScaleAspectFill;
+    // aspectFit so the entire image is always visible — when the container
+    // ratio doesn't match the image's natural ratio (clamped, or before we
+    // know the natural ratio because preview.redd.it URLs don't include
+    // height=), the image is centered with letterbox bars rather than
+    // cropping. When the ratios match, aspectFit and aspectFill render
+    // identically.
+    imageNode.contentMode = UIViewContentModeScaleAspectFit;
     imageNode.placeholderColor = [UIColor colorWithWhite:0.5 alpha:0.12];
     imageNode.placeholderEnabled = YES;
     imageNode.placeholderFadeDuration = 0.2;
     imageNode.cornerRadius = 8.0;
     imageNode.clipsToBounds = YES;
+    // Thin grey border so the tappable image-area boundary is distinguishable
+    // from regular cell background.
+    imageNode.borderWidth = 1.0;
+    imageNode.borderColor = [UIColor colorWithWhite:0.5 alpha:0.35].CGColor;
     imageNode.delegate = [ApolloInlineImageDispatcher shared];
 
     // Tap → ASControlNode TouchUpInside. ASNetworkImageNode IS-A ASControlNode
@@ -432,16 +450,52 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 
 // MARK: - Layout-spec wrapping (ratio + inset)
 
+// Bounds for the container's aspect ratio (height / width). Images outside
+// these bounds get a clamped container with the image aspect-fit inside —
+// preserves natural proportions, gives a tappable hitbox bounded to the
+// container, and prevents extremely tall images from making cells span
+// multiple screens.
+static const CGFloat kApolloMaxContainerRatio = 1.5;  // tallest container: ~3:4.5 portrait
+static const CGFloat kApolloMinContainerRatio = 0.3;  // shortest container: ~10:3 landscape
+
+// When the image is clamped (very tall / very wide), inset the container
+// horizontally by this much per side so taps in the left/right edge
+// margins fall through to the cell (which collapses on tap). 56pt per side
+// gives users a comfortable "outside the image" zone — wide enough that
+// thumb-tapping at the cell edge reliably misses the image.
+static const CGFloat kApolloClampedHorizontalInset = 56.0;
+
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode) {
     NSNumber *ratioNum = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
-    CGFloat ratio = ratioNum ? [ratioNum doubleValue] : 1.0;
-    if (ratio <= 0) ratio = 1.0;
+    CGFloat naturalRatio = ratioNum ? [ratioNum doubleValue] : 1.0;
+    if (naturalRatio <= 0) naturalRatio = 1.0;
 
-    ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:ratio child:imageNode];
+    CGFloat containerRatio = naturalRatio;
+    BOOL clamped = NO;
+    if (containerRatio > kApolloMaxContainerRatio) {
+        containerRatio = kApolloMaxContainerRatio;
+        clamped = YES;
+    } else if (containerRatio < kApolloMinContainerRatio) {
+        containerRatio = kApolloMinContainerRatio;
+        clamped = YES;
+    }
+    // contentMode is set once at imageNode creation (aspectFit always) — we
+    // intentionally don't toggle based on clamping. aspectFit guarantees the
+    // entire image is visible regardless of how the container ratio compares
+    // to the natural image ratio, which avoids cropping when our guessed
+    // ratio (1.0 fallback if no height query param) differs from reality.
+
+    ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     [[ratioSpec style] setValue:@(1.0) forKey:@"flexGrow"];
 
-    UIEdgeInsets insets = UIEdgeInsetsMake(8, 0, 8, 0);
+    // Vertical breathing room always; horizontal inset only for clamped images
+    // so the cell-collapse tap zone has somewhere to land. For natural-ratio
+    // images we keep the container full-width (no UX regression vs prior).
+    UIEdgeInsets insets = UIEdgeInsetsMake(8,
+                                            clamped ? kApolloClampedHorizontalInset : 0,
+                                            8,
+                                            clamped ? kApolloClampedHorizontalInset : 0);
     ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     [[insetSpec style] setValue:@(1.0) forKey:@"flexGrow"];
