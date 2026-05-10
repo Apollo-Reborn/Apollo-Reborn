@@ -226,12 +226,10 @@ static NSURL *ApolloNormalizeInlineImageURL(NSURL *url) {
     return out ?: url;
 }
 
-// Distinguishes a bare URL display ("i.imgur.com/foo.jpeg") from markdown
-// link text wrapping a URL ("[Winner](imgurlink)" → "Winner"). For bare
-// URLs, Apollo's rendered text always contains the URL's path; markdown
-// link text never does. Whitespace also disqualifies — URLs have none.
-// Without this guard, custom link text gets replaced by an inline image
-// and the user loses the descriptive text from the comment body.
+// YES if the rendered text for a URL range looks like a bare URL (text
+// contains the URL path, no whitespace) vs markdown link text. Bare-URL
+// ranges are deleted from the trailing text since the inline image
+// stands in for them; markdown-link ranges are preserved.
 static BOOL ApolloRangeTextLooksLikeBareURL(NSAttributedString *attr, NSRange range, NSURL *url) {
     if (range.location + range.length > attr.string.length) return NO;
     NSString *text = [[attr.string substringWithRange:range]
@@ -538,12 +536,12 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 // preserves natural proportions and avoids degenerate sizes (extremely
 // tall cells spanning multiple screens; near-zero-height slivers).
 static const CGFloat kApolloMaxContainerRatio = 1.0;   // tallest: square (height ≤ width)
-static const CGFloat kApolloMinContainerRatio = 0.15;  // shortest: ~6.7:1 landscape
+static const CGFloat kApolloMinContainerRatio = 0.18; // shortest: ~5.5:1 landscape
 
 // Floor for the container width when shrinking tall images to image-tight
 // width. ~2 thumb widths — keeps super-narrow images from collapsing into
 // a sliver. Below this, the image letterboxes inside a min-width container.
-static const CGFloat kApolloMinTallImageWidth = 100.0;
+static const CGFloat kApolloMinTallImageWidth = 85.0;
 
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
                                                    CGFloat rowMaxWidth) {
@@ -600,7 +598,7 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
 
     // Center the (possibly narrower) container horizontally.
     CGFloat horizontalInset = MAX(0.0, (rowMaxWidth - containerWidth) * 0.5);
-    UIEdgeInsets insets = UIEdgeInsetsMake(8, horizontalInset, 8, horizontalInset);
+    UIEdgeInsets insets = UIEdgeInsetsMake(4, horizontalInset, 4, horizontalInset);
     ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     return insetSpec;
@@ -661,19 +659,22 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
     [attr enumerateAttributesInRange:NSMakeRange(0, attr.length)
                              options:0
                           usingBlock:^(NSDictionary<NSAttributedStringKey, id> *attrs, NSRange range, BOOL *stop) {
-        for (id val in attrs.objectEnumerator) {
+        for (NSAttributedStringKey k in attrs) {
+            id val = attrs[k];
             if (![val isKindOfClass:[NSURL class]]) continue;
             NSURL *url = (NSURL *)val;
             if (!ApolloIsInlineRenderableImageURL(url)) continue;
-            // Skip markdown links with custom text — the URL attribute is
-            // present but the rendered text isn't the URL, so we'd lose
-            // the link text if we replaced it with an image.
-            if (!ApolloRangeTextLooksLikeBareURL(attr, range, url)) continue;
+            // Expand to the URL's longest effective range so a markdown
+            // link with mixed formatting ("[**Bold** plain](url)") gets
+            // captured as one span instead of two.
+            NSRange fullRange = range;
+            (void)[attr attribute:k atIndex:range.location longestEffectiveRange:&fullRange
+                          inRange:NSMakeRange(0, attr.length)];
             NSURL *normalized = ApolloNormalizeInlineImageURL(url);
             NSString *abs = normalized.absoluteString;
             if (!abs.length || [seenAbs containsObject:abs]) continue;
             [seenAbs addObject:abs];
-            [ranges addObject:[NSValue valueWithRange:range]];
+            [ranges addObject:[NSValue valueWithRange:fullRange]];
             [urls addObject:normalized];
         }
     }];
@@ -690,33 +691,58 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
     }];
 
     NSMutableArray *leaves = [NSMutableArray array];
-    NSUInteger cursor = 0;
 
-    void (^appendTextSegment)(NSRange) = ^(NSRange r) {
-        if (r.length == 0) return;
-        NSAttributedString *seg = ApolloTrimAttributedString([attr attributedSubstringFromRange:r]);
-        if (seg.length == 0) return;
-        ASTextNode *tn = ApolloMakeTextSegmentNode(textNode, seg);
-        if (!tn) return;
-        [leaves addObject:tn];
-        [hostMarkdownNode addSubnode:tn];
-    };
+    // Process per-paragraph (\n-delimited spans). Within each paragraph,
+    // images stack at the top and the remaining text follows. Across
+    // paragraphs, source order is preserved — so "Plain text\nhttps://gif"
+    // renders as text then image, while "[a](url1) and [b](url2)" (single
+    // line) renders as image1, image2, then "a and b".
+    NSString *str = attr.string;
 
-    for (NSNumber *iNum in idx) {
-        NSRange r = [ranges[iNum.unsignedIntegerValue] rangeValue];
-        appendTextSegment(NSMakeRange(cursor, (r.location > cursor ? r.location - cursor : 0)));
+    void (^processParagraph)(NSUInteger, NSUInteger) = ^(NSUInteger pStart, NSUInteger pEnd) {
+        if (pEnd <= pStart) return;
+        NSRange pRange = NSMakeRange(pStart, pEnd - pStart);
 
-        // Reuse imageNode by URL to avoid recreate-on-every-rebuild flicker.
-        // ApolloImageNodeForURL handles addSubnode + cache registration.
-        ASNetworkImageNode *img = ApolloImageNodeForURL(urls[iNum.unsignedIntegerValue], hostMarkdownNode);
-        if (img) {
-            [leaves addObject:img];
+        // Indices (into ranges/urls) for URLs falling inside this paragraph.
+        NSMutableArray<NSNumber *> *pIdx = [NSMutableArray array];
+        for (NSNumber *iNum in idx) {
+            NSRange r = [ranges[iNum.unsignedIntegerValue] rangeValue];
+            if (r.location >= pStart && NSMaxRange(r) <= pEnd) [pIdx addObject:iNum];
         }
 
-        cursor = NSMaxRange(r);
-    }
+        for (NSNumber *iNum in pIdx) {
+            ASNetworkImageNode *img = ApolloImageNodeForURL(urls[iNum.unsignedIntegerValue], hostMarkdownNode);
+            if (img) [leaves addObject:img];
+        }
 
-    appendTextSegment(NSMakeRange(cursor, (cursor < attr.length ? attr.length - cursor : 0)));
+        NSMutableAttributedString *remaining = [[attr attributedSubstringFromRange:pRange] mutableCopy];
+        // Reverse-order deletion of bare-URL ranges (paragraph-relative).
+        for (NSInteger n = (NSInteger)pIdx.count - 1; n >= 0; n--) {
+            NSUInteger ri = [pIdx[n] unsignedIntegerValue];
+            NSRange r = [ranges[ri] rangeValue];
+            if (ApolloRangeTextLooksLikeBareURL(attr, r, urls[ri])) {
+                [remaining deleteCharactersInRange:NSMakeRange(r.location - pStart, r.length)];
+            }
+        }
+
+        NSAttributedString *trimmed = ApolloTrimAttributedString(remaining);
+        if (trimmed.length > 0) {
+            ASTextNode *tn = ApolloMakeTextSegmentNode(textNode, trimmed);
+            if (tn) {
+                [leaves addObject:tn];
+                [hostMarkdownNode addSubnode:tn];
+            }
+        }
+    };
+
+    NSUInteger pStart = 0;
+    for (NSUInteger i = 0; i < str.length; i++) {
+        if ([str characterAtIndex:i] == '\n') {
+            processParagraph(pStart, i);
+            pStart = i + 1;
+        }
+    }
+    processParagraph(pStart, str.length);
 
     return leaves.count > 0 ? [leaves copy] : nil;
 }
