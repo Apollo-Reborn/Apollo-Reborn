@@ -543,6 +543,13 @@ static const CGFloat kApolloMinContainerRatio = 0.18; // shortest: ~5.5:1 landsc
 // a sliver. Below this, the image letterboxes inside a min-width container.
 static const CGFloat kApolloMinTallImageWidth = 85.0;
 
+// Secondary height cap as a fraction of the current screen height. Keeps
+// inline images from filling the entire viewport in landscape, where the
+// row is wide but vertical space is scarce. In portrait this rarely
+// binds (screen × 0.6 > row × 1.0 on phones and tablets), so portrait
+// sizing stays unchanged.
+static const CGFloat kApolloMaxScreenHeightFraction = 0.6;
+
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
                                                    CGFloat rowMaxWidth) {
     NSNumber *ratioNum = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
@@ -560,11 +567,16 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
     BOOL isLetterboxed = NO;
 
     if (naturalRatio > kApolloMaxContainerRatio) {
-        // Tall image. Cap height at rowMaxWidth × maxContainerRatio. Within
-        // that cap, shrink container width to image-tight (no letterbox)
-        // unless that would make the container too narrow, in which case
-        // pin to a min width and letterbox inside (still height-capped).
-        CGFloat maxContainerHeight = rowMaxWidth * kApolloMaxContainerRatio;
+        // Tall image. Cap height at min(row × maxContainerRatio,
+        // screen × maxScreenHeightFraction). The screen term protects
+        // landscape, where the row term alone produces images taller
+        // than the viewport. Within that cap, shrink container width
+        // to image-tight (no letterbox) unless that would make the
+        // container too narrow, in which case pin to a min width and
+        // letterbox inside (still height-capped).
+        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+        CGFloat maxContainerHeight = MIN(rowMaxWidth * kApolloMaxContainerRatio,
+                                          screenHeight * kApolloMaxScreenHeightFraction);
         CGFloat tightWidth = maxContainerHeight / naturalRatio;
         if (tightWidth >= kApolloMinTallImageWidth) {
             containerWidth = tightWidth;
@@ -581,6 +593,17 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         containerWidth = rowMaxWidth;
         containerRatio = kApolloMinContainerRatio;
         isLetterboxed = YES;
+    } else {
+        // Normal aspect. Tight-wrap, but enforce the screen height cap
+        // so a landscape-wide normal image (e.g. 16:9 at full row width)
+        // doesn't dominate the viewport.
+        CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
+        CGFloat heightCap = screenHeight * kApolloMaxScreenHeightFraction;
+        CGFloat naturalHeight = rowMaxWidth * naturalRatio;
+        if (naturalHeight > heightCap) {
+            containerWidth = heightCap / naturalRatio;
+            containerRatio = naturalRatio;
+        }
     }
 
     // Border only when letterboxed (natural ratio doesn't match container
