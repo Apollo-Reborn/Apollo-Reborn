@@ -226,6 +226,22 @@ static NSURL *ApolloNormalizeInlineImageURL(NSURL *url) {
     return out ?: url;
 }
 
+// Distinguishes a bare URL display ("i.imgur.com/foo.jpeg") from markdown
+// link text wrapping a URL ("[Winner](imgurlink)" → "Winner"). For bare
+// URLs, Apollo's rendered text always contains the URL's path; markdown
+// link text never does. Whitespace also disqualifies — URLs have none.
+// Without this guard, custom link text gets replaced by an inline image
+// and the user loses the descriptive text from the comment body.
+static BOOL ApolloRangeTextLooksLikeBareURL(NSAttributedString *attr, NSRange range, NSURL *url) {
+    if (range.location + range.length > attr.string.length) return NO;
+    NSString *text = [[attr.string substringWithRange:range]
+                      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *path = url.path;
+    if (text.length == 0 || path.length == 0) return NO;
+    if ([text rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]].location != NSNotFound) return NO;
+    return [text rangeOfString:path].location != NSNotFound;
+}
+
 static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     NSString *w = nil, *h = nil;
@@ -649,6 +665,10 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             if (![val isKindOfClass:[NSURL class]]) continue;
             NSURL *url = (NSURL *)val;
             if (!ApolloIsInlineRenderableImageURL(url)) continue;
+            // Skip markdown links with custom text — the URL attribute is
+            // present but the rendered text isn't the URL, so we'd lose
+            // the link text if we replaced it with an image.
+            if (!ApolloRangeTextLooksLikeBareURL(attr, range, url)) continue;
             NSURL *normalized = ApolloNormalizeInlineImageURL(url);
             NSString *abs = normalized.absoluteString;
             if (!abs.length || [seenAbs containsObject:abs]) continue;
