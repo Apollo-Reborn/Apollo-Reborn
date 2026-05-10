@@ -53,6 +53,24 @@ The [apple-docs-mcp](https://github.com/kimsungwhee/apple-docs-mcp) server gives
 }
 ```
 
+## iOS 26 Runtime Headers (for Liquid Glass work)
+
+For iOS 26 / Liquid Glass-specific tweaks, clone these into the repo root so agents can grep them directly. Both are gitignored.
+
+```bash
+# RuntimeBrowser-style ObjC headers for every framework
+git clone https://github.com/qingralf/iOS26-Runtime-Headers.git
+
+# IDA-style decompilation of iOS 26.1. The full repo is huge; sparse-checkout
+# just UIKitCore.framework (the only slice that's typically needed).
+git clone --depth 1 --filter=blob:none --sparse https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore.git
+cd iPhone18-3_26.1_23B85_Restore
+git sparse-checkout set System/Library/PrivateFrameworks/UIKitCore.framework
+cd ..
+```
+
+See [AGENTS.md](AGENTS.md) for usage notes.
+
 ## Adding a New Feature
 
 Tips for prompting effectively:

@@ -108,6 +108,23 @@ No automated test suite, must be validated manually.
 
 **Decoding Swift small strings from assembly**: Strings <=15 bytes are stored inline in two registers (x0/x1) rather than as heap pointers. Hopper's decompiler hides the actual values behind `_bridgeToObjectiveC()` calls — you must read the raw assembly. Layout: x0 holds bytes 0-7 (little-endian), x1 holds bytes 8-14 in bits 0-55 plus a discriminator byte in bits 56-63 (discriminator = `0xE0 + length`). Each `mov`/`movk` with `#0xXXYY` stores two ASCII bytes in little-endian order (YY first, XX second). Strings >15 bytes use buffer pointers (`x1 = addr | 0x8000000000000000`, UTF-8 at `addr+0x20`) and appear in Hopper's string table. See `docs/sekrit-icon-keys-RE.md` for a worked example.
 
+### iOS 26 Runtime Headers And Decompiled Internals
+
+Two external repos are useful to reference for Liquid Glass / iOS 26 work. Both are gitignored — clone them into the repo root before starting:
+
+```bash
+git clone https://github.com/qingralf/iOS26-Runtime-Headers.git
+
+# Full repo is huge; sparse-checkout just UIKitCore.framework.
+git clone --depth 1 --filter=blob:none --sparse https://github.com/EthanArbuckle/iPhone18-3_26.1_23B85_Restore.git
+cd iPhone18-3_26.1_23B85_Restore
+git sparse-checkout set System/Library/PrivateFrameworks/UIKitCore.framework
+cd ..
+```
+
+- `iOS26-Runtime-Headers/` — RuntimeBrowser-style ObjC headers for every framework. Use to discover ivars, properties, and selectors on private classes (e.g. `_UINavigationBarTitleControl`, `_UINavigationBarContentViewLayout`).
+- `iPhone18-3_26.1_23B85_Restore/System/Library/PrivateFrameworks/UIKitCore.framework/UIKitCore/` — IDA-style decompilation of UIKitCore as one `.mm` file per class. Use to read actual setter/method bodies (e.g. checking whether a setter is a synthesized ivar setter or actually does work). UIKitCore is the most useful framework here for nav bar / tab bar / Liquid Glass investigations.
+
 ### Mapping Runtime PCs To Hopper Addresses
 
 Crash logs typically show:
