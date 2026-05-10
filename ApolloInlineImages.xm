@@ -192,27 +192,27 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     NSString *q = [[url query] lowercaseString];
     if ([q containsString:@"format=mp4"]) return NO;
 
-    // Allowlist with subdomain-stripped tolerance: a candidate matches if
-    // it equals an allowed host OR an allowed host has it as a parent
-    // domain. The latter handles iOS 26 where Apollo cosmetically strips
-    // common subdomains from displayed link text (e.g. "i.redd.it/foo.gif"
-    // → "redd.it/foo.gif"), and our LinkButtonNode hide hook only sees
-    // the displayed text.
-    static NSSet *allowedHosts;
+    // Allowlist of trusted parent domains. A host matches if it equals
+    // a parent domain or is a subdomain of one. Curated to cover common
+    // image hosts in Reddit comments while keeping random tracker pixels
+    // and arbitrary image-extensioned URLs out (privacy + bandwidth).
+    static NSArray<NSString *> *allowedParentDomains;
     static dispatch_once_t hostsOnce;
     dispatch_once(&hostsOnce, ^{
-        allowedHosts = [NSSet setWithObjects:
-                        @"i.redd.it",
-                        @"preview.redd.it",
-                        @"external-preview.redd.it",
-                        @"i.imgur.com",
-                        @"media.giphy.com",
-                        nil];
+        allowedParentDomains = @[
+            @"redd.it",
+            @"imgur.com",
+            @"giphy.com",
+            @"tenor.com",
+            @"redgifs.com",
+            @"twimg.com",
+            @"discordapp.com",
+            @"discordapp.net",
+        ];
     });
-    NSString *parentSuffix = [@"." stringByAppendingString:host];
-    for (NSString *allowed in allowedHosts) {
-        if ([allowed isEqualToString:host]) return YES;
-        if ([allowed hasSuffix:parentSuffix]) return YES;
+    for (NSString *parent in allowedParentDomains) {
+        if ([host isEqualToString:parent]) return YES;
+        if ([host hasSuffix:[@"." stringByAppendingString:parent]]) return YES;
     }
     return NO;
 }
