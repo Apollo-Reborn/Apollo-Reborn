@@ -241,7 +241,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 7;
-        case SectionMedia: return 4;
+        case SectionMedia: return 5;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
         case SectionCredits: return 3;
@@ -586,6 +586,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             return cell;
         }
         case 3:
+            return [self switchCellWithIdentifier:@"Cell_Media_InlinePostImages"
+                                            label:@"Inline Image / GIF Thumbnails"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowInlinePostImageThumbnails]
+                                           action:@selector(inlinePostImageThumbnailsSwitchToggled:)];
+        case 4:
             return [self switchCellWithIdentifier:@"Cell_Media_ProxyImgur"
                                             label:@"Proxy Imgur via DuckDuckGo"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG]
@@ -742,7 +747,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             attributes:plainAttrs]];
     } else if (section == SectionMedia) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Image Upload Host selects where Apollo uploads images attached to posts and comments. \"Reddit\" is experimental and does not support multi-image or video uploads.\n\nProxying routes Imgur image requests through DuckDuckGo to bypass regional blocks; albums and uploads are unsupported by the proxy."
+            initWithString:@"Image Upload Host selects where Apollo uploads images attached to posts and comments. \"Reddit\" is experimental and does not support multi-image or video uploads. Inline Image / GIF Thumbnails replaces supported image and GIF preview links with inline media when enabled.\n\nProxying routes Imgur image requests through DuckDuckGo to bypass regional blocks; albums and uploads are unsupported by the proxy."
             attributes:plainAttrs];
     } else {
         return nil;
@@ -1101,6 +1106,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
 }
 
+- (void)inlinePostImageThumbnailsSwitchToggled:(UISwitch *)sender {
+    sShowInlinePostImageThumbnails = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sShowInlinePostImageThumbnails forKey:UDKeyShowInlinePostImageThumbnails];
+    extern void ApolloInlineHandleToggleChanged(void);
+    ApolloInlineHandleToggleChanged();
+}
+
 #pragma mark - Backup / Restore
 
 static NSString *const kMainPlistFilename = @"preferences.plist";
@@ -1305,6 +1317,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
     sImageUploadProvider = [defaults integerForKey:UDKeyImageUploadProvider];
+    sShowInlinePostImageThumbnails = [defaults boolForKey:UDKeyShowInlinePostImageThumbnails];
     sEnableBulkTranslation = [defaults boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [defaults boolForKey:UDKeyAutoTranslateOnAppear];
 

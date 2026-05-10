@@ -21,6 +21,7 @@ BOOL sProxyImgurDDG = NO;
 NSInteger sImageUploadProvider = ImageUploadProviderImgur;
 
 NSString *sLatestRedditBearerToken = nil;
+BOOL sShowInlinePostImageThumbnails = NO;
 
 BOOL sEnableBulkTranslation = NO;
 BOOL sAutoTranslateOnAppear = YES;

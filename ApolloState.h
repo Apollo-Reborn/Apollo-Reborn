@@ -32,6 +32,7 @@ extern NSInteger sImageUploadProvider;
 // headers. Used by the native Reddit image upload path. nil if Apollo hasn't made an
 // authenticated Reddit API call yet.
 extern NSString *sLatestRedditBearerToken;
+extern BOOL sShowInlinePostImageThumbnails;
 
 extern BOOL sEnableBulkTranslation;
 extern BOOL sAutoTranslateOnAppear;
