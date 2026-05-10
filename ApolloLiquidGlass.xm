@@ -407,6 +407,118 @@ static void HideApolloStatusBarBackgroundView(UINavigationController *navControl
 
 %end
 
+// MARK: - Re-center title widget pushed off-center by Liquid Glass bar items
+//
+// On iOS 26 Liquid Glass, asymmetric padding around bar items widens the
+// trailing item stack more than the back button, so UINavigationBar centers the
+// title in the gap between items rather than at the bar's true midpoint.
+//
+// Fix: hook _UINavigationBarTitleControl (the universal container for plain
+// titles, DualLabelTitleButton, and JumpBar) and apply a CGAffineTransform
+// translation that pulls its center toward the bar midpoint, clamped to avoid
+// overlapping either bar item stack.
+
+@interface _UINavigationBarTitleControl : UIControl
+@end
+
+static void ApolloRecenterTitleControl(UIView *titleControl) {
+    if (!titleControl.window || !titleControl.superview) return;
+
+    UINavigationBar *bar = nil;
+    for (UIView *v = titleControl.superview; v != nil; v = v.superview) {
+        if ([v isKindOfClass:[UINavigationBar class]]) { bar = (UINavigationBar *)v; break; }
+    }
+    if (!bar) return;
+
+    // Skip during push/pop so we don't fight UIKit's transition animations.
+    if (bar.layer.animationKeys.count > 0) return;
+
+    // Measure pre-transform position by subtracting our own previous tx.
+    CGFloat existingTx = titleControl.transform.tx;
+    CGRect frameInBar = [titleControl.superview convertRect:titleControl.frame toView:bar];
+    frameInBar.origin.x -= existingTx;
+
+    CGFloat width = CGRectGetWidth(frameInBar);
+    if (width <= 0) return;
+
+    CGFloat unadjustedCenter = CGRectGetMidX(frameInBar);
+    CGFloat barCenter = CGRectGetMidX(bar.bounds);
+
+    // Build a fast set of views to skip when scanning the bar (the title and its
+    // entire descendant tree).
+    NSMutableSet<NSValue *> *titleSubtree = [NSMutableSet set];
+    {
+        NSMutableArray<UIView *> *q = [NSMutableArray arrayWithObject:titleControl];
+        while (q.count > 0) {
+            UIView *v = q.firstObject;
+            [q removeObjectAtIndex:0];
+            [titleSubtree addObject:[NSValue valueWithNonretainedObject:v]];
+            for (UIView *c in v.subviews) [q addObject:c];
+        }
+    }
+
+    // Walk the bar's view tree to find the nearest visible content edges on
+    // either side. Recurse into containers (e.g. _UITAMICAdaptorView wrappers)
+    // and treat controls / labels / image views / visual-effect bubbles as edges.
+    CGFloat leftLimit = 0;
+    CGFloat rightLimit = CGRectGetWidth(bar.bounds);
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:bar];
+    while (queue.count > 0) {
+        UIView *v = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        for (UIView *child in v.subviews) {
+            if ([titleSubtree containsObject:[NSValue valueWithNonretainedObject:child]]) continue;
+            if (child.hidden || child.alpha == 0) continue;
+
+            BOOL isContent = [child isKindOfClass:[UIControl class]] ||
+                             [child isKindOfClass:[UILabel class]] ||
+                             [child isKindOfClass:[UIImageView class]] ||
+                             [child isKindOfClass:[UIVisualEffectView class]];
+            if (!isContent) {
+                [queue addObject:child];
+                continue;
+            }
+            if (child.bounds.size.width <= 0 || child.bounds.size.height <= 0) continue;
+
+            CGRect sibInBar = [child.superview convertRect:child.frame toView:bar];
+            if (CGRectGetMaxX(sibInBar) <= CGRectGetMinX(frameInBar) + 0.5) {
+                leftLimit = MAX(leftLimit, CGRectGetMaxX(sibInBar));
+            } else if (CGRectGetMinX(sibInBar) + 0.5 >= CGRectGetMaxX(frameInBar)) {
+                rightLimit = MIN(rightLimit, CGRectGetMinX(sibInBar));
+            }
+        }
+    }
+
+    const CGFloat kEdgePadding = 8.0;
+    CGFloat halfWidth = width / 2.0;
+    CGFloat minCenter = leftLimit + halfWidth + kEdgePadding;
+    CGFloat maxCenter = rightLimit - halfWidth - kEdgePadding;
+
+    CGFloat targetCenter = (minCenter > maxCenter)
+        ? unadjustedCenter   // bar too cramped — leave UIKit's layout alone
+        : MIN(MAX(barCenter, minCenter), maxCenter);
+
+    CGFloat newTx = targetCenter - unadjustedCenter;
+    if (fabs(newTx - existingTx) < 0.5) return;
+
+    CGAffineTransform desired = (fabs(newTx) < 0.5) ? CGAffineTransformIdentity
+                                                    : CGAffineTransformMakeTranslation(newTx, 0);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    titleControl.transform = desired;
+    [CATransaction commit];
+}
+
+%hook _UINavigationBarTitleControl
+
+- (void)layoutSubviews {
+    %orig;
+    if (!IsLiquidGlass()) return;
+    ApolloRecenterTitleControl(self);
+}
+
+%end
+
 %ctor {
     %init;
 }
