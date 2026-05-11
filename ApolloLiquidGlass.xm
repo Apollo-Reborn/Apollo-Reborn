@@ -6,6 +6,147 @@
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
+static char kApolloTabBarApplyingAdaptiveAppearanceKey;
+static char kApolloTabBarHasScrubbedAppearanceKey;
+
+static BOOL ApolloDictionaryHasForegroundColor(NSDictionary *attributes) {
+    return [attributes isKindOfClass:[NSDictionary class]] && attributes[NSForegroundColorAttributeName] != nil;
+}
+
+static NSDictionary *ApolloTitleTextAttributesWithoutForegroundColor(NSDictionary *attributes) {
+    if (!ApolloDictionaryHasForegroundColor(attributes)) {
+        return attributes;
+    }
+
+    NSMutableDictionary *cleaned = [attributes mutableCopy];
+    [cleaned removeObjectForKey:NSForegroundColorAttributeName];
+    return cleaned;
+}
+
+static BOOL ApolloScrubTabBarItemStateAppearance(UITabBarItemStateAppearance *stateAppearance) {
+    if (!stateAppearance) return NO;
+
+    BOOL changed = NO;
+    if (stateAppearance.iconColor != nil) {
+        stateAppearance.iconColor = nil;
+        changed = YES;
+    }
+
+    NSDictionary *oldAttributes = stateAppearance.titleTextAttributes;
+    NSDictionary *newAttributes = ApolloTitleTextAttributesWithoutForegroundColor(oldAttributes);
+    if (newAttributes != oldAttributes) {
+        stateAppearance.titleTextAttributes = newAttributes;
+        changed = YES;
+    }
+
+    return changed;
+}
+
+static BOOL ApolloScrubTabBarItemAppearance(UITabBarItemAppearance *itemAppearance) {
+    if (!itemAppearance) return NO;
+
+    BOOL changed = NO;
+    changed |= ApolloScrubTabBarItemStateAppearance(itemAppearance.normal);
+    changed |= ApolloScrubTabBarItemStateAppearance(itemAppearance.selected);
+    changed |= ApolloScrubTabBarItemStateAppearance(itemAppearance.disabled);
+    changed |= ApolloScrubTabBarItemStateAppearance(itemAppearance.focused);
+    return changed;
+}
+
+static UITabBarAppearance *ApolloAdaptiveTabBarAppearance(UITabBarAppearance *appearance, BOOL *changedOut) {
+    BOOL changed = NO;
+    if (!appearance) {
+        if (changedOut) {
+            *changedOut = NO;
+        }
+        return nil;
+    }
+
+    UITabBarAppearance *workingAppearance = [appearance copy];
+
+    changed |= ApolloScrubTabBarItemAppearance(workingAppearance.stackedLayoutAppearance);
+    changed |= ApolloScrubTabBarItemAppearance(workingAppearance.inlineLayoutAppearance);
+    changed |= ApolloScrubTabBarItemAppearance(workingAppearance.compactInlineLayoutAppearance);
+
+    if (changedOut) {
+        *changedOut = changed;
+    }
+    return workingAppearance;
+}
+
+static UIImage *ApolloTemplateTabBarImage(UIImage *image) {
+    if (![image isKindOfClass:[UIImage class]]) return image;
+    if (image.renderingMode == UIImageRenderingModeAlwaysTemplate) return image;
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
+static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reason) {
+    if (!IsLiquidGlass() || !tabBar) return;
+
+    NSNumber *isApplying = objc_getAssociatedObject(tabBar, &kApolloTabBarApplyingAdaptiveAppearanceKey);
+    if ([isApplying boolValue]) return;
+
+    objc_setAssociatedObject(tabBar, &kApolloTabBarApplyingAdaptiveAppearanceKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    BOOL changed = NO;
+    if (tabBar.tintColor != nil) {
+        tabBar.tintColor = nil;
+        changed = YES;
+    }
+    if (tabBar.unselectedItemTintColor != nil) {
+        tabBar.unselectedItemTintColor = nil;
+        changed = YES;
+    }
+
+    for (UITabBarItem *item in tabBar.items) {
+        UIImage *image = ApolloTemplateTabBarImage(item.image);
+        if (image != item.image) {
+            item.image = image;
+            changed = YES;
+        }
+
+        UIImage *selectedImage = ApolloTemplateTabBarImage(item.selectedImage);
+        if (selectedImage != item.selectedImage) {
+            item.selectedImage = selectedImage;
+            changed = YES;
+        }
+    }
+
+    // Only scrub the *appearance objects* once per bar. UIKit internally
+    // writes adaptive glyph colors into the appearance during layoutSubviews;
+    // if we kept reading + rewriting it we'd undo the system's adaptive
+    // decision and freeze the glyphs at a static color. Apollo's hardcoded
+    // colors come in through -setStandardAppearance:/-setScrollEdgeAppearance:
+    // which we intercept separately, so a single scrub on first attach is
+    // enough.
+    NSNumber *hasScrubbed = objc_getAssociatedObject(tabBar, &kApolloTabBarHasScrubbedAppearanceKey);
+    if (![hasScrubbed boolValue]) {
+        objc_setAssociatedObject(tabBar, &kApolloTabBarHasScrubbedAppearanceKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        BOOL standardChanged = NO;
+        UITabBarAppearance *standardAppearance = ApolloAdaptiveTabBarAppearance(tabBar.standardAppearance, &standardChanged);
+        if (standardChanged) {
+            tabBar.standardAppearance = standardAppearance;
+            changed = YES;
+        }
+
+        if ([tabBar respondsToSelector:@selector(scrollEdgeAppearance)]) {
+            UITabBarAppearance *scrollEdgeAppearance = tabBar.scrollEdgeAppearance;
+            BOOL scrollEdgeChanged = NO;
+            UITabBarAppearance *adaptiveScrollEdgeAppearance = ApolloAdaptiveTabBarAppearance(scrollEdgeAppearance, &scrollEdgeChanged);
+            if (scrollEdgeChanged) {
+                tabBar.scrollEdgeAppearance = adaptiveScrollEdgeAppearance;
+                changed = YES;
+            }
+        }
+    }
+
+    if (changed) {
+        ApolloLog(@"[LiquidGlassTabBar] Applied adaptive tab bar tint (%@)", reason ?: @"unknown");
+    }
+
+    objc_setAssociatedObject(tabBar, &kApolloTabBarApplyingAdaptiveAppearanceKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 // Recursively collects all _UITabButton views from the view hierarchy
 static void CollectTabButtonsRecursive(UIView *root, NSMutableArray<UIView *> *buttons, Class tabButtonClass) {
@@ -133,6 +274,87 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 
 @interface _UITAMICAdaptorView : UIView
 @end
+
+%hook UITabBarItem
+
+- (void)setImage:(UIImage *)image {
+    if (IsLiquidGlass()) {
+        image = ApolloTemplateTabBarImage(image);
+    }
+    %orig(image);
+}
+
+- (void)setSelectedImage:(UIImage *)selectedImage {
+    if (IsLiquidGlass()) {
+        selectedImage = ApolloTemplateTabBarImage(selectedImage);
+    }
+    %orig(selectedImage);
+}
+
+%end
+
+%hook UITabBar
+
+- (void)didMoveToWindow {
+    %orig;
+    ApolloApplyAdaptiveTabBarAppearance(self, @"didMoveToWindow");
+}
+
+- (void)setItems:(NSArray<UITabBarItem *> *)items animated:(BOOL)animated {
+    %orig(items, animated);
+    ApolloApplyAdaptiveTabBarAppearance(self, @"setItems:animated:");
+}
+
+- (void)setTintColor:(UIColor *)tintColor {
+    if (IsLiquidGlass()) {
+        tintColor = nil;
+    }
+    %orig(tintColor);
+}
+
+- (void)setUnselectedItemTintColor:(UIColor *)unselectedItemTintColor {
+    if (IsLiquidGlass()) {
+        unselectedItemTintColor = nil;
+    }
+    %orig(unselectedItemTintColor);
+}
+
+- (void)setStandardAppearance:(UITabBarAppearance *)standardAppearance {
+    if (IsLiquidGlass()) {
+        BOOL ignored = NO;
+        standardAppearance = ApolloAdaptiveTabBarAppearance(standardAppearance, &ignored);
+        // Explicit setter (Apollo / theme switch) supersedes our prior scrub.
+        // Clear the once-flag so the next didMoveToWindow / setItems pass can
+        // re-evaluate the new appearance object exactly once.
+        objc_setAssociatedObject(self, &kApolloTabBarHasScrubbedAppearanceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    %orig(standardAppearance);
+}
+
+- (void)setScrollEdgeAppearance:(UITabBarAppearance *)scrollEdgeAppearance {
+    if (IsLiquidGlass()) {
+        BOOL ignored = NO;
+        scrollEdgeAppearance = ApolloAdaptiveTabBarAppearance(scrollEdgeAppearance, &ignored);
+        objc_setAssociatedObject(self, &kApolloTabBarHasScrubbedAppearanceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    %orig(scrollEdgeAppearance);
+}
+
+%end
+
+%hook UITabBarController
+
+- (void)viewDidLoad {
+    %orig;
+    ApolloApplyAdaptiveTabBarAppearance(self.tabBar, @"tabBarController viewDidLoad");
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloApplyAdaptiveTabBarAppearance(self.tabBar, @"tabBarController viewWillAppear:");
+}
+
+%end
 
 %hook _UITabButton
 
