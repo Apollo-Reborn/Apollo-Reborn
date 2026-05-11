@@ -88,11 +88,11 @@ static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reas
 
     objc_setAssociatedObject(tabBar, &kApolloTabBarApplyingAdaptiveAppearanceKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // Preserve `tintColor` — Apollo sets it to the user's theme accent,
+    // which drives the selected icon/label once images are templated below.
+    // Unselected items stay adaptive via nil `unselectedItemTintColor` +
+    // the appearance scrub further down.
     BOOL changed = NO;
-    if (tabBar.tintColor != nil) {
-        tabBar.tintColor = nil;
-        changed = YES;
-    }
     if (tabBar.unselectedItemTintColor != nil) {
         tabBar.unselectedItemTintColor = nil;
         changed = YES;
@@ -303,13 +303,6 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 - (void)setItems:(NSArray<UITabBarItem *> *)items animated:(BOOL)animated {
     %orig(items, animated);
     ApolloApplyAdaptiveTabBarAppearance(self, @"setItems:animated:");
-}
-
-- (void)setTintColor:(UIColor *)tintColor {
-    if (IsLiquidGlass()) {
-        tintColor = nil;
-    }
-    %orig(tintColor);
 }
 
 - (void)setUnselectedItemTintColor:(UIColor *)unselectedItemTintColor {
