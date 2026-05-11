@@ -6,11 +6,6 @@
 // Copy Link / Share / Open in Safari (UIContextMenuInteraction wins over
 // Apollo's cell-level menu since it's installed on the deeper view).
 //
-// See plan.md for a full architecture writeup including the layout-storm
-// fix (element-pointer identity caching), the gap-on-load fix (omit images
-// from layout until aspect ratio is known, then call
-// _u_setNeedsLayoutFromAbove), and the @"ApolloLink" attribute key
-// requirement (RE'd from MarkdownNode's tap dispatch).
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
@@ -143,11 +138,7 @@ static char kApolloImageURLKey;                // NSURL on the imageNode AND mir
 static char kApolloHostMarkdownNodeKey;        // weak ref (assign association) to the host MarkdownNode
 static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
-static char kApolloVideoThumbnailKey;          // NSNumber BOOL — imageNode is our generated video thumbnail
-static char kApolloPlayOverlayInstalledKey;    // NSNumber BOOL — play-button UIImageView already added to view
-static char kApolloPlayOverlayViewKey;         // UIImageView play overlay on video thumbnail view
-static char kApolloVideoPosterViewKey;         // UIImageView generated poster on video thumbnail view
-static char kApolloPendingVideoPosterImageKey; // UIImage to apply once thumbnail view is loaded
+static char kApolloPlayOverlayViewKey;         // UIView play overlay container, also used as install gate
 
 // MARK: - Class lookups (cached)
 
@@ -179,10 +170,29 @@ static Class ApolloASNetworkImageNodeClass(void) {
 
 // MARK: - Image URL classification & normalization
 
+// YES for bare Imgur share URLs (imgur.com/<id>) — a single alphanumeric
+// path component with no extension. Excludes albums, galleries, tags.
+static BOOL ApolloIsImgurShareURL(NSURL *url) {
+    NSString *host = [[url host] lowercaseString];
+    if (![host isEqualToString:@"imgur.com"] && ![host isEqualToString:@"www.imgur.com"]) return NO;
+    if (url.pathExtension.length > 0) return NO;
+    NSString *path = url.path ?: @"";
+    if ([path hasPrefix:@"/a/"] || [path hasPrefix:@"/gallery/"] || [path hasPrefix:@"/t/"]) return NO;
+    NSString *imgurID = path.length > 1 ? [path substringFromIndex:1] : @"";
+    if (imgurID.length == 0) return NO;
+    if ([imgurID rangeOfString:@"/"].location != NSNotFound) return NO;
+    NSCharacterSet *disallowed = [NSCharacterSet alphanumericCharacterSet].invertedSet;
+    return [imgurID rangeOfCharacterFromSet:disallowed].location == NSNotFound;
+}
+
 static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *host = [[url host] lowercaseString];
     if (host.length == 0) return NO;
+
+    // Imgur share URLs (imgur.com/<id>) — extensionless; normalizer
+    // canonicalizes to i.imgur.com/<id>.jpeg.
+    if (ApolloIsImgurShareURL(url)) return YES;
 
     NSString *ext = [[[url path] pathExtension] lowercaseString];
     static NSSet *imageExts;
@@ -224,68 +234,292 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     return NO;
 }
 
-static BOOL ApolloHostMatchesAnyParentDomain(NSString *host, NSArray<NSString *> *parentDomains) {
-    if (host.length == 0) return NO;
-    for (NSString *parent in parentDomains) {
-        if ([host isEqualToString:parent]) return YES;
-        if ([host hasSuffix:[@"." stringByAppendingString:parent]]) return YES;
-    }
-    return NO;
-}
-
 static BOOL ApolloIsInlineRenderableVideoURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *host = [[url host] lowercaseString];
     if (host.length == 0) return NO;
 
-    static NSArray<NSString *> *allowedParentDomains;
-    static NSSet<NSString *> *videoExts;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        allowedParentDomains = @[
-            @"redd.it",
-            @"reddit.com",
-            @"redgifs.com",
-            @"streamable.com",
-            @"gfycat.com",
-        ];
-        videoExts = [NSSet setWithObjects:@"mp4", @"webm", @"mov", @"gifv", nil];
-    });
-
-    if (!ApolloHostMatchesAnyParentDomain(host, allowedParentDomains)) return NO;
-
-    NSString *path = [[url path] lowercaseString] ?: @"";
+    // Two URL forms we know how to derive a poster for:
+    //   1. Reddit pseudo-MP4 GIFs (preview.redd.it/*.gif?format=mp4) →
+    //      poster from mediaMetadata[id].p[] signed thumbnail.
+    //   2. Reddit hosted video permalinks
+    //      (reddit.com/link/<post>/video/<asset>/player) → poster from
+    //      DASH manifest + AVAssetImageGenerator frame extraction.
     NSString *ext = [[url path] pathExtension].lowercaseString ?: @"";
     NSString *q = [[url query] lowercaseString] ?: @"";
+    BOOL isRedditPreview = [host isEqualToString:@"preview.redd.it"]
+                          || [host isEqualToString:@"external-preview.redd.it"]
+                          || [host hasSuffix:@".redd.it"];
+    if (isRedditPreview && [ext isEqualToString:@"gif"] && [q containsString:@"format=mp4"]) return YES;
 
-    if ([host isEqualToString:@"v.redd.it"] && path.length > 1) return YES;
-    if ([videoExts containsObject:ext]) return YES;
-
-    // Reddit exposes some hosted videos inside selftext as
-    // https://reddit.com/link/<post>/video/<asset>/player. Apollo already
-    // knows how to play that link; we just replace the bare text with a
-    // playable-looking thumbnail that dispatches the same ApolloLink tap.
-    if (ApolloHostMatchesAnyParentDomain(host, @[@"reddit.com"]) &&
-        [path hasPrefix:@"/link/"] &&
-        [path containsString:@"/video/"] &&
-        [path hasSuffix:@"/player"]) {
-        return YES;
-    }
-
-    // Reddit's pseudo-GIF links can be .gif paths whose query returns MP4.
-    // The image renderer intentionally skips these; the video thumbnail path
-    // can still hand the URL to Apollo's native player.
-    if (([host isEqualToString:@"i.redd.it"] || [host hasSuffix:@".redd.it"]) &&
-        [ext isEqualToString:@"gif"] &&
-        [q containsString:@"format=mp4"]) {
-        return YES;
-    }
+    NSString *path = [[url path] lowercaseString] ?: @"";
+    BOOL isReddit = [host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"];
+    if (isReddit && [path hasPrefix:@"/link/"] && [path containsString:@"/video/"]
+        && [path hasSuffix:@"/player"]) return YES;
 
     return NO;
 }
 
+// Returns the mediaMetadata key for a given video URL — either the image
+// id (pseudo-MP4 GIFs) or the asset id (player URLs). Both forms key the
+// metadata dict by id.
+static NSString *ApolloMediaMetadataIDFromVideoURL(NSURL *videoURL) {
+    NSString *host = [[videoURL host] lowercaseString] ?: @"";
+    NSString *path = [videoURL path] ?: @"";
+    if ([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"]) {
+        // /link/<post>/video/<asset>/player → asset
+        NSArray<NSString *> *comps = [path componentsSeparatedByString:@"/"];
+        if (comps.count >= 6 && [comps[1] isEqualToString:@"link"]
+            && [comps[3] isEqualToString:@"video"]) {
+            return comps[4];
+        }
+        return nil;
+    }
+    // preview.redd.it/<id>.gif → id
+    return [[videoURL lastPathComponent] stringByDeletingPathExtension];
+}
+
+// Find mediaMetadata for the hosting comment/post by walking up the
+// supernode chain looking for a node with a `comment` or `link` ivar.
+// Apollo's CommentCellNode holds the RDKComment; CommentsHeaderCellNode
+// holds the RDKLink. Both models carry mediaMetadata for native uploads.
+static NSDictionary *ApolloMediaMetadataForHost(ASDisplayNode *hostMarkdownNode) {
+    for (ASDisplayNode *n = hostMarkdownNode; n; n = n.supernode) {
+        for (const char *ivarName : (const char *[]){"comment", "link"}) {
+            Ivar ivar = class_getInstanceVariable([n class], ivarName);
+            if (!ivar) continue;
+            id model = nil;
+            @try { model = object_getIvar(n, ivar); } @catch (__unused NSException *e) {}
+            if (!model || ![model respondsToSelector:@selector(mediaMetadata)]) continue;
+            id md = [model performSelector:@selector(mediaMetadata)];
+            if ([md isKindOfClass:[NSDictionary class]]) return md;
+        }
+    }
+    return nil;
+}
+
+// Pick the largest signed preview thumbnail from a mediaMetadata entry.
+// Entries look like: { p: [{u, x, y}, ...sorted ascending], s: {u, gif, mp4}, ... }
+// The last p[] entry is the highest-resolution still thumbnail (PNG/WEBP)
+// with a valid signature. Returns nil for RedditVideo entries (no p[]).
+static NSURL *ApolloPosterURLFromMediaMetadata(NSDictionary *mediaMetadata, NSURL *videoURL) {
+    NSString *imageID = ApolloMediaMetadataIDFromVideoURL(videoURL);
+    if (imageID.length == 0) return nil;
+    NSDictionary *entry = mediaMetadata[imageID];
+    if (![entry isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSArray *previews = entry[@"p"];
+    if ([previews isKindOfClass:[NSArray class]] && previews.count > 0) {
+        id last = previews.lastObject;
+        NSString *u = [last isKindOfClass:[NSDictionary class]] ? last[@"u"] : nil;
+        if ([u isKindOfClass:[NSString class]] && u.length > 0) {
+            NSString *decoded = [u stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+            NSURL *out = [NSURL URLWithString:decoded];
+            if (out) return out;
+        }
+    }
+    return nil;
+}
+
+// Returns the DASH manifest URL for a RedditVideo mediaMetadata entry,
+// or nil if the entry isn't a video (or has no dashUrl). Used by the
+// poster-frame-extraction path below.
+static NSURL *ApolloDashURLFromMediaMetadata(NSDictionary *mediaMetadata, NSURL *videoURL) {
+    NSString *assetID = ApolloMediaMetadataIDFromVideoURL(videoURL);
+    if (assetID.length == 0) return nil;
+    NSDictionary *entry = mediaMetadata[assetID];
+    if (![entry isKindOfClass:[NSDictionary class]]) return nil;
+    NSString *u = entry[@"dashUrl"];
+    if (![u isKindOfClass:[NSString class]] || u.length == 0) return nil;
+    NSString *decoded = [u stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+    return [NSURL URLWithString:decoded];
+}
+
+// MARK: - DASH poster extraction (for Reddit hosted video permalinks)
+
+// Cache: assetID → UIImage (success) | NSNull (failed, don't retry)
+// Pending callbacks coalesce concurrent fetches for the same asset.
+static NSMutableDictionary *sApolloDashPosterCache;
+static NSMutableDictionary<NSString *, NSMutableArray *> *sApolloDashPosterPending;
+static dispatch_queue_t sApolloDashPosterQueue;
+static void ApolloDashPosterInit(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sApolloDashPosterCache = [NSMutableDictionary dictionary];
+        sApolloDashPosterPending = [NSMutableDictionary dictionary];
+        sApolloDashPosterQueue = dispatch_queue_create("ca.jeffrey.apollo.dashposter", DISPATCH_QUEUE_SERIAL);
+    });
+}
+
+// Find the lowest-bitrate video MP4 Representation in a DASH MPD. Reddit
+// orders Representations ascending by bitrate, so the first BaseURL after
+// the video AdaptationSet header is the smallest.
+static NSURL *ApolloLowestDashMP4URL(NSData *mpdData, NSURL *mpdURL) {
+    if (mpdData.length == 0 || !mpdURL) return nil;
+    NSString *xml = [[NSString alloc] initWithData:mpdData encoding:NSUTF8StringEncoding];
+    if (xml.length == 0) return nil;
+
+    NSRange searchRange = NSMakeRange(0, xml.length);
+    NSRange videoSet = [xml rangeOfString:@"contentType=\"video\""];
+    if (videoSet.location != NSNotFound) {
+        searchRange = NSMakeRange(videoSet.location, xml.length - videoSet.location);
+    }
+
+    NSRegularExpression *re = [NSRegularExpression
+        regularExpressionWithPattern:@"<BaseURL>([^<]+\\.mp4)</BaseURL>"
+                             options:0 error:nil];
+    NSTextCheckingResult *m = [re firstMatchInString:xml options:0 range:searchRange];
+    if (!m || m.numberOfRanges < 2) return nil;
+    NSString *relative = [xml substringWithRange:[m rangeAtIndex:1]];
+    return [NSURL URLWithString:relative relativeToURL:mpdURL].absoluteURL;
+}
+
+// Avg luminance check on a tiny downsample. Reddit videos often open
+// with logo intros on black; we reject these as poster candidates.
+static BOOL ApolloImageIsMostlyBlack(UIImage *img) {
+    if (!img) return YES;
+    size_t w = 32, h = 32;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img.CGImage);
+    uint64_t sum = 0;
+    for (size_t i = 0; i < w * h; i++) {
+        sum += (buf[i*4] * 299 + buf[i*4+1] * 587 + buf[i*4+2] * 114) / 1000;
+    }
+    free(buf);
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+    return ((double)sum / (double)(w * h)) < 12.0; // ~5% luma
+}
+
+// Download the DASH MPD, find the smallest video MP4, decode multiple
+// candidate frames and pick the first non-black one. Reddit videos often
+// fade in from a logo/black intro, so frame at t=0 is usually black.
+// Calls back on main queue with the UIImage (or nil on failure).
+// Coalesces concurrent calls for the same assetID.
+static void ApolloFetchDashPoster(NSString *assetID, NSURL *dashURL,
+                                   void (^completion)(UIImage *poster)) {
+    if (!assetID.length || !dashURL || !completion) {
+        if (completion) completion(nil);
+        return;
+    }
+    ApolloDashPosterInit();
+    void (^cb)(UIImage *) = [completion copy];
+
+    dispatch_async(sApolloDashPosterQueue, ^{
+        id cached = sApolloDashPosterCache[assetID];
+        if (cached) {
+            UIImage *out = (cached == [NSNull null]) ? nil : (UIImage *)cached;
+            dispatch_async(dispatch_get_main_queue(), ^{ cb(out); });
+            return;
+        }
+        NSMutableArray *pending = sApolloDashPosterPending[assetID];
+        if (pending) { [pending addObject:cb]; return; }
+        sApolloDashPosterPending[assetID] = [NSMutableArray arrayWithObject:cb];
+
+        void (^deliver)(UIImage *) = ^(UIImage *result) {
+            dispatch_async(sApolloDashPosterQueue, ^{
+                sApolloDashPosterCache[assetID] = result ?: (id)[NSNull null];
+                NSArray *cbs = [sApolloDashPosterPending[assetID] copy];
+                [sApolloDashPosterPending removeObjectForKey:assetID];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (void (^c)(UIImage *) in cbs) c(result);
+                });
+            });
+        };
+
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:dashURL
+                                                           cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                       timeoutInterval:8.0];
+        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+                ? ((NSHTTPURLResponse *)response).statusCode : 0;
+            if (error || status < 200 || status >= 300 || data.length == 0) {
+                ApolloLog(@"[InlineImages] DASH MPD fetch FAIL asset=%@ status=%ld err=%@",
+                          assetID, (long)status, error.localizedDescription ?: @"nil");
+                deliver(nil);
+                return;
+            }
+            NSURL *mp4URL = ApolloLowestDashMP4URL(data, dashURL);
+            if (!mp4URL) {
+                ApolloLog(@"[InlineImages] DASH parse FAIL asset=%@", assetID);
+                deliver(nil);
+                return;
+            }
+            AVURLAsset *asset = [AVURLAsset URLAssetWithURL:mp4URL options:nil];
+            [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
+                if ([asset statusOfValueForKey:@"tracks" error:nil] != AVKeyValueStatusLoaded) {
+                    ApolloLog(@"[InlineImages] DASH asset load FAIL asset=%@", assetID);
+                    deliver(nil);
+                    return;
+                }
+                AVAssetImageGenerator *gen = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+                gen.appliesPreferredTrackTransform = YES;
+                gen.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.5, 600);
+                gen.requestedTimeToleranceAfter = CMTimeMakeWithSeconds(0.5, 600);
+
+                Float64 durSec = CMTIME_IS_NUMERIC(asset.duration)
+                    ? CMTimeGetSeconds(asset.duration) : 0;
+                NSMutableArray<NSValue *> *times = [NSMutableArray array];
+                for (NSNumber *t in @[@3.0, @5.0, @1.5, @0.5, @0.0]) {
+                    Float64 v = t.doubleValue;
+                    if (durSec <= 0 || v < durSec) {
+                        [times addObject:[NSValue valueWithCMTime:CMTimeMakeWithSeconds(v, 600)]];
+                    }
+                }
+                if (times.count == 0) [times addObject:[NSValue valueWithCMTime:kCMTimeZero]];
+
+                __block BOOL delivered = NO;
+                __block UIImage *darkFallback = nil;
+                __block NSInteger remaining = (NSInteger)times.count;
+                __block AVAssetImageGenerator *retainedGen = gen;
+
+                [gen generateCGImagesAsynchronouslyForTimes:times
+                    completionHandler:^(CMTime requested, CGImageRef cgImage,
+                                        CMTime actualT, AVAssetImageGeneratorResult res,
+                                        NSError *genError) {
+                    @synchronized (retainedGen ?: (id)@"x") {
+                        if (delivered) return;
+                        remaining--;
+                        if (res == AVAssetImageGeneratorSucceeded && cgImage) {
+                            UIImage *ui = [UIImage imageWithCGImage:cgImage];
+                            BOOL dark = ApolloImageIsMostlyBlack(ui);
+                            if (!dark) {
+                                delivered = YES;
+                                retainedGen = nil;
+                                deliver(ui);
+                                return;
+                            }
+                            if (!darkFallback) darkFallback = ui;
+                        }
+                        if (remaining <= 0 && !delivered) {
+                            delivered = YES;
+                            retainedGen = nil;
+                            deliver(darkFallback);
+                        }
+                    }
+                }];
+            }];
+        }];
+        [task resume];
+    });
+}
+
 static NSURL *ApolloNormalizeInlineImageURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return url;
+
+    // Imgur share URL → i.imgur.com/<id>.jpeg. The CDN serves the
+    // underlying media (incl. animated GIFs) regardless of requested ext.
+    if (ApolloIsImgurShareURL(url)) {
+        NSString *imgurID = [url.path substringFromIndex:1];
+        NSURL *canonical = [NSURL URLWithString:
+            [NSString stringWithFormat:@"https://i.imgur.com/%@.jpeg", imgurID]];
+        if (canonical) return canonical;
+    }
+
     NSString *s = [url absoluteString];
     if (![s containsString:@"&amp;"]) return url;
     NSString *decoded = [s stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
@@ -534,23 +768,9 @@ static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
 static ASNetworkImageNode *ApolloVideoThumbnailNodeForURL(NSURL *normalizedURL,
                                                            ASDisplayNode *hostMarkdownNode);
 
-static UIImage *ApolloVideoPlaceholderImage(void) {
-    static UIImage *image;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        CGSize size = CGSizeMake(640, 360);
-        UIGraphicsBeginImageContextWithOptions(size, YES, 0.0);
-        [[UIColor colorWithWhite:0.12 alpha:1.0] setFill];
-        UIRectFill((CGRect){CGPointZero, size});
-        image = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-    });
-    return image;
-}
-
 // Standalone play-circle glyph (transparent background) drawn into a
-// UIImageView placed over the poster so the play button stays visible no
-// matter what the network image node renders underneath.
+// UIImageView placed over the imageNode so the play button stays visible
+// no matter what the network image node renders underneath.
 static UIImage *ApolloPlayOverlayImage(void) {
     static UIImage *image;
     static dispatch_once_t once;
@@ -586,414 +806,151 @@ static UIImage *ApolloPlayOverlayImage(void) {
     return image;
 }
 
-// MARK: - Reddit JSON poster lookup
 
-// Extracts the post id from a /link/<postid>/video/<asset>/player URL, the
-// only Reddit video form we have a stable poster source for. Returns nil
-// for v.redd.it/<id> direct URLs (no post context to look up).
-static NSString *ApolloRedditPostIDFromVideoURL(NSURL *url) {
-    NSString *host = [[url host] lowercaseString] ?: @"";
-    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
-    NSString *path = [url path] ?: @"";
-    NSArray<NSString *> *comps = [path componentsSeparatedByString:@"/"];
-    // Expect: ["", "link", "<postid>", "video", "<asset>", "player"]
-    if (comps.count >= 5 &&
-        [comps[1] isEqualToString:@"link"] &&
-        comps[2].length > 0 &&
-        [comps[3] isEqualToString:@"video"]) {
-        return comps[2];
+// A UIView that centers its single subview in layoutSubviews, AND on
+// every observed bounds change of its host layer. Texture sets layer
+// frames directly without going through UIView's setBounds:, so neither
+// autoresizingMask nor layoutSubviews fire on resize. KVO on the host
+// layer's bounds is the only reliable signal.
+@interface ApolloPlayOverlayContainer : UIView
+@property (nonatomic, weak) CALayer *observedLayer;
+@end
+@implementation ApolloPlayOverlayContainer
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self recenter];
+}
+- (void)recenter {
+    for (UIView *sub in self.subviews) {
+        CGSize s = sub.bounds.size;
+        sub.center = CGPointMake(self.bounds.size.width * 0.5,
+                                  self.bounds.size.height * 0.5);
+        sub.bounds = (CGRect){CGPointZero, s};
     }
-    return nil;
 }
-
-// Asset id is the 5th path component when present.
-static NSString *ApolloRedditAssetIDFromVideoURL(NSURL *url) {
-    NSString *path = [url path] ?: @"";
-    NSArray<NSString *> *comps = [path componentsSeparatedByString:@"/"];
-    if (comps.count >= 5 &&
-        [comps[1] isEqualToString:@"link"] &&
-        [comps[3] isEqualToString:@"video"]) {
-        return comps[4];
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+    if (object == self.observedLayer) {
+        CGRect b = self.observedLayer.bounds;
+        self.frame = b;
+        [self recenter];
     }
-    return nil;
 }
-
-// Cache & request coalescing: the resolved value can be either a UIImage
-// (for video posters generated via AVAssetImageGenerator) or an NSURL (for
-// image-type media_metadata entries, where the network image node can fetch
-// it itself). NSNull means "we tried and failed".
-static NSMutableDictionary *sApolloPosterCacheByKey;        // cacheKey -> UIImage | NSURL | NSNull
-static NSMutableDictionary *sApolloPosterPendingByKey;      // cacheKey -> NSMutableArray<void(^)(id)>
-static dispatch_queue_t sApolloPosterQueue;
-
-static void ApolloPosterCacheInit(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        sApolloPosterCacheByKey = [NSMutableDictionary dictionary];
-        sApolloPosterPendingByKey = [NSMutableDictionary dictionary];
-        sApolloPosterQueue = dispatch_queue_create("ca.jeffrey.apollo.inlineposter", DISPATCH_QUEUE_SERIAL);
-    });
+- (void)dealloc {
+    [_observedLayer removeObserver:self forKeyPath:@"bounds"];
 }
+@end
 
-static void ApolloDeliverPosterResult(NSString *cacheKey, id result) {
-    dispatch_async(sApolloPosterQueue, ^{
-        sApolloPosterCacheByKey[cacheKey] = result ?: (id)[NSNull null];
-        NSArray *cbs = [sApolloPosterPendingByKey[cacheKey] copy];
-        [sApolloPosterPendingByKey removeObjectForKey:cacheKey];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            for (void (^c)(id) in cbs) c(result);
-        });
-    });
-}
-
-// Parse the smallest video representation's BaseURL from a Reddit DASH MPD.
-// MPD's Representations list BaseURLs like "DASH_220.mp4" relative to the MPD.
-// Returns the absolute URL to the lowest-bitrate MP4 (preserving the signed
-// query string from the MPD URL, which Reddit requires).
-static NSURL *ApolloLowestDashMP4URLFromMPD(NSData *mpdData, NSURL *mpdURL) {
-    if (!mpdData.length || !mpdURL) return nil;
-    NSString *xml = [[NSString alloc] initWithData:mpdData encoding:NSUTF8StringEncoding];
-    if (!xml.length) return nil;
-
-    // Find the first BaseURL in a video Representation. Reddit lists video reps
-    // in ascending bitrate order, so the first BaseURL after a video AdaptationSet
-    // header is the smallest. Audio reps live in a separate AdaptationSet that comes
-    // later, so this is safe.
-    NSRange videoSet = [xml rangeOfString:@"contentType=\"video\""];
-    if (videoSet.location == NSNotFound) {
-        // Fallback: any BaseURL ending in .mp4
-        videoSet = NSMakeRange(0, xml.length);
-    } else {
-        videoSet = NSMakeRange(videoSet.location, xml.length - videoSet.location);
-    }
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"<BaseURL>([^<]+\\.mp4)</BaseURL>"
-                                                                       options:0 error:nil];
-    NSTextCheckingResult *m = [re firstMatchInString:xml options:0 range:videoSet];
-    if (!m || m.numberOfRanges < 2) return nil;
-    NSString *segName = [xml substringWithRange:[m rangeAtIndex:1]];
-    if (!segName.length) return nil;
-
-    // Build sibling URL: same path-dir as the MPD, same query string.
-    NSURLComponents *comps = [NSURLComponents componentsWithURL:mpdURL resolvingAgainstBaseURL:NO];
-    NSString *path = comps.path ?: @"";
-    NSString *dir = [path stringByDeletingLastPathComponent];
-    if (dir.length == 0 || ![dir hasSuffix:@"/"]) dir = [dir stringByAppendingString:@"/"];
-    comps.path = [dir stringByAppendingString:segName];
-    return comps.URL;
-}
-
-// Generate a still frame for a Reddit video by:
-//   1. Fetching the DASH MPD to discover the lowest-bitrate MP4 segment URL.
-//   2. Pointing AVAssetImageGenerator at that MP4 (HTTP byte-range works
-//      reliably for MP4, unlike HLS which requires a full player session).
-static void ApolloGenerateVideoPosterImage(NSURL *dashMPDURL, NSString *cacheKey) {
-    NSMutableURLRequest *mpdReq = [NSMutableURLRequest requestWithURL:dashMPDURL
-                                                          cachePolicy:NSURLRequestUseProtocolCachePolicy
-                                                      timeoutInterval:8.0];
-    [mpdReq setValue:@"ApolloImprovedCustomApi/inline-video-thumbnail" forHTTPHeaderField:@"User-Agent"];
-
-    NSURLSessionDataTask *mpdTask = [[NSURLSession sharedSession] dataTaskWithRequest:mpdReq
-        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
-            ? ((NSHTTPURLResponse *)response).statusCode : 0;
-        if (error || status < 200 || status >= 300 || !data.length) {
-            ApolloLog(@"[InlineImages] poster gen: MPD fetch FAIL status=%ld err=%@",
-                      (long)status, error.localizedDescription ?: @"nil");
-            ApolloDeliverPosterResult(cacheKey, nil);
-            return;
-        }
-        NSURL *mp4URL = ApolloLowestDashMP4URLFromMPD(data, dashMPDURL);
-        if (!mp4URL) {
-            ApolloLog(@"[InlineImages] poster gen: no BaseURL in MPD");
-            ApolloDeliverPosterResult(cacheKey, nil);
-            return;
-        }
-        ApolloLog(@"[InlineImages] poster gen: using mp4=%@", mp4URL);
-
-        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:mp4URL options:nil];
-        [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
-            NSError *err = nil;
-            AVKeyValueStatus tracksStatus = [asset statusOfValueForKey:@"tracks" error:&err];
-            if (tracksStatus != AVKeyValueStatusLoaded) {
-                ApolloLog(@"[InlineImages] poster gen: asset load FAIL status=%ld err=%@",
-                          (long)tracksStatus, err.localizedDescription ?: @"nil");
-                ApolloDeliverPosterResult(cacheKey, nil);
-                return;
-            }
-            AVAssetImageGenerator *gen = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
-            gen.appliesPreferredTrackTransform = YES;
-            // Tight tolerance so we land near the requested time. Reddit videos
-            // often have ~2s of black/fade-in at the head (e.g. logo intros);
-            // grab progressively later frames and pick the first non-mostly-black
-            // one.
-            gen.requestedTimeToleranceBefore = CMTimeMakeWithSeconds(0.5, 600);
-            gen.requestedTimeToleranceAfter  = CMTimeMakeWithSeconds(0.5, 600);
-
-            CMTime duration = asset.duration;
-            Float64 durSec = CMTIME_IS_NUMERIC(duration) ? CMTimeGetSeconds(duration) : 0;
-            // Candidate times: 3s, 5s, 1.5s, 0.5s, 0s. Skip any past duration.
-            NSMutableArray<NSValue *> *times = [NSMutableArray array];
-            for (NSNumber *t in @[@3.0, @5.0, @1.5, @0.5, @0.0]) {
-                Float64 v = t.doubleValue;
-                if (durSec <= 0 || v < durSec) {
-                    [times addObject:[NSValue valueWithCMTime:CMTimeMakeWithSeconds(v, 600)]];
-                }
-            }
-            if (times.count == 0) {
-                [times addObject:[NSValue valueWithCMTime:kCMTimeZero]];
-            }
-
-            __block BOOL delivered = NO;
-            __block UIImage *bestFallback = nil;     // any successful frame, even if dark
-            __block NSInteger remaining = (NSInteger)times.count;
-            // Retain generator until callback completes.
-            __block AVAssetImageGenerator *retainedGen = gen;
-
-            // Quick darkness check on a tiny downsample (32x32 -> avg luminance).
-            // If the frame is essentially black we keep looking; if all candidates
-            // are dark we still deliver the latest one we got.
-            BOOL (^isMostlyBlack)(UIImage *) = ^BOOL(UIImage *img) {
-                if (!img) return YES;
-                CGSize sz = CGSizeMake(32, 32);
-                UIGraphicsBeginImageContextWithOptions(sz, YES, 1);
-                [img drawInRect:CGRectMake(0, 0, sz.width, sz.height)];
-                UIImage *small = UIGraphicsGetImageFromCurrentImageContext();
-                UIGraphicsEndImageContext();
-                CGImageRef cg = small.CGImage;
-                if (!cg) return NO;
-                size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
-                CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-                uint8_t *buf = (uint8_t *)calloc(w * h * 4, 1);
-                CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, w * 4, cs,
-                    kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-                CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cg);
-                uint64_t sum = 0;
-                for (size_t i = 0; i < w * h; i++) {
-                    uint8_t r = buf[i*4], g = buf[i*4+1], b = buf[i*4+2];
-                    sum += (r * 299 + g * 587 + b * 114) / 1000;
-                }
-                free(buf);
-                CGContextRelease(ctx);
-                CGColorSpaceRelease(cs);
-                double avg = (double)sum / (double)(w * h);
-                return avg < 12.0; // ~5% luma
-            };
-
-            [gen generateCGImagesAsynchronouslyForTimes:times
-                completionHandler:^(CMTime requestedTime, CGImageRef image,
-                                    CMTime actualTime, AVAssetImageGeneratorResult result, NSError *genErr) {
-                @synchronized (retainedGen ?: (id)@"x") {
-                    if (delivered) return;
-                    remaining--;
-                    if (result == AVAssetImageGeneratorSucceeded && image) {
-                        UIImage *ui = [UIImage imageWithCGImage:image];
-                        BOOL dark = isMostlyBlack(ui);
-                        ApolloLog(@"[InlineImages] poster gen: frame at req=%.2fs actual=%.2fs size=%@ dark=%d",
-                                  CMTimeGetSeconds(requestedTime), CMTimeGetSeconds(actualTime),
-                                  NSStringFromCGSize(ui.size), dark);
-                        if (!dark) {
-                            delivered = YES;
-                            retainedGen = nil;
-                            ApolloDeliverPosterResult(cacheKey, ui);
-                            return;
-                        }
-                        // remember as fallback if everything ends up dark
-                        if (!bestFallback) bestFallback = ui;
-                    } else if (result == AVAssetImageGeneratorFailed) {
-                        ApolloLog(@"[InlineImages] poster gen: failed at %.2fs err=%@",
-                                  CMTimeGetSeconds(requestedTime), genErr.localizedDescription ?: @"nil");
-                    }
-                    if (remaining <= 0 && !delivered) {
-                        delivered = YES;
-                        retainedGen = nil;
-                        ApolloLog(@"[InlineImages] poster gen: all candidates exhausted, fallback=%@",
-                                  bestFallback ? @"dark frame" : @"none");
-                        ApolloDeliverPosterResult(cacheKey, bestFallback);
-                    }
-                }
-            }];
-        }];
-    }];
-    [mpdTask resume];
-}
-
-static NSURL *ApolloExtractImageURLFromMediaMetadataEntry(NSDictionary *entry) {
-    NSString *kind = [entry[@"e"] isKindOfClass:[NSString class]] ? entry[@"e"] : nil;
-    if (![kind isEqualToString:@"Image"]) return nil;
-    NSDictionary *source = [entry[@"s"] isKindOfClass:[NSDictionary class]] ? entry[@"s"] : nil;
-    NSString *u = [source[@"u"] isKindOfClass:[NSString class]] ? source[@"u"] : nil;
-    if (!u.length) return nil;
-    NSString *decoded = [u stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
-    return [NSURL URLWithString:decoded];
-}
-
-static NSURL *ApolloExtractDashURLFromMediaMetadataEntry(NSDictionary *entry) {
-    NSString *kind = [entry[@"e"] isKindOfClass:[NSString class]] ? entry[@"e"] : nil;
-    if (![kind isEqualToString:@"RedditVideo"]) return nil;
-    NSString *dash = [entry[@"dashUrl"] isKindOfClass:[NSString class]] ? entry[@"dashUrl"] : nil;
-    if (!dash.length) return nil;
-    NSString *decoded = [dash stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
-    return [NSURL URLWithString:decoded];
-}
-
-// Resolve the poster for a /link/<postid>/video/<asset>/player URL. Calls back
-// on the main queue with either a UIImage (video frame), an NSURL (image
-// hosted by reddit), or nil (no poster available).
-static void ApolloFetchRedditPoster(NSString *postID, NSString *assetID,
-                                     void (^completion)(id posterURLOrImage)) {
-    if (!postID.length || !completion) return;
-    ApolloPosterCacheInit();
-    NSString *cacheKey = [NSString stringWithFormat:@"%@/%@", postID, assetID ?: @""];
-    void (^cb)(id) = [completion copy];
-
-    dispatch_async(sApolloPosterQueue, ^{
-        id cached = sApolloPosterCacheByKey[cacheKey];
-        if (cached) {
-            id out = (cached == [NSNull null]) ? nil : cached;
-            dispatch_async(dispatch_get_main_queue(), ^{ cb(out); });
-            return;
-        }
-        NSMutableArray *pending = sApolloPosterPendingByKey[cacheKey];
-        if (pending) { [pending addObject:cb]; return; }
-        sApolloPosterPendingByKey[cacheKey] = [NSMutableArray arrayWithObject:cb];
-
-        NSString *jsonStr = [NSString stringWithFormat:@"https://www.reddit.com/comments/%@.json?raw_json=1&limit=1", postID];
-        NSURL *jsonURL = [NSURL URLWithString:jsonStr];
-        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:jsonURL
-                                                           cachePolicy:NSURLRequestUseProtocolCachePolicy
-                                                       timeoutInterval:8.0];
-        [req setValue:@"ApolloImprovedCustomApi/inline-video-thumbnail"
-   forHTTPHeaderField:@"User-Agent"];
-        [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
-
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
-            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
-                ? ((NSHTTPURLResponse *)response).statusCode : 0;
-
-            if (error || status < 200 || status >= 300 || !data.length) {
-                ApolloLog(@"[InlineImages] poster JSON fetch postID=%@ FAIL status=%ld err=%@",
-                          postID, (long)status, error.localizedDescription ?: @"nil");
-                ApolloDeliverPosterResult(cacheKey, nil);
-                return;
-            }
-
-            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            NSArray *listings = [json isKindOfClass:[NSArray class]] ? (NSArray *)json : nil;
-            NSDictionary *post = nil;
-            if (listings.count) {
-                NSDictionary *l0 = [listings[0] isKindOfClass:[NSDictionary class]] ? listings[0] : nil;
-                NSDictionary *ld = [l0[@"data"] isKindOfClass:[NSDictionary class]] ? l0[@"data"] : nil;
-                NSArray *children = [ld[@"children"] isKindOfClass:[NSArray class]] ? ld[@"children"] : nil;
-                if (children.count) {
-                    NSDictionary *wrap = [children[0] isKindOfClass:[NSDictionary class]] ? children[0] : nil;
-                    post = [wrap[@"data"] isKindOfClass:[NSDictionary class]] ? wrap[@"data"] : nil;
-                }
-            }
-            if (!post) {
-                ApolloLog(@"[InlineImages] poster JSON: no post");
-                ApolloDeliverPosterResult(cacheKey, nil);
-                return;
-            }
-
-            NSDictionary *mm = [post[@"media_metadata"] isKindOfClass:[NSDictionary class]] ? post[@"media_metadata"] : nil;
-            NSDictionary *entry = (assetID.length && [mm[assetID] isKindOfClass:[NSDictionary class]]) ? mm[assetID] : nil;
-
-            if (entry) {
-                NSURL *imageURL = ApolloExtractImageURLFromMediaMetadataEntry(entry);
-                if (imageURL) {
-                    ApolloLog(@"[InlineImages] poster JSON: image media_metadata url=%@", imageURL);
-                    ApolloDeliverPosterResult(cacheKey, imageURL);
-                    return;
-                }
-                NSURL *dashURL = ApolloExtractDashURLFromMediaMetadataEntry(entry);
-                if (dashURL) {
-                    ApolloLog(@"[InlineImages] poster JSON: video media_metadata, generating frame from DASH=%@", dashURL);
-                    ApolloGenerateVideoPosterImage(dashURL, cacheKey);
-                    return;
-                }
-            }
-
-            // Fallback: post-level preview (link posts where the post itself is the video)
-            NSDictionary *preview = [post[@"preview"] isKindOfClass:[NSDictionary class]] ? post[@"preview"] : nil;
-            NSArray *images = [preview[@"images"] isKindOfClass:[NSArray class]] ? preview[@"images"] : nil;
-            if (images.count) {
-                NSDictionary *first = [images[0] isKindOfClass:[NSDictionary class]] ? images[0] : nil;
-                NSDictionary *src = [first[@"source"] isKindOfClass:[NSDictionary class]] ? first[@"source"] : nil;
-                NSString *u = [src[@"url"] isKindOfClass:[NSString class]] ? src[@"url"] : nil;
-                if (u.length) {
-                    NSString *decoded = [u stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
-                    NSURL *out = [NSURL URLWithString:decoded];
-                    ApolloLog(@"[InlineImages] poster JSON: post preview url=%@", out);
-                    ApolloDeliverPosterResult(cacheKey, out);
-                    return;
-                }
-            }
-
-            ApolloLog(@"[InlineImages] poster JSON: no usable poster for postID=%@ asset=%@", postID, assetID);
-            ApolloDeliverPosterResult(cacheKey, nil);
-        }];
-        [task resume];
-    });
-}
-
-// Idempotently add the play-circle UIImageView centered on the imageNode's
-// backing view.
+// Idempotently add the play-circle overlay centered on the imageNode.
+// Uses KVO on the imageNode's layer bounds since Texture mutates
+// layer.frame directly (UIView setBounds: / layoutSubviews don't fire).
 static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     if (!v || !node) return;
-    UIImageView *overlay = objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey);
-    if (overlay) {
-        [v bringSubviewToFront:overlay];
-        return;
-    }
+    if (objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey)) return;
 
-    overlay = [[UIImageView alloc] initWithImage:ApolloPlayOverlayImage()];
-    overlay.contentMode = UIViewContentModeScaleAspectFit;
-    overlay.userInteractionEnabled = NO;
-    overlay.translatesAutoresizingMaskIntoConstraints = NO;
-    [v addSubview:overlay];
-    [NSLayoutConstraint activateConstraints:@[
-        [overlay.centerXAnchor constraintEqualToAnchor:v.centerXAnchor],
-        [overlay.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
-        [overlay.widthAnchor constraintEqualToConstant:72.0],
-        [overlay.heightAnchor constraintEqualToConstant:72.0],
-    ]];
-    [v bringSubviewToFront:overlay];
-    objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(node, &kApolloPlayOverlayInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloPlayOverlayContainer *container = [[ApolloPlayOverlayContainer alloc] initWithFrame:v.bounds];
+    container.userInteractionEnabled = NO;
+    container.backgroundColor = [UIColor clearColor];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:ApolloPlayOverlayImage()];
+    icon.userInteractionEnabled = NO;
+    icon.frame = CGRectMake(0, 0, 72, 72);
+    [container addSubview:icon];
+
+    [v addSubview:container];
+    [v bringSubviewToFront:container];
+
+    // Observe the host layer's bounds — fires whenever Texture re-lays out
+    // the node, including the initial size assignment.
+    container.observedLayer = v.layer;
+    [v.layer addObserver:container forKeyPath:@"bounds" options:NSKeyValueObservingOptionNew context:NULL];
+    [container recenter];
+
+    objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void ApolloInstallOrUpdateVideoPosterOnView(UIView *v, ASDisplayNode *node, UIImage *poster) {
-    if (!v || !node || !poster) return;
+// Builds a video thumbnail with a 16:9 placeholder ratio so it's included
+// in layout immediately, then resolves the real poster URL + ratio
+// asynchronously in didLoad (after Texture connects the supernode chain).
+static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL,
+                                                               ASDisplayNode *hostMarkdownNode) {
+    Class imageNodeClass = ApolloASNetworkImageNodeClass();
+    if (!imageNodeClass) return nil;
 
-    v.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
-    v.clipsToBounds = YES;
-    v.layer.cornerRadius = 8.0;
+    ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
+    imageNode.shouldRenderProgressImages = YES;
+    imageNode.contentMode = UIViewContentModeScaleAspectFill;
+    imageNode.placeholderColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+    imageNode.placeholderEnabled = YES;
+    imageNode.placeholderFadeDuration = 0.2;
+    imageNode.cornerRadius = 8.0;
+    imageNode.clipsToBounds = YES;
+    imageNode.borderWidth = 0.0;
+    imageNode.delegate = [ApolloInlineImageDispatcher shared];
 
-    UIImageView *posterView = objc_getAssociatedObject(node, &kApolloVideoPosterViewKey);
-    if (!posterView) {
-        posterView = [[UIImageView alloc] initWithImage:poster];
-        posterView.contentMode = UIViewContentModeScaleAspectFill;
-        posterView.clipsToBounds = YES;
-        posterView.userInteractionEnabled = NO;
-        posterView.translatesAutoresizingMaskIntoConstraints = NO;
-        [v insertSubview:posterView atIndex:0];
-        [NSLayoutConstraint activateConstraints:@[
-            [posterView.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
-            [posterView.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
-            [posterView.topAnchor constraintEqualToAnchor:v.topAnchor],
-            [posterView.bottomAnchor constraintEqualToAnchor:v.bottomAnchor],
-        ]];
-        objc_setAssociatedObject(node, &kApolloVideoPosterViewKey, posterView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLog(@"[InlineImages] poster view installed node=%p imageSize=%@ subviews=%lu",
-                  node, NSStringFromCGSize(poster.size), (unsigned long)v.subviews.count);
-    } else {
-        posterView.image = poster;
-        ApolloLog(@"[InlineImages] poster view updated node=%p imageSize=%@",
-                  node, NSStringFromCGSize(poster.size));
-    }
+    [imageNode addTarget:[ApolloInlineImageDispatcher shared]
+                  action:@selector(imageNodeTapped:)
+        forControlEvents:ApolloASControlNodeEventTouchUpInside];
 
-    ApolloInstallPlayOverlayOnView(v, node);
+    [[imageNode style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
+
+    // Tap routes to the MP4 URL (MediaViewer plays video). Default 16:9
+    // ratio so the layout reserves space immediately; DIDLOAD refines it
+    // once the real poster loads.
+    objc_setAssociatedObject(imageNode, &kApolloImageURLKey, videoURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(9.0 / 16.0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    __weak ASNetworkImageNode *weakImage = imageNode;
+    [imageNode onDidLoad:^(__kindof ASDisplayNode *node) {
+        ASNetworkImageNode *img = weakImage;
+        if (!img) return;
+        UIView *v = [img view];
+
+        // Resolve the poster now that the supernode chain is connected
+        // (MarkdownNode → ... → CommentCellNode/CommentsHeaderCellNode).
+        // Try the cheap signed-thumbnail URL first; if not available
+        // (RedditVideo entries have no p[]), fall back to DASH manifest
+        // + AVAssetImageGenerator to extract a frame at t=0.
+        if (!img.URL && !img.image) {
+            ASDisplayNode *host = objc_getAssociatedObject(img, &kApolloHostMarkdownNodeKey);
+            NSDictionary *mm = ApolloMediaMetadataForHost(host);
+            NSURL *posterURL = mm ? ApolloPosterURLFromMediaMetadata(mm, videoURL) : nil;
+            if (posterURL) {
+                img.URL = posterURL;
+            } else {
+                NSURL *dashURL = mm ? ApolloDashURLFromMediaMetadata(mm, videoURL) : nil;
+                NSString *assetID = ApolloMediaMetadataIDFromVideoURL(videoURL);
+                if (dashURL && assetID.length) {
+                    ApolloFetchDashPoster(assetID, dashURL, ^(UIImage *poster) {
+                        ASNetworkImageNode *strong = weakImage;
+                        if (!strong || !poster) return;
+                        strong.image = poster;
+                        if (poster.size.width > 0 && poster.size.height > 0) {
+                            [[ApolloInlineImageDispatcher shared]
+                                updateAspectRatioForImageNode:strong imageSize:poster.size];
+                        }
+                    });
+                } else {
+                    ApolloLog(@"[InlineImages] video poster NOT FOUND node=%p video=%@", img, videoURL);
+                }
+            }
+        }
+
+        if (v) ApolloInstallPlayOverlayOnView(v, img);
+        if (v && ![objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) {
+            NSURL *u = objc_getAssociatedObject(img, &kApolloImageURLKey);
+            objc_setAssociatedObject(v, &kApolloImageURLKey, u, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            UIContextMenuInteraction *menu = [[UIContextMenuInteraction alloc]
+                initWithDelegate:[ApolloInlineImageDispatcher shared]];
+            [v addInteraction:menu];
+            objc_setAssociatedObject(img, &kApolloLongPressInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }];
+
+    return imageNode;
 }
 
 static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
@@ -1058,96 +1015,6 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         objc_setAssociatedObject(img, &kApolloLongPressInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }];
 
-    return imageNode;
-}
-
-static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *normalizedURL,
-                                                               ASDisplayNode *hostMarkdownNode) {
-    Class imageNodeClass = ApolloASNetworkImageNodeClass();
-    if (!imageNodeClass) return nil;
-
-    ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
-    // Solid dark placeholder until the real poster (if any) loads. The play
-    // button sits on top via a separate UIImageView so it stays visible
-    // regardless of poster state.
-    imageNode.image = ApolloVideoPlaceholderImage();
-    imageNode.shouldRenderProgressImages = YES;
-    imageNode.contentMode = UIViewContentModeScaleAspectFill;
-    imageNode.placeholderColor = [UIColor colorWithWhite:0.12 alpha:1.0];
-    imageNode.placeholderEnabled = YES;
-    imageNode.placeholderFadeDuration = 0.2;
-    imageNode.cornerRadius = 8.0;
-    imageNode.clipsToBounds = YES;
-    imageNode.borderWidth = 0.0;
-
-    [imageNode addTarget:[ApolloInlineImageDispatcher shared]
-                  action:@selector(imageNodeTapped:)
-        forControlEvents:ApolloASControlNodeEventTouchUpInside];
-
-    [[imageNode style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
-
-    CGFloat ratio = ApolloAspectRatioFromURL(normalizedURL);
-    if (ratio <= 0) ratio = 9.0 / 16.0;
-
-    objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
-    objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(imageNode, &kApolloVideoThumbnailKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    __weak ASNetworkImageNode *weakImage = imageNode;
-    [imageNode onDidLoad:^(__kindof ASDisplayNode *node) {
-        ASNetworkImageNode *img = weakImage;
-        if (!img) return;
-        UIView *v = [img view];
-        if (!v) return;
-        v.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
-        UIImage *pendingPoster = objc_getAssociatedObject(img, &kApolloPendingVideoPosterImageKey);
-        if (pendingPoster) {
-            ApolloLog(@"[InlineImages] applying pending poster on load node=%p", img);
-            ApolloInstallOrUpdateVideoPosterOnView(v, img, pendingPoster);
-            objc_setAssociatedObject(img, &kApolloPendingVideoPosterImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        ApolloInstallPlayOverlayOnView(v, img);
-        if (![objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) {
-            NSURL *url = objc_getAssociatedObject(img, &kApolloImageURLKey);
-            objc_setAssociatedObject(v, &kApolloImageURLKey, url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIContextMenuInteraction *menu = [[UIContextMenuInteraction alloc]
-                initWithDelegate:[ApolloInlineImageDispatcher shared]];
-            [v addInteraction:menu];
-            objc_setAssociatedObject(img, &kApolloLongPressInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-    }];
-
-    // Fetch the real poster image for /link/<postid>/video/.../player URLs
-    // and swap it onto the imageNode once available. Negative results are
-    // cached so failed lookups don't retry per-cell.
-    NSString *postID = ApolloRedditPostIDFromVideoURL(normalizedURL);
-    NSString *assetID = ApolloRedditAssetIDFromVideoURL(normalizedURL);
-    if (postID.length) {
-        ApolloFetchRedditPoster(postID, assetID, ^(id posterURLOrImage) {
-            ASNetworkImageNode *img = weakImage;
-            if (!img || !posterURLOrImage) return;
-            if ([posterURLOrImage isKindOfClass:[UIImage class]]) {
-                UIImage *ui = (UIImage *)posterURLOrImage;
-                UIView *v = [img view];
-                if (v) {
-                    ApolloLog(@"[InlineImages] applying poster IMAGE via view node=%p", img);
-                    ApolloInstallOrUpdateVideoPosterOnView(v, img, ui);
-                } else {
-                    ApolloLog(@"[InlineImages] poster callback before view loaded; storing pending poster node=%p", img);
-                    objc_setAssociatedObject(img, &kApolloPendingVideoPosterImageKey, ui, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                }
-            } else if ([posterURLOrImage isKindOfClass:[NSURL class]]) {
-                NSURL *posterURL = (NSURL *)posterURLOrImage;
-                ApolloLog(@"[InlineImages] applying poster URL=%@ -> node=%p", posterURL, img);
-                img.URL = posterURL;
-                UIView *v = [img view];
-                if (v) ApolloInstallPlayOverlayOnView(v, img);
-            }
-        });
-    }
-
-    ApolloLog(@"[InlineImages] video thumbnail node=%p url=%@", imageNode, normalizedURL);
     return imageNode;
 }
 
@@ -1299,6 +1166,9 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
     // Collect (range, url, kind) tuples for inline media URLs, deduping by URL string.
     NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
     NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    // Pre-normalize URLs, used for the bare-URL text check — the
+    // displayed text matches the original form, not the normalized one.
+    NSMutableArray<NSURL *> *originalURLs = [NSMutableArray array];
     NSMutableArray<NSNumber *> *isVideoURL = [NSMutableArray array];
     NSMutableSet<NSString *> *seenAbs = [NSMutableSet set];
 
@@ -1324,6 +1194,7 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             [seenAbs addObject:abs];
             [ranges addObject:[NSValue valueWithRange:fullRange]];
             [urls addObject:normalized];
+            [originalURLs addObject:url];
             [isVideoURL addObject:@(isVideo)];
         }
     }];
@@ -1364,7 +1235,21 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             ASNetworkImageNode *img = [isVideoURL[leafIndex] boolValue]
                 ? ApolloVideoThumbnailNodeForURL(urls[leafIndex], hostMarkdownNode)
                 : ApolloImageNodeForURL(urls[leafIndex], hostMarkdownNode);
-            if (img) [leaves addObject:img];
+            if (img) {
+                // Route tap/long-press to the original posted URL when
+                // it differs from the loaded URL, so Copy Link returns
+                // what the user actually shared.
+                NSURL *original = originalURLs[leafIndex];
+                if (original && ![original.absoluteString isEqualToString:urls[leafIndex].absoluteString]) {
+                    objc_setAssociatedObject(img, &kApolloImageURLKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    if ([img respondsToSelector:@selector(isNodeLoaded)]
+                        && ((BOOL (*)(id, SEL))objc_msgSend)(img, @selector(isNodeLoaded))) {
+                        UIView *v = [img view];
+                        if (v) objc_setAssociatedObject(v, &kApolloImageURLKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    }
+                }
+                [leaves addObject:img];
+            }
         }
 
         NSMutableAttributedString *remaining = [[attr attributedSubstringFromRange:pRange] mutableCopy];
@@ -1372,7 +1257,7 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
         for (NSInteger n = (NSInteger)pIdx.count - 1; n >= 0; n--) {
             NSUInteger ri = [pIdx[n] unsignedIntegerValue];
             NSRange r = [ranges[ri] rangeValue];
-            if (ApolloRangeTextLooksLikeBareURL(attr, r, urls[ri])) {
+            if (ApolloRangeTextLooksLikeBareURL(attr, r, originalURLs[ri])) {
                 [remaining deleteCharactersInRange:NSMakeRange(r.location - pStart, r.length)];
             }
         }
@@ -1493,7 +1378,10 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
                 newDecomp[k] = leaves;
                 for (id leaf in leaves) {
                     if ([leaf isKindOfClass:imageNodeCls]) {
-                        NSURL *url = objc_getAssociatedObject(leaf, &kApolloImageURLKey) ?: ((ASNetworkImageNode *)leaf).URL;
+                        // Use imageNode.URL (matches the cache key) —
+                        // kApolloImageURLKey can be the original share
+                        // URL for tap routing, which would mis-GC here.
+                        NSURL *url = ((ASNetworkImageNode *)leaf).URL;
                         NSString *abs = [url absoluteString];
                         if (abs) [referencedURLs addObject:abs];
                     }
