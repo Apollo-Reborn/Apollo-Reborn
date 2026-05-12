@@ -241,7 +241,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
-        case SectionMedia: return 4;
+        case SectionMedia: return 5;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
         case SectionCredits: return 3;
@@ -595,6 +595,11 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Proxy Imgur via DuckDuckGo"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG]
                                            action:@selector(proxyImgurDDGSwitchToggled:)];
+        case 4:
+            return [self switchCellWithIdentifier:@"Cell_Media_InlineImages"
+                                            label:@"Render Images Inline"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages]
+                                           action:@selector(inlineImagesSwitchToggled:)];
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1109,6 +1114,11 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {
     sProxyImgurDDG = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
+}
+
+- (void)inlineImagesSwitchToggled:(UISwitch *)sender {
+    sEnableInlineImages = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sEnableInlineImages forKey:UDKeyEnableInlineImages];
 }
 
 #pragma mark - Backup / Restore
