@@ -327,9 +327,19 @@ static const void *kFeedThumbLastAppliedLinkPtrKey = &kFeedThumbLastAppliedLinkP
 static const void *kFeedThumbLastAppliedSizeKey = &kFeedThumbLastAppliedSizeKey; // NSValue(CGSize)
 static const void *kFeedThumbMountedOnPillKey = &kFeedThumbMountedOnPillKey; // NSNumber(BOOL)
 static const void *kFeedThumbPillHiddenSiblingsKey = &kFeedThumbPillHiddenSiblingsKey; // NSArray<UIView *> *
+// Stretch state: the target height we've forced onto richMediaNode (via
+// Texture's preferredSize style) so the pill slot grows to a proper
+// large-mode image card height instead of a ~60pt link pill. Stored on
+// the *richMediaNode* (not the cell) since style.preferredSize is a
+// per-node attribute and the cell may reuse the same richMediaNode.
+static const void *kFeedThumbStretchTargetKey = &kFeedThumbStretchTargetKey; // NSNumber(CGFloat) on richMediaNode
 
 NSString *const ApolloFeedThumbsLinkUpdatedNotification = @"ApolloFeedThumbsLinkUpdatedNotification";
 static NSString *const kApolloFeedThumbsLinkPointerKey = @"linkPointer";
+
+// Forward decls for pill-stretch helpers (defined after ApolloFeedThumbClearImageOnCell).
+static void ApolloFeedThumbSetPillStretchTarget(id richMediaNode, CGFloat targetHeight, id cell);
+static CGFloat ApolloFeedThumbPillStretchTargetGet(id richMediaNode);
 
 // MARK: - v.redd.it preview-image fetch
 //
@@ -723,6 +733,97 @@ static void ApolloFeedThumbClearImageOnCell(id cell) {
     // Restore pill text/icon if we had hidden them while mounted on the pill.
     ApolloFeedThumbRestorePillSiblings(cell);
     objc_setAssociatedObject(cell, kFeedThumbMountedOnPillKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // If we had stretched the cell's richMediaNode for a pill image card,
+    // collapse it back so other cell-reuse paths (text post, real media)
+    // get the correct intrinsic size.
+    id richMediaForReset = ApolloFeedThumbIvarByName(cell, "richMediaNode");
+    if (richMediaForReset) ApolloFeedThumbSetPillStretchTarget(richMediaForReset, 0, cell);
+    id crossForReset = ApolloFeedThumbIvarByName(cell, "crosspostNode");
+    id crossRichForReset = crossForReset ? ApolloFeedThumbIvarByName(crossForReset, "richMediaNode") : nil;
+    if (crossRichForReset) ApolloFeedThumbSetPillStretchTarget(crossRichForReset, 0, cell);
+}
+
+// MARK: - Pill stretch
+//
+// When we mount a recovered preview image inside richMediaNode's pill slot
+// (large-mode "stuck pill" cells), the slot itself is laid out at ~60pt
+// because Apollo's intrinsic size for the pill is just text + icon. Texture
+// nodes expose `style.preferredSize` as the standard way to override their
+// intrinsic measurement — the parent stack spec will then allocate the
+// requested space and the cell as a whole grows correspondingly.
+//
+// We:
+//   1. Set richMediaNode.style.preferredSize = (0, targetHeight) — width 0
+//      lets the parent stack spec stretch us full-width as before.
+//   2. Invalidate richMediaNode's calculated layout.
+//   3. Trigger ASCellNode re-measurement via
+//      transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:
+//      so the collection picks up the new cell height.
+//
+// Reset (passing target == 0) restores CGSizeZero (auto) so cell reuse with
+// real media or text-only posts gets back the natural layout.
+
+static CGFloat ApolloFeedThumbPillStretchTargetGet(id richMediaNode) {
+    if (!richMediaNode) return 0;
+    NSNumber *n = objc_getAssociatedObject(richMediaNode, kFeedThumbStretchTargetKey);
+    return [n isKindOfClass:[NSNumber class]] ? n.doubleValue : 0;
+}
+
+// Apply preferredSize on richMediaNode and trigger a relayout on the cell.
+// `cell` may be nil for the reset path (we still need to clear the style).
+static void ApolloFeedThumbSetPillStretchTarget(id richMediaNode, CGFloat targetHeight, id cell) {
+    if (!richMediaNode) return;
+    CGFloat current = ApolloFeedThumbPillStretchTargetGet(richMediaNode);
+    if (fabs(current - targetHeight) < 0.5) return; // no-op
+
+    objc_setAssociatedObject(richMediaNode, kFeedThumbStretchTargetKey,
+                             targetHeight > 0 ? @(targetHeight) : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // 1. Override intrinsic size via style.preferredSize.
+    @try {
+        if ([(id)richMediaNode respondsToSelector:@selector(style)]) {
+            id style = ((id (*)(id, SEL))objc_msgSend)(richMediaNode, @selector(style));
+            if (style && [style respondsToSelector:@selector(setPreferredSize:)]) {
+                CGSize newSize = (targetHeight > 0) ? CGSizeMake(0, targetHeight) : CGSizeZero;
+                ((void (*)(id, SEL, CGSize))objc_msgSend)(style, @selector(setPreferredSize:), newSize);
+            }
+        }
+    } @catch (__unused id e) {}
+
+    // 2. Invalidate the node's cached layout so it re-measures.
+    @try {
+        if ([(id)richMediaNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(richMediaNode, @selector(invalidateCalculatedLayout));
+        }
+        if ([(id)richMediaNode respondsToSelector:@selector(setNeedsLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(richMediaNode, @selector(setNeedsLayout));
+        }
+    } @catch (__unused id e) {}
+
+    // 3. Trigger ASCellNode re-measurement so the collection picks up the
+    //    new cell size. Dispatched async so we never call this from inside
+    //    a layout pass (Texture asserts on re-entrant transitions).
+    if (cell) {
+        __weak id weakCell = cell;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id strongCell = weakCell;
+            if (!strongCell) return;
+            @try {
+                SEL transitionSel = @selector(transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:);
+                if ([strongCell respondsToSelector:transitionSel]) {
+                    ((void (*)(id, SEL, BOOL, BOOL, id))objc_msgSend)(strongCell, transitionSel, NO, NO, nil);
+                } else if ([strongCell respondsToSelector:@selector(setNeedsLayout)]) {
+                    ((void (*)(id, SEL))objc_msgSend)(strongCell, @selector(setNeedsLayout));
+                }
+            } @catch (__unused id e) {}
+        });
+    }
+
+    static dispatch_once_t logToken;
+    dispatch_once(&logToken, ^{
+        ApolloLog(@"[FeedThumbs] pill stretch wired: preferredSize→(0,target) + transitionLayoutWithAnimation");
+    });
 }
 
 // MARK: - Spoiler/NSFW gaussian blur
@@ -1018,6 +1119,64 @@ static void ApolloFeedThumbApplyToCell(id cell) {
     objc_setAssociatedObject(cell, kFeedThumbMountedOnPillKey,
                              mountedOnPill ? @YES : nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Pill stretch: when mounted on richMediaNode's pill slot, force it to
+    // a proper image-card height (~16:9 of the available cell width). When
+    // not in pill mode, ensure stretch is cleared in case this richMediaNode
+    // was previously stretched on a reused cell. The actual relayout call is
+    // dispatched async inside the helper to avoid re-entrant transitions.
+    {
+        id richMediaForStretch = nil;
+        if (mountedOnPill) {
+            // pillView is richMediaNode.view (or crosspost richMedia.view).
+            // Re-derive the node by checking both candidates.
+            id rm = ApolloFeedThumbIvarByName(cell, "richMediaNode");
+            if (rm) {
+                @try {
+                    UIView *rmView = [(id)rm respondsToSelector:@selector(view)]
+                                     ? ((UIView *(*)(id, SEL))objc_msgSend)(rm, @selector(view)) : nil;
+                    if (rmView == pillView) richMediaForStretch = rm;
+                } @catch (__unused id e) {}
+            }
+            if (!richMediaForStretch) {
+                id cross = ApolloFeedThumbIvarByName(cell, "crosspostNode");
+                id rmx = cross ? ApolloFeedThumbIvarByName(cross, "richMediaNode") : nil;
+                if (rmx) {
+                    @try {
+                        UIView *rmxView = [(id)rmx respondsToSelector:@selector(view)]
+                                          ? ((UIView *(*)(id, SEL))objc_msgSend)(rmx, @selector(view)) : nil;
+                        if (rmxView == pillView) richMediaForStretch = rmx;
+                    } @catch (__unused id e) {}
+                }
+            }
+        }
+        if (richMediaForStretch) {
+            CGFloat cellW = 0;
+            @try {
+                if ([(id)cell respondsToSelector:@selector(view)]) {
+                    UIView *cv = ((UIView *(*)(id, SEL))objc_msgSend)(cell, @selector(view));
+                    cellW = cv.bounds.size.width;
+                }
+            } @catch (__unused id e) {}
+            if (cellW < 200) cellW = pillView.bounds.size.width;
+            if (cellW < 200) cellW = 390;
+            // Aim for ~16:9. Clamp to a band so we don't overwhelm tiny posts
+            // or eat the whole screen on iPad.
+            CGFloat targetH = MIN(320.0, MAX(180.0, cellW * 9.0 / 16.0));
+            ApolloFeedThumbSetPillStretchTarget(richMediaForStretch, targetH, cell);
+        } else {
+            // Not on pill — clear stretch on both candidates if previously set.
+            id rm = ApolloFeedThumbIvarByName(cell, "richMediaNode");
+            if (rm && ApolloFeedThumbPillStretchTargetGet(rm) > 0) {
+                ApolloFeedThumbSetPillStretchTarget(rm, 0, cell);
+            }
+            id cross = ApolloFeedThumbIvarByName(cell, "crosspostNode");
+            id rmx = cross ? ApolloFeedThumbIvarByName(cross, "richMediaNode") : nil;
+            if (rmx && ApolloFeedThumbPillStretchTargetGet(rmx) > 0) {
+                ApolloFeedThumbSetPillStretchTarget(rmx, 0, cell);
+            }
+        }
+    }
 
     // Cell reuse / link change detection.
     NSString *linkID = nil;
