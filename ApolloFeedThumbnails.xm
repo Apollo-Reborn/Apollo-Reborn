@@ -71,7 +71,7 @@ static NSURL *ApolloFeedThumbURLFromPreviewItem(id item) {
     return nil;
 }
 
-static NSURL *ApolloFeedThumbURLFromPreviewMedia(RDKLinkPreviewMedia *previewMedia) {
+static NSURL *ApolloFeedThumbURLFromPreviewMedia(RDKLinkPreviewMedia *previewMedia, BOOL preferHighQuality) {
     Class previewMediaClass = objc_getClass("RDKLinkPreviewMedia");
     if (!previewMediaClass || ![(id)previewMedia isKindOfClass:previewMediaClass]) return nil;
 
@@ -84,7 +84,7 @@ static NSURL *ApolloFeedThumbURLFromPreviewMedia(RDKLinkPreviewMedia *previewMed
     if (![images isKindOfClass:[NSArray class]]) return nil;
 
     NSURL *fallbackURL = nil;
-    CGFloat fallbackDelta = CGFLOAT_MAX;
+    CGFloat fallbackMetric = preferHighQuality ? 0 : CGFLOAT_MAX;
     for (id item in images) {
         NSURL *url = ApolloFeedThumbURLFromPreviewItem(item);
         if (!url) continue;
@@ -100,9 +100,9 @@ static NSURL *ApolloFeedThumbURLFromPreviewMedia(RDKLinkPreviewMedia *previewMed
         } @catch (__unused NSException *exception) {}
 
         if (width > 0) {
-            CGFloat delta = fabs(width - 320.0);
-            if (delta < fallbackDelta) {
-                fallbackDelta = delta;
+            CGFloat metric = preferHighQuality ? width : fabs(width - 320.0);
+            if ((preferHighQuality && metric > fallbackMetric) || (!preferHighQuality && metric < fallbackMetric)) {
+                fallbackMetric = metric;
                 fallbackURL = url;
             }
         }
@@ -111,7 +111,7 @@ static NSURL *ApolloFeedThumbURLFromPreviewMedia(RDKLinkPreviewMedia *previewMed
     return fallbackURL;
 }
 
-static NSURL *ApolloFeedThumbURLFromMediaMetadataEntry(NSDictionary *entry) {
+static NSURL *ApolloFeedThumbURLFromMediaMetadataEntry(NSDictionary *entry, BOOL preferHighQuality) {
     if (![entry isKindOfClass:[NSDictionary class]]) return nil;
     NSString *status = entry[@"status"];
     if ([status isKindOfClass:[NSString class]] && ![status isEqualToString:@"valid"]) return nil;
@@ -122,9 +122,17 @@ static NSURL *ApolloFeedThumbURLFromMediaMetadataEntry(NSDictionary *entry) {
         if (![lowerKind containsString:@"image"]) return nil;
     }
 
+    NSDictionary *source = entry[@"s"];
+    if (preferHighQuality && [source isKindOfClass:[NSDictionary class]]) {
+        for (NSString *key in @[@"u", @"gif"]) {
+            NSURL *url = ApolloFeedThumbURLFromString(source[key]);
+            if (url) return url;
+        }
+    }
+
     NSArray *previews = entry[@"p"];
     NSURL *fallbackURL = nil;
-    CGFloat fallbackDelta = CGFLOAT_MAX;
+    CGFloat fallbackMetric = preferHighQuality ? 0 : CGFLOAT_MAX;
     if ([previews isKindOfClass:[NSArray class]]) {
         for (id preview in previews) {
             if (![preview isKindOfClass:[NSDictionary class]]) continue;
@@ -134,16 +142,15 @@ static NSURL *ApolloFeedThumbURLFromMediaMetadataEntry(NSDictionary *entry) {
             if (!fallbackURL) fallbackURL = url;
 
             NSNumber *widthNumber = [previewDict[@"x"] respondsToSelector:@selector(doubleValue)] ? previewDict[@"x"] : nil;
-            CGFloat delta = widthNumber ? fabs(widthNumber.doubleValue - 320.0) : CGFLOAT_MAX;
-            if (delta < fallbackDelta) {
-                fallbackDelta = delta;
+            CGFloat metric = widthNumber ? (preferHighQuality ? widthNumber.doubleValue : fabs(widthNumber.doubleValue - 320.0)) : (preferHighQuality ? 0 : CGFLOAT_MAX);
+            if ((preferHighQuality && metric > fallbackMetric) || (!preferHighQuality && metric < fallbackMetric)) {
+                fallbackMetric = metric;
                 fallbackURL = url;
             }
         }
     }
     if (fallbackURL) return fallbackURL;
 
-    NSDictionary *source = entry[@"s"];
     if ([source isKindOfClass:[NSDictionary class]]) {
         for (NSString *key in @[@"u", @"gif"]) {
             NSURL *url = ApolloFeedThumbURLFromString(source[key]);
@@ -154,13 +161,13 @@ static NSURL *ApolloFeedThumbURLFromMediaMetadataEntry(NSDictionary *entry) {
     return nil;
 }
 
-static NSURL *ApolloFeedThumbURLFromMediaMetadata(RDKLink *link) {
+static NSURL *ApolloFeedThumbURLFromMediaMetadata(RDKLink *link, BOOL preferHighQuality) {
     NSDictionary *metadata = nil;
     @try { metadata = link.mediaMetadata; } @catch (__unused NSException *exception) {}
     if (![metadata isKindOfClass:[NSDictionary class]] || metadata.count == 0) return nil;
 
     for (id key in metadata) {
-        NSURL *url = ApolloFeedThumbURLFromMediaMetadataEntry(metadata[key]);
+        NSURL *url = ApolloFeedThumbURLFromMediaMetadataEntry(metadata[key], preferHighQuality);
         if (url) return url;
     }
 
@@ -267,7 +274,7 @@ static void ApolloFeedThumbLogOnce(RDKLink *link, NSString *source, NSURL *url) 
 static NSURL *ApolloFeedThumbCachedVRedditPreview(RDKLink *link);
 static void ApolloFeedThumbKickVRedditFetch(RDKLink *link);
 
-static NSURL *ApolloFeedThumbFallbackURLForLink(RDKLink *link, NSString **outSource) {
+static NSURL *ApolloFeedThumbFallbackURLForLink(RDKLink *link, BOOL preferHighQuality, NSString **outSource) {
     Class linkClass = objc_getClass("RDKLink");
     if (!linkClass || ![(id)link isKindOfClass:linkClass]) return nil;
 
@@ -278,9 +285,9 @@ static NSURL *ApolloFeedThumbFallbackURLForLink(RDKLink *link, NSString **outSou
 
     RDKLinkPreviewMedia *previewMedia = nil;
     @try { previewMedia = link.previewMedia; } @catch (__unused NSException *exception) {}
-    NSURL *url = ApolloFeedThumbURLFromPreviewMedia(previewMedia);
+    NSURL *url = ApolloFeedThumbURLFromPreviewMedia(previewMedia, preferHighQuality);
     if (url) {
-        if (outSource) *outSource = @"previewMedia";
+        if (outSource) *outSource = preferHighQuality ? @"previewMediaHQ" : @"previewMedia";
         return url;
     }
 
@@ -290,9 +297,9 @@ static NSURL *ApolloFeedThumbFallbackURLForLink(RDKLink *link, NSString **outSou
         return url;
     }
 
-    url = ApolloFeedThumbURLFromMediaMetadata(link);
+    url = ApolloFeedThumbURLFromMediaMetadata(link, preferHighQuality);
     if (url) {
-        if (outSource) *outSource = @"mediaMetadata";
+        if (outSource) *outSource = preferHighQuality ? @"mediaMetadataHQ" : @"mediaMetadata";
         return url;
     }
 
@@ -320,9 +327,11 @@ static NSURL *ApolloFeedThumbFallbackURLForLink(RDKLink *link, NSString **outSou
 static const void *kFeedThumbImageViewKey   = &kFeedThumbImageViewKey;   // UIImageView *
 static const void *kFeedThumbBlurViewKey    = &kFeedThumbBlurViewKey;    // UIVisualEffectView * (legacy, no longer used)
 static const void *kFeedThumbPlayBadgeKey   = &kFeedThumbPlayBadgeKey;   // UIImageView * (play.fill SF Symbol)
+static const void *kFeedThumbObscuredOverlayKey = &kFeedThumbObscuredOverlayKey; // UIView * (native-style spoiler/NSFW label)
 static const void *kFeedThumbCurrentURLKey  = &kFeedThumbCurrentURLKey;  // NSURL *
 static const void *kFeedThumbCurrentTaskKey = &kFeedThumbCurrentTaskKey; // NSURLSessionDataTask *
 static const void *kFeedThumbCurrentLinkIDKey = &kFeedThumbCurrentLinkIDKey; // NSString *
+static const void *kFeedThumbLoadedImageSizeKey = &kFeedThumbLoadedImageSizeKey; // NSValue(CGSize)
 static const void *kFeedThumbHeaderImageViewKey = &kFeedThumbHeaderImageViewKey; // UIImageView *
 static const void *kFeedThumbHeaderPlayBadgeKey = &kFeedThumbHeaderPlayBadgeKey; // UIImageView *
 static const void *kFeedThumbHeaderCurrentURLKey = &kFeedThumbHeaderCurrentURLKey; // NSURL *
@@ -744,16 +753,24 @@ static void ApolloFeedThumbClearImageOnCell(id cell) {
         iv.image = nil;
         iv.hidden = YES;
         iv.layer.contentsRect = CGRectMake(0, 0, 1, 1);
+        iv.contentMode = UIViewContentModeScaleAspectFill;
+        iv.backgroundColor = [UIColor clearColor];
     }
     UIVisualEffectView *blur = objc_getAssociatedObject(cell, kFeedThumbBlurViewKey);
     if (blur) blur.hidden = YES;
     UIImageView *badge = objc_getAssociatedObject(cell, kFeedThumbPlayBadgeKey);
     if (badge) badge.hidden = YES;
+    UIView *obscuredOverlay = objc_getAssociatedObject(cell, kFeedThumbObscuredOverlayKey);
+    if (obscuredOverlay) {
+        [obscuredOverlay removeFromSuperview];
+        objc_setAssociatedObject(cell, kFeedThumbObscuredOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     NSURLSessionDataTask *task = objc_getAssociatedObject(cell, kFeedThumbCurrentTaskKey);
     [task cancel];
     objc_setAssociatedObject(cell, kFeedThumbCurrentTaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, kFeedThumbCurrentURLKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, kFeedThumbCurrentLinkIDKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, kFeedThumbLoadedImageSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // Restore pill text/icon if we had hidden them while mounted on the pill.
     ApolloFeedThumbRestorePillSiblings(cell);
     objc_setAssociatedObject(cell, kFeedThumbMountedOnPillKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1098,32 +1115,218 @@ static UIImageView *ApolloFeedThumbEnsureImageView(id cell, UIView *parent) {
     return iv;
 }
 
-static void ApolloFeedThumbApplyLargeFeedCropBias(UIImageView *iv, UIImage *image, BOOL enabled) {
+static CGFloat ApolloFeedThumbClamp(CGFloat value, CGFloat minValue, CGFloat maxValue) {
+    return MIN(maxValue, MAX(minValue, value));
+}
+
+static id ApolloFeedThumbRichMediaNodeForPillView(id cell, UIView *pillView) {
+    if (!cell || !pillView) return nil;
+    id rm = ApolloFeedThumbIvarByName(cell, "richMediaNode");
+    if (rm) {
+        @try {
+            UIView *rmView = [(id)rm respondsToSelector:@selector(view)]
+                             ? ((UIView *(*)(id, SEL))objc_msgSend)(rm, @selector(view)) : nil;
+            if (rmView == pillView) return rm;
+        } @catch (__unused id e) {}
+    }
+    id cross = ApolloFeedThumbIvarByName(cell, "crosspostNode");
+    id rmx = cross ? ApolloFeedThumbIvarByName(cross, "richMediaNode") : nil;
+    if (rmx) {
+        @try {
+            UIView *rmxView = [(id)rmx respondsToSelector:@selector(view)]
+                              ? ((UIView *(*)(id, SEL))objc_msgSend)(rmx, @selector(view)) : nil;
+            if (rmxView == pillView) return rmx;
+        } @catch (__unused id e) {}
+    }
+    return nil;
+}
+
+static CGFloat ApolloFeedThumbRecoveredTargetWidth(id cell, UIView *pillView) {
+    CGFloat cellW = 0;
+    @try {
+        if ([(id)cell respondsToSelector:@selector(view)]) {
+            UIView *cv = ((UIView *(*)(id, SEL))objc_msgSend)(cell, @selector(view));
+            cellW = cv.bounds.size.width;
+        }
+    } @catch (__unused id e) {}
+    CGFloat targetW = pillView.bounds.size.width;
+    if (targetW < 200) targetW = cellW;
+    if (targetW < 200) targetW = 390;
+    return targetW;
+}
+
+static CGFloat ApolloFeedThumbRecoveredTargetHeight(CGFloat targetW, UIImage *image, BOOL isStaticPosterVideo) {
+    if (targetW < 1) targetW = 390;
+    if (isStaticPosterVideo || !image || image.size.width <= 0 || image.size.height <= 0) {
+        return ApolloFeedThumbClamp(targetW * 9.0 / 16.0, 180.0, 320.0);
+    }
+
+    CGFloat aspect = image.size.width / image.size.height;
+    if (aspect <= 0) return ApolloFeedThumbClamp(targetW * 9.0 / 16.0, 180.0, 320.0);
+    CGFloat naturalH = targetW / aspect;
+
+    if (aspect >= 1.45) return ApolloFeedThumbClamp(naturalH, 180.0, 320.0);
+    if (aspect >= 1.10) return ApolloFeedThumbClamp(naturalH, 220.0, 380.0);
+    if (aspect >= 0.85) return ApolloFeedThumbClamp(naturalH, 300.0, 460.0);
+    return ApolloFeedThumbClamp(naturalH, 360.0, 640.0);
+}
+
+static BOOL ApolloFeedThumbRecoveredShouldAspectFit(UIImage *image, BOOL isStaticPosterVideo) {
+    if (isStaticPosterVideo || !image || image.size.width <= 0 || image.size.height <= 0) return NO;
+    CGFloat aspect = image.size.width / image.size.height;
+    return aspect < 0.92;
+}
+
+static void ApolloFeedThumbRemoveObscuredOverlay(id cell) {
+    UIView *overlay = objc_getAssociatedObject(cell, kFeedThumbObscuredOverlayKey);
+    if (overlay) {
+        [overlay removeFromSuperview];
+        objc_setAssociatedObject(cell, kFeedThumbObscuredOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void ApolloFeedThumbApplyObscuredOverlay(id cell, UIView *parent, RDKLink *link, BOOL enabled) {
+    if (!enabled || !parent) {
+        ApolloFeedThumbRemoveObscuredOverlay(cell);
+        return;
+    }
+
+    BOOL isNSFW = NO;
+    BOOL isSpoiler = NO;
+    @try {
+        if ([(id)link respondsToSelector:@selector(isNSFW)]) isNSFW = link.isNSFW;
+        if ([(id)link respondsToSelector:@selector(isSpoiler)]) isSpoiler = link.isSpoiler;
+    } @catch (__unused id e) {}
+    if (!isNSFW && !isSpoiler) {
+        ApolloFeedThumbRemoveObscuredOverlay(cell);
+        return;
+    }
+
+    UIView *overlay = objc_getAssociatedObject(cell, kFeedThumbObscuredOverlayKey);
+    if (!overlay) {
+        overlay = [[UIView alloc] initWithFrame:parent.bounds];
+        overlay.userInteractionEnabled = NO;
+        overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        overlay.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.10];
+        overlay.layer.cornerRadius = 6.0;
+        overlay.layer.masksToBounds = YES;
+
+        UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectZero];
+        stack.tag = 426901;
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.alignment = UIStackViewAlignmentCenter;
+        stack.spacing = 8.0;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+        UIImageView *icon = [[UIImageView alloc] initWithFrame:CGRectZero];
+        icon.tag = 426902;
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.tintColor = [UIColor whiteColor];
+        icon.translatesAutoresizingMaskIntoConstraints = NO;
+        [stack addArrangedSubview:icon];
+        [icon.widthAnchor constraintEqualToConstant:56.0].active = YES;
+        [icon.heightAnchor constraintEqualToConstant:56.0].active = YES;
+
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectZero];
+        title.tag = 426903;
+        title.textColor = [UIColor whiteColor];
+        title.font = [UIFont systemFontOfSize:24.0 weight:UIFontWeightBold];
+        title.textAlignment = NSTextAlignmentCenter;
+        [stack addArrangedSubview:title];
+
+        UILabel *subtitle = [[UILabel alloc] initWithFrame:CGRectZero];
+        subtitle.tag = 426904;
+        subtitle.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.80];
+        subtitle.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightRegular];
+        subtitle.textAlignment = NSTextAlignmentCenter;
+        subtitle.numberOfLines = 2;
+        [stack addArrangedSubview:subtitle];
+
+        [overlay addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.centerXAnchor constraintEqualToAnchor:overlay.centerXAnchor],
+            [stack.centerYAnchor constraintEqualToAnchor:overlay.centerYAnchor],
+            [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:overlay.leadingAnchor constant:24.0],
+            [stack.trailingAnchor constraintLessThanOrEqualToAnchor:overlay.trailingAnchor constant:-24.0],
+        ]];
+        objc_setAssociatedObject(cell, kFeedThumbObscuredOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    overlay.frame = parent.bounds;
+    if (overlay.superview != parent) {
+        [overlay removeFromSuperview];
+        [parent addSubview:overlay];
+    } else {
+        [parent bringSubviewToFront:overlay];
+    }
+
+    UIImageView *icon = (UIImageView *)[overlay viewWithTag:426902];
+    UILabel *title = (UILabel *)[overlay viewWithTag:426903];
+    UILabel *subtitle = (UILabel *)[overlay viewWithTag:426904];
+    NSString *symbolName = isNSFW ? @"exclamationmark.triangle.fill" : @"eye.slash.fill";
+    UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:46.0 weight:UIImageSymbolWeightSemibold];
+    icon.image = [UIImage systemImageNamed:symbolName withConfiguration:cfg] ?: [UIImage systemImageNamed:@"exclamationmark.triangle.fill" withConfiguration:cfg];
+    title.text = isNSFW ? @"NSFW" : @"Spoiler";
+    subtitle.text = isNSFW ? @"Sensitive content - tap to view" : @"Contains spoiler - tap to view";
+    overlay.hidden = NO;
+}
+
+static void ApolloFeedThumbApplyRecoveredLargePresentation(id cell,
+                                                           RDKLink *link,
+                                                           UIImageView *iv,
+                                                           UIImage *image,
+                                                           BOOL mountedOnPill,
+                                                           BOOL isStaticPosterVideo,
+                                                           BOOL needsObscuredOverlay,
+                                                           ApolloFeedThumbPlayBadgeStyle playStyle) {
     if (!iv) return;
-    CGRect fullRect = CGRectMake(0, 0, 1, 1);
-    if (!enabled || !image || image.size.width <= 0 || image.size.height <= 0 || iv.bounds.size.width <= 0 || iv.bounds.size.height <= 0) {
-        iv.layer.contentsRect = fullRect;
+    iv.layer.contentsRect = CGRectMake(0, 0, 1, 1);
+    if (!mountedOnPill) {
+        iv.contentMode = UIViewContentModeScaleAspectFill;
+        iv.backgroundColor = [UIColor clearColor];
+        ApolloFeedThumbRemoveObscuredOverlay(cell);
         return;
     }
 
-    CGFloat imageAspect = image.size.width / image.size.height;
-    CGFloat viewAspect = iv.bounds.size.width / iv.bounds.size.height;
-    // Only bias square/portrait-ish images that aspectFill would crop
-    // vertically. Landscape screenshots/videos generally look better with
-    // the normal centered crop.
-    if (imageAspect >= viewAspect || imageAspect > 1.2) {
-        iv.layer.contentsRect = fullRect;
-        return;
+    UIView *parent = iv.superview;
+    if (!parent) return;
+    CGFloat targetW = ApolloFeedThumbRecoveredTargetWidth(cell, parent);
+    CGFloat targetH = ApolloFeedThumbRecoveredTargetHeight(targetW, image, isStaticPosterVideo);
+    id richMedia = ApolloFeedThumbRichMediaNodeForPillView(cell, parent);
+    if (richMedia) {
+        ApolloFeedThumbSetPillStretchTarget(richMedia, CGSizeMake(targetW, targetH), cell);
     }
 
-    CGFloat visibleHeight = imageAspect / viewAspect;
-    if (visibleHeight >= 0.98 || visibleHeight <= 0) {
-        iv.layer.contentsRect = fullRect;
-        return;
+    BOOL aspectFit = ApolloFeedThumbRecoveredShouldAspectFit(image, isStaticPosterVideo);
+    iv.contentMode = aspectFit ? UIViewContentModeScaleAspectFit : UIViewContentModeScaleAspectFill;
+    iv.backgroundColor = aspectFit ? [UIColor colorWithWhite:0.05 alpha:1.0] : [UIColor clearColor];
+    iv.frame = parent.bounds;
+    ApolloFeedThumbApplyPlayBadge(cell, parent, needsObscuredOverlay ? ApolloFeedThumbPlayBadgeStyleNone : playStyle);
+    ApolloFeedThumbApplyObscuredOverlay(cell, parent, link, needsObscuredOverlay);
+
+    if (ApolloFeedThumbShouldLogStretchProbe()) {
+        ApolloLog(@"[FeedThumbs] recovered presentation image=%@ target=%@ mode=%@ obscured=%@",
+                  image ? NSStringFromCGSize(image.size) : @"nil",
+                  NSStringFromCGSize(CGSizeMake(targetW, targetH)),
+                  aspectFit ? @"fit" : @"fill",
+                  needsObscuredOverlay ? @"YES" : @"NO");
     }
-    CGFloat centeredY = (1.0 - visibleHeight) / 2.0;
-    CGFloat biasedY = MIN(centeredY, MAX(0.06, centeredY * 0.45));
-    iv.layer.contentsRect = CGRectMake(0, biasedY, 1, visibleHeight);
+
+    __weak UIImageView *weakIV = iv;
+    __weak id weakCell = cell;
+    __weak RDKLink *weakLink = link;
+    ApolloFeedThumbPlayBadgeStyle capturedPlayStyle = playStyle;
+    BOOL capturedNeedsOverlay = needsObscuredOverlay;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIImageView *strongIV = weakIV;
+        id strongCell = weakCell;
+        RDKLink *strongLink = weakLink;
+        UIView *strongParent = strongIV.superview;
+        if (!strongIV || !strongCell || !strongParent) return;
+        strongIV.frame = strongParent.bounds;
+        ApolloFeedThumbApplyPlayBadge(strongCell, strongParent, capturedNeedsOverlay ? ApolloFeedThumbPlayBadgeStyleNone : capturedPlayStyle);
+        ApolloFeedThumbApplyObscuredOverlay(strongCell, strongParent, strongLink, capturedNeedsOverlay);
+    });
 }
 
 static void ApolloFeedThumbApplyToCell(id cell) {
@@ -1220,8 +1423,9 @@ static void ApolloFeedThumbApplyToCell(id cell) {
         return;
     }
 
+    BOOL preferHighQualityFallback = (pillView != nil);
     NSString *source = nil;
-    NSURL *fallbackURL = ApolloFeedThumbFallbackURLForLink(link, &source);
+    NSURL *fallbackURL = ApolloFeedThumbFallbackURLForLink(link, preferHighQualityFallback, &source);
 
     // Pill path: prefer the native thumbnailURL when usable (Apollo just
     // isn't rendering it); otherwise use the recovered URL. Only mount on
@@ -1230,7 +1434,7 @@ static void ApolloFeedThumbApplyToCell(id cell) {
     // native pill so we don't paint over legitimate external link cards.
     NSURL *renderURL = nil;
     if (pillView) {
-        NSURL *candidate = nativeUsable ? nativeURL : fallbackURL;
+        NSURL *candidate = fallbackURL ?: (nativeUsable ? nativeURL : nil);
         if (ApolloFeedThumbURLIsPillCoverable(candidate)) {
             thumbView = pillView;
             renderURL = candidate;
@@ -1307,20 +1511,8 @@ static void ApolloFeedThumbApplyToCell(id cell) {
             }
         }
         if (richMediaForStretch) {
-            CGFloat cellW = 0;
-            @try {
-                if ([(id)cell respondsToSelector:@selector(view)]) {
-                    UIView *cv = ((UIView *(*)(id, SEL))objc_msgSend)(cell, @selector(view));
-                    cellW = cv.bounds.size.width;
-                }
-            } @catch (__unused id e) {}
-            CGFloat pillW = pillView.bounds.size.width;
-            CGFloat targetW = pillW;
-            if (targetW < 200) targetW = cellW;
-            if (targetW < 200) targetW = 390;
-            // Aim for ~16:9. Clamp to a band so we don't overwhelm tiny posts
-            // or eat the whole screen on iPad.
-            CGFloat targetH = MIN(320.0, MAX(180.0, targetW * 9.0 / 16.0));
+            CGFloat targetW = ApolloFeedThumbRecoveredTargetWidth(cell, pillView);
+            CGFloat targetH = ApolloFeedThumbRecoveredTargetHeight(targetW, nil, NO);
             ApolloFeedThumbSetPillStretchTarget(richMediaForStretch, CGSizeMake(targetW, targetH), cell);
         } else {
             // Not on pill — clear stretch on both candidates if previously set.
@@ -1366,7 +1558,7 @@ static void ApolloFeedThumbApplyToCell(id cell) {
                     ? ApolloFeedThumbPlayBadgeStyleLargeCenter
                     : ApolloFeedThumbPlayBadgeStyleCompactCorner;
     }
-    ApolloFeedThumbApplyPlayBadge(cell, thumbView, playStyle);
+    ApolloFeedThumbApplyPlayBadge(cell, thumbView, (mountedOnPill && needsBlur) ? ApolloFeedThumbPlayBadgeStyleNone : playStyle);
 
     // When mounted on the pill, hide the pill's text + leading icon so they
     // don't peek through during the brief image load. Tracked on the cell so
@@ -1378,7 +1570,9 @@ static void ApolloFeedThumbApplyToCell(id cell) {
 
     if ([currentLinkID isEqualToString:linkID] && [currentURL isEqual:fallbackURL] && iv.image) {
         // Same link, same URL, image already loaded — just resync visibility.
-        ApolloFeedThumbApplyLargeFeedCropBias(iv, iv.image, mountedOnPill);
+        ApolloFeedThumbApplyRecoveredLargePresentation(cell, link, iv, iv.image,
+                                                       mountedOnPill, isStaticPosterVideo,
+                                                       mountedOnPill && needsBlur, playStyle);
         iv.hidden = NO;
         return;
     }
@@ -1388,6 +1582,9 @@ static void ApolloFeedThumbApplyToCell(id cell) {
     [oldTask cancel];
     iv.image = nil;
     iv.layer.contentsRect = CGRectMake(0, 0, 1, 1);
+    iv.contentMode = UIViewContentModeScaleAspectFill;
+    iv.backgroundColor = [UIColor clearColor];
+    ApolloFeedThumbRemoveObscuredOverlay(cell);
     // Pill mount: keep the imageView hidden until the image actually loads,
     // otherwise we'd briefly show an empty rounded rect over the pill. The
     // pill siblings are also hidden, so the cell shows the cell's background
@@ -1396,6 +1593,7 @@ static void ApolloFeedThumbApplyToCell(id cell) {
 
     objc_setAssociatedObject(cell, kFeedThumbCurrentLinkIDKey, linkID, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(cell, kFeedThumbCurrentURLKey, fallbackURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, kFeedThumbLoadedImageSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     ApolloFeedThumbLogOnce(link, source, fallbackURL);
     ApolloFeedThumbLogAppliedOnce(cell, link, source);
@@ -1406,6 +1604,8 @@ static void ApolloFeedThumbApplyToCell(id cell) {
     NSURL *expectedURL = fallbackURL;
     BOOL captureNeedsBlur = needsBlur;
     BOOL captureMountedOnPill = mountedOnPill;
+    BOOL captureIsStaticPosterVideo = isStaticPosterVideo;
+    ApolloFeedThumbPlayBadgeStyle capturePlayStyle = playStyle;
 
     NSURLSessionDataTask *task = [ApolloFeedThumbSharedSession() dataTaskWithURL:fallbackURL completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
         if (error || data.length == 0) return;
@@ -1426,7 +1626,14 @@ static void ApolloFeedThumbApplyToCell(id cell) {
             if (![nowLinkID isEqualToString:expectedLinkID]) return;
             if (![nowURL isEqual:expectedURL]) return;
             strongIV.image = finalImage;
-            ApolloFeedThumbApplyLargeFeedCropBias(strongIV, finalImage, captureMountedOnPill);
+            objc_setAssociatedObject(strongCell, kFeedThumbLoadedImageSizeKey,
+                                     [NSValue valueWithCGSize:image.size],
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            RDKLink *currentLink = ApolloFeedThumbLinkFromCell(strongCell);
+            ApolloFeedThumbApplyRecoveredLargePresentation(strongCell, currentLink, strongIV, image,
+                                                           captureMountedOnPill, captureIsStaticPosterVideo,
+                                                           captureMountedOnPill && captureNeedsBlur,
+                                                           capturePlayStyle);
             strongIV.hidden = NO;
             if (captureMountedOnPill && ApolloFeedThumbShouldLogStretchProbe()) {
                 UIView *parent = strongIV.superview;
