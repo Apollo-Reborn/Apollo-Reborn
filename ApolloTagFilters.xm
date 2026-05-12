@@ -133,17 +133,16 @@ static UIView *ApolloTagViewForNode(id node) {
 // MARK: - Blur target geometry
 //
 // Compact cells: blur thumbnailNode + titleNode separately (these are already
-//   the only on-screen content above the action row, and Apollo natively blurs
-//   spoiler video thumbnails so a harmless extra blur on top is fine).
+//   the only on-screen content above the action row).
 //
 // Large cells: build TWO overlays — one over the title area, one over the
 //   media area — so users can tap-reveal either independently. Each overlay
 //   gets its own "kind" (@"title" / @"media"); tapping reveals only that part.
 //
-//   For SPOILER-only posts whose media is a video, Apollo already shows its
-//   own native "Spoiler — Contains spoiler – tap to watch" overlay on the
-//   video, so the media overlay is suppressed (only the title is covered).
-//   For NSFW posts, we always cover both regardless of media type.
+//   For SPOILER-only posts, Apollo / FeedThumbs already applies spoiler
+//   treatment to media, so the tag-filter media overlay is suppressed and only
+//   the title is covered. For NSFW posts, we always cover both regardless of
+//   media type.
 //
 //   Coverage uses the actual subnode frames (richMediaNode / thumbnailNode /
 //   crosspostNode→richMediaNode) extended horizontally to the cell width so
@@ -183,15 +182,6 @@ static UIView *ApolloTagMediaViewForCell(id cell, id *outRichMediaNode) {
     return nil;
 }
 
-// Detect whether the rich media node currently represents a video. Apollo
-// populates the videoNode ivar on RichMediaNode for v.redd.it / Streamable /
-// hosted video / GIF posts.
-static BOOL ApolloTagMediaIsVideo(id richMediaNode) {
-    if (!richMediaNode) return NO;
-    id vn = ApolloTagIvarValueByName(richMediaNode, "videoNode");
-    return vn != nil;
-}
-
 // Returns an array of NSDictionary entries: @{ @"rect": NSValue<CGRect>, @"kind": NSString }.
 // Rects are in cellView coordinates. `kind` is one of @"title" or @"media".
 static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *link) {
@@ -207,9 +197,8 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
         // Compact: blur titleNode + (usually) thumbnailNode at their actual
         // frames. Pill only on the title (the thumbnail is too small to wear
         // it). For SPOILER-only posts the thumbnail is suppressed because
-        // Apollo already natively blurs spoiler thumbnails in compact mode;
-        // covering it again would just stack two grey rectangles. NSFW posts
-        // always get both.
+        // media already gets spoiler treatment elsewhere. NSFW posts always
+        // get both.
         BOOL compactIsNSFW = NO, compactIsSpoiler = NO;
         @try { compactIsNSFW = link.isNSFW; } @catch (__unused id e) {}
         @try { compactIsSpoiler = link.isSpoiler; } @catch (__unused id e) {}
@@ -237,8 +226,7 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
     @try { isSpoiler = link.isSpoiler; } @catch (__unused id e) {}
 
     UIView *titleView = ApolloTagTitleViewForCell(cell);
-    id richMediaNode = nil;
-    UIView *mediaView = ApolloTagMediaViewForCell(cell, &richMediaNode);
+    UIView *mediaView = ApolloTagMediaViewForCell(cell, nil);
 
     // Title overlay: title's frame stretched to full cell width so any
     // trailing tag pills are also covered. Rounded corners look right here
@@ -258,11 +246,10 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
         }
     }
 
-    // Media overlay: only build it unless this is a SPOILER-only video post
-    // (Apollo's native spoiler overlay already covers the player). Square
-    // corners — the media area runs edge-to-edge and any rounding leaves a
-    // sliver of the underlying image visible in the corners.
-    BOOL skipMedia = (!isNSFW && isSpoiler && ApolloTagMediaIsVideo(richMediaNode));
+    // Media overlay: skip spoiler-only media because Apollo / FeedThumbs already
+    // handles spoiler media. Square corners - the media area runs edge-to-edge
+    // and any rounding leaves a sliver of the underlying image visible.
+    BOOL skipMedia = (!isNSFW && isSpoiler);
     if (!skipMedia && mediaView) {
         CGRect mf = [mediaView.superview convertRect:mediaView.frame toView:cellView];
         // Stretch horizontally to full cell width so a horizontally-scrollable

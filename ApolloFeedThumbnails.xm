@@ -2131,6 +2131,27 @@ static void ApolloFeedThumbLogCommentsOffset(id commentsVC, NSString *phase, UIS
               fullName ?: @"?");
 }
 
+static void ApolloFeedThumbTryResetCommentsTop(id commentsVC, NSString *phase) {
+    if (!commentsVC) return;
+    UIScrollView *scrollView = ApolloFeedThumbCommentsScrollView(commentsVC);
+    if (!scrollView) return;
+    if (ApolloFeedThumbCommentsVCProbablyHasAnchor(commentsVC)) return;
+    if (scrollView.tracking || scrollView.dragging || scrollView.decelerating) return;
+
+    NSNumber *initialNumber = objc_getAssociatedObject(commentsVC, kFeedThumbCommentsInitialOffsetKey);
+    CGFloat initialY = [initialNumber isKindOfClass:[NSNumber class]] ? initialNumber.doubleValue : scrollView.contentOffset.y;
+    CGFloat currentY = scrollView.contentOffset.y;
+    CGFloat topY = ApolloFeedThumbScrollViewTopY(scrollView);
+    ApolloFeedThumbLogCommentsOffset(commentsVC, phase ?: @"delayed", scrollView, NO);
+
+    BOOL startedNearTop = initialY <= topY + 64.0;
+    BOOL stayedAtInitialOffset = fabs(currentY - initialY) < 2.0;
+    if (currentY > topY + 64.0 && (startedNearTop || stayedAtInitialOffset)) {
+        [scrollView setContentOffset:CGPointMake(scrollView.contentOffset.x, topY) animated:NO];
+        ApolloLog(@"[FeedThumbs] comments offset reset to top (from %.1f to %.1f, phase=%@)", currentY, topY, phase ?: @"delayed");
+    }
+}
+
 static void ApolloFeedThumbScheduleCommentsTopResetIfNeeded(id commentsVC) {
     if (!commentsVC) return;
     if (objc_getAssociatedObject(commentsVC, kFeedThumbCommentsTopResetKey)) return;
@@ -2143,22 +2164,15 @@ static void ApolloFeedThumbScheduleCommentsTopResetIfNeeded(id commentsVC) {
     if (anchored) return;
 
     __weak id weakVC = commentsVC;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        id strongVC = weakVC;
-        if (!strongVC) return;
-        UIScrollView *strongScroll = ApolloFeedThumbCommentsScrollView(strongVC);
-        if (!strongScroll) return;
-        if (ApolloFeedThumbCommentsVCProbablyHasAnchor(strongVC)) return;
-        NSNumber *initialNumber = objc_getAssociatedObject(strongVC, kFeedThumbCommentsInitialOffsetKey);
-        CGFloat initialY = [initialNumber isKindOfClass:[NSNumber class]] ? initialNumber.doubleValue : strongScroll.contentOffset.y;
-        CGFloat currentY = strongScroll.contentOffset.y;
-        CGFloat topY = ApolloFeedThumbScrollViewTopY(strongScroll);
-        ApolloFeedThumbLogCommentsOffset(strongVC, @"delayed", strongScroll, NO);
-        if (currentY > topY + 140.0 && fabs(currentY - initialY) < 2.0) {
-            [strongScroll setContentOffset:CGPointMake(strongScroll.contentOffset.x, topY) animated:NO];
-            ApolloLog(@"[FeedThumbs] comments offset reset to top (from %.1f to %.1f)", currentY, topY);
-        }
-    });
+    NSArray<NSNumber *> *delays = @[ @0.12, @0.35, @0.75 ];
+    for (NSNumber *delay in delays) {
+        NSTimeInterval interval = delay.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id strongVC = weakVC;
+            if (!strongVC) return;
+            ApolloFeedThumbTryResetCommentsTop(strongVC, @"delayed");
+        });
+    }
 }
 
 %hook _TtC6Apollo22CommentsViewController
