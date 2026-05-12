@@ -142,6 +142,7 @@ static char kApolloHostMarkdownNodeKey;        // weak ref (assign association) 
 static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
 static char kApolloPlayOverlayViewKey;         // UIView play overlay container, also used as install gate
+static char kApolloStackedCardSyncerKey;       // ApolloStackedCardSyncer — keeps the multi-image card peeking behind imageNode
 
 // MARK: - Class lookups (cached)
 
@@ -291,22 +292,28 @@ static NSDictionary *ApolloImgurResultFromAPIData(id data) {
     NSDictionary *dict = (NSDictionary *)data;
     NSArray *images = [dict[@"images"] isKindOfClass:[NSArray class]] ? dict[@"images"] : nil;
     if (images.count > 0) {
+        NSDictionary *picked = nil;
         NSString *coverID = [dict[@"cover"] isKindOfClass:[NSString class]] ? dict[@"cover"] : nil;
         if (coverID.length > 0) {
             for (id item in images) {
                 if (![item isKindOfClass:[NSDictionary class]]) continue;
                 NSString *imageID = [item[@"id"] isKindOfClass:[NSString class]] ? item[@"id"] : nil;
                 if ([imageID isEqualToString:coverID]) {
-                    NSDictionary *result = ApolloImgurResultFromImageDictionary(item);
-                    if (result) return result;
+                    picked = ApolloImgurResultFromImageDictionary(item);
+                    if (picked) break;
                 }
             }
         }
-        for (id item in images) {
-            NSDictionary *result = ApolloImgurResultFromImageDictionary(item);
-            if (result) return result;
+        if (!picked) {
+            for (id item in images) {
+                picked = ApolloImgurResultFromImageDictionary(item);
+                if (picked) break;
+            }
         }
-        return nil;
+        if (!picked) return nil;
+        NSMutableDictionary *out = [picked mutableCopy];
+        out[@"count"] = @(images.count);
+        return out;
     }
     return ApolloImgurResultFromImageDictionary(dict);
 }
@@ -1057,6 +1064,7 @@ static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
                                                    ASDisplayNode *hostMarkdownNode);
 static ASNetworkImageNode *ApolloVideoThumbnailNodeForURL(NSURL *normalizedURL,
                                                            ASDisplayNode *hostMarkdownNode);
+static void ApolloInstallStackedCardForImageNode(ASNetworkImageNode *imageNode);
 
 // Mirror the imageNode's tap/long-press URL associations onto its
 // backing view once it's loaded — UIContextMenuInteraction reads from
@@ -1144,6 +1152,30 @@ static void ApolloApplyResolvedImgurImage(ASNetworkImageNode *imageNode, NSDicti
             }];
         }
     });
+
+    // Multi-image albums get a "stacked card" peeking out bottom-right to
+    // signal "more than one image". Installed on imageNode's view's
+    // superview after relayout. Defer to onDidLoad if the imageNode
+    // isn't view-loaded yet.
+    NSNumber *count = [result[@"count"] respondsToSelector:@selector(integerValue)] ? result[@"count"] : nil;
+    if (count.integerValue > 1) {
+        __weak ASNetworkImageNode *weakImage = imageNode;
+        void (^installCard)(void) = ^{
+            ASNetworkImageNode *strong = weakImage;
+            if (strong) ApolloInstallStackedCardForImageNode(strong);
+        };
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ASNetworkImageNode *strong = weakImage;
+            if (!strong) return;
+            if ([strong respondsToSelector:@selector(isNodeLoaded)] && [strong isNodeLoaded]) {
+                installCard();
+            } else if ([strong respondsToSelector:@selector(onDidLoad:)]) {
+                [strong onDidLoad:^(__kindof ASDisplayNode *node) {
+                    dispatch_async(dispatch_get_main_queue(), installCard);
+                }];
+            }
+        });
+    }
 }
 
 // Standalone play-circle glyph (transparent background) drawn into a
@@ -1247,6 +1279,77 @@ static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     [container recenter];
 
     objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+// "Stacked card" view shown behind a multi-image album thumbnail. Peeks
+// out from the top-right of the imageNode (same size, offset +8pt right
+// / -8pt up), in systemGray3Color for contrast against any cell
+// background in both light and dark themes. Gives a visual cue that the
+// album has more than one image without loading any additional images.
+//
+// Sibling to imageNode.view in the parent (MarkdownNode's view) rather
+// than a subview — imageNode.clipsToBounds=YES would clip the peek.
+// KVO on imageNode.layer.bounds/position keeps the card frame in sync
+// across Texture layout passes (which mutate layer.frame directly).
+static const CGFloat kApolloStackedCardOffset = 8.0;
+
+@interface ApolloStackedCardSyncer : NSObject
+@property (nonatomic, weak) UIView *card;
+@property (nonatomic, weak) UIView *anchor;
+@end
+@implementation ApolloStackedCardSyncer
+- (void)syncFrame {
+    UIView *anchor = self.anchor;
+    UIView *card = self.card;
+    if (!anchor || !card) return;
+    CGRect a = anchor.frame;
+    if (CGRectIsEmpty(a)) return;
+    card.frame = CGRectMake(a.origin.x + kApolloStackedCardOffset,
+                             a.origin.y - kApolloStackedCardOffset,
+                             a.size.width,
+                             a.size.height);
+    // Texture may re-add the imageNode's view to the parent during
+    // layout passes, which can flip z-order. Re-assert "card below
+    // image" on every sync.
+    UIView *parent = anchor.superview;
+    if (parent == card.superview) {
+        [parent insertSubview:card belowSubview:anchor];
+    }
+}
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+    [self syncFrame];
+}
+- (void)dealloc {
+    UIView *anchor = _anchor;
+    if (anchor) {
+        @try { [anchor.layer removeObserver:self forKeyPath:@"bounds"]; } @catch (__unused NSException *e) {}
+        @try { [anchor.layer removeObserver:self forKeyPath:@"position"]; } @catch (__unused NSException *e) {}
+    }
+}
+@end
+
+static void ApolloInstallStackedCardForImageNode(ASNetworkImageNode *imageNode) {
+    if (objc_getAssociatedObject(imageNode, &kApolloStackedCardSyncerKey)) return;
+    if (![imageNode respondsToSelector:@selector(isNodeLoaded)] || ![imageNode isNodeLoaded]) return;
+    UIView *imgView = [imageNode view];
+    UIView *parent = imgView.superview;
+    if (!imgView || !parent) return;
+
+    UIView *card = [[UIView alloc] init];
+    card.userInteractionEnabled = NO;
+    card.backgroundColor = [UIColor systemGray3Color];
+    card.layer.cornerRadius = 8.0;
+    [parent insertSubview:card belowSubview:imgView];
+
+    ApolloStackedCardSyncer *syncer = [ApolloStackedCardSyncer new];
+    syncer.card = card;
+    syncer.anchor = imgView;
+    [syncer syncFrame];
+    [imgView.layer addObserver:syncer forKeyPath:@"bounds" options:0 context:NULL];
+    [imgView.layer addObserver:syncer forKeyPath:@"position" options:0 context:NULL];
+    objc_setAssociatedObject(imageNode, &kApolloStackedCardSyncerKey, syncer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // Builds a video thumbnail with a 16:9 placeholder ratio so it's included
