@@ -70,6 +70,7 @@ typedef NS_ENUM(unsigned char, ApolloASStackLayoutAlignSelf) {
 - (BOOL)isNodeLoaded;
 - (void)onDidLoad:(void(^)(__kindof ASDisplayNode *node))body;
 @property (nonatomic) BOOL userInteractionEnabled;
+@property (nullable, nonatomic, copy) UIColor *backgroundColor;
 @end
 
 @interface ASTextNode : ASDisplayNode
@@ -298,15 +299,43 @@ static NSDictionary *ApolloMediaMetadataForHost(ASDisplayNode *hostMarkdownNode)
     return nil;
 }
 
+// Find the mediaMetadata entry for a given video URL. Tries direct id
+// lookup first; falls back to scanning s.gif/s.mp4 URLs for a match
+// (giphy entries have keys like "giphy|<id>" that don't match the
+// preview.redd.it filename in the video URL).
+static NSDictionary *ApolloMediaMetadataEntryForVideoURL(NSDictionary *mediaMetadata, NSURL *videoURL) {
+    NSString *imageID = ApolloMediaMetadataIDFromVideoURL(videoURL);
+    if (imageID.length > 0) {
+        NSDictionary *entry = mediaMetadata[imageID];
+        if ([entry isKindOfClass:[NSDictionary class]]) return entry;
+    }
+    NSString *absStr = videoURL.absoluteString;
+    NSString *path = videoURL.path;
+    for (NSString *key in mediaMetadata) {
+        NSDictionary *entry = mediaMetadata[key];
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *s = entry[@"s"];
+        if (![s isKindOfClass:[NSDictionary class]]) continue;
+        for (NSString *k in @[@"mp4", @"gif", @"u"]) {
+            NSString *candidate = s[k];
+            if (![candidate isKindOfClass:[NSString class]]) continue;
+            NSString *decoded = [candidate stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+            if ([decoded isEqualToString:absStr]) return entry;
+            // Path-only match for sig/query mismatches across renderings.
+            NSURL *cu = [NSURL URLWithString:decoded];
+            if (path.length > 0 && [cu.path isEqualToString:path]) return entry;
+        }
+    }
+    return nil;
+}
+
 // Pick the largest signed preview thumbnail from a mediaMetadata entry.
 // Entries look like: { p: [{u, x, y}, ...sorted ascending], s: {u, gif, mp4}, ... }
 // The last p[] entry is the highest-resolution still thumbnail (PNG/WEBP)
 // with a valid signature. Returns nil for RedditVideo entries (no p[]).
 static NSURL *ApolloPosterURLFromMediaMetadata(NSDictionary *mediaMetadata, NSURL *videoURL) {
-    NSString *imageID = ApolloMediaMetadataIDFromVideoURL(videoURL);
-    if (imageID.length == 0) return nil;
-    NSDictionary *entry = mediaMetadata[imageID];
-    if (![entry isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *entry = ApolloMediaMetadataEntryForVideoURL(mediaMetadata, videoURL);
+    if (!entry) return nil;
 
     NSArray *previews = entry[@"p"];
     if ([previews isKindOfClass:[NSArray class]] && previews.count > 0) {
@@ -318,6 +347,17 @@ static NSURL *ApolloPosterURLFromMediaMetadata(NSDictionary *mediaMetadata, NSUR
             if (out) return out;
         }
     }
+    // For giphy/animated entries with no p[], use s.gif directly — it's
+    // a small signed animated GIF that renders inline as the thumbnail.
+    NSDictionary *s = entry[@"s"];
+    if ([s isKindOfClass:[NSDictionary class]]) {
+        NSString *gif = s[@"gif"];
+        if ([gif isKindOfClass:[NSString class]] && gif.length > 0) {
+            NSString *decoded = [gif stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+            NSURL *out = [NSURL URLWithString:decoded];
+            if (out) return out;
+        }
+    }
     return nil;
 }
 
@@ -325,10 +365,8 @@ static NSURL *ApolloPosterURLFromMediaMetadata(NSDictionary *mediaMetadata, NSUR
 // or nil if the entry isn't a video (or has no dashUrl). Used by the
 // poster-frame-extraction path below.
 static NSURL *ApolloDashURLFromMediaMetadata(NSDictionary *mediaMetadata, NSURL *videoURL) {
-    NSString *assetID = ApolloMediaMetadataIDFromVideoURL(videoURL);
-    if (assetID.length == 0) return nil;
-    NSDictionary *entry = mediaMetadata[assetID];
-    if (![entry isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *entry = ApolloMediaMetadataEntryForVideoURL(mediaMetadata, videoURL);
+    if (!entry) return nil;
     NSString *u = entry[@"dashUrl"];
     if (![u isKindOfClass:[NSString class]] || u.length == 0) return nil;
     NSString *decoded = [u stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
@@ -882,7 +920,7 @@ static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL,
     ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
     imageNode.shouldRenderProgressImages = YES;
     imageNode.contentMode = UIViewContentModeScaleAspectFill;
-    imageNode.placeholderColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+    imageNode.placeholderColor = [UIColor tertiarySystemFillColor];
     imageNode.placeholderEnabled = YES;
     imageNode.placeholderFadeDuration = 0.2;
     imageNode.cornerRadius = 8.0;
@@ -926,15 +964,20 @@ static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL,
                 if (dashURL && assetID.length) {
                     ApolloFetchDashPoster(assetID, dashURL, ^(UIImage *poster) {
                         ASNetworkImageNode *strong = weakImage;
-                        if (!strong || !poster) return;
-                        strong.image = poster;
-                        if (poster.size.width > 0 && poster.size.height > 0) {
-                            [[ApolloInlineImageDispatcher shared]
-                                updateAspectRatioForImageNode:strong imageSize:poster.size];
+                        if (!strong) return;
+                        if (poster) {
+                            strong.image = poster;
+                            if (poster.size.width > 0 && poster.size.height > 0) {
+                                [[ApolloInlineImageDispatcher shared]
+                                    updateAspectRatioForImageNode:strong imageSize:poster.size];
+                            }
+                        } else if (!strong.image && !strong.URL) {
+                            strong.backgroundColor = [UIColor tertiarySystemFillColor];
                         }
                     });
                 } else {
                     ApolloLog(@"[InlineImages] video poster NOT FOUND node=%p video=%@", img, videoURL);
+                    img.backgroundColor = [UIColor tertiarySystemFillColor];
                 }
             }
         }
@@ -1450,10 +1493,11 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
 
 // MARK: - %hook _TtC6Apollo14LinkButtonNode
 
-// Hides Apollo's link-card preview at the bottom of the comment when the
-// URL has been inlined as an image elsewhere. Returns a zero-size empty
-// spec so the LinkButtonNode reserves no visible space. Non-image
-// LinkButtonNodes (tweets, articles, etc.) are unaffected.
+// Hides Apollo's link-card preview when the URL has been inlined as an
+// image elsewhere in the same cell. Returns a zero-size empty spec so
+// the LinkButtonNode reserves no visible space. For link posts (no
+// selftext / no MarkdownNode body), there is no inline replacement, so
+// the preview is preserved.
 
 %hook _TtC6Apollo14LinkButtonNode
 
@@ -1465,9 +1509,27 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     NSURL *url = [NSURL URLWithString:urlString];
     if (!ApolloIsInlineRenderableImageURL(url) && !ApolloIsInlineRenderableVideoURL(url)) return %orig;
 
-    // Empty layout spec with zero preferredSize. The LinkButtonNode itself
-    // remains in the cell's subnode tree (we don't want to fight Apollo's
-    // ownership), but contributes no visible content or vertical space.
+    // Only hide if there's a MarkdownNode body that would carry the
+    // inline replacement. Walk supernodes for an RDKLink with selftext,
+    // or an RDKComment (comments always have a body).
+    BOOL haveInlineReplacement = NO;
+    for (ASDisplayNode *n = (ASDisplayNode *)self; n; n = n.supernode) {
+        for (const char *ivarName : (const char *[]){"link", "comment"}) {
+            Ivar ivar = class_getInstanceVariable([n class], ivarName);
+            if (!ivar) continue;
+            id model = nil;
+            @try { model = object_getIvar(n, ivar); } @catch (__unused NSException *e) {}
+            if (!model) continue;
+            if (strcmp(ivarName, "comment") == 0) { haveInlineReplacement = YES; break; }
+            if ([model respondsToSelector:@selector(isSelfPostWithSelfText)]
+                && ((BOOL (*)(id, SEL))objc_msgSend)(model, @selector(isSelfPostWithSelfText))) {
+                haveInlineReplacement = YES; break;
+            }
+        }
+        if (haveInlineReplacement) break;
+    }
+    if (!haveInlineReplacement) return %orig;
+
     Class layoutSpecCls = NSClassFromString(@"ASLayoutSpec");
     if (!layoutSpecCls) return %orig;
     ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
