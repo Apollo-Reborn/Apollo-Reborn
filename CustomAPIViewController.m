@@ -592,7 +592,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                            action:@selector(proxyImgurDDGSwitchToggled:)];
         case 4:
             return [self switchCellWithIdentifier:@"Cell_Media_InlineImages"
-                                            label:@"Render Images Inline"
+                                            label:@"Inline Media Previews"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages]
                                            action:@selector(inlineImagesSwitchToggled:)];
         default: return [[UITableViewCell alloc] init];
