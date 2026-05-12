@@ -32,6 +32,7 @@ ApolloImprovedCustomApi_FILES = \
     ApolloVideoUnmute.xm \
     ApolloVideoSwipeFix.xm \
     ApolloTagFilters.xm \
+    ApolloHideNextParentButton.xm \
     CustomAPIViewController.m \
     TranslationSettingsViewController.m \
     SavedCategoriesViewController.m \

@@ -5,18 +5,68 @@
 
 // MARK: - Tab Bar Auto-Hide Reveal Fix
 //
-// Apollo's "Hide Bars on Scroll" (Settings > General > Other) on iOS 26 hides the
-// bottom UITabBar when scrolling but never restores it. The top nav bar still
-// reveals correctly because iOS itself owns that path via
-// UINavigationController.hidesBarsOnSwipe / barHideOnSwipeGestureRecognizer.
+// Apollo's "Hide Bars on Scroll" (Settings > General > Other) toggles
+// UINavigationController.hidesBarsOnSwipe on every nav controller. Two paths:
 //
-// Fix: piggyback on the working top-bar show/hide. Hook every method
-// UINavigationController uses to flip hidden state and mirror the same change
-// onto the enclosing UITabBarController's tab bar.
+// iOS 26+ (Liquid Glass):
+//   Use Apple's native UITabBarController.tabBarMinimizeBehavior. When the
+//   toggle is ON we set the enclosing tab bar controller's behavior to
+//   .onScrollDown (raw value 2) so the tab bar collapses to the Liquid Glass
+//   pill on scroll-down and re-expands on scroll-up — matching Music/Photos.
+//   We also forward setHidesBarsOnSwipe:NO to Apollo's nav controller so the
+//   nav bar stays put (true Liquid Glass feel; native API only minimizes the
+//   tab bar). When the toggle is OFF we restore .never (raw value 1).
+//
+// iOS <26 (legacy mirror):
+//   Apollo's hide-on-swipe hides the bottom UITabBar but never restores it.
+//   The top nav bar still reveals because iOS owns that path via
+//   barHideOnSwipeGestureRecognizer. We piggyback on the working top-bar
+//   show/hide and mirror it onto the enclosing UITabBarController's tab bar.
 
 @interface UITabBarController (ApolloHideFix)
 - (void)setTabBarHidden:(BOOL)hidden animated:(BOOL)animated; // private
 @end
+
+// iOS 26 SDK selector — declared via NSInteger to avoid hard SDK dependency.
+// UITabBarControllerMinimizeBehaviorAutomatic = 0
+// UITabBarControllerMinimizeBehaviorNever     = 1
+// UITabBarControllerMinimizeBehaviorOnScrollDown = 2
+// UITabBarControllerMinimizeBehaviorOnScrollUp   = 3
+typedef NS_ENUM(NSInteger, ApolloTabBarMinimizeBehavior) {
+    ApolloTabBarMinimizeBehaviorAutomatic = 0,
+    ApolloTabBarMinimizeBehaviorNever = 1,
+    ApolloTabBarMinimizeBehaviorOnScrollDown = 2,
+    ApolloTabBarMinimizeBehaviorOnScrollUp = 3,
+};
+
+static SEL ApolloMinimizeBehaviorSetter(void) {
+    return NSSelectorFromString(@"setTabBarMinimizeBehavior:");
+}
+
+static BOOL ApolloSupportsNativeTabBarMinimize(void) {
+    static BOOL supported = NO;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        supported = IsLiquidGlass() &&
+            [UITabBarController instancesRespondToSelector:ApolloMinimizeBehaviorSetter()];
+    });
+    return supported;
+}
+
+static void ApolloApplyMinimizeBehavior(UITabBarController *tbc, ApolloTabBarMinimizeBehavior behavior) {
+    if (!tbc || !ApolloSupportsNativeTabBarMinimize()) return;
+    SEL sel = ApolloMinimizeBehaviorSetter();
+    NSMethodSignature *sig = [tbc methodSignatureForSelector:sel];
+    if (!sig) return;
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = tbc;
+    inv.selector = sel;
+    NSInteger raw = (NSInteger)behavior;
+    [inv setArgument:&raw atIndex:2];
+    [inv invoke];
+    ApolloLog(@"[AutoHideTabBarFix] Native tabBarMinimizeBehavior=%ld on %@",
+              (long)raw, NSStringFromClass([tbc class]));
+}
 
 // Walk only the parentViewController chain so modally-presented nav controllers
 // (share sheets, document pickers, etc.) are skipped — mirroring their hidden
@@ -117,8 +167,10 @@ static void ApolloHideTabBar(UITabBarController *tbc, BOOL animated) {
 }
 
 // Mirror nav-bar visibility onto the tab bar. Called from every nav-bar
-// hide/show entry point, including the gesture-driven path.
+// hide/show entry point, including the gesture-driven path. iOS <26 only —
+// on iOS 26 we use the native UITabBarController.tabBarMinimizeBehavior path.
 static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL navHidden, BOOL animated) {
+    if (ApolloSupportsNativeTabBarMinimize()) return;
     UITabBarController *tbc = ApolloLocateTabBarController(nav);
     if (!tbc) return;
     if (navHidden) {
@@ -132,24 +184,41 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
 
 - (void)setNavigationBarHidden:(BOOL)hidden {
     %orig;
+    if (ApolloSupportsNativeTabBarMinimize()) return;
     ApolloMirrorNavBarStateToTabBar(self, hidden, NO);
 }
 
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     %orig;
+    if (ApolloSupportsNativeTabBarMinimize()) return;
     ApolloMirrorNavBarStateToTabBar(self, hidden, animated);
 }
 
 %end
 
-// UIBarHideOnSwipeGestureRecognizer drives hidesBarsOnSwipe. When the
-// recognizer's state changes the nav controller updates its hidden state via
-// the setters above — but on iOS 26 some paths bypass those setters and only
-// flip the bar's alpha via internal animations. As a belt-and-suspenders, also
-// observe the gesture directly.
+// hidesBarsOnSwipe entry point. Two modes:
+//   iOS 26+: hijack the toggle — instead of letting the nav bar hide on
+//            swipe, set the enclosing tab bar controller's native
+//            tabBarMinimizeBehavior so only the tab bar collapses (true
+//            Liquid Glass feel, mirroring Music/Photos).
+//   iOS <26: leave Apollo's behavior intact and observe the gesture so we
+//            can mirror nav-bar visibility onto the tab bar.
 %hook UINavigationController
 
 - (void)setHidesBarsOnSwipe:(BOOL)value {
+    if (ApolloSupportsNativeTabBarMinimize()) {
+        // Suppress Apollo's nav-bar hide-on-swipe; the native API only
+        // collapses the tab bar so we want the nav bar to stay visible.
+        %orig(NO);
+        UITabBarController *tbc = ApolloLocateTabBarController(self);
+        if (tbc) {
+            ApolloApplyMinimizeBehavior(tbc,
+                value ? ApolloTabBarMinimizeBehaviorOnScrollDown
+                      : ApolloTabBarMinimizeBehaviorNever);
+        }
+        return;
+    }
+
     %orig;
     if (!value) return;
     UIPanGestureRecognizer *gr = self.barHideOnSwipeGestureRecognizer;
@@ -163,6 +232,7 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
 
 %new
 - (void)_apolloBarHideSwipeFired:(UIPanGestureRecognizer *)gr {
+    if (ApolloSupportsNativeTabBarMinimize()) return;
     if (gr.state != UIGestureRecognizerStateEnded &&
         gr.state != UIGestureRecognizerStateCancelled &&
         gr.state != UIGestureRecognizerStateFailed) return;
@@ -172,6 +242,34 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
     BOOL navHidden = self.isNavigationBarHidden;
     ApolloLog(@"[AutoHideTabBarFix] Swipe ended state=%ld navHidden=%d", (long)gr.state, navHidden);
     ApolloMirrorNavBarStateToTabBar(self, navHidden, YES);
+}
+
+%end
+
+// On iOS 26, when the app launches with the toggle already ON, Apollo sets
+// hidesBarsOnSwipe before the tab bar controller is fully wired up. Re-apply
+// the minimize behavior on viewWillAppear: by inspecting the embedded nav
+// controllers' hidesBarsOnSwipe state.
+%hook UITabBarController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    if (!ApolloSupportsNativeTabBarMinimize()) return;
+
+    BOOL anyHidesOnSwipe = NO;
+    for (UIViewController *child in self.viewControllers) {
+        UINavigationController *nav = nil;
+        if ([child isKindOfClass:[UINavigationController class]]) {
+            nav = (UINavigationController *)child;
+        }
+        if (nav && nav.hidesBarsOnSwipe) {
+            anyHidesOnSwipe = YES;
+            break;
+        }
+    }
+    ApolloApplyMinimizeBehavior(self,
+        anyHidesOnSwipe ? ApolloTabBarMinimizeBehaviorOnScrollDown
+                        : ApolloTabBarMinimizeBehaviorNever);
 }
 
 %end

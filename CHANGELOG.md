@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+- Liquid Glass: **Hide Bars on Scroll** now uses the native iOS 26 tab bar minimize behavior (`.onScrollDown`) so the tab bar collapses into the small Liquid Glass pill on scroll-down and re-expands on scroll-up, matching Apple Music/Photos. Nav bar stays visible (true Liquid Glass feel). iOS <26 keeps the existing nav+tab bar mirror behavior.
+- New **Hide Next Parent Button** toggle in **Settings > Custom API > General** to hide the floating circular button in the bottom-right of the comments view that scrolls to the next parent comment.
+
 ## [v2.8.0] - 2026-05-08
 
 - New **Image Upload Host** option to upload images directly to Reddit instead of Imgur (thanks @icpryde for the implementation!)
