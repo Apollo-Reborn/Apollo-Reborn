@@ -173,12 +173,24 @@ static UIView *EnsureCommentsCoverView(UIViewController *viewController, const v
 
 // Keep the root and toolbar covers aligned with the current layout.
 static void LayoutCommentsCollapseCover(UIViewController *viewController) {
+    // NSISEngine isn't thread-safe; ASDK can call viewDidLayoutSubviews
+    // off-main during deferred CA transaction flushes.
+    if (![NSThread isMainThread]) return;
+
     UIView *rootView = viewController.view;
+    UIView *rootCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseRootCoverViewKey);
+    UIView *toolbarCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseToolbarCoverViewKey);
+
+    // Show path re-lays out covers on demand; nothing to do while hidden.
+    BOOL hasVisibleCover = (rootCoverView && !rootCoverView.hidden) ||
+                           (toolbarCoverView && !toolbarCoverView.hidden);
+    if (!hasVisibleCover) return;
+
+    if (!rootView || !rootView.window) return;
     UITableView *tableView = GetCommentsTableView(viewController);
-    if (!rootView || !tableView) return;
+    if (!tableView) return;
 
     CGFloat navBarBottom = GetNavigationBarBottom(viewController);
-    UIView *rootCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseRootCoverViewKey);
     if (rootCoverView) {
         rootCoverView.frame = CGRectMake(0.0, 0.0, CGRectGetWidth(rootView.bounds), navBarBottom);
         rootCoverView.backgroundColor = GetCommentsCoverColor(viewController, tableView);
@@ -205,7 +217,6 @@ static void LayoutCommentsCollapseCover(UIViewController *viewController) {
         }
     }
 
-    UIView *toolbarCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseToolbarCoverViewKey);
     if (toolbarCoverView && toolbarHostView) {
         toolbarCoverView.frame = toolbarHostView.bounds;
         toolbarCoverView.backgroundColor = GetCommentsCoverColor(viewController, tableView);
@@ -259,10 +270,12 @@ static void ShowCommentsCollapseCover(NSString *reason) {
 
     UIView *rootCoverView = EnsureCommentsCoverView(viewController, kCommentsCollapseRootCoverViewKey, @"root collapse");
     UIView *toolbarCoverView = EnsureCommentsCoverView(viewController, kCommentsCollapseToolbarCoverViewKey, @"toolbar collapse");
-    LayoutCommentsCollapseCover(viewController);
-    rootCoverView.hidden = NO;
     UIView *toolbarHostView = GetCommentsToolbarHostView(viewController);
+    // Unhide before layout so the hidden-cover early-bail doesn't skip the
+    // first layout pass.
+    rootCoverView.hidden = NO;
     toolbarCoverView.hidden = (toolbarHostView == nil);
+    LayoutCommentsCollapseCover(viewController);
 
     NSUInteger generation = [objc_getAssociatedObject(viewController, kCommentsCollapseCoverGenerationKey) unsignedIntegerValue] + 1;
     objc_setAssociatedObject(viewController, kCommentsCollapseCoverGenerationKey, @(generation),
