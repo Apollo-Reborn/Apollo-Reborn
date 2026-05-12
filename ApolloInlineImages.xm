@@ -134,7 +134,9 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 static char kApolloDecompositionMapKey;        // NSDictionary<NSValue (non-retained orig text node ptr), NSArray<id leaf>>
 static char kApolloCachedOrigChildrenKey;      // NSArray (held strongly so element pointers stay valid for compare)
 static char kApolloImageNodesByURLKey;         // NSMutableDictionary<NSString URL, ASNetworkImageNode> per-MarkdownNode reuse cache
+static char kApolloImageCacheKey;              // NSString cache key used even before deferred image URLs resolve
 static char kApolloImageURLKey;                // NSURL on the imageNode AND mirrored on the imageNode's view
+static char kApolloOriginalImageURLKey;        // NSURL used for context-menu copy/share/open when different from the loaded URL
 static char kApolloHostMarkdownNodeKey;        // weak ref (assign association) to the host MarkdownNode
 static char kApolloAspectRatioKey;             // NSNumber height/width — NIL if unknown (no URL params yet, no DIDLOAD yet)
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
@@ -185,6 +187,268 @@ static BOOL ApolloIsImgurShareURL(NSURL *url) {
     return [imgurID rangeOfCharacterFromSet:disallowed].location == NSNotFound;
 }
 
+static NSString *ApolloImgurPathID(NSURL *url, NSString *prefix) {
+    NSString *host = [[url host] lowercaseString];
+    if (![host isEqualToString:@"imgur.com"] && ![host isEqualToString:@"www.imgur.com"]) return nil;
+    if (url.pathExtension.length > 0) return nil;
+    NSString *path = [url.path stringByRemovingPercentEncoding] ?: @"";
+    NSArray<NSString *> *parts = [path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count != 2 || ![[clean[0] lowercaseString] isEqualToString:prefix]) return nil;
+    NSString *imgurID = clean[1];
+    NSCharacterSet *disallowed = [NSCharacterSet alphanumericCharacterSet].invertedSet;
+    return [imgurID rangeOfCharacterFromSet:disallowed].location == NSNotFound ? imgurID : nil;
+}
+
+static NSString *ApolloImgurAlbumID(NSURL *url) {
+    return ApolloImgurPathID(url, @"a");
+}
+
+static NSString *ApolloImgurGalleryID(NSURL *url) {
+    return ApolloImgurPathID(url, @"gallery");
+}
+
+static BOOL ApolloIsImgurAlbumOrGalleryURL(NSURL *url) {
+    return ApolloImgurAlbumID(url).length > 0 || ApolloImgurGalleryID(url).length > 0;
+}
+
+static NSString *ApolloImgurResolutionCacheKey(NSURL *url) {
+    NSString *albumID = ApolloImgurAlbumID(url);
+    if (albumID.length > 0) return [@"album:" stringByAppendingString:albumID];
+    NSString *galleryID = ApolloImgurGalleryID(url);
+    if (galleryID.length > 0) return [@"gallery:" stringByAppendingString:galleryID];
+    return nil;
+}
+
+static NSObject *ApolloImgurResolverLock(void) {
+    static NSObject *lock;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lock = [NSObject new];
+    });
+    return lock;
+}
+
+static NSMutableDictionary<NSString *, id> *ApolloImgurResolverCache(void) {
+    static NSMutableDictionary<NSString *, id> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+    return cache;
+}
+
+static NSMutableDictionary<NSString *, NSMutableArray *> *ApolloImgurResolverPending(void) {
+    static NSMutableDictionary<NSString *, NSMutableArray *> *pending;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        pending = [NSMutableDictionary dictionary];
+    });
+    return pending;
+}
+
+static NSURL *ApolloImgurDisplayURLFromImageDictionary(NSDictionary *image) {
+    NSString *link = [image[@"link"] isKindOfClass:[NSString class]] ? image[@"link"] : nil;
+    NSString *imageID = [image[@"id"] isKindOfClass:[NSString class]] ? image[@"id"] : nil;
+    BOOL animated = [image[@"animated"] respondsToSelector:@selector(boolValue)] && [image[@"animated"] boolValue];
+    NSString *type = [image[@"type"] isKindOfClass:[NSString class]] ? [image[@"type"] lowercaseString] : @"";
+
+    if (link.length == 0 && imageID.length > 0) {
+        NSString *ext = animated || [type containsString:@"gif"] ? @"gif" : ([type containsString:@"png"] ? @"png" : @"jpg");
+        link = [NSString stringWithFormat:@"https://i.imgur.com/%@.%@", imageID, ext];
+    }
+    if (link.length == 0) return nil;
+
+    NSString *lowerLink = [link lowercaseString];
+    if ([lowerLink hasSuffix:@".gifv"] || [lowerLink hasSuffix:@".mp4"]) {
+        link = [[link stringByDeletingPathExtension] stringByAppendingPathExtension:@"gif"];
+    }
+    link = [link stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+    return [NSURL URLWithString:link];
+}
+
+static NSDictionary *ApolloImgurResultFromImageDictionary(NSDictionary *image) {
+    if (![image isKindOfClass:[NSDictionary class]]) return nil;
+    NSURL *displayURL = ApolloImgurDisplayURLFromImageDictionary(image);
+    if (![displayURL isKindOfClass:[NSURL class]]) return nil;
+
+    NSMutableDictionary *result = [@{ @"url": displayURL } mutableCopy];
+    NSNumber *width = [image[@"width"] respondsToSelector:@selector(doubleValue)] ? image[@"width"] : nil;
+    NSNumber *height = [image[@"height"] respondsToSelector:@selector(doubleValue)] ? image[@"height"] : nil;
+    if (width.doubleValue > 0 && height.doubleValue > 0) {
+        result[@"width"] = width;
+        result[@"height"] = height;
+    }
+    return result;
+}
+
+static NSDictionary *ApolloImgurResultFromAPIData(id data) {
+    if ([data isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)data) {
+            NSDictionary *result = ApolloImgurResultFromImageDictionary(item);
+            if (result) return result;
+        }
+        return nil;
+    }
+    if (![data isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSDictionary *dict = (NSDictionary *)data;
+    NSArray *images = [dict[@"images"] isKindOfClass:[NSArray class]] ? dict[@"images"] : nil;
+    if (images.count > 0) {
+        NSString *coverID = [dict[@"cover"] isKindOfClass:[NSString class]] ? dict[@"cover"] : nil;
+        if (coverID.length > 0) {
+            for (id item in images) {
+                if (![item isKindOfClass:[NSDictionary class]]) continue;
+                NSString *imageID = [item[@"id"] isKindOfClass:[NSString class]] ? item[@"id"] : nil;
+                if ([imageID isEqualToString:coverID]) {
+                    NSDictionary *result = ApolloImgurResultFromImageDictionary(item);
+                    if (result) return result;
+                }
+            }
+        }
+        for (id item in images) {
+            NSDictionary *result = ApolloImgurResultFromImageDictionary(item);
+            if (result) return result;
+        }
+        return nil;
+    }
+
+    return ApolloImgurResultFromImageDictionary(dict);
+}
+
+static NSArray<NSURL *> *ApolloImgurAPIEndpointsForURL(NSURL *url) {
+    NSString *albumID = ApolloImgurAlbumID(url);
+    if (albumID.length > 0) {
+        return @[[NSURL URLWithString:[@"https://api.imgur.com/3/album/" stringByAppendingString:albumID]]];
+    }
+
+    NSString *galleryID = ApolloImgurGalleryID(url);
+    if (galleryID.length > 0) {
+        return @[
+            [NSURL URLWithString:[@"https://api.imgur.com/3/gallery/album/" stringByAppendingString:galleryID]],
+            [NSURL URLWithString:[@"https://api.imgur.com/3/gallery/image/" stringByAppendingString:galleryID]],
+            [NSURL URLWithString:[@"https://api.imgur.com/3/gallery/" stringByAppendingString:galleryID]],
+            [NSURL URLWithString:[@"https://api.imgur.com/3/album/" stringByAppendingString:galleryID]],
+        ];
+    }
+    return @[];
+}
+
+static void ApolloDeliverImgurResolution(NSString *cacheKey, NSDictionary *result) {
+    NSArray *callbacks = nil;
+    @synchronized (ApolloImgurResolverLock()) {
+        ApolloImgurResolverCache()[cacheKey] = result ?: (id)[NSNull null];
+        callbacks = [ApolloImgurResolverPending()[cacheKey] copy];
+        [ApolloImgurResolverPending() removeObjectForKey:cacheKey];
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (void (^callback)(NSDictionary *) in callbacks) {
+            callback(result);
+        }
+    });
+}
+
+static void ApolloFetchImgurEndpointAtIndex(NSArray<NSURL *> *endpoints, NSUInteger index, NSString *cacheKey) {
+    if (index >= endpoints.count) {
+        ApolloLog(@"[InlineImages] Imgur resolve FAIL key=%@", cacheKey);
+        ApolloDeliverImgurResolution(cacheKey, nil);
+        return;
+    }
+
+    NSURL *endpoint = endpoints[index];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:endpoint
+                                                           cachePolicy:NSURLRequestUseProtocolCachePolicy
+                                                       timeoutInterval:8.0];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    if (sImgurClientId.length > 0) {
+        [request setValue:[@"Client-ID " stringByAppendingString:sImgurClientId] forHTTPHeaderField:@"Authorization"];
+    }
+
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+                                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        if (error || status < 200 || status >= 300 || data.length == 0) {
+            ApolloLog(@"[InlineImages] Imgur endpoint FAIL key=%@ index=%lu status=%ld err=%@ url=%@",
+                      cacheKey, (unsigned long)index, (long)status, error.localizedDescription ?: @"nil", endpoint);
+            ApolloFetchImgurEndpointAtIndex(endpoints, index + 1, cacheKey);
+            return;
+        }
+
+        NSError *jsonError = nil;
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        id payload = [json isKindOfClass:[NSDictionary class]] ? json[@"data"] : nil;
+        NSDictionary *result = ApolloImgurResultFromAPIData(payload);
+        if (!result) {
+            ApolloLog(@"[InlineImages] Imgur parse MISS key=%@ index=%lu err=%@", cacheKey, (unsigned long)index, jsonError.localizedDescription ?: @"nil");
+            ApolloFetchImgurEndpointAtIndex(endpoints, index + 1, cacheKey);
+            return;
+        }
+
+        ApolloLog(@"[InlineImages] Imgur resolved key=%@ url=%@ size=%@x%@",
+                  cacheKey, result[@"url"], result[@"width"] ?: @"?", result[@"height"] ?: @"?");
+        ApolloDeliverImgurResolution(cacheKey, result);
+    }];
+    [task resume];
+}
+
+static NSDictionary *ApolloCachedImgurResolution(NSURL *url) {
+    NSString *cacheKey = ApolloImgurResolutionCacheKey(url);
+    if (cacheKey.length == 0) return nil;
+    @synchronized (ApolloImgurResolverLock()) {
+        id cached = ApolloImgurResolverCache()[cacheKey];
+        return [cached isKindOfClass:[NSDictionary class]] ? cached : nil;
+    }
+}
+
+static void ApolloResolveImgurURL(NSURL *url, void (^completion)(NSDictionary *result)) {
+    NSString *cacheKey = ApolloImgurResolutionCacheKey(url);
+    NSArray<NSURL *> *endpoints = ApolloImgurAPIEndpointsForURL(url);
+    if (cacheKey.length == 0 || endpoints.count == 0) {
+        if (completion) completion(nil);
+        return;
+    }
+
+    void (^callback)(NSDictionary *) = [completion copy];
+    BOOL shouldStartFetch = NO;
+    NSDictionary *cachedResult = nil;
+    BOOL hasCachedFailure = NO;
+
+    @synchronized (ApolloImgurResolverLock()) {
+        id cached = ApolloImgurResolverCache()[cacheKey];
+        if ([cached isKindOfClass:[NSDictionary class]]) {
+            cachedResult = cached;
+        } else if (cached == [NSNull null]) {
+            hasCachedFailure = YES;
+        } else {
+            NSMutableArray *pending = ApolloImgurResolverPending()[cacheKey];
+            if (pending) {
+                if (callback) [pending addObject:callback];
+            } else {
+                ApolloImgurResolverPending()[cacheKey] = callback ? [NSMutableArray arrayWithObject:callback] : [NSMutableArray array];
+                shouldStartFetch = YES;
+            }
+        }
+    }
+
+    if (cachedResult || hasCachedFailure) {
+        if (callback) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                callback(cachedResult);
+            });
+        }
+        return;
+    }
+
+    if (shouldStartFetch) {
+        ApolloLog(@"[InlineImages] Imgur resolve START key=%@ endpoints=%lu", cacheKey, (unsigned long)endpoints.count);
+        ApolloFetchImgurEndpointAtIndex(endpoints, 0, cacheKey);
+    }
+}
+
 static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *host = [[url host] lowercaseString];
@@ -192,7 +456,7 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
 
     // Imgur share URLs (imgur.com/<id>) — extensionless; normalizer
     // canonicalizes to i.imgur.com/<id>.jpeg.
-    if (ApolloIsImgurShareURL(url)) return YES;
+    if (ApolloIsImgurShareURL(url) || ApolloIsImgurAlbumOrGalleryURL(url)) return YES;
 
     NSString *ext = [[[url path] pathExtension] lowercaseString];
     static NSSet *imageExts;
@@ -633,7 +897,7 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
                        configurationForMenuAtLocation:(CGPoint)location {
     UIView *v = interaction.view;
     if (!v) return nil;
-    NSURL *url = objc_getAssociatedObject(v, &kApolloImageURLKey);
+    NSURL *url = objc_getAssociatedObject(v, &kApolloOriginalImageURLKey) ?: objc_getAssociatedObject(v, &kApolloImageURLKey);
     if (![url isKindOfClass:[NSURL class]]) return nil;
 
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
@@ -767,6 +1031,52 @@ static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
                                                    ASDisplayNode *hostMarkdownNode);
 static ASNetworkImageNode *ApolloVideoThumbnailNodeForURL(NSURL *normalizedURL,
                                                            ASDisplayNode *hostMarkdownNode);
+
+static void ApolloMirrorImageURLsToLoadedView(ASNetworkImageNode *imageNode) {
+    if (![imageNode respondsToSelector:@selector(isNodeLoaded)] || ![imageNode isNodeLoaded]) return;
+    UIView *view = [imageNode view];
+    if (!view) return;
+
+    NSURL *tapURL = objc_getAssociatedObject(imageNode, &kApolloImageURLKey) ?: imageNode.URL;
+    NSURL *originalURL = objc_getAssociatedObject(imageNode, &kApolloOriginalImageURLKey);
+    if (tapURL) {
+        objc_setAssociatedObject(view, &kApolloImageURLKey, tapURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (originalURL) {
+        objc_setAssociatedObject(view, &kApolloOriginalImageURLKey, originalURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void ApolloSetOriginalImageURL(ASNetworkImageNode *imageNode, NSURL *originalURL) {
+    if (![originalURL isKindOfClass:[NSURL class]]) return;
+    objc_setAssociatedObject(imageNode, &kApolloOriginalImageURLKey, originalURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloMirrorImageURLsToLoadedView(imageNode);
+}
+
+static void ApolloApplyResolvedImgurImage(ASNetworkImageNode *imageNode, NSDictionary *result) {
+    if (![result isKindOfClass:[NSDictionary class]]) return;
+    NSURL *imageURL = [result[@"url"] isKindOfClass:[NSURL class]] ? result[@"url"] : nil;
+    if (![imageURL isKindOfClass:[NSURL class]]) return;
+
+    imageNode.URL = imageURL;
+    objc_setAssociatedObject(imageNode, &kApolloImageURLKey, imageURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloMirrorImageURLsToLoadedView(imageNode);
+
+    NSNumber *width = [result[@"width"] respondsToSelector:@selector(doubleValue)] ? result[@"width"] : nil;
+    NSNumber *height = [result[@"height"] respondsToSelector:@selector(doubleValue)] ? result[@"height"] : nil;
+    if (width.doubleValue > 0 && height.doubleValue > 0) {
+        [[ApolloInlineImageDispatcher shared] updateAspectRatioForImageNode:imageNode
+                                                                  imageSize:CGSizeMake(width.doubleValue, height.doubleValue)];
+    } else {
+        objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(1.0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+        if ([imageNode respondsToSelector:relayoutSel]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ((void (*)(id, SEL))objc_msgSend)(imageNode, relayoutSel);
+            });
+        }
+    }
+}
 
 // Standalone play-circle glyph (transparent background) drawn into a
 // UIImageView placed over the imageNode so the play button stays visible
@@ -959,7 +1269,10 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     if (!imageNodeClass) return nil;
 
     ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
-    imageNode.URL = normalizedURL;
+    BOOL deferredImgur = ApolloIsImgurAlbumOrGalleryURL(normalizedURL);
+    if (!deferredImgur) {
+        imageNode.URL = normalizedURL;
+    }
     imageNode.shouldRenderProgressImages = YES;
     // aspectFit always: container ratio may be clamped (very tall/wide
     // images) or guessed when ratio is unknown — fit avoids cropping in
@@ -990,10 +1303,22 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     // query params now, or didLoadImage later). Nil means "unknown" → the
     // wrapper omits the image from layout to avoid wrong-ratio races.
 
-    objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(imageNode, &kApolloImageCacheKey, normalizedURL.absoluteString, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!deferredImgur) {
+        objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
     if (ratio > 0) {
         objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    if (deferredImgur) {
+        __weak ASNetworkImageNode *weakImage = imageNode;
+        ApolloResolveImgurURL(normalizedURL, ^(NSDictionary *result) {
+            ASNetworkImageNode *strong = weakImage;
+            if (!strong || !result) return;
+            ApolloApplyResolvedImgurImage(strong, result);
+        });
     }
 
     // Long-press: install a UIContextMenuInteraction once the imageNode's
@@ -1007,8 +1332,7 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         if ([objc_getAssociatedObject(img, &kApolloLongPressInstalledKey) boolValue]) return;
         UIView *v = [img view];
         if (!v) return;
-        NSURL *url = objc_getAssociatedObject(img, &kApolloImageURLKey) ?: img.URL;
-        objc_setAssociatedObject(v, &kApolloImageURLKey, url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloMirrorImageURLsToLoadedView(img);
         UIContextMenuInteraction *menu = [[UIContextMenuInteraction alloc]
             initWithDelegate:[ApolloInlineImageDispatcher shared]];
         [v addInteraction:menu];
@@ -1236,6 +1560,7 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
                 ? ApolloVideoThumbnailNodeForURL(urls[leafIndex], hostMarkdownNode)
                 : ApolloImageNodeForURL(urls[leafIndex], hostMarkdownNode);
             if (img) {
+                ApolloSetOriginalImageURL(img, originalURLs[leafIndex]);
                 // Route tap/long-press to the original posted URL when
                 // it differs from the loaded URL, so Copy Link returns
                 // what the user actually shared.
@@ -1301,6 +1626,14 @@ static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
         // Reuse: ensure the host association is still up to date in case
         // (somehow) it pointed elsewhere previously.
         objc_setAssociatedObject(existing, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
+        if (ApolloIsImgurAlbumOrGalleryURL(normalizedURL) && !objc_getAssociatedObject(existing, &kApolloImageURLKey)) {
+            __weak ASNetworkImageNode *weakImage = existing;
+            ApolloResolveImgurURL(normalizedURL, ^(NSDictionary *result) {
+                ASNetworkImageNode *strong = weakImage;
+                if (!strong || !result) return;
+                ApolloApplyResolvedImgurImage(strong, result);
+            });
+        }
         return existing;
     }
 
@@ -1378,11 +1711,7 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
                 newDecomp[k] = leaves;
                 for (id leaf in leaves) {
                     if ([leaf isKindOfClass:imageNodeCls]) {
-                        // Use imageNode.URL (matches the cache key) —
-                        // kApolloImageURLKey can be the original share
-                        // URL for tap routing, which would mis-GC here.
-                        NSURL *url = ((ASNetworkImageNode *)leaf).URL;
-                        NSString *abs = [url absoluteString];
+                        NSString *abs = objc_getAssociatedObject(leaf, &kApolloImageCacheKey) ?: [((ASNetworkImageNode *)leaf).URL absoluteString];
                         if (abs) [referencedURLs addObject:abs];
                     }
                 }
@@ -1464,6 +1793,7 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     if (!urlString) return %orig;
     NSURL *url = [NSURL URLWithString:urlString];
     if (!ApolloIsInlineRenderableImageURL(url) && !ApolloIsInlineRenderableVideoURL(url)) return %orig;
+    if (ApolloIsImgurAlbumOrGalleryURL(url) && !ApolloCachedImgurResolution(url)) return %orig;
 
     // Empty layout spec with zero preferredSize. The LinkButtonNode itself
     // remains in the cell's subnode tree (we don't want to fight Apollo's
