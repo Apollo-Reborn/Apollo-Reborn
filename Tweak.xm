@@ -35,7 +35,6 @@ static NSString *ValetOverrideValue(NSString *account) {
             @"meganotifs":              @"affirmative", // Ultra
             @"seconds_since2":          @"1473982",     // Pro
             @"rep_seconds_since2":      @"1473982",     // Pro (alternate?)
-            @"pixelpalfoodtokensgiven": @"affirmative", // Community icons
             @"rep_seconds_after2":      @"1482118",     // SPCA Animals icon pack
         };
     });
