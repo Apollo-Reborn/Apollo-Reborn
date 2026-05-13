@@ -9,11 +9,13 @@
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static CGFloat const ApolloInlineAvatarDiameter = 28.0;
+static CGFloat const ApolloCommentInlineAvatarDiameter = 28.0;
+static CGFloat const ApolloFeedInlineAvatarDiameter = 22.0;
 static CGFloat const ApolloProfileHeaderHeight = 206.0;
 static CGFloat const ApolloProfileAvatarDiameter = 96.0;
 static CGFloat const ApolloProfileSnoovatarWidth = 156.0;
 static CGFloat const ApolloProfileSnoovatarHeight = 178.0;
-static NSUInteger const ApolloInlineAvatarMaxActiveInfoRequests = 3;
+static NSUInteger const ApolloInlineAvatarMaxActiveInfoRequests = 6;
 static NSUInteger const ApolloInlineAvatarMaxBindAttempts = 4;
 static NSUInteger const ApolloInlineAvatarLogLimit = 16;
 
@@ -25,6 +27,7 @@ static const void *kApolloAvatarOwnedTextNodeKey = &kApolloAvatarOwnedTextNodeKe
 static const void *kApolloAvatarInfoKey = &kApolloAvatarInfoKey;
 static const void *kApolloAvatarImageKey = &kApolloAvatarImageKey;
 static const void *kApolloAvatarDecoratorImageKey = &kApolloAvatarDecoratorImageKey;
+static const void *kApolloAvatarDiameterKey = &kApolloAvatarDiameterKey;
 static const void *kApolloAvatarApplyingTextKey = &kApolloAvatarApplyingTextKey;
 static const void *kApolloAvatarPendingFetchUsernameKey = &kApolloAvatarPendingFetchUsernameKey;
 static const void *kApolloAvatarPendingLateReapplyUsernameKey = &kApolloAvatarPendingLateReapplyUsernameKey;
@@ -363,16 +366,18 @@ static UIImage *ApolloAvatarImageForInfo(ApolloUserProfileInfo *info, UIImage *s
     }];
 }
 
-static NSAttributedString *ApolloAttributedTextByPrependingAvatar(NSAttributedString *baseText, UIImage *avatarImage, UIImage *decoratorImage, ApolloUserProfileInfo *info) {
+static NSAttributedString *ApolloAttributedTextByPrependingAvatar(NSAttributedString *baseText, UIImage *avatarImage, UIImage *decoratorImage, ApolloUserProfileInfo *info, CGFloat diameter) {
     if (!baseText.length) return baseText;
+
+    CGFloat avatarDiameter = diameter > 0.0 ? diameter : ApolloInlineAvatarDiameter;
 
     UIFont *font = [baseText attribute:NSFontAttributeName atIndex:0 effectiveRange:nil];
     if (![font isKindOfClass:[UIFont class]]) font = [UIFont systemFontOfSize:13.0];
 
     NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
-    attachment.image = ApolloAvatarImageForInfo(info, avatarImage, decoratorImage, ApolloInlineAvatarDiameter);
-    CGFloat yOffset = ((font.capHeight - ApolloInlineAvatarDiameter) / 2.0) - 1.0;
-    attachment.bounds = CGRectMake(0.0, yOffset, ApolloInlineAvatarDiameter, ApolloInlineAvatarDiameter);
+    attachment.image = ApolloAvatarImageForInfo(info, avatarImage, decoratorImage, avatarDiameter);
+    CGFloat yOffset = ((font.capHeight - avatarDiameter) / 2.0) - 1.0;
+    attachment.bounds = CGRectMake(0.0, yOffset, avatarDiameter, avatarDiameter);
 
     NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
     NSDictionary *spaceAttributes = [baseText attributesAtIndex:0 effectiveRange:nil] ?: @{};
@@ -391,6 +396,18 @@ static BOOL ApolloAttributedTextContainsUsername(NSAttributedString *text, NSStr
     return [text.string rangeOfString:username options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
+static CGFloat ApolloInlineAvatarDiameterForObject(id object) {
+    NSNumber *number = objc_getAssociatedObject(object, kApolloAvatarDiameterKey);
+    CGFloat diameter = [number respondsToSelector:@selector(doubleValue)] ? number.doubleValue : 0.0;
+    return diameter > 0.0 ? diameter : ApolloInlineAvatarDiameter;
+}
+
+static void ApolloSetInlineAvatarDiameterForObject(id object, CGFloat diameter) {
+    if (!object) return;
+    CGFloat avatarDiameter = diameter > 0.0 ? diameter : ApolloInlineAvatarDiameter;
+    objc_setAssociatedObject(object, kApolloAvatarDiameterKey, @(avatarDiameter), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void ApolloClearAvatarTextNodeAssociations(id textNode) {
     if (!textNode) return;
     objc_setAssociatedObject(textNode, kApolloAvatarOriginalAttributedTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -400,6 +417,7 @@ static void ApolloClearAvatarTextNodeAssociations(id textNode) {
     objc_setAssociatedObject(textNode, kApolloAvatarInfoKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarDecoratorImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloAvatarDiameterKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarApplyingTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -417,16 +435,17 @@ static void ApolloRestoreAvatarForCell(id cell) {
     if (textNode) ApolloRestoreAvatarTextNode(textNode);
     objc_setAssociatedObject(cell, kApolloAvatarTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, kApolloAvatarUsernameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(cell, kApolloAvatarDiameterKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static NSString *ApolloAvatarTokenForInfo(ApolloUserProfileInfo *info, BOOL hasAvatarImage, BOOL hasDecoratorImage) {
+static NSString *ApolloAvatarTokenForInfo(ApolloUserProfileInfo *info, BOOL hasAvatarImage, BOOL hasDecoratorImage, CGFloat diameter) {
     NSString *urlToken = info.iconURL.absoluteString ?: @"placeholder";
     NSString *shapeToken = (info.hasSnoovatar || ApolloAvatarHasFrame(info)) ? @"polygon" : @"circle";
     NSString *imageToken = hasAvatarImage ? @"loaded" : @"placeholder";
     NSString *frameToken = info.avatarFrameKind ?: @"none";
     NSString *decoratorURLToken = info.decoratorURL.absoluteString ?: @"none";
     NSString *decoratorStateToken = info.decoratorURL ? (hasDecoratorImage ? @"decorator-loaded" : @"decorator-pending") : @"decorator-none";
-    return [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@", urlToken, shapeToken, imageToken, frameToken, decoratorURLToken, decoratorStateToken];
+    return [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|d%.1f", urlToken, shapeToken, imageToken, frameToken, decoratorURLToken, decoratorStateToken, diameter];
 }
 
 static BOOL ApolloSetAvatarImageOnTextNode(id textNode, NSString *username, UIImage *avatarImage, UIImage *decoratorImage, ApolloUserProfileInfo *info, NSString *token) {
@@ -449,6 +468,8 @@ static BOOL ApolloSetAvatarImageOnTextNode(id textNode, NSString *username, UIIm
     if (!ApolloAttributedTextContainsUsername(baseText, username)) return NO;
     if ([appliedToken isEqualToString:token] && ApolloTextLooksAvatarPrepended(current)) return NO;
 
+    CGFloat diameter = ApolloInlineAvatarDiameterForObject(textNode);
+
     objc_setAssociatedObject(textNode, kApolloAvatarOriginalAttributedTextKey, baseText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarAppliedTokenKey, token, OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -456,8 +477,9 @@ static BOOL ApolloSetAvatarImageOnTextNode(id textNode, NSString *username, UIIm
     objc_setAssociatedObject(textNode, kApolloAvatarInfoKey, info, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarImageKey, avatarImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarDecoratorImageKey, decoratorImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
 
-    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(baseText, avatarImage, decoratorImage, info);
+    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(baseText, avatarImage, decoratorImage, info, diameter);
     objc_setAssociatedObject(textNode, kApolloAvatarApplyingTextKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     @try {
         ApolloSetAttributedTextForNode(textNode, updated);
@@ -484,7 +506,9 @@ static id ApolloCurrentAuthorTextNodeForCell(id cell, NSString *username) {
 static BOOL ApolloApplyAvatarRenderToCell(id cell, NSString *username, ApolloUserProfileInfo *info, UIImage *avatarImage, UIImage *decoratorImage) {
     id currentTextNode = ApolloCurrentAuthorTextNodeForCell(cell, username);
     if (!ApolloTextNodeContainsUsername(currentTextNode, username)) return NO;
-    NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil);
+    CGFloat diameter = ApolloInlineAvatarDiameterForObject(cell);
+    ApolloSetInlineAvatarDiameterForObject(currentTextNode, diameter);
+    NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil, diameter);
     return ApolloSetAvatarImageOnTextNode(currentTextNode, username, avatarImage, decoratorImage, info, token);
 }
 
@@ -545,8 +569,9 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
     }
     if (!info || !avatarImage) return NO;
 
-    NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil);
-    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(incomingAttributedText, avatarImage, decoratorImage, info);
+    CGFloat diameter = ApolloInlineAvatarDiameterForObject(textNode);
+    NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil, diameter);
+    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(incomingAttributedText, avatarImage, decoratorImage, info, diameter);
     if (!updated || updated == incomingAttributedText) return NO;
 
     objc_setAssociatedObject(textNode, kApolloAvatarOriginalAttributedTextKey, incomingAttributedText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -556,6 +581,7 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
     objc_setAssociatedObject(textNode, kApolloAvatarInfoKey, info, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarImageKey, avatarImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloAvatarDecoratorImageKey, decoratorImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
 
     if (swapOut) *swapOut = updated;
     if (ApolloInlineAvatarShouldLog(&sApolloInlineAvatarRewriteLogCount)) {
@@ -566,7 +592,7 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
 
 static NSTimeInterval ApolloInlineAvatarBindDelayForAttempt(NSUInteger attempt) {
     switch (attempt) {
-        case 0: return 0.15;
+        case 0: return 0.05;
         case 1: return 0.45;
         case 2: return 1.0;
         default: return 2.0;
@@ -610,12 +636,18 @@ static BOOL ApolloInlineAvatarCellUsernameMatches(id cell, NSString *username) {
 static BOOL ApolloBindInlineAvatarTextNodeForCell(id cell, NSString *username) {
     if (!ApolloInlineAvatarCellUsernameMatches(cell, username)) return NO;
 
+    CGFloat diameter = ApolloInlineAvatarDiameterForObject(cell);
+
     id textNode = objc_getAssociatedObject(cell, kApolloAvatarTextNodeKey);
-    if (ApolloTextNodeContainsUsername(textNode, username) && ApolloNodeTreeContainsObject(cell, textNode, [NSMutableSet set], 0)) return YES;
+    if (ApolloTextNodeContainsUsername(textNode, username) && ApolloNodeTreeContainsObject(cell, textNode, [NSMutableSet set], 0)) {
+        ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
+        return YES;
+    }
 
     textNode = ApolloBestAuthorTextNode(cell, username);
     if (!ApolloTextNodeContainsUsername(textNode, username)) return NO;
     objc_setAssociatedObject(cell, kApolloAvatarTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
     return YES;
 }
 
@@ -783,7 +815,7 @@ static void ApolloScheduleInlineAvatarInfoFetchForCell(id cell, NSString *userna
     ApolloScheduleInlineAvatarInfoFetchAttempt(cell, username, 0);
 }
 
-static void ApolloApplyAvatarToCell(id cell, NSString *username) {
+static void ApolloApplyAvatarToCellWithDiameter(id cell, NSString *username, CGFloat diameter) {
     username = ApolloAvatarNormalizedUsername(username);
     if (!cell || username.length == 0) {
         ApolloRestoreAvatarForCell(cell);
@@ -795,9 +827,13 @@ static void ApolloApplyAvatarToCell(id cell, NSString *username) {
         return;
     }
 
+    ApolloSetInlineAvatarDiameterForObject(cell, diameter);
     objc_setAssociatedObject(cell, kApolloAvatarUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
     id textNode = ApolloBestAuthorTextNode(cell, username);
-    if (textNode) objc_setAssociatedObject(cell, kApolloAvatarTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (textNode) {
+        objc_setAssociatedObject(cell, kApolloAvatarTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
+    }
 
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
@@ -1095,7 +1131,7 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 
 - (void)didLoad {
     %orig;
-    ApolloApplyAvatarToCell(self, ApolloUsernameFromCell(self, @"comment"));
+    ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"comment"), ApolloCommentInlineAvatarDiameter);
 }
 
 %end
@@ -1104,7 +1140,7 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 
 - (void)didLoad {
     %orig;
-    ApolloApplyAvatarToCell(self, ApolloUsernameFromCell(self, @"link"));
+    ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
 }
 
 %end
@@ -1113,7 +1149,7 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 
 - (void)didLoad {
     %orig;
-    ApolloApplyAvatarToCell(self, ApolloUsernameFromCell(self, @"link"));
+    ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
 }
 
 %end

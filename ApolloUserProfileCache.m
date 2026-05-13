@@ -7,6 +7,18 @@ NSString * const ApolloUserProfileUsernameKey = @"username";
 
 static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
 
+static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
+    if (!image || image.images.count > 0 || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = image.scale > 0.0 ? image.scale : [UIScreen mainScreen].scale;
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:image.size format:format];
+    return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [image drawInRect:CGRectMake(0.0, 0.0, image.size.width, image.size.height)];
+    }] ?: image;
+}
+
 @implementation ApolloUserProfileInfo
 
 - (instancetype)initWithUsername:(NSString *)username
@@ -67,7 +79,7 @@ static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
         configuration.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
         configuration.timeoutIntervalForRequest = 15.0;
-        configuration.HTTPMaximumConnectionsPerHost = 4;
+        configuration.HTTPMaximumConnectionsPerHost = 6;
         _session = [NSURLSession sessionWithConfiguration:configuration];
 
         [self loadDiskCache];
@@ -283,6 +295,8 @@ static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0
             self.diskInfo[key] = info;
             [self.infoCache setObject:info forKey:key];
             [self saveDiskCacheLocked];
+            if (info.iconURL) [self requestImageForURL:info.iconURL completion:nil];
+            if (info.decoratorURL) [self requestImageForURL:info.decoratorURL completion:nil];
         }
 
         NSArray<void (^)(ApolloUserProfileInfo *)> *callbacks = [self.infoCompletions[key] copy];
@@ -405,7 +419,9 @@ static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0
         NSURLSessionDataTask *task = [self.session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
             UIImage *image = nil;
             if (!error && data.length > 0) {
-                image = [UIImage imageWithData:data scale:[UIScreen mainScreen].scale];
+                @autoreleasepool {
+                    image = ApolloDecodedAvatarImage([UIImage imageWithData:data scale:[UIScreen mainScreen].scale]);
+                }
             }
             if (!image && error) {
                 ApolloLog(@"[UserAvatars] Failed to load image %@: %@", key, error.localizedDescription);
