@@ -206,6 +206,15 @@ static NSRegularExpression *ApolloRedditUploadedMediaURLRegex(void) {
     return regex;
 }
 
+static NSString *ApolloFirstRedditUploadedMediaURLInString(NSString *text) {
+    if (!ApolloStringContainsRedditUploadedMedia(text)) return nil;
+    NSRegularExpression *regex = ApolloRedditUploadedMediaURLRegex();
+    NSTextCheckingResult *match = [regex firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+    return match ? [text substringWithRange:match.range] : nil;
+}
+
+static NSData *ApolloRedditRichTextJSONDataForText(NSString *text);
+
 // MARK: - Request identification
 
 // Matches /api/comment (new comments) and /api/editusertext (edits to existing
@@ -256,9 +265,10 @@ static NSDictionary *ApolloRedditMediaSubmitContextFromRequest(NSURLRequest *req
 
         if ([key isEqualToString:@"sr"] && value.length > 0) context[@"subreddit"] = value;
         else if ([key isEqualToString:@"title"] && value.length > 0) context[@"title"] = value;
-        else if ([key isEqualToString:@"url"] && ApolloStringContainsRedditUploadedMedia(value)) {
-            context[@"stagedURL"] = value;
-            NSString *assetID = ApolloAssetIDForRedditUploadedMediaURL(value);
+        else if (([key isEqualToString:@"url"] || [key isEqualToString:@"text"]) && ApolloStringContainsRedditUploadedMedia(value)) {
+            NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value) ?: value;
+            context[@"stagedURL"] = stagedURL;
+            NSString *assetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL);
             if (assetID.length > 0) context[@"assetID"] = assetID;
         }
     }
@@ -276,9 +286,22 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     if (!ApolloStringContainsRedditUploadedMedia(body)) return nil;
 
     NSArray<NSString *> *pairs = [body componentsSeparatedByString:@"&"];
+    BOOL hasUploadedURLField = NO;
+    BOOL hasUploadedTextField = NO;
+    for (NSString *pair in pairs) {
+        NSRange equals = [pair rangeOfString:@"="];
+        NSString *key = ApolloFormDecodeComponent(equals.location == NSNotFound ? pair : [pair substringToIndex:equals.location]);
+        NSString *value = ApolloFormDecodeComponent(equals.location == NSNotFound ? @"" : [pair substringFromIndex:equals.location + 1]);
+        if ([key isEqualToString:@"url"] && ApolloFirstRedditUploadedMediaURLInString(value).length > 0) hasUploadedURLField = YES;
+        if ([key isEqualToString:@"text"] && ApolloFirstRedditUploadedMediaURLInString(value).length > 0) hasUploadedTextField = YES;
+    }
+    if (!hasUploadedURLField && !hasUploadedTextField) return nil;
+
     NSMutableArray<NSString *> *rewrittenPairs = [NSMutableArray arrayWithCapacity:pairs.count + 2];
     BOOL changed = NO;
-    BOOL wroteKind = NO, wroteAPIType = NO, wroteValidateOnSubmit = NO;
+    BOOL rewriteAsSelfText = hasUploadedTextField && !hasUploadedURLField;
+    BOOL wroteKind = NO, wroteAPIType = NO, wroteValidateOnSubmit = NO, wroteReturnRichTextJSON = NO;
+    NSString *richTextJSONString = nil;
     NSString *assetID = nil;
 
     for (NSString *pair in pairs) {
@@ -286,25 +309,47 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
         NSString *key = ApolloFormDecodeComponent(equals.location == NSNotFound ? pair : [pair substringToIndex:equals.location]);
         NSString *value = ApolloFormDecodeComponent(equals.location == NSNotFound ? @"" : [pair substringFromIndex:equals.location + 1]);
 
-        if ([key isEqualToString:@"url"] && ApolloStringContainsRedditUploadedMedia(value)) {
-            assetID = ApolloAssetIDForRedditUploadedMediaURL(value);
+        if ([key isEqualToString:@"text"] && rewriteAsSelfText) {
+            NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value);
+            assetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL);
+            NSData *richTextJSONData = ApolloRedditRichTextJSONDataForText(value);
+            if (richTextJSONData.length > 0) {
+                richTextJSONString = [[NSString alloc] initWithData:richTextJSONData encoding:NSUTF8StringEncoding];
+                if (richTextJSONString.length > 0) {
+                    changed = YES;
+                    continue;
+                }
+            }
+        } else if ([key isEqualToString:@"url"] && ApolloStringContainsRedditUploadedMedia(value)) {
+            NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value) ?: value;
+            assetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL);
         } else if ([key isEqualToString:@"kind"]) {
             wroteKind = YES;
-            if (![value isEqualToString:@"image"]) { value = @"image"; changed = YES; }
+            NSString *newKind = rewriteAsSelfText ? @"self" : @"image";
+            if (![value isEqualToString:newKind]) { value = newKind; changed = YES; }
         } else if ([key isEqualToString:@"api_type"]) {
             wroteAPIType = YES;
             if (![value isEqualToString:@"json"]) { value = @"json"; changed = YES; }
         } else if ([key isEqualToString:@"validate_on_submit"]) {
             wroteValidateOnSubmit = YES;
             if (![value isEqualToString:@"false"] && ![value isEqualToString:@"False"] && ![value isEqualToString:@"0"]) { value = @"false"; changed = YES; }
+        } else if ([key isEqualToString:@"return_rtjson"]) {
+            wroteReturnRichTextJSON = YES;
+            if (rewriteAsSelfText && ![value isEqualToString:@"true"]) { value = @"true"; changed = YES; }
         }
 
         [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(key), ApolloFormEncodeComponent(value)]];
     }
 
-    if (!wroteKind) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"kind"), ApolloFormEncodeComponent(@"image")]]; changed = YES; }
+    if (!wroteKind) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"kind"), ApolloFormEncodeComponent(rewriteAsSelfText ? @"self" : @"image")]]; changed = YES; }
     if (!wroteValidateOnSubmit) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"validate_on_submit"), ApolloFormEncodeComponent(@"false")]]; changed = YES; }
     if (!wroteAPIType) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"api_type"), ApolloFormEncodeComponent(@"json")]]; changed = YES; }
+    if (richTextJSONString.length > 0) {
+        [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"richtext_json"), ApolloFormEncodeComponent(richTextJSONString)]];
+        if (!wroteReturnRichTextJSON) {
+            [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"return_rtjson"), ApolloFormEncodeComponent(@"true")]];
+        }
+    }
 
     if (!changed) return nil;
 
@@ -312,7 +357,7 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
     [modifiedRequest setHTTPBody:newBody];
     [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
-    ApolloLog(@"[RedditUpload] Rewrote /api/submit to image post (assetID=%@, %lu bytes)", assetID ?: @"(missing)", (unsigned long)newBody.length);
+    ApolloLog(@"[RedditUpload] Rewrote /api/submit to %@ (assetID=%@, %lu bytes)", rewriteAsSelfText ? @"rich text self post" : @"image post", assetID ?: @"(missing)", (unsigned long)newBody.length);
     return modifiedRequest;
 }
 
@@ -324,7 +369,7 @@ static NSDictionary *ApolloRedditRichTextParagraphBlock(NSString *text) {
     return @{ @"e": @"par", @"c": @[ @{ @"e": @"text", @"t": trimmed } ] };
 }
 
-static NSData *ApolloRedditRichTextCommentJSONDataForText(NSString *text) {
+static NSData *ApolloRedditRichTextJSONDataForText(NSString *text) {
     NSRegularExpression *regex = ApolloRedditUploadedMediaURLRegex();
     NSArray<NSTextCheckingResult *> *matches = regex ? [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)] : nil;
     if (matches.count == 0) return nil;
@@ -390,7 +435,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
         NSString *value = ApolloFormDecodeComponent(equals.location == NSNotFound ? @"" : [pair substringFromIndex:equals.location + 1]);
 
         if ([key isEqualToString:@"text"] && ApolloStringContainsRedditUploadedMedia(value)) {
-            NSData *richTextJSONData = ApolloRedditRichTextCommentJSONDataForText(value);
+            NSData *richTextJSONData = ApolloRedditRichTextJSONDataForText(value);
             if (richTextJSONData.length > 0) {
                 richTextJSONString = [[NSString alloc] initWithData:richTextJSONData encoding:NSUTF8StringEncoding];
                 if (richTextJSONString.length > 0) {
