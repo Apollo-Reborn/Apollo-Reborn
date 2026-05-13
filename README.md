@@ -41,6 +41,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Bulk in-place translation**: Translate posts and comments in-place with configurable provider and target language (Settings > Translation)
 - **Tap timestamp for creation date**: Tap a comment or post's relative-time label to see the absolute creation date and time
 - **Tag Filters**: Blur NSFW and/or Spoiler posts (including titles) in feeds, with per-subreddit overrides (Settings > Tag Filters)
+- **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
 
 ## Known Issues
 

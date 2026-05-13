@@ -171,6 +171,49 @@ static Class ApolloASNetworkImageNodeClass(void) {
     dispatch_once(&once, ^{ c = NSClassFromString(@"ASNetworkImageNode"); });
     return c;
 }
+static NSMutableSet<NSString *> *ApolloInlineSuppressionKeys(void) {
+    static NSMutableSet<NSString *> *keys;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ keys = [NSMutableSet set]; });
+    return keys;
+}
+
+static NSString *ApolloDecodedAbsoluteString(NSURL *url) {
+    NSString *abs = [url absoluteString];
+    if (![abs isKindOfClass:[NSString class]] || abs.length == 0) return nil;
+    return [abs stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+}
+
+static NSString *ApolloInlineSuppressionPathKey(NSURL *url) {
+    NSString *host = [[url host] lowercaseString];
+    NSString *path = [url path];
+    if (host.length == 0 || path.length == 0) return nil;
+    return [NSString stringWithFormat:@"path:%@%@", host, path];
+}
+
+static void ApolloRegisterInlineSuppressionURL(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return;
+    NSString *abs = ApolloDecodedAbsoluteString(url);
+    NSString *pathKey = ApolloInlineSuppressionPathKey(url);
+    @synchronized (ApolloInlineSuppressionKeys()) {
+        NSMutableSet<NSString *> *keys = ApolloInlineSuppressionKeys();
+        if (keys.count > 512) [keys removeAllObjects];
+        if (abs.length > 0) [keys addObject:[@"abs:" stringByAppendingString:abs]];
+        if (pathKey.length > 0) [keys addObject:pathKey];
+    }
+}
+
+static BOOL ApolloInlineSuppressionContainsURL(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return NO;
+    NSString *abs = ApolloDecodedAbsoluteString(url);
+    NSString *pathKey = ApolloInlineSuppressionPathKey(url);
+    @synchronized (ApolloInlineSuppressionKeys()) {
+        NSMutableSet<NSString *> *keys = ApolloInlineSuppressionKeys();
+        if (abs.length > 0 && [keys containsObject:[@"abs:" stringByAppendingString:abs]]) return YES;
+        if (pathKey.length > 0 && [keys containsObject:pathKey]) return YES;
+    }
+    return NO;
+}
 
 // MARK: - Image URL classification & normalization
 
@@ -1707,6 +1750,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             NSString *abs = normalized.absoluteString;
             if (!abs.length || [seenAbs containsObject:abs]) continue;
             [seenAbs addObject:abs];
+            ApolloRegisterInlineSuppressionURL(url);
+            ApolloRegisterInlineSuppressionURL(normalized);
             [ranges addObject:[NSValue valueWithRange:fullRange]];
             [urls addObject:normalized];
             [originalURLs addObject:url];
@@ -1868,6 +1913,45 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     return YES;
 }
 
+static id ApolloModelFromNodeIvar(ASDisplayNode *node, const char *ivarName) {
+    if (!node || !ivarName) return nil;
+    Ivar ivar = class_getInstanceVariable([node class], ivarName);
+    if (!ivar) return nil;
+    id model = nil;
+    @try {
+        model = object_getIvar(node, ivar);
+    } @catch (NSException *e) {
+        ApolloLog(@"[InlineImages] ivar read failed node=%@ ivar=%s err=%@",
+                  NSStringFromClass([node class]), ivarName, e.reason ?: e.name);
+    }
+    return model;
+}
+
+static BOOL ApolloModelRepresentsInlineHost(id model, BOOL isComment) {
+    if (!model) return NO;
+    if (isComment) return YES;
+    if ([model respondsToSelector:@selector(isSelfPostWithSelfText)]
+        && ((BOOL (*)(id, SEL))objc_msgSend)(model, @selector(isSelfPostWithSelfText))) {
+        return YES;
+    }
+    return NO;
+}
+
+static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
+    for (ASDisplayNode *n = linkButtonNode; n; n = n.supernode) {
+        id comment = ApolloModelFromNodeIvar(n, "comment");
+        if (ApolloModelRepresentsInlineHost(comment, YES)) {
+            return YES;
+        }
+
+        id link = ApolloModelFromNodeIvar(n, "link");
+        if (ApolloModelRepresentsInlineHost(link, NO)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 // MARK: - %hook _TtC6Apollo12MarkdownNode
 
 %hook _TtC6Apollo12MarkdownNode
@@ -1986,6 +2070,7 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
 
     NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
     if (!urlString) return %orig;
+
     NSURL *url = [NSURL URLWithString:urlString];
     if (!ApolloIsInlineRenderableImageURL(url) && !ApolloIsInlineRenderableVideoURL(url)) return %orig;
 
@@ -1996,28 +2081,16 @@ static BOOL ApolloChildrenIdentityMatches(NSArray *a, NSArray *b) {
     if (ApolloIsImgurAlbumOrGalleryURL(url) && !ApolloCachedImgurResolution(url)) return %orig;
 
     // Only hide if there's a MarkdownNode body that would carry the
-    // inline replacement. Walk supernodes for an RDKLink with selftext,
-    // or an RDKComment (comments always have a body).
-    BOOL haveInlineReplacement = NO;
-    for (ASDisplayNode *n = (ASDisplayNode *)self; n; n = n.supernode) {
-        for (const char *ivarName : (const char *[]){"link", "comment"}) {
-            Ivar ivar = class_getInstanceVariable([n class], ivarName);
-            if (!ivar) continue;
-            id model = nil;
-            @try { model = object_getIvar(n, ivar); } @catch (__unused NSException *e) {}
-            if (!model) continue;
-            if (strcmp(ivarName, "comment") == 0) { haveInlineReplacement = YES; break; }
-            if ([model respondsToSelector:@selector(isSelfPostWithSelfText)]
-                && ((BOOL (*)(id, SEL))objc_msgSend)(model, @selector(isSelfPostWithSelfText))) {
-                haveInlineReplacement = YES; break;
-            }
-        }
-        if (haveInlineReplacement) break;
-    }
+    // inline replacement. LinkButtonNode is sometimes measured while
+    // detached (supernode == nil), so fall back to URLs registered by the
+    // MarkdownNode inline pass.
+    BOOL haveInlineReplacement = ApolloLinkButtonHasInlineHost((ASDisplayNode *)self)
+                              || ApolloInlineSuppressionContainsURL(url);
     if (!haveInlineReplacement) return %orig;
 
     Class layoutSpecCls = NSClassFromString(@"ASLayoutSpec");
     if (!layoutSpecCls) return %orig;
+
     ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
     [[empty style] setValue:[NSValue valueWithCGSize:CGSizeZero] forKey:@"preferredSize"];
     return empty;

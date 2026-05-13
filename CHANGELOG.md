@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Liquid Glass: **Hide Bars on Scroll** now uses the native iOS 26 tab bar minimize behavior (`.onScrollDown`) so the tab bar collapses into the small Liquid Glass pill on scroll-down and re-expands on scroll-up, matching Apple Music/Photos. Nav bar stays visible (true Liquid Glass feel). iOS <26 keeps the existing nav+tab bar mirror behavior.
+- Liquid Glass: keep native tab bar auto-hide active after opening and dismissing images, videos, links, and fullscreen media viewers.
 - New **Hide Next Parent Button** toggle in **Settings > Custom API > General** to hide the floating circular button in the bottom-right of the comments view that scrolls to the next parent comment.
+
+## [v2.9.0] - 2026-05-11
+
+- New **Inline Media Previews** option to render images, GIFs, and videos inline within posts and comments
+    - Configure in **Settings > Custom API > Media > Inline Media Previews** (on by default)
+    - Supports most animated GIFs (including GIFV), Reddit hosted videos, and Imgur images and albums
+    - Thank you @icpryde for the collaboration and adding support for videos, Imgur albums, and thumbnail retrieval
+- Fix Apollo bug where viewing MP4-style GIFs / GIFVs on subsequent loops would randomly freeze
+- Fix rare crash issue caused by comment collapse hooks
+- Liquid Glass: fix tab bar icon and label tinting so it adapts to light/dark mode and to bright/dark content behind the glass material (thanks @icpryde!)
+- Liquid Glass: fix subreddit title being misaligned to the left in the navigation bar
 
 ## [v2.8.0] - 2026-05-08
 
@@ -350,6 +362,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.8.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.2...v2.8.0
 [v2.7.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.1...v2.7.2
 [v2.7.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.0...v2.7.1
