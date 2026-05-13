@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -115,6 +116,74 @@ static NSString *const StreamableRegexPatternWithQueryString = @"^(?:(?:https?:)
 }
 
 %end
+
+// Fix MP4 GIF loop freeze in MediaViewerController fullscreen player
+//
+// Stock Apollo bug: on every loop boundary, the didPlayToEnd handler
+// (sub_10036da80) dispatches two `seekToTime:kCMTimeZero` calls ~1 ms apart
+// from sibling DispatchQueue.main.async blocks. The second seek interrupts
+// the first mid-flight, double-resetting the decode pipeline and causing a
+// ~0.5–1.5s freeze at a random mid-video frame on every loop after the first.
+//
+// Scoping: `-[AVPlayer setActionAtItemEnd:]` has exactly one xref in Apollo
+// (inside createPlayer(withURL:) at sub_100363c90, called with
+// AVPlayerActionAtItemEndNone). We use that single call as a tag for the
+// MediaViewer non-shareable player; shareable v.redd.it, comments header,
+// and feed cell players leave actionAtItemEnd at its default and are not
+// touched. Fix: on tagged players, dedupe seek-to-zero calls within a
+// 250 ms window — first call goes through to %orig, subsequent ones invoke
+// only their completionHandler so caller state machinery still runs.
+static const void *kApolloGifLoopFixKey = &kApolloGifLoopFixKey;
+static const void *kApolloGifLoopLastSeekKey = &kApolloGifLoopLastSeekKey;
+static const void *kApolloGifLoopDedupeLoggedKey = &kApolloGifLoopDedupeLoggedKey;
+static const NSTimeInterval kApolloGifLoopSeekDedupeWindow = 0.25;
+
+%hook AVPlayer
+
+- (void)setActionAtItemEnd:(AVPlayerActionAtItemEnd)action {
+    %orig;
+    if (action == AVPlayerActionAtItemEndNone) {
+        if (objc_getAssociatedObject(self, kApolloGifLoopFixKey) != nil) {
+            return;
+        }
+        objc_setAssociatedObject(self, kApolloGifLoopFixKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[GifLoopFix] Marked AVPlayer %p (actionAtItemEnd=None)", self);
+    }
+}
+
+- (void)seekToTime:(CMTime)time toleranceBefore:(CMTime)toleranceBefore toleranceAfter:(CMTime)toleranceAfter completionHandler:(void (^)(BOOL))completionHandler {
+    BOOL isLoopFixPlayer = (objc_getAssociatedObject(self, kApolloGifLoopFixKey) != nil);
+    BOOL isZeroSeek = CMTIME_IS_VALID(time) && CMTimeCompare(time, kCMTimeZero) == 0;
+
+    if (isLoopFixPlayer && isZeroSeek) {
+        NSTimeInterval now = CACurrentMediaTime();
+        NSNumber *lastSeek = objc_getAssociatedObject(self, kApolloGifLoopLastSeekKey);
+        NSTimeInterval delta = lastSeek ? (now - lastSeek.doubleValue) : INFINITY;
+
+        if (delta < kApolloGifLoopSeekDedupeWindow) {
+            // Sibling seek from same didPlayToEnd handler — skip %orig but
+            // still invoke completionHandler so caller state logic runs.
+            if (objc_getAssociatedObject(self, kApolloGifLoopDedupeLoggedKey) == nil) {
+                objc_setAssociatedObject(self, kApolloGifLoopDedupeLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ApolloLog(@"[GifLoopFix] Deduping sibling seek-to-zero on %p (%.1fms after first); will suppress further per-loop logs",
+                          self, delta * 1000.0);
+            }
+            if (completionHandler) {
+                void (^handler)(BOOL) = [completionHandler copy];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    handler(YES);
+                });
+            }
+            return;
+        }
+
+        objc_setAssociatedObject(self, kApolloGifLoopLastSeekKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    %orig;
+}
+
+%end
+
 
 %hook NSRegularExpression
 

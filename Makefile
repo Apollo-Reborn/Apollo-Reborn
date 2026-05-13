@@ -33,6 +33,8 @@ ApolloImprovedCustomApi_FILES = \
     ApolloVideoSwipeFix.xm \
     ApolloFeedThumbnails.xm \
     ApolloTagFilters.xm \
+    ApolloInlineImages.xm \
+    ApolloHideNextParentButton.xm \
     CustomAPIViewController.m \
     TranslationSettingsViewController.m \
     SavedCategoriesViewController.m \
@@ -41,7 +43,7 @@ ApolloImprovedCustomApi_FILES = \
     UIWindow+Apollo.m \
     fishhook.c \
     $(SSZIPARCHIVE_FILES)
-ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage
+ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO
 ApolloImprovedCustomApi_LIBRARIES = z iconv
 ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -IZipArchive/SSZipArchive -IZipArchive/SSZipArchive/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 

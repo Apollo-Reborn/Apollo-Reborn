@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIQUID_GLASS_ASSETS_CAR="${SCRIPT_DIR}/patch-assets/liquid-glass/ApolloLiquidGlass/Assets.car"
+LIQUID_GLASS_ICON_NAME="ApolloLiquidGlass"
+
 # Cleanup on exit (success or failure)
 cleanup() {
     if [ -d "extract_temp" ]; then
@@ -140,6 +144,21 @@ if [ "${LIQUID_GLASS}" == "true" ]; then
         echo "Removing duplicate @executable_path/Frameworks LC_RPATH entry..."
         install_name_tool -delete_rpath "@executable_path/Frameworks" "${EXECUTABLE_NAME}"
         echo "Duplicate LC_RPATH entry removed"
+    fi
+
+    if [ ! -f "${LIQUID_GLASS_ASSETS_CAR}" ]; then
+        echo "Error: Liquid Glass asset catalog not found at ${LIQUID_GLASS_ASSETS_CAR}"
+        exit 1
+    fi
+
+    echo "Replacing Assets.car with prebuilt Liquid Glass asset catalog..."
+    cp "${LIQUID_GLASS_ASSETS_CAR}" "Assets.car"
+
+    echo "Updating primary app icon name to ${LIQUID_GLASS_ICON_NAME}..."
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName ${LIQUID_GLASS_ICON_NAME}" "Info.plist"
+
+    if /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "Info.plist" &>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Set :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName ${LIQUID_GLASS_ICON_NAME}" "Info.plist"
     fi
 fi
 

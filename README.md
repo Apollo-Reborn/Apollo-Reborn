@@ -41,6 +41,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Bulk in-place translation**: Translate posts and comments in-place with configurable provider and target language (Settings > Translation)
 - **Tap timestamp for creation date**: Tap a comment or post's relative-time label to see the absolute creation date and time
 - **Tag Filters**: Blur NSFW and/or Spoiler posts (including titles) in feeds, with per-subreddit overrides (Settings > Tag Filters)
+- **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
 
 ## Known Issues
 
@@ -89,6 +90,8 @@ You can use `patch.sh` or the GitHub action mentioned below to add URL schemes.
 ## Patching IPA
 
 `patch.sh` and the **Patch IPA** GitHub Action can apply optional patches (Liquid Glass for iOS 26, custom URL schemes) to Apollo IPAs. These do **not** inject the tweak itself.
+
+The Liquid Glass patch now also replaces Apollo's compiled `Assets.car` with a prebuilt catalog that includes the `ApolloLiquidGlass` app icon, and updates the primary app icon name in `Info.plist`.
 
 ```bash
 ./patch.sh <path_to_ipa> [--liquid-glass] [--url-schemes <schemes>] [--remove-code-signature] [-o <output>]

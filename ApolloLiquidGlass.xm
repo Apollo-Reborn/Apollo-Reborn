@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -6,8 +7,11 @@
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
+static char kApolloFloatingTabItemViewSetupKey;
 static char kApolloTabBarApplyingAdaptiveAppearanceKey;
 static char kApolloTabBarHasScrubbedAppearanceKey;
+
+static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
 static BOOL ApolloDictionaryHasForegroundColor(NSDictionary *attributes) {
     return [attributes isKindOfClass:[NSDictionary class]] && attributes[NSForegroundColorAttributeName] != nil;
@@ -148,53 +152,6 @@ static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reas
     objc_setAssociatedObject(tabBar, &kApolloTabBarApplyingAdaptiveAppearanceKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Recursively collects all _UITabButton views from the view hierarchy
-static void CollectTabButtonsRecursive(UIView *root, NSMutableArray<UIView *> *buttons, Class tabButtonClass) {
-    if (!root) return;
-    if ([root isKindOfClass:tabButtonClass]) {
-        [buttons addObject:root];
-    }
-    for (UIView *child in root.subviews) {
-        CollectTabButtonsRecursive(child, buttons, tabButtonClass);
-    }
-}
-
-// Returns all tab buttons sorted by horizontal position (left to right)
-static NSArray<UIView *> *OrderedTabButtonsInTabBar(UITabBar *tabBar) {
-    if (!tabBar) return @[];
-
-    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
-    CollectTabButtonsRecursive(tabBar, buttons, objc_getClass("_UITabButton"));
-
-    return [buttons sortedArrayUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
-        CGFloat ax = [a convertRect:a.bounds toView:tabBar].origin.x;
-        CGFloat bx = [b convertRect:b.bounds toView:tabBar].origin.x;
-        if (ax < bx) return NSOrderedAscending;
-        if (ax > bx) return NSOrderedDescending;
-        return NSOrderedSame;
-    }];
-}
-
-// Actual tab indices are: 1, 3, 5, 7, 9 due to multiple _UITabButton views per tab. This converts them to logical indices: 0, 1, 2, 3, 4
-static NSUInteger LogicalTabIndexForButton(UITabBar *tabBar, NSArray<UIView *> *orderedButtons, UIView *button) {
-    if (!tabBar || !orderedButtons.count || !button) {
-        return NSNotFound;
-    }
-
-    NSUInteger physicalIndex = [orderedButtons indexOfObjectIdenticalTo:button];
-    if (physicalIndex == NSNotFound) {
-        return NSNotFound;
-    }
-
-    NSUInteger itemsCount = tabBar.items.count;
-    if (itemsCount > 0 && orderedButtons.count >= itemsCount && (orderedButtons.count % itemsCount) == 0) {
-        NSUInteger groupSize = orderedButtons.count / itemsCount;
-        return physicalIndex / groupSize;
-    }
-
-    return physicalIndex;
-}
-
 // Walks up the view hierarchy to find the containing UITabBar
 static UITabBar *FindAncestorTabBar(UIView *view) {
     while (view && ![view isKindOfClass:[UITabBar class]]) {
@@ -203,8 +160,99 @@ static UITabBar *FindAncestorTabBar(UIView *view) {
     return (UITabBar *)view;
 }
 
+static id ApolloObjectIvar(id object, const char *name) {
+    if (!object || !name) return nil;
+    Class cls = object_getClass(object);
+    while (cls) {
+        Ivar ivar = class_getInstanceVariable(cls, name);
+        if (ivar) {
+            return object_getIvar(object, ivar);
+        }
+        cls = class_getSuperclass(cls);
+    }
+    return nil;
+}
+
+static id ApolloSendObjectReturningSelector(id target, SEL selector) {
+    if (!target || !selector || ![target respondsToSelector:selector]) return nil;
+    id (*send)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+    return send(target, selector);
+}
+
+static UITabBarItem *ApolloLinkedTabBarItemForObject(id object) {
+    if ([object isKindOfClass:[UITabBarItem class]]) {
+        return (UITabBarItem *)object;
+    }
+
+    id linkedItem = ApolloSendObjectReturningSelector(object, NSSelectorFromString(@"_linkedTabBarItem"));
+    if ([linkedItem isKindOfClass:[UITabBarItem class]]) {
+        return (UITabBarItem *)linkedItem;
+    }
+
+    return nil;
+}
+
+static UITabBarItem *ApolloTabBarItemForTabView(UIView *view) {
+    if (!view) return nil;
+
+    id item = ApolloSendObjectReturningSelector(view, @selector(item));
+    return ApolloLinkedTabBarItemForObject(item);
+}
+
+static UITabBarItem *ApolloTabBarItemForButtonInTabBar(UIView *button, UITabBar *tabBar) {
+    if (!button || !tabBar) return nil;
+
+    SEL tabBarButtonSelector = NSSelectorFromString(@"_tabBarButton");
+    for (UITabBarItem *item in tabBar.items) {
+        id tabBarButton = ApolloSendObjectReturningSelector(item, tabBarButtonSelector);
+        if (tabBarButton == button) {
+            return item;
+        }
+
+        id itemView = ApolloObjectIvar(item, "_view");
+        if (itemView == button) {
+            return item;
+        }
+    }
+
+    return nil;
+}
+
+static UITabBar *ApolloTabBarForTabObject(id tabObject) {
+    id tabBarController = ApolloSendObjectReturningSelector(tabObject, @selector(tabBarController));
+    if ([tabBarController isKindOfClass:[UITabBarController class]]) {
+        return [(UITabBarController *)tabBarController tabBar];
+    }
+    return nil;
+}
+
+static BOOL ApolloIsProfileTabView(UIView *view) {
+    UITabBar *tabBar = FindAncestorTabBar(view);
+    UITabBarItem *item = ApolloTabBarItemForButtonInTabBar(view, tabBar);
+    if (!item) {
+        item = ApolloTabBarItemForTabView(view);
+    }
+
+    if (!tabBar) {
+        id tabObject = ApolloSendObjectReturningSelector(view, @selector(item));
+        tabBar = ApolloTabBarForTabObject(tabObject);
+    }
+
+    if (!tabBar || !item) return NO;
+
+    NSArray<UITabBarItem *> *items = tabBar.items;
+    return items.count > 2 && items[2] == item;
+}
+
 // Opens Apollo's account switcher by invoking ProfileViewController's bar button action
 static void OpenAccountManager(void) {
+    static CFTimeInterval lastOpen = 0;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - lastOpen < 0.75) {
+        return;
+    }
+    lastOpen = now;
+
     __block UIWindow *lastKeyWindow = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if ([scene isKindOfClass:[UIWindowScene class]]) {
@@ -251,6 +299,32 @@ static void OpenAccountManager(void) {
 
     if (profileVC && [profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
         [profileVC performSelector:@selector(accountsBarButtonItemTappedWithSender:) withObject:nil];
+    } else {
+        ApolloLog(@"[LiquidGlassTabBar] Unable to find ProfileViewController for account manager");
+    }
+}
+
+static void ApolloInstallAccountTabLongPress(UIView *view, const void *setupKey) {
+    if (!IsLiquidGlass() || !view.window) return;
+    if (objc_getAssociatedObject(view, setupKey)) return;
+    objc_setAssociatedObject(view, setupKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:view action:@selector(apollo_tabButtonLongPressed:)];
+    longPress.minimumPressDuration = 0.5;
+    longPress.delegate = (id<UIGestureRecognizerDelegate>)view;
+    [view addGestureRecognizer:longPress];
+}
+
+static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureRecognizer *recognizer) {
+    if (recognizer.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+
+    UITabBar *tabBar = FindAncestorTabBar(view);
+    if (ApolloIsProfileTabView(view)) {
+        ApolloCancelLiquidLensGesture(tabBar);
+        OpenAccountManager();
     }
 }
 
@@ -267,6 +341,9 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 
 @interface _UITabButton : UIView
 @property (nonatomic, getter=isHighlighted) BOOL highlighted;
+@end
+
+@interface _UIFloatingTabBarItemView : UIView
 @end
 
 @interface _UIBarBackground : UIView
@@ -354,16 +431,7 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 - (void)didMoveToWindow {
     %orig;
 
-    if (!self.window) return;
-    if (objc_getAssociatedObject(self, &kApolloTabButtonSetupKey)) return;
-    objc_setAssociatedObject(self, &kApolloTabButtonSetupKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    // Restore account tab long-press gesture
-    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
-        initWithTarget:self action:@selector(apollo_tabButtonLongPressed:)];
-    longPress.minimumPressDuration = 0.5;
-    longPress.delegate = (id<UIGestureRecognizerDelegate>)self;
-    [(UIView *)self addGestureRecognizer:longPress];
+    ApolloInstallAccountTabLongPress(self, &kApolloTabButtonSetupKey);
 
     // Toggle 'highlighted' to trigger Liquid Glass tab bar to re-layout labels correctly
     BOOL wasHighlighted = self.highlighted;
@@ -373,18 +441,26 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 
 %new
 - (void)apollo_tabButtonLongPressed:(UILongPressGestureRecognizer *)recognizer {
-    if (recognizer.state != UIGestureRecognizerStateBegan) {
-        return;
-    }
+    ApolloHandleAccountTabLongPress(self, recognizer);
+}
 
-    UITabBar *tabBar = FindAncestorTabBar(self);
-    NSArray<UIView *> *orderedButtons = OrderedTabButtonsInTabBar(tabBar);
-    NSUInteger index = LogicalTabIndexForButton(tabBar, orderedButtons, self);
+%new
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
 
-    if (index == 2) { // Profile tab
-        ApolloCancelLiquidLensGesture(tabBar);
-        OpenAccountManager();
-    }
+%end
+
+%hook _UIFloatingTabBarItemView
+
+- (void)didMoveToWindow {
+    %orig;
+    ApolloInstallAccountTabLongPress(self, &kApolloFloatingTabItemViewSetupKey);
+}
+
+%new
+- (void)apollo_tabButtonLongPressed:(UILongPressGestureRecognizer *)recognizer {
+    ApolloHandleAccountTabLongPress(self, recognizer);
 }
 
 %new
