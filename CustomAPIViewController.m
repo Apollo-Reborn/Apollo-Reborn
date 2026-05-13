@@ -39,7 +39,6 @@ static NSString *const kLiquidGlassPrimaryIconIdentifier = @"jryng";
 static NSString *const kLiquidGlassAlternateIconIdentifierJryngAlt = @"jryng-alt";
 static NSString *const kLiquidGlassAlternateIconIdentifierIgerman00 = @"igerman00";
 static NSString *const kLiquidGlassAlternateIconIdentifierMetalnakls = @"metalnakls";
-static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo__";
 
 #pragma mark - Helpers
 
@@ -195,7 +194,6 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
 
 - (NSArray<NSDictionary<NSString *, NSString *> *> *)liquidGlassIconOptions {
     return @[
-        @{@"id": kLiquidGlassDefaultApolloIdentifier, @"title": @"Default Apollo"},
         @{@"id": kLiquidGlassPrimaryIconIdentifier, @"title": @"jryng"},
         @{@"id": kLiquidGlassAlternateIconIdentifierJryngAlt, @"title": @"jryng-alt"},
         @{@"id": kLiquidGlassAlternateIconIdentifierIgerman00, @"title": @"igerman00"},
@@ -203,9 +201,13 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
     ];
 }
 
+- (BOOL)shouldUseLiquidGlassIcon {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseLiquidGlassIcon];
+}
+
 - (NSString *)storedLiquidGlassIconIdentifier {
     NSString *iconIdentifier = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyLiquidGlassSelectedIcon];
-    return iconIdentifier.length > 0 ? iconIdentifier : kLiquidGlassDefaultApolloIdentifier;
+    return iconIdentifier.length > 0 ? iconIdentifier : kLiquidGlassPrimaryIconIdentifier;
 }
 
 - (void)setStoredLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
@@ -226,23 +228,27 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
 }
 
 - (void)reloadLiquidGlassIconRow {
-    [self.tableView reloadData];
+    NSIndexSet *appearanceSection = [NSIndexSet indexSetWithIndex:SectionAppearance];
+    [self.tableView reloadSections:appearanceSection withRowAnimation:UITableViewRowAnimationAutomatic];
 }
 
-- (void)setLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
+- (void)applyLiquidGlassIconStateEnabled:(BOOL)enabled iconIdentifier:(NSString *)iconIdentifier {
     UIApplication *application = UIApplication.sharedApplication;
     if (![application supportsAlternateIcons]) {
         [self showAlertWithTitle:@"Unavailable" message:@"This Apollo build does not expose alternate app icons."];
         return;
     }
 
-    NSString *requestedIconName = [iconIdentifier isEqualToString:kLiquidGlassDefaultApolloIdentifier] ? nil : iconIdentifier;
-    NSString *currentIconName = application.alternateIconName;
-    BOOL isUnchanged =
-        (requestedIconName == nil && currentIconName == nil) ||
-        [currentIconName isEqualToString:requestedIconName];
+    NSString *effectiveIconIdentifier = iconIdentifier.length > 0 ? iconIdentifier : [self storedLiquidGlassIconIdentifier];
+    NSString *requestedIconName = enabled ? effectiveIconIdentifier : nil;
+    NSString *storedIconIdentifier = [self storedLiquidGlassIconIdentifier];
+    BOOL storedEnabled = [self shouldUseLiquidGlassIcon];
+    BOOL isUnchanged = (storedEnabled == enabled) && (!enabled || [storedIconIdentifier isEqualToString:effectiveIconIdentifier]);
     if (isUnchanged) {
-        [self setStoredLiquidGlassIconIdentifier:iconIdentifier];
+        if (enabled) {
+            [self setStoredLiquidGlassIconIdentifier:effectiveIconIdentifier];
+        }
+        [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:UDKeyUseLiquidGlassIcon];
         [self reloadLiquidGlassIconRow];
         return;
     }
@@ -258,13 +264,24 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
                 return;
             }
 
-            [strongSelf setStoredLiquidGlassIconIdentifier:iconIdentifier];
+            [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:UDKeyUseLiquidGlassIcon];
+            if (enabled) {
+                [strongSelf setStoredLiquidGlassIconIdentifier:effectiveIconIdentifier];
+            }
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 [strongSelf reloadLiquidGlassIconRow];
             });
         });
     }];
+}
+
+- (void)setLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
+    [self applyLiquidGlassIconStateEnabled:YES iconIdentifier:iconIdentifier];
+}
+
+- (void)liquidGlassIconSwitchToggled:(UISwitch *)sender {
+    [self applyLiquidGlassIconStateEnabled:sender.isOn iconIdentifier:[self storedLiquidGlassIconIdentifier]];
 }
 
 - (void)presentLiquidGlassIconSheetFromSourceView:(UIView *)sourceView {
@@ -364,7 +381,7 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
-        case SectionAppearance: return 1;
+        case SectionAppearance: return [self shouldUseLiquidGlassIcon] ? 2 : 1;
         case SectionMedia: return 5;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
@@ -680,7 +697,12 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
 
 - (UITableViewCell *)appearanceCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
     switch (row) {
-        case 0: {
+        case 0:
+            return [self switchCellWithIdentifier:@"Cell_Appearance_UseLiquidGlass"
+                                            label:@"Use Liquid Glass Icon"
+                                               on:[self shouldUseLiquidGlassIcon]
+                                           action:@selector(liquidGlassIconSwitchToggled:)];
+        case 1: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Gen_LiquidGlassIcon"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Gen_LiquidGlassIcon"];
@@ -965,7 +987,7 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
             [self exportLogs];
         }
     } else if (indexPath.section == SectionAppearance) {
-        if (indexPath.row == 0) {
+        if (indexPath.row == 1) {
             UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
             [self presentLiquidGlassIconSheetFromSourceView:cell];
         }
@@ -996,7 +1018,7 @@ static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo_
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 4 || indexPath.row == 5)) return YES;
-    if (indexPath.section == SectionAppearance && indexPath.row == 0) return YES;
+    if (indexPath.section == SectionAppearance && indexPath.row == 1) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1)) return YES;
     if (indexPath.section == SectionCredits) return YES;
