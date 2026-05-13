@@ -13,6 +13,7 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionBackupRestore = 0,
     SectionAPIKeys,
     SectionGeneral,
+    SectionAppearance,
     SectionMedia,
     SectionSubreddits,
     SectionCredits,
@@ -33,6 +34,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagTrendingLimit,
     TagReadPostMaxCount,
 };
+
+static NSString *const kLiquidGlassPrimaryIconIdentifier = @"jryng";
+static NSString *const kLiquidGlassAlternateIconIdentifierJryngAlt = @"jryng-alt";
+static NSString *const kLiquidGlassAlternateIconIdentifierIgerman00 = @"igerman00";
+static NSString *const kLiquidGlassAlternateIconIdentifierMetalnakls = @"metalnakls";
+static NSString *const kLiquidGlassDefaultApolloIdentifier = @"__default_apollo__";
 
 #pragma mark - Helpers
 
@@ -186,6 +193,117 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)liquidGlassIconOptions {
+    return @[
+        @{@"id": kLiquidGlassDefaultApolloIdentifier, @"title": @"Default Apollo"},
+        @{@"id": kLiquidGlassPrimaryIconIdentifier, @"title": @"jryng"},
+        @{@"id": kLiquidGlassAlternateIconIdentifierJryngAlt, @"title": @"jryng-alt"},
+        @{@"id": kLiquidGlassAlternateIconIdentifierIgerman00, @"title": @"igerman00"},
+        @{@"id": kLiquidGlassAlternateIconIdentifierMetalnakls, @"title": @"metalnakls"},
+    ];
+}
+
+- (NSString *)storedLiquidGlassIconIdentifier {
+    NSString *iconIdentifier = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyLiquidGlassSelectedIcon];
+    return iconIdentifier.length > 0 ? iconIdentifier : kLiquidGlassDefaultApolloIdentifier;
+}
+
+- (void)setStoredLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
+    [[NSUserDefaults standardUserDefaults] setObject:iconIdentifier forKey:UDKeyLiquidGlassSelectedIcon];
+}
+
+- (NSString *)displayNameForLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
+    for (NSDictionary<NSString *, NSString *> *option in [self liquidGlassIconOptions]) {
+        if ([option[@"id"] isEqualToString:iconIdentifier]) {
+            return option[@"title"];
+        }
+    }
+    return iconIdentifier;
+}
+
+- (NSString *)currentLiquidGlassIconText {
+    return [self displayNameForLiquidGlassIconIdentifier:[self storedLiquidGlassIconIdentifier]];
+}
+
+- (void)reloadLiquidGlassIconRow {
+    [self.tableView reloadData];
+}
+
+- (void)setLiquidGlassIconIdentifier:(NSString *)iconIdentifier {
+    UIApplication *application = UIApplication.sharedApplication;
+    if (![application supportsAlternateIcons]) {
+        [self showAlertWithTitle:@"Unavailable" message:@"This Apollo build does not expose alternate app icons."];
+        return;
+    }
+
+    NSString *requestedIconName = [iconIdentifier isEqualToString:kLiquidGlassDefaultApolloIdentifier] ? nil : iconIdentifier;
+    NSString *currentIconName = application.alternateIconName;
+    BOOL isUnchanged =
+        (requestedIconName == nil && currentIconName == nil) ||
+        [currentIconName isEqualToString:requestedIconName];
+    if (isUnchanged) {
+        [self setStoredLiquidGlassIconIdentifier:iconIdentifier];
+        [self reloadLiquidGlassIconRow];
+        return;
+    }
+
+    __weak __typeof__(self) weakSelf = self;
+    [application setAlternateIconName:requestedIconName completionHandler:^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong __typeof__(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+
+            if (error) {
+                [strongSelf showAlertWithTitle:@"Couldn't Change Icon" message:error.localizedDescription ?: @"Unknown error."];
+                return;
+            }
+
+            [strongSelf setStoredLiquidGlassIconIdentifier:iconIdentifier];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [strongSelf reloadLiquidGlassIconRow];
+            });
+        });
+    }];
+}
+
+- (void)presentLiquidGlassIconSheetFromSourceView:(UIView *)sourceView {
+    UIApplication *application = UIApplication.sharedApplication;
+    if (![application supportsAlternateIcons]) {
+        [self showAlertWithTitle:@"Unavailable" message:@"This Apollo build does not expose alternate app icons."];
+        return;
+    }
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Liquid Glass App Icon"
+                                                                   message:@"Choose which Liquid Glass icon Apollo should use."
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSString *currentIconIdentifier = [self storedLiquidGlassIconIdentifier];
+    for (NSDictionary<NSString *, NSString *> *option in [self liquidGlassIconOptions]) {
+        NSString *iconIdentifier = option[@"id"];
+        NSString *title = option[@"title"];
+        if ([iconIdentifier isEqualToString:currentIconIdentifier]) {
+            title = [title stringByAppendingString:@" (Current)"];
+        }
+
+        [sheet addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [self setLiquidGlassIconIdentifier:iconIdentifier];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 - (void)setImageUploadProvider:(NSInteger)provider {
     sImageUploadProvider = provider;
     [[NSUserDefaults standardUserDefaults] setInteger:sImageUploadProvider forKey:UDKeyImageUploadProvider];
@@ -230,6 +348,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.tableView reloadData];
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -241,6 +364,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
+        case SectionAppearance: return 1;
         case SectionMedia: return 5;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
@@ -254,6 +378,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return @"Backup / Restore";
         case SectionAPIKeys: return @"API Keys";
         case SectionGeneral: return @"General";
+        case SectionAppearance: return @"Appearance";
         case SectionMedia: return @"Media";
         case SectionSubreddits: return @"Subreddits";
         case SectionAbout: return @"About";
@@ -267,6 +392,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return [self backupRestoreCellForRow:indexPath.row tableView:tableView];
         case SectionAPIKeys: return [self apiKeyCellForRow:indexPath.row tableView:tableView];
         case SectionGeneral: return [self generalCellForRow:indexPath.row tableView:tableView];
+        case SectionAppearance: return [self appearanceCellForRow:indexPath.row tableView:tableView];
         case SectionMedia: return [self mediaCellForRow:indexPath.row tableView:tableView];
         case SectionSubreddits: return [self subredditCellForRow:indexPath.row tableView:tableView];
         case SectionAbout: return [self aboutCellForRow:indexPath.row tableView:tableView];
@@ -552,6 +678,24 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+- (UITableViewCell *)appearanceCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
+    switch (row) {
+        case 0: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Gen_LiquidGlassIcon"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Gen_LiquidGlassIcon"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Liquid Glass App Icon";
+            cell.detailTextLabel.text = [self currentLiquidGlassIconText];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
+        default: return [[UITableViewCell alloc] init];
+    }
+}
+
 - (UITableViewCell *)mediaCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
     switch (row) {
         case 0: {
@@ -820,6 +964,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         } else if (indexPath.row == 1) {
             [self exportLogs];
         }
+    } else if (indexPath.section == SectionAppearance) {
+        if (indexPath.row == 0) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            [self presentLiquidGlassIconSheetFromSourceView:cell];
+        }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
         if (indexPath.row == 0) {
@@ -847,6 +996,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 4 || indexPath.row == 5)) return YES;
+    if (indexPath.section == SectionAppearance && indexPath.row == 0) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1)) return YES;
     if (indexPath.section == SectionCredits) return YES;

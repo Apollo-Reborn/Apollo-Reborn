@@ -3,7 +3,64 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIQUID_GLASS_ASSETS_CAR="${SCRIPT_DIR}/patch-assets/liquid-glass/ApolloLiquidGlass/Assets.car"
-LIQUID_GLASS_ICON_NAME="ApolloLiquidGlass"
+LIQUID_GLASS_ICON_NAME="AppIcon"
+LIQUID_GLASS_IPAD_ICON_FILES=("AppIcon60x60" "AppIcon76x76")
+LIQUID_GLASS_IPHONE_ICON_FILES=("AppIcon60x60")
+LIQUID_GLASS_ALTERNATE_ICONS=("jryng" "jryng-alt" "igerman00" "metalnakls")
+
+plist_set_string() {
+    local path="$1"
+    local value="$2"
+
+    if /usr/libexec/PlistBuddy -c "Print :${path}" "Info.plist" &>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Set :${path} ${value}" "Info.plist"
+    else
+        /usr/libexec/PlistBuddy -c "Add :${path} string ${value}" "Info.plist"
+    fi
+}
+
+plist_ensure_dict() {
+    local path="$1"
+
+    if ! /usr/libexec/PlistBuddy -c "Print :${path}" "Info.plist" &>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Add :${path} dict" "Info.plist"
+    fi
+}
+
+plist_replace_string_array() {
+    local path="$1"
+    shift
+
+    if /usr/libexec/PlistBuddy -c "Print :${path}" "Info.plist" &>/dev/null; then
+        /usr/libexec/PlistBuddy -c "Delete :${path}" "Info.plist"
+    fi
+    /usr/libexec/PlistBuddy -c "Add :${path} array" "Info.plist"
+
+    for value in "$@"; do
+        /usr/libexec/PlistBuddy -c "Add :${path}: string ${value}" "Info.plist"
+    done
+}
+
+ensure_liquid_glass_icon_metadata() {
+    plist_ensure_dict "CFBundleIcons"
+    plist_ensure_dict "CFBundleIcons:CFBundlePrimaryIcon"
+    plist_ensure_dict "CFBundleIcons:CFBundleAlternateIcons"
+    plist_ensure_dict "CFBundleIcons~ipad"
+    plist_ensure_dict "CFBundleIcons~ipad:CFBundlePrimaryIcon"
+    plist_ensure_dict "CFBundleIcons~ipad:CFBundleAlternateIcons"
+
+    plist_set_string "CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName" "${LIQUID_GLASS_ICON_NAME}"
+    plist_set_string "CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "${LIQUID_GLASS_ICON_NAME}"
+    plist_replace_string_array "CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles" "${LIQUID_GLASS_IPHONE_ICON_FILES[@]}"
+    plist_replace_string_array "CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconFiles" "${LIQUID_GLASS_IPAD_ICON_FILES[@]}"
+
+    for icon_name in "${LIQUID_GLASS_ALTERNATE_ICONS[@]}"; do
+        plist_ensure_dict "CFBundleIcons:CFBundleAlternateIcons:${icon_name}"
+        plist_ensure_dict "CFBundleIcons~ipad:CFBundleAlternateIcons:${icon_name}"
+        plist_set_string "CFBundleIcons:CFBundleAlternateIcons:${icon_name}:CFBundleIconName" "${icon_name}"
+        plist_set_string "CFBundleIcons~ipad:CFBundleAlternateIcons:${icon_name}:CFBundleIconName" "${icon_name}"
+    done
+}
 
 # Cleanup on exit (success or failure)
 cleanup() {
@@ -24,6 +81,7 @@ OUTPUT_IPA="Apollo-Patched.ipa"
 REMOVE_CODE_SIGNATURE="false"
 LIQUID_GLASS="false"
 URL_SCHEMES=""
+OUTPUT_IPA_PATH=""
 
 print_usage() {
     echo "Usage: $0 <path_to_ipa> [options]"
@@ -93,6 +151,12 @@ echo "Remove code signature: ${REMOVE_CODE_SIGNATURE}"
 echo "Liquid Glass patch: ${LIQUID_GLASS}"
 echo "URL schemes: ${URL_SCHEMES:-none}"
 
+if [[ "${OUTPUT_IPA}" = /* ]]; then
+    OUTPUT_IPA_PATH="${OUTPUT_IPA}"
+else
+    OUTPUT_IPA_PATH="../${OUTPUT_IPA}"
+fi
+
 # --- 1. Extract IPA ---
 echo "Extracting ${INPUT_IPA}..."
 rm -rf extract_temp
@@ -154,12 +218,8 @@ if [ "${LIQUID_GLASS}" == "true" ]; then
     echo "Replacing Assets.car with prebuilt Liquid Glass asset catalog..."
     cp "${LIQUID_GLASS_ASSETS_CAR}" "Assets.car"
 
-    echo "Updating primary app icon name to ${LIQUID_GLASS_ICON_NAME}..."
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName ${LIQUID_GLASS_ICON_NAME}" "Info.plist"
-
-    if /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "Info.plist" &>/dev/null; then
-        /usr/libexec/PlistBuddy -c "Set :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName ${LIQUID_GLASS_ICON_NAME}" "Info.plist"
-    fi
+    echo "Updating app icon metadata for Liquid Glass multi-icon catalog..."
+    ensure_liquid_glass_icon_metadata
 fi
 
 # --- 2b. URL Schemes Patch ---
@@ -237,14 +297,14 @@ cd ../.. # Back to extract_temp directory
 
 # --- 3. Repackage IPA ---
 echo "Repackaging modified IPA..."
-zip -qr "../${OUTPUT_IPA}" Payload/
+zip -qr "${OUTPUT_IPA_PATH}" Payload/
 cd .. # Back to original directory
 
 # Note: Cleanup handled by trap on EXIT
 
 # --- 5. Final Verification ---
-file_size=$(wc -c < "${OUTPUT_IPA}")
-echo "Patched IPA created: ${OUTPUT_IPA} (Size: ${file_size} bytes)"
+file_size=$(wc -c < "${OUTPUT_IPA_PATH}")
+echo "Patched IPA created: ${OUTPUT_IPA_PATH} (Size: ${file_size} bytes)"
 
 # Output the name for the workflow
-echo "${OUTPUT_IPA}"
+echo "${OUTPUT_IPA_PATH}"
