@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Remove duplicate **Hide Next Parent Button** setting; Apollo already provides this as **Show Jump Button**.
+
 ## [v2.10.0] - 2026-05-12
 
 - New **Hide Next Parent Button** toggle in **Settings > Custom API > General** to hide the floating button in the bottom-right of comments views (thanks @icpryde!)
