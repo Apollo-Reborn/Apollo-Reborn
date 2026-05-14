@@ -12,3 +12,7 @@ data/
 .claude/
 Apollo
 .cache
+
+# Build-generated Liquid Glass preview header
+/LiquidGlassIconPreviews.gen.h
+

@@ -154,7 +154,7 @@ echo "URL schemes: ${URL_SCHEMES:-none}"
 if [[ "${OUTPUT_IPA}" = /* ]]; then
     OUTPUT_IPA_PATH="${OUTPUT_IPA}"
 else
-    OUTPUT_IPA_PATH="../${OUTPUT_IPA}"
+    OUTPUT_IPA_PATH="$(pwd)/${OUTPUT_IPA}"
 fi
 
 # --- 1. Extract IPA ---
