@@ -26,6 +26,7 @@ ApolloImprovedCustomApi_FILES = \
     ApolloMedia.xm \
     ApolloCommentsCollapse.xm \
     ApolloLiquidGlass.xm \
+    ApolloLiquidGlassIconPicker.xm \
     ApolloAutoHideTabBar.xm \
     ApolloSettings.xm \
     ApolloRecentlyRead.xm \
@@ -54,12 +55,22 @@ SUBPROJECTS += Tweaks/FLEXing/libflex
 CONTROL_FILE = $(THEOS_PROJECT_DIR)/control
 
 # Generate Version.h
-before-all:: generate_version_h
+before-all:: generate_version_h generate_lg_previews
 
 generate_version_h:
 	@echo "Generating Version.h from control file"
 	@version=$$(grep '^Version:' $(CONTROL_FILE) | cut -d' ' -f2); \
 	echo "#define TWEAK_VERSION \"v$${version}\"" > $(THEOS_PROJECT_DIR)/Version.h
+
+LG_PREVIEW_DIR = $(THEOS_PROJECT_DIR)/Resources/LiquidGlassIconPreviews
+LG_PREVIEW_HEADER = $(THEOS_PROJECT_DIR)/LiquidGlassIconPreviews.gen.h
+LG_PREVIEW_PNGS = $(wildcard $(LG_PREVIEW_DIR)/*.png)
+
+generate_lg_previews: $(LG_PREVIEW_HEADER)
+
+$(LG_PREVIEW_HEADER): $(LG_PREVIEW_DIR)/generate_header.py $(LG_PREVIEW_PNGS)
+	@echo "Generating $(notdir $(LG_PREVIEW_HEADER)) from $(words $(LG_PREVIEW_PNGS)) PNGs"
+	@python3 $(LG_PREVIEW_DIR)/generate_header.py $(LG_PREVIEW_HEADER)
 
 include $(THEOS_MAKE_PATH)/aggregate.mk
 include $(THEOS_MAKE_PATH)/tweak.mk

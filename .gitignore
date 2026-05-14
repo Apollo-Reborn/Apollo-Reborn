@@ -1,7 +1,9 @@
 .theos
 *.ipa
 *.zip
-Resources/
+Resources/*
+!Resources/LiquidGlassIconPreviews/
+Resources/LiquidGlassIconPreviews/.originals/
 packages/
 Version.h
 Headers/
