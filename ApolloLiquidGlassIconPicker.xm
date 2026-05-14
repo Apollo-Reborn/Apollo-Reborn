@@ -38,16 +38,42 @@ static NSString *const kLGPrimaryIconID = @"jryng";
 
 static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
     if (!iconID || !variant) return nil;
+
+    // Cache decoded UIImages forever (16 entries, small) so we only ever pay
+    // the base64-decode + PNG-decode cost on the first display.
+    static NSCache<NSString *, UIImage *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSCache new];
+        cache.name = @"ca.jeffrey.apollo.lg-icon-previews";
+    });
+    NSString *cacheKey = [NSString stringWithFormat:@"%@/%@", iconID, variant];
+    UIImage *cached = [cache objectForKey:cacheKey];
+    if (cached) return cached;
+
     const char *cIcon = iconID.UTF8String;
     const char *cVariant = variant.UTF8String;
     for (size_t i = 0; i < kLGPreviewEntryCount; i++) {
         const LGPreviewEntry *entry = &kLGPreviewEntries[i];
-        if (strcmp(entry->iconID, cIcon) == 0 && strcmp(entry->variant, cVariant) == 0) {
-            NSData *data = [NSData dataWithBytesNoCopy:(void *)entry->bytes
-                                                length:entry->length
-                                          freeWhenDone:NO];
-            return [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+        if (strcmp(entry->iconID, cIcon) != 0 || strcmp(entry->variant, cVariant) != 0) continue;
+
+        NSString *b64 = [[NSString alloc] initWithBytesNoCopy:(void *)entry->base64
+                                                       length:strlen(entry->base64)
+                                                     encoding:NSASCIIStringEncoding
+                                                 freeWhenDone:NO];
+        if (!b64) {
+            ApolloLog(@"[LGIconPicker] failed to wrap base64 cstring for %@/%@", iconID, variant);
+            return nil;
         }
+        NSData *data = [[NSData alloc] initWithBase64EncodedString:b64
+                                                            options:0];
+        if (!data) {
+            ApolloLog(@"[LGIconPicker] base64 decode failed for %@/%@", iconID, variant);
+            return nil;
+        }
+        UIImage *img = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+        if (img) [cache setObject:img forKey:cacheKey];
+        return img;
     }
     return nil;
 }
