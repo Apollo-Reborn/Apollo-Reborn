@@ -1118,6 +1118,46 @@ static id ApolloRedditSuccessfulSubmitResponseJSON(NSData *data) {
     return json;
 }
 
+static NSDictionary *ApolloRedditSubmitResponseErrorSummary(NSData *data) {
+    if (data.length == 0) return nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    NSDictionary *root = [json isKindOfClass:[NSDictionary class]] ? json : nil;
+    NSDictionary *jsonDict = [root[@"json"] isKindOfClass:[NSDictionary class]] ? root[@"json"] : nil;
+    NSArray *errors = [jsonDict[@"errors"] isKindOfClass:[NSArray class]] ? jsonDict[@"errors"] : nil;
+    if (errors.count == 0) return nil;
+
+    NSString *code = nil, *field = nil, *message = nil;
+    id first = errors.firstObject;
+    if ([first isKindOfClass:[NSArray class]]) {
+        NSArray *parts = (NSArray *)first;
+        if (parts.count > 0 && [parts[0] isKindOfClass:[NSString class]]) code = parts[0];
+        if (parts.count > 1 && [parts[1] isKindOfClass:[NSString class]]) message = parts[1];
+        if (parts.count > 2 && [parts[2] isKindOfClass:[NSString class]]) field = parts[2];
+    } else if ([first isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)first;
+        code = [dict[@"error"] isKindOfClass:[NSString class]] ? dict[@"error"] : nil;
+        if (code.length == 0) code = [dict[@"code"] isKindOfClass:[NSString class]] ? dict[@"code"] : nil;
+        message = [dict[@"message"] isKindOfClass:[NSString class]] ? dict[@"message"] : nil;
+        field = [dict[@"field"] isKindOfClass:[NSString class]] ? dict[@"field"] : nil;
+    } else if ([first isKindOfClass:[NSString class]]) {
+        message = first;
+    }
+
+    NSString *lowerCode = code.lowercaseString ?: @"";
+    NSString *lowerMessage = message.lowercaseString ?: @"";
+    BOOL rateLimit = [lowerCode containsString:@"ratelimit"] || [lowerMessage containsString:@"ratelimit"] ||
+        [lowerMessage containsString:@"rate limit"] || [lowerMessage containsString:@"try again"] ||
+        [lowerMessage containsString:@"doing that too much"] || [lowerMessage containsString:@"wait"];
+
+    NSMutableDictionary *summary = [NSMutableDictionary dictionary];
+    summary[@"count"] = @(errors.count);
+    summary[@"code"] = code.length > 0 ? code : @"(missing)";
+    summary[@"field"] = field.length > 0 ? field : @"(missing)";
+    summary[@"messageLength"] = @(message.length);
+    summary[@"rateLimit"] = @(rateLimit);
+    return summary;
+}
+
 static NSString *ApolloRedditSubmitResponseDirectURL(NSData *data) {
     id json = ApolloRedditSuccessfulSubmitResponseJSON(data);
     NSDictionary *root = [json isKindOfClass:[NSDictionary class]] ? json : nil;
@@ -1196,6 +1236,11 @@ void ApolloRedditTransformSubmitResponseAsync(NSData *originalData, NSURLRequest
         ApolloLog(@"[RedditUpload] Submit response transform skipped path=%@ bytes=%lu reason=missing-context", requestPath, (unsigned long)originalData.length);
         completion(originalData);
         return;
+    }
+
+    NSDictionary *errorSummary = ApolloRedditSubmitResponseErrorSummary(originalData);
+    if (errorSummary) {
+        ApolloLog(@"[RedditUpload] Submit response error path=%@ bytes=%lu count=%@ code=%@ field=%@ rateLimit=%@ messageLen=%@", requestPath, (unsigned long)originalData.length, errorSummary[@"count"], errorSummary[@"code"], errorSummary[@"field"], [errorSummary[@"rateLimit"] boolValue] ? @"yes" : @"no", errorSummary[@"messageLength"]);
     }
 
     NSString *directURL = ApolloRedditSubmitResponseDirectURL(originalData);
