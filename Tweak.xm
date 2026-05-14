@@ -349,7 +349,9 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
     NSURLRequest *redditMediaSubmitRequest = ApolloRedditMaybeRewriteSubmitRequest(request);
     if (redditMediaSubmitRequest) {
         ApolloRedditInstallResponseTransformerForDelegate(self.delegate);
-        return %orig(redditMediaSubmitRequest);
+        NSURLSessionDataTask *task = %orig(redditMediaSubmitRequest);
+        ApolloRedditAssociateSubmitRequestWithTask(task, redditMediaSubmitRequest);
+        return task;
     }
 
     NSURLRequest *redditMediaCommentRequest = ApolloRedditMaybeRewriteCommentRequest(request);

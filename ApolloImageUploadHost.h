@@ -20,6 +20,7 @@ NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *requ
 // Task identification (matches against original/current request).
 BOOL ApolloRedditIsSubmitTask(NSURLSessionTask *task);
 BOOL ApolloRedditIsCommentTask(NSURLSessionTask *task);
+void ApolloRedditAssociateSubmitRequestWithTask(NSURLSessionTask *task, NSURLRequest *request);
 
 // Async response transformation.
 // - For /api/submit: resolves the real Reddit linkID (websocket race vs listing fallback)
