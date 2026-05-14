@@ -6,6 +6,7 @@ NSString * const ApolloUserProfileInfoUpdatedNotification = @"ApolloUserProfileI
 NSString * const ApolloUserProfileUsernameKey = @"username";
 
 static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
+static NSUInteger const ApolloUserProfileDiskCacheMaxEntries = 2000;
 
 static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     if (!image || image.images.count > 0 || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
@@ -181,6 +182,25 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     return info;
 }
 
+- (void)pruneDiskInfoLocked {
+    NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+    for (NSString *key in self.diskInfo) {
+        if (![self isFreshInfo:self.diskInfo[key]]) [staleKeys addObject:key];
+    }
+    for (NSString *key in staleKeys) [self.diskInfo removeObjectForKey:key];
+
+    if (self.diskInfo.count <= ApolloUserProfileDiskCacheMaxEntries) return;
+
+    NSArray<NSString *> *sorted = [self.diskInfo.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSDate *da = self.diskInfo[a].fetchedAt ?: [NSDate distantPast];
+        NSDate *db = self.diskInfo[b].fetchedAt ?: [NSDate distantPast];
+        return [db compare:da];
+    }];
+    for (NSUInteger i = ApolloUserProfileDiskCacheMaxEntries; i < sorted.count; i++) {
+        [self.diskInfo removeObjectForKey:sorted[i]];
+    }
+}
+
 - (void)loadDiskCache {
     NSData *data = [NSData dataWithContentsOfFile:[self cachePath]];
     if (!data.length) return;
@@ -195,16 +215,21 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         ApolloUserProfileInfo *info = [self infoFromDictionary:root[key] fallbackUsername:key];
         if (!info) continue;
         self.diskInfo[key] = info;
-        [self.infoCache setObject:info forKey:key];
+    }
+
+    [self pruneDiskInfoLocked];
+
+    for (NSString *key in self.diskInfo) {
+        [self.infoCache setObject:self.diskInfo[key] forKey:key];
     }
 }
 
 - (void)saveDiskCacheLocked {
+    [self pruneDiskInfoLocked];
+
     NSMutableDictionary *root = [NSMutableDictionary dictionary];
     for (NSString *key in self.diskInfo) {
-        ApolloUserProfileInfo *info = self.diskInfo[key];
-        if (![self isFreshInfo:info]) continue;
-        root[key] = [self dictionaryForInfo:info];
+        root[key] = [self dictionaryForInfo:self.diskInfo[key]];
     }
 
     NSData *data = [NSJSONSerialization dataWithJSONObject:root options:0 error:nil];

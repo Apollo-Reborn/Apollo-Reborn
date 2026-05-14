@@ -10,7 +10,7 @@
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static CGFloat const ApolloInlineAvatarDiameter = 28.0;
 static CGFloat const ApolloCommentInlineAvatarDiameter = 28.0;
-static CGFloat const ApolloFeedInlineAvatarDiameter = 22.0;
+static CGFloat const ApolloFeedInlineAvatarDiameter = 24.0;
 static CGFloat const ApolloProfileHeaderHeight = 206.0;
 static CGFloat const ApolloProfileAvatarDiameter = 96.0;
 static CGFloat const ApolloProfileSnoovatarWidth = 156.0;
@@ -29,6 +29,7 @@ static const void *kApolloAvatarImageKey = &kApolloAvatarImageKey;
 static const void *kApolloAvatarDecoratorImageKey = &kApolloAvatarDecoratorImageKey;
 static const void *kApolloAvatarDiameterKey = &kApolloAvatarDiameterKey;
 static const void *kApolloAvatarApplyingTextKey = &kApolloAvatarApplyingTextKey;
+static NSString *const kApolloAvatarAttachmentMarkerAttributeName = @"ApolloAvatarAttachment";
 static const void *kApolloAvatarPendingFetchUsernameKey = &kApolloAvatarPendingFetchUsernameKey;
 static const void *kApolloAvatarPendingLateReapplyUsernameKey = &kApolloAvatarPendingLateReapplyUsernameKey;
 static const void *kApolloProfileHeaderViewKey = &kApolloProfileHeaderViewKey;
@@ -366,28 +367,73 @@ static UIImage *ApolloAvatarImageForInfo(ApolloUserProfileInfo *info, UIImage *s
     }];
 }
 
-static NSAttributedString *ApolloAttributedTextByPrependingAvatar(NSAttributedString *baseText, UIImage *avatarImage, UIImage *decoratorImage, ApolloUserProfileInfo *info, CGFloat diameter) {
+static NSRange ApolloUsernameRangeInString(NSString *string, NSString *username) {
+    NSRange notFound = NSMakeRange(NSNotFound, 0);
+    NSString *normalized = ApolloAvatarNormalizedUsername(username);
+    if (string.length == 0 || normalized.length == 0) return notFound;
+
+    NSString *prefixed = [@"u/" stringByAppendingString:normalized];
+    NSRange withPrefix = [string rangeOfString:prefixed options:NSCaseInsensitiveSearch];
+    if (withPrefix.location != NSNotFound) {
+        return NSMakeRange(withPrefix.location + 2, withPrefix.length - 2);
+    }
+    NSRange direct = [string rangeOfString:normalized options:NSCaseInsensitiveSearch];
+    return direct;
+}
+
+static NSAttributedString *ApolloAttributedTextByPrependingAvatar(NSAttributedString *baseText, NSString *username, UIImage *avatarImage, UIImage *decoratorImage, ApolloUserProfileInfo *info, CGFloat diameter) {
     if (!baseText.length) return baseText;
 
-    CGFloat avatarDiameter = diameter > 0.0 ? diameter : ApolloInlineAvatarDiameter;
+    CGFloat preferredDiameter = diameter > 0.0 ? diameter : ApolloInlineAvatarDiameter;
 
-    UIFont *font = [baseText attribute:NSFontAttributeName atIndex:0 effectiveRange:nil];
+    NSRange usernameRange = ApolloUsernameRangeInString(baseText.string, username);
+    NSUInteger insertionPoint = (usernameRange.location != NSNotFound) ? usernameRange.location : 0;
+
+    NSUInteger attrIndex = MIN(insertionPoint, baseText.length - 1);
+    UIFont *font = [baseText attribute:NSFontAttributeName atIndex:attrIndex effectiveRange:nil];
     if (![font isKindOfClass:[UIFont class]]) font = [UIFont systemFontOfSize:13.0];
+
+    // Scale the avatar with the surrounding font so it doesn't tower over small bylines.
+    // Inline comment cells (preferred 28) get a slightly larger profile than feed/header
+    // bylines, which are denser and look better with a smaller avatar near the cap height.
+    CGFloat capHeight = font.capHeight > 0.0 ? font.capHeight : (font.pointSize * 0.7);
+    CGFloat lineHeight = font.lineHeight > 0.0 ? font.lineHeight : (font.pointSize * 1.2);
+    BOOL useLargerScaling = preferredDiameter >= 26.0;
+    CGFloat capMultiplier = useLargerScaling ? 2.75 : 2.25;
+    CGFloat lineHeightMultiplier = useLargerScaling ? 1.7 : 1.4;
+    CGFloat minDiameter = useLargerScaling ? 24.0 : 20.0;
+    CGFloat fontScaledDiameter = floor(capHeight * capMultiplier);
+    CGFloat lineHeightCap = floor(lineHeight * lineHeightMultiplier);
+    CGFloat avatarDiameter = MIN(preferredDiameter, MIN(lineHeightCap, MAX(minDiameter, fontScaledDiameter)));
 
     NSTextAttachment *attachment = [[NSTextAttachment alloc] init];
     attachment.image = ApolloAvatarImageForInfo(info, avatarImage, decoratorImage, avatarDiameter);
-    CGFloat yOffset = ((font.capHeight - avatarDiameter) / 2.0) - 1.0;
+    // Center the avatar on the cap-height midline of the surrounding text.
+    CGFloat yOffset = (capHeight - avatarDiameter) / 2.0;
     attachment.bounds = CGRectMake(0.0, yOffset, avatarDiameter, avatarDiameter);
 
-    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
-    NSDictionary *spaceAttributes = [baseText attributesAtIndex:0 effectiveRange:nil] ?: @{};
-    [result appendAttributedString:[[NSAttributedString alloc] initWithString:@" " attributes:spaceAttributes]];
-    [result appendAttributedString:baseText];
+    NSDictionary *baseAttributes = [baseText attributesAtIndex:attrIndex effectiveRange:nil] ?: @{};
+
+    NSMutableAttributedString *attachmentString = [[NSMutableAttributedString alloc] initWithAttributedString:[NSAttributedString attributedStringWithAttachment:attachment]];
+    [attachmentString addAttribute:kApolloAvatarAttachmentMarkerAttributeName value:@YES range:NSMakeRange(0, attachmentString.length)];
+    NSAttributedString *spacer = [[NSAttributedString alloc] initWithString:@" " attributes:baseAttributes];
+
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithAttributedString:baseText];
+    [result insertAttributedString:spacer atIndex:insertionPoint];
+    [result insertAttributedString:attachmentString atIndex:insertionPoint];
     return result;
 }
 
 static BOOL ApolloTextLooksAvatarPrepended(NSAttributedString *text) {
-    return text.string.length > 0 && [text.string characterAtIndex:0] == NSAttachmentCharacter;
+    if (text.length == 0) return NO;
+    __block BOOL found = NO;
+    [text enumerateAttribute:kApolloAvatarAttachmentMarkerAttributeName
+                     inRange:NSMakeRange(0, text.length)
+                     options:0
+                  usingBlock:^(id value, __unused NSRange range, BOOL *stop) {
+        if (value) { found = YES; *stop = YES; }
+    }];
+    return found;
 }
 
 static BOOL ApolloAttributedTextContainsUsername(NSAttributedString *text, NSString *username) {
@@ -479,7 +525,7 @@ static BOOL ApolloSetAvatarImageOnTextNode(id textNode, NSString *username, UIIm
     objc_setAssociatedObject(textNode, kApolloAvatarDecoratorImageKey, decoratorImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
 
-    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(baseText, avatarImage, decoratorImage, info, diameter);
+    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(baseText, username, avatarImage, decoratorImage, info, diameter);
     objc_setAssociatedObject(textNode, kApolloAvatarApplyingTextKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     @try {
         ApolloSetAttributedTextForNode(textNode, updated);
@@ -571,7 +617,7 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
 
     CGFloat diameter = ApolloInlineAvatarDiameterForObject(textNode);
     NSString *token = ApolloAvatarTokenForInfo(info, avatarImage != nil, decoratorImage != nil, diameter);
-    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(incomingAttributedText, avatarImage, decoratorImage, info, diameter);
+    NSAttributedString *updated = ApolloAttributedTextByPrependingAvatar(incomingAttributedText, username, avatarImage, decoratorImage, info, diameter);
     if (!updated || updated == incomingAttributedText) return NO;
 
     objc_setAssociatedObject(textNode, kApolloAvatarOriginalAttributedTextKey, incomingAttributedText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1092,7 +1138,6 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
         } @finally {
             objc_setAssociatedObject(self, kApolloAvatarApplyingTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        ApolloNodeSetNeedsLayout((id)self);
         return;
     }
 
@@ -1118,7 +1163,6 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
         } @finally {
             objc_setAssociatedObject(self, kApolloAvatarApplyingTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-        ApolloNodeSetNeedsLayout((id)self);
         return;
     }
 
@@ -1137,6 +1181,15 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 %end
 
 %hook _TtC6Apollo17LargePostCellNode
+
+- (void)didLoad {
+    %orig;
+    ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
+}
+
+%end
+
+%hook _TtC6Apollo22CommentsHeaderCellNode
 
 - (void)didLoad {
     %orig;
