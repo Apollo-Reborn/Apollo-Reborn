@@ -375,11 +375,9 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
         return;
     }
 
-    NSString *targetIconName = [iconID isEqualToString:kLGPrimaryIconID] ? nil : iconID;
-
-    ApolloLog(@"[LGIconPicker] requesting alternate icon=%@ (target=%@)", iconID, targetIconName ?: @"<nil/primary>");
+    ApolloLog(@"[LGIconPicker] requesting alternate icon=%@", iconID);
     __weak UITableView *weakTable = tableView;
-    [UIApplication.sharedApplication setAlternateIconName:targetIconName completionHandler:^(NSError * _Nullable error) {
+    [UIApplication.sharedApplication setAlternateIconName:iconID completionHandler:^(NSError * _Nullable error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
                 ApolloLog(@"[LGIconPicker] setAlternateIconName failed: %@", error);

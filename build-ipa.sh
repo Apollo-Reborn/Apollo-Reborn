@@ -102,7 +102,7 @@ fi
 if command -v cyan >/dev/null 2>&1; then
     echo "Using cyan for injection..."
 
-    if cyan -i "$IPA_PATH" -d "$DEB_PATH" -o "$OUTPUT_IPA"; then
+    if cyan -i "$IPA_PATH" -f "$DEB_PATH" -o "$OUTPUT_IPA"; then
         echo "Injected IPA created at: $OUTPUT_IPA"
         exit 0
     fi
