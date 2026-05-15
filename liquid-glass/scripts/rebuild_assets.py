@@ -8,23 +8,45 @@ Strategy:
   3. act extract   → SVG symbol weight/size variants + PNG fallbacks
   4. Group files by asset Name, preferring PDFs from cartool over act's rasters
   5. For symbol assets: use the correctly-sized SVG variant from act
-  6. Compile with actool
+  6. Compile with actool, including every .icon package registered in icons.json
 """
 
+import json
 import os
 import re
-import json
 import shutil
 import subprocess
+import sys
 from collections import defaultdict
 
-ACT              = "/Applications/Asset Catalog Tinkerer.app/Contents/MacOS/act"
-CARTOOL          = shutil.which("cartool") or "/usr/local/bin/cartool"
-ORIGINAL_CAR     = "Assets.car"
-CARTOOL_DIR      = "cartool-extracted"
-EXTRACTED_DIR    = "act-extracted"
-XCASSETS_DIR     = "rebuilt/Assets.xcassets"
-OUTPUT_DIR       = "rebuilt/compiled"
+# Layout (resolved relative to this script so the rebuild can run from anywhere):
+#
+#   liquid-glass/
+#   ├── icons.json                          (registry: which icons to include)
+#   ├── Assets.car                          (user-supplied original — input)
+#   ├── icons/<id>/<id>.icon/               (Icon Composer packages)
+#   ├── prebuilt/Assets.car                 (rebuilt output destination)
+#   └── scripts/
+#       ├── rebuild_assets.py               (this file)
+#       ├── cartool-extracted/              (intermediate, gitignored)
+#       ├── act-extracted/                  (intermediate, gitignored)
+#       └── rebuilt/{Assets.xcassets,compiled}/  (intermediate, gitignored)
+
+SCRIPTS_DIR     = os.path.dirname(os.path.abspath(__file__))
+LG_DIR          = os.path.abspath(os.path.join(SCRIPTS_DIR, ".."))
+REGISTRY_PATH   = os.path.join(LG_DIR, "icons.json")
+ICONS_ROOT      = os.path.join(LG_DIR, "icons")
+ORIGINAL_CAR    = os.path.join(LG_DIR, "Assets.car")
+PREBUILT_CAR    = os.path.join(LG_DIR, "prebuilt", "Assets.car")
+
+CARTOOL_DIR     = os.path.join(SCRIPTS_DIR, "cartool-extracted")
+EXTRACTED_DIR   = os.path.join(SCRIPTS_DIR, "act-extracted")
+REBUILT_ROOT    = os.path.join(SCRIPTS_DIR, "rebuilt")
+XCASSETS_DIR    = os.path.join(REBUILT_ROOT, "Assets.xcassets")
+OUTPUT_DIR      = os.path.join(REBUILT_ROOT, "compiled")
+
+ACT             = "/Applications/Asset Catalog Tinkerer.app/Contents/MacOS/act"
+CARTOOL         = shutil.which("cartool") or "/usr/local/bin/cartool"
 
 # Appearance string → Contents.json appearances array entry
 APPEARANCE_MAP = {
@@ -283,8 +305,8 @@ def write_raster_imageset(name, entries, xcassets_path):
 
 def build_xcassets(symbol_variants, raster_groups):
     print(f"Building {XCASSETS_DIR}...")
-    if os.path.exists("rebuilt"):
-        shutil.rmtree("rebuilt")
+    if os.path.exists(REBUILT_ROOT):
+        shutil.rmtree(REBUILT_ROOT)
     os.makedirs(XCASSETS_DIR, exist_ok=True)
     with open(os.path.join(XCASSETS_DIR, "Contents.json"), "w") as f:
         json.dump({"info": {"author": "xcode", "version": 1}}, f, indent=2)
@@ -313,23 +335,33 @@ def build_xcassets(symbol_variants, raster_groups):
 # Step 5 – compile
 # ---------------------------------------------------------------------------
 
-def find_icon_packages():
-    """Find all .icon packages in the icons/ directory next to this script."""
-    icons_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
-    if not os.path.isdir(icons_dir):
-        return []
-    return sorted(
-        os.path.join(icons_dir, entry)
-        for entry in os.listdir(icons_dir)
-        if entry.endswith(".icon") and os.path.isdir(os.path.join(icons_dir, entry))
-    )
+def load_icon_packages():
+    """Resolve every `.icon` package listed in icons.json.
+
+    Each entry maps to liquid-glass/icons/<id>/<id>.icon. Missing
+    packages are a hard error since the registry is the source of truth.
+    """
+    with open(REGISTRY_PATH, "r") as fp:
+        registry = json.load(fp)
+
+    packages = []
+    for entry in registry.get("icons", []):
+        icon_id = entry["id"]
+        pkg = os.path.join(ICONS_ROOT, icon_id, f"{icon_id}.icon")
+        if not os.path.isdir(pkg):
+            print(f"✗ missing .icon package: {pkg}", file=sys.stderr)
+            return None
+        packages.append(pkg)
+    return packages
 
 
 def compile_assets():
     print("\nCompiling Assets.car...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    icon_packages = find_icon_packages()
+    icon_packages = load_icon_packages()
+    if icon_packages is None:
+        return False
     if icon_packages:
         names = [os.path.splitext(os.path.basename(p))[0] for p in icon_packages]
         print(f"  Including {len(icon_packages)} icon packages: {', '.join(names)}")
@@ -346,10 +378,7 @@ def compile_assets():
         "--output-format", "human-readable-text",
     ])
 
-    # Register each icon as an alternate app icon
-    # for pkg in icon_packages:
-    #     name = os.path.splitext(os.path.basename(pkg))[0]
-    #     cmd.extend(["--app-icon", name])
+    # Register every icon as an alternate app icon
     cmd.extend(["--include-all-app-icons"])
 
     # --output-partial-info-plist is required when alternate icons are present
@@ -360,12 +389,17 @@ def compile_assets():
         print(f"Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print(result.stdout)
-        car = os.path.join(OUTPUT_DIR, "Assets.car")
-        if os.path.exists(car):
-            print(f"✓ Assets.car ({os.path.getsize(car):,} bytes) → {car}")
-            return True
-        print("⚠ Assets.car not found in output")
-        return False
+        compiled_car = os.path.join(OUTPUT_DIR, "Assets.car")
+        if not os.path.exists(compiled_car):
+            print("⚠ Assets.car not found in output")
+            return False
+        print(f"✓ Assets.car ({os.path.getsize(compiled_car):,} bytes) → {compiled_car}")
+
+        # Copy into prebuilt/ for the patcher to pick up.
+        os.makedirs(os.path.dirname(PREBUILT_CAR), exist_ok=True)
+        shutil.copy2(compiled_car, PREBUILT_CAR)
+        print(f"✓ Copied to {PREBUILT_CAR}")
+        return True
     except subprocess.CalledProcessError as e:
         print(f"✗ actool:\n{e.stderr}")
         return False
@@ -382,6 +416,7 @@ def main():
 
     if not os.path.exists(ORIGINAL_CAR):
         print(f"✗ {ORIGINAL_CAR} not found")
+        print(f"  Copy a decrypted Apollo Assets.car to {ORIGINAL_CAR} and rerun.")
         return 1
 
     rendition_to_assets = load_metadata()
@@ -418,6 +453,7 @@ def main():
         print("✓ Rebuild complete!")
         print(f"  .xcassets : {XCASSETS_DIR}")
         print(f"  Assets.car: {OUTPUT_DIR}/Assets.car")
+        print(f"  Installed : {PREBUILT_CAR}")
         print("=" * 60)
         return 0
     return 1

@@ -1,0 +1,9 @@
+{
+  "primaryIconID": "jryng",
+  "icons": [
+    { "id": "igerman00",  "displayName": "iGerman00" },
+    { "id": "jryng",      "displayName": "jryng" },
+    { "id": "jryng-alt",  "displayName": "jryng (alt)" },
+    { "id": "metalnakls", "displayName": "metalnakls" }
+  ]
+}

@@ -2,11 +2,27 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LIQUID_GLASS_ASSETS_CAR="${SCRIPT_DIR}/patch-assets/liquid-glass/ApolloLiquidGlass/Assets.car"
+LIQUID_GLASS_ASSETS_CAR="${SCRIPT_DIR}/liquid-glass/prebuilt/Assets.car"
+LIQUID_GLASS_ICONS_REGISTRY="${SCRIPT_DIR}/liquid-glass/icons.json"
 LIQUID_GLASS_ICON_NAME="AppIcon"
 LIQUID_GLASS_IPAD_ICON_FILES=("AppIcon60x60" "AppIcon76x76")
 LIQUID_GLASS_IPHONE_ICON_FILES=("AppIcon60x60")
-LIQUID_GLASS_ALTERNATE_ICONS=("jryng" "jryng-alt" "igerman00" "metalnakls")
+
+load_liquid_glass_alternate_icons() {
+    # Register every icon from icons.json as a CFBundleAlternateIcons entry
+    # (including the primary, so setAlternateIconName:<primary> is a valid
+    # no-op switch back to the primary asset).
+    local i=0 id
+    while id=$(plutil -extract "icons.${i}.id" raw -o - "$LIQUID_GLASS_ICONS_REGISTRY" 2>/dev/null); do
+        echo "$id"
+        ((i++))
+    done
+}
+
+LIQUID_GLASS_ALTERNATE_ICONS=()
+while IFS= read -r line; do
+    [[ -n "$line" ]] && LIQUID_GLASS_ALTERNATE_ICONS+=("$line")
+done < <(load_liquid_glass_alternate_icons)
 
 plist_set_string() {
     local path="$1"

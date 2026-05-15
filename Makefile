@@ -46,7 +46,7 @@ ApolloImprovedCustomApi_FILES = \
     $(SSZIPARCHIVE_FILES)
 ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO
 ApolloImprovedCustomApi_LIBRARIES = z iconv
-ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -IZipArchive/SSZipArchive -IZipArchive/SSZipArchive/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
+ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -Iliquid-glass/generated -IZipArchive/SSZipArchive -IZipArchive/SSZipArchive/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 
 ApolloImprovedCustomApi_OBJ_FILES = $(shell find ffmpeg-kit -name '*.a')
 
@@ -63,13 +63,13 @@ generate_version_h:
 	echo "#define TWEAK_VERSION \"v$${version}\"" > $(THEOS_PROJECT_DIR)/Version.h
 
 # Liquid Glass icon preview header is generated explicitly by running 'make lg-previews'
-LG_PREVIEW_DIR = $(THEOS_PROJECT_DIR)/Resources/LiquidGlassIconPreviews
-LG_PREVIEW_HEADER = $(THEOS_PROJECT_DIR)/LiquidGlassIconPreviews.gen.h
+LG_DIR = $(THEOS_PROJECT_DIR)/liquid-glass
+LG_PREVIEW_HEADER = $(LG_DIR)/generated/LiquidGlassIconPreviews.gen.h
 
 .PHONY: lg-previews
 lg-previews:
-	@echo "Regenerating $(notdir $(LG_PREVIEW_HEADER)) from PNGs in $(LG_PREVIEW_DIR)"
-	@python3 $(LG_PREVIEW_DIR)/generate_header.py $(LG_PREVIEW_HEADER)
+	@echo "Regenerating $(notdir $(LG_PREVIEW_HEADER)) from liquid-glass/icons.json"
+	@python3 $(LG_DIR)/scripts/generate_previews_header.py $(LG_PREVIEW_HEADER)
 
 include $(THEOS_MAKE_PATH)/aggregate.mk
 include $(THEOS_MAKE_PATH)/tweak.mk

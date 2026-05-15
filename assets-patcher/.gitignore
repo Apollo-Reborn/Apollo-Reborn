@@ -1,9 +1,0 @@
-# Source binary — must be supplied by the user (decrypted Apollo IPA)
-Assets.car
-
-# Intermediate extraction directories
-cartool-extracted/
-act-extracted/
-
-# Compiled output (rebuilt Assets.car goes to patch-assets/, not here)
-rebuilt/

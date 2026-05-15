@@ -4,6 +4,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
@@ -805,6 +806,9 @@ static void ApolloRecenterTitleControl(UIView *titleControl) {
 - (void)layoutSubviews {
     %orig;
     if (!IsLiquidGlass()) return;
+    // Bulk translation adds a new right nav bar item which often causes the title overlap.
+    // Skip adjustment for now until we can find a more robust solution that works with the dynamic item changes.
+    if (sEnableBulkTranslation) return;
     ApolloRecenterTitleControl(self);
 }
 

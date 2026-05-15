@@ -30,11 +30,20 @@ static const CGFloat kLGThumbnailCorner = 11.5;
 static const CGFloat kLGTileSpacing = 12.0;
 static const CGFloat kLGRowHeight = 124.0;
 
-static NSString *const kLGPrimaryIconID = @"jryng";
-
 #pragma mark - Bundled preview data
 
 #include "LiquidGlassIconPreviews.gen.h"
+
+// The generated header exposes kLGPrimaryIconIDCString as a plain C string.
+// Wrap it in an NSString once for use in ObjC dictionary lookups.
+static NSString *LGPrimaryIconID(void) {
+    static NSString *cached;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cached = @(kLGPrimaryIconIDCString);
+    });
+    return cached;
+}
 
 static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
     if (!iconID || !variant) return nil;
@@ -86,14 +95,33 @@ typedef struct {
 } LGIconRow;
 
 static const LGIconRow *LGIconRows(NSInteger *outCount) {
-    // Sorted alphabetically (case-insensitive) by display name for consistency.
-    static const LGIconRow rows[] = {
-        { @"igerman00",  @"iGerman00" },
-        { @"jryng",      @"jryng" },
-        { @"jryng-alt",  @"jryng (alt)" },
-        { @"metalnakls", @"metalnakls" },
-    };
-    if (outCount) *outCount = sizeof(rows) / sizeof(rows[0]);
+    // The icon list lives in liquid-glass/icons.json. The header generated
+    // by liquid-glass/scripts/generate_previews_header.py exposes it as
+    // `kLGIconRowEntries` (C-string fields). Wrap each entry in an NSString
+    // once at first call. We keep a static strong NSArray around so the
+    // NSStrings outlive every call without us having to manage refcounts
+    // through the calloc'd C array (whose __unsafe_unretained members ARC
+    // cannot track).
+    static LGIconRow *rows = NULL;
+    static NSInteger count = 0;
+    static NSArray<NSString *> *strongStorage = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        count = (NSInteger)kLGIconRowEntryCount;
+        rows = (LGIconRow *)calloc((size_t)count, sizeof(LGIconRow));
+        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(count * 2)];
+        for (NSInteger i = 0; i < count; i++) {
+            NSString *iconID      = [@(kLGIconRowEntries[i].iconID) copy];
+            NSString *displayName = [@(kLGIconRowEntries[i].displayName) copy];
+            [storage addObject:iconID];
+            [storage addObject:displayName];
+            rows[i].iconID      = iconID;
+            rows[i].displayName = displayName;
+        }
+        strongStorage = [storage copy];
+        (void)strongStorage;  // intentionally kept alive via static reference
+    });
+    if (outCount) *outCount = count;
     return rows;
 }
 
@@ -118,8 +146,10 @@ static NSString *LGCurrentAlternateIconName(void) {
 #pragma mark - Eligibility
 
 static BOOL LGAlternateIconsAvailable(void) {
-    // The LG patch script registers `jryng` as an alternate icon in
-    // Info.plist. That's enough to know the asset catalog was swapped in.
+    // patch.sh registers every icon ID from liquid-glass/icons.json into
+    // CFBundleAlternateIcons (including the primary, as a no-op switch
+    // target so we never need to call setAlternateIconName:nil). We're
+    // patched iff the primary appears as an alternate.
     //
     // Don't gate on `[UIApplication.sharedApplication supportsAlternateIcons]`
     // here: this helper is called from hooks AND %ctor, but %ctor runs before
@@ -131,7 +161,7 @@ static BOOL LGAlternateIconsAvailable(void) {
     if (![icons isKindOfClass:[NSDictionary class]]) return NO;
     NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
     if (![alts isKindOfClass:[NSDictionary class]]) return NO;
-    return alts[kLGPrimaryIconID] != nil;
+    return alts[LGPrimaryIconID()] != nil;
 }
 
 #pragma mark - Section remap helpers

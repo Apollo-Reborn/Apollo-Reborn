@@ -1,9 +1,6 @@
 .theos
 *.ipa
 *.zip
-Resources/*
-!Resources/LiquidGlassIconPreviews/
-Resources/LiquidGlassIconPreviews/.originals/
 packages/
 Version.h
 Headers/
@@ -12,3 +9,10 @@ data/
 .claude/
 Apollo
 .cache
+
+# Liquid Glass
+liquid-glass/Assets.car
+liquid-glass/scripts/__pycache__/
+liquid-glass/scripts/cartool-extracted/
+liquid-glass/scripts/act-extracted/
+liquid-glass/scripts/rebuilt/
