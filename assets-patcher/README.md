@@ -29,7 +29,7 @@ From this directory:
 python3 rebuild_assets.py
 ```
 
-This extracts and rebuilds the asset catalog, then copies the result into place:
+This extracts the asset catalog, adds the icons, and rebuilds it into `rebuilt/compiled/Assets.car`. Copy the result into the patch directory:
 
 ```bash
 cp rebuilt/compiled/Assets.car ../patch-assets/liquid-glass/ApolloLiquidGlass/Assets.car
