@@ -1,0 +1,225 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "extended-srgb:0.00000,0.75294,0.90980,1.00000",
+      "extended-srgb:0.38039,0.33333,0.96078,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "hidden" : false,
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "plus-darker"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "hard-light"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : "none"
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "extended-srgb:0.79608,0.18824,0.87843,1.00000",
+                  "display-p3:0.95955,0.41534,1.01372,1.00000"
+                ]
+              }
+            }
+          ],
+          "glass-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : true
+            }
+          ],
+          "image-name" : "Eyes.svg",
+          "name" : "Eyes",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0.8
+            }
+          ],
+          "position" : {
+            "scale" : 0.53,
+            "translation-in-points" : [
+              -0.5818738520208784,
+              101.90818256600141
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "hidden" : false,
+      "layers" : [
+        {
+          "image-name" : "Antenna.svg",
+          "name" : "Antenna",
+          "position" : {
+            "scale" : 0.53,
+            "translation-in-points" : [
+              -1.04999722406978,
+              -321.38099222050846
+            ]
+          }
+        }
+      ],
+      "name" : "Antenna",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "blur-material" : 0.5,
+      "hidden" : false,
+      "layers" : [
+        {
+          "hidden" : false,
+          "image-name" : "Header.svg",
+          "name" : "Header",
+          "position" : {
+            "scale" : 0.54,
+            "translation-in-points" : [
+              -1.3074591652659,
+              71.29126376017494
+            ]
+          }
+        },
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.36127,0.28223,0.51573,1.00000",
+                  "display-p3:0.19214,0.10980,0.35303,1.00000"
+                ]
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "automatic-gradient" : "extended-gray:0.00000,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "アセット 8.svg",
+          "name" : "アセット 8",
+          "position" : {
+            "scale" : 0.54,
+            "translation-in-points" : [
+              -1.2199847744179626,
+              118.72060626217878
+            ]
+          }
+        }
+      ],
+      "lighting" : "combined",
+      "name" : "Head",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "blend-mode-specializations" : [
+        {
+          "value" : "hard-light"
+        },
+        {
+          "appearance" : "dark",
+          "value" : "overlay"
+        }
+      ],
+      "blur-material" : 0.5,
+      "layers" : [
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-gray:0.75000,1.00000"
+          },
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "OuterTr.svg",
+          "name" : "OuterTr",
+          "position" : {
+            "scale" : 0.53,
+            "translation-in-points" : [
+              -1.470756120227776,
+              -362.07268113629397
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-gray:1.00000,1.00000"
+          },
+          "image-name" : "Inner.svg",
+          "name" : "Inner",
+          "position" : {
+            "scale" : 0.54,
+            "translation-in-points" : [
+              1.6616846753235754,
+              -359.34704941339123
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "Siganl",
+      "opacity-specializations" : [
+        {
+          "value" : 0.7
+        },
+        {
+          "appearance" : "dark",
+          "value" : 1
+        }
+      ],
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.5
+      },
+      "translucency-specializations" : [
+        {
+          "appearance" : "dark",
+          "value" : {
+            "enabled" : true,
+            "value" : 0.5
+          }
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
