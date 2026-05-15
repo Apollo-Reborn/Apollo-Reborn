@@ -1,0 +1,271 @@
+{
+  "color-space-for-untagged-svg-colors" : "display-p3",
+  "fill-specializations" : [
+    {
+      "value" : {
+        "linear-gradient" : [
+          "display-p3:0.32544,0.62744,0.97266,1.00000",
+          "display-p3:0.42358,0.35693,0.96484,1.00000"
+        ],
+        "orientation" : {
+          "start" : {
+            "x" : 0.5,
+            "y" : 0
+          },
+          "stop" : {
+            "x" : 0.5,
+            "y" : 0.7
+          }
+        }
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "hidden" : true,
+          "image-name" : "Icon.png",
+          "name" : "Icon",
+          "opacity" : 0.47
+        }
+      ],
+      "position" : {
+        "scale" : 6,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.76
+      }
+    },
+    {
+      "blur-material-specializations" : [
+        {
+          "value" : 0.24
+        },
+        {
+          "appearance" : "tinted",
+          "value" : 0.24
+        }
+      ],
+      "hidden" : false,
+      "layers" : [
+        {
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "apollo_snoo_eyes.svg",
+          "name" : "apollo_snoo_eyes",
+          "position" : {
+            "scale" : 1.43,
+            "translation-in-points" : [
+              0.6,
+              104
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "apollo_snoo_face.svg",
+          "name" : "apollo_snoo_face",
+          "position" : {
+            "scale" : 1.41,
+            "translation-in-points" : [
+              1,
+              127
+            ]
+          }
+        },
+        {
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "apollo_helmet_space.svg",
+          "name" : "apollo_helmet_space",
+          "position" : {
+            "scale" : 1.42,
+            "translation-in-points" : [
+              0,
+              125
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "apollo_antennaball.svg",
+          "name" : "apollo_antennaball",
+          "opacity" : 1,
+          "position" : {
+            "scale" : 1.38,
+            "translation-in-points" : [
+              -0.021877584780781945,
+              -403
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "apollo_antennastem.svg",
+          "name" : "apollo_antennastem",
+          "position" : {
+            "scale" : 1.41,
+            "translation-in-points" : [
+              0,
+              -283
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "apollo_helmet.svg",
+          "name" : "apollo_helmet",
+          "position" : {
+            "scale" : 1.43,
+            "translation-in-points" : [
+              0,
+              84
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "apollo_radio.svg",
+          "name" : "apollo_radio",
+          "position" : {
+            "scale" : 1.44,
+            "translation-in-points" : [
+              0,
+              -135
+            ]
+          }
+        },
+        {
+          "glass-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "apollo_ring_small.svg",
+          "name" : "apollo_ring_small",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.33
+            }
+          ],
+          "position" : {
+            "scale" : 1.48,
+            "translation-in-points" : [
+              -0.00951036040987674,
+              -394
+            ]
+          }
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "none"
+            }
+          ],
+          "hidden-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "idiom" : "square",
+              "value" : false
+            }
+          ],
+          "image-name" : "apollo_ring_large.svg",
+          "name" : "apollo_ring_large",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0.29
+            }
+          ],
+          "position" : {
+            "scale" : 1.46,
+            "translation-in-points" : [
+              0,
+              -394
+            ]
+          }
+        }
+      ],
+      "lighting-specializations" : [
+        {
+          "value" : "individual"
+        },
+        {
+          "appearance" : "tinted",
+          "value" : "individual"
+        }
+      ],
+      "shadow-specializations" : [
+        {
+          "value" : {
+            "kind" : "neutral",
+            "opacity" : 0.64
+          }
+        },
+        {
+          "appearance" : "tinted",
+          "value" : {
+            "kind" : "layer-color",
+            "opacity" : 1
+          }
+        }
+      ],
+      "specular-specializations" : [
+        {
+          "value" : true
+        },
+        {
+          "appearance" : "tinted",
+          "value" : false
+        }
+      ],
+      "translucency-specializations" : [
+        {
+          "value" : {
+            "enabled" : true,
+            "value" : 0.49
+          }
+        },
+        {
+          "appearance" : "tinted",
+          "value" : {
+            "enabled" : true,
+            "value" : 0.49
+          }
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}
