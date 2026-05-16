@@ -16,7 +16,7 @@ liquid-glass/
 │   └── asset-info.plist       # reference metadata for the catalog
 ├── scripts/
 │   ├── rebuild_assets.py      # rebuilds prebuilt/Assets.car from a fresh Apollo Assets.car
-│   ├── generate_icon_previews.py  # exports 300×300 PNG previews from .icon packages via ictool
+│   ├── generate_icon_previews.py  # exports 120×120 PNG previews from .icon packages via ictool
 │   └── generate_previews_header.py
 └── generated/
     └── LiquidGlassIconPreviews.gen.h   # base64 PNG blob + LGIconRows + primary icon
@@ -52,7 +52,7 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
    ```
 3. Append the icon to **`liquid-glass/icons.json`** (this is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file).
-4. Generate the 300×300 PNG previews from the `.icon` package:
+4. Generate the 120×120 PNG previews from the `.icon` package:
    ```bash
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>
    ```

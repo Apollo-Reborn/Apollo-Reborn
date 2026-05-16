@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate 300×300 PNG preview images for each icon variant using ictool.
+"""Generate 120×120 PNG preview images for each icon variant using ictool.
 
 For each icon registered in icons.json, finds <id>/<id>.icon and exports
 four variants (default, dark, clear-light, clear-dark) via ictool into
-icons/<id>/<variant>.png at 300×300 px.
+icons/<id>/<variant>.png at 120×120 px.
 
 Usage:
-    python3 scripts/generate_icon_previews.py [--icons <id1,id2,...>]
+    python3 scripts/generate_icon_previews.py [--icons <id1,id2,...>] [--size N]
 
     --icons  Comma-separated list of icon IDs to (re)generate.
              Omit to regenerate all icons in icons.json.
+    --size   Output size in logical points for both width and height
+             (default: 120).
 """
 from __future__ import annotations
 
@@ -35,21 +37,20 @@ VARIANTS: dict[str, str] = {
     "clear-dark":  "ClearDark",
 }
 
-# Output size in logical points; scale=1 → pixel dimensions equal these values
-PREVIEW_WIDTH  = 300
-PREVIEW_HEIGHT = 300
-PREVIEW_SCALE  = 1
+# Output size in logical points; scale=1 → pixel dimensions equal this value
+PREVIEW_SIZE  = 120
+PREVIEW_SCALE = 1
 
 
-def export_variant(icon_file: str, rendition: str, out_path: str) -> bool:
+def export_variant(icon_file: str, rendition: str, out_path: str, size: int) -> bool:
     cmd = [
         ICTOOL, icon_file,
         "--export-image",
         "--output-file", out_path,
         "--platform", "iOS",
         "--rendition", rendition,
-        "--width",  str(PREVIEW_WIDTH),
-        "--height", str(PREVIEW_HEIGHT),
+        "--width",  str(size),
+        "--height", str(size),
         "--scale",  str(PREVIEW_SCALE),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -76,7 +77,11 @@ def export_variant(icon_file: str, rendition: str, out_path: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--icons", help="Comma-separated icon IDs to regenerate")
+    parser.add_argument("--size", type=int, default=PREVIEW_SIZE,
+                        help=f"Output size in points, applied to both width and height (default: {PREVIEW_SIZE})")
     args = parser.parse_args()
+
+    size = args.size
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
     lg_dir = os.path.abspath(os.path.join(scripts_dir, ".."))
@@ -115,7 +120,7 @@ def main() -> int:
         ok = True
         for stem, rendition in VARIANTS.items():
             out_path = os.path.join(icon_dir, f"{stem}.png")
-            success  = export_variant(icon_file, rendition, out_path)
+            success  = export_variant(icon_file, rendition, out_path, size)
             status   = "OK" if success else "FAIL"
             print(f"  {stem:<12} ({rendition:<12}) → {status}")
             if not success:
