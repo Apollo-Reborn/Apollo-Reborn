@@ -44,6 +44,7 @@ typedef NS_ENUM(NSInteger, ApolloTabBarMinimizeBehavior) {
 static char kApolloRequestedHidesBarsOnSwipeKey;
 static char kApolloAppliedMinimizeBehaviorKey;
 static char kApolloIdleRevealTimerKey;
+static char kApolloIdleModeCollapsedKey;
 
 static NSString *const ApolloAutoHideTabBarShowOnIdleChangedNotification = @"ApolloAutoHideTabBarShowOnIdleChangedNotification";
 
@@ -126,6 +127,16 @@ static void ApolloCancelIdleRevealTimer(UITabBarController *tbc) {
     if (!timer) return;
     dispatch_source_cancel(timer);
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL ApolloIdleModeCollapsed(UITabBarController *tbc) {
+    NSNumber *collapsed = objc_getAssociatedObject(tbc, &kApolloIdleModeCollapsedKey);
+    return [collapsed isKindOfClass:[NSNumber class]] && collapsed.boolValue;
+}
+
+static void ApolloSetIdleModeCollapsed(UITabBarController *tbc, BOOL collapsed) {
+    if (!tbc) return;
+    objc_setAssociatedObject(tbc, &kApolloIdleModeCollapsedKey, collapsed ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void ApolloReapplyNativeMinimizeBehavior(UITabBarController *tbc, NSString *reason) {
@@ -239,7 +250,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
 
     __weak UITabBarController *weakTBC = tbc;
     dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(450 * NSEC_PER_MSEC)),
                               DISPATCH_TIME_FOREVER,
                               (uint64_t)(50 * NSEC_PER_MSEC));
     dispatch_source_set_event_handler(timer, ^{
@@ -247,6 +258,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
         if (!strongTBC) return;
         objc_setAssociatedObject(strongTBC, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(strongTBC)) return;
+        ApolloSetIdleModeCollapsed(strongTBC, NO);
         ApolloApplyMinimizeBehavior(strongTBC, ApolloTabBarMinimizeBehaviorNever);
         ApolloShowTabBar(strongTBC, YES);
     });
@@ -347,6 +359,7 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
             ApolloApplyMinimizeBehavior(tbc, behavior);
             if (!value || sAutoHideTabBarShowOnIdle) {
                 ApolloCancelIdleRevealTimer(tbc);
+                ApolloSetIdleModeCollapsed(tbc, NO);
                 ApolloShowTabBar(tbc, YES);
             }
         }
@@ -392,11 +405,14 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
         (self.tracking || self.dragging || self.decelerating) && fabs(deltaY) >= 0.5) {
         tbc = ApolloTabBarControllerForScrollView(self);
         if (ApolloTabBarControllerWantsNativeMinimize(tbc)) {
-            ApolloTabBarMinimizeBehavior behavior = deltaY > 0.0
-                ? ApolloTabBarMinimizeBehaviorOnScrollDown
-                : ApolloTabBarMinimizeBehaviorOnScrollUp;
-            ApolloApplyMinimizeBehavior(tbc, behavior);
-            shouldScheduleIdleReveal = YES;
+            if (deltaY > 0.0) {
+                ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+                ApolloHideTabBar(tbc, YES);
+                ApolloSetIdleModeCollapsed(tbc, YES);
+                shouldScheduleIdleReveal = YES;
+            } else if (ApolloIdleModeCollapsed(tbc)) {
+                shouldScheduleIdleReveal = YES;
+            }
         }
     }
 
@@ -435,6 +451,7 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloForEachVisibleTabBarController(^(UITabBarController *tbc) {
             ApolloCancelIdleRevealTimer(tbc);
+            ApolloSetIdleModeCollapsed(tbc, NO);
             ApolloReapplyNativeMinimizeBehavior(tbc, @"idleModeChanged");
             if (sAutoHideTabBarShowOnIdle) {
                 ApolloShowTabBar(tbc, YES);
