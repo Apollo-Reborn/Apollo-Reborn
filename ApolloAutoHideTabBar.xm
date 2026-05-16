@@ -20,9 +20,10 @@
 //   tab bar). When the toggle is OFF we restore .never (raw value 1).
 //
 //   Mode B ("Tab Bar Re-Expands When Idle"): same .onScrollDown collapse as
-//   Mode A, but after scroll motion stops we flip to .never so UIKit expands
-//   the bar even without scrolling back up. On the next scroll we restore
-//   .onScrollDown so the native scroll-away interaction drives collapse again.
+//   Mode A. A deliberate upward scroll flips to .never so the bar expands and
+//   stays open until the next downward scroll. If the user stops reading with
+//   the pill collapsed we wait a longer idle period before doing the same
+//   restore automatically.
 //
 // iOS <26 (legacy mirror):
 //   Apollo's hide-on-swipe hides the bottom UITabBar but never restores it.
@@ -49,8 +50,11 @@ typedef NS_ENUM(NSInteger, ApolloTabBarMinimizeBehavior) {
 static char kApolloRequestedHidesBarsOnSwipeKey;
 static char kApolloAppliedMinimizeBehaviorKey;
 static char kApolloIdleRevealTimerKey;
+static char kApolloUpwardRevealDistanceKey;
 
 static NSString *const ApolloAutoHideTabBarShowOnIdleChangedNotification = @"ApolloAutoHideTabBarShowOnIdleChangedNotification";
+static const NSTimeInterval ApolloIdleRevealDelaySeconds = 30.0;
+static const CGFloat ApolloUpwardRevealDistanceThreshold = 120.0;
 
 static SEL ApolloMinimizeBehaviorSetter(void) {
     return NSSelectorFromString(@"setTabBarMinimizeBehavior:");
@@ -91,6 +95,22 @@ static ApolloTabBarMinimizeBehavior ApolloLastAppliedMinimizeBehavior(UITabBarCo
         return (ApolloTabBarMinimizeBehavior)lastApplied.integerValue;
     }
     return ApolloTabBarMinimizeBehaviorNever;
+}
+
+static CGFloat ApolloUpwardRevealDistance(UITabBarController *tbc) {
+    NSNumber *distance = objc_getAssociatedObject(tbc, &kApolloUpwardRevealDistanceKey);
+    if ([distance isKindOfClass:[NSNumber class]]) {
+        return (CGFloat)distance.doubleValue;
+    }
+    return 0.0;
+}
+
+static void ApolloSetUpwardRevealDistance(UITabBarController *tbc, CGFloat distance) {
+    if (!tbc) return;
+    objc_setAssociatedObject(tbc,
+                             &kApolloUpwardRevealDistanceKey,
+                             distance > 0.0 ? @(distance) : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // Walk only the parentViewController chain so modally-presented nav controllers
@@ -250,7 +270,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
 
     __weak UITabBarController *weakTBC = tbc;
     dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ApolloIdleRevealDelaySeconds * NSEC_PER_SEC)),
                               DISPATCH_TIME_FOREVER,
                               (uint64_t)(50 * NSEC_PER_MSEC));
     dispatch_source_set_event_handler(timer, ^{
@@ -259,6 +279,13 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
         objc_setAssociatedObject(strongTBC, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(strongTBC)) return;
         ApolloApplyMinimizeBehavior(strongTBC, ApolloTabBarMinimizeBehaviorNever);
+        __weak UITabBarController *rearmTBC = strongTBC;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            UITabBarController *rearmStrongTBC = rearmTBC;
+            if (!rearmStrongTBC || !sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(rearmStrongTBC)) return;
+            if (objc_getAssociatedObject(rearmStrongTBC, &kApolloIdleRevealTimerKey)) return;
+            ApolloApplyMinimizeBehavior(rearmStrongTBC, ApolloTabBarMinimizeBehaviorOnScrollDown);
+        });
     });
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_resume(timer);
@@ -404,9 +431,19 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
             // Re-arm before UIKit processes this offset. If we wait until after
             // %orig, a fast fling can spend its first scroll update in .never
             // and miss the native Liquid Glass collapse threshold.
-            if (deltaY > 0.0 &&
-                ApolloLastAppliedMinimizeBehavior(tbc) == ApolloTabBarMinimizeBehaviorNever) {
-                ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorOnScrollDown);
+            if (deltaY > 0.0) {
+                ApolloSetUpwardRevealDistance(tbc, 0.0);
+                if (ApolloLastAppliedMinimizeBehavior(tbc) == ApolloTabBarMinimizeBehaviorNever) {
+                    ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorOnScrollDown);
+                }
+            } else {
+                CGFloat upwardDistance = ApolloUpwardRevealDistance(tbc) + fabs(deltaY);
+                if (upwardDistance >= ApolloUpwardRevealDistanceThreshold) {
+                    ApolloSetUpwardRevealDistance(tbc, 0.0);
+                    ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+                } else {
+                    ApolloSetUpwardRevealDistance(tbc, upwardDistance);
+                }
             }
             shouldScheduleIdleReveal = YES;
         }
