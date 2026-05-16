@@ -1,0 +1,126 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.14902,0.67059,1.00000,1.00000",
+      "display-p3:0.43922,0.35294,1.00000,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : "plus-darker"
+            }
+          ],
+          "glass-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "dark",
+              "value" : true
+            },
+            {
+              "appearance" : "tinted",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "Apollo Top.png",
+          "name" : "Apollo Features"
+        },
+        {
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "Apollo Mid 2.png",
+          "name" : "Apollo Face"
+        },
+        {
+          "hidden" : false,
+          "image-name" : "Apollo Mid Dark.png",
+          "name" : "Apollo Helmet Back",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ]
+        },
+        {
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "Apollo Rings 1.png",
+          "name" : "Apollo Rings Top",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0
+            },
+            {
+              "appearance" : "tinted",
+              "value" : 0.5
+            }
+          ]
+        },
+        {
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "Apollo Rings 3.png",
+          "name" : "Apollo Rings MidUgly",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0
+            },
+            {
+              "appearance" : "tinted",
+              "value" : 0.5
+            }
+          ]
+        },
+        {
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "Apollo Rings 2.png",
+          "name" : "Apollo Rings BottomUgly",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 0
+            },
+            {
+              "appearance" : "tinted",
+              "value" : 0.5
+            }
+          ]
+        },
+        {
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "Apollo Low.png",
+          "name" : "Apollo Turf"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

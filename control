@@ -1,6 +1,6 @@
 Package: ca.jeffrey.apollo-improvedcustomapi
 Name: Apollo-ImprovedCustomApi
-Version: 2.10.0
+Version: 2.11.0
 Architecture: iphoneos-arm
 Description: Apollo for Reddit tweak with in-app configurable API keys
 Maintainer: JeffreyCA

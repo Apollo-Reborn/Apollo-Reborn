@@ -6,8 +6,17 @@ All notable changes to this project will be documented in this file.
 
 - Fix Reddit-hosted multi-image photo posts by submitting them as native Reddit galleries instead of Imgur albums, including the post-submit comments permalink Apollo opens after success.
 - Fix the Photo Post composer thumbnail strip so all selected images can be reviewed with reliable horizontal scrolling before submit.
-- Preserve typed text when submitting Reddit-hosted image comments.
-- Remove duplicate **Hide Next Parent Button** setting; Apollo already provides this as **Show Jump Button**.
+
+## [v2.11.0] - 2026-05-15
+
+- **Liquid Glass app icons!** Apollo's native App Icon picker now ships with 4 community-designed Liquid Glass app icons that render with full iOS 26 Liquid Glass effects on the home screen
+    - Requires re-patching your IPA using the updated `patch.sh` script or **Patch IPA** GitHub Action. Previously patched IPAs won't show them
+    - Huge thanks to @jordanearle for figuring out the `.icon` → `Assets.car` build flow, @DeltAndy123 for the asset-rebuild tooling and tint fixes, and to @jryng, @iGerman00, and @metalnakls for the icon designs
+- New **Show User Profile Pictures** toggle to display Reddit user avatars next to usernames in posts, comments, as well as in user profiles (thanks @icpryde for implementing this feature!)
+    - Configure in **Settings > Custom API > Media > Show User Profile Pictures**
+- Preserve typed text when submitting Reddit-hosted image comments (thanks @icpryde!)
+- Remove duplicate **Hide Next Parent Button** setting; Apollo already provides this as **Show Jump Button** (thanks @icpryde!)
+- Fix Pixel Pals receiving 3 food items on every launch (thanks @DeltAndy123!)
 
 ## [v2.10.0] - 2026-05-12
 
@@ -370,6 +379,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.2...v2.8.0

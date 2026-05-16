@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>igerman00</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>igerman00</string>
+			</dict>
+			<key>jryng-alt</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>jryng-alt</string>
+			</dict>
+			<key>metalnakls</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>metalnakls</string>
+			</dict>
+		</dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>jryng60x60</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>jryng</string>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>igerman00</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>igerman00</string>
+			</dict>
+			<key>jryng-alt</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>jryng-alt</string>
+			</dict>
+			<key>metalnakls</key>
+			<dict>
+				<key>CFBundleIconName</key>
+				<string>metalnakls</string>
+			</dict>
+		</dict>
+		<key>CFBundlePrimaryIcon</key>
+		<dict>
+			<key>CFBundleIconFiles</key>
+			<array>
+				<string>jryng60x60</string>
+				<string>jryng76x76</string>
+			</array>
+			<key>CFBundleIconName</key>
+			<string>jryng</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

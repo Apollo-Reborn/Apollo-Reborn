@@ -42,6 +42,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Tap timestamp for creation date**: Tap a comment or post's relative-time label to see the absolute creation date and time
 - **Tag Filters**: Blur NSFW and/or Spoiler posts (including titles) in feeds, with per-subreddit overrides (Settings > Tag Filters)
 - **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
+- **User Profile Pictures**: Show Reddit user avatars next to usernames in feeds, comments, and user profiles (Settings > Custom API > Media > Show User Profile Pictures)
 
 ## Known Issues
 
@@ -69,7 +70,13 @@ More discussion in [#82](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/i
 
 ## Custom Redirect URI
 
-The redirect URI scheme (the part before `://`) must be registered in the Apollo IPA's `Info.plist` under `CFBundleURLTypes`, otherwise the OAuth callback won't return to Apollo.
+The redirect URI scheme (the part before `://`) must be registered in the Apollo IPA's `Info.plist` under `CFBundleURLTypes`, otherwise the OAuth callback won't return to Apollo. Add your scheme with [`patch.sh`](#patching-ipa) or the **Patch IPA** GitHub Action:
+
+```bash
+./patch.sh Apollo.ipa --url-schemes custom
+```
+
+Resulting `Info.plist` entry:
 
 ```xml
 <key>CFBundleURLTypes</key>
@@ -79,62 +86,46 @@ The redirect URI scheme (the part before `://`) must be registered in the Apollo
     <array>
       <string>twitterkit-xyz</string>
       <string>apollo</string>
-      <string>custom</string> <!-- add 'custom' you want to use custom://reddit-oauth -->
+      <string>custom</string> <!-- enables custom://reddit-oauth -->
     </array>
   </dict>
 </array>
 ```
 
-You can use `patch.sh` or the GitHub action mentioned below to add URL schemes.
-
 ## Patching IPA
 
-`patch.sh` and the **Patch IPA** GitHub Action can apply optional patches (Liquid Glass for iOS 26, custom URL schemes) to Apollo IPAs. These do **not** inject the tweak itself.
-
-The Liquid Glass patch now also replaces Apollo's compiled `Assets.car` with a prebuilt catalog that includes the `ApolloLiquidGlass` app icon, and updates the primary app icon name in `Info.plist`.
+`patch.sh` and the **Patch IPA** GitHub Action apply optional patches to a stock Apollo IPA. They do **not** inject the tweak - use [Sideloadly](#sideloadly) or [`build-ipa.sh`](#build-injected-ipa-locally) for that.
 
 ```bash
 ./patch.sh <path_to_ipa> [--liquid-glass] [--url-schemes <schemes>] [--remove-code-signature] [-o <output>]
 ```
 
-To use the GitHub Action, fork this repo and navigate to **Actions** > **Patch IPA**. The workflow accepts:
+Available patches:
 
-- **IPA source**: Direct URL or a release artifact from this repository
-- **Liquid Glass**: Enable/disable the iOS 26 patch
-- **URL Schemes**: Comma-separated list of schemes to add (e.g., `custom,test`)
-- **Remove Code Signature**: Optionally strip the code signature
+- **`--liquid-glass`** - enables the iOS 26 Liquid Glass UI and installs a pack of Liquid Glass icons that can be switched between in the tweak's in-app icon picker.
+- **`--url-schemes <list>`** - adds comma-separated URL schemes to `CFBundleURLTypes` (see [Custom Redirect URI](#custom-redirect-uri)).
+- **`--remove-code-signature`** - strips the existing code signature.
 
-Credit for the Liquid Glass patching method goes to [@ryannair05](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/63).
+To run via GitHub Actions, fork this repo and trigger **Actions** > **Patch IPA**. The IPA source can be a direct URL or a release artifact from your fork.
 
 ## Sideloadly
+
 Recommended configuration:
-- **Use automatic bundle ID**: *unchecked*
-    - Enter a custom one (e.g. com.foo.Apollo)
+
+- **Use automatic bundle ID**: unchecked (e.g. `com.foo.Apollo`)
 - **Signing Mode**: Apple ID Sideload
-- **Inject dylibs/frameworks**: *checked*
-    - Add the .deb file using **+dylib/deb/bundle**
-    - **Cydia Substrate**: *checked*
-    - **Substitute**: *unchecked*
-    - **Sideload Spoofer**: *unchecked*
+- **Inject dylibs/frameworks**: checked - add the `.deb` via **+dylib/deb/bundle**
+  - **Cydia Substrate**: checked
+  - **Substitute** / **Sideload Spoofer**: unchecked
 
 ## Build Injected IPA Locally
 
-You can build the tweak `.deb` and inject it into a stock Apollo IPA using `build-ipa.sh`.
+`build-ipa.sh` builds the tweak `.deb` and injects it into a stock Apollo IPA. Requires `azule` or `cyan` installed locally; signing/sideloading is still handled by your preferred signer.
 
 ```bash
 make package
-./build-ipa.sh --ipa ./Apollo.ipa
+./build-ipa.sh --ipa ./Apollo.ipa [--deb ./packages/<tweak>.deb] [-o ./packages/Apollo-Tweaked.ipa]
 ```
-
-Optional arguments:
-
-```bash
-./build-ipa.sh --ipa ./Apollo.ipa --deb ./packages/<your_tweak>.deb -o ./packages/Apollo-Tweaked.ipa
-```
-
-Notes:
-- The script expects either `azule` or `cyan` to be installed on your machine.
-- This is a local helper workflow for testing; final signing/sideloading is still done with your preferred signer.
 
 ## Build
 
