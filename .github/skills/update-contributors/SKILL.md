@@ -52,7 +52,7 @@ Contributor fields:
 python3 -c "import json; d=json.load(open('contributors.json')); print('\n'.join(c['github'] for c in d['contributors'] if c.get('github')))" | sort -fu
 
 # GitHub contributors (excluding the bot account)
-gh api repos/JeffreyCA/Apollo-CustomApiCredentialsPlus/contributors --paginate -q '.[] | select(.type=="User") | .login' | sort -fu
+gh api repos/JeffreyCA/Apollo-ImprovedCustomApi/contributors --paginate -q '.[] | select(.type=="User") | .login' | sort -fu
 ```
 
 `comm -23` between the two lists tells you who's new. Show this list to the user before doing anything destructive.
@@ -62,7 +62,7 @@ gh api repos/JeffreyCA/Apollo-CustomApiCredentialsPlus/contributors --paginate -
 Look up each new GitHub contributor's commits to make an informed default suggestion:
 
 ```bash
-gh api "repos/JeffreyCA/Apollo-CustomApiCredentialsPlus/commits?author=<login>" -q '.[].commit.message' | head -10
+gh api "repos/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=<login>" -q '.[].commit.message' | head -10
 ```
 
 Default suggestions:
