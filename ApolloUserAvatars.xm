@@ -37,6 +37,10 @@ static const void *kApolloProfileWrappedHeaderKey = &kApolloProfileWrappedHeader
 static const void *kApolloProfileOriginalHeaderKey = &kApolloProfileOriginalHeaderKey;
 static const void *kApolloProfileUsernameKey = &kApolloProfileUsernameKey;
 static const void *kApolloProfileWrapperMarkerKey = &kApolloProfileWrapperMarkerKey;
+static const void *kApolloProfileUsernameCopyInteractionKey = &kApolloProfileUsernameCopyInteractionKey;
+static const void *kApolloProfileUsernameCopyValueKey = &kApolloProfileUsernameCopyValueKey;
+static const void *kApolloProfileUsernameCopyLoggedKey = &kApolloProfileUsernameCopyLoggedKey;
+static const void *kApolloProfileUsernameCopyMissLoggedKey = &kApolloProfileUsernameCopyMissLoggedKey;
 
 @interface ApolloProfileHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
@@ -1002,6 +1006,107 @@ static BOOL ApolloViewControllerLooksProfileRelated(UIViewController *viewContro
         [className containsString:@"AccountManagerViewController"];
 }
 
+@interface ApolloProfileUsernameCopyMenuDelegate : NSObject <UIContextMenuInteractionDelegate>
++ (instancetype)sharedDelegate;
+@end
+
+@implementation ApolloProfileUsernameCopyMenuDelegate
+
++ (instancetype)sharedDelegate {
+    static ApolloProfileUsernameCopyMenuDelegate *delegate = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        delegate = [ApolloProfileUsernameCopyMenuDelegate new];
+    });
+    return delegate;
+}
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
+    NSString *username = ApolloAvatarNormalizedUsername(objc_getAssociatedObject(interaction.view, kApolloProfileUsernameCopyValueKey));
+    if (username.length == 0) return nil;
+
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
+        UIImage *image = nil;
+        if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) image = [UIImage systemImageNamed:@"doc.on.doc"];
+        UIAction *copyAction = [UIAction actionWithTitle:@"Copy Username" image:image identifier:nil handler:^(__unused UIAction *action) {
+            UIPasteboard.generalPasteboard.string = username;
+            ApolloLog(@"[ProfileUsernameCopy] copied username=%@", username);
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[copyAction]];
+    }];
+}
+
+@end
+
+static BOOL ApolloProfileViewControllerIsVisibleTopController(UIViewController *viewController) {
+    if (!viewController) return NO;
+    UINavigationController *navigationController = viewController.navigationController;
+    if (!navigationController) return viewController.view.window != nil;
+    UIViewController *visibleController = navigationController.visibleViewController ?: navigationController.topViewController;
+    return visibleController == viewController;
+}
+
+static UIView *ApolloProfileUsernameCopyFindLabelInView(UIView *rootView, NSString *username) {
+    if (!rootView || username.length == 0 || rootView.hidden || rootView.alpha < 0.01) return nil;
+
+    if ([rootView isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)rootView;
+        NSString *labelUsername = ApolloAvatarNormalizedUsername(label.text);
+        if (ApolloAvatarUsernameMatches(labelUsername, username)) return label;
+    }
+
+    for (UIView *subview in rootView.subviews) {
+        UIView *match = ApolloProfileUsernameCopyFindLabelInView(subview, username);
+        if (match) return match;
+    }
+    return nil;
+}
+
+static UIView *ApolloProfileUsernameCopyTargetForController(UIViewController *viewController, NSString *username) {
+    UIView *titleView = viewController.navigationItem.titleView;
+    UIView *target = ApolloProfileUsernameCopyFindLabelInView(titleView, username);
+    if (target) return target;
+    if ([titleView isKindOfClass:[UILabel class]] && ApolloAvatarUsernameMatches(((UILabel *)titleView).text, username)) return titleView;
+
+    UINavigationBar *navigationBar = viewController.navigationController.navigationBar;
+    target = ApolloProfileUsernameCopyFindLabelInView(navigationBar, username);
+    return target;
+}
+
+static void ApolloProfileInstallUsernameCopyInteraction(UIViewController *viewController, NSString *reason) {
+    if (!viewController || !ApolloViewControllerLooksProfileRelated(viewController)) return;
+    if (!ApolloProfileViewControllerIsVisibleTopController(viewController)) return;
+
+    NSString *username = ApolloUsernameFromProfileViewController(viewController);
+    if (username.length == 0) return;
+
+    UIView *target = ApolloProfileUsernameCopyTargetForController(viewController, username);
+    if (!target) {
+        NSNumber *loggedMiss = objc_getAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey);
+        if (![loggedMiss boolValue]) {
+            objc_setAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[ProfileUsernameCopy] no nav title target class=%@ username=%@ reason=%@", NSStringFromClass(viewController.class) ?: @"(unknown)", username, reason ?: @"(unknown)");
+        }
+        return;
+    }
+
+    objc_setAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(target, kApolloProfileUsernameCopyValueKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    target.userInteractionEnabled = YES;
+
+    if (!objc_getAssociatedObject(target, kApolloProfileUsernameCopyInteractionKey)) {
+        UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:[ApolloProfileUsernameCopyMenuDelegate sharedDelegate]];
+        [target addInteraction:interaction];
+        objc_setAssociatedObject(target, kApolloProfileUsernameCopyInteractionKey, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSString *loggedUsername = objc_getAssociatedObject(target, kApolloProfileUsernameCopyLoggedKey);
+    if (![loggedUsername isEqualToString:username]) {
+        objc_setAssociatedObject(target, kApolloProfileUsernameCopyLoggedKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        ApolloLog(@"[ProfileUsernameCopy] installed nav title copy class=%@ username=%@ target=%@ reason=%@", NSStringFromClass(viewController.class) ?: @"(unknown)", username, NSStringFromClass(target.class) ?: @"(unknown)", reason ?: @"(unknown)");
+    }
+}
+
 static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     if (![viewControllerObject isKindOfClass:[UIViewController class]]) return;
     UIViewController *viewController = (UIViewController *)viewControllerObject;
@@ -1224,21 +1329,25 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 - (void)viewDidLoad {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLoad");
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewWillAppear");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidAppear");
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
 }
 
 - (void)refreshControlActivatedWithSender:(id)sender {
@@ -1277,6 +1386,7 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
 }
 
 %end

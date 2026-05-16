@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Add an optional **Text** row to Media posts that opens Apollo's native Post Text editor, including its Markdown toolbar, and submits that body text with Reddit-hosted media.
+- Add a long-press menu on profile usernames to copy the username to the clipboard.
 - Add single-video Reddit uploads from the media composer, including video selection, poster upload, and native hosted-video posts.
 - Fix Reddit-hosted multi-image photo posts by submitting them as native Reddit galleries instead of Imgur albums, including the post-submit comments permalink Apollo opens after success.
 - Fix the Photo Post composer thumbnail strip so all selected images can be reviewed with reliable horizontal scrolling before submit.
