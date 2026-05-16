@@ -15,9 +15,12 @@
 
 extern NSString *sUserAgent;
 
+extern "C" NSDictionary *ApolloMediaComposerConsumePendingVideoUploadContext(NSData *posterData, NSURL *posterFileURL);
+
 static NSMutableDictionary<NSString *, NSString *> *sRedditUploadAssetIDByURL = nil;
 static NSMutableDictionary<NSString *, NSDictionary *> *sRedditUploadInfoByAssetID = nil;
 static NSMutableDictionary<NSString *, NSArray<NSString *> *> *sRedditUploadGalleryAssetIDsByAlbumID = nil;
+static NSMutableSet<NSString *> *sRedditLoggedUnhandledImgurUploadKeys = nil;
 static NSMutableSet<NSString *> *sRedditResponseTransformerInstalledClasses = nil;
 static char kApolloRedditCommentResponseDataKey;
 static char kApolloRedditSubmitResponseDataKey;
@@ -29,6 +32,13 @@ static NSObject *ApolloRedditUploadAssetMapLock(void) {
     dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
     return lock;
 }
+
+static NSString *ApolloRedditNativeVideoURLForAssetID(NSString *assetID) {
+    if (assetID.length == 0) return nil;
+    return [@"https://v.redd.it/" stringByAppendingString:assetID];
+}
+
+static NSString *ApolloDecodedRedditMediaURLString(NSString *urlString);
 
 // User-perceived wait cap for permalink resolution. Past this, we deliver Reddit's
 // original response and let Apollo handle whatever it returned.
@@ -46,6 +56,19 @@ BOOL ApolloIsAuthorizationHeader(NSString *field) {
     return [field isKindOfClass:[NSString class]] && [field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame;
 }
 
+static BOOL ApolloURLIsRedditOAuth(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return NO;
+    NSString *host = url.host.lowercaseString;
+    if (host.length == 0) return NO;
+    if ([host isEqualToString:@"oauth.reddit.com"]) return YES;
+    if ([host isEqualToString:@"www.reddit.com"]) return YES;
+    if ([host isEqualToString:@"ssl.reddit.com"]) return YES;
+    if ([host isEqualToString:@"api.reddit.com"]) return YES;
+    if ([host isEqualToString:@"old.reddit.com"]) return YES;
+    if ([host hasSuffix:@".reddit.com"]) return YES;
+    return NO;
+}
+
 void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NSString *source) {
     if (![authorization isKindOfClass:[NSString class]]) return;
 
@@ -57,6 +80,11 @@ void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NS
 
     sLatestRedditBearerToken = [token copy];
     ApolloLog(@"[RedditUpload] Captured Reddit bearer token from %@", source ?: @"unknown source");
+}
+
+void ApolloRedditCaptureBearerTokenFromAuthorizationForURL(NSString *authorization, NSURL *url, NSString *source) {
+    if (!ApolloURLIsRedditOAuth(url)) return;
+    ApolloRedditCaptureBearerTokenFromAuthorization(authorization, source);
 }
 
 void ApolloRedditCaptureBearerTokenFromHeaderDictionary(NSDictionary *headers, NSString *source) {
@@ -74,6 +102,7 @@ void ApolloRedditCaptureBearerTokenFromHeaderDictionary(NSDictionary *headers, N
 
 void ApolloRedditCaptureBearerTokenFromRequest(NSURLRequest *request, NSString *source) {
     if (![request isKindOfClass:[NSURLRequest class]]) return;
+    if (!ApolloURLIsRedditOAuth(request.URL)) return;
     ApolloRedditCaptureBearerTokenFromAuthorization([request valueForHTTPHeaderField:@"Authorization"], source);
 }
 
@@ -86,13 +115,18 @@ static void ApolloRecordRedditUploadedMediaAssetID(NSURL *imageURL, NSString *as
     @synchronized(ApolloRedditUploadAssetMapLock()) {
         if (!sRedditUploadAssetIDByURL) sRedditUploadAssetIDByURL = [NSMutableDictionary new];
         sRedditUploadAssetIDByURL[urlString] = assetID;
+        if ([imageURL.host.lowercaseString isEqualToString:@"reddit-uploaded-video.s3-accelerate.amazonaws.com"]) {
+            NSString *nativeVideoURL = ApolloRedditNativeVideoURLForAssetID(assetID);
+            if (nativeVideoURL.length > 0) sRedditUploadAssetIDByURL[nativeVideoURL] = assetID;
+        }
     }
 }
 
 static NSString *ApolloAssetIDForRedditUploadedMediaURL(NSString *urlString) {
     if (urlString.length == 0) return nil;
+    NSString *decoded = ApolloDecodedRedditMediaURLString(urlString);
     @synchronized(ApolloRedditUploadAssetMapLock()) {
-        return sRedditUploadAssetIDByURL[urlString];
+        return sRedditUploadAssetIDByURL[urlString] ?: (decoded.length > 0 ? sRedditUploadAssetIDByURL[decoded] : nil);
     }
 }
 
@@ -102,10 +136,16 @@ static NSString *ApolloRedditUploadExtensionForMIMEType(NSString *mimeType) {
     if ([mimeType isEqualToString:@"image/webp"]) return @"webp";
     if ([mimeType isEqualToString:@"image/heic"]) return @"heic";
     if ([mimeType isEqualToString:@"image/heif"]) return @"heif";
+    if ([mimeType isEqualToString:@"video/mp4"]) return @"mp4";
+    if ([mimeType isEqualToString:@"video/quicktime"]) return @"mov";
     return @"jpeg";
 }
 
-static void ApolloRecordRedditUploadedMediaInfo(NSURL *imageURL, NSString *assetID, NSString *mimeType) {
+static NSString *ApolloRedditUploadMediaKindForMIMEType(NSString *mimeType) {
+    return ApolloMediaMIMETypeIsVideo(mimeType) ? @"video" : @"image";
+}
+
+static void ApolloRecordRedditUploadedMediaInfo(NSURL *imageURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL) {
     if (assetID.length == 0) return;
 
     NSString *resolvedMIMEType = ApolloMediaMIMETypeForFilename(nil, mimeType);
@@ -114,7 +154,9 @@ static void ApolloRecordRedditUploadedMediaInfo(NSURL *imageURL, NSString *asset
     info[@"assetID"] = assetID;
     info[@"mimeType"] = resolvedMIMEType ?: @"image/jpeg";
     info[@"extension"] = extension ?: @"jpeg";
+    info[@"mediaKind"] = ApolloRedditUploadMediaKindForMIMEType(resolvedMIMEType);
     if (imageURL.absoluteString.length > 0) info[@"stagedURL"] = imageURL.absoluteString;
+    if (webSocketURL.length > 0) info[@"webSocketURL"] = webSocketURL;
 
     @synchronized(ApolloRedditUploadAssetMapLock()) {
         if (!sRedditUploadInfoByAssetID) sRedditUploadInfoByAssetID = [NSMutableDictionary new];
@@ -122,10 +164,45 @@ static void ApolloRecordRedditUploadedMediaInfo(NSURL *imageURL, NSString *asset
     }
 }
 
+static NSDictionary *ApolloRedditUploadInfoForAssetID(NSString *assetID) {
+    if (assetID.length == 0) return nil;
+    @synchronized(ApolloRedditUploadAssetMapLock()) {
+        NSDictionary *info = sRedditUploadInfoByAssetID[assetID];
+        return [info isKindOfClass:[NSDictionary class]] ? [info copy] : nil;
+    }
+}
+
+static void ApolloRecordRedditUploadedVideoPosterInfo(NSString *assetID, NSURL *posterURL, NSString *posterAssetID) {
+    if (assetID.length == 0 || posterURL.absoluteString.length == 0) return;
+
+    @synchronized(ApolloRedditUploadAssetMapLock()) {
+        if (!sRedditUploadInfoByAssetID) sRedditUploadInfoByAssetID = [NSMutableDictionary new];
+        NSMutableDictionary *info = [sRedditUploadInfoByAssetID[assetID] isKindOfClass:[NSDictionary class]] ? [sRedditUploadInfoByAssetID[assetID] mutableCopy] : [NSMutableDictionary dictionary];
+        info[@"posterURL"] = posterURL.absoluteString;
+        if (posterAssetID.length > 0) info[@"posterAssetID"] = posterAssetID;
+        sRedditUploadInfoByAssetID[assetID] = info;
+    }
+}
+
+static BOOL ApolloRedditUploadAssetIDIsVideo(NSString *assetID) {
+    NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+    NSString *mediaKind = [info[@"mediaKind"] isKindOfClass:[NSString class]] ? info[@"mediaKind"] : nil;
+    return [mediaKind isEqualToString:@"video"] || ApolloMediaMIMETypeIsVideo(info[@"mimeType"]);
+}
+
+static BOOL ApolloRedditUploadAssetIDsContainVideo(NSArray<NSString *> *assetIDs) {
+    for (NSString *assetID in assetIDs) {
+        if (ApolloRedditUploadAssetIDIsVideo(assetID)) return YES;
+    }
+    return NO;
+}
+
 // MARK: - URL helpers
 
 static BOOL ApolloStringContainsRedditUploadedMedia(NSString *text) {
-    return [text isKindOfClass:[NSString class]] && [text containsString:@"reddit-uploaded-media.s3-accelerate.amazonaws.com"];
+    return [text isKindOfClass:[NSString class]] &&
+        ([text containsString:@"reddit-uploaded-media.s3-accelerate.amazonaws.com"] ||
+         [text containsString:@"reddit-uploaded-video.s3-accelerate.amazonaws.com"]);
 }
 
 static BOOL ApolloStringIsRedditDisplayMediaURL(NSString *text) {
@@ -172,10 +249,11 @@ static NSString *ApolloHTMLEscapedString(NSString *string) {
 
 static NSString *ApolloRedditUploadFallbackURLForAssetID(NSString *assetID) {
     if (assetID.length == 0) return nil;
-    NSString *extension = nil;
-    @synchronized(ApolloRedditUploadAssetMapLock()) {
-        NSDictionary *info = sRedditUploadInfoByAssetID[assetID];
-        extension = [info[@"extension"] isKindOfClass:[NSString class]] ? info[@"extension"] : nil;
+    NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+    NSString *extension = [info[@"extension"] isKindOfClass:[NSString class]] ? info[@"extension"] : nil;
+    if (ApolloRedditUploadAssetIDIsVideo(assetID)) {
+        NSString *stagedURL = [info[@"stagedURL"] isKindOfClass:[NSString class]] ? info[@"stagedURL"] : nil;
+        return stagedURL.length > 0 ? stagedURL : [@"https://v.redd.it/" stringByAppendingString:assetID];
     }
     return [NSString stringWithFormat:@"https://i.redd.it/%@.%@", assetID, extension.length > 0 ? extension : @"jpeg"];
 }
@@ -237,7 +315,7 @@ static NSRegularExpression *ApolloRedditUploadedMediaURLRegex(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         regex = [[NSRegularExpression alloc]
-                 initWithPattern:@"https://reddit-uploaded-media\\.s3-accelerate\\.amazonaws\\.com/[^\\s\\])<>]+"
+                 initWithPattern:@"https://reddit-uploaded-(?:media|video)\\.s3-accelerate\\.amazonaws\\.com/[^\\s\\])<>]+"
                          options:0
                            error:nil];
     });
@@ -440,11 +518,10 @@ static NSArray<NSString *> *ApolloRedditGalleryAssetIDsForURLString(NSString *ur
 
 static NSDictionary *ApolloSyntheticImgurImageDictionaryForAssetID(NSString *assetID) {
     NSString *mimeType = @"image/jpeg";
-    @synchronized(ApolloRedditUploadAssetMapLock()) {
-        NSDictionary *info = sRedditUploadInfoByAssetID[assetID];
-        if ([info[@"mimeType"] isKindOfClass:[NSString class]]) mimeType = info[@"mimeType"];
-    }
+    NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+    if ([info[@"mimeType"] isKindOfClass:[NSString class]]) mimeType = info[@"mimeType"];
     NSString *link = ApolloRedditUploadFallbackURLForAssetID(assetID) ?: @"";
+    BOOL isVideo = ApolloMediaMIMETypeIsVideo(mimeType);
     return @{
         @"id": assetID ?: @"",
         @"deletehash": assetID ?: @"",
@@ -452,13 +529,16 @@ static NSDictionary *ApolloSyntheticImgurImageDictionaryForAssetID(NSString *ass
         @"description": [NSNull null],
         @"datetime": @((NSInteger)[[NSDate date] timeIntervalSince1970]),
         @"type": mimeType ?: @"image/jpeg",
-        @"animated": @NO,
+        @"animated": @(isVideo),
         @"width": @0,
         @"height": @0,
         @"size": @0,
         @"views": @0,
         @"bandwidth": @0,
         @"link": link,
+        @"mp4": isVideo ? link : @"",
+        @"hls": isVideo ? link : @"",
+        @"has_sound": @(isVideo),
     };
 }
 
@@ -476,6 +556,10 @@ NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *requ
     NSArray<NSString *> *assetIDs = ApolloRedditGalleryAssetIDsFromImgurAlbumRequest(request);
     if (assetIDs.count < 2) {
         ApolloLog(@"[RedditUpload] Imgur album request did not map to a Reddit gallery (mappedItems=%lu)", (unsigned long)assetIDs.count);
+        return nil;
+    }
+    if (ApolloRedditUploadAssetIDsContainVideo(assetIDs)) {
+        ApolloLog(@"[RedditUpload] Refusing to synthesize Reddit gallery containing video media (items=%lu)", (unsigned long)assetIDs.count);
         return nil;
     }
 
@@ -599,6 +683,7 @@ static NSDictionary *ApolloRedditMediaSubmitContextFromRequest(NSURLRequest *req
         if (assetIDs.count > 0) {
             context[@"assetID"] = assetIDs.firstObject;
             context[@"assetIDs"] = assetIDs;
+            context[@"mediaKind"] = @"gallery";
         }
         return context[@"assetID"] ? context : nil;
     }
@@ -617,14 +702,25 @@ static NSDictionary *ApolloRedditMediaSubmitContextFromRequest(NSURLRequest *req
             NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value) ?: value;
             context[@"stagedURL"] = stagedURL;
             NSString *assetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL);
-            if (assetID.length > 0) context[@"assetID"] = assetID;
+            if (assetID.length > 0) {
+                context[@"assetID"] = assetID;
+                context[@"mediaKind"] = ApolloRedditUploadAssetIDIsVideo(assetID) ? @"video" : @"image";
+            }
         } else if ([key isEqualToString:@"url"]) {
-            NSString *albumID = nil;
-            NSArray<NSString *> *assetIDs = ApolloRedditGalleryAssetIDsForURLString(value, &albumID);
-            if (assetIDs.count > 0) {
-                if (albumID.length > 0) context[@"albumID"] = albumID;
-                context[@"assetID"] = assetIDs.firstObject;
-                context[@"assetIDs"] = assetIDs;
+            NSString *urlAssetID = ApolloAssetIDForRedditUploadToken(value);
+            if (urlAssetID.length > 0 && ApolloRedditUploadAssetIDIsVideo(urlAssetID)) {
+                context[@"stagedURL"] = value;
+                context[@"assetID"] = urlAssetID;
+                context[@"mediaKind"] = @"video";
+            } else {
+                NSString *albumID = nil;
+                NSArray<NSString *> *assetIDs = ApolloRedditGalleryAssetIDsForURLString(value, &albumID);
+                if (assetIDs.count > 0) {
+                    if (albumID.length > 0) context[@"albumID"] = albumID;
+                    context[@"assetID"] = assetIDs.firstObject;
+                    context[@"assetIDs"] = assetIDs;
+                    context[@"mediaKind"] = @"gallery";
+                }
             }
         }
     }
@@ -691,24 +787,50 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     BOOL hasUploadedTextField = NO;
     NSString *galleryAlbumID = nil;
     NSArray<NSString *> *galleryAssetIDs = nil;
+    NSString *uploadedURLAssetID = nil;
+    NSString *uploadedURLHost = nil;
     for (NSString *pair in pairs) {
         NSRange equals = [pair rangeOfString:@"="];
         NSString *key = ApolloFormDecodeComponent(equals.location == NSNotFound ? pair : [pair substringToIndex:equals.location]);
         NSString *value = ApolloFormDecodeComponent(equals.location == NSNotFound ? @"" : [pair substringFromIndex:equals.location + 1]);
-        if ([key isEqualToString:@"url"] && ApolloFirstRedditUploadedMediaURLInString(value).length > 0) hasUploadedURLField = YES;
+        if ([key isEqualToString:@"url"] && ApolloFirstRedditUploadedMediaURLInString(value).length > 0) {
+            hasUploadedURLField = YES;
+            NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value) ?: value;
+            uploadedURLHost = ApolloHostForRedditMediaURL(stagedURL);
+            uploadedURLAssetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL) ?: uploadedURLAssetID;
+        }
         if ([key isEqualToString:@"url"] && galleryAssetIDs.count == 0) galleryAssetIDs = ApolloRedditGalleryAssetIDsForURLString(value, &galleryAlbumID);
         if ([key isEqualToString:@"text"] && ApolloFirstRedditUploadedMediaURLInString(value).length > 0) hasUploadedTextField = YES;
     }
-    if (galleryAssetIDs.count >= 2) return ApolloRedditGallerySubmitRequestFromForm(request, formValues, galleryAssetIDs, galleryAlbumID);
+    if (galleryAssetIDs.count >= 2) {
+        if (ApolloRedditUploadAssetIDsContainVideo(galleryAssetIDs)) {
+            ApolloLog(@"[RedditUpload] Refusing unsupported mixed/video gallery submit (albumID=%@, items=%lu)", galleryAlbumID ?: @"(missing)", (unsigned long)galleryAssetIDs.count);
+            return nil;
+        }
+        return ApolloRedditGallerySubmitRequestFromForm(request, formValues, galleryAssetIDs, galleryAlbumID);
+    }
     if (!ApolloStringContainsRedditUploadedMedia(body)) return nil;
     if (!hasUploadedURLField && !hasUploadedTextField) return nil;
 
-    NSMutableArray<NSString *> *rewrittenPairs = [NSMutableArray arrayWithCapacity:pairs.count + 2];
+    NSMutableArray<NSString *> *rewrittenPairs = [NSMutableArray arrayWithCapacity:pairs.count + 3];
     BOOL changed = NO;
     BOOL rewriteAsSelfText = hasUploadedTextField && !hasUploadedURLField;
-    BOOL wroteKind = NO, wroteAPIType = NO, wroteValidateOnSubmit = NO, wroteReturnRichTextJSON = NO;
+    BOOL rewriteAsVideo = hasUploadedURLField && ApolloRedditUploadAssetIDIsVideo(uploadedURLAssetID);
+    BOOL wroteKind = NO, wroteAPIType = NO, wroteValidateOnSubmit = NO, wroteReturnRichTextJSON = NO, wroteVideoPosterURL = NO;
     NSString *richTextJSONString = nil;
     NSString *assetID = nil;
+
+    BOOL uploadedURLLooksVideo = [uploadedURLHost isEqualToString:@"reddit-uploaded-video.s3-accelerate.amazonaws.com"];
+    rewriteAsVideo = hasUploadedURLField && (rewriteAsVideo || uploadedURLLooksVideo);
+    NSDictionary *videoInfo = rewriteAsVideo ? ApolloRedditUploadInfoForAssetID(uploadedURLAssetID) : nil;
+    NSString *videoPosterURL = [videoInfo[@"posterURL"] isKindOfClass:[NSString class]] ? videoInfo[@"posterURL"] : nil;
+    NSString *videoPosterHost = videoPosterURL.length > 0 ? ApolloHostForRedditMediaURL(videoPosterURL) : nil;
+
+    if (hasUploadedURLField && uploadedURLAssetID.length == 0) {
+        ApolloLog(@"[RedditUpload] Uploaded media submit detected but asset map was missing (host=%@)", uploadedURLHost ?: @"(missing)");
+    } else if (rewriteAsVideo) {
+        ApolloLog(@"[RedditUpload] Preparing native video submit (assetID=%@, host=%@, websocket=%@, poster=%@, posterHost=%@)", uploadedURLAssetID ?: @"(missing)", uploadedURLHost ?: @"(missing)", [videoInfo[@"webSocketURL"] isKindOfClass:[NSString class]] ? @"yes" : @"no", videoPosterURL.length > 0 ? @"yes" : @"no", videoPosterHost ?: @"(missing)");
+    }
 
     for (NSString *pair in pairs) {
         NSRange equals = [pair rangeOfString:@"="];
@@ -729,9 +851,16 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
         } else if ([key isEqualToString:@"url"] && ApolloStringContainsRedditUploadedMedia(value)) {
             NSString *stagedURL = ApolloFirstRedditUploadedMediaURLInString(value) ?: value;
             assetID = ApolloAssetIDForRedditUploadedMediaURL(stagedURL);
+            if (rewriteAsVideo) {
+                NSString *nativeVideoURL = ApolloRedditNativeVideoURLForAssetID(assetID ?: uploadedURLAssetID);
+                if (nativeVideoURL.length > 0 && ![value isEqualToString:nativeVideoURL]) {
+                    value = nativeVideoURL;
+                    changed = YES;
+                }
+            }
         } else if ([key isEqualToString:@"kind"]) {
             wroteKind = YES;
-            NSString *newKind = rewriteAsSelfText ? @"self" : @"image";
+            NSString *newKind = rewriteAsSelfText ? @"self" : (rewriteAsVideo ? @"video" : @"image");
             if (![value isEqualToString:newKind]) { value = newKind; changed = YES; }
         } else if ([key isEqualToString:@"api_type"]) {
             wroteAPIType = YES;
@@ -742,14 +871,21 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
         } else if ([key isEqualToString:@"return_rtjson"]) {
             wroteReturnRichTextJSON = YES;
             if (rewriteAsSelfText && ![value isEqualToString:@"true"]) { value = @"true"; changed = YES; }
+        } else if ([key isEqualToString:@"video_poster_url"]) {
+            wroteVideoPosterURL = YES;
+            if (rewriteAsVideo && videoPosterURL.length > 0 && ![value isEqualToString:videoPosterURL]) { value = videoPosterURL; changed = YES; }
         }
 
         [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(key), ApolloFormEncodeComponent(value)]];
     }
 
-    if (!wroteKind) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"kind"), ApolloFormEncodeComponent(rewriteAsSelfText ? @"self" : @"image")]]; changed = YES; }
+    if (!wroteKind) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"kind"), ApolloFormEncodeComponent(rewriteAsSelfText ? @"self" : (rewriteAsVideo ? @"video" : @"image"))]]; changed = YES; }
     if (!wroteValidateOnSubmit) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"validate_on_submit"), ApolloFormEncodeComponent(@"false")]]; changed = YES; }
     if (!wroteAPIType) { [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"api_type"), ApolloFormEncodeComponent(@"json")]]; changed = YES; }
+    if (rewriteAsVideo && !wroteVideoPosterURL && videoPosterURL.length > 0) {
+        [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"video_poster_url"), ApolloFormEncodeComponent(videoPosterURL)]];
+        changed = YES;
+    }
     if (richTextJSONString.length > 0) {
         [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"richtext_json"), ApolloFormEncodeComponent(richTextJSONString)]];
         if (!wroteReturnRichTextJSON) {
@@ -763,7 +899,8 @@ NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request) {
     NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
     [modifiedRequest setHTTPBody:newBody];
     [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
-    ApolloLog(@"[RedditUpload] Rewrote /api/submit to %@ (assetID=%@, %lu bytes)", rewriteAsSelfText ? @"rich text self post" : @"image post", assetID ?: @"(missing)", (unsigned long)newBody.length);
+    NSString *submitKindDescription = rewriteAsSelfText ? @"rich text self post" : (rewriteAsVideo ? @"video post" : @"image post");
+    ApolloLog(@"[RedditUpload] Rewrote /api/submit to %@ (assetID=%@, %lu bytes)", submitKindDescription, assetID ?: uploadedURLAssetID ?: @"(missing)", (unsigned long)newBody.length);
     return modifiedRequest;
 }
 
@@ -1042,6 +1179,58 @@ static BOOL ApolloListingPostMatchesContext(NSDictionary *postData, NSDictionary
     return expectedAuthor.length == 0 || [postAuthor caseInsensitiveCompare:expectedAuthor] == NSOrderedSame;
 }
 
+static BOOL ApolloRedditSubmitContextIsVideo(NSDictionary *context) {
+    return [context[@"mediaKind"] isKindOfClass:[NSString class]] && [context[@"mediaKind"] isEqualToString:@"video"];
+}
+
+static BOOL ApolloRedditMediaDictionaryHasVideo(NSDictionary *media) {
+    if (![media isKindOfClass:[NSDictionary class]]) return NO;
+    return [media[@"reddit_video"] isKindOfClass:[NSDictionary class]];
+}
+
+static void ApolloRedditLogVideoPostVerification(NSDictionary *postData, NSDictionary *context, NSString *source) {
+    if (!ApolloRedditSubmitContextIsVideo(context) || ![postData isKindOfClass:[NSDictionary class]]) return;
+
+    BOOL isVideo = [postData[@"is_video"] respondsToSelector:@selector(boolValue)] ? [postData[@"is_video"] boolValue] : NO;
+    NSString *postHint = [postData[@"post_hint"] isKindOfClass:[NSString class]] ? postData[@"post_hint"] : nil;
+    NSString *domain = [postData[@"domain"] isKindOfClass:[NSString class]] ? postData[@"domain"] : nil;
+    NSString *urlString = [postData[@"url"] isKindOfClass:[NSString class]] ? postData[@"url"] : nil;
+    NSString *urlHost = ApolloHostForRedditMediaURL(urlString);
+    NSDictionary *media = [postData[@"media"] isKindOfClass:[NSDictionary class]] ? postData[@"media"] : nil;
+    NSDictionary *secureMedia = [postData[@"secure_media"] isKindOfClass:[NSDictionary class]] ? postData[@"secure_media"] : nil;
+    ApolloLog(@"[RedditUpload] Video post verification source=%@ assetID=%@ is_video=%@ post_hint=%@ domain=%@ urlHost=%@ media.reddit_video=%@ secure_media.reddit_video=%@",
+        source ?: @"(unknown)", context[@"assetID"] ?: @"(missing)", isVideo ? @"yes" : @"no", postHint ?: @"(missing)", domain ?: @"(missing)", urlHost ?: @"(missing)",
+        ApolloRedditMediaDictionaryHasVideo(media) ? @"yes" : @"no", ApolloRedditMediaDictionaryHasVideo(secureMedia) ? @"yes" : @"no");
+}
+
+static void ApolloRedditVerifySubmittedVideoPost(NSDictionary *context, NSString *linkID, NSString *source) {
+    if (!ApolloRedditSubmitContextIsVideo(context) || linkID.length == 0 || sLatestRedditBearerToken.length == 0) return;
+
+    NSString *fullName = [linkID hasPrefix:@"t3_"] ? linkID : [@"t3_" stringByAppendingString:linkID];
+    NSURLComponents *components = [NSURLComponents componentsWithString:[NSString stringWithFormat:@"https://oauth.reddit.com/by_id/%@.json", fullName]];
+    components.queryItems = @[ [NSURLQueryItem queryItemWithName:@"raw_json" value:@"1"] ];
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:components.URL cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:6.0];
+    [request setValue:[@"Bearer " stringByAppendingString:sLatestRedditBearerToken] forHTTPHeaderField:@"Authorization"];
+    NSString *userAgent = sUserAgent.length > 0 ? sUserAgent : defaultUserAgent;
+    if (userAgent.length > 0) [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        if (error || status < 200 || status >= 300 || data.length == 0) {
+            ApolloLog(@"[RedditUpload] Video post verification fetch failed source=%@ status=%ld error=%@", source ?: @"(unknown)", (long)status, error.localizedDescription ?: @"(none)");
+            return;
+        }
+
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *listingData = [json isKindOfClass:[NSDictionary class]] ? ((NSDictionary *)json)[@"data"] : nil;
+        NSArray *children = [listingData isKindOfClass:[NSDictionary class]] ? listingData[@"children"] : nil;
+        NSDictionary *firstChild = [children.firstObject isKindOfClass:[NSDictionary class]] ? children.firstObject : nil;
+        NSDictionary *postData = [firstChild[@"data"] isKindOfClass:[NSDictionary class]] ? firstChild[@"data"] : nil;
+        ApolloRedditLogVideoPostVerification(postData, context, source ?: @"by-id");
+    }] resume];
+}
+
 static void ApolloRedditPollListingForLinkID(NSDictionary *context, NSUInteger attempt, ApolloRedditLinkIDResolution completion) {
     NSString *subreddit = [context[@"subreddit"] isKindOfClass:[NSString class]] ? context[@"subreddit"] : nil;
     if (subreddit.length == 0 || sLatestRedditBearerToken.length == 0) { completion(nil, nil); return; }
@@ -1077,6 +1266,7 @@ static void ApolloRedditPollListingForLinkID(NSDictionary *context, NSUInteger a
             NSString *permalink = [postData[@"permalink"] isKindOfClass:[NSString class]] ? postData[@"permalink"] : nil;
             NSString *postURL = permalink.length > 0 ? [@"https://reddit.com" stringByAppendingString:permalink] : nil;
             if (id_.length > 0) {
+                ApolloRedditLogVideoPostVerification(postData, context, [NSString stringWithFormat:@"listing-poll-%lu", (unsigned long)attempt]);
                 completion(id_, postURL);
                 return;
             }
@@ -1088,17 +1278,18 @@ static void ApolloRedditPollListingForLinkID(NSDictionary *context, NSUInteger a
 // Race websocket against listing-poll. First non-nil linkID wins.
 static void ApolloRedditResolveSubmittedLinkID(NSString *webSocketURL, NSDictionary *context, ApolloRedditLinkIDResolution completion) {
     __block BOOL completed = NO;
-    void (^deliver)(NSString *, NSString *) = ^(NSString *linkID, NSString *postURL) {
+    void (^deliver)(NSString *, NSString *, NSString *) = ^(NSString *linkID, NSString *postURL, NSString *source) {
         @synchronized(ApolloRedditUploadAssetMapLock()) {
             if (completed) return;
             if (linkID.length == 0) return;
             completed = YES;
         }
+        ApolloRedditVerifySubmittedVideoPost(context, linkID, source);
         completion(linkID, postURL);
     };
 
     ApolloRedditResolveSubmittedLinkIDViaWebsocket(webSocketURL, ^(NSString *linkID, NSString *postURL) {
-        deliver(linkID, postURL);
+        deliver(linkID, postURL, @"websocket");
     });
 
     for (NSUInteger i = 0; i < kApolloSubmitListingPollCount; i++) {
@@ -1106,7 +1297,7 @@ static void ApolloRedditResolveSubmittedLinkID(NSString *webSocketURL, NSDiction
         NSUInteger attempt = i + 1;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             @synchronized(ApolloRedditUploadAssetMapLock()) { if (completed) return; }
-            ApolloRedditPollListingForLinkID(context, attempt, ^(NSString *linkID, NSString *postURL) { deliver(linkID, postURL); });
+            ApolloRedditPollListingForLinkID(context, attempt, ^(NSString *linkID, NSString *postURL) { deliver(linkID, postURL, [NSString stringWithFormat:@"listing-poll-%lu", (unsigned long)attempt]); });
         });
     }
 
@@ -1130,7 +1321,9 @@ static NSData *ApolloRedditSynthesizeSubmitSuccessResponseData(NSString *linkID,
     NSString *fullName = [linkID hasPrefix:@"t3_"] ? linkID : [@"t3_" stringByAppendingString:linkID];
     NSString *bareID = [linkID hasPrefix:@"t3_"] ? [linkID substringFromIndex:3] : linkID;
     NSString *url = postURL.length > 0 ? postURL : ApolloRedditUploadFallbackURLForAssetID(context[@"assetID"]);
-    if (ApolloRedditPostURLIsGalleryURL(url)) {
+    if ([context[@"mediaKind"] isEqualToString:@"video"] && postURL.length == 0) {
+        url = ApolloRedditCanonicalCommentsURLForLinkID(linkID, context) ?: url;
+    } else if (ApolloRedditPostURLIsGalleryURL(url)) {
         url = ApolloRedditCanonicalCommentsURLForLinkID(linkID, context) ?: url;
     }
 
@@ -1291,7 +1484,7 @@ void ApolloRedditTransformSubmitResponseAsync(NSData *originalData, NSURLRequest
         NSString *commentsURL = ApolloRedditCanonicalCommentsURLForLinkID(directLinkID, context);
         NSData *synth = ApolloRedditSynthesizeSubmitSuccessResponseData(directLinkID, commentsURL, context);
         if (synth.length > 0) {
-            ApolloLog(@"[RedditUpload] Normalized gallery submit success response (linkID=%@, url=%@)", directLinkID, commentsURL ?: @"(missing)");
+            ApolloLog(@"[RedditUpload] Normalized media submit success response (linkID=%@, url=%@)", directLinkID, commentsURL ?: @"(missing)");
             completion(synth);
             return;
         }
@@ -1703,13 +1896,31 @@ static NSHTTPURLResponse *ApolloSyntheticImgurHTTPResponse(NSURL *url) {
                                      headerFields:@{@"Content-Type": @"application/json"}];
 }
 
-static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *filename, NSString *mimeType,
-                                                  NSURL *originalURL, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
+static BOOL ApolloRedditRequestUsesImgurHost(NSURLRequest *request) {
+    NSString *host = request.URL.host.lowercaseString;
+    return [host isEqualToString:@"imgur-apiv3.p.rapidapi.com"] || [host isEqualToString:@"api.imgur.com"];
+}
+
+static void ApolloLogUnhandledImgurUploadRequestOnce(NSURLRequest *request, NSString *source) {
+    if (!ApolloRedditRequestUsesImgurHost(request)) return;
+    NSString *key = [NSString stringWithFormat:@"%@ %@ %@", source ?: @"upload", request.HTTPMethod ?: @"GET", request.URL.path ?: @"(missing)"];
+    @synchronized(ApolloRedditUploadAssetMapLock()) {
+        if (!sRedditLoggedUnhandledImgurUploadKeys) sRedditLoggedUnhandledImgurUploadKeys = [NSMutableSet new];
+        if ([sRedditLoggedUnhandledImgurUploadKeys containsObject:key]) return;
+        [sRedditLoggedUnhandledImgurUploadKeys addObject:key];
+    }
+
+    NSString *contentType = [request valueForHTTPHeaderField:@"Content-Type"] ?: @"(missing)";
+    ApolloLog(@"[RedditUpload] Observed unsupported Imgur upload request source=%@ path=%@ contentType=%@", source ?: @"(unknown)", request.URL.path ?: @"(missing)", contentType);
+}
+
+static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSString *filename, NSString *mimeType,
+                                                  NSData *videoPosterData, NSURL *originalURL, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
     NSString *token = [sLatestRedditBearerToken copy];
     NSString *userAgent = sUserAgent.length > 0 ? sUserAgent : defaultUserAgent;
 
-    ApolloUploadImageDataToReddit(imageData, filename, mimeType, token, userAgent, ^(NSURL *imageURL, NSString *assetID, NSString *webSocketURL, NSError *error) {
-        if (error || !imageURL || assetID.length == 0) {
+    ApolloUploadMediaDataToReddit(mediaData, filename, mimeType, token, userAgent, ^(NSURL *mediaURL, NSString *assetID, NSString *webSocketURL, NSError *error) {
+        if (error || !mediaURL || assetID.length == 0) {
             ApolloLog(@"[RedditUpload] Upload failed: %@", error.localizedDescription);
             completionHandler(nil, nil, error ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:50
                 userInfo:@{NSLocalizedDescriptionKey: @"Reddit media upload did not return a URL and asset ID"}]);
@@ -1717,12 +1928,49 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
         }
 
         NSString *resolvedMIMEType = ApolloMediaMIMETypeForFilename(filename, mimeType);
-        ApolloRecordRedditUploadedMediaAssetID(imageURL, assetID);
-        ApolloRecordRedditUploadedMediaInfo(imageURL, assetID, resolvedMIMEType);
+        ApolloRecordRedditUploadedMediaAssetID(mediaURL, assetID);
+        ApolloRecordRedditUploadedMediaInfo(mediaURL, assetID, resolvedMIMEType, webSocketURL);
 
-        NSData *jsonData = ApolloSyntheticImgurUploadResponseData(imageURL, resolvedMIMEType);
-        NSHTTPURLResponse *response = ApolloSyntheticImgurHTTPResponse(originalURL ?: imageURL);
-        completionHandler(jsonData, response, nil);
+        BOOL isVideo = ApolloMediaMIMETypeIsVideo(resolvedMIMEType);
+        void (^completeSyntheticUpload)(void) = ^{
+            NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+            NSString *posterURL = [info[@"posterURL"] isKindOfClass:[NSString class]] ? info[@"posterURL"] : nil;
+            ApolloLog(@"[RedditUpload] Completed Reddit native %@ upload (assetID=%@, websocket=%@, poster=%@)", isVideo ? @"video" : @"image", assetID, webSocketURL.length > 0 ? @"yes" : @"no", isVideo ? (posterURL.length > 0 ? @"yes" : @"no") : @"n/a");
+            NSData *jsonData = ApolloSyntheticImgurUploadResponseData(mediaURL, resolvedMIMEType);
+            NSHTTPURLResponse *response = ApolloSyntheticImgurHTTPResponse(originalURL ?: mediaURL);
+            completionHandler(jsonData, response, nil);
+        };
+
+        if (isVideo) {
+            if (videoPosterData.length == 0) {
+                ApolloLog(@"[RedditUpload] Video upload missing poster data for assetID=%@", assetID);
+                completionHandler(nil, nil, [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:52
+                    userInfo:@{NSLocalizedDescriptionKey: @"Selected video poster image was missing"}]);
+                return;
+            }
+
+            NSString *posterFilename = [NSString stringWithFormat:@"apollo-video-poster-%@.jpg", [NSUUID UUID].UUIDString];
+            ApolloLog(@"[RedditUpload] Uploading video poster image for assetID=%@ (%lu bytes)", assetID, (unsigned long)videoPosterData.length);
+            ApolloUploadMediaDataToReddit(videoPosterData, posterFilename, @"image/jpeg", token, userAgent, ^(NSURL *posterURL, NSString *posterAssetID, NSString *posterWebSocketURL, NSError *posterError) {
+                if (posterError || !posterURL) {
+                    ApolloLog(@"[RedditUpload] Video poster upload failed for assetID=%@: %@", assetID, posterError.localizedDescription ?: @"missing poster URL");
+                    completionHandler(nil, nil, posterError ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:53
+                        userInfo:@{NSLocalizedDescriptionKey: @"Reddit video poster upload did not return a URL"}]);
+                    return;
+                }
+
+                if (posterAssetID.length > 0) {
+                    ApolloRecordRedditUploadedMediaAssetID(posterURL, posterAssetID);
+                    ApolloRecordRedditUploadedMediaInfo(posterURL, posterAssetID, @"image/jpeg", posterWebSocketURL);
+                }
+                ApolloRecordRedditUploadedVideoPosterInfo(assetID, posterURL, posterAssetID);
+                ApolloLog(@"[RedditUpload] Uploaded video poster image for assetID=%@ posterAssetID=%@ posterHost=%@", assetID, posterAssetID ?: @"(missing)", posterURL.host ?: @"(missing)");
+                completeSyntheticUpload();
+            });
+            return;
+        }
+
+        completeSyntheticUpload();
     });
 }
 
@@ -1732,24 +1980,15 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
 
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (ApolloIsAuthorizationHeader(field)) {
-        ApolloRedditCaptureBearerTokenFromAuthorization(value, @"NSMutableURLRequest setValue:forHTTPHeaderField:");
+        ApolloRedditCaptureBearerTokenFromAuthorizationForURL(value, self.URL, @"NSMutableURLRequest setValue:forHTTPHeaderField:");
     }
     %orig;
 }
 
 - (void)addValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (ApolloIsAuthorizationHeader(field)) {
-        ApolloRedditCaptureBearerTokenFromAuthorization(value, @"NSMutableURLRequest addValue:forHTTPHeaderField:");
+        ApolloRedditCaptureBearerTokenFromAuthorizationForURL(value, self.URL, @"NSMutableURLRequest addValue:forHTTPHeaderField:");
     }
-    %orig;
-}
-
-%end
-
-%hook NSURLSessionConfiguration
-
-- (void)setHTTPAdditionalHeaders:(NSDictionary *)HTTPAdditionalHeaders {
-    ApolloRedditCaptureBearerTokenFromHeaderDictionary(HTTPAdditionalHeaders, @"NSURLSessionConfiguration HTTPAdditionalHeaders");
     %orig;
 }
 
@@ -1760,7 +1999,10 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
 - (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession uploadTaskWithRequest:fromData:");
 
-    if (sImageUploadProvider != ImageUploadProviderReddit || !completionHandler || !ApolloIsImgurImageUploadRequest(request)) return %orig;
+    if (sImageUploadProvider != ImageUploadProviderReddit || !completionHandler || !ApolloIsImgurImageUploadRequest(request)) {
+        if (sImageUploadProvider == ImageUploadProviderReddit && completionHandler) ApolloLogUnhandledImgurUploadRequestOnce(request, @"fromData");
+        return %orig;
+    }
     if (sLatestRedditBearerToken.length == 0) {
         ApolloLog(@"[RedditUpload] No captured Reddit bearer token yet; using Imgur upload");
         return %orig;
@@ -1769,11 +2011,28 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
     NSString *mimeType = ApolloMediaMIMETypeForFilename(nil, [request valueForHTTPHeaderField:@"Content-Type"]);
     NSString *extension = ApolloRedditUploadExtensionForMIMEType(mimeType);
     NSString *filename = [@"apollo-upload" stringByAppendingPathExtension:extension];
+    NSData *uploadData = bodyData ?: [NSData data];
 
-    ApolloLog(@"[RedditUpload] Intercepting Imgur data upload (%lu bytes)", (unsigned long)bodyData.length);
+    NSDictionary *videoContext = ApolloMediaComposerConsumePendingVideoUploadContext(bodyData, nil);
+    NSURL *videoURL = [videoContext[@"fileURL"] isKindOfClass:[NSURL class]] ? videoContext[@"fileURL"] : nil;
+    NSData *videoPosterData = [videoContext[@"posterData"] isKindOfClass:[NSData class]] ? videoContext[@"posterData"] : nil;
+    if (videoURL) {
+        NSError *readError = nil;
+        NSData *videoData = [NSData dataWithContentsOfURL:videoURL options:0 error:&readError];
+        if (videoData.length > 0) {
+            uploadData = videoData;
+            filename = [videoContext[@"filename"] isKindOfClass:[NSString class]] && [videoContext[@"filename"] length] > 0 ? videoContext[@"filename"] : videoURL.lastPathComponent ?: @"apollo-selected-video.mp4";
+            mimeType = [videoContext[@"mimeType"] isKindOfClass:[NSString class]] && [videoContext[@"mimeType"] length] > 0 ? videoContext[@"mimeType"] : ApolloMediaMIMETypeForFilename(filename, @"video/mp4");
+            ApolloLog(@"[RedditUpload] Swapping selected-video poster upload for original video file %@ (%lu bytes)", filename, (unsigned long)videoData.length);
+        } else {
+            ApolloLog(@"[RedditUpload] Selected-video context had unreadable file %@: %@", videoURL.path ?: @"(missing)", readError.localizedDescription ?: @"unknown error");
+        }
+    }
+
+    ApolloLog(@"[RedditUpload] Intercepting Imgur data upload (%lu bytes)", (unsigned long)uploadData.length);
 
     void (^wrapped)(NSData *, NSURLResponse *, NSError *) = ^(__unused NSData *data, __unused NSURLResponse *response, __unused NSError *error) {
-        ApolloCompleteRedditNativeImageUpload(bodyData, filename, mimeType, request.URL, completionHandler);
+        ApolloCompleteRedditNativeMediaUpload(uploadData, filename, mimeType, videoPosterData, request.URL, completionHandler);
     };
     return %orig(ApolloRedditUploadFastFailRequest(), bodyData ?: [NSData data], wrapped);
 }
@@ -1781,26 +2040,38 @@ static void ApolloCompleteRedditNativeImageUpload(NSData *imageData, NSString *f
 - (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession uploadTaskWithRequest:fromFile:");
 
-    if (sImageUploadProvider != ImageUploadProviderReddit || !completionHandler || !ApolloIsImgurImageUploadRequest(request)) return %orig;
+    if (sImageUploadProvider != ImageUploadProviderReddit || !completionHandler || !ApolloIsImgurImageUploadRequest(request)) {
+        if (sImageUploadProvider == ImageUploadProviderReddit && completionHandler) ApolloLogUnhandledImgurUploadRequestOnce(request, @"fromFile");
+        return %orig;
+    }
     if (sLatestRedditBearerToken.length == 0) {
         ApolloLog(@"[RedditUpload] No captured Reddit bearer token yet; using Imgur upload");
         return %orig;
     }
 
-    NSString *filename = fileURL.lastPathComponent.length > 0 ? fileURL.lastPathComponent : @"apollo-upload.jpg";
-    NSString *mimeType = ApolloMediaMIMETypeForFilename(filename, [request valueForHTTPHeaderField:@"Content-Type"]);
+    __block NSString *filename = fileURL.lastPathComponent.length > 0 ? fileURL.lastPathComponent : @"apollo-upload.jpg";
+    __block NSString *mimeType = ApolloMediaMIMETypeForFilename(filename, [request valueForHTTPHeaderField:@"Content-Type"]);
+    NSDictionary *videoContext = ApolloMediaComposerConsumePendingVideoUploadContext(nil, fileURL);
+    NSURL *videoURL = [videoContext[@"fileURL"] isKindOfClass:[NSURL class]] ? videoContext[@"fileURL"] : nil;
+    NSData *videoPosterData = [videoContext[@"posterData"] isKindOfClass:[NSData class]] ? videoContext[@"posterData"] : nil;
 
     ApolloLog(@"[RedditUpload] Intercepting Imgur file upload: %@", filename);
 
     void (^wrapped)(NSData *, NSURLResponse *, NSError *) = ^(__unused NSData *data, __unused NSURLResponse *response, __unused NSError *error) {
         NSError *readError = nil;
-        NSData *imageData = [NSData dataWithContentsOfURL:fileURL options:0 error:&readError];
-        if (readError || imageData.length == 0) {
+        NSURL *uploadFileURL = videoURL ?: fileURL;
+        NSData *mediaData = [NSData dataWithContentsOfURL:uploadFileURL options:0 error:&readError];
+        if (readError || mediaData.length == 0) {
             completionHandler(nil, nil, readError ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:51
                 userInfo:@{NSLocalizedDescriptionKey: @"Upload file was empty"}]);
             return;
         }
-        ApolloCompleteRedditNativeImageUpload(imageData, filename, mimeType, request.URL, completionHandler);
+        if (videoURL) {
+            filename = [videoContext[@"filename"] isKindOfClass:[NSString class]] && [videoContext[@"filename"] length] > 0 ? videoContext[@"filename"] : videoURL.lastPathComponent ?: @"apollo-selected-video.mp4";
+            mimeType = [videoContext[@"mimeType"] isKindOfClass:[NSString class]] && [videoContext[@"mimeType"] length] > 0 ? videoContext[@"mimeType"] : ApolloMediaMIMETypeForFilename(filename, @"video/mp4");
+            ApolloLog(@"[RedditUpload] Swapping selected-video poster file upload for original video file %@ (%lu bytes)", filename, (unsigned long)mediaData.length);
+        }
+        ApolloCompleteRedditNativeMediaUpload(mediaData, filename, mimeType, videoPosterData, request.URL, completionHandler);
     };
     return %orig(ApolloRedditUploadFastFailRequest(), fileURL, wrapped);
 }

@@ -4,11 +4,18 @@
 extern "C" {
 #endif
 
-typedef void (^ApolloRedditMediaUploadCompletion)(NSURL *imageURL, NSString *assetID, NSString *webSocketURL, NSError *error);
+typedef void (^ApolloRedditMediaUploadCompletion)(NSURL *mediaURL, NSString *assetID, NSString *webSocketURL, NSError *error);
 
 BOOL ApolloIsImgurImageUploadRequest(NSURLRequest *request);
 NSString *ApolloMediaMIMETypeForFilename(NSString *filename, NSString *fallbackMIMEType);
-NSData *ApolloSyntheticImgurUploadResponseData(NSURL *imageURL, NSString *mimeType);
+BOOL ApolloMediaMIMETypeIsVideo(NSString *mimeType);
+NSData *ApolloSyntheticImgurUploadResponseData(NSURL *mediaURL, NSString *mimeType);
+void ApolloUploadMediaDataToReddit(NSData *mediaData,
+                                  NSString *filename,
+                                  NSString *mimeType,
+                                  NSString *bearerToken,
+                                  NSString *userAgent,
+                                  ApolloRedditMediaUploadCompletion completion);
 void ApolloUploadImageDataToReddit(NSData *imageData,
                                    NSString *filename,
                                    NSString *mimeType,

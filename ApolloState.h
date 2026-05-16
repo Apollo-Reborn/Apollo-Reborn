@@ -26,7 +26,7 @@ extern BOOL sShowUserAvatars;
 // link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
 
-// Image upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
+// Media upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
 // session to upload directly to Reddit's media storage.
 typedef NS_ENUM(NSInteger, ImageUploadProvider) {
     ImageUploadProviderImgur = 0,
