@@ -56,6 +56,19 @@ BOOL ApolloIsAuthorizationHeader(NSString *field) {
     return [field isKindOfClass:[NSString class]] && [field caseInsensitiveCompare:@"Authorization"] == NSOrderedSame;
 }
 
+static BOOL ApolloURLIsRedditOAuth(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return NO;
+    NSString *host = url.host.lowercaseString;
+    if (host.length == 0) return NO;
+    if ([host isEqualToString:@"oauth.reddit.com"]) return YES;
+    if ([host isEqualToString:@"www.reddit.com"]) return YES;
+    if ([host isEqualToString:@"ssl.reddit.com"]) return YES;
+    if ([host isEqualToString:@"api.reddit.com"]) return YES;
+    if ([host isEqualToString:@"old.reddit.com"]) return YES;
+    if ([host hasSuffix:@".reddit.com"]) return YES;
+    return NO;
+}
+
 void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NSString *source) {
     if (![authorization isKindOfClass:[NSString class]]) return;
 
@@ -67,6 +80,11 @@ void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NS
 
     sLatestRedditBearerToken = [token copy];
     ApolloLog(@"[RedditUpload] Captured Reddit bearer token from %@", source ?: @"unknown source");
+}
+
+void ApolloRedditCaptureBearerTokenFromAuthorizationForURL(NSString *authorization, NSURL *url, NSString *source) {
+    if (!ApolloURLIsRedditOAuth(url)) return;
+    ApolloRedditCaptureBearerTokenFromAuthorization(authorization, source);
 }
 
 void ApolloRedditCaptureBearerTokenFromHeaderDictionary(NSDictionary *headers, NSString *source) {
@@ -84,6 +102,7 @@ void ApolloRedditCaptureBearerTokenFromHeaderDictionary(NSDictionary *headers, N
 
 void ApolloRedditCaptureBearerTokenFromRequest(NSURLRequest *request, NSString *source) {
     if (![request isKindOfClass:[NSURLRequest class]]) return;
+    if (!ApolloURLIsRedditOAuth(request.URL)) return;
     ApolloRedditCaptureBearerTokenFromAuthorization([request valueForHTTPHeaderField:@"Authorization"], source);
 }
 
@@ -1961,24 +1980,15 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSString *f
 
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (ApolloIsAuthorizationHeader(field)) {
-        ApolloRedditCaptureBearerTokenFromAuthorization(value, @"NSMutableURLRequest setValue:forHTTPHeaderField:");
+        ApolloRedditCaptureBearerTokenFromAuthorizationForURL(value, self.URL, @"NSMutableURLRequest setValue:forHTTPHeaderField:");
     }
     %orig;
 }
 
 - (void)addValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if (ApolloIsAuthorizationHeader(field)) {
-        ApolloRedditCaptureBearerTokenFromAuthorization(value, @"NSMutableURLRequest addValue:forHTTPHeaderField:");
+        ApolloRedditCaptureBearerTokenFromAuthorizationForURL(value, self.URL, @"NSMutableURLRequest addValue:forHTTPHeaderField:");
     }
-    %orig;
-}
-
-%end
-
-%hook NSURLSessionConfiguration
-
-- (void)setHTTPAdditionalHeaders:(NSDictionary *)HTTPAdditionalHeaders {
-    ApolloRedditCaptureBearerTokenFromHeaderDictionary(HTTPAdditionalHeaders, @"NSURLSessionConfiguration HTTPAdditionalHeaders");
     %orig;
 }
 
