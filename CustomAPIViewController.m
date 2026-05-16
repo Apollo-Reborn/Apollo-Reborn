@@ -1,6 +1,7 @@
 #import "CustomAPIViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
@@ -241,7 +242,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 7;
-        case SectionMedia: return 6;
+        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 7 : 6;
         case SectionSubreddits: return 5;
         case SectionAbout: return 3; // GitHub repo link + version + export logs
         case SectionCredits: return 3;
@@ -600,6 +601,16 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Show User Profile Pictures"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]
                                            action:@selector(userAvatarsSwitchToggled:)];
+        case 6: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearAvatarCache"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Media_ClearAvatarCache"];
+            }
+            cell.textLabel.text = @"Clear Profile Picture Cache";
+            cell.textLabel.textColor = self.view.tintColor;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -828,6 +839,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self presentUnmuteCommentsVideosModeSheetFromSourceView:cell];
         } else if (indexPath.row == 2) {
             [self presentImageUploadProviderSheetFromSourceView:cell];
+        } else if (indexPath.row == 6) {
+            [self promptClearProfilePictureCacheFromSourceView:cell];
         }
     } else if (indexPath.section == SectionCredits) {
         switch (indexPath.row) {
@@ -847,7 +860,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 4 || indexPath.row == 5)) return YES;
-    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
+    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 6)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1)) return YES;
     if (indexPath.section == SectionCredits) return YES;
     return NO;
@@ -1112,9 +1125,30 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
+    BOOL wasOn = sShowUserAvatars;
     sShowUserAvatars = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sShowUserAvatars forKey:UDKeyShowUserAvatars];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloUserAvatarsToggleChangedNotification" object:nil];
+    if (sShowUserAvatars == wasOn) return;
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:6 inSection:SectionMedia]];
+    if (sShowUserAvatars) {
+        [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (void)promptClearProfilePictureCacheFromSourceView:(UIView *)sourceView {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear Profile Picture Cache?"
+                                                                   message:@"Cached user avatars, banners, and profile metadata will be removed. They'll be re-downloaded the next time they're shown."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [[ApolloUserProfileCache sharedCache] clearAllCaches];
+        // Re-broadcast the avatars-toggle notification so visible profile headers reload immediately.
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloUserAvatarsToggleChangedNotification" object:nil];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)inlineImagesSwitchToggled:(UISwitch *)sender {

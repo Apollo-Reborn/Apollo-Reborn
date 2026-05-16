@@ -944,7 +944,7 @@ static ApolloProfileHeaderView *ApolloProfileCreateHeader(CGFloat width) {
     return header;
 }
 
-static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username) {
+static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh) {
     if (!header || username.length == 0) return;
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
@@ -981,7 +981,11 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
     };
 
     if (cachedInfo) applyInfo(cachedInfo);
-    [cache requestInfoForUsername:username completion:applyInfo];
+    if (forceRefresh) {
+        [cache refetchInfoForUsername:username completion:applyInfo];
+    } else {
+        [cache requestInfoForUsername:username completion:applyInfo];
+    }
 }
 
 static BOOL ApolloViewControllerLooksProfileRelated(UIViewController *viewController) {
@@ -1078,7 +1082,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         header.snoovatarImageView.image = nil;
         header.bannerImageView.image = nil;
         ApolloProfileSetSnoovatarMode(header, NO);
-        ApolloProfileLoadImages(header, username);
+        ApolloProfileLoadImages(header, username, NO);
         ApolloLog(@"[UserAvatars] Loading profile header images class=%@ vc=%p username=%@", className, viewControllerObject, username);
     }
 }
@@ -1227,6 +1231,17 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+}
+
+- (void)refreshControlActivatedWithSender:(id)sender {
+    %orig;
+    if (!sShowUserAvatars) return;
+    NSString *username = ApolloUsernameFromProfileViewController((UIViewController *)self);
+    if (username.length == 0) return;
+    ApolloProfileHeaderView *header = objc_getAssociatedObject(self, kApolloProfileHeaderViewKey);
+    if (!header) return;
+    ApolloLog(@"[UserAvatars] Pull-to-refresh forcing avatar/banner refetch for u/%@", username);
+    ApolloProfileLoadImages(header, username, YES);
 }
 
 %end
