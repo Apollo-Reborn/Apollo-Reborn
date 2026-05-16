@@ -38,6 +38,14 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
 
 ## Adding a new icon
 
+### Prerequisites
+
+- **Python 3**
+- **[Icon Composer](https://developer.apple.com/icon-composer/)** — for designing icons, exporting `.icon` packages, and generating preview images (can also be installed by installing [Xcode 26+](https://developer.apple.com/xcode/))
+- **ImageMagick** — for compression (8-bit normalization) in `generate_icon_previews.py` (install with `brew install imagemagick`)
+
+### Steps
+
 1. Design it in **[Icon Composer](https://developer.apple.com/icon-composer/)** and export the `.icon` package.
 2. Create the per-icon directory and drop in the package:
    ```
@@ -49,7 +57,7 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>
    ```
    This exports all four variants (`default`, `dark`, `clear-light`, `clear-dark`) via
-   `ictool` and compresses them by normalising to 8-bit depth.
+   `ictool` (included in Icon Composer) and compresses them by normalising to 8-bit depth.
 5. Regenerate the preview header and rebuild the asset catalog:
    ```bash
    # From the repo root
@@ -70,20 +78,10 @@ final IPA. It bundles Apollo's original assets plus the Liquid Glass
 
 ### Prerequisites
 
-- **Python 3** — for the scripts in `liquid-glass/scripts/`
-
----
-
-**Building the Assets.car**
+- **Python 3**
 - **Xcode Command Line Tools** — provides `assetutil` and `xcrun actool`
 - **[cartool](https://github.com/showxu/cartools)** — must be on your `PATH` ([binary release](https://github.com/showxu/cartools/releases/download/1.0.0-alpha/cartool-1.0.0-alpha.bigsur.bottle.tar.gz))
 - **[Asset Catalog Tinkerer](https://github.com/insidegui/AssetCatalogTinkerer)** — installed at `/Applications/Asset Catalog Tinkerer.app`
-
----
-
-**Adding new icons**
-- **Icon Composer** — for designing icons, exporting `.icon` packages, and generating preview images (install with Xcode, or standalone from [here](https://developer.apple.com/icon-composer/) in `/Applications/Icon Composer.app/`)
-- **ImageMagick** — for compression (8-bit normalization) in `generate_icon_previews.py` (install with `brew install imagemagick`)
 
 ### Run
 
