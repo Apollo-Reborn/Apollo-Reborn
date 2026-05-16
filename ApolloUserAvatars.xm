@@ -235,26 +235,65 @@ static NSInteger ApolloAuthorTextScore(NSString *text, NSString *username) {
 
     NSString *lowerText = text.lowercaseString;
     NSString *lowerUsername = username.lowercaseString;
-    NSString *prefixed = [@"u/" stringByAppendingString:lowerUsername];
+    NSString *uPrefixed = [@"u/" stringByAppendingString:lowerUsername];
+    NSString *byPrefixed = [@"by " stringByAppendingString:lowerUsername];
+    NSString *byUPrefixed = [@"by " stringByAppendingString:uPrefixed];
 
     NSRange direct = [lowerText rangeOfString:lowerUsername];
-    NSRange withPrefix = [lowerText rangeOfString:prefixed];
-    if (direct.location == NSNotFound && withPrefix.location == NSNotFound) return NSIntegerMax;
+    NSRange uRange = [lowerText rangeOfString:uPrefixed];
+    NSRange byRange = [lowerText rangeOfString:byPrefixed];
+    NSRange byURange = [lowerText rangeOfString:byUPrefixed];
+    if (direct.location == NSNotFound
+        && uRange.location == NSNotFound
+        && byRange.location == NSNotFound
+        && byURange.location == NSNotFound) {
+        return NSIntegerMax;
+    }
 
-    NSUInteger location = MIN(direct.location == NSNotFound ? NSUIntegerMax : direct.location,
-                              withPrefix.location == NSNotFound ? NSUIntegerMax : withPrefix.location);
+    NSUInteger location = direct.location != NSNotFound ? direct.location : NSUIntegerMax;
+    if (uRange.location != NSNotFound) location = MIN(location, uRange.location);
+    if (byRange.location != NSNotFound) location = MIN(location, byRange.location);
+    if (byURange.location != NSNotFound) location = MIN(location, byURange.location);
     if (location > 55) return NSIntegerMax;
 
-    NSInteger prefixBonus = 20;
-    if ([lowerText hasPrefix:lowerUsername] || [lowerText hasPrefix:prefixed]) prefixBonus = 0;
-    else if (withPrefix.location != NSNotFound) prefixBonus = 8;
+    // Prefer real byline markers ("u/<name>", "by <name>") so a username that
+    // happens to also appear in a title / flair / subreddit label can't outrank
+    // the actual byline. Bare matches stay scoreable for contexts that lack a
+    // prefix (e.g. comment cells where the author label is just the username).
+    NSInteger prefixBonus;
+    if (uRange.location != NSNotFound || byURange.location != NSNotFound) {
+        prefixBonus = 0;
+    } else if (byRange.location != NSNotFound) {
+        prefixBonus = 4;
+    } else {
+        prefixBonus = 1000;
+    }
 
     return prefixBonus + (NSInteger)location + (NSInteger)(text.length / 4);
 }
 
-static id ApolloBestAuthorTextNode(id cell, NSString *username) {
+// Resolve the byline subtree directly from known cell ivars so titles/flairs
+// sharing the username string can't be mistaken for the author. Ivars sourced
+// from Hopper RE of each class's .cxx_destruct:
+//   CommentCellNode → authorNode
+//   {Large,Compact}PostCellNode / CommentsHeaderCellNode → postInfoNode.authorButtonNode
+static id ApolloResolveAuthorNodeSubtree(id cell) {
+    if (!cell) return nil;
+    id authorNode = ApolloObjectIvarValue(cell, @"authorNode");
+    if (authorNode) return authorNode;
+    id postInfoNode = ApolloObjectIvarValue(cell, @"postInfoNode");
+    if (postInfoNode) {
+        id authorButtonNode = ApolloObjectIvarValue(postInfoNode, @"authorButtonNode");
+        if (authorButtonNode) return authorButtonNode;
+        return postInfoNode;
+    }
+    return nil;
+}
+
+static id ApolloBestAuthorTextNodeInRoot(id root, NSString *username) {
+    if (!root) return nil;
     NSMutableArray *nodes = [NSMutableArray array];
-    ApolloCollectTextNodes(cell, [NSMutableSet set], nodes, 0);
+    ApolloCollectTextNodes(root, [NSMutableSet set], nodes, 0);
 
     id bestNode = nil;
     NSInteger bestScore = NSIntegerMax;
@@ -267,6 +306,15 @@ static id ApolloBestAuthorTextNode(id cell, NSString *username) {
         }
     }
     return bestNode;
+}
+
+static id ApolloBestAuthorTextNode(id cell, NSString *username) {
+    id authorSubtree = ApolloResolveAuthorNodeSubtree(cell);
+    if (authorSubtree) {
+        id node = ApolloBestAuthorTextNodeInRoot(authorSubtree, username);
+        if (node) return node;
+    }
+    return ApolloBestAuthorTextNodeInRoot(cell, username);
 }
 
 static UIBezierPath *ApolloHexagonPath(CGRect rect) {
