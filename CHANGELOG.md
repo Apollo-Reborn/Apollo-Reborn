@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - Refresh user profile pictures on pull-to-refresh and add a **Clear Profile Picture Cache** action under **Settings > Custom API > Media**.
 - Add **harunatsu** Liquid Glass app icon to Apollo's native App Icon picker (thanks @jordanearle and /u/harunatsu91202024!)
 - Liquid Glass: new **Tab Bar Re-Expands When Idle** toggle in **Settings > Custom API > General** that re-expands the tab bar after a deliberate upward scroll or a longer idle timeout (thanks @icpryde!)
+- New **Thanks To** screen under **About** section. Thank you to all the contributors who've helped make this tweak what it is ❤️
 
 ### Fixes
 
