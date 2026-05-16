@@ -16,6 +16,7 @@ liquid-glass/
 │   └── asset-info.plist       # reference metadata for the catalog
 ├── scripts/
 │   ├── rebuild_assets.py      # rebuilds prebuilt/Assets.car from a fresh Apollo Assets.car
+│   ├── generate_icon_previews.py  # exports 300×300 PNG previews from .icon packages via ictool
 │   └── generate_previews_header.py
 └── generated/
     └── LiquidGlassIconPreviews.gen.h   # base64 PNG blob + LGIconRows + primary icon
@@ -33,20 +34,23 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
 | **jryng**      | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/jryng/clear-dark.png)      |
 | **jryng (alt)**| ![](icons/jryng-alt/default.png)  | ![](icons/jryng-alt/dark.png)  | ![](icons/jryng-alt/clear-light.png)  | ![](icons/jryng-alt/clear-dark.png)  |
 | **metalnakls** | ![](icons/metalnakls/default.png) | ![](icons/metalnakls/dark.png) | ![](icons/metalnakls/clear-light.png) | ![](icons/metalnakls/clear-dark.png) |
+| **harunatsu**  | ![](icons/harunatsu/default.png)  | ![](icons/harunatsu/dark.png)  | ![](icons/harunatsu/clear-light.png)  | ![](icons/harunatsu/clear-dark.png)  |
 
 ## Adding a new icon
 
 1. Design it in **[Icon Composer](https://developer.apple.com/icon-composer/)** and export the `.icon` package.
-2. Create the per-icon directory and drop in the package and four preview PNGs:
+2. Create the per-icon directory and drop in the package:
    ```
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
-   liquid-glass/icons/<id>/default.png       # 300×300 light-mode preview
-   liquid-glass/icons/<id>/dark.png          # dark mode
-   liquid-glass/icons/<id>/clear-light.png   # clear light
-   liquid-glass/icons/<id>/clear-dark.png    # clear dark
    ```
 3. Append the icon to **`liquid-glass/icons.json`** (this is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file).
-4. Regenerate the preview header and rebuild the asset catalog:
+4. Generate the 300×300 PNG previews from the `.icon` package:
+   ```bash
+   python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>
+   ```
+   This exports all four variants (`default`, `dark`, `clear-light`, `clear-dark`) via
+   `ictool` and compresses them by normalising to 8-bit depth.
+5. Regenerate the preview header and rebuild the asset catalog:
    ```bash
    # From the repo root
    make lg-previews
@@ -54,7 +58,7 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
    # Rebuild prebuilt/Assets.car (requires a decrypted Apollo Assets.car — see below)
    python3 liquid-glass/scripts/rebuild_assets.py
    ```
-5. Commit the new `.icon` package, preview PNGs, regenerated
+6. Commit the new `.icon` package, preview PNGs, regenerated
    `generated/LiquidGlassIconPreviews.gen.h`, and updated
    `prebuilt/Assets.car`.
 
@@ -66,10 +70,20 @@ final IPA. It bundles Apollo's original assets plus the Liquid Glass
 
 ### Prerequisites
 
+- **Python 3** — for the scripts in `liquid-glass/scripts/`
+
+---
+
+**Building the Assets.car**
 - **Xcode Command Line Tools** — provides `assetutil` and `xcrun actool`
 - **[cartool](https://github.com/showxu/cartools)** — must be on your `PATH` ([binary release](https://github.com/showxu/cartools/releases/download/1.0.0-alpha/cartool-1.0.0-alpha.bigsur.bottle.tar.gz))
 - **[Asset Catalog Tinkerer](https://github.com/insidegui/AssetCatalogTinkerer)** — installed at `/Applications/Asset Catalog Tinkerer.app`
-- **Python 3**
+
+---
+
+**Adding new icons**
+- **Icon Composer** — for designing icons, exporting `.icon` packages, and generating preview images (install with Xcode, or standalone from [here](https://developer.apple.com/icon-composer/) in `/Applications/Icon Composer.app/`)
+- **ImageMagick** — for compression (8-bit normalization) in `generate_icon_previews.py` (install with `brew install imagemagick`)
 
 ### Run
 
