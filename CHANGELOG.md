@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 - Add single-video Reddit uploads from the media composer, including video selection, poster upload, and native hosted-video posts.
 - Fix Reddit-hosted multi-image photo posts by submitting them as native Reddit galleries instead of Imgur albums, including the post-submit comments permalink Apollo opens after success.
 - Fix the Photo Post composer thumbnail strip so all selected images can be reviewed with reliable horizontal scrolling before submit.
-- Liquid Glass: add a Custom API toggle for making the tab bar re-expand as soon as scrolling stops.
+- Liquid Glass: add a Custom API toggle for making the tab bar re-expand as soon as scrolling stops (uses native `tabBarMinimizeBehavior` switching so collapse matches the standard iOS 26 pill animation).
 
 ## [v2.11.0] - 2026-05-15
 

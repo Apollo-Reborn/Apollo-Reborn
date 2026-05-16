@@ -19,6 +19,11 @@
 //   nav bar stays put (true Liquid Glass feel; native API only minimizes the
 //   tab bar). When the toggle is OFF we restore .never (raw value 1).
 //
+//   Mode B ("Tab Bar Re-Expands When Idle"): same .onScrollDown collapse as
+//   Mode A, but after scroll motion stops we flip to .never so UIKit expands
+//   the bar even without scrolling back up. On the next scroll we restore
+//   .onScrollDown so the native scroll-away interaction drives collapse again.
+//
 // iOS <26 (legacy mirror):
 //   Apollo's hide-on-swipe hides the bottom UITabBar but never restores it.
 //   The top nav bar still reveals because iOS owns that path via
@@ -44,12 +49,8 @@ typedef NS_ENUM(NSInteger, ApolloTabBarMinimizeBehavior) {
 static char kApolloRequestedHidesBarsOnSwipeKey;
 static char kApolloAppliedMinimizeBehaviorKey;
 static char kApolloIdleRevealTimerKey;
-static char kApolloIdleModeCollapsedKey;
 
 static NSString *const ApolloAutoHideTabBarShowOnIdleChangedNotification = @"ApolloAutoHideTabBarShowOnIdleChangedNotification";
-
-static BOOL ApolloSetNativeTabBarMinimized(UITabBarController *tbc, BOOL minimized, NSString *reason);
-static void ApolloRepairFullHiddenTabBarIfNeeded(UITabBarController *tbc, BOOL animated);
 
 static SEL ApolloMinimizeBehaviorSetter(void) {
     return NSSelectorFromString(@"setTabBarMinimizeBehavior:");
@@ -82,6 +83,14 @@ static void ApolloApplyMinimizeBehavior(UITabBarController *tbc, ApolloTabBarMin
     objc_setAssociatedObject(tbc, &kApolloAppliedMinimizeBehaviorKey, @(raw), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLog(@"[AutoHideTabBarFix] Native tabBarMinimizeBehavior=%ld on %@",
               (long)raw, NSStringFromClass([tbc class]));
+}
+
+static ApolloTabBarMinimizeBehavior ApolloLastAppliedMinimizeBehavior(UITabBarController *tbc) {
+    NSNumber *lastApplied = objc_getAssociatedObject(tbc, &kApolloAppliedMinimizeBehaviorKey);
+    if ([lastApplied isKindOfClass:[NSNumber class]]) {
+        return (ApolloTabBarMinimizeBehavior)lastApplied.integerValue;
+    }
+    return ApolloTabBarMinimizeBehaviorNever;
 }
 
 // Walk only the parentViewController chain so modally-presented nav controllers
@@ -132,32 +141,16 @@ static void ApolloCancelIdleRevealTimer(UITabBarController *tbc) {
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static BOOL ApolloIdleModeCollapsed(UITabBarController *tbc) {
-    NSNumber *collapsed = objc_getAssociatedObject(tbc, &kApolloIdleModeCollapsedKey);
-    return [collapsed isKindOfClass:[NSNumber class]] && collapsed.boolValue;
-}
-
-static void ApolloSetIdleModeCollapsed(UITabBarController *tbc, BOOL collapsed) {
-    if (!tbc) return;
-    objc_setAssociatedObject(tbc, &kApolloIdleModeCollapsedKey, collapsed ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
 static void ApolloReapplyNativeMinimizeBehavior(UITabBarController *tbc, NSString *reason) {
     if (!tbc || !ApolloSupportsNativeTabBarMinimize()) return;
 
     BOOL anyWantsMinimize = ApolloTabBarControllerWantsNativeMinimize(tbc);
-    ApolloTabBarMinimizeBehavior behavior = ApolloTabBarMinimizeBehaviorNever;
-    if (anyWantsMinimize && !sAutoHideTabBarShowOnIdle) {
-        behavior = ApolloTabBarMinimizeBehaviorOnScrollDown;
-    } else {
-        ApolloCancelIdleRevealTimer(tbc);
-    }
+    ApolloCancelIdleRevealTimer(tbc);
 
+    ApolloTabBarMinimizeBehavior behavior = anyWantsMinimize
+        ? ApolloTabBarMinimizeBehaviorOnScrollDown
+        : ApolloTabBarMinimizeBehaviorNever;
     ApolloApplyMinimizeBehavior(tbc, behavior);
-    if (anyWantsMinimize && sAutoHideTabBarShowOnIdle && !ApolloIdleModeCollapsed(tbc)) {
-        ApolloRepairFullHiddenTabBarIfNeeded(tbc, NO);
-        ApolloSetNativeTabBarMinimized(tbc, NO, reason ?: @"reapplyIdleMode");
-    }
     ApolloLog(@"[AutoHideTabBarFix] Reapplied native minimize desired=%d idleMode=%d reason=%@",
               anyWantsMinimize, sAutoHideTabBarShowOnIdle, reason ?: @"unknown");
 }
@@ -198,77 +191,6 @@ static void ApolloShowTabBar(UITabBarController *tbc, BOOL animated) {
     } else {
         apply();
     }
-}
-
-static void ApolloRepairFullHiddenTabBarIfNeeded(UITabBarController *tbc, BOOL animated) {
-    if (!tbc || !ApolloSupportsNativeTabBarMinimize()) return;
-    if (!ApolloTabBarLooksHidden(tbc.tabBar)) return;
-    ApolloLog(@"[AutoHideTabBarFix] Repairing full-hidden tab bar before native minimize path");
-    ApolloShowTabBar(tbc, animated);
-}
-
-static id ApolloObjectIvarValue(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(object, ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-static BOOL ApolloInvokeBoolArgument(id target, SEL selector, BOOL value) {
-    if (!target || !selector || ![target respondsToSelector:selector]) return NO;
-    NSMethodSignature *sig = [target methodSignatureForSelector:selector];
-    if (!sig || sig.numberOfArguments < 3) return NO;
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = target;
-    inv.selector = selector;
-    [inv setArgument:&value atIndex:2];
-    [inv invoke];
-    return YES;
-}
-
-static BOOL ApolloInvokeIntegerArgument(id target, SEL selector, NSInteger value) {
-    if (!target || !selector || ![target respondsToSelector:selector]) return NO;
-    NSMethodSignature *sig = [target methodSignatureForSelector:selector];
-    if (!sig || sig.numberOfArguments < 3) return NO;
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = target;
-    inv.selector = selector;
-    [inv setArgument:&value atIndex:2];
-    [inv invoke];
-    return YES;
-}
-
-static BOOL ApolloSetNativeTabBarMinimized(UITabBarController *tbc, BOOL minimized, NSString *reason) {
-    if (!tbc || !ApolloSupportsNativeTabBarMinimize()) return NO;
-    UITabBar *tabBar = tbc.tabBar;
-    if (!tabBar) return NO;
-
-    ApolloRepairFullHiddenTabBarIfNeeded(tbc, NO);
-
-    id provider = ApolloObjectIvarValue(tabBar, "_visualProvider");
-    BOOL applied = ApolloInvokeBoolArgument(provider, NSSelectorFromString(@"setMinimized:"), minimized);
-    if (!applied) {
-        NSInteger target = minimized ? 2 : 0;
-        applied = ApolloInvokeIntegerArgument(provider, NSSelectorFromString(@"setCurrentMorphTarget:"), target);
-        if (!applied) {
-            applied = ApolloInvokeIntegerArgument(tabBar, NSSelectorFromString(@"_setCurrentMorphTarget:"), target);
-        }
-    }
-
-    if (applied) {
-        [tabBar setNeedsLayout];
-        [tbc.view setNeedsLayout];
-        ApolloLog(@"[AutoHideTabBarFix] Native Liquid Glass minimized=%d reason=%@ provider=%@",
-                  minimized, reason ?: @"unknown", provider ? NSStringFromClass([provider class]) : @"nil");
-    } else {
-        ApolloLog(@"[AutoHideTabBarFix] Failed native Liquid Glass minimized=%d reason=%@ provider=%@",
-                  minimized, reason ?: @"unknown", provider ? NSStringFromClass([provider class]) : @"nil");
-    }
-    return applied;
 }
 
 static void ApolloHideTabBar(UITabBarController *tbc, BOOL animated) {
@@ -328,7 +250,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
 
     __weak UITabBarController *weakTBC = tbc;
     dispatch_source_set_timer(timer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(450 * NSEC_PER_MSEC)),
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
                               DISPATCH_TIME_FOREVER,
                               (uint64_t)(50 * NSEC_PER_MSEC));
     dispatch_source_set_event_handler(timer, ^{
@@ -336,9 +258,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
         if (!strongTBC) return;
         objc_setAssociatedObject(strongTBC, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(strongTBC)) return;
-        ApolloSetIdleModeCollapsed(strongTBC, NO);
         ApolloApplyMinimizeBehavior(strongTBC, ApolloTabBarMinimizeBehaviorNever);
-        ApolloSetNativeTabBarMinimized(strongTBC, NO, @"idleRevealTimer");
     });
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_resume(timer);
@@ -431,14 +351,12 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
         %orig(NO);
         UITabBarController *tbc = ApolloLocateTabBarController(self);
         if (tbc) {
-            ApolloTabBarMinimizeBehavior behavior = (value && !sAutoHideTabBarShowOnIdle)
+            ApolloTabBarMinimizeBehavior behavior = value
                 ? ApolloTabBarMinimizeBehaviorOnScrollDown
                 : ApolloTabBarMinimizeBehaviorNever;
             ApolloApplyMinimizeBehavior(tbc, behavior);
-            if (!value || sAutoHideTabBarShowOnIdle) {
+            if (!value) {
                 ApolloCancelIdleRevealTimer(tbc);
-                ApolloSetIdleModeCollapsed(tbc, NO);
-                ApolloSetNativeTabBarMinimized(tbc, NO, value ? @"setHidesBarsOnSwipeIdleMode" : @"setHidesBarsOnSwipeDisabled");
             }
         }
         return;
@@ -485,15 +403,10 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
         (self.tracking || self.dragging || self.decelerating) && fabs(deltaY) >= 0.5) {
         tbc = ApolloTabBarControllerForScrollView(self);
         if (ApolloTabBarControllerWantsNativeMinimize(tbc)) {
-            if (deltaY > 0.0) {
-                ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
-                if (ApolloSetNativeTabBarMinimized(tbc, YES, @"scrollDownIdleMode")) {
-                    ApolloSetIdleModeCollapsed(tbc, YES);
-                }
-                shouldScheduleIdleReveal = YES;
-            } else if (ApolloIdleModeCollapsed(tbc)) {
-                shouldScheduleIdleReveal = YES;
+            if (ApolloLastAppliedMinimizeBehavior(tbc) == ApolloTabBarMinimizeBehaviorNever) {
+                ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorOnScrollDown);
             }
+            shouldScheduleIdleReveal = YES;
         }
     }
 
@@ -530,11 +443,7 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloForEachVisibleTabBarController(^(UITabBarController *tbc) {
             ApolloCancelIdleRevealTimer(tbc);
-            ApolloSetIdleModeCollapsed(tbc, NO);
             ApolloReapplyNativeMinimizeBehavior(tbc, @"idleModeChanged");
-            if (sAutoHideTabBarShowOnIdle) {
-                ApolloSetNativeTabBarMinimized(tbc, NO, @"idleModeChanged");
-            }
         });
     }];
 }
