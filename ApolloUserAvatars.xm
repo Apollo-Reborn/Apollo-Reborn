@@ -75,6 +75,7 @@ static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL 
 static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh);
 static void ApolloProfileRefreshControllersForUsername(NSString *username);
 static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController);
+static void ApolloProfileApplyTabAvatarForVisibleWindows(void);
 
 @implementation ApolloProfileHeaderView
 
@@ -454,6 +455,21 @@ static NSString *ApolloUsernameFromModelObject(id object) {
         if ([value isKindOfClass:[NSString class]]) return ApolloAvatarNormalizedUsername(value);
     }
     return nil;
+}
+
+static NSString *ApolloCurrentLoggedInUsername(void) {
+    Class clientClass = objc_getClass("RDKClient");
+    SEL sharedClientSEL = @selector(sharedClient);
+    if (!clientClass || ![clientClass respondsToSelector:sharedClientSEL]) return nil;
+
+    id client = ((id (*)(id, SEL))objc_msgSend)(clientClass, sharedClientSEL);
+    if (!client) return nil;
+
+    SEL currentUserSEL = @selector(currentUser);
+    if (![client respondsToSelector:currentUserSEL]) return nil;
+
+    id currentUser = ((id (*)(id, SEL))objc_msgSend)(client, currentUserSEL);
+    return ApolloUsernameFromModelObject(currentUser);
 }
 
 static NSString *ApolloUsernameFromCell(id cell, NSString *ivarName) {
@@ -1633,6 +1649,9 @@ static UITabBarItem *ApolloProfileTabItemForController(UITabBarController *tabBa
 }
 
 static NSString *ApolloProfileTabUsernameForController(UITabBarController *tabBarController) {
+    NSString *currentUsername = ApolloCurrentLoggedInUsername();
+    if (currentUsername.length > 0) return currentUsername;
+
     NSArray<UIViewController *> *controllers = tabBarController.viewControllers;
     if (controllers.count <= ApolloProfileTabIndex) return nil;
 
@@ -1658,13 +1677,14 @@ static void ApolloProfileRestoreTabAvatarItem(UITabBarItem *item) {
 
     UIImage *originalImage = objc_getAssociatedObject(item, kApolloProfileTabOriginalImageKey);
     UIImage *originalSelectedImage = objc_getAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey);
+    objc_setAssociatedObject(item, ApolloProfileTabAvatarActiveKey(), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     if (originalImage) item.image = originalImage;
     if (originalSelectedImage) item.selectedImage = originalSelectedImage;
 
     objc_setAssociatedObject(item, kApolloProfileTabOriginalImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, kApolloProfileTabAppliedUsernameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(item, ApolloProfileTabAvatarActiveKey(), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static UIImage *ApolloProfileTabAvatarImage(UIImage *sourceImage) {
@@ -1695,6 +1715,11 @@ static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarC
 
     NSString *username = ApolloProfileTabUsernameForController(tabBarController);
     if (username.length == 0 || !item) return;
+
+    NSString *appliedUsername = objc_getAssociatedObject(item, kApolloProfileTabAppliedUsernameKey);
+    if (appliedUsername.length > 0 && !ApolloAvatarUsernameMatches(appliedUsername, username)) {
+        ApolloProfileRestoreTabAvatarItem(item);
+    }
 
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
@@ -1741,6 +1766,12 @@ static void ApolloProfileApplyTabAvatarForVisibleWindows(void) {
             ApolloProfileApplyTabAvatarInTree(window.rootViewController, visited);
         }
     });
+}
+
+static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {
+    if (!sUseProfileAvatarTabIcon) return;
+    ApolloProfileApplyTabAvatarForVisibleWindows();
+    ApolloLog(@"[UserAvatars] Scheduled profile tab avatar refresh after %@", reason ?: @"account change");
 }
 
 static void ApolloProfileOpenURL(NSURL *url) {
@@ -1880,6 +1911,12 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
     ApolloProfileLoadImages(header, username, YES);
 }
 
+- (void)redditAccountChangedWithNotification:(id)notification {
+    %orig(notification);
+    ApolloProfileRefreshControllersForUsername(nil);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"ProfileViewController account notification");
+}
+
 %end
 
 %hook UITabBarController
@@ -1902,6 +1939,20 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
     %orig(viewControllers, animated);
     ApolloProfileApplyTabAvatarForController(self);
+}
+
+%end
+
+%hook RDKClient
+
+- (void)setCurrentUser:(id)currentUser {
+    %orig(currentUser);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"RDKClient currentUser");
+}
+
+- (void)updateCurrentUserWithNewUser:(id)newUser {
+    %orig(newUser);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"RDKClient user update");
 }
 
 %end
@@ -1930,6 +1981,11 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
+}
+
+- (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath {
+    %orig(tableView, indexPath);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"AccountManager selection");
 }
 
 %end
