@@ -85,6 +85,10 @@ static UIImage *ApolloTemplateTabBarImage(UIImage *image) {
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
+static BOOL ApolloTabBarItemUsesProfileAvatarIcon(UITabBarItem *item) {
+    return [objc_getAssociatedObject(item, NSSelectorFromString(@"apollo_profileTabAvatarIconActive")) boolValue];
+}
+
 static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reason) {
     if (!IsLiquidGlass() || !tabBar) return;
 
@@ -104,6 +108,8 @@ static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reas
     }
 
     for (UITabBarItem *item in tabBar.items) {
+        if (ApolloTabBarItemUsesProfileAvatarIcon(item)) continue;
+
         UIImage *image = ApolloTemplateTabBarImage(item.image);
         if (image != item.image) {
             item.image = image;
@@ -356,14 +362,14 @@ static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
 %hook UITabBarItem
 
 - (void)setImage:(UIImage *)image {
-    if (IsLiquidGlass()) {
+    if (IsLiquidGlass() && !ApolloTabBarItemUsesProfileAvatarIcon(self)) {
         image = ApolloTemplateTabBarImage(image);
     }
     %orig(image);
 }
 
 - (void)setSelectedImage:(UIImage *)selectedImage {
-    if (IsLiquidGlass()) {
+    if (IsLiquidGlass() && !ApolloTabBarItemUsesProfileAvatarIcon(self)) {
         selectedImage = ApolloTemplateTabBarImage(selectedImage);
     }
     %orig(selectedImage);

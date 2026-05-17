@@ -889,6 +889,7 @@ static void initializeRandomSources() {
                                     UDKeyEnableInlineImages: @YES,
                                     UDKeyImageUploadProvider: @(ImageUploadProviderImgur),
                                     UDKeyShowUserAvatars: @NO,
+                                    UDKeyUseProfileAvatarTabIcon: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,
@@ -918,6 +919,7 @@ static void initializeRandomSources() {
     sEnableInlineImages = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages];
     sImageUploadProvider = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyImageUploadProvider];
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
+    sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sAutoHideTabBarShowOnIdle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoHideTabBarShowOnIdle];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoTranslateOnAppear];

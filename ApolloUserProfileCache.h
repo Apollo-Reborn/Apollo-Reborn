@@ -13,6 +13,8 @@ extern NSString * const ApolloUserProfileUsernameKey;
 @property(nonatomic, strong) NSURL *decoratorURL;
 @property(nonatomic, strong) NSDate *fetchedAt;
 @property(nonatomic, copy) NSString *avatarFrameKind;
+@property(nonatomic, copy) NSString *displayName;
+@property(nonatomic, copy) NSString *aboutText;
 @property(nonatomic) BOOL defaultSnoo;
 @property(nonatomic) BOOL hasSnoovatar;
 

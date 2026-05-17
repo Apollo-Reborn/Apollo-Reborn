@@ -20,6 +20,7 @@ extern NSInteger sUnmuteCommentsVideos;
 
 extern BOOL sProxyImgurDDG;
 extern BOOL sShowUserAvatars;
+extern BOOL sUseProfileAvatarTabIcon;
 extern BOOL sAutoHideTabBarShowOnIdle;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
