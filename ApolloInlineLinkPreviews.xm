@@ -10,6 +10,7 @@
 #import "ApolloState.h"
 
 #import <Foundation/Foundation.h>
+#import <math.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -41,6 +42,7 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 - (void)addSubnode:(ASDisplayNode *)subnode;
 - (ASDisplayNode *)supernode;
 - (id)style;
+- (UIView *)view;
 @property (nullable, nonatomic, copy) UIColor *backgroundColor;
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL clipsToBounds;
@@ -97,6 +99,8 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 static char kApolloLinkPreviewNodesKey;
 static char kApolloLinkPreviewFetchInFlightKey;
 static char kApolloLinkPreviewOriginalHostShellKey;
+
+static void ApolloLPLogOncePerHost(NSString *host, NSString *event);
 
 static Class ApolloLPClass(NSString *name) {
     return NSClassFromString(name);
@@ -163,6 +167,108 @@ static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *url) {
     return NO;
 }
 
+static UIColor *ApolloLPResolvedColor(UIColor *color, UITraitCollection *traitCollection) {
+    if (!color) return nil;
+    if (@available(iOS 13.0, *)) {
+        return [color resolvedColorWithTraitCollection:traitCollection ?: UIScreen.mainScreen.traitCollection];
+    }
+    return color;
+}
+
+static BOOL ApolloLPColorIsNeutral(UIColor *color, UITraitCollection *traitCollection) {
+    UIColor *resolvedColor = ApolloLPResolvedColor(color, traitCollection);
+    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 1.0;
+    if (![resolvedColor getRed:&red green:&green blue:&blue alpha:&alpha]) return NO;
+    if (alpha < 0.05) return YES;
+
+    CGFloat maxComponent = MAX(MAX(red, green), blue);
+    CGFloat minComponent = MIN(MIN(red, green), blue);
+    return fabs(maxComponent - minComponent) < 0.04;
+}
+
+static UIColor *ApolloLPTintCandidate(UIColor *color, UITraitCollection *traitCollection) {
+    if (!color || ApolloLPColorIsNeutral(color, traitCollection)) return nil;
+    return color;
+}
+
+static UIView *ApolloLPViewForNode(ASDisplayNode *node) {
+    if (!node || ![node respondsToSelector:@selector(view)]) return nil;
+    @try {
+        UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));
+        return [view isKindOfClass:[UIView class]] ? view : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static UIColor *ApolloLPThemeTintColorForView(UIView *view, UITraitCollection *traitCollection, NSInteger depth) {
+    if (!view || depth < 0) return nil;
+
+    UIColor *candidate = ApolloLPTintCandidate(view.tintColor, traitCollection);
+    if (candidate) return candidate;
+
+    for (UIView *subview in view.subviews) {
+        candidate = ApolloLPThemeTintColorForView(subview, traitCollection, depth - 1);
+        if (candidate) return candidate;
+    }
+
+    return nil;
+}
+
+static UIColor *ApolloLPThemeTintColorForNode(ASDisplayNode *hostNode) {
+    UITraitCollection *traitCollection = nil;
+    for (ASDisplayNode *node = hostNode; node; node = node.supernode) {
+        UIView *view = ApolloLPViewForNode(node);
+        if (!view) continue;
+
+        if (!traitCollection) traitCollection = view.traitCollection;
+        UIColor *candidate = ApolloLPThemeTintColorForView(view, view.traitCollection, 2);
+        if (candidate) return candidate;
+    }
+
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (!window.isKeyWindow) continue;
+            UIColor *candidate = ApolloLPThemeTintColorForView(window, window.traitCollection, 3);
+            if (candidate) return candidate;
+        }
+    }
+
+    return [UIColor systemBlueColor];
+}
+
+static UIColor *ApolloLPBlendColor(UIColor *foreground, UIColor *background, CGFloat foregroundAlpha, UITraitCollection *traitCollection) {
+    UIColor *resolvedForeground = ApolloLPResolvedColor(foreground, traitCollection);
+    UIColor *resolvedBackground = ApolloLPResolvedColor(background, traitCollection);
+
+    CGFloat fr = 0.0, fg = 0.0, fb = 0.0, fa = 1.0;
+    CGFloat br = 0.0, bg = 0.0, bb = 0.0, ba = 1.0;
+    if (![resolvedForeground getRed:&fr green:&fg blue:&fb alpha:&fa]) return background;
+    if (![resolvedBackground getRed:&br green:&bg blue:&bb alpha:&ba]) return background;
+
+    CGFloat alpha = MIN(MAX(foregroundAlpha * fa, 0.0), 1.0);
+    return [UIColor colorWithRed:(fr * alpha) + (br * (1.0 - alpha))
+                           green:(fg * alpha) + (bg * (1.0 - alpha))
+                            blue:(fb * alpha) + (bb * (1.0 - alpha))
+                           alpha:1.0];
+}
+
+static UIColor *ApolloLPCardBackgroundColorForNode(ASDisplayNode *hostNode, NSURL *url) {
+    UIColor *tintColor = ApolloLPThemeTintColorForNode(hostNode);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"V12-theme-tint-resolved");
+
+    if (@available(iOS 13.0, *)) {
+        return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traitCollection) {
+            BOOL dark = traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+            UIColor *base = dark ? [UIColor secondarySystemBackgroundColor] : [UIColor systemBackgroundColor];
+            return ApolloLPBlendColor(tintColor, base, dark ? 0.14 : 0.08, traitCollection);
+        }];
+    }
+
+    return ApolloLPBlendColor(tintColor, [UIColor secondarySystemBackgroundColor], 0.12, UIScreen.mainScreen.traitCollection);
+}
+
 static NSString *ApolloLPBundleKey(NSURL *url, NSString *variant) {
     return [NSString stringWithFormat:@"%@|%@", url.absoluteString ?: @"", variant ?: @"default"];
 }
@@ -204,7 +310,7 @@ static NSDictionary *ApolloLPNodeBundleForHost(ASDisplayNode *hostNode, NSURL *u
     descriptionNode.userInteractionEnabled = NO;
 
     ASDisplayNode *backgroundNode = [[displayNodeClass alloc] init];
-    backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
     backgroundNode.cornerRadius = 12.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -414,7 +520,7 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     siteNode.attributedText = ApolloLPAttributedString([siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
     titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
     descriptionNode.attributedText = ApolloLPAttributedString(preview.desc, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
-    backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
 
     return bundle;
 }
@@ -451,7 +557,7 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     imageNode.cornerRadius = 8.0;
     titleNode.maximumNumberOfLines = 3;
     descriptionNode.maximumNumberOfLines = 5;
-    backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -510,7 +616,7 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     titleNode.maximumNumberOfLines = isYouTube ? 3 : 4;
     descriptionNode.maximumNumberOfLines = isYouTube ? 2 : 4;
     titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
-    backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -580,9 +686,8 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     imageNode.backgroundColor = placeholder;
     imageNode.cornerRadius = context == ApolloLPContextSelfText ? 10.0 : 8.0;
     siteNode.attributedText = ApolloLPAttributedString([preview.siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
-    BOOL isYouTube = ApolloLPIsYouTubeURL(url);
-    NSUInteger titleLines = context == ApolloLPContextSelfText ? 3 : 1;
-    NSUInteger descriptionLines = isYouTube ? 2 : 4;
+    NSUInteger titleLines = context == ApolloLPContextSelfText ? 2 : 1;
+    NSUInteger descriptionLines = 2;
     titleNode.maximumNumberOfLines = titleLines;
     descriptionNode.maximumNumberOfLines = context == ApolloLPContextSelfText ? descriptionLines : 1;
     titleNode.attributedText = ApolloLPAttributedString(ApolloLPPlaceholderLines(titleLines, YES), context == ApolloLPContextSelfText ? [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold] : [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], placeholder);
@@ -606,7 +711,7 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
                                                                  justifyContent:ApolloLinkPreviewStackJustifyContentStart
                                                                      alignItems:ApolloLinkPreviewStackAlignItemsStretch
                                                                        children:children];
-        backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
         backgroundNode.cornerRadius = 10.0;
         backgroundNode.clipsToBounds = YES;
         id card = ApolloLPBackgroundWrappedSpec(cardStack, backgroundNode, backgroundClass);
@@ -627,7 +732,7 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
                                                        justifyContent:ApolloLinkPreviewStackJustifyContentStart
                                                            alignItems:ApolloLinkPreviewStackAlignItemsStart
                                                              children:@[imageNode, textStack]];
-    backgroundNode.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
     id card = ApolloLPBackgroundWrappedSpec([insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0) child:row], backgroundNode, backgroundClass);
@@ -657,7 +762,62 @@ static void ApolloLPInvokeTransitionLayoutIfPossible(id node) {
     }
 }
 
-static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDelayed) {
+static BOOL ApolloLPInvokeRelayoutItemsIfPossible(id node) {
+    if (!node) return NO;
+
+    SEL relayoutItems = NSSelectorFromString(@"relayoutItems");
+    if (![node respondsToSelector:relayoutItems]) return NO;
+
+    @try {
+        ((void (*)(id, SEL))objc_msgSend)(node, relayoutItems);
+        return YES;
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+}
+
+static BOOL ApolloLPInvokeScrollViewHeightRefresh(ASDisplayNode *node) {
+    UIView *view = ApolloLPViewForNode(node);
+    for (UIView *current = view; current; current = current.superview) {
+        if ([current isKindOfClass:[UITableView class]]) {
+            UITableView *tableView = (UITableView *)current;
+            [tableView beginUpdates];
+            [tableView endUpdates];
+            return YES;
+        }
+
+        if ([current isKindOfClass:[UICollectionView class]]) {
+            UICollectionView *collectionView = (UICollectionView *)current;
+            [collectionView performBatchUpdates:nil completion:nil];
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
+static void ApolloLPInvokeContainerRelayoutIfPossible(ASDisplayNode *node, ASDisplayNode *cellNode, NSString *host) {
+    ASDisplayNode *containerNode = nil;
+    NSUInteger depth = 0;
+    for (ASDisplayNode *current = cellNode ?: node; current && depth < 48; current = current.supernode, depth++) {
+        NSString *className = NSStringFromClass([current class]);
+        if ([className containsString:@"TableNode"] || [className containsString:@"CollectionNode"]) {
+            containerNode = current;
+            break;
+        }
+    }
+
+    if (containerNode && ApolloLPInvokeRelayoutItemsIfPossible(containerNode)) {
+        ApolloLPLogOncePerHost(host, @"V12-table-relayout-items");
+        return;
+    }
+
+    if (ApolloLPInvokeScrollViewHeightRefresh(cellNode ?: node)) {
+        ApolloLPLogOncePerHost(host, @"V12-scrollview-height-refresh");
+    }
+}
+
+static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDelayed, NSString *host) {
     ASDisplayNode *cellNode = nil;
     NSUInteger depth = 0;
     for (ASDisplayNode *current = node; current && depth < 32; current = current.supernode, depth++) {
@@ -685,17 +845,22 @@ static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDe
         ApolloLPInvokeTransitionLayoutIfPossible(cellNode);
     }
 
+    if (!scheduleDelayed) {
+        ApolloLPInvokeContainerRelayoutIfPossible(node, cellNode, host);
+    }
+
     if (scheduleDelayed) {
         __weak ASDisplayNode *weakNode = node;
+        NSString *hostCopy = [host copy];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
             ASDisplayNode *strongNode = weakNode;
-            if (strongNode) ApolloLPTriggerRelayoutInternal(strongNode, NO);
+            if (strongNode) ApolloLPTriggerRelayoutInternal(strongNode, NO, hostCopy);
         });
     }
 }
 
-static void ApolloLPTriggerRelayout(ASDisplayNode *node) {
-    ApolloLPTriggerRelayoutInternal(node, YES);
+static void ApolloLPTriggerRelayoutForHost(ASDisplayNode *node, NSString *host) {
+    ApolloLPTriggerRelayoutInternal(node, YES, host);
 }
 
 // Round 4 diagnostic flag: throttles the per-call logging so a feed scroll
@@ -729,7 +894,7 @@ static void ApolloLPLogMetadataOnce(NSString *host, ApolloLinkPreview *preview, 
 
     NSString *areaName = (area == ApolloLPAreaComments) ? @"comments" : @"body";
     NSString *cardName = (context == ApolloLPContextSelfText) ? @"hero" : @"compact";
-    ApolloLog(@"[LinkPreviews] V10 metadata host=%@ area=%@ mode=%ld card=%@ site=%d title=%d desc=%d image=%d fallbackIcon=%d titleLen=%lu descLen=%lu",
+    ApolloLog(@"[LinkPreviews] V12 metadata host=%@ area=%@ mode=%ld card=%@ site=%d title=%d desc=%d image=%d fallbackIcon=%d titleLen=%lu descLen=%lu",
               host,
               areaName,
               (long)mode,
@@ -798,7 +963,7 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
                     ASDisplayNode *strongSelf = weakSelf;
                     if (!strongSelf) return;
                     objc_setAssociatedObject(strongSelf, &kApolloLinkPreviewFetchInFlightKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    ApolloLPTriggerRelayout(strongSelf);
+                    ApolloLPTriggerRelayoutForHost(strongSelf, host);
                 });
             }];
         }
@@ -853,4 +1018,5 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     ApolloLog(@"[LinkPreviews] V9 split body/comment modes active");
     ApolloLog(@"[LinkPreviews] V10 preview text restore active");
     ApolloLog(@"[LinkPreviews] V11 hero-card stability and naked-URL hiding active");
+    ApolloLog(@"[LinkPreviews] V12 adaptive heights, theme tint, and URL hiding fix active");
 }

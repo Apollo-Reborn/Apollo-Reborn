@@ -23,6 +23,7 @@ static NSString * const ApolloLinkPreviewDidCacheNotification = @"ApolloLinkPrev
 
 static const void *kApolloLPURLHidingOriginalTextKey = &kApolloLPURLHidingOriginalTextKey;
 static const void *kApolloLPURLHidingReentrancyKey = &kApolloLPURLHidingReentrancyKey;
+static const void *kApolloLPURLHidingCandidateURLsKey = &kApolloLPURLHidingCandidateURLsKey;
 
 static BOOL ApolloLPURLHidingEnabled(void) {
     return sLinkPreviewBodyMode != ApolloLinkPreviewModeOff || sLinkPreviewCommentsMode != ApolloLinkPreviewModeOff;
@@ -51,6 +52,55 @@ static BOOL ApolloLPURLIsHTTP(NSURL *url) {
     return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
 }
 
+static BOOL ApolloLPURLHidingShouldProcessTextNode(id textNode) {
+    if (!textNode) return NO;
+    NSString *className = NSStringFromClass([textNode class]);
+    if ([className containsString:@"MarkdownTextNode"]) return YES;
+    if ([className containsString:@"Markdown"]) return YES;
+    if ([className hasPrefix:@"_TtC6Apollo"] && [className containsString:@"TextNode"]) return YES;
+    return NO;
+}
+
+static BOOL ApolloLPURLsMatch(NSURL *a, NSURL *b) {
+    NSString *aString = a.absoluteString.lowercaseString ?: @"";
+    NSString *bString = b.absoluteString.lowercaseString ?: @"";
+    return aString.length > 0 && [aString isEqualToString:bString];
+}
+
+static NSURL *ApolloLPBareHTTPURLFromText(NSString *text) {
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return nil;
+    if ([trimmed rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound) return nil;
+
+    NSURL *url = [NSURL URLWithString:trimmed];
+    return ApolloLPURLIsHTTP(url) ? url : nil;
+}
+
+static BOOL ApolloLPTextLooksLikeStandaloneURL(NSString *text, NSURL *url) {
+    if (!ApolloLPURLIsHTTP(url)) return NO;
+
+    NSURL *textURL = ApolloLPBareHTTPURLFromText(text);
+    if (textURL && ApolloLPURLsMatch(textURL, url)) return YES;
+
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([trimmed rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound) return NO;
+
+    NSString *host = url.host.lowercaseString ?: @"";
+    NSString *path = url.path ?: @"";
+    NSString *lowerText = trimmed.lowercaseString ?: @"";
+    if (host.length > 0 && [lowerText rangeOfString:host].location == NSNotFound) return NO;
+    return path.length == 0 || [lowerText rangeOfString:path.lowercaseString].location != NSNotFound;
+}
+
+static NSURL *ApolloLPHTTPURLFromAttributes(NSDictionary *attributes) {
+    for (id value in attributes.allValues) {
+        if ([value isKindOfClass:[NSURL class]] && ApolloLPURLIsHTTP((NSURL *)value)) {
+            return (NSURL *)value;
+        }
+    }
+    return nil;
+}
+
 static NSURL *ApolloLPURLFromStandaloneParagraph(NSAttributedString *attributedText, NSRange paragraphRange) {
     if (![attributedText isKindOfClass:[NSAttributedString class]] || paragraphRange.length == 0) return nil;
 
@@ -63,25 +113,34 @@ static NSURL *ApolloLPURLFromStandaloneParagraph(NSAttributedString *attributedT
     if (end <= start) return nil;
 
     NSRange trimmedRange = NSMakeRange(start, end - start);
-    id linkAttr = [attributedText attribute:NSLinkAttributeName atIndex:trimmedRange.location effectiveRange:NULL];
-    if (!linkAttr) return nil;
-
+    NSString *urlText = [string substringWithRange:trimmedRange];
+    __block NSURL *candidateURL = nil;
     __block BOOL linkCoversTrimmedRange = YES;
-    [attributedText enumerateAttribute:NSLinkAttributeName
-                               inRange:trimmedRange
-                               options:0
-                            usingBlock:^(id value, __unused NSRange range, BOOL *stop) {
-        if (!value) {
+    __block BOOL multipleURLs = NO;
+
+    [attributedText enumerateAttributesInRange:trimmedRange
+                                       options:0
+                                    usingBlock:^(NSDictionary<NSAttributedStringKey, id> *attrs, __unused NSRange range, BOOL *stop) {
+        NSURL *runURL = ApolloLPHTTPURLFromAttributes(attrs);
+        if (!runURL) {
             linkCoversTrimmedRange = NO;
+            *stop = YES;
+            return;
+        }
+
+        if (!candidateURL) {
+            candidateURL = runURL;
+        } else if (!ApolloLPURLsMatch(candidateURL, runURL)) {
+            multipleURLs = YES;
             *stop = YES;
         }
     }];
-    if (!linkCoversTrimmedRange) return nil;
 
-    NSString *urlText = [string substringWithRange:trimmedRange];
-    NSURL *url = [NSURL URLWithString:urlText];
-    if (!ApolloLPURLIsHTTP(url)) return nil;
-    return url;
+    if (candidateURL && linkCoversTrimmedRange && !multipleURLs && ApolloLPTextLooksLikeStandaloneURL(urlText, candidateURL)) {
+        return candidateURL;
+    }
+
+    return ApolloLPBareHTTPURLFromText(urlText);
 }
 
 static BOOL ApolloLPAttributedTextContainsURL(NSAttributedString *attributedText, NSURL *url) {
@@ -127,13 +186,21 @@ static NSAttributedString *ApolloLPAttributedTextByHidingStandalonePreviewURLs(N
 static void ApolloLPRegisterURLHidingTextNode(id textNode, NSAttributedString *originalText, NSArray<NSURL *> *candidateURLs) {
     if (!textNode || ![originalText isKindOfClass:[NSAttributedString class]] || candidateURLs.count == 0) return;
     objc_setAssociatedObject(textNode, kApolloLPURLHidingOriginalTextKey, [originalText copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloLPURLHidingCandidateURLsKey, [candidateURLs copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_async(ApolloLPURLHidingQueue(), ^{
         [ApolloLPURLHidingTextNodes() addObject:textNode];
     });
 }
 
+static void ApolloLPLogURLHide(NSUInteger hiddenCount, id textNode) {
+    if (hiddenCount == 0) return;
+    ApolloLog(@"[LinkPreviews] V12 hid %lu standalone rich-preview URL paragraph(s) node=%@",
+              (unsigned long)hiddenCount,
+              NSStringFromClass([textNode class]));
+}
+
 static void ApolloLPApplyURLHidingToTextNode(id textNode, NSAttributedString *incomingText) {
-    if (!textNode || ![incomingText isKindOfClass:[NSAttributedString class]]) return;
+    if (!ApolloLPURLHidingShouldProcessTextNode(textNode) || ![incomingText isKindOfClass:[NSAttributedString class]]) return;
 
     NSArray<NSURL *> *candidateURLs = nil;
     NSUInteger hiddenCount = 0;
@@ -155,7 +222,7 @@ static void ApolloLPApplyURLHidingToTextNode(id textNode, NSAttributedString *in
         ((void (*)(id, SEL))objc_msgSend)(textNode, @selector(setNeedsDisplay));
     }
 
-    ApolloLog(@"[LinkPreviews] hid %lu standalone rich-preview URL paragraph(s)", (unsigned long)hiddenCount);
+    ApolloLPLogURLHide(hiddenCount, textNode);
 }
 
 static void ApolloLPReapplyURLHidingForCachedURL(NSURL *url) {
@@ -166,7 +233,15 @@ static void ApolloLPReapplyURLHidingForCachedURL(NSURL *url) {
         dispatch_async(dispatch_get_main_queue(), ^{
             for (id textNode in snapshot) {
                 NSAttributedString *originalText = objc_getAssociatedObject(textNode, kApolloLPURLHidingOriginalTextKey);
-                if (!ApolloLPAttributedTextContainsURL(originalText, url)) continue;
+                NSArray<NSURL *> *candidateURLs = objc_getAssociatedObject(textNode, kApolloLPURLHidingCandidateURLsKey);
+                BOOL containsCandidate = ApolloLPAttributedTextContainsURL(originalText, url);
+                for (NSURL *candidateURL in candidateURLs) {
+                    if (ApolloLPURLsMatch(candidateURL, url)) {
+                        containsCandidate = YES;
+                        break;
+                    }
+                }
+                if (!containsCandidate) continue;
                 ApolloLPApplyURLHidingToTextNode(textNode, originalText);
             }
         });
@@ -188,7 +263,7 @@ static void ApolloLPInstallURLHidingObserver(void) {
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue]) {
+    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
         %orig;
         return;
     }
@@ -201,6 +276,7 @@ static void ApolloLPInstallURLHidingObserver(void) {
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLPLogURLHide(hiddenCount, self);
         return;
     }
     %orig;
@@ -211,7 +287,7 @@ static void ApolloLPInstallURLHidingObserver(void) {
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue]) {
+    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
         %orig;
         return;
     }
@@ -224,6 +300,7 @@ static void ApolloLPInstallURLHidingObserver(void) {
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLPLogURLHide(hiddenCount, self);
         return;
     }
     %orig;
@@ -233,4 +310,5 @@ static void ApolloLPInstallURLHidingObserver(void) {
 
 %ctor {
     ApolloLPInstallURLHidingObserver();
+    ApolloLog(@"[LinkPreviews] V12 URL hiding helper active");
 }
