@@ -380,6 +380,11 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         }
 
         ApolloUserProfileInfo *info = [self profileInfoFromResponseData:data fallbackUsername:key];
+        if (!info) {
+            [self finishInfoRequestForKey:key info:nil];
+            return;
+        }
+
         if (info.iconURL || info.bannerURL) {
             ApolloLog(@"[UserAvatars] Fetched profile info for u/%@ icon=%@ banner=%@ decorator=%@ frame=%@", key, info.iconURL.absoluteString ?: @"nil", info.bannerURL.absoluteString ?: @"nil", info.decoratorURL.absoluteString ?: @"nil", info.avatarFrameKind ?: @"nil");
         } else {

@@ -68,6 +68,7 @@ static const void *kApolloProfileTabAppliedUsernameKey = &kApolloProfileTabAppli
 
 static NSString *ApolloAvatarNormalizedUsername(NSString *username);
 static BOOL ApolloAvatarUsernameMatches(NSString *left, NSString *right);
+static BOOL ApolloProfileUsernameIsLoggedInAccount(NSString *username);
 
 static void ApolloProfileOpenRedditProfileEditor(void);
 static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL showSnoovatar);
@@ -275,12 +276,13 @@ static CGFloat const ApolloProfileBottomPadding = 16.0;
     CGFloat textX = showSnoovatar ? CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap - 2.0
                                   : CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap;
     CGFloat textWidth = MAX(80.0, width - textX - 18.0);
-    CGFloat editButtonWidth = 52.0;
+    CGFloat editButtonWidth = self.editProfileButton.hidden ? 0.0 : 52.0;
     CGFloat editButtonHeight = 26.0;
     CGFloat displayNameY = ApolloProfileBannerHeight + 10.0;
     self.editProfileButton.frame = CGRectMake(textX + textWidth - editButtonWidth, displayNameY - 1.0, editButtonWidth, editButtonHeight);
     self.editProfileButton.layer.cornerRadius = editButtonHeight / 2.0;
-    self.displayNameLabel.frame = CGRectMake(textX, displayNameY, MAX(60.0, textWidth - editButtonWidth - 8.0), 24.0);
+    CGFloat displayNameWidth = self.editProfileButton.hidden ? textWidth : MAX(60.0, textWidth - editButtonWidth - 8.0);
+    self.displayNameLabel.frame = CGRectMake(textX, displayNameY, displayNameWidth, 24.0);
     self.usernameLabel.frame = CGRectMake(textX, CGRectGetMaxY(self.displayNameLabel.frame) + 1.0, textWidth, 18.0);
 
     CGFloat aboutWidth = MAX(120.0, width - ApolloProfileAboutSideInset * 2.0);
@@ -301,6 +303,9 @@ static CGFloat const ApolloProfileBottomPadding = 16.0;
     self.displayNameLabel.text = displayName.length > 0 ? displayName : nil;
     self.usernameLabel.text = (!displayMatchesUsername && username.length > 0) ? [@"u/" stringByAppendingString:username] : nil;
     self.aboutLabel.text = info.aboutText.length > 0 ? info.aboutText : nil;
+    BOOL isLoggedInAccount = ApolloProfileUsernameIsLoggedInAccount(username);
+    ApolloLog(@"[UserAvatars] Edit button username=%@ isLoggedIn=%@", username ?: @"nil", isLoggedInAccount ? @"YES" : @"NO");
+    self.editProfileButton.hidden = !isLoggedInAccount;
 
     self.displayNameLabel.hidden = self.displayNameLabel.text.length == 0;
     self.usernameLabel.hidden = self.usernameLabel.text.length == 0;
@@ -327,6 +332,91 @@ static BOOL ApolloAvatarUsernameMatches(NSString *left, NSString *right) {
     NSString *normalizedRight = ApolloAvatarNormalizedUsername(right);
     if (normalizedLeft.length == 0 || normalizedRight.length == 0) return NO;
     return [normalizedLeft caseInsensitiveCompare:normalizedRight] == NSOrderedSame;
+}
+
+static BOOL ApolloProfileUsernameCollectionContains(NSString *username, id value) {
+    if (username.length == 0 || !value) return NO;
+
+    if ([value isKindOfClass:[NSString class]]) {
+        return ApolloAvatarUsernameMatches(username, value);
+    }
+    if ([value isKindOfClass:[NSData class]]) {
+        id decoded = nil;
+        @try {
+            if (@available(iOS 11.0, *)) {
+                decoded = [NSKeyedUnarchiver unarchivedObjectOfClasses:[NSSet setWithObjects:
+                    [NSDictionary class],
+                    [NSArray class],
+                    [NSString class],
+                    [NSNumber class],
+                    [NSData class],
+                    nil]
+                                                                 fromData:(NSData *)value
+                                                                    error:nil];
+            }
+            if (!decoded) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                decoded = [NSKeyedUnarchiver unarchiveObjectWithData:(NSData *)value];
+#pragma clang diagnostic pop
+            }
+        } @catch (__unused NSException *exception) {
+            decoded = nil;
+        }
+        return decoded && ApolloProfileUsernameCollectionContains(username, decoded);
+    }
+    if ([value isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)value) {
+            if (ApolloProfileUsernameCollectionContains(username, item)) return YES;
+        }
+        return NO;
+    }
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)value;
+        for (id key in dict) {
+            if (ApolloProfileUsernameCollectionContains(username, key) ||
+                ApolloProfileUsernameCollectionContains(username, dict[key])) {
+                return YES;
+            }
+        }
+    }
+    NSArray<NSString *> *usernameSelectors = @[@"username", @"userName", @"accountName", @"name"];
+    for (NSString *selectorName in usernameSelectors) {
+        SEL selector = NSSelectorFromString(selectorName);
+        if (![value respondsToSelector:selector]) continue;
+        @try {
+            id (*msgSend)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            id result = msgSend(value, selector);
+            if (ApolloProfileUsernameCollectionContains(username, result)) return YES;
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return NO;
+}
+
+static BOOL ApolloProfileUsernameIsLoggedInAccount(NSString *username) {
+    NSString *normalizedUsername = ApolloAvatarNormalizedUsername(username);
+    if (normalizedUsername.length == 0) return NO;
+
+    NSMutableArray<NSUserDefaults *> *defaultsCandidates = [NSMutableArray array];
+    NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    if (groupDefaults) [defaultsCandidates addObject:groupDefaults];
+    [defaultsCandidates addObject:[NSUserDefaults standardUserDefaults]];
+    NSArray<NSString *> *keys = @[
+        @"LoggedInAccountDetails",
+        @"RedditAccounts2",
+        @"RedditApplicationOnlyAccount2",
+        @"LoggedInRedditAccountUsername",
+        @"CurrentRedditAccountUsername",
+    ];
+
+    for (NSUserDefaults *defaults in defaultsCandidates) {
+        for (NSString *key in keys) {
+            id value = [defaults objectForKey:key];
+            if (ApolloProfileUsernameCollectionContains(normalizedUsername, value)) return YES;
+        }
+    }
+    return NO;
 }
 
 static id ApolloObjectIvarValue(id object, NSString *name) {
