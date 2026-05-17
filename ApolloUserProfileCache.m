@@ -340,8 +340,11 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     });
 }
 
-- (void)startInfoFetchForKey:(NSString *)key {
-    NSURLRequest *request = [self profileRequestForUsername:key];
+- (void)startInfoFetchForKey:(NSString *)key bypassingCache:(BOOL)bypassingCache {
+    NSMutableURLRequest *request = [[self profileRequestForUsername:key] mutableCopy];
+    if (bypassingCache) {
+        request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+    }
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error) {
             ApolloLog(@"[UserAvatars] Failed to fetch u/%@: %@", key, error.localizedDescription);
@@ -365,6 +368,10 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         [self finishInfoRequestForKey:key info:info];
     }];
     [task resume];
+}
+
+- (void)startInfoFetchForKey:(NSString *)key {
+    [self startInfoFetchForKey:key bypassingCache:NO];
 }
 
 - (void)requestInfoForUsername:(NSString *)username completion:(void (^)(ApolloUserProfileInfo *info))completion {
@@ -393,6 +400,45 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         if (completion) [callbacks addObject:[completion copy]];
         self.infoCompletions[key] = callbacks;
         [self startInfoFetchForKey:key];
+    });
+}
+
+- (void)refetchInfoForUsername:(NSString *)username completion:(void (^)(ApolloUserProfileInfo *info))completion {
+    NSString *key = [self normalizedUsername:username];
+    if (!key) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+        return;
+    }
+
+    dispatch_async(self.queue, ^{
+        ApolloUserProfileInfo *previous = self.diskInfo[key] ?: [self.infoCache objectForKey:key];
+        NSMutableArray<NSURL *> *priorURLs = [NSMutableArray array];
+        if (previous.iconURL) [priorURLs addObject:previous.iconURL];
+        if (previous.bannerURL) [priorURLs addObject:previous.bannerURL];
+        if (previous.snoovatarURL) [priorURLs addObject:previous.snoovatarURL];
+        if (previous.decoratorURL) [priorURLs addObject:previous.decoratorURL];
+
+        // Drop any cached images and HTTP responses so a fresh icon/banner with a
+        // recycled URL would still be re-downloaded. In practice Reddit's CDN URLs
+        // include a content hash that changes on update, so this mostly covers edge
+        // cases like default snoos and unchanged subreddit banners.
+        NSURLCache *httpCache = self.session.configuration.URLCache ?: [NSURLCache sharedURLCache];
+        for (NSURL *url in priorURLs) {
+            [self.imageCache removeObjectForKey:url.absoluteString];
+            [httpCache removeCachedResponseForRequest:[NSURLRequest requestWithURL:url]];
+        }
+
+        ApolloLog(@"[UserAvatars] Forcing profile refetch for u/%@ priorURLs=%lu", key, (unsigned long)priorURLs.count);
+
+        NSMutableArray<void (^)(ApolloUserProfileInfo *)> *callbacks = self.infoCompletions[key];
+        if (callbacks) {
+            if (completion) [callbacks addObject:[completion copy]];
+            return;
+        }
+        callbacks = [NSMutableArray array];
+        if (completion) [callbacks addObject:[completion copy]];
+        self.infoCompletions[key] = callbacks;
+        [self startInfoFetchForKey:key bypassingCache:YES];
     });
 }
 
@@ -454,6 +500,27 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
             [self finishImageRequestForKey:key image:image];
         }];
         [task resume];
+    });
+}
+
+- (void)clearAllCaches {
+    dispatch_async(self.queue, ^{
+        NSUInteger infoCount = self.diskInfo.count;
+        [self.diskInfo removeAllObjects];
+        [self.infoCache removeAllObjects];
+        [self.imageCache removeAllObjects];
+
+        // Wipe HTTP cache entries so subsequent fetches go to the network.
+        NSURLCache *httpCache = self.session.configuration.URLCache ?: [NSURLCache sharedURLCache];
+        [httpCache removeAllCachedResponses];
+
+        NSString *path = [self cachePath];
+        NSError *error = nil;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:&error];
+        }
+
+        ApolloLog(@"[UserAvatars] Cleared profile cache (info entries=%lu, removeError=%@)", (unsigned long)infoCount, error.localizedDescription ?: @"none");
     });
 }
 

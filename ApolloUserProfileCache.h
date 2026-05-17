@@ -30,8 +30,11 @@ extern NSString * const ApolloUserProfileUsernameKey;
 
 - (ApolloUserProfileInfo *)cachedInfoForUsername:(NSString *)username;
 - (void)requestInfoForUsername:(NSString *)username completion:(void (^)(ApolloUserProfileInfo *info))completion;
+- (void)refetchInfoForUsername:(NSString *)username completion:(void (^)(ApolloUserProfileInfo *info))completion;
 
 - (UIImage *)cachedImageForURL:(NSURL *)url;
 - (void)requestImageForURL:(NSURL *)url completion:(void (^)(UIImage *image))completion;
+
+- (void)clearAllCaches;
 
 @end

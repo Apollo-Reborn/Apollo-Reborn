@@ -21,6 +21,7 @@ ApolloImprovedCustomApi_FILES = \
     ApolloUserProfileCache.m \
     ApolloUserAvatars.xm \
     ApolloImageUploadHost.xm \
+    ApolloPhotoPostComposerScrollFix.xm \
     ApolloCreatedAtAlert.xm \
     ApolloState.m \
     ApolloShareLinks.xm \

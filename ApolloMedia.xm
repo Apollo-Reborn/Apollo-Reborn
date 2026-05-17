@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -20,6 +22,80 @@ static NSString *const CMAFAudioIdentifier = @"CMAF_AUDIO";
 // Regex patterns for Streamable URLs (some Streamable links have new query strings)
 static NSString *const StreamableRegexPattern = @"^(?:(?:https?:)?//)?(?:www\\.)?streamable\\.com/(?:edit/)?(\\w+)$";
 static NSString *const StreamableRegexPatternWithQueryString = @"^(?:(?:https?:)?//)?(?:www\\.)?streamable\\.com/(?:edit/)?(\\w+)(?:\\?.*)?$";
+
+static const void *kApolloRouteIconRepairLoggedKey = &kApolloRouteIconRepairLoggedKey;
+
+static BOOL ApolloMediaStringContains(NSString *haystack, NSString *needle) {
+    return [haystack isKindOfClass:[NSString class]] && needle.length > 0 &&
+        [haystack rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+static BOOL ApolloMediaRouteControlIsInMediaViewer(UIView *view) {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
+        NSString *className = NSStringFromClass(responder.class);
+        if (ApolloMediaStringContains(className, @"MediaViewer") || ApolloMediaStringContains(className, @"MediaPage") || ApolloMediaStringContains(className, @"Player")) return YES;
+    }
+    for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview) {
+        NSString *className = NSStringFromClass(ancestor.class);
+        if (ApolloMediaStringContains(className, @"MediaViewer") || ApolloMediaStringContains(className, @"MediaPage") || ApolloMediaStringContains(className, @"Player")) return YES;
+    }
+    return NO;
+}
+
+static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *reason) {
+    if (![routeView isKindOfClass:[UIView class]] || !ApolloMediaRouteControlIsInMediaViewer(routeView)) return;
+    routeView.clipsToBounds = NO;
+    routeView.contentMode = UIViewContentModeScaleAspectFit;
+    routeView.layer.masksToBounds = NO;
+    routeView.superview.clipsToBounds = NO;
+    routeView.superview.layer.masksToBounds = NO;
+
+    CGRect frame = routeView.frame;
+    CGFloat minSide = 36.0;
+    if (frame.size.width > 0.0 && frame.size.width < minSide) frame.size.width = minSide;
+    if (frame.size.height > 0.0 && frame.size.height < minSide) frame.size.height = minSide;
+    routeView.frame = frame;
+
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:routeView];
+    NSUInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 80) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        view.clipsToBounds = NO;
+        view.layer.masksToBounds = NO;
+        view.contentMode = UIViewContentModeScaleAspectFit;
+        if ([view isKindOfClass:[UIButton class]]) {
+            UIButton *button = (UIButton *)view;
+            button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        } else if ([view isKindOfClass:[UIImageView class]]) {
+            ((UIImageView *)view).contentMode = UIViewContentModeScaleAspectFit;
+        }
+        for (UIView *subview in view.subviews) [stack addObject:subview];
+    }
+
+    if (objc_getAssociatedObject(routeView, kApolloRouteIconRepairLoggedKey) == nil) {
+        objc_setAssociatedObject(routeView, kApolloRouteIconRepairLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[MediaRouteIcon] repaired route control layout class=%@ frame=%@ reason=%@", NSStringFromClass(routeView.class) ?: @"(unknown)", NSStringFromCGRect(routeView.frame), reason ?: @"(unknown)");
+    }
+}
+
+%hook AVRoutePickerView
+
+- (void)layoutSubviews {
+    %orig;
+    ApolloMediaRepairRouteControlLayout((UIView *)self, @"AVRoutePickerView layoutSubviews");
+}
+
+%end
+
+%hook MPVolumeView
+
+- (void)layoutSubviews {
+    %orig;
+    ApolloMediaRepairRouteControlLayout((UIView *)self, @"MPVolumeView layoutSubviews");
+}
+
+%end
 
 // Implementation derived from https://github.com/dankrichtofen/apolloliquidglass/blob/main/Tweak.x
 // Credits to @dankrichtofen for the original implementation

@@ -20,6 +20,7 @@ NSInteger sUnmuteCommentsVideos = 0; // 0=Default, 1=Remember from Full Screen, 
 
 BOOL sProxyImgurDDG = NO;
 BOOL sShowUserAvatars = NO;
+BOOL sAutoHideTabBarShowOnIdle = NO;
 BOOL sEnableInlineImages = NO;
 NSInteger sImageUploadProvider = ImageUploadProviderImgur;
 

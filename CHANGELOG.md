@@ -2,7 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [v2.12.0b] - 2026-05-16
+
+### Features
+
+- Add an optional **Text** row to Media posts that opens Apollo's native Post Text editor (with Markdown toolbar) and submits the body text alongside Reddit-hosted media (thanks @icpryde!)
+- Add a long-press menu on profile usernames to copy the username to the clipboard (thanks @icpryde!)
+- Add single-video Reddit-hosted uploads from the media composer, including video selection, poster upload, and native hosted-video posts (thanks @icpryde!)
+- Refresh user profile pictures on pull-to-refresh and add a **Clear Profile Picture Cache** action under **Settings > Custom API > Media**.
+- Add **harunatsu** Liquid Glass app icon to Apollo's native App Icon picker (thanks @jordanearle and /u/harunatsu91202024!)
+- Liquid Glass: new **Tab Bar Re-Expands When Idle** toggle in **Settings > Custom API > General** that re-expands the tab bar after a deliberate upward scroll or a longer idle timeout (thanks @icpryde!)
+- New **Thanks To** screen under **About** section. Thank you to all the contributors who've helped make this tweak what it is ❤️
+
+### Fixes
+
+- Fix Reddit-hosted multi-image photo posts by submitting them as native Reddit galleries instead of Imgur albums, including the post-submit comments permalink Apollo opens after success (thanks @icpryde!)
+- Fix the Photo Post composer thumbnail strip so all selected images can be reviewed with reliable horizontal scrolling before submit (thanks @icpryde!)
+- Improve user avatar loading on multireddits
+
 
 - Optional **Notification Backend** support: point Apollo at your own forked self-hosted [apollo-backend](https://github.com/christianselig/apollo-backend) instance so push registrations, watchers, and inbox checks route there instead of being silently dropped. Configure in **Settings > Custom API > Notification Backend** with the backend URL and optional registration token. Leave empty to keep current blocking behavior. APNs delivery still requires a paid Apple Developer account on the signing side.
 - New **Reddit API Secret** field in **Settings > Custom API > API Keys** so per-account Reddit credentials can be forwarded to a self-hosted notification backend that performs token refreshes server-side. Usually left empty for installed-app Reddit credentials.
@@ -379,6 +396,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
 [v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.8.0...v2.9.0

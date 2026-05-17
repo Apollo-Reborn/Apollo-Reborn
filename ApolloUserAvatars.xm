@@ -37,6 +37,10 @@ static const void *kApolloProfileWrappedHeaderKey = &kApolloProfileWrappedHeader
 static const void *kApolloProfileOriginalHeaderKey = &kApolloProfileOriginalHeaderKey;
 static const void *kApolloProfileUsernameKey = &kApolloProfileUsernameKey;
 static const void *kApolloProfileWrapperMarkerKey = &kApolloProfileWrapperMarkerKey;
+static const void *kApolloProfileUsernameCopyInteractionKey = &kApolloProfileUsernameCopyInteractionKey;
+static const void *kApolloProfileUsernameCopyValueKey = &kApolloProfileUsernameCopyValueKey;
+static const void *kApolloProfileUsernameCopyLoggedKey = &kApolloProfileUsernameCopyLoggedKey;
+static const void *kApolloProfileUsernameCopyMissLoggedKey = &kApolloProfileUsernameCopyMissLoggedKey;
 
 @interface ApolloProfileHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
@@ -231,26 +235,65 @@ static NSInteger ApolloAuthorTextScore(NSString *text, NSString *username) {
 
     NSString *lowerText = text.lowercaseString;
     NSString *lowerUsername = username.lowercaseString;
-    NSString *prefixed = [@"u/" stringByAppendingString:lowerUsername];
+    NSString *uPrefixed = [@"u/" stringByAppendingString:lowerUsername];
+    NSString *byPrefixed = [@"by " stringByAppendingString:lowerUsername];
+    NSString *byUPrefixed = [@"by " stringByAppendingString:uPrefixed];
 
     NSRange direct = [lowerText rangeOfString:lowerUsername];
-    NSRange withPrefix = [lowerText rangeOfString:prefixed];
-    if (direct.location == NSNotFound && withPrefix.location == NSNotFound) return NSIntegerMax;
+    NSRange uRange = [lowerText rangeOfString:uPrefixed];
+    NSRange byRange = [lowerText rangeOfString:byPrefixed];
+    NSRange byURange = [lowerText rangeOfString:byUPrefixed];
+    if (direct.location == NSNotFound
+        && uRange.location == NSNotFound
+        && byRange.location == NSNotFound
+        && byURange.location == NSNotFound) {
+        return NSIntegerMax;
+    }
 
-    NSUInteger location = MIN(direct.location == NSNotFound ? NSUIntegerMax : direct.location,
-                              withPrefix.location == NSNotFound ? NSUIntegerMax : withPrefix.location);
+    NSUInteger location = direct.location != NSNotFound ? direct.location : NSUIntegerMax;
+    if (uRange.location != NSNotFound) location = MIN(location, uRange.location);
+    if (byRange.location != NSNotFound) location = MIN(location, byRange.location);
+    if (byURange.location != NSNotFound) location = MIN(location, byURange.location);
     if (location > 55) return NSIntegerMax;
 
-    NSInteger prefixBonus = 20;
-    if ([lowerText hasPrefix:lowerUsername] || [lowerText hasPrefix:prefixed]) prefixBonus = 0;
-    else if (withPrefix.location != NSNotFound) prefixBonus = 8;
+    // Prefer real byline markers ("u/<name>", "by <name>") so a username that
+    // happens to also appear in a title / flair / subreddit label can't outrank
+    // the actual byline. Bare matches stay scoreable for contexts that lack a
+    // prefix (e.g. comment cells where the author label is just the username).
+    NSInteger prefixBonus;
+    if (uRange.location != NSNotFound || byURange.location != NSNotFound) {
+        prefixBonus = 0;
+    } else if (byRange.location != NSNotFound) {
+        prefixBonus = 4;
+    } else {
+        prefixBonus = 1000;
+    }
 
     return prefixBonus + (NSInteger)location + (NSInteger)(text.length / 4);
 }
 
-static id ApolloBestAuthorTextNode(id cell, NSString *username) {
+// Resolve the byline subtree directly from known cell ivars so titles/flairs
+// sharing the username string can't be mistaken for the author. Ivars sourced
+// from Hopper RE of each class's .cxx_destruct:
+//   CommentCellNode → authorNode
+//   {Large,Compact}PostCellNode / CommentsHeaderCellNode → postInfoNode.authorButtonNode
+static id ApolloResolveAuthorNodeSubtree(id cell) {
+    if (!cell) return nil;
+    id authorNode = ApolloObjectIvarValue(cell, @"authorNode");
+    if (authorNode) return authorNode;
+    id postInfoNode = ApolloObjectIvarValue(cell, @"postInfoNode");
+    if (postInfoNode) {
+        id authorButtonNode = ApolloObjectIvarValue(postInfoNode, @"authorButtonNode");
+        if (authorButtonNode) return authorButtonNode;
+        return postInfoNode;
+    }
+    return nil;
+}
+
+static id ApolloBestAuthorTextNodeInRoot(id root, NSString *username) {
+    if (!root) return nil;
     NSMutableArray *nodes = [NSMutableArray array];
-    ApolloCollectTextNodes(cell, [NSMutableSet set], nodes, 0);
+    ApolloCollectTextNodes(root, [NSMutableSet set], nodes, 0);
 
     id bestNode = nil;
     NSInteger bestScore = NSIntegerMax;
@@ -263,6 +306,15 @@ static id ApolloBestAuthorTextNode(id cell, NSString *username) {
         }
     }
     return bestNode;
+}
+
+static id ApolloBestAuthorTextNode(id cell, NSString *username) {
+    id authorSubtree = ApolloResolveAuthorNodeSubtree(cell);
+    if (authorSubtree) {
+        id node = ApolloBestAuthorTextNodeInRoot(authorSubtree, username);
+        if (node) return node;
+    }
+    return ApolloBestAuthorTextNodeInRoot(cell, username);
 }
 
 static UIBezierPath *ApolloHexagonPath(CGRect rect) {
@@ -944,7 +996,7 @@ static ApolloProfileHeaderView *ApolloProfileCreateHeader(CGFloat width) {
     return header;
 }
 
-static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username) {
+static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh) {
     if (!header || username.length == 0) return;
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
@@ -981,13 +1033,118 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
     };
 
     if (cachedInfo) applyInfo(cachedInfo);
-    [cache requestInfoForUsername:username completion:applyInfo];
+    if (forceRefresh) {
+        [cache refetchInfoForUsername:username completion:applyInfo];
+    } else {
+        [cache requestInfoForUsername:username completion:applyInfo];
+    }
 }
 
 static BOOL ApolloViewControllerLooksProfileRelated(UIViewController *viewController) {
     NSString *className = NSStringFromClass([viewController class]);
     return [className containsString:@"ProfileViewController"] ||
         [className containsString:@"AccountManagerViewController"];
+}
+
+@interface ApolloProfileUsernameCopyMenuDelegate : NSObject <UIContextMenuInteractionDelegate>
++ (instancetype)sharedDelegate;
+@end
+
+@implementation ApolloProfileUsernameCopyMenuDelegate
+
++ (instancetype)sharedDelegate {
+    static ApolloProfileUsernameCopyMenuDelegate *delegate = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        delegate = [ApolloProfileUsernameCopyMenuDelegate new];
+    });
+    return delegate;
+}
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
+    NSString *username = ApolloAvatarNormalizedUsername(objc_getAssociatedObject(interaction.view, kApolloProfileUsernameCopyValueKey));
+    if (username.length == 0) return nil;
+
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
+        UIImage *image = nil;
+        if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) image = [UIImage systemImageNamed:@"doc.on.doc"];
+        UIAction *copyAction = [UIAction actionWithTitle:@"Copy Username" image:image identifier:nil handler:^(__unused UIAction *action) {
+            UIPasteboard.generalPasteboard.string = username;
+            ApolloLog(@"[ProfileUsernameCopy] copied username=%@", username);
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[copyAction]];
+    }];
+}
+
+@end
+
+static BOOL ApolloProfileViewControllerIsVisibleTopController(UIViewController *viewController) {
+    if (!viewController) return NO;
+    UINavigationController *navigationController = viewController.navigationController;
+    if (!navigationController) return viewController.view.window != nil;
+    UIViewController *visibleController = navigationController.visibleViewController ?: navigationController.topViewController;
+    return visibleController == viewController;
+}
+
+static UIView *ApolloProfileUsernameCopyFindLabelInView(UIView *rootView, NSString *username) {
+    if (!rootView || username.length == 0 || rootView.hidden || rootView.alpha < 0.01) return nil;
+
+    if ([rootView isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)rootView;
+        NSString *labelUsername = ApolloAvatarNormalizedUsername(label.text);
+        if (ApolloAvatarUsernameMatches(labelUsername, username)) return label;
+    }
+
+    for (UIView *subview in rootView.subviews) {
+        UIView *match = ApolloProfileUsernameCopyFindLabelInView(subview, username);
+        if (match) return match;
+    }
+    return nil;
+}
+
+static UIView *ApolloProfileUsernameCopyTargetForController(UIViewController *viewController, NSString *username) {
+    UIView *titleView = viewController.navigationItem.titleView;
+    UIView *target = ApolloProfileUsernameCopyFindLabelInView(titleView, username);
+    if (target) return target;
+    if ([titleView isKindOfClass:[UILabel class]] && ApolloAvatarUsernameMatches(((UILabel *)titleView).text, username)) return titleView;
+
+    UINavigationBar *navigationBar = viewController.navigationController.navigationBar;
+    target = ApolloProfileUsernameCopyFindLabelInView(navigationBar, username);
+    return target;
+}
+
+static void ApolloProfileInstallUsernameCopyInteraction(UIViewController *viewController, NSString *reason) {
+    if (!viewController || !ApolloViewControllerLooksProfileRelated(viewController)) return;
+    if (!ApolloProfileViewControllerIsVisibleTopController(viewController)) return;
+
+    NSString *username = ApolloUsernameFromProfileViewController(viewController);
+    if (username.length == 0) return;
+
+    UIView *target = ApolloProfileUsernameCopyTargetForController(viewController, username);
+    if (!target) {
+        NSNumber *loggedMiss = objc_getAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey);
+        if (![loggedMiss boolValue]) {
+            objc_setAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLog(@"[ProfileUsernameCopy] no nav title target class=%@ username=%@ reason=%@", NSStringFromClass(viewController.class) ?: @"(unknown)", username, reason ?: @"(unknown)");
+        }
+        return;
+    }
+
+    objc_setAssociatedObject(viewController, kApolloProfileUsernameCopyMissLoggedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(target, kApolloProfileUsernameCopyValueKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    target.userInteractionEnabled = YES;
+
+    if (!objc_getAssociatedObject(target, kApolloProfileUsernameCopyInteractionKey)) {
+        UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:[ApolloProfileUsernameCopyMenuDelegate sharedDelegate]];
+        [target addInteraction:interaction];
+        objc_setAssociatedObject(target, kApolloProfileUsernameCopyInteractionKey, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSString *loggedUsername = objc_getAssociatedObject(target, kApolloProfileUsernameCopyLoggedKey);
+    if (![loggedUsername isEqualToString:username]) {
+        objc_setAssociatedObject(target, kApolloProfileUsernameCopyLoggedKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        ApolloLog(@"[ProfileUsernameCopy] installed nav title copy class=%@ username=%@ target=%@ reason=%@", NSStringFromClass(viewController.class) ?: @"(unknown)", username, NSStringFromClass(target.class) ?: @"(unknown)", reason ?: @"(unknown)");
+    }
 }
 
 static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
@@ -1078,7 +1235,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         header.snoovatarImageView.image = nil;
         header.bannerImageView.image = nil;
         ApolloProfileSetSnoovatarMode(header, NO);
-        ApolloProfileLoadImages(header, username);
+        ApolloProfileLoadImages(header, username, NO);
         ApolloLog(@"[UserAvatars] Loading profile header images class=%@ vc=%p username=%@", className, viewControllerObject, username);
     }
 }
@@ -1212,21 +1369,36 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 - (void)viewDidLoad {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLoad");
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewWillAppear");
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidAppear");
 }
 
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
+}
+
+- (void)refreshControlActivatedWithSender:(id)sender {
+    %orig;
+    if (!sShowUserAvatars) return;
+    NSString *username = ApolloUsernameFromProfileViewController((UIViewController *)self);
+    if (username.length == 0) return;
+    ApolloProfileHeaderView *header = objc_getAssociatedObject(self, kApolloProfileHeaderViewKey);
+    if (!header) return;
+    ApolloLog(@"[UserAvatars] Pull-to-refresh forcing avatar/banner refetch for u/%@", username);
+    ApolloProfileLoadImages(header, username, YES);
 }
 
 %end
@@ -1254,6 +1426,7 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
+    ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
 }
 
 %end

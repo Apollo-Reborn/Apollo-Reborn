@@ -9,16 +9,17 @@ extern "C" {
 // Bearer token capture (from outgoing Reddit API requests).
 BOOL ApolloIsAuthorizationHeader(NSString *field);
 void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NSString *source);
-void ApolloRedditCaptureBearerTokenFromHeaderDictionary(NSDictionary *headers, NSString *source);
 void ApolloRedditCaptureBearerTokenFromRequest(NSURLRequest *request, NSString *source);
 
 // Request rewriting. Returns nil if the request should be passed through unchanged.
 NSURLRequest *ApolloRedditMaybeRewriteSubmitRequest(NSURLRequest *request);
 NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request);
+NSData *ApolloRedditSyntheticImgurAlbumResponseDataForRequest(NSURLRequest *request);
 
 // Task identification (matches against original/current request).
 BOOL ApolloRedditIsSubmitTask(NSURLSessionTask *task);
 BOOL ApolloRedditIsCommentTask(NSURLSessionTask *task);
+void ApolloRedditAssociateSubmitRequestWithTask(NSURLSessionTask *task, NSURLRequest *request);
 
 // Async response transformation.
 // - For /api/submit: resolves the real Reddit linkID (websocket race vs listing fallback)
