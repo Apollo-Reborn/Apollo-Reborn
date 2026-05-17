@@ -7754,15 +7754,16 @@ static const size_t kLGPreviewEntryCount = 24;
 typedef struct {
     const char *iconID;
     const char *displayName;
+    const char *designer;
 } LGIconRowEntry;
 
 static const LGIconRowEntry kLGIconRowEntries[] = {
-    { "igerman00", "iGerman00" },
-    { "jryng", "jryng" },
-    { "jryng-alt", "jryng (alt)" },
-    { "metalnakls", "metalnakls" },
-    { "harunatsu", "harunatsu" },
-    { "bajader", "bajader" },
+    { "igerman00", "iGerman00", "iGerman00" },
+    { "jryng", "jryng", "jryng" },
+    { "jryng-alt", "jryng (alt)", "jryng" },
+    { "metalnakls", "metalnakls", "metalnakls" },
+    { "harunatsu", "harunatsu", "harunatsu91202024" },
+    { "bajader", "bajader", "bajader" },
 };
 
 static const size_t kLGIconRowEntryCount = 6;
