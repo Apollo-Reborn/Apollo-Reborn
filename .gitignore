@@ -9,6 +9,7 @@ data/
 .claude/
 Apollo
 .cache
+/.DS_Store
 
 # Liquid Glass
 liquid-glass/Assets.car
