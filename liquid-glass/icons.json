@@ -1,10 +1,11 @@
 {
   "primaryIconID": "jryng",
   "icons": [
-    { "id": "igerman00",  "displayName": "iGerman00" },
-    { "id": "jryng",      "displayName": "jryng" },
-    { "id": "jryng-alt",  "displayName": "jryng (alt)" },
-    { "id": "metalnakls", "displayName": "metalnakls" },
-    { "id": "harunatsu", "displayName": "harunatsu" }
+    { "id": "igerman00",  "displayName": "iGerman00", "designer": "iGerman00" },
+    { "id": "jryng",      "displayName": "jryng", "designer": "jryng" },
+    { "id": "jryng-alt",  "displayName": "jryng (alt)", "designer": "jryng" },
+    { "id": "metalnakls", "displayName": "metalnakls", "designer": "metalnakls" },
+    { "id": "harunatsu", "displayName": "harunatsu", "designer": "harunatsu91202024" },
+    { "id": "bajader", "displayName": "bajader", "designer": "bajader" }
   ]
 }

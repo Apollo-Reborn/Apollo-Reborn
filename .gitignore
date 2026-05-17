@@ -9,13 +9,14 @@ data/
 .claude/
 Apollo
 .cache
+.DS_Store
 
 # Liquid Glass
-liquid-glass/Assets.car
 liquid-glass/scripts/__pycache__/
 liquid-glass/scripts/cartool-extracted/
 liquid-glass/scripts/act-extracted/
 liquid-glass/scripts/rebuilt/
+liquid-glass/scripts/cartool
 
 AsyncDisplayKit.framework/
 docs/

@@ -8,9 +8,12 @@
 #import "ApolloUserProfileCache.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
+static NSString *const ApolloProfileTabAvatarIconChangedNotification = @"ApolloProfileTabAvatarIconChangedNotification";
 static CGFloat const ApolloInlineAvatarDiameter = 28.0;
 static CGFloat const ApolloCommentInlineAvatarDiameter = 28.0;
 static CGFloat const ApolloFeedInlineAvatarDiameter = 24.0;
+static CGFloat const ApolloProfileTabAvatarDiameter = 30.0;
+static NSUInteger const ApolloProfileTabIndex = 2;
 static CGFloat const ApolloProfileHeaderHeight = 206.0;
 static CGFloat const ApolloProfileAvatarDiameter = 96.0;
 static CGFloat const ApolloProfileSnoovatarWidth = 156.0;
@@ -41,35 +44,66 @@ static const void *kApolloProfileUsernameCopyInteractionKey = &kApolloProfileUse
 static const void *kApolloProfileUsernameCopyValueKey = &kApolloProfileUsernameCopyValueKey;
 static const void *kApolloProfileUsernameCopyLoggedKey = &kApolloProfileUsernameCopyLoggedKey;
 static const void *kApolloProfileUsernameCopyMissLoggedKey = &kApolloProfileUsernameCopyMissLoggedKey;
+static const void *kApolloProfileTabOriginalImageKey = &kApolloProfileTabOriginalImageKey;
+static const void *kApolloProfileTabOriginalSelectedImageKey = &kApolloProfileTabOriginalSelectedImageKey;
+static const void *kApolloProfileTabAppliedUsernameKey = &kApolloProfileTabAppliedUsernameKey;
 
 @interface ApolloProfileHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
+@property(nonatomic, strong) UIView *detailsBackgroundView;
 @property(nonatomic, strong) UIImageView *avatarImageView;
 @property(nonatomic, strong) UIView *avatarBorderView;
 @property(nonatomic, strong) UIImageView *snoovatarImageView;
+@property(nonatomic, strong) UILabel *displayNameLabel;
+@property(nonatomic, strong) UILabel *usernameLabel;
+@property(nonatomic, strong) UIButton *editProfileButton;
+@property(nonatomic, strong) UILabel *aboutLabel;
+@property(nonatomic, weak) UIViewController *hostViewController;
+@property(nonatomic, copy) NSString *username;
+@property(nonatomic, copy) void (^heightInvalidationBlock)(void);
+- (void)applyProfileInfo:(ApolloUserProfileInfo *)info fallbackUsername:(NSString *)username;
+- (CGFloat)preferredHeightForWidth:(CGFloat)width;
+- (void)apollo_updateEditProfileButtonColors;
 @end
+
+static NSString *ApolloAvatarNormalizedUsername(NSString *username);
+static BOOL ApolloAvatarUsernameMatches(NSString *left, NSString *right);
+static BOOL ApolloProfileUsernameIsLoggedInAccount(NSString *username);
+
+static void ApolloProfileOpenRedditProfileEditor(void);
+static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL showSnoovatar);
+static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh);
+static void ApolloProfileRefreshControllersForUsername(NSString *username);
+static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController);
+static void ApolloProfileApplyTabAvatarForVisibleWindows(void);
 
 @implementation ApolloProfileHeaderView
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.backgroundColor = [UIColor systemBackgroundColor];
+        // Header surfaces stay fully transparent so Apollo's themed table
+        // background (any custom theme, dark, or light) shows through directly.
+        self.backgroundColor = [UIColor clearColor];
 
         _bannerImageView = [[UIImageView alloc] init];
-        _bannerImageView.backgroundColor = [UIColor tertiarySystemFillColor];
+        _bannerImageView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.12];
         _bannerImageView.contentMode = UIViewContentModeScaleAspectFill;
         _bannerImageView.clipsToBounds = YES;
         [self addSubview:_bannerImageView];
 
+        _detailsBackgroundView = [[UIView alloc] init];
+        _detailsBackgroundView.backgroundColor = [UIColor clearColor];
+        [self addSubview:_detailsBackgroundView];
+
         _avatarBorderView = [[UIView alloc] init];
-        _avatarBorderView.backgroundColor = [UIColor systemBackgroundColor];
+        _avatarBorderView.backgroundColor = [UIColor clearColor];
         _avatarBorderView.layer.cornerRadius = (ApolloProfileAvatarDiameter + 6.0) / 2.0;
         _avatarBorderView.clipsToBounds = YES;
         [self addSubview:_avatarBorderView];
 
         _avatarImageView = [[UIImageView alloc] init];
-        _avatarImageView.backgroundColor = [UIColor secondarySystemFillColor];
+        _avatarImageView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.15];
         _avatarImageView.contentMode = UIViewContentModeScaleAspectFill;
         _avatarImageView.clipsToBounds = YES;
         _avatarImageView.layer.cornerRadius = ApolloProfileAvatarDiameter / 2.0;
@@ -80,24 +114,207 @@ static const void *kApolloProfileUsernameCopyMissLoggedKey = &kApolloProfileUser
         _snoovatarImageView.clipsToBounds = NO;
         _snoovatarImageView.hidden = YES;
         [self addSubview:_snoovatarImageView];
+
+        // Labels live directly on the header so we can flow `about` full-width
+        // below the avatar; keeps the math simple and avoids reparenting.
+        _displayNameLabel = [[UILabel alloc] init];
+        _displayNameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        _displayNameLabel.textColor = [UIColor labelColor];
+        _displayNameLabel.numberOfLines = 1;
+        _displayNameLabel.adjustsFontForContentSizeCategory = YES;
+        [self addSubview:_displayNameLabel];
+
+        _usernameLabel = [[UILabel alloc] init];
+        _usernameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+        _usernameLabel.textColor = [UIColor secondaryLabelColor];
+        _usernameLabel.numberOfLines = 1;
+        _usernameLabel.adjustsFontForContentSizeCategory = YES;
+        [self addSubview:_usernameLabel];
+
+        _editProfileButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [_editProfileButton setTitle:@"Edit" forState:UIControlStateNormal];
+        _editProfileButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _editProfileButton.titleLabel.adjustsFontForContentSizeCategory = YES;
+        _editProfileButton.backgroundColor = [UIColor tertiarySystemFillColor];
+        _editProfileButton.layer.cornerRadius = 13.0;
+        _editProfileButton.contentEdgeInsets = UIEdgeInsetsMake(4.0, 12.0, 4.0, 12.0);
+        [_editProfileButton addTarget:self action:@selector(apollo_editProfileTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_editProfileButton];
+        [self apollo_updateEditProfileButtonColors];
+
+        _aboutLabel = [[UILabel alloc] init];
+        _aboutLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _aboutLabel.textColor = [UIColor labelColor];
+        _aboutLabel.numberOfLines = 0;
+        _aboutLabel.adjustsFontForContentSizeCategory = YES;
+        [self addSubview:_aboutLabel];
     }
     return self;
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.displayNameLabel.textColor = [UIColor labelColor];
+    self.usernameLabel.textColor = [UIColor secondaryLabelColor];
+    self.aboutLabel.textColor = [UIColor labelColor];
+    [self apollo_updateEditProfileButtonColors];
+}
+
+- (void)tintColorDidChange {
+    [super tintColorDidChange];
+    [self apollo_updateEditProfileButtonColors];
+}
+
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self apollo_updateEditProfileButtonColors];
+}
+
+- (UIColor *)apollo_themeAccentColor {
+    NSMutableArray<UIColor *> *candidates = [NSMutableArray array];
+    if (self.hostViewController.tabBarController.tabBar.tintColor) [candidates addObject:self.hostViewController.tabBarController.tabBar.tintColor];
+    if (self.hostViewController.navigationController.navigationBar.tintColor) [candidates addObject:self.hostViewController.navigationController.navigationBar.tintColor];
+    if (self.hostViewController.view.tintColor) [candidates addObject:self.hostViewController.view.tintColor];
+    if (self.window.tintColor) [candidates addObject:self.window.tintColor];
+    if (self.tintColor) [candidates addObject:self.tintColor];
+    for (UIColor *color in candidates) {
+        if ([color isKindOfClass:[UIColor class]]) return color;
+    }
+    return [UIColor systemBlueColor];
+}
+
+- (void)apollo_updateEditProfileButtonColors {
+    UIColor *accentColor = [self apollo_themeAccentColor];
+    self.editProfileButton.tintColor = accentColor;
+    [self.editProfileButton setTitleColor:accentColor forState:UIControlStateNormal];
+    [self.editProfileButton setTitleColor:[accentColor colorWithAlphaComponent:0.45] forState:UIControlStateHighlighted];
+    self.editProfileButton.backgroundColor = [UIColor tertiarySystemFillColor];
+}
+
+// Layout constants — kept in one place because preferredHeightForWidth needs
+// to match what layoutSubviews actually does, otherwise the tableHeaderView
+// height won't equal the visible content height and the about text gets clipped.
+static CGFloat const ApolloProfileBannerHeight = 126.0;
+static CGFloat const ApolloProfileAvatarBannerOverlap = 34.0;
+static CGFloat const ApolloProfileSidePadding = 22.0;
+static CGFloat const ApolloProfileTextLeftGap = 14.0;
+static CGFloat const ApolloProfileTextTopGap = 12.0;
+static CGFloat const ApolloProfileAboutSideInset = 20.0;
+static CGFloat const ApolloProfileAboutMaxHeight = 220.0; // ~10 lines @ footnote font, covers 200+ chars at full width
+static CGFloat const ApolloProfileBottomPadding = 16.0;
+
+- (CGRect)apollo_avatarFrame {
+    CGFloat borderSize = ApolloProfileAvatarDiameter + 6.0;
+    return CGRectMake(ApolloProfileSidePadding, ApolloProfileBannerHeight - ApolloProfileAvatarBannerOverlap, borderSize, borderSize);
+}
+
+- (CGRect)apollo_snoovatarFrame {
+    CGFloat snoovatarY = MAX(12.0, ApolloProfileBannerHeight - 92.0);
+    return CGRectMake(20.0, snoovatarY, ApolloProfileSnoovatarWidth, ApolloProfileSnoovatarHeight);
+}
+
+- (CGFloat)apollo_aboutHeightForWidth:(CGFloat)width {
+    if (self.aboutLabel.hidden || self.aboutLabel.text.length == 0 || width <= 0.0) return 0.0;
+
+    CGSize constrained = CGSizeMake(width, CGFLOAT_MAX);
+    CGRect rect = [self.aboutLabel.text boundingRectWithSize:constrained
+                                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                                  attributes:@{NSFontAttributeName: self.aboutLabel.font}
+                                                     context:nil];
+    return MIN(ApolloProfileAboutMaxHeight, MAX(18.0, ceil(rect.size.height)));
+}
+
+// Computes the y-coordinate where the about text should start, full-width,
+// based on the bottom of whichever of (avatar/snoovatar, displayName/username
+// stack) reaches further down. This ensures the about text always sits below
+// the avatar — no empty space wasted beneath the picture when about is long.
+- (CGFloat)apollo_aboutYForWidth:(CGFloat)width {
+    BOOL showSnoovatar = !self.snoovatarImageView.hidden;
+    CGRect mediaFrame = showSnoovatar ? [self apollo_snoovatarFrame] : [self apollo_avatarFrame];
+    CGFloat mediaBottom = CGRectGetMaxY(mediaFrame);
+
+    CGFloat textX = showSnoovatar ? CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap - 2.0
+                                  : CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap;
+    CGFloat textWidth = MAX(80.0, width - textX - 18.0);
+    CGFloat displayNameY = ApolloProfileBannerHeight + 10.0;
+    CGFloat displayNameH = self.displayNameLabel.hidden ? 0.0 : 24.0;
+    CGFloat usernameTopGap = (self.displayNameLabel.hidden || self.usernameLabel.hidden) ? 0.0 : 1.0;
+    CGFloat usernameH = self.usernameLabel.hidden ? 0.0 : 18.0;
+    CGFloat usernameBottom = displayNameY + displayNameH + usernameTopGap + usernameH;
+    (void)textWidth;
+
+    CGFloat candidateY = MAX(mediaBottom + ApolloProfileTextTopGap, usernameBottom + 10.0);
+    return candidateY;
+}
+
+- (CGFloat)preferredHeightForWidth:(CGFloat)width {
+    CGFloat aboutWidth = MAX(120.0, width - ApolloProfileAboutSideInset * 2.0);
+    CGFloat aboutHeight = [self apollo_aboutHeightForWidth:aboutWidth];
+    CGFloat aboutY = [self apollo_aboutYForWidth:width];
+    if (aboutHeight <= 0.0) {
+        // No about text — header just needs to clear the avatar / labels.
+        return aboutY + ApolloProfileBottomPadding;
+    }
+    return aboutY + aboutHeight + ApolloProfileBottomPadding;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = self.bounds.size.width;
-    CGFloat bannerHeight = 126.0;
-    self.bannerImageView.frame = CGRectMake(0.0, 0.0, width, bannerHeight);
+    self.bannerImageView.frame = CGRectMake(0.0, 0.0, width, ApolloProfileBannerHeight);
+    self.detailsBackgroundView.frame = CGRectMake(0.0, ApolloProfileBannerHeight, width, MAX(0.0, self.bounds.size.height - ApolloProfileBannerHeight));
 
-    CGFloat borderSize = ApolloProfileAvatarDiameter + 6.0;
-    self.avatarBorderView.frame = CGRectMake(22.0, bannerHeight - 34.0, borderSize, borderSize);
-    self.avatarBorderView.layer.cornerRadius = borderSize / 2.0;
+    CGRect avatarFrame = [self apollo_avatarFrame];
+    self.avatarBorderView.frame = avatarFrame;
+    self.avatarBorderView.layer.cornerRadius = avatarFrame.size.width / 2.0;
     self.avatarImageView.frame = CGRectMake(3.0, 3.0, ApolloProfileAvatarDiameter, ApolloProfileAvatarDiameter);
     self.avatarImageView.layer.cornerRadius = ApolloProfileAvatarDiameter / 2.0;
 
-    CGFloat snoovatarY = MAX(12.0, bannerHeight - 92.0);
-    self.snoovatarImageView.frame = CGRectMake(20.0, snoovatarY, ApolloProfileSnoovatarWidth, ApolloProfileSnoovatarHeight);
+    self.snoovatarImageView.frame = [self apollo_snoovatarFrame];
+
+    BOOL showSnoovatar = !self.snoovatarImageView.hidden;
+    CGRect mediaFrame = showSnoovatar ? self.snoovatarImageView.frame : self.avatarBorderView.frame;
+    CGFloat textX = showSnoovatar ? CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap - 2.0
+                                  : CGRectGetMaxX(mediaFrame) + ApolloProfileTextLeftGap;
+    CGFloat textWidth = MAX(80.0, width - textX - 18.0);
+    CGFloat editButtonWidth = self.editProfileButton.hidden ? 0.0 : 52.0;
+    CGFloat editButtonHeight = 26.0;
+    CGFloat displayNameY = ApolloProfileBannerHeight + 10.0;
+    self.editProfileButton.frame = CGRectMake(textX + textWidth - editButtonWidth, displayNameY - 1.0, editButtonWidth, editButtonHeight);
+    self.editProfileButton.layer.cornerRadius = editButtonHeight / 2.0;
+    CGFloat displayNameWidth = self.editProfileButton.hidden ? textWidth : MAX(60.0, textWidth - editButtonWidth - 8.0);
+    self.displayNameLabel.frame = CGRectMake(textX, displayNameY, displayNameWidth, 24.0);
+    self.usernameLabel.frame = CGRectMake(textX, CGRectGetMaxY(self.displayNameLabel.frame) + 1.0, textWidth, 18.0);
+
+    CGFloat aboutWidth = MAX(120.0, width - ApolloProfileAboutSideInset * 2.0);
+    CGFloat aboutHeight = [self apollo_aboutHeightForWidth:aboutWidth];
+    CGFloat aboutY = [self apollo_aboutYForWidth:width];
+    self.aboutLabel.frame = CGRectMake(ApolloProfileAboutSideInset, aboutY, aboutWidth, aboutHeight);
+}
+
+- (void)apollo_editProfileTapped {
+    ApolloProfileOpenRedditProfileEditor();
+}
+
+- (void)applyProfileInfo:(ApolloUserProfileInfo *)info fallbackUsername:(NSString *)username {
+    NSString *displayName = info.displayName.length > 0 ? info.displayName : username;
+    NSString *normalizedDisplay = ApolloAvatarNormalizedUsername(displayName);
+    BOOL displayMatchesUsername = normalizedDisplay.length > 0 && ApolloAvatarUsernameMatches(normalizedDisplay, username);
+
+    self.displayNameLabel.text = displayName.length > 0 ? displayName : nil;
+    self.usernameLabel.text = (!displayMatchesUsername && username.length > 0) ? [@"u/" stringByAppendingString:username] : nil;
+    self.aboutLabel.text = info.aboutText.length > 0 ? info.aboutText : nil;
+    BOOL isLoggedInAccount = ApolloProfileUsernameIsLoggedInAccount(username);
+    ApolloLog(@"[UserAvatars] Edit button username=%@ isLoggedIn=%@", username ?: @"nil", isLoggedInAccount ? @"YES" : @"NO");
+    self.editProfileButton.hidden = !isLoggedInAccount;
+
+    self.displayNameLabel.hidden = self.displayNameLabel.text.length == 0;
+    self.usernameLabel.hidden = self.usernameLabel.text.length == 0;
+    self.aboutLabel.hidden = self.aboutLabel.text.length == 0;
+    [self setNeedsLayout];
+    if (self.heightInvalidationBlock) {
+        self.heightInvalidationBlock();
+    }
 }
 
 @end
@@ -116,6 +333,91 @@ static BOOL ApolloAvatarUsernameMatches(NSString *left, NSString *right) {
     NSString *normalizedRight = ApolloAvatarNormalizedUsername(right);
     if (normalizedLeft.length == 0 || normalizedRight.length == 0) return NO;
     return [normalizedLeft caseInsensitiveCompare:normalizedRight] == NSOrderedSame;
+}
+
+static BOOL ApolloProfileUsernameCollectionContains(NSString *username, id value) {
+    if (username.length == 0 || !value) return NO;
+
+    if ([value isKindOfClass:[NSString class]]) {
+        return ApolloAvatarUsernameMatches(username, value);
+    }
+    if ([value isKindOfClass:[NSData class]]) {
+        id decoded = nil;
+        @try {
+            if (@available(iOS 11.0, *)) {
+                decoded = [NSKeyedUnarchiver unarchivedObjectOfClasses:[NSSet setWithObjects:
+                    [NSDictionary class],
+                    [NSArray class],
+                    [NSString class],
+                    [NSNumber class],
+                    [NSData class],
+                    nil]
+                                                                 fromData:(NSData *)value
+                                                                    error:nil];
+            }
+            if (!decoded) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                decoded = [NSKeyedUnarchiver unarchiveObjectWithData:(NSData *)value];
+#pragma clang diagnostic pop
+            }
+        } @catch (__unused NSException *exception) {
+            decoded = nil;
+        }
+        return decoded && ApolloProfileUsernameCollectionContains(username, decoded);
+    }
+    if ([value isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)value) {
+            if (ApolloProfileUsernameCollectionContains(username, item)) return YES;
+        }
+        return NO;
+    }
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)value;
+        for (id key in dict) {
+            if (ApolloProfileUsernameCollectionContains(username, key) ||
+                ApolloProfileUsernameCollectionContains(username, dict[key])) {
+                return YES;
+            }
+        }
+    }
+    NSArray<NSString *> *usernameSelectors = @[@"username", @"userName", @"accountName", @"name"];
+    for (NSString *selectorName in usernameSelectors) {
+        SEL selector = NSSelectorFromString(selectorName);
+        if (![value respondsToSelector:selector]) continue;
+        @try {
+            id (*msgSend)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+            id result = msgSend(value, selector);
+            if (ApolloProfileUsernameCollectionContains(username, result)) return YES;
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return NO;
+}
+
+static BOOL ApolloProfileUsernameIsLoggedInAccount(NSString *username) {
+    NSString *normalizedUsername = ApolloAvatarNormalizedUsername(username);
+    if (normalizedUsername.length == 0) return NO;
+
+    NSMutableArray<NSUserDefaults *> *defaultsCandidates = [NSMutableArray array];
+    NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    if (groupDefaults) [defaultsCandidates addObject:groupDefaults];
+    [defaultsCandidates addObject:[NSUserDefaults standardUserDefaults]];
+    NSArray<NSString *> *keys = @[
+        @"LoggedInAccountDetails",
+        @"RedditAccounts2",
+        @"RedditApplicationOnlyAccount2",
+        @"LoggedInRedditAccountUsername",
+        @"CurrentRedditAccountUsername",
+    ];
+
+    for (NSUserDefaults *defaults in defaultsCandidates) {
+        for (NSString *key in keys) {
+            id value = [defaults objectForKey:key];
+            if (ApolloProfileUsernameCollectionContains(normalizedUsername, value)) return YES;
+        }
+    }
+    return NO;
 }
 
 static id ApolloObjectIvarValue(id object, NSString *name) {
@@ -153,6 +455,21 @@ static NSString *ApolloUsernameFromModelObject(id object) {
         if ([value isKindOfClass:[NSString class]]) return ApolloAvatarNormalizedUsername(value);
     }
     return nil;
+}
+
+static NSString *ApolloCurrentLoggedInUsername(void) {
+    Class clientClass = objc_getClass("RDKClient");
+    SEL sharedClientSEL = @selector(sharedClient);
+    if (!clientClass || ![clientClass respondsToSelector:sharedClientSEL]) return nil;
+
+    id client = ((id (*)(id, SEL))objc_msgSend)(clientClass, sharedClientSEL);
+    if (!client) return nil;
+
+    SEL currentUserSEL = @selector(currentUser);
+    if (![client respondsToSelector:currentUserSEL]) return nil;
+
+    id currentUser = ((id (*)(id, SEL))objc_msgSend)(client, currentUserSEL);
+    return ApolloUsernameFromModelObject(currentUser);
 }
 
 static NSString *ApolloUsernameFromCell(id cell, NSString *ivarName) {
@@ -972,7 +1289,12 @@ static NSString *ApolloUsernameFromProfileViewController(UIViewController *viewC
 
     NSString *title = viewController.navigationItem.title ?: viewController.title;
     title = ApolloAvatarNormalizedUsername(title);
-    NSSet<NSString *> *blockedTitles = [NSSet setWithObjects:@"accounts", @"account", @"profile", @"settings", @"overview", nil];
+    // Navigation/tabs often expose labels like "Comments" or "Account" — never treat as u/username.
+    NSSet<NSString *> *blockedTitles = [NSSet setWithObjects:
+        @"accounts", @"account", @"profile", @"settings", @"overview",
+        @"comments", @"comment", @"posts", @"post", @"inbox", @"search",
+        @"saved", @"hidden", @"friends", @"upvoted", @"downvoted", @"trophies",
+        @"messages", @"notifications", @"moderator", @"modmail", nil];
     if ([blockedTitles containsObject:title.lowercaseString]) return nil;
     if (title.length > 0 && ![title containsString:@" "] && title.length <= 32) return title;
     return nil;
@@ -987,6 +1309,9 @@ static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL 
     header.avatarBorderView.hidden = showSnoovatar;
     header.avatarImageView.hidden = showSnoovatar;
     [header setNeedsLayout];
+    if (header.heightInvalidationBlock) {
+        header.heightInvalidationBlock();
+    }
 }
 
 static ApolloProfileHeaderView *ApolloProfileCreateHeader(CGFloat width) {
@@ -1003,6 +1328,8 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
 
     void (^applyInfo)(ApolloUserProfileInfo *) = ^(ApolloUserProfileInfo *info) {
         if (!info) return;
+        [header applyProfileInfo:info fallbackUsername:username];
+
         BOOL showSnoovatar = info.hasSnoovatar && info.snoovatarURL != nil;
         ApolloProfileSetSnoovatarMode(header, showSnoovatar);
 
@@ -1037,6 +1364,20 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
         [cache refetchInfoForUsername:username completion:applyInfo];
     } else {
         [cache requestInfoForUsername:username completion:applyInfo];
+    }
+}
+
+static void ApolloProfileLayoutWrappedHeader(UIView *wrappedHeader,
+                                             ApolloProfileHeaderView *header,
+                                             UIView *originalHeader,
+                                             CGFloat width) {
+    CGFloat originalHeight = originalHeader ? originalHeader.frame.size.height : 0.0;
+    CGFloat headerHeight = [header preferredHeightForWidth:width];
+    wrappedHeader.frame = CGRectMake(0.0, 0.0, width, headerHeight + originalHeight);
+    header.frame = CGRectMake(0.0, 0.0, width, headerHeight);
+
+    if (originalHeader) {
+        originalHeader.frame = CGRectMake(0.0, headerHeight, width, originalHeight);
     }
 }
 
@@ -1197,18 +1538,31 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         objc_setAssociatedObject(viewControllerObject, kApolloProfileWrappedHeaderKey, wrappedHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(viewControllerObject, kApolloProfileOriginalHeaderKey, originalHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    header.hostViewController = viewController;
+    header.username = username;
+    [header apollo_updateEditProfileButtonColors];
+    __weak UIViewController *weakProfileController = viewController;
+    header.heightInvalidationBlock = ^{
+        UIViewController *strongProfileController = weakProfileController;
+        if (strongProfileController) {
+            ApolloProfileInstallOrUpdateHeader(strongProfileController);
+        }
+    };
 
     if (!wrappedHeader || tableView.tableHeaderView != wrappedHeader) {
         originalHeader = currentTableHeader;
         CGFloat originalHeight = originalHeader ? originalHeader.frame.size.height : 0.0;
-        wrappedHeader = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, ApolloProfileHeaderHeight + originalHeight)];
-        wrappedHeader.backgroundColor = [UIColor systemBackgroundColor];
-        header.frame = CGRectMake(0.0, 0.0, width, ApolloProfileHeaderHeight);
+        CGFloat headerHeight = [header preferredHeightForWidth:width];
+        wrappedHeader = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, headerHeight + originalHeight)];
+        // Transparent so Apollo's themed table backgroundColor shows through,
+        // matching custom themes (not just dark/light).
+        wrappedHeader.backgroundColor = [UIColor clearColor];
         [wrappedHeader addSubview:header];
         if (originalHeader) {
-            originalHeader.frame = CGRectMake(0.0, ApolloProfileHeaderHeight, width, originalHeight);
+            originalHeader.frame = CGRectMake(0.0, headerHeight, width, originalHeight);
             [wrappedHeader addSubview:originalHeader];
         }
+        ApolloProfileLayoutWrappedHeader(wrappedHeader, header, originalHeader, width);
         objc_setAssociatedObject(wrappedHeader, kApolloProfileWrapperMarkerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(wrappedHeader, kApolloProfileHeaderViewKey, header, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(wrappedHeader, kApolloProfileOriginalHeaderKey, originalHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1217,12 +1571,9 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         tableView.tableHeaderView = wrappedHeader;
         ApolloLog(@"[UserAvatars] Installed profile header class=%@ vc=%p table=%p username=%@ nativeHeader=%@", className, viewControllerObject, tableView, username, originalHeader ? NSStringFromClass([originalHeader class]) : @"nil");
     } else {
-        CGFloat originalHeight = originalHeader ? originalHeader.frame.size.height : 0.0;
-        CGRect desiredFrame = CGRectMake(0.0, 0.0, width, ApolloProfileHeaderHeight + originalHeight);
-        if (!CGRectEqualToRect(wrappedHeader.frame, desiredFrame)) {
-            wrappedHeader.frame = desiredFrame;
-            header.frame = CGRectMake(0.0, 0.0, width, ApolloProfileHeaderHeight);
-            originalHeader.frame = CGRectMake(0.0, ApolloProfileHeaderHeight, width, originalHeight);
+        CGRect frameBeforeLayout = wrappedHeader.frame;
+        ApolloProfileLayoutWrappedHeader(wrappedHeader, header, originalHeader, width);
+        if (!CGRectEqualToRect(frameBeforeLayout, wrappedHeader.frame)) {
             tableView.tableHeaderView = wrappedHeader;
             ApolloLog(@"[UserAvatars] Resized profile header class=%@ vc=%p username=%@ width=%.1f", className, viewControllerObject, username, width);
         }
@@ -1234,6 +1585,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         header.avatarImageView.image = ApolloProfilePlaceholderAvatar();
         header.snoovatarImageView.image = nil;
         header.bannerImageView.image = nil;
+        [header applyProfileInfo:nil fallbackUsername:username];
         ApolloProfileSetSnoovatarMode(header, NO);
         ApolloProfileLoadImages(header, username, NO);
         ApolloLog(@"[UserAvatars] Loading profile header images class=%@ vc=%p username=%@", className, viewControllerObject, username);
@@ -1276,6 +1628,161 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
             ApolloLog(@"[UserAvatars] Refreshed %lu profile controllers after profile update for u/%@", (unsigned long)refreshCount, username ?: @"all");
         }
     });
+}
+
+static SEL ApolloProfileTabAvatarActiveKey(void) {
+    return NSSelectorFromString(@"apollo_profileTabAvatarIconActive");
+}
+
+static UITabBarItem *ApolloProfileTabItemForController(UITabBarController *tabBarController) {
+    if (!tabBarController) return nil;
+
+    NSArray<UIViewController *> *controllers = tabBarController.viewControllers;
+    if (controllers.count <= ApolloProfileTabIndex) return nil;
+
+    UIViewController *profileChild = controllers[ApolloProfileTabIndex];
+    UITabBarItem *item = profileChild.tabBarItem;
+    if (item) return item;
+
+    NSArray<UITabBarItem *> *items = tabBarController.tabBar.items;
+    return items.count > ApolloProfileTabIndex ? items[ApolloProfileTabIndex] : nil;
+}
+
+static NSString *ApolloProfileTabUsernameForController(UITabBarController *tabBarController) {
+    NSString *currentUsername = ApolloCurrentLoggedInUsername();
+    if (currentUsername.length > 0) return currentUsername;
+
+    NSArray<UIViewController *> *controllers = tabBarController.viewControllers;
+    if (controllers.count <= ApolloProfileTabIndex) return nil;
+
+    UIViewController *profileChild = controllers[ApolloProfileTabIndex];
+    if ([profileChild isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *nav = (UINavigationController *)profileChild;
+        for (UIViewController *candidate in nav.viewControllers) {
+            if (!ApolloViewControllerLooksProfileRelated(candidate)) continue;
+            NSString *username = ApolloUsernameFromProfileViewController(candidate);
+            if (username.length > 0) return username;
+        }
+        for (UIViewController *candidate in [nav.viewControllers reverseObjectEnumerator]) {
+            NSString *username = ApolloUsernameFromProfileViewController(candidate);
+            if (username.length > 0) return username;
+        }
+    }
+
+    return ApolloUsernameFromProfileViewController(profileChild);
+}
+
+static void ApolloProfileRestoreTabAvatarItem(UITabBarItem *item) {
+    if (!item) return;
+
+    UIImage *originalImage = objc_getAssociatedObject(item, kApolloProfileTabOriginalImageKey);
+    UIImage *originalSelectedImage = objc_getAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey);
+    objc_setAssociatedObject(item, ApolloProfileTabAvatarActiveKey(), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (originalImage) item.image = originalImage;
+    if (originalSelectedImage) item.selectedImage = originalSelectedImage;
+
+    objc_setAssociatedObject(item, kApolloProfileTabOriginalImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(item, kApolloProfileTabAppliedUsernameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+static UIImage *ApolloProfileTabAvatarImage(UIImage *sourceImage) {
+    UIImage *avatar = ApolloCircularAvatarImage(sourceImage, ApolloProfileTabAvatarDiameter);
+    return [avatar imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+static void ApolloProfileSetTabAvatarImage(UITabBarItem *item, UIImage *sourceImage, NSString *username) {
+    if (!item || !sourceImage) return;
+    if (!objc_getAssociatedObject(item, kApolloProfileTabOriginalImageKey)) {
+        objc_setAssociatedObject(item, kApolloProfileTabOriginalImageKey, item.image, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey, item.selectedImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    UIImage *avatar = ApolloProfileTabAvatarImage(sourceImage);
+    objc_setAssociatedObject(item, ApolloProfileTabAvatarActiveKey(), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    item.image = avatar;
+    item.selectedImage = avatar;
+    objc_setAssociatedObject(item, kApolloProfileTabAppliedUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController) {
+    UITabBarItem *item = ApolloProfileTabItemForController(tabBarController);
+    if (!sUseProfileAvatarTabIcon) {
+        ApolloProfileRestoreTabAvatarItem(item);
+        return;
+    }
+
+    NSString *username = ApolloProfileTabUsernameForController(tabBarController);
+    if (username.length == 0 || !item) return;
+
+    NSString *appliedUsername = objc_getAssociatedObject(item, kApolloProfileTabAppliedUsernameKey);
+    if (appliedUsername.length > 0 && !ApolloAvatarUsernameMatches(appliedUsername, username)) {
+        ApolloProfileRestoreTabAvatarItem(item);
+    }
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:username];
+    if (cachedInfo.iconURL) {
+        UIImage *cachedImage = [cache cachedImageForURL:cachedInfo.iconURL];
+        if (cachedImage) {
+            ApolloProfileSetTabAvatarImage(item, cachedImage, username);
+            return;
+        }
+    }
+
+    __weak UITabBarController *weakTabBarController = tabBarController;
+    [cache requestInfoForUsername:username completion:^(ApolloUserProfileInfo *info) {
+        if (!sUseProfileAvatarTabIcon || !info.iconURL) return;
+        [cache requestImageForURL:info.iconURL completion:^(UIImage *image) {
+            UITabBarController *strongTabBarController = weakTabBarController;
+            if (!sUseProfileAvatarTabIcon || !strongTabBarController || !image) return;
+            UITabBarItem *currentItem = ApolloProfileTabItemForController(strongTabBarController);
+            NSString *currentUsername = ApolloProfileTabUsernameForController(strongTabBarController);
+            if (!ApolloAvatarUsernameMatches(currentUsername, username)) return;
+            ApolloProfileSetTabAvatarImage(currentItem, image, username);
+        }];
+    }];
+}
+
+static void ApolloProfileApplyTabAvatarInTree(UIViewController *viewController, NSHashTable *visited) {
+    if (!viewController || [visited containsObject:viewController]) return;
+    [visited addObject:viewController];
+
+    if ([viewController isKindOfClass:[UITabBarController class]]) {
+        ApolloProfileApplyTabAvatarForController((UITabBarController *)viewController);
+    }
+
+    for (UIViewController *child in viewController.childViewControllers) {
+        ApolloProfileApplyTabAvatarInTree(child, visited);
+    }
+    ApolloProfileApplyTabAvatarInTree(viewController.presentedViewController, visited);
+}
+
+static void ApolloProfileApplyTabAvatarForVisibleWindows(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:32];
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            ApolloProfileApplyTabAvatarInTree(window.rootViewController, visited);
+        }
+    });
+}
+
+static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {
+    if (!sUseProfileAvatarTabIcon) return;
+    ApolloProfileApplyTabAvatarForVisibleWindows();
+    ApolloLog(@"[UserAvatars] Scheduled profile tab avatar refresh after %@", reason ?: @"account change");
+}
+
+static void ApolloProfileOpenURL(NSURL *url) {
+    if (!url) return;
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+}
+
+static void ApolloProfileOpenRedditProfileEditor(void) {
+    // reddit.com/settings/profile opens the official Reddit app via Universal Links
+    // when installed, and otherwise falls back to Reddit's web profile editor.
+    ApolloProfileOpenURL([NSURL URLWithString:@"https://www.reddit.com/settings/profile"]);
 }
 
 %hook ASTextNode
@@ -1370,18 +1877,21 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLoad");
+    ApolloProfileApplyTabAvatarForController(((UIViewController *)self).tabBarController);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewWillAppear");
+    ApolloProfileApplyTabAvatarForController(((UIViewController *)self).tabBarController);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallOrUpdateHeader(self);
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidAppear");
+    ApolloProfileApplyTabAvatarForController(((UIViewController *)self).tabBarController);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1399,6 +1909,50 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
     if (!header) return;
     ApolloLog(@"[UserAvatars] Pull-to-refresh forcing avatar/banner refetch for u/%@", username);
     ApolloProfileLoadImages(header, username, YES);
+}
+
+- (void)redditAccountChangedWithNotification:(id)notification {
+    %orig(notification);
+    ApolloProfileRefreshControllersForUsername(nil);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"ProfileViewController account notification");
+}
+
+%end
+
+%hook UITabBarController
+
+- (void)viewDidLoad {
+    %orig;
+    ApolloProfileApplyTabAvatarForController(self);
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloProfileApplyTabAvatarForController(self);
+}
+
+- (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers {
+    %orig(viewControllers);
+    ApolloProfileApplyTabAvatarForController(self);
+}
+
+- (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
+    %orig(viewControllers, animated);
+    ApolloProfileApplyTabAvatarForController(self);
+}
+
+%end
+
+%hook RDKClient
+
+- (void)setCurrentUser:(id)currentUser {
+    %orig(currentUser);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"RDKClient currentUser");
+}
+
+- (void)updateCurrentUserWithNewUser:(id)newUser {
+    %orig(newUser);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"RDKClient user update");
 }
 
 %end
@@ -1429,6 +1983,11 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
 }
 
+- (void)tableView:(id)tableView didSelectRowAtIndexPath:(id)indexPath {
+    %orig(tableView, indexPath);
+    ApolloProfileScheduleAccountChangeTabAvatarRefresh(@"AccountManager selection");
+}
+
 %end
 
 %ctor {
@@ -1438,5 +1997,17 @@ static void ApolloProfileRefreshControllersForUsername(NSString *username) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
         ApolloProfileRefreshControllersForUsername(nil);
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloProfileTabAvatarIconChangedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloProfileApplyTabAvatarForVisibleWindows();
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloUserProfileInfoUpdatedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloProfileApplyTabAvatarForVisibleWindows();
     }];
 }

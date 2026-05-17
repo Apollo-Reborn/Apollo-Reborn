@@ -116,6 +116,13 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     return url;
 }
 
+- (NSString *)cleanStringFromValue:(id)value {
+    if (![value isKindOfClass:[NSString class]]) return nil;
+    NSString *string = [(NSString *)value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (string.length == 0) return nil;
+    return string;
+}
+
 - (NSURL *)decoratorURLFromProfileDictionary:(NSDictionary *)dataDict {
     NSArray<NSString *> *keys = @[@"avatar_decoration_data", @"avatar_decoration"];
     for (NSString *key in keys) {
@@ -153,6 +160,8 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     if (info.snoovatarURL.absoluteString) dict[@"snoovatarURL"] = info.snoovatarURL.absoluteString;
     dict[@"decoratorURL"] = info.decoratorURL.absoluteString ?: @"";
     dict[@"avatarFrameKind"] = info.avatarFrameKind ?: @"";
+    dict[@"displayName"] = info.displayName ?: @"";
+    dict[@"aboutText"] = info.aboutText ?: @"";
     dict[@"defaultSnoo"] = @(info.defaultSnoo);
     dict[@"hasSnoovatar"] = @(info.hasSnoovatar);
     dict[@"fetchedAt"] = @([info.fetchedAt timeIntervalSince1970]);
@@ -168,16 +177,21 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     NSURL *decoratorURL = [self URLFromString:dict[@"decoratorURL"]];
     NSString *avatarFrameKind = [dict[@"avatarFrameKind"] isKindOfClass:[NSString class]] ? dict[@"avatarFrameKind"] : nil;
     if (avatarFrameKind.length == 0) avatarFrameKind = nil;
+    NSString *displayName = [self cleanStringFromValue:dict[@"displayName"]];
+    NSString *aboutText = [self cleanStringFromValue:dict[@"aboutText"]];
     BOOL defaultSnoo = [dict[@"defaultSnoo"] boolValue];
     BOOL hasSnoovatar = snoovatarURL || [dict[@"hasSnoovatar"] boolValue];
     NSTimeInterval timestamp = [dict[@"fetchedAt"] doubleValue];
     NSDate *fetchedAt = timestamp > 0 ? [NSDate dateWithTimeIntervalSince1970:timestamp] : [NSDate distantPast];
     if (!dict[@"hasSnoovatar"] && !dict[@"snoovatarURL"]) fetchedAt = [NSDate distantPast];
     if (!dict[@"decoratorURL"] && !dict[@"avatarFrameKind"]) fetchedAt = [NSDate distantPast];
+    if (!dict[@"displayName"] && !dict[@"aboutText"]) fetchedAt = [NSDate distantPast];
     ApolloUserProfileInfo *info = [[ApolloUserProfileInfo alloc] initWithUsername:username iconURL:iconURL bannerURL:bannerURL defaultSnoo:defaultSnoo fetchedAt:fetchedAt];
     info.snoovatarURL = snoovatarURL;
     info.decoratorURL = decoratorURL;
     info.avatarFrameKind = avatarFrameKind;
+    info.displayName = displayName;
+    info.aboutText = aboutText;
     info.hasSnoovatar = hasSnoovatar;
     return info;
 }
@@ -299,6 +313,10 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         [self URLFromString:subreddit[@"banner_background_image"]];
 
     NSString *username = [dataDict[@"name"] isKindOfClass:[NSString class]] ? dataDict[@"name"] : fallbackUsername;
+    NSString *displayName = [self cleanStringFromValue:subreddit[@"title"]] ?: [self cleanStringFromValue:subreddit[@"display_name"]] ?: username;
+    NSString *aboutText = [self cleanStringFromValue:subreddit[@"public_description"]] ?:
+        [self cleanStringFromValue:subreddit[@"description"]] ?:
+        [self cleanStringFromValue:dataDict[@"public_description"]];
     BOOL defaultSnoo = NO;
     if (!snoovatarURL && iconURL.host.length > 0) {
         NSString *host = iconURL.host.lowercaseString;
@@ -310,6 +328,8 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     info.snoovatarURL = snoovatarURL;
     info.decoratorURL = decoratorURL;
     info.avatarFrameKind = avatarFrameKind;
+    info.displayName = displayName;
+    info.aboutText = aboutText;
     info.hasSnoovatar = snoovatarURL != nil;
     return info;
 }
@@ -360,6 +380,11 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         }
 
         ApolloUserProfileInfo *info = [self profileInfoFromResponseData:data fallbackUsername:key];
+        if (!info) {
+            [self finishInfoRequestForKey:key info:nil];
+            return;
+        }
+
         if (info.iconURL || info.bannerURL) {
             ApolloLog(@"[UserAvatars] Fetched profile info for u/%@ icon=%@ banner=%@ decorator=%@ frame=%@", key, info.iconURL.absoluteString ?: @"nil", info.bannerURL.absoluteString ?: @"nil", info.decoratorURL.absoluteString ?: @"nil", info.avatarFrameKind ?: @"nil");
         } else {
