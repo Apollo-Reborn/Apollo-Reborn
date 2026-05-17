@@ -42,11 +42,11 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Tag Filters**: Blur NSFW and/or Spoiler posts (including titles) in feeds, with per-subreddit overrides (Settings > Tag Filters)
 - **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
 - **User Profile Pictures**: Show Reddit user avatars next to usernames in feeds, comments, and user profiles (Settings > Custom API > Media > Show User Profile Pictures)
-- **Self-hosted Notifications** (advanced): Optionally route push registrations, watchers, and inbox checks through your own forked [apollo-backend](https://github.com/christianselig/apollo-backend) instance instead of having those requests silently dropped (Settings > Custom API > Notification Backend)
+- **Self-hosted Notifications** (advanced): Optionally route push registrations, watchers, and inbox checks through your own forked [apollo-backend](https://github.com/nickclyde/apollo-backend) instance instead of having those requests silently dropped (Settings > Custom API > Notification Backend)
 
 ### Self-hosted notifications (advanced)
 
-The legacy Apollo push backends went dark in June 2023 and are otherwise blocked by the tweak. If you run your own fork of [christianselig/apollo-backend](https://github.com/christianselig/apollo-backend) (with your own Reddit OAuth `CLIENT_ID` / `CLIENT_SECRET` baked into its env vars), you can set the URL under **Settings > Custom API > Notification Backend** and the tweak will route all `apollopushserver.xyz`, `beta.apollonotifications.com`, and `apolloreq.com` traffic to that host instead. Leave the field empty to keep the current "silently dropped" behavior.
+The legacy Apollo push backends went dark in June 2023 and are otherwise blocked by the tweak. If you run your own instance of [nickclyde/apollo-backend](https://github.com/nickclyde/apollo-backend) (with your own Reddit OAuth `CLIENT_ID` / `CLIENT_SECRET` baked into its env vars), you can set the URL under **Settings > Custom API > Notification Backend** and the tweak will route all `apollopushserver.xyz`, `beta.apollonotifications.com`, and `apolloreq.com` traffic to that host instead. Leave the field empty to keep the current "silently dropped" behavior.
 
 > [!IMPORTANT]
 > APNs delivery requires a real `aps-environment` entitlement, which Apple only grants under a paid Apple Developer team. Free-account sideloads can still register and exercise the watcher CRUD, but push notifications will never actually arrive.
