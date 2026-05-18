@@ -77,9 +77,10 @@ static char kApolloMediaComposerBodyRestoreSkippedLoggedKey;
 static char kApolloMediaComposerBodyToolbarImageButtonDisabledKey;
 static char kApolloMediaComposerBodyToolbarRestrictionsLoggedKey;
 static char kApolloMediaComposerBodyToolbarButtonOriginalAlphaKey;
+static char kApolloMediaComposerBodyToolbarRetriesScheduledKey;
 static char kApolloMediaComposerBodyEditorFreshOpenKey;
-static char kApolloMediaComposerVideoRequirementsFooterKey;
-static char kApolloMediaComposerVideoRequirementsLoggedKey;
+static char kApolloMediaComposerNativeBodyEditorOwnerKey;
+static char kApolloMediaComposerNativeBodyEditorSavedKey;
 static BOOL sApolloMediaComposerContextActive = NO;
 static BOOL sApolloMediaComposerPickerActive = NO;
 static BOOL sApolloMediaComposerInlineBodyPickerActive = NO;
@@ -122,6 +123,7 @@ static char kApolloMediaComposerPosterPayloadContextKey;
 static NSData *(*orig_UIImageJPEGRepresentation)(UIImage *image, CGFloat compressionQuality) = NULL;
 static NSData *(*orig_UIImagePNGRepresentation)(UIImage *image) = NULL;
 static UITableViewCell *(*orig_ApolloCompose_tableView_cellForRowAtIndexPath)(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) = NULL;
+static NSInteger (*orig_ApolloCompose_tableView_numberOfRowsInSection)(id self, SEL _cmd, UITableView *tableView, NSInteger section) = NULL;
 static CGFloat (*orig_ApolloCompose_tableView_heightForRowAtIndexPath)(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) = NULL;
 static CGFloat (*orig_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath)(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) = NULL;
 
@@ -134,9 +136,15 @@ static void ApolloMediaComposerClearVisibleMediaAttachmentsSoon(NSString *reason
 static void ApolloMediaComposerUpdateBodyEditor(UIViewController *controller, BOOL updateFooter);
 static UIViewController *ApolloMediaComposerCaptureBodyTextView(UITextView *textView, UIViewController *fallbackController, NSString *reason);
 static void ApolloMediaComposerCaptureBodyTextViewMutation(UITextView *textView, NSString *reason);
-static void ApolloMediaComposerOpenNativeBodyEditor(UIViewController *controller);
+static void ApolloMediaComposerStoreBodyText(UIViewController *controller, NSString *text);
+static void ApolloMediaComposerOpenIndependentBodyEditor(UIViewController *controller);
 static UIViewController *ApolloMediaComposerVisibleControllerFromController(UIViewController *controller);
 static void ApolloMediaComposerCleanupVideoContext(NSMutableDictionary *context, BOOL deleteFiles, NSString *reason);
+static UIColor *ApolloPhotoComposerAccentColor(UIViewController *controller);
+static void ApolloMediaComposerConfigureNativeBodyEditor(UIViewController *editor);
+static void ApolloMediaComposerSaveNativeBodyEditor(UIViewController *editor, NSString *reason, BOOL updatePreview);
+static void ApolloMediaComposerApplyNativeEditorToolbarRestrictions(UIViewController *editor, UIViewController *ownerController, NSString *reason);
+static void ApolloMediaComposerScheduleNativeEditorToolbarRetries(UIViewController *editor, UIViewController *ownerController);
 
 @interface ApolloMediaComposerWeakControllerBox : NSObject
 @property (nonatomic, weak) UIViewController *controller;
@@ -165,7 +173,7 @@ static void ApolloMediaComposerCleanupVideoContext(NSMutableDictionary *context,
 @implementation ApolloMediaComposerBodyRowTapTarget
 
 - (void)handleTap:(id)sender {
-    ApolloMediaComposerOpenNativeBodyEditor(self.controller);
+    ApolloMediaComposerOpenIndependentBodyEditor(self.controller);
 }
 
 @end
@@ -1216,10 +1224,6 @@ static NSInteger ApolloMediaComposerVideoRequirementsFooterTag(void) {
     return 0xA901B13;
 }
 
-static NSInteger ApolloMediaComposerVideoRequirementsLabelTag(void) {
-    return 0xA901B14;
-}
-
 static CGFloat ApolloMediaComposerEmbeddedBodyRowHeight(void) {
     return 46.0;
 }
@@ -1436,6 +1440,115 @@ static void ApolloMediaComposerStoreBodyText(UIViewController *controller, NSStr
     }
 }
 
+static UIViewController *ApolloMediaComposerOwnerForNativeBodyEditor(UIViewController *editor) {
+    ApolloMediaComposerWeakControllerBox *box = objc_getAssociatedObject(editor, &kApolloMediaComposerNativeBodyEditorOwnerKey);
+    UIViewController *ownerController = [box isKindOfClass:[ApolloMediaComposerWeakControllerBox class]] ? box.controller : nil;
+    return ApolloMediaComposerCanonicalBodyController(ownerController) ?: ownerController;
+}
+
+static UITextView *ApolloMediaComposerNativeBodyTextView(UIViewController *editor) {
+    if (![editor isKindOfClass:[UIViewController class]]) return nil;
+    id value = nil;
+    @try { value = [editor valueForKey:@"composeTextView"]; } @catch (__unused NSException *e) {}
+    if ([value isKindOfClass:[UITextView class]]) return (UITextView *)value;
+
+    Ivar ivar = class_getInstanceVariable(editor.class, "composeTextView");
+    if (ivar) {
+        id ivarValue = object_getIvar(editor, ivar);
+        if ([ivarValue isKindOfClass:[UITextView class]]) return (UITextView *)ivarValue;
+    }
+
+    UITextView *bestTextView = nil;
+    CGFloat bestHeight = 0.0;
+    NSMutableArray<UIView *> *stack = editor.isViewLoaded && editor.view ? [NSMutableArray arrayWithObject:editor.view] : nil;
+    NSUInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 1600) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if ([view isKindOfClass:[UITextView class]] && view.bounds.size.height >= bestHeight) {
+            bestTextView = (UITextView *)view;
+            bestHeight = view.bounds.size.height;
+        }
+        for (UIView *subview in view.subviews) [stack addObject:subview];
+    }
+    return bestTextView;
+}
+
+static void ApolloMediaComposerSeedNativeBodyEditorTextView(UIViewController *editor, UIViewController *ownerController, NSString *reason) {
+    UITextView *textView = ApolloMediaComposerNativeBodyTextView(editor);
+    if (!textView || !ownerController) return;
+
+    ApolloMediaComposerWeakControllerBox *controllerBox = [ApolloMediaComposerWeakControllerBox new];
+    controllerBox.controller = ownerController;
+    objc_setAssociatedObject(textView, &kApolloMediaComposerBodyTextViewMarkerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textView, &kApolloMediaComposerBodyTextViewControllerBoxKey, controllerBox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyTextViewKey, textView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    textView.tag = ApolloMediaComposerBodyTextViewTag();
+
+    NSNumber *seeded = objc_getAssociatedObject(textView, &kApolloMediaComposerBodyTextViewSeededKey);
+    if (![seeded boolValue]) {
+        NSString *storedText = objc_getAssociatedObject(ownerController, &kApolloMediaComposerBodyTextStorageKey);
+        NSString *seedText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText([storedText isKindOfClass:[NSString class]] ? storedText : @""));
+        objc_setAssociatedObject(textView, &kApolloMediaComposerBodyTextViewSeedingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        textView.text = seedText ?: @"";
+        objc_setAssociatedObject(textView, &kApolloMediaComposerBodyTextViewSeedingKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(textView, &kApolloMediaComposerBodyTextViewSeededKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[MediaPostBody] seeded native ComposeViewController Media body editor len=%lu reason=%@",
+            (unsigned long)ApolloMediaComposerTrimmedBodyText(seedText).length, reason ?: @"(unknown)");
+    }
+}
+
+static void ApolloMediaComposerConfigureNativeBodyEditor(UIViewController *editor) {
+    UIViewController *ownerController = ApolloMediaComposerOwnerForNativeBodyEditor(editor);
+    if (!ownerController) return;
+
+    editor.title = @"Text (optional)";
+    editor.navigationItem.title = @"Text (optional)";
+    UIColor *accentColor = ApolloPhotoComposerAccentColor(ownerController) ?: ownerController.view.tintColor ?: editor.view.tintColor;
+
+    UIBarButtonItem *doneItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:editor action:@selector(apollo_mediaBodyDoneButtonTapped:)];
+    UIBarButtonItem *cancelItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:editor action:@selector(apollo_mediaBodyCancelButtonTapped:)];
+    if (accentColor) {
+        doneItem.tintColor = accentColor;
+        cancelItem.tintColor = accentColor;
+        editor.view.tintColor = accentColor;
+    }
+    editor.navigationItem.rightBarButtonItem = doneItem;
+    editor.navigationItem.rightBarButtonItems = @[doneItem];
+    editor.navigationItem.leftBarButtonItem = cancelItem;
+
+    @try { [editor setValue:doneItem forKey:@"postBarButtonItem"]; } @catch (__unused NSException *e) {}
+    @try { [editor setValue:doneItem forKey:@"postWithCharactersRemainingBarButtonItem"]; } @catch (__unused NSException *e) {}
+    @try { [editor setValue:@NO forKey:@"submitTapped"]; } @catch (__unused NSException *e) {}
+
+    ApolloMediaComposerSeedNativeBodyEditorTextView(editor, ownerController, @"configure-native-compose");
+    ApolloMediaComposerApplyNativeEditorToolbarRestrictions(editor, ownerController, @"native-compose-configure");
+    ApolloMediaComposerScheduleNativeEditorToolbarRetries(editor, ownerController);
+}
+
+static void ApolloMediaComposerSaveNativeBodyEditor(UIViewController *editor, NSString *reason, BOOL updatePreview) {
+    UIViewController *ownerController = ApolloMediaComposerOwnerForNativeBodyEditor(editor);
+    if (!ownerController) return;
+    UITextView *textView = ApolloMediaComposerNativeBodyTextView(editor);
+    NSString *bodyText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText(textView.text ?: @""));
+    ApolloMediaComposerStoreBodyText(ownerController, bodyText);
+    objc_setAssociatedObject(editor, &kApolloMediaComposerNativeBodyEditorSavedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (updatePreview) ApolloMediaComposerUpdateBodyEditor(ownerController, YES);
+    ApolloLog(@"[MediaPostBody] saved native ComposeViewController Media body editor reason=%@ len=%lu",
+        reason ?: @"(unknown)", (unsigned long)ApolloMediaComposerTrimmedBodyText(bodyText).length);
+}
+
+static void ApolloMediaComposerDismissNativeBodyEditor(UIViewController *editor) {
+    UINavigationController *navigationController = editor.navigationController;
+    if (navigationController.presentingViewController && navigationController.viewControllers.firstObject == editor) {
+        [navigationController dismissViewControllerAnimated:YES completion:nil];
+    } else if (navigationController.viewControllers.count > 1) {
+        [navigationController popViewControllerAnimated:YES];
+    } else {
+        [editor dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
 static UISegmentedControl *ApolloMediaComposerFindPostTypeSegmentedControl(UIViewController *controller) {
     if (!controller.isViewLoaded) return nil;
 
@@ -1572,35 +1685,13 @@ static BOOL ApolloMediaComposerShouldInsertBodyRow(UIViewController *controller)
     return ApolloMediaComposerReadPostTypeSlot(controller, 0) == 0;
 }
 
-static NSString *ApolloMediaComposerVideoRequirementsText(void) {
-    return @"Video requirements\n- be less than 1GB in size.\n- not be greater than 15 minutes in length.\n- not be less than 2 seconds in length.\n- be an mpeg4 file. (.mp4 or .mov)";
-}
-
-static CGFloat ApolloMediaComposerVideoRequirementsHeightForWidth(CGFloat width) {
-    CGFloat horizontalInset = 32.0;
-    CGFloat labelWidth = MAX(0.0, width - horizontalInset * 2.0);
-    if (labelWidth <= 0.0) return 0.0;
-    UIFont *font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    CGRect rect = [ApolloMediaComposerVideoRequirementsText() boundingRectWithSize:CGSizeMake(labelWidth, CGFLOAT_MAX)
-                                                                          options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                                       attributes:@{NSFontAttributeName: font}
-                                                                          context:nil];
-    return ceil(rect.size.height) + 18.0;
-}
-
 static void ApolloMediaComposerRemoveVideoRequirementsFromCell(UITableViewCell *cell) {
     UIView *view = [cell.contentView viewWithTag:ApolloMediaComposerVideoRequirementsFooterTag()];
     [view removeFromSuperview];
 }
 
 static void ApolloMediaComposerRemoveVideoRequirementsFooter(UIViewController *controller) {
-    controller = ApolloMediaComposerCanonicalBodyController(controller) ?: controller;
-    UITableView *tableView = ApolloMediaComposerFindPrimaryTableView(controller);
-    UIView *legacyFooter = objc_getAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsFooterKey);
-    if (tableView && legacyFooter && tableView.tableFooterView == legacyFooter) tableView.tableFooterView = nil;
-    [legacyFooter removeFromSuperview];
-    objc_setAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsFooterKey, nil, OBJC_ASSOCIATION_ASSIGN);
-    for (UITableViewCell *cell in tableView.visibleCells ?: @[]) ApolloMediaComposerRemoveVideoRequirementsFromCell(cell);
+    (void)controller;
 }
 
 static void ApolloMediaComposerConfigureVideoRequirementsCell(UITableViewCell *cell, UIViewController *controller, UITableView *tableView, NSIndexPath *indexPath) {
@@ -1611,55 +1702,7 @@ static void ApolloMediaComposerConfigureVideoRequirementsCell(UITableViewCell *c
 }
 
 static void ApolloMediaComposerInstallVideoRequirementsFooter(UIViewController *controller) {
-    controller = ApolloMediaComposerCanonicalBodyController(controller) ?: controller;
-    if (!controller) return;
-    UITableView *tableView = ApolloMediaComposerFindPrimaryTableView(controller);
-    if (!tableView || !tableView.window) return;
-
-    BOOL shouldShow = ApolloMediaComposerShouldInsertBodyRow(controller);
-    UIView *existing = objc_getAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsFooterKey);
-    if (!shouldShow) {
-        if (existing && tableView.tableFooterView == existing) tableView.tableFooterView = nil;
-        [existing removeFromSuperview];
-        objc_setAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsFooterKey, nil, OBJC_ASSOCIATION_ASSIGN);
-        return;
-    }
-
-    CGFloat width = tableView.bounds.size.width;
-    if (width <= 0.0) return;
-    CGFloat height = ApolloMediaComposerVideoRequirementsHeightForWidth(width);
-    if (height <= 0.0) return;
-
-    if ([existing isKindOfClass:[UIView class]] && tableView.tableFooterView == existing &&
-        fabs(existing.bounds.size.width - width) < 0.5 && fabs(existing.bounds.size.height - height) < 0.5) {
-        return;
-    }
-
-    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, height)];
-    footer.tag = ApolloMediaComposerVideoRequirementsFooterTag();
-    footer.backgroundColor = UIColor.clearColor;
-    footer.userInteractionEnabled = NO;
-    footer.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(32.0, 9.0, MAX(0.0, width - 64.0), MAX(0.0, height - 18.0))];
-    label.tag = ApolloMediaComposerVideoRequirementsLabelTag();
-    label.numberOfLines = 0;
-    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    label.textColor = ApolloMediaComposerBodyPlaceholderColor();
-    label.text = ApolloMediaComposerVideoRequirementsText();
-    label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [footer addSubview:label];
-
-    if (existing && tableView.tableFooterView == existing) tableView.tableFooterView = nil;
-    [existing removeFromSuperview];
-    tableView.tableFooterView = footer;
-    objc_setAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsFooterKey, footer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    NSNumber *logged = objc_getAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsLoggedKey);
-    if (![logged boolValue]) {
-        ApolloLog(@"[MediaComposer] installed video requirements footer width=%.1f height=%.1f", width, height);
-        objc_setAssociatedObject(controller, &kApolloMediaComposerVideoRequirementsLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    (void)controller;
 }
 
 static BOOL ApolloMediaComposerIsTitleRowIndexPath(NSIndexPath *indexPath) {
@@ -1972,18 +2015,12 @@ static void ApolloMediaComposerCollectButtonsInView(UIView *root, NSMutableArray
 
 static void ApolloMediaComposerApplyNativeEditorToolbarRestrictions(UIViewController *editor, UIViewController *ownerController, NSString *reason) {
     if (!editor || !ownerController) return;
-    // Determine "is Media tab" dynamically from the owner's segmented control rather than a
-    // sticky associated flag. The composer is a single ComposePostViewController whose tabs are
-    // segments (Media=0, Link=1, Text=2). After OpenNativeBodyEditor flips the segment for the
-    // native presentation, RestoreOriginalPostType restores it to whichever segment the user was
-    // actually on. So the segment tells us the truth, and gating works correctly even when the
-    // user switches Media → Text → Media on the same composer instance without our hooks firing
-    // for the Text-tab path.
+    BOOL mediaOwnedNativeEditor = ApolloMediaComposerOwnerForNativeBodyEditor(editor) != nil;
     UISegmentedControl *segmentedControl = ApolloMediaComposerFindPostTypeSegmentedControl(ownerController);
-    BOOL onMediaTab = NO;
+    BOOL onMediaTab = mediaOwnedNativeEditor;
     if (segmentedControl) {
-        onMediaTab = (segmentedControl.selectedSegmentIndex == 0);
-    } else {
+        onMediaTab = mediaOwnedNativeEditor || (segmentedControl.selectedSegmentIndex == 0);
+    } else if (!mediaOwnedNativeEditor) {
         // Fall back to the persisted lock if we can't find the segmented control yet.
         NSNumber *toolbarLock = objc_getAssociatedObject(ownerController, &kApolloMediaComposerBodyMediaTabToolbarLockKey);
         onMediaTab = [toolbarLock boolValue];
@@ -2036,6 +2073,7 @@ static void ApolloMediaComposerApplyNativeEditorToolbarRestrictions(UIViewContro
                 objc_setAssociatedObject(button, &kApolloMediaComposerBodyToolbarButtonOriginalAlphaKey, @(button.alpha), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
             button.enabled = NO;
+            button.userInteractionEnabled = NO;
             button.alpha = 0.35;
             objc_setAssociatedObject(button, &kApolloMediaComposerBodyToolbarImageButtonDisabledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             disabledCount++;
@@ -2045,6 +2083,7 @@ static void ApolloMediaComposerApplyNativeEditorToolbarRestrictions(UIViewContro
             // available. Restore enabled state and original alpha.
             NSNumber *origAlpha = objc_getAssociatedObject(button, &kApolloMediaComposerBodyToolbarButtonOriginalAlphaKey);
             button.enabled = YES;
+            button.userInteractionEnabled = YES;
             button.alpha = origAlpha ? origAlpha.doubleValue : 1.0;
             objc_setAssociatedObject(button, &kApolloMediaComposerBodyToolbarImageButtonDisabledKey, nil, OBJC_ASSOCIATION_ASSIGN);
             objc_setAssociatedObject(button, &kApolloMediaComposerBodyToolbarButtonOriginalAlphaKey, nil, OBJC_ASSOCIATION_ASSIGN);
@@ -2070,6 +2109,9 @@ static void ApolloMediaComposerApplyNativeEditorToolbarRestrictions(UIViewContro
 // decides whether to disable, restore, or no-op based on the current owner-controller flag.
 static void ApolloMediaComposerScheduleNativeEditorToolbarRetries(UIViewController *editor, UIViewController *ownerController) {
     if (!editor || !ownerController) return;
+    NSNumber *scheduled = objc_getAssociatedObject(editor, &kApolloMediaComposerBodyToolbarRetriesScheduledKey);
+    if ([scheduled boolValue]) return;
+    objc_setAssociatedObject(editor, &kApolloMediaComposerBodyToolbarRetriesScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     __weak UIViewController *weakEditor = editor;
     __weak UIViewController *weakOwner = ownerController;
@@ -2089,8 +2131,7 @@ static void ApolloMediaComposerMarkVisibleNativeBodyTextViews(UIViewController *
     if (!ownerController) return;
 
     NSNumber *active = objc_getAssociatedObject(ownerController, &kApolloMediaComposerBodyNativeEditorActiveKey);
-    BOOL directNativeEditor = ApolloMediaComposerControllerLooksLikeNativeTextEditor(controller);
-    if (![active boolValue] && !directNativeEditor) return;
+    if (![active boolValue]) return;
 
     NSUInteger markedCount = 0;
     UIViewController *editorController = nil;
@@ -2123,101 +2164,56 @@ static void ApolloMediaComposerMarkVisibleNativeBodyTextViews(UIViewController *
     }
 }
 
-static NSIndexPath *ApolloMediaComposerFindNativeTextRowIndexPath(UITableView *tableView) {
-    for (NSIndexPath *indexPath in tableView.indexPathsForVisibleRows ?: @[]) {
-        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-        if (!cell) continue;
-        if (ApolloPhotoComposerViewContainsText(cell, @"Text (optional)") ||
-            ApolloPhotoComposerViewContainsText(cell, @"Insert text") ||
-            ApolloPhotoComposerViewContainsText(cell, @"Post Text")) {
-            return indexPath;
-        }
-    }
-
-    NSInteger rows = [tableView numberOfRowsInSection:0];
-    if (rows > 1) return [NSIndexPath indexPathForRow:1 inSection:0];
-    if (rows > 0) return [NSIndexPath indexPathForRow:0 inSection:0];
-    return nil;
-}
-
-static void ApolloMediaComposerScheduleNativeTextViewCapture(UIViewController *controller, NSString *reason) {
-    __weak UIViewController *weakController = controller;
-    NSTimeInterval delays[] = { 0.15, 0.45, 0.90, 1.40 };
-    for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIViewController *strongController = weakController;
-            if (strongController) ApolloMediaComposerMarkVisibleNativeBodyTextViews(strongController, reason);
-        });
-    }
-}
-
-static void ApolloMediaComposerOpenNativeBodyEditor(UIViewController *controller) {
+static void ApolloMediaComposerOpenIndependentBodyEditor(UIViewController *controller) {
     UIViewController *ownerController = ApolloMediaComposerCanonicalBodyController(controller) ?: controller;
     if (!ownerController || !ApolloPhotoComposerControllerIsInScope(ownerController)) return;
 
     UITableView *tableView = ApolloMediaComposerFindPrimaryTableView(ownerController);
-    if (!tableView) {
-        ApolloLog(@"[MediaPostBody] cannot open native editor: table view missing controller=%@", NSStringFromClass(ownerController.class) ?: @"(unknown)");
+    UISegmentedControl *segmentedControl = ApolloMediaComposerFindPostTypeSegmentedControl(ownerController);
+    NSInteger originalSegment = segmentedControl ? segmentedControl.selectedSegmentIndex : 0;
+    NSInteger segmentCount = segmentedControl ? segmentedControl.numberOfSegments : 0;
+    NSInteger rows = tableView ? [tableView numberOfRowsInSection:0] : -1;
+    NSString *storedText = objc_getAssociatedObject(ownerController, &kApolloMediaComposerBodyTextStorageKey);
+    NSString *bodyText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText([storedText isKindOfClass:[NSString class]] ? storedText : @""));
+
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyNativeEditorActiveKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOpenedFromMediaRowKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyMediaTabToolbarLockKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyRestoreSkippedLoggedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOriginalSegmentKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOriginalPostTypeKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyLoggedNativeTextViewKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    sApolloMediaComposerActiveBodyController = ownerController;
+    ApolloMediaComposerStoreBodyText(ownerController, bodyText);
+
+    ApolloLog(@"[MediaPostBody] opening independent Media body editor selectedSegment=%ld segments=%ld rows=%ld bodyLen=%lu",
+        (long)originalSegment, (long)segmentCount, (long)rows, (unsigned long)ApolloMediaComposerTrimmedBodyText(bodyText).length);
+
+    Class composeEditorClass = objc_getClass("_TtC6Apollo21ComposeViewController");
+    if (!composeEditorClass) {
+        ApolloLog(@"[MediaPostBody] native ComposeViewController class missing; cannot open Media body editor");
         return;
     }
 
-    UISegmentedControl *segmentedControl = ApolloMediaComposerFindPostTypeSegmentedControl(ownerController);
-    NSInteger originalSegment = segmentedControl ? segmentedControl.selectedSegmentIndex : 0;
-    NSInteger originalPostType = ApolloMediaComposerReadPostTypeSlot(ownerController, originalSegment);
-    NSInteger textSegment = segmentedControl.numberOfSegments > 2 ? 2 : originalSegment;
-    if (textSegment == originalSegment && segmentedControl.numberOfSegments > 1) textSegment = segmentedControl.numberOfSegments - 1;
-
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyNativeEditorActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOpenedFromMediaRowKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // Long-lived twin flag for toolbar gating — RestoreOriginalPostType clears the OpenedFromMediaRow
-    // flag almost immediately, but the markdown toolbar is gated by this flag instead so it persists.
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyMediaTabToolbarLockKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyRestoreSkippedLoggedKey, nil, OBJC_ASSOCIATION_ASSIGN);
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOriginalSegmentKey, @(originalSegment), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyOriginalPostTypeKey, @(originalPostType), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(ownerController, &kApolloMediaComposerBodyLoggedNativeTextViewKey, nil, OBJC_ASSOCIATION_ASSIGN);
-    sApolloMediaComposerActiveBodyController = ownerController;
-
-    ApolloLog(@"[MediaPostBody] opening native Post Text editor via Media row originalSegment=%ld originalPostType=%ld textSegment=%ld rows=%ld",
-        (long)originalSegment, (long)originalPostType, (long)textSegment, (long)[tableView numberOfRowsInSection:0]);
-
-    if (segmentedControl && textSegment >= 0 && textSegment < (NSInteger)segmentedControl.numberOfSegments) {
-        segmentedControl.selectedSegmentIndex = textSegment;
-        ApolloMediaComposerWritePostTypeSlot(ownerController, textSegment);
-        ApolloMediaComposerSendPostTypeChanged(ownerController, segmentedControl);
+    UIViewController *editor = [[composeEditorClass alloc] init];
+    if (![editor isKindOfClass:[UIViewController class]]) {
+        ApolloLog(@"[MediaPostBody] native ComposeViewController init failed class=%@", NSStringFromClass(composeEditorClass) ?: @"(unknown)");
+        return;
     }
 
-    __weak UIViewController *weakOwner = ownerController;
-    __weak UITableView *weakTableView = tableView;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIViewController *strongOwner = weakOwner;
-        UITableView *strongTableView = weakTableView;
-        if (!strongOwner || !strongTableView) return;
+    ApolloMediaComposerWeakControllerBox *controllerBox = [ApolloMediaComposerWeakControllerBox new];
+    controllerBox.controller = ownerController;
+    objc_setAssociatedObject(editor, &kApolloMediaComposerNativeBodyEditorOwnerKey, controllerBox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(editor, &kApolloMediaComposerNativeBodyEditorSavedKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    @try { [editor setValue:bodyText ?: @"" forKey:@"startingText"]; } @catch (__unused NSException *e) {}
+    @try { [editor setValue:@YES forKey:@"showKeyboardOnAppearanceForTextEntryView"]; } @catch (__unused NSException *e) {}
+    @try { [editor setValue:@NO forKey:@"submitTapped"]; } @catch (__unused NSException *e) {}
+    ApolloMediaComposerConfigureNativeBodyEditor(editor);
 
-        [strongTableView reloadData];
-        [strongTableView layoutIfNeeded];
-        NSIndexPath *textIndexPath = ApolloMediaComposerFindNativeTextRowIndexPath(strongTableView);
-        SEL didSelectSelector = @selector(tableView:didSelectRowAtIndexPath:);
-        if (textIndexPath && [strongOwner respondsToSelector:didSelectSelector]) {
-            [strongTableView selectRowAtIndexPath:textIndexPath animated:NO scrollPosition:UITableViewScrollPositionNone];
-            ((void (*)(id, SEL, id, id))objc_msgSend)(strongOwner, didSelectSelector, strongTableView, textIndexPath);
-            ApolloLog(@"[MediaPostBody] invoked native text row selection section=%ld row=%ld", (long)textIndexPath.section, (long)textIndexPath.row);
-        } else {
-            ApolloLog(@"[MediaPostBody] failed to invoke native text row selection indexPath=%@ responds=%@",
-                textIndexPath ?: @"(nil)", [strongOwner respondsToSelector:didSelectSelector] ? @"yes" : @"no");
-        }
-
-        ApolloMediaComposerRestoreOriginalPostType(strongOwner, YES, @"after-native-editor-open");
-        // V19: mark this controller as having freshly opened the native body editor so
-        // the first seeding pass can blank any stale text Apollo restored from a
-        // previous compose draft (we own the body for media-composer flows).
-        // V24 hotfix: store an NSDate timestamp so the seeding pass can expire stale
-        // fresh-open windows instead of trusting an old @YES bool indefinitely (the
-        // first successful marking pass may not happen until the user opens the 3-dot
-        // formatting menu seconds later, by which time real text has been typed).
-        objc_setAssociatedObject(strongOwner, &kApolloMediaComposerBodyEditorFreshOpenKey, [NSDate date], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloMediaComposerScheduleNativeTextViewCapture(strongOwner, @"open-native-editor");
-    });
+    UIViewController *presenter = ApolloMediaComposerVisibleControllerFromController(ownerController) ?: ownerController;
+    UINavigationController *modalNavigationController = [[UINavigationController alloc] initWithRootViewController:editor];
+    modalNavigationController.modalPresentationStyle = UIModalPresentationFullScreen;
+    [presenter presentViewController:modalNavigationController animated:YES completion:nil];
 }
 
 static UIViewController *ApolloMediaComposerCaptureBodyTextView(UITextView *textView, UIViewController *fallbackController, NSString *reason) {
@@ -2234,6 +2230,7 @@ static UIViewController *ApolloMediaComposerCaptureBodyTextView(UITextView *text
 
     NSString *storedText = objc_getAssociatedObject(controller, &kApolloMediaComposerBodyTextStorageKey);
     NSString *rawText = ApolloMediaComposerNormalizedRawBodyText(text);
+    if (textView.tag == ApolloMediaComposerBodyTextViewTag()) rawText = ApolloMediaComposerBodyTextByRemovingMediaReferences(rawText);
     NSString *storedBodyText = ApolloMediaComposerNormalizedRawBodyText([storedText isKindOfClass:[NSString class]] ? storedText : @"");
     BOOL containsMediaReference = ApolloMediaComposerTextContainsMediaReference(text);
     BOOL rawOnlyMedia = ApolloMediaComposerTrimmedBodyText(rawText).length > 0 && ApolloMediaComposerTrimmedBodyText(ApolloMediaComposerBodyTextByRemovingMediaReferences(rawText)).length == 0;
@@ -2267,7 +2264,8 @@ static UIViewController *ApolloMediaComposerCaptureBodyTextView(UITextView *text
 
 static void ApolloMediaComposerCaptureBodyTextViewMutation(UITextView *textView, NSString *reason) {
     if (!ApolloMediaComposerTextViewIsBodyEditor(textView)) return;
-    if (!ApolloMediaComposerTextViewIsInsideVisibleNativeEditor(textView)) return;
+    BOOL independentEditor = textView.tag == ApolloMediaComposerBodyTextViewTag();
+    if (!independentEditor && !ApolloMediaComposerTextViewIsInsideVisibleNativeEditor(textView)) return;
     NSNumber *seeding = objc_getAssociatedObject(textView, &kApolloMediaComposerBodyTextViewSeedingKey);
     if ([seeding boolValue]) return;
 
@@ -2462,11 +2460,15 @@ extern "C" NSString *ApolloMediaComposerCurrentBodyTextForSubmit(void) {
     UIViewController *controller = ApolloMediaComposerCanonicalBodyController(sApolloMediaComposerActiveBodyController) ?: sApolloMediaComposerActiveBodyController;
     if (controller) {
         ApolloMediaComposerRestoreOriginalPostType(controller, NO, @"submit-body-read");
-        ApolloMediaComposerMarkVisibleNativeBodyTextViews(controller, @"submit-body-read");
+        if (!ApolloMediaComposerShouldInsertBodyRow(controller)) {
+            ApolloLog(@"[MediaPostBody] submit body skipped source=active reason=not-media-tab controller=%@",
+                NSStringFromClass(controller.class) ?: @"(unknown)");
+            return nil;
+        }
         UITextView *textView = ApolloMediaComposerBodyTextViewForController(controller);
         NSString *storedText = objc_getAssociatedObject(controller, &kApolloMediaComposerBodyTextStorageKey);
-        NSString *textViewText = ApolloMediaComposerNormalizedRawBodyText(textView.text ?: @"");
-        NSString *storedBodyText = ApolloMediaComposerNormalizedRawBodyText([storedText isKindOfClass:[NSString class]] ? storedText : @"");
+        NSString *textViewText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText(textView.text ?: @""));
+        NSString *storedBodyText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText([storedText isKindOfClass:[NSString class]] ? storedText : @""));
         NSString *bodyText = ApolloMediaComposerTrimmedBodyText(textViewText).length > 0 ? textViewText : storedBodyText;
         if (ApolloMediaComposerTrimmedBodyText(bodyText).length > 0) {
             ApolloMediaComposerStoreBodyText(controller, bodyText);
@@ -2486,7 +2488,7 @@ extern "C" NSString *ApolloMediaComposerCurrentBodyTextForSubmit(void) {
     UITextView *visibleTextView = ApolloMediaComposerFindVisibleBodyTextViewInWindows();
     if (visibleTextView) {
         UIViewController *visibleController = ApolloMediaComposerCaptureBodyTextView(visibleTextView, controller, @"submit-window-scan");
-        NSString *text = ApolloMediaComposerNormalizedRawBodyText(visibleTextView.text ?: @"");
+        NSString *text = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText(visibleTextView.text ?: @""));
         if (ApolloMediaComposerTrimmedBodyText(text).length > 0) {
             ApolloLog(@"[MediaPostBody] submit body source=window-scan controller=%@ body=yes len=%lu",
                 NSStringFromClass(visibleController.class) ?: @"(unknown)", (unsigned long)ApolloMediaComposerTrimmedBodyText(text).length);
@@ -2497,7 +2499,7 @@ extern "C" NSString *ApolloMediaComposerCurrentBodyTextForSubmit(void) {
     @synchronized(ApolloMediaComposerVideoBridgeLock()) {
         NSTimeInterval age = ApolloMediaComposerNow() - sApolloMediaComposerLastBodyTextAt;
         if (sApolloMediaComposerLastBodyText.length > 0 && age >= 0.0 && age <= 180.0) {
-            NSString *snapshotBodyText = ApolloMediaComposerNormalizedRawBodyText(sApolloMediaComposerLastBodyText);
+            NSString *snapshotBodyText = ApolloMediaComposerBodyTextByRemovingMediaReferences(ApolloMediaComposerNormalizedRawBodyText(sApolloMediaComposerLastBodyText));
             ApolloLog(@"[MediaPostBody] submit body source=snapshot body=yes len=%lu age=%.1f",
                 (unsigned long)ApolloMediaComposerTrimmedBodyText(snapshotBodyText).length, age);
             return [snapshotBodyText copy];
@@ -3127,6 +3129,10 @@ static UITableViewCell *hooked_ApolloCompose_tableView_cellForRowAtIndexPath(id 
     return cell;
 }
 
+static NSInteger hooked_ApolloCompose_tableView_numberOfRowsInSection(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    return orig_ApolloCompose_tableView_numberOfRowsInSection ? orig_ApolloCompose_tableView_numberOfRowsInSection(self, _cmd, tableView, section) : 0;
+}
+
 static CGFloat hooked_ApolloCompose_tableView_heightForRowAtIndexPath(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
     UIViewController *controller = (UIViewController *)self;
     CGFloat height = orig_ApolloCompose_tableView_heightForRowAtIndexPath ? orig_ApolloCompose_tableView_heightForRowAtIndexPath(self, _cmd, tableView, indexPath) : UITableViewAutomaticDimension;
@@ -3157,6 +3163,12 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 
     orig_ApolloCompose_tableView_cellForRowAtIndexPath = (UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))method_setImplementation(cellMethod, (IMP)hooked_ApolloCompose_tableView_cellForRowAtIndexPath);
 
+    SEL rowsSelector = @selector(tableView:numberOfRowsInSection:);
+    Method rowsMethod = class_getInstanceMethod(cls, rowsSelector);
+    if (rowsMethod) {
+        orig_ApolloCompose_tableView_numberOfRowsInSection = (NSInteger (*)(id, SEL, UITableView *, NSInteger))method_setImplementation(rowsMethod, (IMP)hooked_ApolloCompose_tableView_numberOfRowsInSection);
+    }
+
     BOOL heightHook = NO;
     BOOL estimatedHook = NO;
     SEL heightSelector = @selector(tableView:heightForRowAtIndexPath:);
@@ -3176,6 +3188,70 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
     ApolloLog(@"[MediaPostBody] compose title-control hooks installed required=yes height=%@ estimated=%@",
         heightHook ? @"yes" : @"skip", estimatedHook ? @"yes" : @"skip");
 }
+
+%hook _TtC6Apollo21ComposeViewController
+
+- (void)viewDidLoad {
+    %orig;
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerConfigureNativeBodyEditor((UIViewController *)self);
+    }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerConfigureNativeBodyEditor((UIViewController *)self);
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerConfigureNativeBodyEditor((UIViewController *)self);
+        UITextView *textView = ApolloMediaComposerNativeBodyTextView((UIViewController *)self);
+        [textView becomeFirstResponder];
+    }
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerConfigureNativeBodyEditor((UIViewController *)self);
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerSaveNativeBodyEditor((UIViewController *)self, @"native-compose-disappear", YES);
+    }
+    %orig;
+}
+
+- (void)postButtonTapped:(id)sender {
+    if (ApolloMediaComposerOwnerForNativeBodyEditor((UIViewController *)self)) {
+        ApolloMediaComposerSaveNativeBodyEditor((UIViewController *)self, @"native-compose-post-button", YES);
+        ApolloMediaComposerDismissNativeBodyEditor((UIViewController *)self);
+        return;
+    }
+    %orig;
+}
+
+%new
+- (void)apollo_mediaBodyDoneButtonTapped:(id)sender {
+    (void)sender;
+    ApolloMediaComposerSaveNativeBodyEditor((UIViewController *)self, @"native-compose-done", YES);
+    ApolloMediaComposerDismissNativeBodyEditor((UIViewController *)self);
+}
+
+%new
+- (void)apollo_mediaBodyCancelButtonTapped:(id)sender {
+    (void)sender;
+    ApolloMediaComposerSaveNativeBodyEditor((UIViewController *)self, @"native-compose-cancel", YES);
+    ApolloMediaComposerDismissNativeBodyEditor((UIViewController *)self);
+}
+
+%end
 
 %hook UIViewController
 
@@ -3234,7 +3310,9 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 
 - (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
     ApolloPhotoComposerMaybeEnableMoviePicking(self, viewControllerToPresent);
+    UIViewController *bodyController = ApolloMediaComposerCanonicalBodyController(self);
     %orig;
+    (void)bodyController;
 }
 
 - (void)dismissViewControllerAnimated:(BOOL)flag completion:(void (^)(void))completion {
