@@ -1,0 +1,805 @@
+#import "ApolloCommon.h"
+#import "ApolloNativeActionMetadata.h"
+
+#import <UIKit/UIKit.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
+#include <dlfcn.h>
+
+static char kApolloNativeActionMenuControllerKey;
+static char kApolloNativeActionMenuInvokingActionKey;
+
+static __weak UIView *sApolloNativeActionMenuSourceView = nil;
+static NSUInteger sApolloNativeActionMenuCaptureDepth = 0;
+
+@interface ApolloNativeActionMenuPresenter : NSObject <UIContextMenuInteractionDelegate>
+@property (nonatomic, strong) UIMenu *menu;
+@property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic, strong) UIContextMenuInteraction *interaction;
+@property (nonatomic, assign) BOOL removeSourceViewOnEnd;
+@end
+
+static BOOL ApolloNativeActionMenusEnabled(void) {
+    if (@available(iOS 26.0, *)) {
+        return IsLiquidGlass() && objc_getClass("_UIContextMenuPlatformMetrics_Glass") != Nil;
+    }
+    return NO;
+}
+
+static NSString *ApolloDecodeSwiftString(uint64_t w0, uint64_t w1) {
+    if (w1 == 0) {
+        return nil;
+    }
+
+    uint8_t disc = (uint8_t)(w1 >> 56);
+    if (disc >= 0xE0 && disc <= 0xEF) {
+        NSUInteger len = disc - 0xE0;
+        if (len == 0) return @"";
+
+        char buf[16] = {0};
+        memcpy(buf, &w0, 8);
+        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
+        memcpy(buf + 8, &w1clean, 7);
+        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
+    }
+
+    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
+    static BridgeFn sBridge = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT,
+            "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
+    });
+
+    return sBridge ? sBridge(w0, w1) : nil;
+}
+
+static ptrdiff_t ApolloIvarOffset(Class cls, const char *name) {
+    Ivar ivar = class_getInstanceVariable(cls, name);
+    return ivar ? ivar_getOffset(ivar) : -1;
+}
+
+static void *ApolloReadRawIvar(id object, const char *name) {
+    if (!object) return NULL;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return NULL;
+    uint8_t *base = (uint8_t *)(__bridge void *)object;
+    return *(void **)(base + offset);
+}
+
+static id ApolloReadObjectIvar(id object, const char *name) {
+    if (!object) return nil;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return nil;
+    uint8_t *base = (uint8_t *)(__bridge void *)object;
+    void *value = *(void **)(base + offset);
+    return (__bridge id)value;
+}
+
+static BOOL ApolloReadBoolIvar(id object, const char *name, BOOL defaultValue) {
+    if (!object) return defaultValue;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return defaultValue;
+    uint8_t *base = (uint8_t *)(__bridge void *)object;
+    return *(uint8_t *)(base + offset) != 0;
+}
+
+static NSString *ApolloReadSwiftStringIvar(id object, const char *name) {
+    if (!object) return nil;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return nil;
+    uint8_t *base = (uint8_t *)(__bridge void *)object;
+    return ApolloDecodeSwiftString(*(uint64_t *)(base + offset), *(uint64_t *)(base + offset + 0x08));
+}
+
+static int64_t ApolloSwiftArrayCount(void *buffer) {
+    if (!buffer) return 0;
+    int64_t count = *(int64_t *)((uint8_t *)buffer + 0x10);
+    return count > 0 ? count : 0;
+}
+
+static NSString *ApolloNativeActionDefaultTitle(uint16_t actionKind) {
+    NSUInteger count = sizeof(kApolloNativeActionDefaultTitles) / sizeof(kApolloNativeActionDefaultTitles[0]);
+    return actionKind < count ? kApolloNativeActionDefaultTitles[actionKind] : nil;
+}
+
+static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
+    if (!image) return nil;
+
+    static const CGFloat maxIconSide = 18.0;
+    CGSize imageSize = image.size;
+    if (imageSize.width <= 0.0 || imageSize.height <= 0.0) {
+        return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+
+    CGFloat scale = MIN(maxIconSide / imageSize.width, maxIconSide / imageSize.height);
+    if (scale >= 1.0) {
+        return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+
+    CGSize canvasSize = CGSizeMake(maxIconSide, maxIconSide);
+    CGSize drawSize = CGSizeMake(round(imageSize.width * scale), round(imageSize.height * scale));
+    CGRect drawRect = CGRectMake(
+        floor((canvasSize.width - drawSize.width) / 2.0),
+        floor((canvasSize.height - drawSize.height) / 2.0),
+        drawSize.width,
+        drawSize.height
+    );
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = NO;
+    format.scale = image.scale > 0.0 ? image.scale : UIScreen.mainScreen.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvasSize format:format];
+    UIImage *resized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [[image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal] drawInRect:drawRect];
+    }];
+
+    return [resized imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
+static UIImage *ApolloNativeActionDefaultImage(uint16_t actionKind) {
+    NSUInteger count = sizeof(kApolloNativeActionDefaultAssetNames) / sizeof(kApolloNativeActionDefaultAssetNames[0]);
+    if (actionKind >= count) return nil;
+    NSString *assetName = kApolloNativeActionDefaultAssetNames[actionKind];
+    if (assetName.length == 0) return nil;
+    UIImage *image = [UIImage imageNamed:assetName];
+    return ApolloNativeActionMenuSizedIcon(image);
+}
+
+static UIView *ApolloNativeActionMenuViewForObject(id object) {
+    if (!object) return nil;
+    if ([object isKindOfClass:[UIView class]]) {
+        return (UIView *)object;
+    }
+
+    SEL viewSelector = @selector(view);
+    if ([object respondsToSelector:viewSelector]) {
+        @try {
+            id view = ((id (*)(id, SEL))objc_msgSend)(object, viewSelector);
+            if ([view isKindOfClass:[UIView class]]) {
+                return (UIView *)view;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
+    if ([object isKindOfClass:[UIBarButtonItem class]]) {
+        @try {
+            id view = [object valueForKey:@"view"];
+            if ([view isKindOfClass:[UIView class]]) {
+                return (UIView *)view;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
+    return nil;
+}
+
+static UITableView *ApolloNativeActionMenuFindTableView(UIView *view) {
+    if (!view) return nil;
+    if ([view isKindOfClass:[UITableView class]]) {
+        return (UITableView *)view;
+    }
+
+    for (UIView *subview in view.subviews) {
+        UITableView *tableView = ApolloNativeActionMenuFindTableView(subview);
+        if (tableView) return tableView;
+    }
+
+    return nil;
+}
+
+static UITableView *ApolloNativeActionMenuTableViewForPresenter(id presenter) {
+    if (!presenter) return nil;
+
+    SEL tableViewSelector = @selector(tableView);
+    if ([presenter respondsToSelector:tableViewSelector]) {
+        @try {
+            id tableView = ((id (*)(id, SEL))objc_msgSend)(presenter, tableViewSelector);
+            if ([tableView isKindOfClass:[UITableView class]]) {
+                return (UITableView *)tableView;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+
+    return ApolloNativeActionMenuFindTableView(ApolloNativeActionMenuViewForObject(presenter));
+}
+
+static UIView *ApolloNativeActionMenuSelectedCellForPresenter(id presenter) {
+    UITableView *tableView = ApolloNativeActionMenuTableViewForPresenter(presenter);
+    if (!tableView) return nil;
+
+    NSArray<NSIndexPath *> *selectedIndexPaths = [tableView indexPathsForSelectedRows];
+    NSIndexPath *selectedIndexPath = selectedIndexPaths.firstObject ?: [tableView indexPathForSelectedRow];
+    if (selectedIndexPath) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:selectedIndexPath];
+        if (cell) return cell;
+    }
+
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        if (cell.isSelected || cell.isHighlighted) {
+            return cell;
+        }
+    }
+
+    return nil;
+}
+
+static UIView *ApolloNativeActionMenuResolveSourceView(id sender, id owner) {
+    UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
+    if (sourceView) return sourceView;
+
+    sourceView = ApolloNativeActionMenuViewForObject(owner);
+    if (sourceView) return sourceView;
+
+    return sApolloNativeActionMenuSourceView;
+}
+
+static UIView *ApolloNativeActionMenuCreateProxyAnchorView(UIView *sourceView, BOOL *removeWhenDone) {
+    if (removeWhenDone) *removeWhenDone = NO;
+    if (!sourceView || !sourceView.window) return sourceView;
+
+    UIView *containerView = sourceView.superview ?: sourceView.window;
+    if (!containerView) return sourceView;
+
+    CGPoint center = [sourceView convertPoint:CGPointMake(CGRectGetMidX(sourceView.bounds), CGRectGetMidY(sourceView.bounds))
+                                       toView:containerView];
+    CGRect anchorFrame = CGRectMake(center.x - 0.5, center.y - 0.5, 1.0, 1.0);
+
+    UIView *anchorView = [[UIView alloc] initWithFrame:anchorFrame];
+    anchorView.backgroundColor = UIColor.clearColor;
+    anchorView.opaque = NO;
+    anchorView.userInteractionEnabled = YES;
+    anchorView.accessibilityElementsHidden = YES;
+    anchorView.hidden = NO;
+    [containerView addSubview:anchorView];
+
+    if (removeWhenDone) *removeWhenDone = YES;
+    return anchorView;
+}
+
+static void ApolloNativeActionMenuBeginCapture(id sender, id owner) {
+    UIView *sourceView = ApolloNativeActionMenuResolveSourceView(sender, owner);
+    if (sourceView) {
+        sApolloNativeActionMenuSourceView = sourceView;
+    }
+    sApolloNativeActionMenuCaptureDepth++;
+}
+
+static void ApolloNativeActionMenuEndCapture(void) {
+    if (sApolloNativeActionMenuCaptureDepth > 0) {
+        sApolloNativeActionMenuCaptureDepth--;
+    }
+    if (sApolloNativeActionMenuCaptureDepth == 0) {
+        sApolloNativeActionMenuSourceView = nil;
+    }
+}
+
+static UITableView *ApolloNativeActionMenuTableView(id actionController) {
+    UITableView *tableView = ApolloReadObjectIvar(actionController, "tableView");
+    return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
+}
+
+static void ApolloNativeActionMenuSelectRow(id actionController, NSInteger row) {
+    if (!actionController || ![actionController respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
+        ApolloLog(@"[NativeActionMenu] Cannot invoke ActionController row %ld", (long)row);
+        return;
+    }
+
+    objc_setAssociatedObject(actionController, &kApolloNativeActionMenuInvokingActionKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UITableView *tableView = ApolloNativeActionMenuTableView(actionController);
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:row inSection:0];
+    ((void (*)(id, SEL, id, id))objc_msgSend)(
+        actionController,
+        @selector(tableView:didSelectRowAtIndexPath:),
+        tableView,
+        indexPath
+    );
+}
+
+static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitle, UIImage *image, BOOL destructive, BOOL checked, BOOL enabled, id actionController, NSInteger row) {
+    if (title.length == 0) {
+        return nil;
+    }
+
+    UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {
+        ApolloNativeActionMenuSelectRow(actionController, row);
+    }];
+
+    if (subtitle.length > 0 && [action respondsToSelector:@selector(setSubtitle:)]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(action, @selector(setSubtitle:), subtitle);
+    }
+
+    UIMenuElementAttributes attributes = 0;
+    if (destructive) attributes |= UIMenuElementAttributesDestructive;
+    if (!enabled) attributes |= UIMenuElementAttributesDisabled;
+    action.attributes = attributes;
+
+    if (checked && [action respondsToSelector:@selector(setState:)]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(action, @selector(setState:), 1);
+    }
+
+    return action;
+}
+
+static void ApolloNativeActionMenuSortSavedCategoriesIfNeeded(id presenter, id actionController) {
+    if (![presenter isKindOfClass:objc_getClass("_TtC6Apollo32SavedPostsCommentsViewController")]) {
+        return;
+    }
+
+    NSString *actionsDescription = ApolloReadSwiftStringIvar(actionController, "actionsDescription");
+    if (![actionsDescription hasPrefix:@"Show saved items for category"]) {
+        return;
+    }
+
+    void *actionsBuffer = ApolloReadRawIvar(actionController, "actions");
+    int64_t actionCount = ApolloSwiftArrayCount(actionsBuffer);
+    if (actionCount < 3) {
+        return;
+    }
+
+    uint8_t tmpAction[0x30];
+    for (int64_t i = 2; i < actionCount; i++) {
+        uint8_t *elementI = (uint8_t *)actionsBuffer + 0x20 + i * 0x30;
+        NSString *titleI = ApolloDecodeSwiftString(*(uint64_t *)(elementI + 0x08), *(uint64_t *)(elementI + 0x10));
+        if (titleI.length == 0) continue;
+
+        int64_t j = i - 1;
+        while (j >= 1) {
+            uint8_t *elementJ = (uint8_t *)actionsBuffer + 0x20 + j * 0x30;
+            NSString *titleJ = ApolloDecodeSwiftString(*(uint64_t *)(elementJ + 0x08), *(uint64_t *)(elementJ + 0x10));
+            if (titleJ.length == 0 || [titleJ localizedCaseInsensitiveCompare:titleI] <= 0) break;
+            j--;
+        }
+
+        int64_t insertIndex = j + 1;
+        if (insertIndex == i) continue;
+
+        memcpy(tmpAction, elementI, sizeof(tmpAction));
+        memmove((uint8_t *)actionsBuffer + 0x20 + (insertIndex + 1) * 0x30,
+                (uint8_t *)actionsBuffer + 0x20 + insertIndex * 0x30,
+                (i - insertIndex) * 0x30);
+        memcpy((uint8_t *)actionsBuffer + 0x20 + insertIndex * 0x30, tmpAction, sizeof(tmpAction));
+    }
+}
+
+static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
+    void *actionsBuffer = ApolloReadRawIvar(actionController, "actions");
+    void *textActionsBuffer = ApolloReadRawIvar(actionController, "textActions");
+    int64_t actionCount = ApolloSwiftArrayCount(actionsBuffer);
+    int64_t textActionCount = ApolloSwiftArrayCount(textActionsBuffer);
+    BOOL enabled = ApolloReadBoolIvar(actionController, "actionsEnabled", YES);
+
+    if (actionCount <= 0 && textActionCount <= 0) {
+        return nil;
+    }
+
+    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+
+    for (int64_t i = 0; i < actionCount; i++) {
+        uint8_t *element = (uint8_t *)actionsBuffer + 0x20 + i * 0x30;
+        uint16_t actionKind = *(uint16_t *)(element + 0x00);
+        NSString *title = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x08), *(uint64_t *)(element + 0x10));
+        NSString *subtitle = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x18), *(uint64_t *)(element + 0x20));
+        if (title.length == 0) {
+            title = ApolloNativeActionDefaultTitle(actionKind);
+        }
+        UIImage *image = ApolloNativeActionDefaultImage(actionKind);
+        UIAction *action = ApolloNativeActionMenuAction(title, subtitle, image, NO, NO, enabled, actionController, (NSInteger)i);
+        if (action) {
+            [children addObject:action];
+        }
+    }
+
+    if (actionCount > 0 && textActionCount > 0 && children.count > 0) {
+        NSMutableArray<UIMenuElement *> *textChildren = [NSMutableArray array];
+        for (int64_t i = 0; i < textActionCount; i++) {
+            uint8_t *element = (uint8_t *)textActionsBuffer + 0x20 + i * 0x18;
+            NSInteger row = (NSInteger)(actionCount + i);
+            NSString *title = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x00), *(uint64_t *)(element + 0x08));
+            BOOL destructive = *(uint8_t *)(element + 0x10) != 0;
+            BOOL checked = *(uint8_t *)(element + 0x12) != 0;
+
+            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, destructive, checked, enabled, actionController, row);
+            if (action) {
+                [textChildren addObject:action];
+            }
+        }
+        if (textChildren.count > 0) {
+            UIMenu *inlineTextMenu = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:textChildren];
+            [children addObject:inlineTextMenu];
+        }
+    } else {
+        for (int64_t i = 0; i < textActionCount; i++) {
+            uint8_t *element = (uint8_t *)textActionsBuffer + 0x20 + i * 0x18;
+            NSInteger row = (NSInteger)(actionCount + i);
+            NSString *title = ApolloDecodeSwiftString(*(uint64_t *)(element + 0x00), *(uint64_t *)(element + 0x08));
+            BOOL destructive = *(uint8_t *)(element + 0x10) != 0;
+            BOOL checked = *(uint8_t *)(element + 0x12) != 0;
+
+            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, destructive, checked, enabled, actionController, row);
+            if (action) {
+                [children addObject:action];
+            }
+        }
+    }
+
+    if (children.count == 0) {
+        return nil;
+    }
+
+    NSString *title = ApolloReadSwiftStringIvar(actionController, "actionsDescription") ?: @"";
+    return [UIMenu menuWithTitle:title children:children];
+}
+
+@implementation ApolloNativeActionMenuPresenter
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(__unused CGPoint)location {
+    UIMenu *menu = self.menu;
+    if (!menu) return nil;
+
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
+        return menu;
+    }];
+}
+
+- (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
+    UIView *sourceView = self.sourceView;
+    if (!sourceView) return nil;
+
+    UIPreviewParameters *parameters = [UIPreviewParameters new];
+    parameters.backgroundColor = UIColor.clearColor;
+    parameters.visiblePath = [UIBezierPath bezierPathWithRect:sourceView.bounds];
+    SEL setAppliesShadowSelector = NSSelectorFromString(@"setAppliesShadow:");
+    if ([parameters respondsToSelector:setAppliesShadowSelector]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(parameters, setAppliesShadowSelector, NO);
+    }
+    return [[UITargetedPreview alloc] initWithView:sourceView parameters:parameters];
+}
+
+- (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
+    return [self contextMenuInteraction:interaction previewForHighlightingMenuWithConfiguration:configuration];
+}
+
+- (void)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction willEndForConfiguration:(__unused UIContextMenuConfiguration *)configuration animator:(__unused id<UIContextMenuInteractionAnimating>)animator {
+    UIView *sourceView = self.sourceView;
+    UIContextMenuInteraction *menuInteraction = self.interaction;
+    if (sourceView && menuInteraction) {
+        [sourceView removeInteraction:menuInteraction];
+        objc_setAssociatedObject(sourceView, &kApolloNativeActionMenuControllerKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        if (self.removeSourceViewOnEnd) {
+            [sourceView removeFromSuperview];
+        }
+    }
+}
+
+@end
+
+static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {
+    if (!ApolloNativeActionMenusEnabled()) return NO;
+    if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
+    if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
+
+    ApolloNativeActionMenuSortSavedCategoriesIfNeeded(presenter, actionController);
+
+    UIMenu *menu = ApolloNativeActionMenuBuildMenu(actionController);
+    if (!menu) {
+        ApolloLog(@"[NativeActionMenu] Could not build native menu for %@", actionController);
+        return NO;
+    }
+
+    UIView *sourceView = sApolloNativeActionMenuSourceView
+        ?: ApolloNativeActionMenuSelectedCellForPresenter(presenter)
+        ?: ApolloNativeActionMenuViewForObject(presenter);
+    if (!sourceView || !sourceView.window) {
+        ApolloLog(@"[NativeActionMenu] No source view/window for %@", actionController);
+        return NO;
+    }
+
+    BOOL removeAnchorViewOnEnd = NO;
+    UIView *anchorView = ApolloNativeActionMenuCreateProxyAnchorView(sourceView, &removeAnchorViewOnEnd);
+    if (!anchorView || !anchorView.window) {
+        ApolloLog(@"[NativeActionMenu] Could not create anchor view for %@", actionController);
+        return NO;
+    }
+
+    ApolloNativeActionMenuPresenter *menuPresenter = [ApolloNativeActionMenuPresenter new];
+    menuPresenter.menu = menu;
+    menuPresenter.sourceView = anchorView;
+    menuPresenter.removeSourceViewOnEnd = removeAnchorViewOnEnd;
+
+    UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:menuPresenter];
+    if (![interaction respondsToSelector:NSSelectorFromString(@"_presentMenuAtLocation:")]) {
+        ApolloLog(@"[NativeActionMenu] UIContextMenuInteraction cannot present programmatically");
+        return NO;
+    }
+
+    menuPresenter.interaction = interaction;
+
+    [anchorView addInteraction:interaction];
+    objc_setAssociatedObject(anchorView, &kApolloNativeActionMenuControllerKey, menuPresenter, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    CGPoint location = CGPointMake(CGRectGetMidX(anchorView.bounds), CGRectGetMidY(anchorView.bounds));
+    ((void (*)(id, SEL, CGPoint))objc_msgSend)(interaction, NSSelectorFromString(@"_presentMenuAtLocation:"), location);
+
+    ApolloLog(@"[NativeActionMenu] Presented native menu with %lu item(s)", (unsigned long)menu.children.count);
+    if (completion) completion();
+    return YES;
+}
+
+%hook _TtC6Apollo17LargePostCellNode
+- (void)moreOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBannerNodeTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo19CompactPostCellNode
+- (void)moreOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBannerNodeTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo15CommentCellNode
+- (void)moreOptionsTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBannerNodeTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo13InboxCellNode
+- (void)moreOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo13RichMediaNode
+- (void)moreOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBannerNodeTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo22CommentsHeaderCellNode
+- (void)moderatorBannerNodeTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo23MediaPageViewController
+- (void)moreButtonTapped:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo20QuickBarKeyboardView
+- (void)moreButtonTapped:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo19PostsViewController
+- (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)sortBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo22CommentsViewController
+- (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)sortBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo32PostsSearchResultsViewController
+- (void)sortBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo26UserCommentsViewController
+- (void)sortBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo21ProfileViewController
+- (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)accountsBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo28PrivateMessageViewController
+- (void)moreBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)modActionsBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo19InboxViewController
+- (void)markAllReadBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo26ModmailInboxViewController
+- (void)moreOptionsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)moderatorAreaTitleViewButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo32SavedPostsCommentsViewController
+- (void)savedCategoriesButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)titleViewTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if (ApolloNativeActionMenuPresent(self, viewControllerToPresent, completion)) {
+        return;
+    }
+    %orig;
+}
+%end
+
+%hook _TtC6Apollo25ComposePostViewController
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    UIView *sourceView = [tableView cellForRowAtIndexPath:indexPath] ?: tableView;
+    ApolloNativeActionMenuBeginCapture(sourceView, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo30CrosspostPerformViewController
+- (void)flairSelectorTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo26ApolloNavigationController
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if (ApolloNativeActionMenuPresent(self, viewControllerToPresent, completion)) {
+        return;
+    }
+    %orig;
+}
+%end
+
+%hook UIViewController
+
+- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
+    if (ApolloNativeActionMenuPresent(self, viewControllerToPresent, completion)) {
+        return;
+    }
+    %orig;
+}
+
+- (void)dismissViewControllerAnimated:(BOOL)flag completion:(void (^)(void))completion {
+    if ([self isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]
+        && [objc_getAssociatedObject(self, &kApolloNativeActionMenuInvokingActionKey) boolValue]) {
+        objc_setAssociatedObject(self, &kApolloNativeActionMenuInvokingActionKey, nil, OBJC_ASSOCIATION_ASSIGN);
+        if (completion) completion();
+        return;
+    }
+    %orig;
+}
+
+%end

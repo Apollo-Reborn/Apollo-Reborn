@@ -32,6 +32,7 @@ ApolloImprovedCustomApi_FILES = \
     ApolloSettings.xm \
     ApolloRecentlyRead.xm \
     ApolloSavedCategories.xm \
+    ApolloNativeActionMenus.xm \
     ApolloTranslation.xm \
     ApolloVideoUnmute.xm \
     ApolloVideoSwipeFix.xm \
