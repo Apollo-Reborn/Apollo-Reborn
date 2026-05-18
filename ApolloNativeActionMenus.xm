@@ -11,6 +11,8 @@ static char kApolloNativeActionMenuInvokingActionKey;
 
 static __weak UIView *sApolloNativeActionMenuSourceView = nil;
 static NSUInteger sApolloNativeActionMenuCaptureDepth = 0;
+static BOOL sApolloNativeActionMenuModeratorStyleStack[32];
+static BOOL sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
 
 @interface ApolloNativeActionMenuPresenter : NSObject <UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIMenu *menu;
@@ -101,6 +103,14 @@ static int64_t ApolloSwiftArrayCount(void *buffer) {
 static NSString *ApolloNativeActionDefaultTitle(uint16_t actionKind) {
     NSUInteger count = sizeof(kApolloNativeActionDefaultTitles) / sizeof(kApolloNativeActionDefaultTitles[0]);
     return actionKind < count ? kApolloNativeActionDefaultTitles[actionKind] : nil;
+}
+
+static UIColor *ApolloNativeActionMenuModeratorColor(void) {
+    return [UIColor colorWithRed:(33.0 / 255.0) green:(143.0 / 255.0) blue:(35.0 / 255.0) alpha:1.0];
+}
+
+static BOOL ApolloNativeActionKindOpensModeratorMenu(uint16_t actionKind) {
+    return actionKind == 124;
 }
 
 static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
@@ -260,17 +270,39 @@ static UIView *ApolloNativeActionMenuCreateProxyAnchorView(UIView *sourceView, B
     return anchorView;
 }
 
-static void ApolloNativeActionMenuBeginCapture(id sender, id owner) {
+static BOOL ApolloNativeActionMenuModeratorStyleActive(void) {
+    NSUInteger count = MIN(sApolloNativeActionMenuCaptureDepth, (NSUInteger)(sizeof(sApolloNativeActionMenuModeratorStyleStack) / sizeof(sApolloNativeActionMenuModeratorStyleStack[0])));
+    for (NSUInteger i = 0; i < count; i++) {
+        if (sApolloNativeActionMenuModeratorStyleStack[i]) return YES;
+    }
+    return NO;
+}
+
+static void ApolloNativeActionMenuBeginCaptureStyled(id sender, id owner, BOOL moderatorStyle) {
     UIView *sourceView = ApolloNativeActionMenuResolveSourceView(sender, owner);
     if (sourceView) {
         sApolloNativeActionMenuSourceView = sourceView;
     }
+    if (sApolloNativeActionMenuCaptureDepth < sizeof(sApolloNativeActionMenuModeratorStyleStack) / sizeof(sApolloNativeActionMenuModeratorStyleStack[0])) {
+        sApolloNativeActionMenuModeratorStyleStack[sApolloNativeActionMenuCaptureDepth] = moderatorStyle;
+    }
     sApolloNativeActionMenuCaptureDepth++;
+}
+
+static void ApolloNativeActionMenuBeginCapture(id sender, id owner) {
+    ApolloNativeActionMenuBeginCaptureStyled(sender, owner, NO);
+}
+
+static void ApolloNativeActionMenuBeginModeratorCapture(id sender, id owner) {
+    ApolloNativeActionMenuBeginCaptureStyled(sender, owner, YES);
 }
 
 static void ApolloNativeActionMenuEndCapture(void) {
     if (sApolloNativeActionMenuCaptureDepth > 0) {
         sApolloNativeActionMenuCaptureDepth--;
+        if (sApolloNativeActionMenuCaptureDepth < sizeof(sApolloNativeActionMenuModeratorStyleStack) / sizeof(sApolloNativeActionMenuModeratorStyleStack[0])) {
+            sApolloNativeActionMenuModeratorStyleStack[sApolloNativeActionMenuCaptureDepth] = NO;
+        }
     }
     if (sApolloNativeActionMenuCaptureDepth == 0) {
         sApolloNativeActionMenuSourceView = nil;
@@ -300,14 +332,39 @@ static void ApolloNativeActionMenuSelectRow(id actionController, NSInteger row) 
     );
 }
 
-static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitle, UIImage *image, BOOL destructive, BOOL checked, BOOL enabled, id actionController, NSInteger row) {
+static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitle, UIImage *image, UIColor *tintColor, BOOL opensModeratorMenu, BOOL destructive, BOOL checked, BOOL enabled, id actionController, NSInteger row) {
     if (title.length == 0) {
         return nil;
     }
 
+    if (tintColor && image) {
+        SEL tintSelector = @selector(imageWithTintColor:renderingMode:);
+        if ([image respondsToSelector:tintSelector]) {
+            image = ((UIImage *(*)(id, SEL, UIColor *, UIImageRenderingMode))objc_msgSend)(
+                image,
+                tintSelector,
+                tintColor,
+                UIImageRenderingModeAlwaysOriginal
+            );
+        }
+    }
+
     UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {
+        if (opensModeratorMenu) {
+            sApolloNativeActionMenuNextPresentationModeratorStyle = YES;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
+            });
+        }
         ApolloNativeActionMenuSelectRow(actionController, row);
     }];
+
+    if (tintColor && [action respondsToSelector:@selector(setAttributedTitle:)]) {
+        NSAttributedString *attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+            NSForegroundColorAttributeName: tintColor
+        }];
+        ((void (*)(id, SEL, id))objc_msgSend)(action, @selector(setAttributedTitle:), attributedTitle);
+    }
 
     if (subtitle.length > 0 && [action respondsToSelector:@selector(setSubtitle:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(action, @selector(setSubtitle:), subtitle);
@@ -366,7 +423,7 @@ static void ApolloNativeActionMenuSortSavedCategoriesIfNeeded(id presenter, id a
     }
 }
 
-static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
+static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderatorStyle) {
     void *actionsBuffer = ApolloReadRawIvar(actionController, "actions");
     void *textActionsBuffer = ApolloReadRawIvar(actionController, "textActions");
     int64_t actionCount = ApolloSwiftArrayCount(actionsBuffer);
@@ -378,6 +435,8 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
     }
 
     NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
+    UIColor *moderatorTintColor = ApolloNativeActionMenuModeratorColor();
+    UIColor *menuTintColor = moderatorStyle ? moderatorTintColor : nil;
 
     for (int64_t i = 0; i < actionCount; i++) {
         uint8_t *element = (uint8_t *)actionsBuffer + 0x20 + i * 0x30;
@@ -388,7 +447,9 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
             title = ApolloNativeActionDefaultTitle(actionKind);
         }
         UIImage *image = ApolloNativeActionDefaultImage(actionKind);
-        UIAction *action = ApolloNativeActionMenuAction(title, subtitle, image, NO, NO, enabled, actionController, (NSInteger)i);
+        BOOL opensModeratorMenu = ApolloNativeActionKindOpensModeratorMenu(actionKind);
+        UIColor *actionTintColor = opensModeratorMenu ? moderatorTintColor : menuTintColor;
+        UIAction *action = ApolloNativeActionMenuAction(title, subtitle, image, actionTintColor, opensModeratorMenu, NO, NO, enabled, actionController, (NSInteger)i);
         if (action) {
             [children addObject:action];
         }
@@ -403,7 +464,7 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
             BOOL destructive = *(uint8_t *)(element + 0x10) != 0;
             BOOL checked = *(uint8_t *)(element + 0x12) != 0;
 
-            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, destructive, checked, enabled, actionController, row);
+            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, menuTintColor, NO, destructive, checked, enabled, actionController, row);
             if (action) {
                 [textChildren addObject:action];
             }
@@ -420,7 +481,7 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController) {
             BOOL destructive = *(uint8_t *)(element + 0x10) != 0;
             BOOL checked = *(uint8_t *)(element + 0x12) != 0;
 
-            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, destructive, checked, enabled, actionController, row);
+            UIAction *action = ApolloNativeActionMenuAction(title, nil, nil, menuTintColor, NO, destructive, checked, enabled, actionController, row);
             if (action) {
                 [children addObject:action];
             }
@@ -485,7 +546,11 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 
     ApolloNativeActionMenuSortSavedCategoriesIfNeeded(presenter, actionController);
 
-    UIMenu *menu = ApolloNativeActionMenuBuildMenu(actionController);
+    BOOL moderatorStyle = ApolloNativeActionMenuModeratorStyleActive() || sApolloNativeActionMenuNextPresentationModeratorStyle;
+    if (sApolloNativeActionMenuNextPresentationModeratorStyle) {
+        sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
+    }
+    UIMenu *menu = ApolloNativeActionMenuBuildMenu(actionController, moderatorStyle);
     if (!menu) {
         ApolloLog(@"[NativeActionMenu] Could not build native menu for %@", actionController);
         return NO;
@@ -538,13 +603,13 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -558,13 +623,13 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -578,7 +643,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -600,7 +665,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -608,7 +673,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 
 %hook _TtC6Apollo22CommentsHeaderCellNode
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -644,7 +709,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -664,7 +729,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -708,7 +773,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)modActionsBarButtonItemTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -730,7 +795,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 }
 
 - (void)moderatorAreaTitleViewButtonTappedWithSender:(id)sender {
-    ApolloNativeActionMenuBeginCapture(sender, self);
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
