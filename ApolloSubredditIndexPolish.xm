@@ -79,15 +79,18 @@ static UIColor *ApolloSubredditIndexThemeListBackgroundColor(UITableView *tableV
     UIViewController *viewController = ApolloSubredditIndexOwningViewController(tableView ?: fallbackView);
     NSMutableArray<UIColor *> *candidates = [NSMutableArray array];
 
-    if (tableView.backgroundColor) [candidates addObject:tableView.backgroundColor];
-    if (tableView.superview.backgroundColor) [candidates addObject:tableView.superview.backgroundColor];
-    if (viewController.view.backgroundColor) [candidates addObject:viewController.view.backgroundColor];
-    if (fallbackView.superview.backgroundColor) [candidates addObject:fallbackView.superview.backgroundColor];
-
+    // Headers are transparent, but UITableView reveals its own background in
+    // section gaps. Use the row surface first so the header area visually
+    // disappears instead of showing Apollo's tableBackgroundColor strip.
     for (UITableViewCell *cell in tableView.visibleCells) {
-        if (cell.backgroundColor) [candidates addObject:cell.backgroundColor];
         if (cell.contentView.backgroundColor) [candidates addObject:cell.contentView.backgroundColor];
+        if (cell.backgroundColor) [candidates addObject:cell.backgroundColor];
     }
+
+    if (fallbackView.superview.backgroundColor) [candidates addObject:fallbackView.superview.backgroundColor];
+    if (viewController.view.backgroundColor) [candidates addObject:viewController.view.backgroundColor];
+    if (tableView.superview.backgroundColor) [candidates addObject:tableView.superview.backgroundColor];
+    if (tableView.backgroundColor) [candidates addObject:tableView.backgroundColor];
 
     for (UIColor *color in candidates) {
         if (ApolloSubredditIndexColorIsVisible(color)) return color;
@@ -240,11 +243,23 @@ static UILabel *ApolloSubredditIndexHeaderLabelInView(UIView *view) {
     return nil;
 }
 
+static BOOL ApolloSubredditIndexViewContainsView(UIView *container, UIView *target) {
+    if (!container || !target) return NO;
+    if (container == target) return YES;
+    for (UIView *subview in container.subviews) {
+        if (ApolloSubredditIndexViewContainsView(subview, target)) return YES;
+    }
+    return NO;
+}
+
 static void ApolloSubredditIndexClearHeaderBackgrounds(UIView *view, UILabel *labelToKeep) {
     if (view != labelToKeep) {
         view.backgroundColor = [UIColor clearColor];
         view.layer.backgroundColor = UIColor.clearColor.CGColor;
         view.opaque = NO;
+        if ([view isKindOfClass:[UIVisualEffectView class]] && !ApolloSubredditIndexViewContainsView(view, labelToKeep)) {
+            view.hidden = YES;
+        }
     }
     for (UIView *subview in view.subviews) {
         ApolloSubredditIndexClearHeaderBackgrounds(subview, labelToKeep);
@@ -828,19 +843,13 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     label.frame = CGRectMake(18.0, 0.0, MAX(CGRectGetWidth(header.bounds) - 72.0, 0.0), CGRectGetHeight(header.bounds));
 
     UIView *separator = objc_getAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey);
-    if (!separator) {
-        separator = [[UIView alloc] initWithFrame:CGRectZero];
-        objc_setAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey, separator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [header addSubview:separator];
+    if (separator) {
+        separator.hidden = YES;
+        separator.backgroundColor = [UIColor clearColor];
+        separator.layer.backgroundColor = UIColor.clearColor.CGColor;
+        separator.frame = CGRectZero;
     }
-    separator.backgroundColor = [[UIColor separatorColor] colorWithAlphaComponent:0.18];
-    CGFloat scale = UIScreen.mainScreen.scale ?: 2.0;
-    CGFloat height = 1.0 / scale;
-    separator.frame = CGRectMake(18.0,
-                                 MAX(CGRectGetHeight(header.bounds) - height, 0.0),
-                                 MAX(CGRectGetWidth(header.bounds) - 72.0, 0.0),
-                                 height);
-    [header bringSubviewToFront:separator];
+
     [header bringSubviewToFront:label];
     [header setNeedsDisplay];
 
