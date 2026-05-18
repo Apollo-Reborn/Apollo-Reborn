@@ -13,6 +13,7 @@ static char kApolloSubredditHeaderSeparatorKey;
 static char kApolloSubredditHeaderLoggedKey;
 
 static void (*orig_ApolloRedditListWillDisplayHeader)(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) = NULL;
+static void (*orig_ApolloSubredditHeaderLayoutSubviews)(id self, SEL _cmd) = NULL;
 
 static const CGFloat ApolloSubredditIndexSlotHeight = 14.0;
 static const CGFloat ApolloSubredditIndexTouchWidth = 56.0;
@@ -66,6 +67,33 @@ static UIColor *ApolloSubredditIndexThemeAccentColor(UITableView *tableView, UIV
     }
 
     return fallbackView.tintColor ?: tableView.tintColor ?: [UIColor systemBlueColor];
+}
+
+static BOOL ApolloSubredditIndexColorIsVisible(UIColor *color) {
+    if (![color isKindOfClass:[UIColor class]]) return NO;
+    CGFloat alpha = CGColorGetAlpha(color.CGColor);
+    return alpha > 0.01;
+}
+
+static UIColor *ApolloSubredditIndexThemeListBackgroundColor(UITableView *tableView, UIView *fallbackView) {
+    UIViewController *viewController = ApolloSubredditIndexOwningViewController(tableView ?: fallbackView);
+    NSMutableArray<UIColor *> *candidates = [NSMutableArray array];
+
+    if (tableView.backgroundColor) [candidates addObject:tableView.backgroundColor];
+    if (tableView.superview.backgroundColor) [candidates addObject:tableView.superview.backgroundColor];
+    if (viewController.view.backgroundColor) [candidates addObject:viewController.view.backgroundColor];
+    if (fallbackView.superview.backgroundColor) [candidates addObject:fallbackView.superview.backgroundColor];
+
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        if (cell.backgroundColor) [candidates addObject:cell.backgroundColor];
+        if (cell.contentView.backgroundColor) [candidates addObject:cell.contentView.backgroundColor];
+    }
+
+    for (UIColor *color in candidates) {
+        if (ApolloSubredditIndexColorIsVisible(color)) return color;
+    }
+
+    return [UIColor clearColor];
 }
 
 static NSArray<NSString *> *ApolloSubredditIndexTitlesForTable(UITableView *tableView) {
@@ -216,10 +244,19 @@ static void ApolloSubredditIndexClearHeaderBackgrounds(UIView *view, UILabel *la
     if (view != labelToKeep) {
         view.backgroundColor = [UIColor clearColor];
         view.layer.backgroundColor = UIColor.clearColor.CGColor;
+        view.opaque = NO;
     }
     for (UIView *subview in view.subviews) {
         ApolloSubredditIndexClearHeaderBackgrounds(subview, labelToKeep);
     }
+}
+
+static UITableView *ApolloSubredditIndexTableForView(UIView *view) {
+    while (view) {
+        if ([view isKindOfClass:[UITableView class]]) return (UITableView *)view;
+        view = view.superview;
+    }
+    return nil;
 }
 
 static UILabel *ApolloSubredditIndexBestTitleLabelInView(UIView *view, UITableViewCell *cell) {
@@ -777,6 +814,11 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     if (!ApolloSubredditIndexStringLooksLikeHeaderTitle(text)) return;
 
     ApolloSubredditIndexClearHeaderBackgrounds(header, label);
+    UIColor *backgroundColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
+    header.backgroundColor = backgroundColor;
+    header.layer.backgroundColor = backgroundColor.CGColor;
+    header.opaque = NO;
+
     label.text = text;
     label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
     label.textColor = ApolloSubredditIndexThemeAccentColor(tableView, header);
@@ -800,12 +842,25 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
                                  height);
     [header bringSubviewToFront:separator];
     [header bringSubviewToFront:label];
-    [header setNeedsLayout];
+    [header setNeedsDisplay];
 
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditHeaderLoggedKey) boolValue]) {
         objc_setAssociatedObject(tableView, &kApolloSubredditHeaderLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLog(@"[SubredditIndex] styled-header class=%@ title=%@", NSStringFromClass([header class]), text);
     }
+}
+
+static void ApolloSubredditIndexHeaderLayoutSubviewsHook(id self, SEL _cmd) {
+    if (orig_ApolloSubredditHeaderLayoutSubviews) {
+        orig_ApolloSubredditHeaderLayoutSubviews(self, _cmd);
+    }
+
+    if (![self isKindOfClass:[UIView class]]) return;
+    UIView *header = (UIView *)self;
+    UITableView *tableView = ApolloSubredditIndexTableForView(header);
+    if (!tableView) return;
+
+    ApolloSubredditIndexStyleHeaderView(header, tableView);
 }
 
 static void ApolloSubredditIndexWillDisplayHeaderHook(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) {
@@ -834,6 +889,45 @@ static void ApolloSubredditIndexInstallHeaderHook(void) {
         BOOL added = class_addMethod(cls, selector, hook, "v@:@@q");
         ApolloLog(@"[SubredditIndex] header hook installed via add=%d on %@", added, NSStringFromClass(cls));
     }
+}
+
+static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
+    Class cls = objc_getClass("Apollo.RecreatedTableSectionHeaderView");
+    if (!cls) cls = NSClassFromString(@"Apollo.RecreatedTableSectionHeaderView");
+    if (!cls) {
+        ApolloLog(@"[SubredditIndex] header layout hook skipped: RecreatedTableSectionHeaderView missing");
+        return;
+    }
+
+    SEL selector = @selector(layoutSubviews);
+    Method ownMethod = NULL;
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int idx = 0; idx < methodCount; idx++) {
+        if (method_getName(methods[idx]) == selector) {
+            ownMethod = methods[idx];
+            break;
+        }
+    }
+    free(methods);
+
+    if (ownMethod) {
+        orig_ApolloSubredditHeaderLayoutSubviews = (void (*)(id, SEL))method_getImplementation(ownMethod);
+        method_setImplementation(ownMethod, (IMP)ApolloSubredditIndexHeaderLayoutSubviewsHook);
+        ApolloLog(@"[SubredditIndex] header layout hook installed via replace on %@", NSStringFromClass(cls));
+        return;
+    }
+
+    Method inheritedMethod = class_getInstanceMethod(cls, selector);
+    if (!inheritedMethod) {
+        ApolloLog(@"[SubredditIndex] header layout hook skipped: inherited layoutSubviews missing on %@", NSStringFromClass(cls));
+        return;
+    }
+
+    orig_ApolloSubredditHeaderLayoutSubviews = (void (*)(id, SEL))method_getImplementation(inheritedMethod);
+    const char *types = method_getTypeEncoding(inheritedMethod) ?: "v@:";
+    BOOL added = class_addMethod(cls, selector, (IMP)ApolloSubredditIndexHeaderLayoutSubviewsHook, types);
+    ApolloLog(@"[SubredditIndex] header layout hook installed via add=%d on %@", added, NSStringFromClass(cls));
 }
 
 %hook UITableView
@@ -870,5 +964,6 @@ static void ApolloSubredditIndexInstallHeaderHook(void) {
 
 %ctor {
     ApolloSubredditIndexInstallHeaderHook();
+    ApolloSubredditIndexInstallHeaderLayoutHook();
     ApolloLog(@"[SubredditIndex] polish active");
 }
