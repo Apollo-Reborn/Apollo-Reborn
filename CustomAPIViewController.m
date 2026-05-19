@@ -443,7 +443,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)presentLinkPreviewCardColorSheetFromSourceView:(UIView *)sourceView {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Preview Card Color"
-                                                                   message:@"Choose the subtle color tint used behind rich link preview cards."
+                                                                   message:@"Choose a color."
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
     NSArray<NSNumber *> *colors = @[
@@ -975,7 +975,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
-            cell.textLabel.text = @"Preview Card Color";
+            cell.textLabel.text = @"Rich Link Previews - Color";
             cell.detailTextLabel.text = [self linkPreviewCardColorTextForColor:sLinkPreviewCardColor];
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
