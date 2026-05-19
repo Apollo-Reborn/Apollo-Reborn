@@ -908,14 +908,6 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     separator.backgroundColor = [UIColor clearColor];
     separator.layer.backgroundColor = UIColor.clearColor.CGColor;
 
-    if ([text isEqualToString:@"MODERATOR"]) {
-        separator.hidden = YES;
-        separator.frame = CGRectZero;
-        [header bringSubviewToFront:label];
-        [header setNeedsDisplay];
-        return;
-    }
-
     CGFloat lineHeight = 2.0;
     CGSize labelSize = [text sizeWithAttributes:@{ NSFontAttributeName: label.font }];
     CGFloat lineX = CGRectGetMinX(label.frame) + ceil(labelSize.width) + 12.0;
