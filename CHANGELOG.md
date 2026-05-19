@@ -20,7 +20,8 @@ All notable changes to this project will be documented in this file.
 - Fix the media post body text editor in subreddits that do not expose Apollo's normal Text tab (thanks @icpryde!)
 - Fix subreddit list view scroll position shifting after favouriting a subreddit
 - Fix stale subreddit entries lingering after unfavouriting from Favourites section
-- Fix separators blocking alphabet in subreddit list view
+- Liquid Glass: fix separators blocking alphabet in subreddit list view
+- Update Custom API settings view to match app theme
 
 ## [v2.12.0b] - 2026-05-16
 
