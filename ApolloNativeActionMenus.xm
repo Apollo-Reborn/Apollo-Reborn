@@ -173,6 +173,7 @@ static void ApolloNativeActionMenuStyleElementImage(UIMenuElement *element, UICo
 typedef void (^ApolloNativeActionMenuActionHandler)(UIAction *action);
 
 static void ApolloNativeActionMenuPrimeSourceView(UIView *sourceView) {
+    if (!ApolloNativeActionMenusEnabled()) return;
     if (!sourceView.window) return;
 
     sApolloNativeActionMenuSourceView = sourceView;
@@ -389,6 +390,22 @@ static UIView *ApolloNativeActionMenuSelectedCellForPresenter(id presenter) {
     return nil;
 }
 
+static UIView *ApolloNativeActionMenuCellForGesture(UIGestureRecognizer *gestureRecognizer, id owner) {
+    UIView *gestureView = gestureRecognizer.view;
+    UITableView *tableView = nil;
+    if ([gestureView isKindOfClass:[UITableView class]]) {
+        tableView = (UITableView *)gestureView;
+    } else {
+        tableView = ApolloNativeActionMenuTableViewForPresenter(owner);
+    }
+    if (!tableView) return gestureView;
+
+    CGPoint location = [gestureRecognizer locationInView:tableView];
+    NSIndexPath *indexPath = [tableView indexPathForRowAtPoint:location];
+    UITableViewCell *cell = indexPath ? [tableView cellForRowAtIndexPath:indexPath] : nil;
+    return cell ?: tableView;
+}
+
 static UIView *ApolloNativeActionMenuResolveSourceView(id sender, id owner) {
     UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
     if (sourceView) return sourceView;
@@ -435,6 +452,8 @@ static BOOL ApolloNativeActionMenuActionControllerIsModeratorOnly(id actionContr
 }
 
 static void ApolloNativeActionMenuBeginCaptureStyled(id sender, id owner, BOOL moderatorStyle) {
+    if (!ApolloNativeActionMenusEnabled()) return;
+
     UIView *sourceView = ApolloNativeActionMenuResolveSourceView(sender, owner);
     if (sourceView) {
         sApolloNativeActionMenuSourceView = sourceView;
@@ -698,6 +717,10 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 
 %hook UIContextMenuConfiguration
 + (instancetype)configurationWithIdentifier:(id<NSCopying>)identifier previewProvider:(id)previewProvider actionProvider:(ApolloNativeActionMenuProvider)actionProvider {
+    if (!ApolloNativeActionMenusEnabled()) {
+        return %orig(identifier, previewProvider, actionProvider);
+    }
+
     ApolloNativeActionMenuProvider wrappedActionProvider = nil;
     if (actionProvider) {
         ApolloNativeActionMenuProvider originalActionProvider = [actionProvider copy];
@@ -1017,6 +1040,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
     ApolloNativeActionMenuEndCapture();
 }
 
+- (void)sendAsButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
 - (void)modActionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
@@ -1033,6 +1062,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %end
 
 %hook _TtC6Apollo26ModmailInboxViewController
+- (void)sortButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
 - (void)moreOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
     %orig;
@@ -1068,8 +1103,90 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %end
 
 %hook _TtC6Apollo25ComposePostViewController
+- (void)cancelButtonTapped:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)presentationControllerDidAttemptToDismiss:(id)presentationController {
+    if (sApolloNativeActionMenuCaptureDepth > 0) {
+        %orig;
+        return;
+    }
+    ApolloNativeActionMenuBeginCapture(self, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     UIView *sourceView = [tableView cellForRowAtIndexPath:indexPath] ?: tableView;
+    ApolloNativeActionMenuBeginCapture(sourceView, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo21ComposeViewController
+- (void)cancelBarButtonTapped:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)presentationControllerDidAttemptToDismiss:(id)presentationController {
+    if (sApolloNativeActionMenuCaptureDepth > 0) {
+        %orig;
+        return;
+    }
+    ApolloNativeActionMenuBeginCapture(self, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo29WatcherComposerViewController
+- (void)cancelBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)presentationControllerDidAttemptToDismiss:(id)presentationController {
+    if (sApolloNativeActionMenuCaptureDepth > 0) {
+        %orig;
+        return;
+    }
+    ApolloNativeActionMenuBeginCapture(self, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo27AutoModeratorViewController
+- (void)cancelBarButtonItemTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo40SettingsDeleteImgurUploadsViewController
+- (void)deleteButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    UIView *sourceView = [tableView cellForRowAtIndexPath:indexPath] ?: tableView;
+    ApolloNativeActionMenuBeginCapture(sourceView, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)longPressedTableViewWithGestureRecognizer:(UIGestureRecognizer *)gestureRecognizer {
+    UIView *sourceView = ApolloNativeActionMenuCellForGesture(gestureRecognizer, self);
     ApolloNativeActionMenuBeginCapture(sourceView, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
@@ -1103,6 +1220,14 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 %hook _TtC6Apollo30CrosspostPerformViewController
 - (void)flairSelectorTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
+%hook _TtC6Apollo22ModQueueViewController
+- (void)titleViewButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
