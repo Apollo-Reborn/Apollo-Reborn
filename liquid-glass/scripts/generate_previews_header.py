@@ -9,8 +9,8 @@ Emits three things into the header:
 
   1. `kLGPreviewEntries[]`     — base64-encoded PNGs, decoded lazily by
                                  the tweak and cached forever.
-  2. `kLGIconRows[]`           — (iconID, displayName) pairs for the icon
-                                 picker, in registry order.
+  2. `kLGIconRows[]`           — (iconID, displayName, designer) triples for
+                                  the icon picker, in registry order.
   3. `kLGPrimaryIconID`        — the icon ID treated as the bundle's
                                  default (no alternate icon set).
 """
@@ -55,12 +55,13 @@ def main() -> int:
 
     rows = []
     arrays = []
-    icon_meta = []   # [(id, displayName)]
+    icon_meta = []   # [(id, displayName, designer)]
 
     for entry in registry["icons"]:
         icon_id = entry["id"]
         display_name = entry.get("displayName", icon_id)
-        icon_meta.append((icon_id, display_name))
+        designer = entry.get("designer", "")
+        icon_meta.append((icon_id, display_name, designer))
 
         previews_dir = os.path.join(lg_dir, "icons", icon_id)
         for variant in VARIANTS:
@@ -109,14 +110,16 @@ def main() -> int:
         fp.write("typedef struct {\n")
         fp.write("    const char *iconID;\n")
         fp.write("    const char *displayName;\n")
+        fp.write("    const char *designer;\n")
         fp.write("} LGIconRowEntry;\n\n")
 
         fp.write("static const LGIconRowEntry kLGIconRowEntries[] = {\n")
-        for icon_id, display_name in icon_meta:
+        for icon_id, display_name, designer in icon_meta:
             # Escape any embedded quotes in the display name to keep the
             # generated C literal well-formed.
             safe_name = display_name.replace('\\', '\\\\').replace('"', '\\"')
-            fp.write(f'    {{ "{icon_id}", "{safe_name}" }},\n')
+            safe_designer = designer.replace('\\', '\\\\').replace('"', '\\"')
+            fp.write(f'    {{ "{icon_id}", "{safe_name}", "{safe_designer}" }},\n')
         fp.write("};\n\n")
         fp.write(f"static const size_t kLGIconRowEntryCount = {len(icon_meta)};\n\n")
 

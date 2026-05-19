@@ -41,6 +41,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 - **Tap timestamp for creation date**: Tap a comment or post's relative-time label to see the absolute creation date and time
 - **Tag Filters**: Blur NSFW and/or Spoiler posts (including titles) in feeds, with per-subreddit overrides (Settings > Tag Filters)
 - **Inline Media Previews**: Render images, GIFs, videos, and Imgur albums inline within posts and comments (Settings > Custom API > Media > Inline Media Previews)
+- **Rich Link Previews**: Render metadata-rich link cards in post bodies and comments (Settings > Custom API > Media)
 - **User Profile Pictures**: Show Reddit user avatars next to usernames in feeds, comments, and user profiles (Settings > Custom API > Media > Show User Profile Pictures)
 - **Self-hosted Notifications** (advanced): Optionally route push registrations, watchers, and inbox checks through your own forked [apollo-backend](https://github.com/nickclyde/apollo-backend) instance instead of having those requests silently dropped (Settings > Custom API > Notification Backend)
 
@@ -126,7 +127,7 @@ Recommended configuration:
 
 ## Build Injected IPA Locally
 
-`build-ipa.sh` builds the tweak `.deb` and injects it into a stock Apollo IPA. Requires `azule` or `cyan` installed locally; signing/sideloading is still handled by your preferred signer.
+`build-ipa.sh` builds the tweak `.deb` and injects it into an Apollo IPA. For this repo's already-injected `Apollo-base.ipa`, it uses the repo-local `scripts/inject-deb-local.sh` replacement injector first, so `azule`/`cyan` are not required for normal test builds. For a truly stock IPA without the injection scaffold, install `azule` or `cyan`; signing/sideloading is still handled by your preferred signer.
 
 ```bash
 make package
@@ -182,6 +183,7 @@ Thank you to these wonderful people:
     <tr>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/iGerman00"><img src="https://avatars.githubusercontent.com/u/36676880?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="iGerman00"/></a><br /><sub><b>iGerman00</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons" title="Icon and design">Design</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/jryng"><img src="https://avatars.githubusercontent.com/u/16271550?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="jryng"/></a><br /><sub><b>jryng</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons" title="Icon and design">Design</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/bajader"><img src="https://avatars.githubusercontent.com/u/98495831?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="bajader"/></a><br /><sub><b>bajader</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons" title="Icon and design">Design</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/metalnakls"><img src="https://avatars.githubusercontent.com/u/15786688?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="metalnakls"/></a><br /><sub><b>metalnakls</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons" title="Icon and design">Design</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://www.reddit.com/user/harunatsu91202024/"><img src="https://i.redd.it/snoovatar/avatars/ef90ed21-4a24-4a78-b535-848d4efc6378.png?s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="harumatsu"/></a><br /><sub><b>harumatsu</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons" title="Icon and design">Design</a></td>
     </tr>

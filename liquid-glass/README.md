@@ -31,11 +31,11 @@ The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
 
 | Icon | Default | Dark | Clear Light | Clear Dark |
 |---|---|---|---|---|
-| **iGerman00**  | ![](icons/igerman00/default.png)  | ![](icons/igerman00/dark.png)  | ![](icons/igerman00/clear-light.png)  | ![](icons/igerman00/clear-dark.png)  |
-| **jryng**      | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/jryng/clear-dark.png)      |
-| **jryng (alt)**| ![](icons/jryng-alt/default.png)  | ![](icons/jryng-alt/dark.png)  | ![](icons/jryng-alt/clear-light.png)  | ![](icons/jryng-alt/clear-dark.png)  |
+| **Canon**      | ![](icons/igerman00/default.png)  | ![](icons/igerman00/dark.png)  | ![](icons/igerman00/clear-light.png)  | ![](icons/igerman00/clear-dark.png)  |
+| **OG**         | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/og/clear-dark.png)      |
 | **metalnakls** | ![](icons/metalnakls/default.png) | ![](icons/metalnakls/dark.png) | ![](icons/metalnakls/clear-light.png) | ![](icons/metalnakls/clear-dark.png) |
 | **harunatsu**  | ![](icons/harunatsu/default.png)  | ![](icons/harunatsu/dark.png)  | ![](icons/harunatsu/clear-light.png)  | ![](icons/harunatsu/clear-dark.png)  |
+| **Sunset**     | ![](icons/bajader/default.png)    | ![](icons/bajader/dark.png)    | ![](icons/bajader/clear-light.png)    | ![](icons/bajader/clear-dark.png)    |
 
 ## Adding a new icon
 

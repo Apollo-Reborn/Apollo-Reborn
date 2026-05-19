@@ -23,11 +23,44 @@ extern BOOL sProxyImgurDDG;
 extern BOOL sShowUserAvatars;
 extern BOOL sUseProfileAvatarTabIcon;
 extern BOOL sAutoHideTabBarShowOnIdle;
+extern BOOL sModernSubredditDividers;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
 // link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
+typedef NS_ENUM(NSInteger, ApolloLinkPreviewMode) {
+    ApolloLinkPreviewModeOff = 0,
+    ApolloLinkPreviewModeCompact = 1,
+    ApolloLinkPreviewModeFull = 2,
+};
+
+typedef NS_ENUM(NSInteger, ApolloLinkPreviewCardColor) {
+    ApolloLinkPreviewCardColorNeutral = 0,
+    ApolloLinkPreviewCardColorGray = 1,
+    ApolloLinkPreviewCardColorRed = 2,
+    ApolloLinkPreviewCardColorOrange = 3,
+    ApolloLinkPreviewCardColorYellow = 4,
+    ApolloLinkPreviewCardColorGreen = 5,
+    ApolloLinkPreviewCardColorMint = 6,
+    ApolloLinkPreviewCardColorTeal = 7,
+    ApolloLinkPreviewCardColorCyan = 8,
+    ApolloLinkPreviewCardColorBlue = 9,
+    ApolloLinkPreviewCardColorIndigo = 10,
+    ApolloLinkPreviewCardColorPurple = 11,
+    ApolloLinkPreviewCardColorPink = 12,
+    ApolloLinkPreviewCardColorBrown = 13,
+    ApolloLinkPreviewCardColorCoral = 14,
+    ApolloLinkPreviewCardColorLime = 15,
+    ApolloLinkPreviewCardColorOlive = 16,
+    ApolloLinkPreviewCardColorLavender = 17,
+    ApolloLinkPreviewCardColorSlate = 18,
+};
+
+// Rich link previews (Open Graph / oEmbed) for link cards in body/feed and comments.
+extern NSInteger sLinkPreviewBodyMode;
+extern NSInteger sLinkPreviewCommentsMode;
+extern NSInteger sLinkPreviewCardColor;
 
 // Media upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
 // session to upload directly to Reddit's media storage.

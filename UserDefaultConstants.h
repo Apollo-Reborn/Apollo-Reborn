@@ -14,6 +14,8 @@ static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsSource = @"TrendingSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsLimit = @"TrendingSubredditsLimit";
+static NSString *const UDKeyModernSubredditDividers = @"ModernSubredditDividers";
+static NSString *const ApolloModernSubredditDividersChangedNotification = @"ApolloModernSubredditDividersChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
 static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
 static NSString *const UDKeyPreferredGIFFallbackFormat = @"PreferredGIFFallbackFormat";
@@ -64,3 +66,9 @@ static NSString *const UDKeyNotificationBackendURL = @"NotificationBackendURL";
 // When set, sent as X-Registration-Token on the three POST registration
 // endpoints (/v1/device, /v1/device/{apns}/account[s]).
 static NSString *const UDKeyNotificationBackendRegistrationToken = @"NotificationBackendRegistrationToken";
+
+// Rich link preview cards: 0 = Off, 1 = Compact, 2 = Full.
+static NSString *const UDKeyLinkPreviewBodyMode = @"LinkPreviewBodyMode";
+static NSString *const UDKeyLinkPreviewCommentsMode = @"LinkPreviewCommentsMode";
+static NSString *const UDKeyLinkPreviewCardColor = @"LinkPreviewCardColor";
+static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLinkPreviewModeDidChangeNotification";

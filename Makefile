@@ -33,11 +33,18 @@ ApolloImprovedCustomApi_FILES = \
     ApolloSettings.xm \
     ApolloRecentlyRead.xm \
     ApolloSavedCategories.xm \
+    ApolloNativeActionMenus.xm \
     ApolloTranslation.xm \
     ApolloVideoUnmute.xm \
     ApolloVideoSwipeFix.xm \
+    ApolloSubredditIndexPolish.xm \
     ApolloTagFilters.xm \
+    ApolloLinkPreviewModel.m \
+    ApolloLinkPreviewCache.m \
+    ApolloLinkPreviewFetcher.m \
     ApolloInlineImages.xm \
+    ApolloInlineLinkPreviews.xm \
+    ApolloTweetBuddy.xm \
     CustomAPIViewController.m \
     TranslationSettingsViewController.m \
     SavedCategoriesViewController.m \

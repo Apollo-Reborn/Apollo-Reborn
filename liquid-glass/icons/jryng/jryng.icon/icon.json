@@ -4,8 +4,8 @@
     {
       "value" : {
         "linear-gradient" : [
-          "display-p3:0.32935,0.65088,0.97266,1.00000",
-          "display-p3:0.42749,0.36084,0.96484,1.00000"
+          "display-p3:0.32544,0.62744,0.97266,1.00000",
+          "display-p3:0.42358,0.35693,0.96484,1.00000"
         ],
         "orientation" : {
           "start" : {
@@ -21,32 +21,239 @@
     },
     {
       "appearance" : "dark",
-      "value" : {
-        "linear-gradient" : [
-          "display-p3:0.15499,0.00000,0.96484,1.00000",
-          "display-p3:0.36778,0.08494,0.65586,1.00000"
-        ],
-        "orientation" : {
-          "start" : {
-            "x" : 0.5,
-            "y" : 0
-          },
-          "stop" : {
-            "x" : 0.5,
-            "y" : 0.7
-          }
-        }
-      }
+      "value" : "system-dark"
     }
   ],
   "groups" : [
     {
+      "blur-material" : 0.5,
+      "hidden-specializations" : [
+        {
+          "idiom" : "square",
+          "value" : false
+        }
+      ],
       "layers" : [
         {
-          "hidden" : true,
-          "image-name" : "Icon.png",
-          "name" : "Icon",
-          "opacity" : 0.47
+          "image-name" : "apollo_antennaball 2.svg",
+          "name" : "apollo_antennaball 2",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.24,
+                "translation-in-points" : [
+                  0,
+                  -63
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "glass-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "eyes.svg",
+          "name" : "eyes",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.5,
+                "translation-in-points" : [
+                  0,
+                  22
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "hidden" : false,
+          "image-name" : "stem.svg",
+          "name" : "stem",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.54,
+                "translation-in-points" : [
+                  0,
+                  -43
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "fill" : {
+            "solid" : "display-p3:0.97572,0.97016,1.00000,1.00000"
+          },
+          "glass-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : true
+            }
+          ],
+          "image-name" : "face_separate.svg",
+          "name" : "face_separate",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.47,
+                "translation-in-points" : [
+                  0,
+                  25
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "fill" : {
+            "solid" : "extended-gray:1.00000,1.00000"
+          },
+          "glass-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "helmet.svg",
+          "name" : "helmet",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.54,
+                "translation-in-points" : [
+                  0,
+                  16
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "fill" : {
+            "solid" : "srgb:0.00000,0.26800,0.61815,1.00000"
+          },
+          "image-name" : "face_separate.svg",
+          "name" : "face_separate",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.56,
+                "translation-in-points" : [
+                  0,
+                  24
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "glass-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "dark",
+              "value" : true
+            },
+            {
+              "appearance" : "tinted",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "antennae 2.svg",
+          "name" : "antennae 2",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.54,
+                "translation-in-points" : [
+                  0,
+                  -14
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "blend-mode" : "overlay",
+          "fill" : {
+            "solid" : "display-p3:0.54554,0.74193,1.02880,1.00000"
+          },
+          "hidden" : false,
+          "image-name" : "apollo_ring_small 2.svg",
+          "name" : "apollo_ring_small 2",
+          "opacity" : 0.6,
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.16,
+                "translation-in-points" : [
+                  0,
+                  -63
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "fill" : {
+            "solid" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+          },
+          "hidden" : false,
+          "image-name" : "apollo_ring_small 2.svg",
+          "name" : "apollo_ring_small 2",
+          "opacity" : 0.5,
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.24,
+                "translation-in-points" : [
+                  0,
+                  -63
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "display-p3:0.18126,0.42220,0.78261,1.00000"
+          },
+          "hidden" : false,
+          "image-name" : "apollo_ring_large 2.svg",
+          "name" : "apollo_ring_large 2",
+          "opacity" : 0.4,
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.24,
+                "translation-in-points" : [
+                  0,
+                  -64
+                ]
+              }
+            }
+          ]
         }
       ],
       "position" : {
@@ -57,12 +264,13 @@
         ]
       },
       "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
+        "kind" : "layer-color",
+        "opacity" : 0.6
       },
+      "specular" : true,
       "translucency" : {
         "enabled" : true,
-        "value" : 0.76
+        "value" : 0.52
       }
     },
     {
@@ -77,117 +285,7 @@
       ],
       "hidden" : false,
       "layers" : [
-        {
-          "glass" : false,
-          "hidden" : false,
-          "image-name" : "apollo_snoo_eyes.svg",
-          "name" : "apollo_snoo_eyes",
-          "position" : {
-            "scale" : 1.43,
-            "translation-in-points" : [
-              0.6,
-              104
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_snoo_face.svg",
-          "name" : "apollo_snoo_face",
-          "position" : {
-            "scale" : 1.41,
-            "translation-in-points" : [
-              1,
-              127
-            ]
-          }
-        },
-        {
-          "glass" : false,
-          "hidden" : false,
-          "image-name" : "apollo_helmet_space.svg",
-          "name" : "apollo_helmet_space",
-          "position" : {
-            "scale" : 1.42,
-            "translation-in-points" : [
-              0,
-              125
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_antennaball.svg",
-          "name" : "apollo_antennaball",
-          "opacity" : 1,
-          "position" : {
-            "scale" : 1.38,
-            "translation-in-points" : [
-              -0.021877584780781945,
-              -403
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_antennastem.svg",
-          "name" : "apollo_antennastem",
-          "position" : {
-            "scale" : 1.41,
-            "translation-in-points" : [
-              0,
-              -283
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_helmet.svg",
-          "name" : "apollo_helmet",
-          "position" : {
-            "scale" : 1.43,
-            "translation-in-points" : [
-              0,
-              84
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_radio.svg",
-          "name" : "apollo_radio",
-          "position" : {
-            "scale" : 1.44,
-            "translation-in-points" : [
-              0,
-              -135
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_ring_small.svg",
-          "name" : "apollo_ring_small",
-          "position" : {
-            "scale" : 1.48,
-            "translation-in-points" : [
-              -0.00951036040987674,
-              -394
-            ]
-          }
-        },
-        {
-          "hidden" : false,
-          "image-name" : "apollo_ring_large.svg",
-          "name" : "apollo_ring_large",
-          "position" : {
-            "scale" : 1.46,
-            "translation-in-points" : [
-              0,
-              -394
-            ]
-          }
-        }
+
       ],
       "lighting-specializations" : [
         {

@@ -12,8 +12,9 @@
 // original layout get shifted down by 1; all hooked data-source and delegate
 // methods passthrough to %orig with a remapped section index.
 //
-// Each row renders a 1x4 preview strip (Default / Dark / Clear / Clear Dark)
-// for one of four bundled Liquid Glass icons. Tapping a row calls
+// Each row renders a 1x4 preview strip in a fixed variant order
+// (default / dark / clear / clear dark) for one bundled Liquid Glass icon.
+// Tapping a row calls
 // -[UIApplication setAlternateIconName:completionHandler:] with the icon ID
 // (or nil if the user picked the icon that matches the primary `jryng`
 // CFBundleIcon, so iOS stays in its "default icon" state when possible).
@@ -28,7 +29,7 @@ static const NSInteger kLGSectionIndex = 0;
 static const CGFloat kLGThumbnailSide = 52.0;
 static const CGFloat kLGThumbnailCorner = 11.5;
 static const CGFloat kLGTileSpacing = 12.0;
-static const CGFloat kLGRowHeight = 124.0;
+static const CGFloat kLGRowHeight = 104.0;
 
 #pragma mark - Bundled preview data
 
@@ -92,31 +93,58 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
 typedef struct {
     __unsafe_unretained NSString *iconID;
     __unsafe_unretained NSString *displayName;
+    __unsafe_unretained NSString *designer;
 } LGIconRow;
+
+static NSDictionary *LGAlternateIconsForBundleIconsKey(NSString *bundleIconsKey) {
+    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[bundleIconsKey];
+    if (![icons isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
+    if (![alts isKindOfClass:[NSDictionary class]]) return nil;
+    return alts;
+}
+
+static BOOL LGAlternateIconRegisteredInInfoPlist(NSString *iconID) {
+    if (!iconID.length) return NO;
+    NSDictionary *iphoneAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons");
+    NSDictionary *ipadAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons~ipad");
+    return iphoneAlts[iconID] != nil || ipadAlts[iconID] != nil;
+}
 
 static const LGIconRow *LGIconRows(NSInteger *outCount) {
     // The icon list lives in liquid-glass/icons.json. The header generated
     // by liquid-glass/scripts/generate_previews_header.py exposes it as
     // `kLGIconRowEntries` (C-string fields). Wrap each entry in an NSString
-    // once at first call. We keep a static strong NSArray around so the
-    // NSStrings outlive every call without us having to manage refcounts
-    // through the calloc'd C array (whose __unsafe_unretained members ARC
-    // cannot track).
+    // once at first call, but only keep rows whose icon ID is actually
+    // registered in this IPA's Info.plist.
+    //
+    // We keep a static strong NSArray around so the NSStrings outlive every
+    // call without us having to manage refcounts through the calloc'd C array
+    // (whose __unsafe_unretained members ARC cannot track).
     static LGIconRow *rows = NULL;
     static NSInteger count = 0;
     static NSArray<NSString *> *strongStorage = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        count = (NSInteger)kLGIconRowEntryCount;
-        rows = (LGIconRow *)calloc((size_t)count, sizeof(LGIconRow));
-        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(count * 2)];
-        for (NSInteger i = 0; i < count; i++) {
-            NSString *iconID      = [@(kLGIconRowEntries[i].iconID) copy];
+        NSInteger generatedCount = (NSInteger)kLGIconRowEntryCount;
+        rows = (LGIconRow *)calloc((size_t)generatedCount, sizeof(LGIconRow));
+        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(generatedCount * 3)];
+        for (NSInteger i = 0; i < generatedCount; i++) {
+            NSString *iconID = [@(kLGIconRowEntries[i].iconID) copy];
+            if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
+                ApolloLog(@"[LGIconPicker] omitting icon not registered in Info.plist: %@", iconID);
+                continue;
+            }
+
             NSString *displayName = [@(kLGIconRowEntries[i].displayName) copy];
+            NSString *designer    = [@(kLGIconRowEntries[i].designer) copy];
             [storage addObject:iconID];
             [storage addObject:displayName];
-            rows[i].iconID      = iconID;
-            rows[i].displayName = displayName;
+            [storage addObject:designer];
+            rows[count].iconID      = iconID;
+            rows[count].displayName = displayName;
+            rows[count].designer    = designer;
+            count++;
         }
         strongStorage = [storage copy];
         (void)strongStorage;  // intentionally kept alive via static reference
@@ -157,11 +185,7 @@ static BOOL LGAlternateIconsAvailable(void) {
     // would return NO at startup. Re-evaluating Info.plist on every call is
     // cheap (dict lookup) and avoids any caching that would freeze a bad
     // startup answer in place.
-    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[@"CFBundleIcons"];
-    if (![icons isKindOfClass:[NSDictionary class]]) return NO;
-    NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
-    if (![alts isKindOfClass:[NSDictionary class]]) return NO;
-    return alts[LGPrimaryIconID()] != nil;
+    return LGAlternateIconRegisteredInInfoPlist(LGPrimaryIconID()) && LGIconRowCount() > 0;
 }
 
 #pragma mark - Section remap helpers
@@ -249,17 +273,18 @@ static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableVi
 
 @interface LGIconPreviewTile : UIView
 @property (nonatomic, strong) UIImageView *imageView;
-@property (nonatomic, strong) UILabel *captionLabel;
-- (instancetype)initWithCaption:(NSString *)caption;
+- (instancetype)initWithAccessibilityLabel:(NSString *)accessibilityLabel;
 - (void)setImage:(UIImage *)image;
 @end
 
 @implementation LGIconPreviewTile
 
-- (instancetype)initWithCaption:(NSString *)caption {
+- (instancetype)initWithAccessibilityLabel:(NSString *)accessibilityLabel {
     self = [super initWithFrame:CGRectZero];
     if (!self) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
+    self.isAccessibilityElement = YES;
+    self.accessibilityLabel = accessibilityLabel;
 
     self.imageView = [[UIImageView alloc] initWithFrame:CGRectZero];
     self.imageView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -272,33 +297,14 @@ static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableVi
     self.imageView.backgroundColor = [UIColor secondarySystemBackgroundColor];
     [self addSubview:self.imageView];
 
-    self.captionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.captionLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.captionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightRegular];
-    self.captionLabel.textColor = [UIColor secondaryLabelColor];
-    self.captionLabel.textAlignment = NSTextAlignmentCenter;
-    self.captionLabel.text = caption;
-    self.captionLabel.numberOfLines = 1;
-    self.captionLabel.adjustsFontSizeToFitWidth = YES;
-    self.captionLabel.minimumScaleFactor = 0.75;
-    self.captionLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self addSubview:self.captionLabel];
-
     [NSLayoutConstraint activateConstraints:@[
-        // Image is fixed-size and centered horizontally; the tile itself is
-        // free to grow wider (via UIStackViewDistributionFillEqually) so the
-        // caption has room beyond the icon footprint.
         [self.imageView.topAnchor constraintEqualToAnchor:self.topAnchor],
         [self.imageView.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
         [self.imageView.widthAnchor constraintEqualToConstant:kLGThumbnailSide],
         [self.imageView.heightAnchor constraintEqualToConstant:kLGThumbnailSide],
         [self.imageView.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor],
         [self.imageView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor],
-
-        [self.captionLabel.topAnchor constraintEqualToAnchor:self.imageView.bottomAnchor constant:6.0],
-        [self.captionLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-        [self.captionLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [self.captionLabel.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [self.imageView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
     ]];
 
     return self;
@@ -341,12 +347,13 @@ static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableVi
     self.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.titleLabel.textColor = [UIColor labelColor];
     self.titleLabel.numberOfLines = 1;
+    self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     [self.contentView addSubview:self.titleLabel];
 
-    NSArray<NSString *> *captions = @[@"Default", @"Dark", @"Clear", @"Clear Dark"];
-    NSMutableArray<LGIconPreviewTile *> *tiles = [NSMutableArray arrayWithCapacity:captions.count];
-    for (NSString *caption in captions) {
-        LGIconPreviewTile *tile = [[LGIconPreviewTile alloc] initWithCaption:caption];
+    NSArray<NSString *> *variantNames = @[@"Default", @"Dark", @"Clear", @"Clear Dark"];
+    NSMutableArray<LGIconPreviewTile *> *tiles = [NSMutableArray arrayWithCapacity:variantNames.count];
+    for (NSString *variantName in variantNames) {
+        LGIconPreviewTile *tile = [[LGIconPreviewTile alloc] initWithAccessibilityLabel:variantName];
         [tiles addObject:tile];
     }
     self.previewTiles = [tiles copy];
@@ -363,14 +370,14 @@ static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableVi
     // cells sometimes overlaps the rounded section background and clips the top
     // of subviews.
     [NSLayoutConstraint activateConstraints:@[
-        [self.titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:12.0],
+        [self.titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10.0],
         [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
         [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
 
-        [self.previewStack.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:8.0],
+        [self.previewStack.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:10.0],
         [self.previewStack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
         [self.previewStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
-        [self.previewStack.bottomAnchor constraintLessThanOrEqualToAnchor:self.contentView.bottomAnchor constant:-10.0],
+        [self.previewStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12.0],
     ]];
 
     return self;
@@ -379,7 +386,27 @@ static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableVi
 - (void)configureWithRow:(const LGIconRow *)row {
     if (!row) return;
     self.iconID = row->iconID;
-    self.titleLabel.text = row->displayName;
+    if (row->designer.length) {
+        NSString *text = [NSString stringWithFormat:@"%@ by %@", row->displayName, row->designer];
+        NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:text];
+        NSRange nameRange = [text rangeOfString:row->displayName];
+        NSRange bylineRange = NSMakeRange(NSMaxRange(nameRange), text.length - NSMaxRange(nameRange));
+        [title addAttributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold],
+            NSForegroundColorAttributeName: UIColor.labelColor,
+        } range:nameRange];
+        [title addAttributes:@{
+            NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightRegular],
+            NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+        } range:bylineRange];
+        self.titleLabel.attributedText = title;
+    } else {
+        self.titleLabel.attributedText = nil;
+        self.titleLabel.text = row->displayName;
+    }
+    self.accessibilityLabel = row->designer.length
+        ? [NSString stringWithFormat:@"%@, by %@", row->displayName, row->designer]
+        : row->displayName;
     // Liquid Glass icons don't reliably reflect the currently-selected
     // alternate icon (Apple's icon-stack assets don't round-trip cleanly
     // through alternateIconName), so we omit the checkmark in this section
