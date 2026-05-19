@@ -22,6 +22,9 @@ static void (*orig_ApolloSubredditHeaderLayoutSubviews)(id self, SEL _cmd) = NUL
 static const CGFloat ApolloSubredditIndexSlotHeight = 14.0;
 static const CGFloat ApolloSubredditIndexTouchWidth = 56.0;
 static const CGFloat ApolloSubredditIndexGestureWidth = 34.0;
+static const CGFloat ApolloSubredditRowBalancedLeadingMargin = 18.0;
+static const CGFloat ApolloSubredditRowIconTextGap = 12.0;
+static const CGFloat ApolloSubredditRowStandardIconTextTrim = 2.0;
 
 @class ApolloSubredditStarHitProxy;
 
@@ -43,6 +46,7 @@ static const CGFloat ApolloSubredditIndexGestureWidth = 34.0;
 @end
 
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl);
+static CGPoint ApolloSubredditIndexClampedContentOffset(UITableView *tableView, CGPoint requestedOffset);
 
 static UIViewController *ApolloSubredditIndexOwningViewController(UIView *view) {
     UIResponder *responder = view;
@@ -402,14 +406,23 @@ static void ApolloSubredditIndexClearStarChrome(UIControl *control) {
 }
 
 static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UIControl *nativeControl) {
-    CGRect nativeFrame = nativeControl ? [cell convertRect:nativeControl.bounds fromView:nativeControl] : CGRectNull;
     CGFloat cellWidth = CGRectGetWidth(cell.bounds);
     CGFloat cellHeight = CGRectGetHeight(cell.bounds);
-    CGFloat centerX = CGRectIsNull(nativeFrame) ? cellWidth - 56.0 : CGRectGetMidX(nativeFrame);
-    CGFloat width = 104.0;
-    CGFloat maxX = cellWidth - 24.0;
-    CGFloat originX = MIN(MAX(centerX - (width / 2.0), cellWidth - 128.0), maxX - width);
-    return CGRectMake(MAX(originX, 0.0), 0.0, width, cellHeight);
+
+    // Anchor a tight, symmetric hit area on the native star control so we keep
+    // a comfortable tap target without extending into the title's tap region.
+    if (!nativeControl) {
+        CGFloat fallbackWidth = 56.0;
+        return CGRectMake(MAX(cellWidth - fallbackWidth - 16.0, 0.0), 0.0, fallbackWidth, cellHeight);
+    }
+
+    CGRect nativeFrame = [cell convertRect:nativeControl.bounds fromView:nativeControl];
+    CGFloat hPadding = 24.0;
+    CGFloat width = MAX(CGRectGetWidth(nativeFrame) + hPadding * 2.0, 64.0);
+    CGFloat centerX = CGRectGetMidX(nativeFrame);
+    CGFloat originX = centerX - (width / 2.0);
+    originX = MAX(0.0, MIN(originX, cellWidth - width));
+    return CGRectMake(originX, 0.0, width, cellHeight);
 }
 
 static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
@@ -437,7 +450,64 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     if (!nativeControl || !tableView) return;
 
     ApolloLog(@"[SubredditIndex] star-tap subreddit=%@", subredditName ?: @"(unknown)");
+
+    // Capture the topmost-visible row's content + y-offset so we can
+    // compensate for Apollo's synchronous favorites row insert/delete,
+    // which otherwise shifts everything below the insertion point.
+    NSString *anchorTitle = nil;
+    NSInteger anchorSection = NSNotFound;
+    CGFloat anchorDeltaY = 0.0;
+    {
+        CGFloat topY = tableView.contentOffset.y + tableView.adjustedContentInset.top;
+        CGFloat bestMinY = CGFLOAT_MAX;
+        for (UITableViewCell *visibleCell in tableView.visibleCells) {
+            NSIndexPath *ip = [tableView indexPathForCell:visibleCell];
+            if (!ip) continue;
+            NSString *title = ApolloSubredditIndexCellTitle(visibleCell);
+            if (title.length == 0) continue;
+            CGRect rect = [tableView rectForRowAtIndexPath:ip];
+            if (CGRectGetMaxY(rect) <= topY + 0.5) continue;
+            if (CGRectGetMinY(rect) < bestMinY) {
+                bestMinY = CGRectGetMinY(rect);
+                anchorTitle = title;
+                anchorSection = ip.section;
+                anchorDeltaY = CGRectGetMinY(rect) - tableView.contentOffset.y;
+            }
+        }
+    }
+
     [nativeControl sendActionsForControlEvents:UIControlEventTouchUpInside];
+
+    // Apollo's unfavorite handler deletes the wrong row when removing a
+    // favorite from the middle of the list, leaving a stale cell that
+    // navigates to the next subreddit when tapped. Reload to re-sync.
+    [UIView performWithoutAnimation:^{
+        [tableView reloadData];
+        [tableView layoutIfNeeded];
+    }];
+
+    if (anchorTitle.length > 0) {
+        UITableViewCell *bestMatch = nil;
+        UITableViewCell *sectionMatch = nil;
+        for (UITableViewCell *visibleCell in tableView.visibleCells) {
+            NSString *title = ApolloSubredditIndexCellTitle(visibleCell);
+            if (![title isEqualToString:anchorTitle]) continue;
+            if (!bestMatch) bestMatch = visibleCell;
+            NSIndexPath *ip = [tableView indexPathForCell:visibleCell];
+            if (ip && ip.section == anchorSection) {
+                sectionMatch = visibleCell;
+                break;
+            }
+        }
+        UITableViewCell *match = sectionMatch ?: bestMatch;
+        NSIndexPath *matchPath = match ? [tableView indexPathForCell:match] : nil;
+        if (matchPath) {
+            CGRect rect = [tableView rectForRowAtIndexPath:matchPath];
+            CGPoint newOffset = CGPointMake(tableView.contentOffset.x, CGRectGetMinY(rect) - anchorDeltaY);
+            [tableView setContentOffset:ApolloSubredditIndexClampedContentOffset(tableView, newOffset) animated:NO];
+        }
+    }
+
     ApolloSubredditIndexClearStarChrome(nativeControl);
     ApolloSubredditIndexScheduleFavoritesRefresh(tableView, self.cell, subredditName, nativeControl);
 }
@@ -766,7 +836,6 @@ static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView,
 static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, UITableView *tableView) {
     if (!cell || !tableView) return;
 
-    ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
     if (tableView.editing || cell.editing) {
         // In edit mode Apollo's reorder grip lives in the same right-side area.
         // Let the native reorder gesture win instead of covering it with our
@@ -776,6 +845,7 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
     }
 
     UIControl *nativeControl = ApolloSubredditIndexFindStarControlInView(cell, cell);
+    ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
     if (!nativeControl) {
         ApolloSubredditIndexRemoveStarProxyFromCell(cell);
         return;
@@ -1071,6 +1141,78 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
     UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
+    }
+}
+
+%end
+
+static UIStackView *ApolloSubredditIndexRedditListMainStackView(UITableViewCell *cell) {
+    static Ivar mainStackIvar = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell");
+        if (cls) mainStackIvar = class_getInstanceVariable(cls, "mainStackView");
+    });
+    if (!mainStackIvar) return nil;
+    id value = object_getIvar(cell, mainStackIvar);
+    return [value isKindOfClass:[UIStackView class]] ? (UIStackView *)value : nil;
+}
+
+%hook _TtC6Apollo23RedditListTableViewCell
+
+- (void)layoutSubviews {
+    UITableViewCell *cell = (UITableViewCell *)self;
+    UIEdgeInsets margins = cell.contentView.layoutMargins;
+    if (margins.left < ApolloSubredditRowBalancedLeadingMargin) {
+        margins.left = ApolloSubredditRowBalancedLeadingMargin;
+        cell.contentView.layoutMargins = margins;
+    }
+
+    UIStackView *mainStack = ApolloSubredditIndexRedditListMainStackView(cell);
+    if (mainStack && mainStack.spacing < ApolloSubredditRowIconTextGap) {
+        mainStack.spacing = ApolloSubredditRowIconTextGap;
+    }
+
+    %orig;
+}
+
+%end
+
+%hook _TtC6Apollo27ApolloSubtitleTableViewCell
+
+- (void)layoutSubviews {
+    %orig;
+
+    UITableViewCell *cell = (UITableViewCell *)self;
+    // Only adjust within the subreddits list — this cell is shared with other screens.
+    UITableView *tableView = ApolloSubredditIndexTableForCell(cell);
+    if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) return;
+
+    UIImageView *iconView = cell.imageView;
+    if (!iconView || !iconView.image) return;
+
+    CGFloat deltaX = ApolloSubredditRowBalancedLeadingMargin - CGRectGetMinX(iconView.frame);
+    if (deltaX <= 0.5) return;
+
+    CGRect frame = iconView.frame;
+    frame.origin.x += deltaX;
+    iconView.frame = frame;
+
+    // Pull labels left by the trim amount so the icon→text gap shrinks
+    // to match the tightened gap on custom subreddit rows.
+    CGFloat labelDeltaX = deltaX - ApolloSubredditRowStandardIconTextTrim;
+
+    UILabel *textLabel = cell.textLabel;
+    if (textLabel) {
+        CGRect f = textLabel.frame;
+        f.origin.x += labelDeltaX;
+        textLabel.frame = f;
+    }
+    UILabel *detailLabel = cell.detailTextLabel;
+    if (detailLabel) {
+        CGRect f = detailLabel.frame;
+        f.origin.x += labelDeltaX;
+        detailLabel.frame = f;
     }
 }
 
