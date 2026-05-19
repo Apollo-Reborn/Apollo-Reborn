@@ -2,21 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.13.0] - 2026-05-18
+## [v2.13.0] - 2026-05-19
 
 ### Features
 
-- Add **Rich Link Previews** for post bodies and comments, with Full, Compact, and Off modes, first-party cards for YouTube, Reddit, GitHub, Wikipedia, Twitter/X, Bluesky, and a configurable preview card color (thanks @icpryde!)
-- Add richer profile polish, including Reddit profile metadata in the profile header, a profile editor shortcut, theme-aware Custom API settings, and an optional **Profile Picture Tab Icon** (thanks @icpryde!)
-- Liquid Glass: add native iOS action menus for post, comment, and moderator actions, with additional anchoring fixes.
-- Add a **bajader** Liquid Glass app icon and show icon designer names in the picker (thanks @bajader!)
-- Add subreddit list polish with a custom alphabet index overlay, larger favorite-star hit targets, and a **Modern Subreddit Dividers** toggle (thanks @icpryde!)
+- Add **Rich Link Previews**: first-party cards for YouTube, Reddit, GitHub, Wikipedia, Twitter/X, Bluesky, and a configurable preview card color (thanks @icpryde!)
+    - Configurable for posts and comments separately between with Full, Compact, and Off in **Settings > Custom API > Media**
+- Profile pages now include Reddit display name, about text, and an Edit button that opens Reddit's profile editor (thanks @icpryde!)
+- New **Profile Picture Tab Icon** setting (**Settings > Custom API > Media**) that displays user profile picture in the tab bar.
+- Polish subreddit list view with a custom alphabet index overlay, larger favourite-star hit targets, and a **Modern Subreddit Dividers** style (**Settings > Custom API > Subreddits**) (thanks @icpryde!)
+- Liquid Glass: replace action sheets with native iOS action menus throughout the app
+- Liquid Glass: add new **Sunset** app icon (thanks @bajader!), rename icons, and show icon designer names in the picker
 
 ### Fixes
 
-- Fix user profile pictures appearing inside flair text.
-- Fix the profile tab icon not refreshing immediately after switching accounts.
+- Fix user profile pictures appearing inside flair text
 - Fix the media post body text editor in subreddits that do not expose Apollo's normal Text tab (thanks @icpryde!)
+- Fix subreddit list view scroll position shifting after favouriting a subreddit
+- Fix stale subreddit entries lingering after unfavouriting from Favourites section
+- Fix separators blocking alphabet in subreddit list view
 
 ## [v2.12.0b] - 2026-05-16
 
