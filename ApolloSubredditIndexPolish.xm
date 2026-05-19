@@ -1,8 +1,11 @@
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloState.h"
+#import "UserDefaultConstants.h"
 
 static char kApolloSubredditIndexTableKey;
 static char kApolloSubredditIndexOverlayKey;
@@ -10,6 +13,7 @@ static char kApolloSubredditIndexLoggedKey;
 static char kApolloSubredditStarProxyKey;
 static char kApolloSubredditStarProxyLoggedKey;
 static char kApolloSubredditHeaderSeparatorKey;
+static char kApolloSubredditHeaderGradientLayerKey;
 static char kApolloSubredditHeaderLoggedKey;
 
 static void (*orig_ApolloRedditListWillDisplayHeader)(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) = NULL;
@@ -133,6 +137,7 @@ static void ApolloSubredditIndexApplySeparatorInsets(UITableView *tableView) {
     CGFloat rightInset = MAX(inset.right, 38.0);
     UIEdgeInsets adjusted = UIEdgeInsetsMake(inset.top, inset.left, inset.bottom, rightInset);
     tableView.separatorInset = adjusted;
+    tableView.separatorStyle = sModernSubredditDividers ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
     tableView.layoutMargins = UIEdgeInsetsMake(tableView.layoutMargins.top,
                                                tableView.layoutMargins.left,
                                                tableView.layoutMargins.bottom,
@@ -143,6 +148,14 @@ static void ApolloSubredditIndexHideNativeIndex(UITableView *tableView) {
     tableView.sectionIndexColor = [UIColor clearColor];
     tableView.sectionIndexBackgroundColor = [UIColor clearColor];
     tableView.sectionIndexTrackingBackgroundColor = [UIColor clearColor];
+}
+
+static UIColor *ApolloSubredditIndexResolvedColor(UIColor *color, UITraitCollection *traitCollection) {
+    if (!color) return nil;
+    if (@available(iOS 13.0, *)) {
+        return [color resolvedColorWithTraitCollection:traitCollection ?: UIScreen.mainScreen.traitCollection];
+    }
+    return color;
 }
 
 static void ApolloSubredditIndexScrollToTitle(UITableView *tableView, NSString *title, NSInteger titleIndex) {
@@ -526,14 +539,14 @@ static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UICon
             CGFloat scale = 1.0;
             CGFloat translateX = 0.0;
             if (distance == 0.0) {
-                scale = 2.9;
-                translateX = -24.0;
+                scale = sModernSubredditDividers ? 3.75 : 2.90;
+                translateX = sModernSubredditDividers ? -38.0 : -27.0;
             } else if (distance == 1.0) {
-                scale = 1.85;
-                translateX = -14.0;
+                scale = sModernSubredditDividers ? 2.35 : 1.85;
+                translateX = sModernSubredditDividers ? -23.0 : -16.0;
             } else if (distance == 2.0) {
-                scale = 1.38;
-                translateX = -6.0;
+                scale = sModernSubredditDividers ? 1.60 : 1.38;
+                translateX = sModernSubredditDividers ? -10.0 : -7.0;
             }
             CGAffineTransform transform = CGAffineTransformMakeTranslation(translateX, 0.0);
             label.transform = CGAffineTransformScale(transform, scale, scale);
@@ -819,6 +832,38 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
     }
 }
 
+static void ApolloSubredditIndexRefreshTablesInView(UIView *view) {
+    if (!view) return;
+
+    if ([view isKindOfClass:[UITableView class]]) {
+        UITableView *tableView = (UITableView *)view;
+        NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
+        BOOL isSubredditTable = [objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue] ||
+                                ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles);
+        if (isSubredditTable) {
+            objc_setAssociatedObject(tableView, &kApolloSubredditIndexTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(tableView);
+            ApolloSubredditIndexApplySeparatorInsets(tableView);
+            [UIView performWithoutAnimation:^{
+                [tableView reloadData];
+                [tableView layoutIfNeeded];
+                ApolloSubredditIndexInstallOrUpdate(tableView);
+                ApolloSubredditIndexRestoreScrollAnchor(tableView, anchor);
+            }];
+        }
+    }
+
+    for (UIView *subview in view.subviews) {
+        ApolloSubredditIndexRefreshTablesInView(subview);
+    }
+}
+
+static void ApolloSubredditIndexRefreshAllVisibleTables(void) {
+    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        ApolloSubredditIndexRefreshTablesInView(window);
+    }
+}
+
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView) {
     if (!header || !tableView) return;
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
@@ -832,6 +877,12 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
 
     NSString *text = [[label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (!ApolloSubredditIndexStringLooksLikeHeaderTitle(text)) return;
+
+    UIView *separator = objc_getAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey);
+    if (!sModernSubredditDividers) {
+        separator.hidden = YES;
+        return;
+    }
 
     ApolloSubredditIndexClearHeaderBackgrounds(header, label);
     UIColor *backgroundColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
@@ -847,14 +898,49 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     label.layer.backgroundColor = UIColor.clearColor.CGColor;
     label.frame = CGRectMake(18.0, 0.0, MAX(CGRectGetWidth(header.bounds) - 72.0, 0.0), CGRectGetHeight(header.bounds));
 
-    UIView *separator = objc_getAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey);
-    if (separator) {
+    if (!separator) {
+        separator = [[UIView alloc] initWithFrame:CGRectZero];
+        separator.userInteractionEnabled = NO;
+        objc_setAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey, separator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [header addSubview:separator];
+    }
+    separator.hidden = NO;
+    separator.backgroundColor = [UIColor clearColor];
+    separator.layer.backgroundColor = UIColor.clearColor.CGColor;
+
+    if ([text isEqualToString:@"MODERATOR"]) {
         separator.hidden = YES;
-        separator.backgroundColor = [UIColor clearColor];
-        separator.layer.backgroundColor = UIColor.clearColor.CGColor;
         separator.frame = CGRectZero;
+        [header bringSubviewToFront:label];
+        [header setNeedsDisplay];
+        return;
     }
 
+    CGFloat lineHeight = 2.0;
+    CGSize labelSize = [text sizeWithAttributes:@{ NSFontAttributeName: label.font }];
+    CGFloat lineX = CGRectGetMinX(label.frame) + ceil(labelSize.width) + 12.0;
+    CGFloat lineWidth = MAX(CGRectGetWidth(header.bounds) - lineX - 8.0, 0.0);
+    CGFloat lineY = floor(CGRectGetMidY(header.bounds) - (lineHeight / 2.0));
+    separator.frame = CGRectMake(lineX, lineY, lineWidth, lineHeight);
+
+    CAGradientLayer *gradientLayer = objc_getAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey);
+    if (!gradientLayer) {
+        gradientLayer = [CAGradientLayer layer];
+        gradientLayer.startPoint = CGPointMake(0.0, 0.5);
+        gradientLayer.endPoint = CGPointMake(1.0, 0.5);
+        objc_setAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey, gradientLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [separator.layer addSublayer:gradientLayer];
+    }
+    UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, header);
+    UIColor *resolvedAccentColor = ApolloSubredditIndexResolvedColor(accentColor, header.traitCollection);
+    UIColor *visibleColor = [resolvedAccentColor colorWithAlphaComponent:0.76];
+    UIColor *midColor = [resolvedAccentColor colorWithAlphaComponent:0.38];
+    UIColor *clearColor = [resolvedAccentColor colorWithAlphaComponent:0.0];
+    gradientLayer.frame = separator.bounds;
+    gradientLayer.colors = @[(__bridge id)visibleColor.CGColor, (__bridge id)midColor.CGColor, (__bridge id)clearColor.CGColor];
+    gradientLayer.locations = @[@0.0, @0.62, @1.0];
+
+    [header bringSubviewToFront:separator];
     [header bringSubviewToFront:label];
     [header setNeedsDisplay];
 
@@ -979,5 +1065,12 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 %ctor {
     ApolloSubredditIndexInstallHeaderHook();
     ApolloSubredditIndexInstallHeaderLayoutHook();
-    ApolloLog(@"[SubredditIndex] polish active");
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloModernSubredditDividersChangedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        ApolloSubredditIndexRefreshAllVisibleTables();
+        ApolloLog(@"[SubredditIndex] divider-style-changed modern=%d", sModernSubredditDividers);
+    }];
+    ApolloLog(@"[SubredditIndex] polish active modernDividers=%d", sModernSubredditDividers);
 }

@@ -882,6 +882,7 @@ static void initializeRandomSources() {
                                     UDKeyRandNsfwSubredditsSource: @"",
                                     UDKeyTrendingSubredditsSource: defaultTrendingSubredditsSource,
                                     UDKeyReadPostMaxCount: @0,
+                                    UDKeyModernSubredditDividers: @YES,
                                     UDKeyShowRecentlyReadThumbnails: @YES,
                                     UDKeyPreferredGIFFallbackFormat: @1,
                                     UDKeyUnmuteCommentsVideos: @0,
@@ -921,6 +922,7 @@ static void initializeRandomSources() {
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sAutoHideTabBarShowOnIdle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoHideTabBarShowOnIdle];
+    sModernSubredditDividers = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoTranslateOnAppear];
     sTranslatePostTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTranslatePostTitles];

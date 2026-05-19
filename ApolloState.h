@@ -22,6 +22,7 @@ extern BOOL sProxyImgurDDG;
 extern BOOL sShowUserAvatars;
 extern BOOL sUseProfileAvatarTabIcon;
 extern BOOL sAutoHideTabBarShowOnIdle;
+extern BOOL sModernSubredditDividers;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
