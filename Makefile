@@ -19,6 +19,7 @@ ApolloImprovedCustomApi_FILES = \
     ApolloRedditMediaUpload.m \
     ApolloUserProfileCache.m \
     ApolloSubredditInfoCache.m \
+    ApolloSubredditDefaultAssets.c \
     ApolloUserAvatars.xm \
     ApolloSubredditHeaders.xm \
     ApolloImageUploadHost.xm \

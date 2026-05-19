@@ -3,7 +3,6 @@
 #import "ApolloState.h"
 
 NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoUpdatedNotification";
-NSString * const ApolloSubredditNameKey = @"subredditName";
 
 static NSTimeInterval const ApolloSubredditInfoCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
 static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
@@ -268,8 +267,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (info) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSubredditInfoUpdatedNotification
-                                                                    object:self
-                                                                  userInfo:@{ApolloSubredditNameKey: key}];
+                                                                    object:self];
             }
             for (void (^callback)(ApolloSubredditInfo *) in callbacks) {
                 callback(info);
@@ -278,7 +276,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
     });
 }
 
-- (void)enqueueRequestForSubreddit:(NSString *)subredditName forceRefresh:(BOOL)forceRefresh completion:(void (^)(ApolloSubredditInfo *info))completion {
+- (void)requestInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion {
     NSString *key = [self normalizedSubredditName:subredditName];
     if (!key) {
         if (completion) completion(nil);
@@ -286,7 +284,7 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
     }
 
     ApolloSubredditInfo *cached = [self cachedInfoForSubreddit:key];
-    if (!forceRefresh && cached && [self isFreshInfo:cached]) {
+    if (cached && [self isFreshInfo:cached]) {
         if (completion) completion(cached);
         return;
     }
@@ -307,22 +305,6 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
             [self finishRequestForKey:key info:info];
         }];
         [task resume];
-    });
-}
-
-- (void)requestInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion {
-    [self enqueueRequestForSubreddit:subredditName forceRefresh:NO completion:completion];
-}
-
-- (void)refetchInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion {
-    [self enqueueRequestForSubreddit:subredditName forceRefresh:YES completion:completion];
-}
-
-- (void)clearAllCaches {
-    dispatch_async(self.queue, ^{
-        [self.infoCache removeAllObjects];
-        [self.diskInfo removeAllObjects];
-        [[NSFileManager defaultManager] removeItemAtPath:[self cachePath] error:nil];
     });
 }
 

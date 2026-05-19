@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloState.h"
+#import "ApolloSubredditDefaultAssets.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloUserProfileCache.h"
 
@@ -60,7 +61,7 @@ static const void *kApolloSubredditManagedViewControllerKey = &kApolloSubredditM
 @property(nonatomic, strong) UIView *apolloOriginalHeaderView;
 @end
 
-static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName, BOOL forceRefresh);
+static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName);
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
                                                UIView *originalHeader,
@@ -71,7 +72,7 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
                                             UIView *wrappedHeader,
                                             UIView *originalHeader);
 static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewController);
-static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL restoreNativeHeader);
+static void ApolloSubredditTearDownHeader(UIViewController *viewController);
 static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController, NSString *reason);
 
 @implementation ApolloSubredditHeaderView
@@ -361,20 +362,37 @@ static UITableView *ApolloSubredditFindTableView(UIViewController *viewControlle
 }
 
 static UIImage *ApolloSubredditPlaceholderIcon(void) {
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(ApolloSubredditIconDiameter, ApolloSubredditIconDiameter)];
-    return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [[UIColor secondarySystemFillColor] setFill];
-        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0.0, 0.0, ApolloSubredditIconDiameter, ApolloSubredditIconDiameter)] fill];
-    }];
+    static UIImage *cached = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultIconPNG
+                                            length:ApolloSubredditDefaultIconPNG_len
+                                      freeWhenDone:NO];
+        cached = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+    });
+    return cached;
+}
+
+static UIImage *ApolloSubredditPlaceholderBanner(void) {
+    static UIImage *cached = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultBannerJPG
+                                            length:ApolloSubredditDefaultBannerJPG_len
+                                      freeWhenDone:NO];
+        cached = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+    });
+    return cached;
 }
 
 static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
     ApolloSubredditHeaderView *header = [[ApolloSubredditHeaderView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 210.0)];
     header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+    header.bannerImageView.image = ApolloSubredditPlaceholderBanner();
     return header;
 }
 
-static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName, BOOL forceRefresh) {
+static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName) {
     if (!header || subredditName.length == 0) return;
 
     ApolloSubredditInfoCache *cache = [ApolloSubredditInfoCache sharedCache];
@@ -408,11 +426,7 @@ static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSStrin
     };
 
     if (cachedInfo) applyInfo(cachedInfo);
-    if (forceRefresh) {
-        [cache refetchInfoForSubreddit:subredditName completion:applyInfo];
-    } else {
-        [cache requestInfoForSubreddit:subredditName completion:applyInfo];
-    }
+    [cache requestInfoForSubreddit:subredditName completion:applyInfo];
 }
 
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
@@ -466,7 +480,7 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
     }
 }
 
-static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL restoreNativeHeader) {
+static void ApolloSubredditTearDownHeader(UIViewController *viewController) {
     if (!viewController) return;
 
     UITableView *tableView = ApolloSubredditFindTableView(viewController);
@@ -474,7 +488,7 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
     UIView *wrappedHeader = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey);
     UIView *originalHeader = objc_getAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey);
 
-    if (tableView && restoreNativeHeader && wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
+    if (tableView && wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tableView.tableHeaderView = originalHeader;
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -652,9 +666,9 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     if (![storedSubredditName isEqualToString:subredditName]) {
         objc_setAssociatedObject(viewController, kApolloSubredditNameKey, subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
         header.iconImageView.image = ApolloSubredditPlaceholderIcon();
-        header.bannerImageView.image = nil;
+        header.bannerImageView.image = ApolloSubredditPlaceholderBanner();
         [header applyInfo:nil fallbackSubredditName:subredditName];
-        ApolloSubredditLoadImages(header, subredditName, NO);
+        ApolloSubredditLoadImages(header, subredditName);
     }
 }
 
@@ -730,9 +744,6 @@ static void ApolloSubredditRefreshVisibleControllers(void) {
     }
 }
 
-- (void)layoutSubviews {
-    %orig;
-}
 - (void)reloadData {
     %orig;
     if (![objc_getAssociatedObject(self, kApolloSubredditManagedTableKey) boolValue]) return;
@@ -823,7 +834,7 @@ static BOOL ApolloSubredditShouldBlockOffset(UITableView *tableView, CGPoint new
     BOOL beingDismissed = [(UIViewController *)self isBeingDismissed];
     %orig(animated);
     if (movingFromParent || beingDismissed) {
-        ApolloSubredditTearDownHeader((UIViewController *)self, YES);
+        ApolloSubredditTearDownHeader((UIViewController *)self);
     }
 }
 

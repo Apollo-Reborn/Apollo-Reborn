@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 
 extern NSString * const ApolloSubredditInfoUpdatedNotification;
-extern NSString * const ApolloSubredditNameKey;
 
 @interface ApolloSubredditInfo : NSObject
 
@@ -28,7 +27,5 @@ extern NSString * const ApolloSubredditNameKey;
 
 - (ApolloSubredditInfo *)cachedInfoForSubreddit:(NSString *)subredditName;
 - (void)requestInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion;
-- (void)refetchInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion;
-- (void)clearAllCaches;
 
 @end
