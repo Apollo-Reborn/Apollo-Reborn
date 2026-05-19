@@ -82,7 +82,9 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
     NSString *cacheRoot = paths.firstObject ?: NSTemporaryDirectory();
     NSString *directory = [cacheRoot stringByAppendingPathComponent:@"ApolloFix"];
     [[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil];
-    return [directory stringByAppendingPathComponent:@"ApolloSubreddits.json"];
+    // v2 bump: cache entries from v1 stored legacy icon_img URLs even when
+    // a community_icon existed. Orphaning the old file forces a clean refetch.
+    return [directory stringByAppendingPathComponent:@"ApolloSubreddits-v2.json"];
 }
 
 - (NSURL *)URLFromString:(id)value {
@@ -239,11 +241,15 @@ static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
         subredditName;
     NSString *aboutText = [self cleanStringFromValue:dataDict[@"public_description"]] ?:
         [self cleanStringFromValue:dataDict[@"description"]];
-    NSURL *iconURL = [self URLFromString:dataDict[@"icon_img"]] ?:
-        [self URLFromString:dataDict[@"community_icon"]];
-    NSURL *bannerURL = [self URLFromString:dataDict[@"banner_img"]] ?:
+    // Prefer new-reddit "community" branding fields (community_icon,
+    // banner_background_image). Fall back to legacy fields so subs that
+    // were only ever styled on old reddit (e.g. r/TheRookie) still show
+    // their artwork instead of nothing.
+    NSURL *iconURL = [self URLFromString:dataDict[@"community_icon"]] ?:
+        [self URLFromString:dataDict[@"icon_img"]];
+    NSURL *bannerURL = [self URLFromString:dataDict[@"banner_background_image"]] ?:
         [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
-        [self URLFromString:dataDict[@"banner_background_image"]];
+        [self URLFromString:dataDict[@"banner_img"]];
 
     return [[ApolloSubredditInfo alloc] initWithSubredditName:subredditName
                                                   displayName:displayName
