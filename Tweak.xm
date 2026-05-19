@@ -880,6 +880,17 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
 }
 %end
 
+// Sideloaded builds have no App Store presence, so review prompts serve no purpose
+// and fire repeatedly without the App Store's rate limiting. Suppress both APIs.
+%hook SKStoreReviewController
++ (void)requestReview {
+    ApolloLog(@"[StoreKit] Suppressing SKStoreReviewController requestReview");
+}
++ (void)requestReviewInScene:(UIWindowScene *)windowScene {
+    ApolloLog(@"[StoreKit] Suppressing SKStoreReviewController requestReviewInScene:");
+}
+%end
+
 // Reddit API can returns "error" as a dict (e.g. {"reason":"UNAUTHORIZED",...})
 // instead of a numeric code. Multiple Apollo code paths call [dict[@"error"] integerValue]
 // on the response, including unhookable block invokes. Adding integerValue to NSDictionary
