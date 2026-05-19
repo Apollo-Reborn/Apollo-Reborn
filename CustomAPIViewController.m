@@ -330,6 +330,69 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+- (NSString *)linkPreviewCardColorTextForColor:(NSInteger)color {
+    switch (color) {
+        case ApolloLinkPreviewCardColorGray:     return @"Gray";
+        case ApolloLinkPreviewCardColorRed:      return @"Red";
+        case ApolloLinkPreviewCardColorOrange:   return @"Orange";
+        case ApolloLinkPreviewCardColorYellow:   return @"Yellow";
+        case ApolloLinkPreviewCardColorGreen:    return @"Green";
+        case ApolloLinkPreviewCardColorMint:     return @"Mint";
+        case ApolloLinkPreviewCardColorTeal:     return @"Teal";
+        case ApolloLinkPreviewCardColorCyan:     return @"Cyan";
+        case ApolloLinkPreviewCardColorBlue:     return @"Blue";
+        case ApolloLinkPreviewCardColorIndigo:   return @"Indigo";
+        case ApolloLinkPreviewCardColorPurple:   return @"Purple";
+        case ApolloLinkPreviewCardColorPink:     return @"Pink";
+        case ApolloLinkPreviewCardColorBrown:    return @"Brown";
+        case ApolloLinkPreviewCardColorCoral:    return @"Coral";
+        case ApolloLinkPreviewCardColorLime:     return @"Lime";
+        case ApolloLinkPreviewCardColorOlive:    return @"Olive";
+        case ApolloLinkPreviewCardColorLavender: return @"Lavender";
+        case ApolloLinkPreviewCardColorSlate:    return @"Slate";
+        case ApolloLinkPreviewCardColorNeutral:
+        default:                                 return @"Neutral";
+    }
+}
+
+- (UIColor *)linkPreviewCardUIColorForColor:(NSInteger)color {
+    switch (color) {
+        case ApolloLinkPreviewCardColorGray:     return [UIColor colorWithWhite:0.56 alpha:1.0];
+        case ApolloLinkPreviewCardColorRed:      return [UIColor colorWithRed:1.00 green:0.23 blue:0.19 alpha:1.0];
+        case ApolloLinkPreviewCardColorOrange:   return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorYellow:   return [UIColor colorWithRed:1.00 green:0.80 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorGreen:    return [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        case ApolloLinkPreviewCardColorMint:     return [UIColor colorWithRed:0.00 green:0.78 blue:0.75 alpha:1.0];
+        case ApolloLinkPreviewCardColorTeal:     return [UIColor colorWithRed:0.19 green:0.69 blue:0.78 alpha:1.0];
+        case ApolloLinkPreviewCardColorCyan:     return [UIColor colorWithRed:0.20 green:0.68 blue:0.90 alpha:1.0];
+        case ApolloLinkPreviewCardColorBlue:     return [UIColor colorWithRed:0.00 green:0.48 blue:1.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorIndigo:   return [UIColor colorWithRed:0.35 green:0.34 blue:0.84 alpha:1.0];
+        case ApolloLinkPreviewCardColorPurple:   return [UIColor colorWithRed:0.69 green:0.32 blue:0.87 alpha:1.0];
+        case ApolloLinkPreviewCardColorPink:     return [UIColor colorWithRed:1.00 green:0.18 blue:0.33 alpha:1.0];
+        case ApolloLinkPreviewCardColorBrown:    return [UIColor colorWithRed:0.64 green:0.52 blue:0.37 alpha:1.0];
+        case ApolloLinkPreviewCardColorCoral:    return [UIColor colorWithRed:1.00 green:0.50 blue:0.31 alpha:1.0];
+        case ApolloLinkPreviewCardColorLime:     return [UIColor colorWithRed:0.60 green:0.80 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorOlive:    return [UIColor colorWithRed:0.50 green:0.60 blue:0.20 alpha:1.0];
+        case ApolloLinkPreviewCardColorLavender: return [UIColor colorWithRed:0.56 green:0.45 blue:0.90 alpha:1.0];
+        case ApolloLinkPreviewCardColorSlate:    return [UIColor colorWithRed:0.35 green:0.43 blue:0.50 alpha:1.0];
+        case ApolloLinkPreviewCardColorNeutral:
+        default:                                 return [UIColor colorWithWhite:0.72 alpha:1.0];
+    }
+}
+
+- (UIImage *)linkPreviewCardColorDotImageForColor:(NSInteger)color {
+    CGSize size = CGSizeMake(18.0, 18.0);
+    CGRect dotRect = CGRectMake(3.0, 3.0, 12.0, 12.0);
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    UIColor *dotColor = [self linkPreviewCardUIColorForColor:color];
+    CGContextSetFillColorWithColor(context, dotColor.CGColor);
+    CGContextFillEllipseInRect(context, dotRect);
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
 - (void)setLinkPreviewMode:(NSInteger)mode body:(BOOL)body {
     NSInteger row = body ? 5 : 6;
     NSString *key = body ? UDKeyLinkPreviewBodyMode : UDKeyLinkPreviewCommentsMode;
@@ -353,6 +416,81 @@ typedef NS_ENUM(NSInteger, Tag) {
     if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
         [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
     }
+}
+
+- (void)setLinkPreviewCardColor:(NSInteger)color {
+    if (color < ApolloLinkPreviewCardColorNeutral || color > ApolloLinkPreviewCardColorSlate) {
+        color = ApolloLinkPreviewCardColorNeutral;
+    }
+
+    sLinkPreviewCardColor = color;
+    [[NSUserDefaults standardUserDefaults] setInteger:sLinkPreviewCardColor forKey:UDKeyLinkPreviewCardColor];
+    sLinkPreviewModeRefreshPending = YES;
+    sPendingLinkPreviewModeRefreshArea = @"card-color";
+    sPendingLinkPreviewModeRefreshMode = sLinkPreviewCardColor;
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloLinkPreviewModeDidChangeNotification
+                                                        object:nil
+                                                      userInfo:@{
+                                                          @"area": @"card-color",
+                                                          @"cardColor": @(color),
+                                                      }];
+
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:7 inSection:SectionMedia];
+    if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    }
+}
+
+- (void)presentLinkPreviewCardColorSheetFromSourceView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Preview Card Color"
+                                                                   message:@"Choose the subtle color tint used behind rich link preview cards."
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSArray<NSNumber *> *colors = @[
+        @(ApolloLinkPreviewCardColorNeutral),
+        @(ApolloLinkPreviewCardColorGray),
+        @(ApolloLinkPreviewCardColorRed),
+        @(ApolloLinkPreviewCardColorOrange),
+        @(ApolloLinkPreviewCardColorYellow),
+        @(ApolloLinkPreviewCardColorGreen),
+        @(ApolloLinkPreviewCardColorMint),
+        @(ApolloLinkPreviewCardColorTeal),
+        @(ApolloLinkPreviewCardColorCyan),
+        @(ApolloLinkPreviewCardColorBlue),
+        @(ApolloLinkPreviewCardColorIndigo),
+        @(ApolloLinkPreviewCardColorPurple),
+        @(ApolloLinkPreviewCardColorPink),
+        @(ApolloLinkPreviewCardColorBrown),
+        @(ApolloLinkPreviewCardColorCoral),
+        @(ApolloLinkPreviewCardColorLime),
+        @(ApolloLinkPreviewCardColorOlive),
+        @(ApolloLinkPreviewCardColorLavender),
+        @(ApolloLinkPreviewCardColorSlate),
+    ];
+
+    for (NSNumber *colorNumber in colors) {
+        NSInteger color = colorNumber.integerValue;
+        NSString *name = [self linkPreviewCardColorTextForColor:color];
+        NSString *title = (color == sLinkPreviewCardColor) ? [NSString stringWithFormat:@"%@ (Current)", name] : name;
+        UIAlertAction *colorAction = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            [self setLinkPreviewCardColor:color];
+        }];
+        @try {
+            [colorAction setValue:[self linkPreviewCardColorDotImageForColor:color] forKey:@"image"];
+        } @catch (__unused NSException *exception) {
+        }
+        [sheet addAction:colorAction];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)presentLinkPreviewModeSheetFromSourceView:(UIView *)sourceView body:(BOOL)body {
@@ -447,7 +585,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
-        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 11 : 10;
+        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
         case SectionSubreddits: return 5;
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;
@@ -830,17 +968,29 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 7:
+        case 7: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewCardColor"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewCardColor"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Preview Card Color";
+            cell.detailTextLabel.text = [self linkPreviewCardColorTextForColor:sLinkPreviewCardColor];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
+        case 8:
             return [self switchCellWithIdentifier:@"Cell_Media_UserAvatars"
                                             label:@"Show User Profile Pictures"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]
                                            action:@selector(userAvatarsSwitchToggled:)];
-        case 8:
+        case 9:
             return [self switchCellWithIdentifier:@"Cell_Media_ProfileTabAvatar"
                                             label:@"Profile Picture Tab Icon"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon]
                                            action:@selector(profileTabAvatarSwitchToggled:)];
-        case 9: {
+        case 10: {
             BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
             if (avatarsOn) {
                 UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearAvatarCache"];
@@ -861,7 +1011,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 10: {
+        case 11: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
@@ -1112,9 +1262,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:YES];
         } else if (indexPath.row == 6) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:NO];
-        } else if (indexPath.row == 9 && avatarsOn) {
+        } else if (indexPath.row == 7) {
+            [self presentLinkPreviewCardColorSheetFromSourceView:cell];
+        } else if (indexPath.row == 10 && avatarsOn) {
             [self promptClearProfilePictureCacheFromSourceView:cell];
-        } else if ((indexPath.row == 9 && !avatarsOn) || (indexPath.row == 10 && avatarsOn)) {
+        } else if ((indexPath.row == 10 && !avatarsOn) || (indexPath.row == 11 && avatarsOn)) {
             [self promptClearLinkPreviewCacheFromSourceView:cell];
         }
     }
@@ -1123,7 +1275,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 4 || indexPath.row == 5)) return YES;
-    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 9 || indexPath.row == 10)) return YES;
+    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
     return NO;
 }
@@ -1402,13 +1554,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sShowUserAvatars forKey:UDKeyShowUserAvatars];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloUserAvatarsToggleChangedNotification" object:nil];
     if (sShowUserAvatars == wasOn) return;
-    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:9 inSection:SectionMedia]];
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:10 inSection:SectionMedia]];
     if (sShowUserAvatars) {
         [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     } else {
         [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     }
-    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 10 : 9) inSection:SectionMedia]]
+    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 11 : 10) inSection:SectionMedia]]
                           withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -1651,6 +1803,11 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
     sImageUploadProvider = [defaults integerForKey:UDKeyImageUploadProvider];
+    sLinkPreviewCardColor = [defaults integerForKey:UDKeyLinkPreviewCardColor];
+    if (sLinkPreviewCardColor < ApolloLinkPreviewCardColorNeutral || sLinkPreviewCardColor > ApolloLinkPreviewCardColorSlate) {
+        sLinkPreviewCardColor = ApolloLinkPreviewCardColorNeutral;
+        [defaults setInteger:sLinkPreviewCardColor forKey:UDKeyLinkPreviewCardColor];
+    }
     sEnableBulkTranslation = [defaults boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [defaults boolForKey:UDKeyAutoTranslateOnAppear];
 

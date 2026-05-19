@@ -56,4 +56,5 @@ static NSString *const UDKeyTagFilterSubredditOverrides = @"TagFilterSubredditOv
 // Rich link preview cards: 0 = Off, 1 = Compact, 2 = Full.
 static NSString *const UDKeyLinkPreviewBodyMode = @"LinkPreviewBodyMode";
 static NSString *const UDKeyLinkPreviewCommentsMode = @"LinkPreviewCommentsMode";
+static NSString *const UDKeyLinkPreviewCardColor = @"LinkPreviewCardColor";
 static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLinkPreviewModeDidChangeNotification";
