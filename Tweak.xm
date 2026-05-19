@@ -156,6 +156,7 @@ static NSArray *const blockedUrls = @[
     @"sessions.bugsnag.com",
     @"api.mixpanel.com",
     @"api.statsig.com",
+    @"statsigapi.net",
     @"telemetrydeck.com",
     @"apollogur.download/api/easter_sale",
     @"apollogur.download/api/html_codes",
