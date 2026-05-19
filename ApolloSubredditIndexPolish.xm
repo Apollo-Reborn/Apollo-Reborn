@@ -412,6 +412,12 @@ static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UICon
     return CGRectMake(MAX(originX, 0.0), 0.0, width, cellHeight);
 }
 
+static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
+    ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
+    [proxy removeFromSuperview];
+    objc_setAssociatedObject(cell, &kApolloSubredditStarProxyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 @implementation ApolloSubredditStarHitProxy
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -665,6 +671,7 @@ static void ApolloSubredditIndexRestoreScrollAnchor(UITableView *tableView, NSDi
 
 static void ApolloSubredditIndexCleanVisibleStarChrome(UITableView *tableView, NSString *subredditName) {
     if (!tableView) return;
+    if (tableView.editing) return;
 
     for (UITableViewCell *cell in tableView.visibleCells) {
         if (subredditName.length > 0) {
@@ -759,11 +766,18 @@ static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView,
 static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, UITableView *tableView) {
     if (!cell || !tableView) return;
 
-    UIControl *nativeControl = ApolloSubredditIndexFindStarControlInView(cell, cell);
     ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
+    if (tableView.editing || cell.editing) {
+        // In edit mode Apollo's reorder grip lives in the same right-side area.
+        // Let the native reorder gesture win instead of covering it with our
+        // larger transparent star hit target.
+        ApolloSubredditIndexRemoveStarProxyFromCell(cell);
+        return;
+    }
+
+    UIControl *nativeControl = ApolloSubredditIndexFindStarControlInView(cell, cell);
     if (!nativeControl) {
-        [proxy removeFromSuperview];
-        objc_setAssociatedObject(cell, &kApolloSubredditStarProxyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSubredditIndexRemoveStarProxyFromCell(cell);
         return;
     }
 
@@ -1048,6 +1062,14 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
                                                                    ((UITableViewCell *)self).layoutMargins.left,
                                                                    ((UITableViewCell *)self).layoutMargins.bottom,
                                                                    MAX(((UITableViewCell *)self).layoutMargins.right, 38.0));
+        ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
+    }
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    %orig;
+    UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
+    if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
     }
 }
