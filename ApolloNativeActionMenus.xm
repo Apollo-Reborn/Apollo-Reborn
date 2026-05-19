@@ -1061,6 +1061,18 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 }
 %end
 
+%hook _TtC6Apollo24RedditListViewController
+- (void)tappedAddBarButtonItem:(id)sender {
+    UIView *sourceView = ApolloNativeActionMenuViewForObject(sender);
+    if (!sourceView) {
+        sourceView = ApolloNativeActionMenuViewForObject(ApolloReadObjectIvar(self, "addBarButtonItem"));
+    }
+    ApolloNativeActionMenuBeginCapture(sourceView ?: sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+%end
+
 %hook _TtC6Apollo26ModmailInboxViewController
 - (void)sortButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
