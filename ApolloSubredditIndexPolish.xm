@@ -25,6 +25,7 @@ static const CGFloat ApolloSubredditIndexGestureWidth = 34.0;
 @property (nonatomic, weak) UITableView *tableView;
 @property (nonatomic, copy) NSArray<NSString *> *titles;
 @property (nonatomic, strong) NSArray<UILabel *> *labels;
+@property (nonatomic, strong) UISelectionFeedbackGenerator *selectionFeedbackGenerator;
 @property (nonatomic) NSInteger activeIndex;
 @property (nonatomic) NSInteger lastScrolledIndex;
 - (void)updateWithTableView:(UITableView *)tableView titles:(NSArray<NSString *> *)titles;
@@ -431,6 +432,7 @@ static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UICon
     if (self) {
         self.activeIndex = NSNotFound;
         self.lastScrolledIndex = NSNotFound;
+        self.selectionFeedbackGenerator = [[UISelectionFeedbackGenerator alloc] init];
         self.userInteractionEnabled = YES;
         self.clipsToBounds = NO;
     }
@@ -558,11 +560,14 @@ static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UICon
     [self applyMagnificationForIndex:index animated:YES];
     if (self.lastScrolledIndex == index) return;
     self.lastScrolledIndex = index;
+    [self.selectionFeedbackGenerator selectionChanged];
+    [self.selectionFeedbackGenerator prepare];
     ApolloSubredditIndexScrollToTitle(self.tableView, self.titles[index], index);
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     UITouch *touch = touches.anyObject;
+    [self.selectionFeedbackGenerator prepare];
     if (touch) [self handleTouch:touch];
 }
 
