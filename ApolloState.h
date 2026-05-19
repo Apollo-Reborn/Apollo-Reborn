@@ -28,6 +28,15 @@ extern BOOL sModernSubredditDividers;
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
 // link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
+typedef NS_ENUM(NSInteger, ApolloLinkPreviewMode) {
+    ApolloLinkPreviewModeOff = 0,
+    ApolloLinkPreviewModeCompact = 1,
+    ApolloLinkPreviewModeFull = 2,
+};
+
+// Rich link previews (Open Graph / oEmbed) for link cards in body/feed and comments.
+extern NSInteger sLinkPreviewBodyMode;
+extern NSInteger sLinkPreviewCommentsMode;
 
 // Media upload host selection. Imgur is the default; Reddit uses Apollo's signed-in
 // session to upload directly to Reddit's media storage.

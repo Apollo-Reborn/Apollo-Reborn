@@ -54,3 +54,8 @@ static NSString *const UDKeyTagFilterSpoiler = @"TagFilterSpoiler";        // gl
 //   "mode"    -> NSString       ("hide" | "blur"; overrides global mode)
 // Missing keys fall back to global settings.
 static NSString *const UDKeyTagFilterSubredditOverrides = @"TagFilterSubredditOverrides";
+
+// Rich link preview cards: 0 = Off, 1 = Compact, 2 = Full.
+static NSString *const UDKeyLinkPreviewBodyMode = @"LinkPreviewBodyMode";
+static NSString *const UDKeyLinkPreviewCommentsMode = @"LinkPreviewCommentsMode";
+static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLinkPreviewModeDidChangeNotification";

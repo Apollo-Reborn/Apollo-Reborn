@@ -347,7 +347,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 6; // 4 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
-        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 8 : 7;
+        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 11 : 10;
         case SectionSubreddits: return 6;
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;

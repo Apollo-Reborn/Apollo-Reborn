@@ -12,9 +12,14 @@ git submodule update --init --recursive
 
 # Standard build
 make package
+
+# Build a local test IPA from the persistent Apollo base IPA
+./patch.sh ./Apollo-base.ipa --liquid-glass -o /tmp/Apollo-base-liquid-glass.ipa
+./build-ipa.sh --ipa /tmp/Apollo-base-liquid-glass.ipa --deb ./packages/<tweak>.deb -o ./packages/Apollo-Test.ipa
 ```
 
 The Makefile automatically generates `Version.h` from the `control` file and links FFmpegKit libraries.
+`THEOS` is available at `~/theos`. Do not rely on Azule/Cyan living in `/tmp`; `build-ipa.sh` uses the repo-local `scripts/inject-deb-local.sh` first for this repo's already-injected `Apollo-base.ipa` flow, then falls back to `azule`/`cyan` only for truly stock IPAs.
 
 ## Project Structure
 
@@ -107,6 +112,12 @@ No automated test suite, must be validated manually.
 **Pseudocode constant folding of base registers**: Hopper's decompiler sometimes loses track of a base register and folds it into offset constants, producing misleading absolute-looking addresses. For example, if the assembly is `madd x8, x21, x8, x22` then `str w0, [x8, #0x20]` (meaning `buffer + index*stride + 0x20`), the pseudocode may render this as `*(stride * index + 0x50)` — collapsing `buffer + 0x20` into a single constant `0x50`. This is a critical trap: the pseudocode appears to say elements start at offset 0x50, when they actually start at buffer+0x20. **Always verify struct/array element offsets from the raw assembly** (look for `madd`/`add` base register calculations and `ldr`/`str` displacement operands) rather than trusting the pseudocode constants.
 
 **Decoding Swift small strings from assembly**: Strings <=15 bytes are stored inline in two registers (x0/x1) rather than as heap pointers. Hopper's decompiler hides the actual values behind `_bridgeToObjectiveC()` calls — you must read the raw assembly. Layout: x0 holds bytes 0-7 (little-endian), x1 holds bytes 8-14 in bits 0-55 plus a discriminator byte in bits 56-63 (discriminator = `0xE0 + length`). Each `mov`/`movk` with `#0xXXYY` stores two ASCII bytes in little-endian order (YY first, XX second). Strings >15 bytes use buffer pointers (`x1 = addr | 0x8000000000000000`, UTF-8 at `addr+0x20`) and appear in Hopper's string table. See `docs/sekrit-icon-keys-RE.md` for a worked example.
+
+**Extracting Swift enum metadata from jump tables**: Swift switch helpers for enum titles/icons often compile to a small dispatcher that masks the enum case, loads a jump-table offset, adds it to a code base, then `br`s there. In assembly this looks like `and x8, x0, #0xffff` + `ldrh/ldrsw` from a table + `add x10, base, offset` + `br x10`. To replace a private helper safely, extract the table data and emulate each target block offline instead of calling a hardcoded app address at runtime. For the Apollo action menu metadata this recovered the exact `actionKind -> title/icon asset` mapping used in `ApolloNativeActionMetadata.h`.
+
+**Emulating simple Swift string-returning blocks**: For switch arms that return strings, a tiny ARM64 emulator is often faster and safer than manual transcription. Use the Mach-O `__TEXT` base (`0x100000000` for Apollo) to map `vmaddr -> file offset`, read the jump table bytes, then emulate the small instruction subset used by these blocks: `mov`, `movk`, `adrp`, `adr`, `add`, `sub`, `orr`, `b`, `ret`, and sometimes `bl` to a known Swift/Foundation bridge or image-loading helper. Decode x0/x1 as a Swift small or long string. Validate a few known UI strings via `Hopper/search_strings`/xrefs before trusting the generated table.
+
+**Avoid runtime calls to private binary helper addresses**: Hardcoded Apollo helper addresses like `0x1007xxxxx` can appear to work, but they are version-fragile and can crash or silently mislabel UI when the app binary shifts. Prefer one of: ObjC-visible selectors, stable ivar data, generated metadata tables checked into the tweak, or hook/capture points around the original call path. If a generated table is used, include a source note and spot-check entries whose labels/icons are user-visible.
 
 ### iOS 26 Runtime Headers And Decompiled Internals
 

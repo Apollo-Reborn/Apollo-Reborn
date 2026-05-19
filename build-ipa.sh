@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IPA_PATH=""
 DEB_PATH=""
 OUTPUT_IPA="Apollo-Tweaked.ipa"
@@ -57,7 +58,7 @@ if [[ ! -f "$IPA_PATH" ]]; then
 fi
 
 if [[ -z "$DEB_PATH" ]]; then
-    latest_deb=$(ls -1t packages/*.deb 2>/dev/null | head -1 || true)
+    latest_deb=$(ls -1t "$SCRIPT_DIR"/packages/*.deb 2>/dev/null | head -1 || true)
     if [[ -z "$latest_deb" ]]; then
         echo "Error: No .deb found in packages/. Run 'make package' first or pass --deb."
         exit 1
@@ -73,6 +74,15 @@ fi
 echo "Base IPA : $IPA_PATH"
 echo "Tweak DEB: $DEB_PATH"
 echo "Output   : $OUTPUT_IPA"
+
+LOCAL_INJECTOR="$SCRIPT_DIR/scripts/inject-deb-local.sh"
+if [[ -f "$LOCAL_INJECTOR" ]]; then
+    echo "Using repo-local injector..."
+    if bash "$LOCAL_INJECTOR" --ipa "$IPA_PATH" --deb "$DEB_PATH" -o "$OUTPUT_IPA"; then
+        exit 0
+    fi
+    echo "Repo-local injector could not update this IPA; falling back to azule/cyan if available..."
+fi
 
 if command -v azule >/dev/null 2>&1; then
     echo "Using azule for injection..."

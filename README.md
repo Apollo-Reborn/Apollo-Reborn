@@ -118,7 +118,7 @@ Recommended configuration:
 
 ## Build Injected IPA Locally
 
-`build-ipa.sh` builds the tweak `.deb` and injects it into a stock Apollo IPA. Requires `azule` or `cyan` installed locally; signing/sideloading is still handled by your preferred signer.
+`build-ipa.sh` builds the tweak `.deb` and injects it into an Apollo IPA. For this repo's already-injected `Apollo-base.ipa`, it uses the repo-local `scripts/inject-deb-local.sh` replacement injector first, so `azule`/`cyan` are not required for normal test builds. For a truly stock IPA without the injection scaffold, install `azule` or `cyan`; signing/sideloading is still handled by your preferred signer.
 
 ```bash
 make package

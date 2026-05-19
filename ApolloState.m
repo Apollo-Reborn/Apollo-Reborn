@@ -23,6 +23,8 @@ BOOL sUseProfileAvatarTabIcon = NO;
 BOOL sAutoHideTabBarShowOnIdle = NO;
 BOOL sModernSubredditDividers = YES;
 BOOL sEnableInlineImages = NO;
+NSInteger sLinkPreviewBodyMode = ApolloLinkPreviewModeOff;
+NSInteger sLinkPreviewCommentsMode = ApolloLinkPreviewModeOff;
 NSInteger sImageUploadProvider = ImageUploadProviderImgur;
 
 NSString *sLatestRedditBearerToken = nil;
