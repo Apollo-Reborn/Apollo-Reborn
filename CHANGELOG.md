@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.13.0] - 2026-05-18
+
+### Features
+
+- Add **Rich Link Previews** for post bodies and comments, with Full, Compact, and Off modes, first-party cards for YouTube, Reddit, GitHub, Wikipedia, Twitter/X, Bluesky, and a configurable preview card color (thanks @icpryde!)
+- Add richer profile polish, including Reddit profile metadata in the profile header, a profile editor shortcut, theme-aware Custom API settings, and an optional **Profile Picture Tab Icon** (thanks @icpryde!)
+- Liquid Glass: add native iOS action menus for post, comment, and moderator actions, with additional anchoring fixes.
+- Add a **bajader** Liquid Glass app icon and show icon designer names in the picker (thanks @bajader!)
+- Add subreddit list polish with a custom alphabet index overlay, larger favorite-star hit targets, and a **Modern Subreddit Dividers** toggle (thanks @icpryde!)
+
+### Fixes
+
+- Fix user profile pictures appearing inside flair text.
+- Fix the profile tab icon not refreshing immediately after switching accounts.
+- Fix the media post body text editor in subreddits that do not expose Apollo's normal Text tab (thanks @icpryde!)
+
 ## [v2.12.0b] - 2026-05-16
 
 ### Features
@@ -393,6 +409,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.13.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.12.0b...v2.13.0
 [v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
 [v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0
 [v2.10.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.9.0...v2.10.0
