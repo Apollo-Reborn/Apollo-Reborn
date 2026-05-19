@@ -102,8 +102,18 @@ static char kApolloLinkPreviewNodesKey;
 static char kApolloLinkPreviewFetchInFlightKey;
 static char kApolloLinkPreviewOriginalHostShellKey;
 static char kApolloLinkPreviewRenderedPlaceholderKey;
+static char kApolloLinkPreviewBackgroundColorPresetKey;
+
+static NSHashTable<id> *sApolloLPRegisteredLinkNodes = nil;
+static dispatch_queue_t sApolloLPRegisteredLinkNodesQueue = NULL;
+
+typedef struct {
+    NSUInteger nodes;
+    NSUInteger recolored;
+} ApolloLPRegisteredRecolorResult;
 
 static void ApolloLPLogOncePerHost(NSString *host, NSString *event);
+static void ApolloLPTriggerRelayoutForHost(ASDisplayNode *node, NSString *host);
 
 static Class ApolloLPClass(NSString *name) {
     return NSClassFromString(name);
@@ -178,22 +188,6 @@ static UIColor *ApolloLPResolvedColor(UIColor *color, UITraitCollection *traitCo
     return color;
 }
 
-static BOOL ApolloLPColorIsNeutral(UIColor *color, UITraitCollection *traitCollection) {
-    UIColor *resolvedColor = ApolloLPResolvedColor(color, traitCollection);
-    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 1.0;
-    if (![resolvedColor getRed:&red green:&green blue:&blue alpha:&alpha]) return NO;
-    if (alpha < 0.05) return YES;
-
-    CGFloat maxComponent = MAX(MAX(red, green), blue);
-    CGFloat minComponent = MIN(MIN(red, green), blue);
-    return fabs(maxComponent - minComponent) < 0.04;
-}
-
-static UIColor *ApolloLPTintCandidate(UIColor *color, UITraitCollection *traitCollection) {
-    if (!color || ApolloLPColorIsNeutral(color, traitCollection)) return nil;
-    return color;
-}
-
 static UIView *ApolloLPViewForNode(ASDisplayNode *node) {
     if (!node || ![node respondsToSelector:@selector(view)]) return nil;
     @try {
@@ -202,43 +196,6 @@ static UIView *ApolloLPViewForNode(ASDisplayNode *node) {
     } @catch (__unused NSException *exception) {
         return nil;
     }
-}
-
-static UIColor *ApolloLPThemeTintColorForView(UIView *view, UITraitCollection *traitCollection, NSInteger depth) {
-    if (!view || depth < 0) return nil;
-
-    UIColor *candidate = ApolloLPTintCandidate(view.tintColor, traitCollection);
-    if (candidate) return candidate;
-
-    for (UIView *subview in view.subviews) {
-        candidate = ApolloLPThemeTintColorForView(subview, traitCollection, depth - 1);
-        if (candidate) return candidate;
-    }
-
-    return nil;
-}
-
-static UIColor *ApolloLPThemeTintColorForNode(ASDisplayNode *hostNode) {
-    UITraitCollection *traitCollection = nil;
-    for (ASDisplayNode *node = hostNode; node; node = node.supernode) {
-        UIView *view = ApolloLPViewForNode(node);
-        if (!view) continue;
-
-        if (!traitCollection) traitCollection = view.traitCollection;
-        UIColor *candidate = ApolloLPThemeTintColorForView(view, view.traitCollection, 2);
-        if (candidate) return candidate;
-    }
-
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (!window.isKeyWindow) continue;
-            UIColor *candidate = ApolloLPThemeTintColorForView(window, window.traitCollection, 3);
-            if (candidate) return candidate;
-        }
-    }
-
-    return [UIColor systemBlueColor];
 }
 
 static UIColor *ApolloLPBlendColor(UIColor *foreground, UIColor *background, CGFloat foregroundAlpha, UITraitCollection *traitCollection) {
@@ -257,9 +214,34 @@ static UIColor *ApolloLPBlendColor(UIColor *foreground, UIColor *background, CGF
                            alpha:1.0];
 }
 
+static UIColor *ApolloLPColorForCardPreset(NSInteger preset) {
+    switch (preset) {
+        case ApolloLinkPreviewCardColorGray:     return [UIColor colorWithWhite:0.56 alpha:1.0];
+        case ApolloLinkPreviewCardColorRed:      return [UIColor colorWithRed:1.00 green:0.23 blue:0.19 alpha:1.0];
+        case ApolloLinkPreviewCardColorOrange:   return [UIColor colorWithRed:1.00 green:0.58 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorYellow:   return [UIColor colorWithRed:1.00 green:0.80 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorGreen:    return [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        case ApolloLinkPreviewCardColorMint:     return [UIColor colorWithRed:0.00 green:0.78 blue:0.75 alpha:1.0];
+        case ApolloLinkPreviewCardColorTeal:     return [UIColor colorWithRed:0.19 green:0.69 blue:0.78 alpha:1.0];
+        case ApolloLinkPreviewCardColorCyan:     return [UIColor colorWithRed:0.20 green:0.68 blue:0.90 alpha:1.0];
+        case ApolloLinkPreviewCardColorBlue:     return [UIColor colorWithRed:0.00 green:0.48 blue:1.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorIndigo:   return [UIColor colorWithRed:0.35 green:0.34 blue:0.84 alpha:1.0];
+        case ApolloLinkPreviewCardColorPurple:   return [UIColor colorWithRed:0.69 green:0.32 blue:0.87 alpha:1.0];
+        case ApolloLinkPreviewCardColorPink:     return [UIColor colorWithRed:1.00 green:0.18 blue:0.33 alpha:1.0];
+        case ApolloLinkPreviewCardColorBrown:    return [UIColor colorWithRed:0.64 green:0.52 blue:0.37 alpha:1.0];
+        case ApolloLinkPreviewCardColorCoral:    return [UIColor colorWithRed:1.00 green:0.50 blue:0.31 alpha:1.0];
+        case ApolloLinkPreviewCardColorLime:     return [UIColor colorWithRed:0.60 green:0.80 blue:0.00 alpha:1.0];
+        case ApolloLinkPreviewCardColorOlive:    return [UIColor colorWithRed:0.50 green:0.60 blue:0.20 alpha:1.0];
+        case ApolloLinkPreviewCardColorLavender: return [UIColor colorWithRed:0.56 green:0.45 blue:0.90 alpha:1.0];
+        case ApolloLinkPreviewCardColorSlate:    return [UIColor colorWithRed:0.35 green:0.43 blue:0.50 alpha:1.0];
+        case ApolloLinkPreviewCardColorNeutral:
+        default:                                 return [UIColor colorWithWhite:0.72 alpha:1.0];
+    }
+}
+
 static UIColor *ApolloLPCardBackgroundColorForNode(ASDisplayNode *hostNode, NSURL *url) {
-    UIColor *tintColor = ApolloLPThemeTintColorForNode(hostNode);
-    ApolloLPLogOncePerHost(ApolloLPHost(url), @"V12-theme-tint-resolved");
+    UIColor *tintColor = ApolloLPColorForCardPreset(sLinkPreviewCardColor);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"V13-card-color-preset-resolved");
 
     if (@available(iOS 13.0, *)) {
         return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traitCollection) {
@@ -272,11 +254,59 @@ static UIColor *ApolloLPCardBackgroundColorForNode(ASDisplayNode *hostNode, NSUR
     return ApolloLPBlendColor(tintColor, [UIColor secondarySystemBackgroundColor], 0.12, UIScreen.mainScreen.traitCollection);
 }
 
+static void ApolloLPRegisterLinkPreviewNode(ASDisplayNode *node) {
+    if (!node || !sApolloLPRegisteredLinkNodes || !sApolloLPRegisteredLinkNodesQueue) return;
+    dispatch_async(sApolloLPRegisteredLinkNodesQueue, ^{
+        [sApolloLPRegisteredLinkNodes addObject:node];
+    });
+}
+
+static NSArray *ApolloLPRegisteredLinkPreviewNodesSnapshot(void) {
+    if (!sApolloLPRegisteredLinkNodes || !sApolloLPRegisteredLinkNodesQueue) return @[];
+    __block NSArray *snapshot = nil;
+    dispatch_sync(sApolloLPRegisteredLinkNodesQueue, ^{
+        snapshot = sApolloLPRegisteredLinkNodes.allObjects ?: @[];
+    });
+    return snapshot ?: @[];
+}
+
+static void ApolloLPMarkNodeForColorRefresh(ASDisplayNode *node) {
+    if (!node) return;
+    @try {
+        if ([node respondsToSelector:@selector(setNeedsDisplay)]) {
+            [(id)node setNeedsDisplay];
+        }
+        if ([node respondsToSelector:@selector(setNeedsLayout)]) {
+            [(id)node setNeedsLayout];
+        }
+        if ([node respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(node, @selector(invalidateCalculatedLayout));
+        }
+    } @catch (__unused NSException *exception) {
+    }
+}
+
+static BOOL ApolloLPApplyCardBackgroundColor(ASDisplayNode *hostNode, ASDisplayNode *backgroundNode, NSURL *url, BOOL force) {
+    if (!backgroundNode || ![backgroundNode respondsToSelector:@selector(setBackgroundColor:)]) return NO;
+
+    NSNumber *lastPresetNumber = objc_getAssociatedObject(backgroundNode, &kApolloLinkPreviewBackgroundColorPresetKey);
+    BOOL presetChanged = ![lastPresetNumber isKindOfClass:[NSNumber class]] || lastPresetNumber.integerValue != sLinkPreviewCardColor;
+    if (!force && !presetChanged) return NO;
+
+    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    objc_setAssociatedObject(backgroundNode, &kApolloLinkPreviewBackgroundColorPresetKey, @(sLinkPreviewCardColor), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLPMarkNodeForColorRefresh(backgroundNode);
+    ApolloLPMarkNodeForColorRefresh(hostNode);
+    return YES;
+}
+
 static NSString *ApolloLPBundleKey(NSURL *url, NSString *variant) {
     return [NSString stringWithFormat:@"%@|%@", url.absoluteString ?: @"", variant ?: @"default"];
 }
 
 static NSDictionary *ApolloLPNodeBundleForHost(ASDisplayNode *hostNode, NSURL *url, NSString *variant) {
+    ApolloLPRegisterLinkPreviewNode(hostNode);
+
     NSMutableDictionary<NSString *, NSDictionary *> *bundles = objc_getAssociatedObject(hostNode, &kApolloLinkPreviewNodesKey);
     if (!bundles) {
         bundles = [NSMutableDictionary dictionary];
@@ -320,7 +350,7 @@ static NSDictionary *ApolloLPNodeBundleForHost(ASDisplayNode *hostNode, NSURL *u
     descriptionNode.userInteractionEnabled = NO;
 
     ASDisplayNode *backgroundNode = [[displayNodeClass alloc] init];
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, YES);
     backgroundNode.cornerRadius = 12.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -338,6 +368,7 @@ static NSDictionary *ApolloLPNodeBundleForHost(ASDisplayNode *hostNode, NSURL *u
         @"title": titleNode,
         @"description": descriptionNode,
         @"background": backgroundNode,
+        @"url": url,
     };
     bundles[key] = bundle;
     return bundle;
@@ -616,6 +647,7 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     ApolloLPResetTextNode(siteNode, 1);
     ApolloLPResetTextNode(titleNode, 3);
     ApolloLPResetTextNode(descriptionNode, 4);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     NSString *siteName = preview.siteName.length > 0 ? preview.siteName : ApolloLPHost(url);
     imageNode.URL = preview.imageURL;
     imageNode.backgroundColor = preview.imageURL.absoluteString.length > 0 ? nil : [UIColor tertiarySystemFillColor];
@@ -629,7 +661,7 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     siteNode.attributedText = ApolloLPAttributedString([siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
     titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
     descriptionNode.attributedText = ApolloLPAttributedString(preview.desc, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
 
     return bundle;
 }
@@ -674,7 +706,7 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     NSUInteger descriptionLineCount = ApolloLPCompactDescriptionLineCount(preview);
     titleNode.maximumNumberOfLines = 2;
     descriptionNode.maximumNumberOfLines = descriptionLineCount;
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -740,7 +772,7 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     titleNode.maximumNumberOfLines = 2;
     descriptionNode.maximumNumberOfLines = descriptionLineCount;
     titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -845,7 +877,7 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
         && [preview.imageURL.absoluteString isEqualToString:preview.avatarURL.absoluteString];
     BOOL hasPostImage = preview.imageURL.absoluteString.length > 0 && !imageIsAvatar && !preview.imageIsFallbackIcon;
 
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
@@ -964,7 +996,7 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
                                                                  justifyContent:ApolloLinkPreviewStackJustifyContentStart
                                                                      alignItems:ApolloLinkPreviewStackAlignItemsStretch
                                                                        children:children];
-        backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+        ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
         backgroundNode.cornerRadius = 10.0;
         backgroundNode.clipsToBounds = YES;
         id card = ApolloLPBackgroundWrappedSpec(cardStack, backgroundNode, backgroundClass);
@@ -985,7 +1017,7 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
                                                        justifyContent:ApolloLinkPreviewStackJustifyContentStart
                                                            alignItems:ApolloLinkPreviewStackAlignItemsStart
                                                              children:@[imageNode, textStack]];
-    backgroundNode.backgroundColor = ApolloLPCardBackgroundColorForNode(hostNode, url);
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
     id card = ApolloLPBackgroundWrappedSpec([insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0) child:row], backgroundNode, backgroundClass);
@@ -1250,6 +1282,79 @@ static ASDisplayNode *ApolloLPNodeForViewIfPossible(UIView *view) {
     return nil;
 }
 
+static NSUInteger ApolloLPRecolorLinkPreviewBackgroundsForNode(ASDisplayNode *node) {
+    if (!node) return 0;
+
+    NSUInteger recolored = 0;
+    NSDictionary<NSString *, NSDictionary *> *bundles = objc_getAssociatedObject(node, &kApolloLinkPreviewNodesKey);
+    if ([bundles isKindOfClass:[NSDictionary class]]) {
+        for (NSDictionary *bundle in bundles.allValues) {
+            if (![bundle isKindOfClass:[NSDictionary class]]) continue;
+            ASDisplayNode *backgroundNode = bundle[@"background"];
+            NSURL *url = bundle[@"url"];
+            if (![url isKindOfClass:[NSURL class]]) continue;
+            if (ApolloLPApplyCardBackgroundColor(node, backgroundNode, url, YES)) {
+                recolored++;
+            }
+        }
+    }
+
+    if (recolored > 0) {
+        ApolloLPTriggerRelayoutForHost(node, @"card-color-refresh");
+    }
+    return recolored;
+}
+
+static ApolloLPRegisteredRecolorResult ApolloLPRecolorRegisteredLinkPreviewBackgrounds(void) {
+    ApolloLPRegisteredRecolorResult result = {0, 0};
+    NSArray *nodes = ApolloLPRegisteredLinkPreviewNodesSnapshot();
+    result.nodes = nodes.count;
+
+    for (id object in nodes) {
+        if (![object respondsToSelector:@selector(supernode)] && ![object respondsToSelector:@selector(subnodes)]) continue;
+        result.recolored += ApolloLPRecolorLinkPreviewBackgroundsForNode((ASDisplayNode *)object);
+    }
+
+    return result;
+}
+
+static NSUInteger ApolloLPRecolorLinkPreviewBackgroundsInTree(id object, NSUInteger depth, NSHashTable *visitedObjects) {
+    if (!object || depth == 0) return 0;
+    if ([visitedObjects containsObject:object]) return 0;
+    [visitedObjects addObject:object];
+
+    NSUInteger recolored = 0;
+    if ([object isKindOfClass:[UIView class]]) {
+        ASDisplayNode *node = ApolloLPNodeForViewIfPossible((UIView *)object);
+        if (node) {
+            recolored += ApolloLPRecolorLinkPreviewBackgroundsInTree(node, depth - 1, visitedObjects);
+        }
+        for (UIView *subview in ((UIView *)object).subviews) {
+            recolored += ApolloLPRecolorLinkPreviewBackgroundsInTree(subview, depth - 1, visitedObjects);
+        }
+        return recolored;
+    }
+
+    if ([object respondsToSelector:@selector(supernode)] || [object respondsToSelector:@selector(subnodes)]) {
+        ASDisplayNode *node = (ASDisplayNode *)object;
+        recolored += ApolloLPRecolorLinkPreviewBackgroundsForNode(node);
+
+        if ([node respondsToSelector:@selector(subnodes)]) {
+            @try {
+                NSArray *subnodes = ((NSArray *(*)(id, SEL))objc_msgSend)(node, @selector(subnodes));
+                if ([subnodes isKindOfClass:[NSArray class]]) {
+                    for (id subnode in subnodes) {
+                        recolored += ApolloLPRecolorLinkPreviewBackgroundsInTree(subnode, depth - 1, visitedObjects);
+                    }
+                }
+            } @catch (__unused NSException *exception) {
+            }
+        }
+    }
+
+    return recolored;
+}
+
 static NSUInteger ApolloLPInvalidateLinkButtonNodesInTree(id object, NSUInteger depth, NSHashTable *visitedObjects) {
     if (!object || depth == 0) return 0;
     if ([visitedObjects containsObject:object]) return 0;
@@ -1326,6 +1431,12 @@ static NSUInteger ApolloLPRefreshLinkPreviewScrollViewsInView(UIView *view, NSHa
 
 static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        BOOL cardColorRefresh = [areaName isEqualToString:@"card-color"];
+        ApolloLPRegisteredRecolorResult registeredResult = {0, 0};
+        if (cardColorRefresh) {
+            registeredResult = ApolloLPRecolorRegisteredLinkPreviewBackgrounds();
+        }
+
         NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
         if (@available(iOS 13.0, *)) {
             for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
@@ -1350,10 +1461,15 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
             }
         }
 
-        NSHashTable *visitedObjects = [NSHashTable weakObjectsHashTable];
+        NSUInteger visibleRecolored = 0;
+        NSHashTable *visitedRecolorObjects = [NSHashTable weakObjectsHashTable];
+        NSHashTable *visitedLayoutObjects = [NSHashTable weakObjectsHashTable];
         NSUInteger invalidatedNodes = 0;
         for (UIWindow *window in windows) {
-            invalidatedNodes += ApolloLPInvalidateLinkButtonNodesInTree(window, 24, visitedObjects);
+            if (cardColorRefresh) {
+                visibleRecolored += ApolloLPRecolorLinkPreviewBackgroundsInTree(window, 24, visitedRecolorObjects);
+            }
+            invalidatedNodes += ApolloLPInvalidateLinkButtonNodesInTree(window, 24, visitedLayoutObjects);
         }
 
         NSHashTable<UIView *> *visitedViews = [NSHashTable weakObjectsHashTable];
@@ -1362,8 +1478,18 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
             refreshCount += ApolloLPRefreshLinkPreviewScrollViewsInView(window, visitedViews);
         }
 
-        ApolloLog(@"[LinkPreviews] V12-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu",
-                  areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes);
+        if (cardColorRefresh) {
+            ApolloLog(@"[LinkPreviews] V14-card-color-global-refresh area=%@ scrollViews=%lu linkNodes=%lu registeredNodes=%lu registeredRecolored=%lu visibleRecolored=%lu",
+                      areaName ?: @"unknown",
+                      (unsigned long)refreshCount,
+                      (unsigned long)invalidatedNodes,
+                      (unsigned long)registeredResult.nodes,
+                      (unsigned long)registeredResult.recolored,
+                      (unsigned long)visibleRecolored);
+        } else {
+            ApolloLog(@"[LinkPreviews] V12-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu",
+                      areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes);
+        }
     });
 }
 
@@ -1557,6 +1683,9 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
 %end
 
 %ctor {
+    sApolloLPRegisteredLinkNodes = [NSHashTable weakObjectsHashTable];
+    sApolloLPRegisteredLinkNodesQueue = dispatch_queue_create("com.apollo.linkpreviews.nodes", DISPATCH_QUEUE_SERIAL);
+
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloLinkPreviewModeDidChangeNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
@@ -1565,7 +1694,7 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         ApolloLPRefreshVisibleLayoutsForModeChange(areaName);
     }];
 
-    ApolloLog(@"[LinkPreviews] ctor: hook installed for _TtC6Apollo14LinkButtonNode bodyMode=%ld commentsMode=%ld", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode);
+    ApolloLog(@"[LinkPreviews] ctor: hook installed for _TtC6Apollo14LinkButtonNode bodyMode=%ld commentsMode=%ld cardColor=%ld", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (long)sLinkPreviewCardColor);
     ApolloLog(@"[LinkPreviews] V5 polish active");
     ApolloLog(@"[LinkPreviews] V6 image-kind polish active");
     ApolloLog(@"[LinkPreviews] V7 display modes and placeholders active");
@@ -1573,7 +1702,7 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     ApolloLog(@"[LinkPreviews] V9 split body/comment modes active");
     ApolloLog(@"[LinkPreviews] V10 preview text restore active");
     ApolloLog(@"[LinkPreviews] V11 hero-card stability and naked-URL hiding active");
-    ApolloLog(@"[LinkPreviews] V12 adaptive heights, theme tint, and URL hiding fix active");
+    ApolloLog(@"[LinkPreviews] V13 preset card colors and instant color refresh active");
     ApolloLog(@"[LinkPreviews] V12 cleanup hero sizing active");
     ApolloLog(@"[LinkPreviews] V12 hero image ratio cap 0.6 + nature/client-challenge bypass active");
 }
