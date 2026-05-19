@@ -39,26 +39,7 @@ static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 6
         NSString *cacheDirectory = paths.firstObject ?: NSTemporaryDirectory();
         _cachePath = [cacheDirectory stringByAppendingPathComponent:@"com.apollo.linkpreviews.json"];
         _entries = [[self loadEntriesFromDisk] mutableCopy] ?: [NSMutableDictionary dictionary];
-
-        // Belt-and-suspenders cleanup: drop every negative-cache entry and
-        // legacy favicon-only entry on launch so older builds can't mask a
-        // fetcher/layout fix until the TTL expires.
-        NSMutableArray<NSString *> *keysToPurge = [NSMutableArray array];
-        [_entries enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSDictionary *entry, __unused BOOL *stop) {
-            id rawFlag = entry[@"noMetadata"];
-            BOOL noMetadata = [rawFlag respondsToSelector:@selector(boolValue)] && [rawFlag boolValue];
-            NSString *imageURL = [entry[@"imageURL"] isKindOfClass:[NSString class]] ? [entry[@"imageURL"] lowercaseString] : nil;
-            BOOL legacyFallbackIcon = [imageURL containsString:@"google.com/s2/favicons"];
-            if (noMetadata || legacyFallbackIcon) [keysToPurge addObject:key];
-        }];
-        if (keysToPurge.count > 0) {
-            [_entries removeObjectsForKeys:keysToPurge];
-            NSData *data = [NSJSONSerialization dataWithJSONObject:[_entries copy] options:0 error:nil];
-            if (data) [data writeToFile:_cachePath atomically:YES];
-            ApolloLog(@"[LinkPreviews] purged %lu stale negative entries on launch", (unsigned long)keysToPurge.count);
-        } else {
-            ApolloLog(@"[LinkPreviews] cache init: %lu entries loaded, 0 negative to purge", (unsigned long)_entries.count);
-        }
+        ApolloLog(@"[LinkPreviews] cache init: %lu entries loaded", (unsigned long)_entries.count);
     }
     return self;
 }

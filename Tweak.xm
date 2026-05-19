@@ -907,28 +907,10 @@ static void initializeRandomSources() {
                                     UDKeyTagFilterSpoiler: @YES,
                                     UDKeyTagFilterSubredditOverrides: @{}};
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
-    [[NSUserDefaults standardUserDefaults] registerDefaults:defaultValues];
+    [standardDefaults registerDefaults:defaultValues];
 
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
-    if (![persistentDomain objectForKey:UDKeyLinkPreviewBodyMode] || ![persistentDomain objectForKey:UDKeyLinkPreviewCommentsMode]) {
-        id legacyToggle = [persistentDomain objectForKey:UDKeyEnableLinkPreviews];
-        id legacyMode = [persistentDomain objectForKey:UDKeyLinkPreviewMode];
-        NSInteger migratedMode = [legacyMode respondsToSelector:@selector(integerValue)]
-            ? [legacyMode integerValue]
-            : ((![legacyToggle respondsToSelector:@selector(boolValue)] || [legacyToggle boolValue])
-                ? ApolloLinkPreviewModeFull
-                : ApolloLinkPreviewModeOff);
-        if (migratedMode < ApolloLinkPreviewModeOff || migratedMode > ApolloLinkPreviewModeFull) {
-            migratedMode = ApolloLinkPreviewModeFull;
-        }
-        if (![persistentDomain objectForKey:UDKeyLinkPreviewBodyMode]) {
-            [standardDefaults setInteger:migratedMode forKey:UDKeyLinkPreviewBodyMode];
-        }
-        if (![persistentDomain objectForKey:UDKeyLinkPreviewCommentsMode]) {
-            [standardDefaults setInteger:migratedMode forKey:UDKeyLinkPreviewCommentsMode];
-        }
-    }
 
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
     sImgurClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyImgurClientId] ?: @"" copy];
