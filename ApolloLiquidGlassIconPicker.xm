@@ -96,32 +96,55 @@ typedef struct {
     __unsafe_unretained NSString *designer;
 } LGIconRow;
 
+static NSDictionary *LGAlternateIconsForBundleIconsKey(NSString *bundleIconsKey) {
+    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[bundleIconsKey];
+    if (![icons isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
+    if (![alts isKindOfClass:[NSDictionary class]]) return nil;
+    return alts;
+}
+
+static BOOL LGAlternateIconRegisteredInInfoPlist(NSString *iconID) {
+    if (!iconID.length) return NO;
+    NSDictionary *iphoneAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons");
+    NSDictionary *ipadAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons~ipad");
+    return iphoneAlts[iconID] != nil || ipadAlts[iconID] != nil;
+}
+
 static const LGIconRow *LGIconRows(NSInteger *outCount) {
     // The icon list lives in liquid-glass/icons.json. The header generated
     // by liquid-glass/scripts/generate_previews_header.py exposes it as
     // `kLGIconRowEntries` (C-string fields). Wrap each entry in an NSString
-    // once at first call. We keep a static strong NSArray around so the
-    // NSStrings outlive every call without us having to manage refcounts
-    // through the calloc'd C array (whose __unsafe_unretained members ARC
-    // cannot track).
+    // once at first call, but only keep rows whose icon ID is actually
+    // registered in this IPA's Info.plist.
+    //
+    // We keep a static strong NSArray around so the NSStrings outlive every
+    // call without us having to manage refcounts through the calloc'd C array
+    // (whose __unsafe_unretained members ARC cannot track).
     static LGIconRow *rows = NULL;
     static NSInteger count = 0;
     static NSArray<NSString *> *strongStorage = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        count = (NSInteger)kLGIconRowEntryCount;
-        rows = (LGIconRow *)calloc((size_t)count, sizeof(LGIconRow));
-        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(count * 3)];
-        for (NSInteger i = 0; i < count; i++) {
-            NSString *iconID      = [@(kLGIconRowEntries[i].iconID) copy];
+        NSInteger generatedCount = (NSInteger)kLGIconRowEntryCount;
+        rows = (LGIconRow *)calloc((size_t)generatedCount, sizeof(LGIconRow));
+        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(generatedCount * 3)];
+        for (NSInteger i = 0; i < generatedCount; i++) {
+            NSString *iconID = [@(kLGIconRowEntries[i].iconID) copy];
+            if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
+                ApolloLog(@"[LGIconPicker] omitting icon not registered in Info.plist: %@", iconID);
+                continue;
+            }
+
             NSString *displayName = [@(kLGIconRowEntries[i].displayName) copy];
             NSString *designer    = [@(kLGIconRowEntries[i].designer) copy];
             [storage addObject:iconID];
             [storage addObject:displayName];
             [storage addObject:designer];
-            rows[i].iconID      = iconID;
-            rows[i].displayName = displayName;
-            rows[i].designer    = designer;
+            rows[count].iconID      = iconID;
+            rows[count].displayName = displayName;
+            rows[count].designer    = designer;
+            count++;
         }
         strongStorage = [storage copy];
         (void)strongStorage;  // intentionally kept alive via static reference
@@ -162,11 +185,7 @@ static BOOL LGAlternateIconsAvailable(void) {
     // would return NO at startup. Re-evaluating Info.plist on every call is
     // cheap (dict lookup) and avoids any caching that would freeze a bad
     // startup answer in place.
-    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[@"CFBundleIcons"];
-    if (![icons isKindOfClass:[NSDictionary class]]) return NO;
-    NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
-    if (![alts isKindOfClass:[NSDictionary class]]) return NO;
-    return alts[LGPrimaryIconID()] != nil;
+    return LGAlternateIconRegisteredInInfoPlist(LGPrimaryIconID()) && LGIconRowCount() > 0;
 }
 
 #pragma mark - Section remap helpers
