@@ -13,6 +13,7 @@ static NSSet<NSString *> *ApolloLegacyBackendHosts(void) {
     dispatch_once(&onceToken, ^{
         hosts = [NSSet setWithArray:@[
             @"apollopushserver.xyz",
+            @"apollonotifications.com",
             @"beta.apollonotifications.com",
             @"apolloreq.com",
         ]];
