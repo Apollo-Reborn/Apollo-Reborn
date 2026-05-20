@@ -1,10 +1,35 @@
 {
   "primaryIconID": "jryng",
   "icons": [
-    { "id": "igerman00",  "displayName": "Canon", "designer": "iGerman00" },
-    { "id": "jryng",      "displayName": "OG", "designer": "jryng" },
-    { "id": "metalnakls", "displayName": "metalnakls", "designer": "metalnakls" },
-    { "id": "harunatsu", "displayName": "harunatsu", "designer": "harunatsu91202024" },
-    { "id": "bajader", "displayName": "Sunset", "designer": "bajader" }
+    {
+      "id": "igerman00",
+      "displayName": "Canon",
+      "designer": "iGerman00"
+    },
+    {
+      "id": "jryng",
+      "displayName": "OG",
+      "designer": "jryng"
+    },
+    {
+      "id": "metalnakls",
+      "displayName": "metalnakls",
+      "designer": "metalnakls"
+    },
+    {
+      "id": "harunatsu",
+      "displayName": "harunatsu",
+      "designer": "harunatsu91202024"
+    },
+    {
+      "id": "sunset",
+      "displayName": "Sunset",
+      "designer": "bajader"
+    },
+    {
+      "id": "aperture-science",
+      "displayName": "Aperture Science",
+      "designer": "bajader"
+    }
   ]
 }
