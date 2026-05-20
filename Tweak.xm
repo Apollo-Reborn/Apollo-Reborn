@@ -3,6 +3,7 @@
 #import <objc/message.h>
 #import <sys/utsname.h>
 #import <Security/Security.h>
+#import <StoreKit/StoreKit.h>
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
