@@ -1212,19 +1212,20 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             ?: ApolloLinkPreviewCleanString(meta[@"dc.publisher"])
             ?: ApolloLinkPreviewCleanString(meta[@"jsonld:site_name"])
             ?: ApolloLinkPreviewHost(url);
-        preview.title = ApolloLinkPreviewCleanString(meta[@"og:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"twitter:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"citation_title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"dc.title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"prism.title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"jsonld:title"])
-            ?: ApolloLinkPreviewCleanString(meta[@"title"]);
-        preview.desc = ApolloLinkPreviewTruncatedString(meta[@"og:description"]
+        preview.title = ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"og:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"twitter:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"citation_title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"dc.title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"prism.title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"jsonld:title"])
+            ?: ApolloLinkPreviewStringByStrippingHTMLTags(meta[@"title"]);
+        NSString *rawDescription = meta[@"og:description"]
             ?: meta[@"twitter:description"]
             ?: meta[@"citation_abstract"]
             ?: meta[@"dc.description"]
             ?: meta[@"jsonld:description"]
-            ?: meta[@"description"], 220);
+            ?: meta[@"description"];
+        preview.desc = ApolloLinkPreviewTruncatedString(ApolloLinkPreviewStringByStrippingHTMLTags(rawDescription), 220);
         preview.imageURL = ApolloLinkPreviewURLFromString(meta[@"og:image"] ?: meta[@"twitter:image"] ?: meta[@"twitter:image:src"] ?: meta[@"citation_image"] ?: meta[@"jsonld:image"], url);
         preview.fetchedAt = [NSDate date];
 

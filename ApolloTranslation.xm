@@ -8,6 +8,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloTranslation.h"
 #import "Tweak.h"
 
 #ifndef APOLLO_TRANSLATION_VERBOSE_LOGS
@@ -130,6 +131,8 @@ static BOOL sPendingVisibleFeedTitleApplied = NO;
 static NSMutableDictionary<NSString *, NSNumber *> *sFeedTitleModeByFeedKey = nil;
 static BOOL sLastFeedTitleModeKnown = NO;
 static BOOL sLastFeedTitleTranslatedMode = YES;
+NSString * const ApolloRichPreviewTranslationDidUpdateNotification = @"ApolloRichPreviewTranslationDidUpdateNotification";
+static NSMutableSet<NSString *> *sRichPreviewTranslationInFlightKeys = nil;
 static __weak UIViewController *sLastInstalledFeedViewController = nil;
 
 static void ApolloUpdateTranslationUIForController(id controller);
@@ -138,6 +141,8 @@ static void ApolloRegisterOwnedTextNode(id textNode);
 static void ApolloRestoreAllOwnedTextNodes(void);
 static void ApolloRescanTitleNodesForController(UIViewController *vc);
 static UIViewController *ApolloEnclosingViewControllerForNode(id node);
+static BOOL ApolloClassLooksLikeCommentsViewController(Class cls);
+static BOOL ApolloFeedTitlesShouldShowTranslated(UIViewController *feedVC);
 static BOOL ApolloControllerIsInTranslatedMode(UIViewController *vc);
 static BOOL ApolloRefreshVisibleTranslationAppliedForController(UIViewController *vc);
 static BOOL ApolloRefreshFeedTitleTranslationAppliedForController(UIViewController *vc);
@@ -2171,6 +2176,86 @@ static void ApolloRequestTranslation(NSString *cacheKey,
     });
 }
 
+BOOL ApolloRichPreviewTranslationShouldTranslateForNode(id node) {
+    if (!sEnableBulkTranslation) return NO;
+
+    UIViewController *enclosingVC = ApolloEnclosingViewControllerForNode(node);
+    if (enclosingVC && ApolloClassLooksLikeCommentsViewController([enclosingVC class])) {
+        return ApolloControllerIsInTranslatedMode(enclosingVC);
+    }
+
+    UIViewController *feedVC = ApolloFindTopmostVisibleFeedVC();
+    if (feedVC && [objc_getAssociatedObject(feedVC, kApolloFeedTranslationVCKey) boolValue]) {
+        return sTranslatePostTitles && ApolloFeedTitlesShouldShowTranslated(feedVC);
+    }
+
+    if (sVisibleCommentsViewController) {
+        return ApolloControllerIsInTranslatedMode(sVisibleCommentsViewController);
+    }
+
+    return sTranslatePostTitles && ApolloFeedTitlesShouldShowTranslated(feedVC);
+}
+
+static NSString *ApolloRichPreviewTranslationCacheKey(NSURL *url, NSString *field, NSString *sourceText, NSString *targetLanguage) {
+    NSString *urlKey = url.absoluteString.length > 0 ? url.absoluteString : @"(no-url)";
+    NSString *fieldKey = field.length > 0 ? field : @"text";
+    return [NSString stringWithFormat:@"rich-preview|%@|%@|%lu|%lu",
+            targetLanguage ?: @"en",
+            fieldKey,
+            (unsigned long)urlKey.hash,
+            (unsigned long)(sourceText ?: @"").hash];
+}
+
+NSString *ApolloRichPreviewTranslatedTextIfAvailable(NSURL *url, NSString *field, NSString *sourceText, id ownerNode) {
+    NSString *trimmed = ApolloTrimmedString(sourceText);
+    if (trimmed.length < 3) return nil;
+    if (!ApolloRichPreviewTranslationShouldTranslateForNode(ownerNode)) return nil;
+
+    NSString *targetLanguage = ApolloResolvedTargetLanguageCode();
+    if (targetLanguage.length == 0) return nil;
+
+    NSString *detectionText = ApolloProtectTranslationLinks(trimmed, NULL);
+    NSString *detected = ApolloDetectDominantLanguage(detectionText);
+    if ([detected isEqualToString:targetLanguage]) return nil;
+
+    NSString *cacheKey = ApolloRichPreviewTranslationCacheKey(url, field, trimmed, targetLanguage);
+    NSString *cached = [sTranslationCache objectForKey:cacheKey];
+    if (ApolloTranslatedTextDiffersFromSource(trimmed, cached)) return cached;
+
+    @synchronized (sRichPreviewTranslationInFlightKeys) {
+        if (!sRichPreviewTranslationInFlightKeys) sRichPreviewTranslationInFlightKeys = [NSMutableSet set];
+        if ([sRichPreviewTranslationInFlightKeys containsObject:cacheKey]) return nil;
+        [sRichPreviewTranslationInFlightKeys addObject:cacheKey];
+    }
+
+    ApolloRequestTranslation(cacheKey, trimmed, targetLanguage, ^(NSString *translated, NSError *error) {
+        @synchronized (sRichPreviewTranslationInFlightKeys) {
+            [sRichPreviewTranslationInFlightKeys removeObject:cacheKey];
+        }
+
+        if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
+            if (error) ApolloLog(@"[Translation] Rich preview translate failed field=%@ url=%@: %@",
+                                 field ?: @"text",
+                                 url.absoluteString ?: @"(no-url)",
+                                 error.localizedDescription ?: @"unknown");
+            return;
+        }
+        if (!ApolloTranslatedTextDiffersFromSource(trimmed, translated)) return;
+
+        if (sVisibleCommentsViewController && ApolloControllerIsInTranslatedMode(sVisibleCommentsViewController)) {
+            ApolloMarkVisibleTranslationApplied(trimmed, translated);
+        } else {
+            ApolloMarkVisibleFeedTitleApplied(trimmed, translated);
+        }
+
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification
+                                                            object:nil
+                                                          userInfo:url ? @{@"url": url} : nil];
+    });
+
+    return nil;
+}
+
 static RDKComment *ApolloCommentFromCellNode(id commentCellNode) {
     if (!commentCellNode) return nil;
 
@@ -3282,6 +3367,7 @@ static void ApolloToggleThreadTranslationForController(UIViewController *vc) {
         ApolloScheduleThreadTranslationReconcileForController(vc, YES);
     }
     ApolloUpdateTranslationUIForController(vc);
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 static NSString *ApolloFeedTitleModeKeyForController(UIViewController *vc) {
@@ -3391,6 +3477,7 @@ static void ApolloToggleFeedTitleTranslationForController(UIViewController *vc) 
         ApolloRescanTitleNodesForController(vc);
     }
     ApolloUpdateTranslationUIForController(vc);
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 #pragma mark - Phase D: vote / redisplay resilience
@@ -4980,6 +5067,7 @@ static void ApolloReapplyTranslationOnAppResume(void) {
     sCommentTranslationMirror = [NSMutableDictionary dictionary];
     sLinkTranslationMirror = [NSMutableDictionary dictionary];
     sPendingTranslationCallbacks = [NSMutableDictionary dictionary];
+    sRichPreviewTranslationInFlightKeys = [NSMutableSet set];
     sFeedTitleModeByFeedKey = [NSMutableDictionary dictionary];
     sOwnedTextNodes = [NSHashTable hashTableWithOptions:(NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality)];
     sOwnedTextNodesQueue = dispatch_queue_create("ca.jeffrey.apollo.translation.ownednodes", DISPATCH_QUEUE_SERIAL);
@@ -5071,6 +5159,7 @@ static void ApolloReapplyTranslationOnAppResume(void) {
             ApolloScheduleFeedTranslationStateRefresh(visibleFeedVC, 0.6);
             ApolloScheduleFeedTranslationStateRefresh(visibleFeedVC, 1.5);
         }
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
     }];
 
     // Live-update when the user toggles "Translate Post Titles" in settings:

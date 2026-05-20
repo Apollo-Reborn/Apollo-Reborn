@@ -8,6 +8,7 @@
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloLinkPreviewFetcher.h"
 #import "ApolloState.h"
+#import "ApolloTranslation.h"
 #import "UserDefaultConstants.h"
 
 #import <Foundation/Foundation.h>
@@ -298,6 +299,25 @@ static BOOL ApolloLPApplyCardBackgroundColor(ASDisplayNode *hostNode, ASDisplayN
     ApolloLPMarkNodeForColorRefresh(backgroundNode);
     ApolloLPMarkNodeForColorRefresh(hostNode);
     return YES;
+}
+
+static NSString *ApolloLPCleanDisplayText(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return text;
+    NSString *clean = text;
+    NSRegularExpression *tagRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>" options:0 error:nil];
+    clean = [tagRegex stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
+    NSRegularExpression *whitespace = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:nil];
+    clean = [whitespace stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
+    clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return clean.length > 0 ? clean : text;
+}
+
+static NSString *ApolloLPDisplayTitleForPreview(ApolloLinkPreview *preview) {
+    return ApolloLPCleanDisplayText(preview.title);
+}
+
+static NSString *ApolloLPDisplayDescriptionForPreview(ApolloLinkPreview *preview) {
+    return ApolloLPCleanDisplayText(preview.desc);
 }
 
 static NSString *ApolloLPBundleKey(NSURL *url, NSString *variant) {
@@ -648,7 +668,7 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     ApolloLPResetTextNode(titleNode, 3);
     ApolloLPResetTextNode(descriptionNode, 4);
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
-    NSString *siteName = preview.siteName.length > 0 ? preview.siteName : ApolloLPHost(url);
+    NSString *siteName = preview.siteName.length > 0 ? ApolloLPCleanDisplayText(preview.siteName) : ApolloLPHost(url);
     imageNode.URL = preview.imageURL;
     imageNode.backgroundColor = preview.imageURL.absoluteString.length > 0 ? nil : [UIColor tertiarySystemFillColor];
     imageNode.contentMode = UIViewContentModeScaleAspectFill;
@@ -659,8 +679,8 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     avatarNode.clipsToBounds = YES;
     avatarNode.cornerRadius = 18.0;
     siteNode.attributedText = ApolloLPAttributedString([siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
-    titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
-    descriptionNode.attributedText = ApolloLPAttributedString(preview.desc, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
+    titleNode.attributedText = ApolloLPAttributedString(ApolloLPDisplayTitleForPreview(preview), [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
+    descriptionNode.attributedText = ApolloLPAttributedString(ApolloLPDisplayDescriptionForPreview(preview), [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
 
     return bundle;
@@ -681,7 +701,7 @@ static id ApolloLPMeasuredWrapper(id cardSpec, Class insetClass) {
 }
 
 static NSUInteger ApolloLPCompactDescriptionLineCount(ApolloLinkPreview *preview) {
-    NSUInteger titleLength = preview.title.length;
+    NSUInteger titleLength = ApolloLPDisplayTitleForPreview(preview).length;
     if (titleLength >= 110) return 0;
     if (titleLength >= 70) return 1;
     return 2;
@@ -743,7 +763,7 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
 }
 
 static NSUInteger ApolloLPHeroDescriptionLineCount(ApolloLinkPreview *preview) {
-    NSUInteger titleLength = preview.title.length;
+    NSUInteger titleLength = ApolloLPDisplayTitleForPreview(preview).length;
     if (titleLength >= 120) return 0;
     return 1;
 }
@@ -771,7 +791,7 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     NSUInteger descriptionLineCount = ApolloLPHeroDescriptionLineCount(preview);
     titleNode.maximumNumberOfLines = 2;
     descriptionNode.maximumNumberOfLines = descriptionLineCount;
-    titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
+    titleNode.attributedText = ApolloLPAttributedString(ApolloLPDisplayTitleForPreview(preview), [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
@@ -870,9 +890,9 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
     if (!stackClass || !insetClass) return nil;
 
-    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : @"Bluesky");
+    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (ApolloLPDisplayTitleForPreview(preview).length > 0 ? ApolloLPDisplayTitleForPreview(preview) : @"Bluesky");
     NSString *handleText = ApolloLPBlueskyHandleText(preview);
-    NSString *postText = preview.postText.length > 0 ? preview.postText : preview.desc;
+    NSString *postText = preview.postText.length > 0 ? ApolloLPCleanDisplayText(preview.postText) : ApolloLPDisplayDescriptionForPreview(preview);
     BOOL imageIsAvatar = preview.avatarURL.absoluteString.length > 0
         && [preview.imageURL.absoluteString isEqualToString:preview.avatarURL.absoluteString];
     BOOL hasPostImage = preview.imageURL.absoluteString.length > 0 && !imageIsAvatar && !preview.imageIsFallbackIcon;
@@ -1318,6 +1338,17 @@ static ApolloLPRegisteredRecolorResult ApolloLPRecolorRegisteredLinkPreviewBackg
     return result;
 }
 
+static NSUInteger ApolloLPInvalidateRegisteredLinkPreviewNodes(NSString *reason) {
+    NSArray *nodes = ApolloLPRegisteredLinkPreviewNodesSnapshot();
+    NSUInteger invalidated = 0;
+    for (id object in nodes) {
+        if (![object respondsToSelector:@selector(supernode)] && ![object respondsToSelector:@selector(subnodes)]) continue;
+        ApolloLPTriggerRelayoutForHost((ASDisplayNode *)object, reason ?: @"registered-refresh");
+        invalidated++;
+    }
+    return invalidated;
+}
+
 static NSUInteger ApolloLPRecolorLinkPreviewBackgroundsInTree(id object, NSUInteger depth, NSHashTable *visitedObjects) {
     if (!object || depth == 0) return 0;
     if ([visitedObjects containsObject:object]) return 0;
@@ -1433,8 +1464,11 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
     dispatch_async(dispatch_get_main_queue(), ^{
         BOOL cardColorRefresh = [areaName isEqualToString:@"card-color"];
         ApolloLPRegisteredRecolorResult registeredResult = {0, 0};
+        NSUInteger registeredInvalidated = 0;
         if (cardColorRefresh) {
             registeredResult = ApolloLPRecolorRegisteredLinkPreviewBackgrounds();
+        } else {
+            registeredInvalidated = ApolloLPInvalidateRegisteredLinkPreviewNodes(areaName ?: @"mode-change");
         }
 
         NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
@@ -1487,8 +1521,8 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
                       (unsigned long)registeredResult.recolored,
                       (unsigned long)visibleRecolored);
         } else {
-            ApolloLog(@"[LinkPreviews] V12-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu",
-                      areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes);
+            ApolloLog(@"[LinkPreviews] V14-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu registeredNodes=%lu",
+                      areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes, (unsigned long)registeredInvalidated);
         }
     });
 }
@@ -1503,6 +1537,16 @@ static void ApolloLPScheduleCacheLayoutRefresh(NSString *host) {
         refreshPending = NO;
         ApolloLog(@"[LinkPreviews] V12-cache-layout-refresh host=%@", hostCopy ?: @"(nohost)");
         ApolloLPRefreshVisibleLayoutsForModeChange(@"cache-update");
+    });
+}
+
+static void ApolloLPScheduleTranslationLayoutRefresh(void) {
+    ApolloLPRefreshVisibleLayoutsForModeChange(@"translation-update");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(160 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        ApolloLPRefreshVisibleLayoutsForModeChange(@"translation-update-delayed");
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        ApolloLPRefreshVisibleLayoutsForModeChange(@"translation-update-final");
     });
 }
 
@@ -1555,6 +1599,24 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     NSString *areaName = (area == ApolloLPAreaComments) ? @"comments" : @"body";
     NSString *contextName = (context == ApolloLPContextSelfText) ? @"hero" : @"compact";
     return [NSString stringWithFormat:@"%@-%@-mode%ld-%@", placeholder ? @"placeholder" : @"final", areaName, (long)mode, contextName];
+}
+
+static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview) {
+    if (!preview || !ApolloRichPreviewTranslationShouldTranslateForNode(hostNode)) return preview;
+
+    NSString *sourceTitle = ApolloLPDisplayTitleForPreview(preview);
+    NSString *sourceDesc = ApolloLPDisplayDescriptionForPreview(preview);
+    NSString *translatedTitle = ApolloRichPreviewTranslatedTextIfAvailable(url, @"title", sourceTitle, hostNode);
+    NSString *translatedDesc = ApolloRichPreviewTranslatedTextIfAvailable(url, @"description", sourceDesc, hostNode);
+    if (translatedTitle.length == 0 && translatedDesc.length == 0) return preview;
+
+    ApolloLinkPreview *displayPreview = [ApolloLinkPreview previewFromDictionary:[preview dictionaryRepresentation]];
+    if (!displayPreview) return preview;
+    displayPreview.title = sourceTitle;
+    displayPreview.desc = sourceDesc;
+    if (translatedTitle.length > 0) displayPreview.title = translatedTitle;
+    if (translatedDesc.length > 0) displayPreview.desc = translatedDesc;
+    return displayPreview;
 }
 
 %hook _TtC6Apollo14LinkButtonNode
@@ -1635,10 +1697,11 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         return %orig;
     }
 
-    BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, cached);
-    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ApolloLPContextForMode(selectedMode, cached);
-    ApolloLPLogMetadataOnce(host, cached, area, selectedMode, context);
-    if (!isBlueskyPost && cached.imageIsFallbackIcon) {
+    ApolloLinkPreview *displayPreview = ApolloLPPreviewByApplyingTranslation((ASDisplayNode *)self, url, cached);
+    BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, displayPreview);
+    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ApolloLPContextForMode(selectedMode, displayPreview);
+    ApolloLPLogMetadataOnce(host, displayPreview, area, selectedMode, context);
+    if (!isBlueskyPost && displayPreview.imageIsFallbackIcon) {
         ApolloLPRememberCompactPlaceholderHost(url);
         ApolloLPLogOncePerHost(host, @"fallback-icon-compact");
     } else if (!isBlueskyPost && selectedMode == ApolloLinkPreviewModeFull && context == ApolloLPContextCompact) {
@@ -1646,10 +1709,10 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         ApolloLPLogOncePerHost(host, @"full-fallback-compact");
     }
     id richSpec = isBlueskyPost
-        ? ApolloLPBuildBlueskyPostCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO))
+        ? ApolloLPBuildBlueskyPostCardSpec((ASDisplayNode *)self, url, displayPreview, ApolloLPVariant(area, selectedMode, context, NO))
         : (context == ApolloLPContextSelfText)
-        ? ApolloLPBuildHeroCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO))
-        : ApolloLPBuildCompactCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO));
+        ? ApolloLPBuildHeroCardSpec((ASDisplayNode *)self, url, displayPreview, ApolloLPVariant(area, selectedMode, context, NO))
+        : ApolloLPBuildCompactCardSpec((ASDisplayNode *)self, url, displayPreview, ApolloLPVariant(area, selectedMode, context, NO));
     if (richSpec) {
         NSNumber *renderedPlaceholder = objc_getAssociatedObject(self, &kApolloLinkPreviewRenderedPlaceholderKey);
         if (renderedPlaceholder) {
@@ -1693,6 +1756,12 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         NSString *areaName = [notification.userInfo[@"area"] isKindOfClass:[NSString class]] ? notification.userInfo[@"area"] : @"unknown";
         ApolloLPRefreshVisibleLayoutsForModeChange(areaName);
     }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloRichPreviewTranslationDidUpdateNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        ApolloLPScheduleTranslationLayoutRefresh();
+    }];
 
     ApolloLog(@"[LinkPreviews] ctor: hook installed for _TtC6Apollo14LinkButtonNode bodyMode=%ld commentsMode=%ld cardColor=%ld", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (long)sLinkPreviewCardColor);
     ApolloLog(@"[LinkPreviews] V5 polish active");
@@ -1705,4 +1774,5 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     ApolloLog(@"[LinkPreviews] V13 preset card colors and instant color refresh active");
     ApolloLog(@"[LinkPreviews] V12 cleanup hero sizing active");
     ApolloLog(@"[LinkPreviews] V12 hero image ratio cap 0.6 + nature/client-challenge bypass active");
+    ApolloLog(@"[LinkPreviews] V14 translation-aware metadata text active");
 }

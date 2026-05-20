@@ -1,4 +1,5 @@
 #import "TranslationSettingsViewController.h"
+#import "ApolloTranslation.h"
 
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -149,6 +150,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
 
     NSIndexPath *path = [NSIndexPath indexPathForRow:3 inSection:TranslationSettingsSectionGeneral];
     [self.tableView reloadRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationNone];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 - (void)setProvider:(NSString *)provider {
@@ -164,6 +166,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
     NSIndexPath *providerPath = [NSIndexPath indexPathForRow:4 inSection:TranslationSettingsSectionGeneral];
     NSIndexPath *langPath = [NSIndexPath indexPathForRow:3 inSection:TranslationSettingsSectionGeneral];
     [self.tableView reloadRowsAtIndexPaths:@[langPath, providerPath] withRowAnimation:UITableViewRowAnimationNone];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 - (UITableViewCell *)switchCellWithIdentifier:(NSString *)identifier
@@ -651,11 +654,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
     NSIndexPath *autoPath = [NSIndexPath indexPathForRow:1 inSection:TranslationSettingsSectionGeneral];
     NSIndexPath *titlesPath = [NSIndexPath indexPathForRow:2 inSection:TranslationSettingsSectionGeneral];
     [self.tableView reloadRowsAtIndexPaths:@[autoPath, titlesPath] withRowAnimation:UITableViewRowAnimationNone];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 - (void)autoTranslateSwitchToggled:(UISwitch *)sender {
     sAutoTranslateOnAppear = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sAutoTranslateOnAppear forKey:UDKeyAutoTranslateOnAppear];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 - (void)translatePostTitlesSwitchToggled:(UISwitch *)sender {
@@ -664,6 +669,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
     // Notify ApolloTranslation.xm so the feed-VC globe is added/removed live
     // and any currently-translated title nodes get restored when this is OFF.
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloTranslatePostTitlesChanged" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloRichPreviewTranslationDidUpdateNotification object:nil];
 }
 
 @end
