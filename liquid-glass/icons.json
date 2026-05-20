@@ -30,6 +30,11 @@
       "id": "aperture-science",
       "displayName": "Aperture Science",
       "designer": "bajader"
+    },
+    {
+      "id": "apollos",
+      "displayName": "ApollOS",
+      "designer": "bajader"
     }
   ]
 }
