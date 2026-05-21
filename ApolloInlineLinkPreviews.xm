@@ -103,6 +103,7 @@ static char kApolloLinkPreviewFetchInFlightKey;
 static char kApolloLinkPreviewOriginalHostShellKey;
 static char kApolloLinkPreviewRenderedPlaceholderKey;
 static char kApolloLinkPreviewBackgroundColorPresetKey;
+static char kApolloLinkPreviewAreaKey;
 
 static NSHashTable<id> *sApolloLPRegisteredLinkNodes = nil;
 static dispatch_queue_t sApolloLPRegisteredLinkNodesQueue = NULL;
@@ -482,6 +483,11 @@ static NSInteger ApolloLPModeForArea(ApolloLPArea area) {
     return (area == ApolloLPAreaComments) ? sLinkPreviewCommentsMode : sLinkPreviewBodyMode;
 }
 
+static BOOL ApolloLPAllModesDisabled(void) {
+    return sLinkPreviewBodyMode == ApolloLinkPreviewModeOff &&
+        sLinkPreviewCommentsMode == ApolloLinkPreviewModeOff;
+}
+
 static ApolloLPContext ApolloLPContextForMode(NSInteger mode, ApolloLinkPreview *preview) {
     if (mode == ApolloLinkPreviewModeCompact) return ApolloLPContextCompact;
     if (preview.imageIsFallbackIcon) return ApolloLPContextCompact;
@@ -549,9 +555,17 @@ static id ApolloLPModelFromNodeIvar(ASDisplayNode *node, const char *ivarName) {
 }
 
 static ApolloLPArea ApolloLPAreaForLinkButton(ASDisplayNode *linkButtonNode) {
+    NSNumber *cachedArea = objc_getAssociatedObject(linkButtonNode, &kApolloLinkPreviewAreaKey);
+    if ([cachedArea isKindOfClass:[NSNumber class]]) {
+        return (ApolloLPArea)cachedArea.unsignedIntegerValue;
+    }
+
     for (ASDisplayNode *node = linkButtonNode; node; node = node.supernode) {
         id comment = ApolloLPModelFromNodeIvar(node, "comment");
-        if (comment) return ApolloLPAreaComments;
+        if (comment) {
+            objc_setAssociatedObject(linkButtonNode, &kApolloLinkPreviewAreaKey, @(ApolloLPAreaComments), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return ApolloLPAreaComments;
+        }
     }
     return ApolloLPAreaBody;
 }
@@ -1560,6 +1574,11 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
 %hook _TtC6Apollo14LinkButtonNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
+    if (ApolloLPAllModesDisabled()) {
+        ApolloLPRestoreHostShell((ASDisplayNode *)self);
+        return %orig;
+    }
+
     NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
     NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
     if (!url) {

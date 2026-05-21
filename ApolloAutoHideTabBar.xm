@@ -50,11 +50,23 @@ typedef NS_ENUM(NSInteger, ApolloTabBarMinimizeBehavior) {
 static char kApolloRequestedHidesBarsOnSwipeKey;
 static char kApolloAppliedMinimizeBehaviorKey;
 static char kApolloIdleRevealTimerKey;
+static char kApolloIdleRevealTimerScheduledAtKey;
 static char kApolloUpwardRevealDistanceKey;
+static char kApolloDownwardCollapseDistanceKey;
+static char kApolloScrollViewTabBarControllerBoxKey;
 
 static NSString *const ApolloAutoHideTabBarShowOnIdleChangedNotification = @"ApolloAutoHideTabBarShowOnIdleChangedNotification";
 static const NSTimeInterval ApolloIdleRevealDelaySeconds = 30.0;
+static const NSTimeInterval ApolloIdleRevealRescheduleInterval = 0.25;
 static const CGFloat ApolloUpwardRevealDistanceThreshold = 120.0;
+static const CGFloat ApolloDownwardCollapseDistanceThreshold = 48.0;
+
+@interface ApolloAutoHideWeakTabBarControllerBox : NSObject
+@property (nonatomic, weak) UITabBarController *controller;
+@end
+
+@implementation ApolloAutoHideWeakTabBarControllerBox
+@end
 
 static SEL ApolloMinimizeBehaviorSetter(void) {
     return NSSelectorFromString(@"setTabBarMinimizeBehavior:");
@@ -113,6 +125,22 @@ static void ApolloSetUpwardRevealDistance(UITabBarController *tbc, CGFloat dista
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+static CGFloat ApolloDownwardCollapseDistance(UITabBarController *tbc) {
+    NSNumber *distance = objc_getAssociatedObject(tbc, &kApolloDownwardCollapseDistanceKey);
+    if ([distance isKindOfClass:[NSNumber class]]) {
+        return (CGFloat)distance.doubleValue;
+    }
+    return 0.0;
+}
+
+static void ApolloSetDownwardCollapseDistance(UITabBarController *tbc, CGFloat distance) {
+    if (!tbc) return;
+    objc_setAssociatedObject(tbc,
+                             &kApolloDownwardCollapseDistanceKey,
+                             distance > 0.0 ? @(distance) : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 // Walk only the parentViewController chain so modally-presented nav controllers
 // (share sheets, document pickers, etc.) are skipped — mirroring their hidden
 // state onto the main tab bar would spuriously hide it.
@@ -159,6 +187,7 @@ static void ApolloCancelIdleRevealTimer(UITabBarController *tbc) {
     if (!timer) return;
     dispatch_source_cancel(timer);
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerScheduledAtKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void ApolloReapplyNativeMinimizeBehavior(UITabBarController *tbc, NSString *reason) {
@@ -263,7 +292,23 @@ static void ApolloHideTabBar(UITabBarController *tbc, BOOL animated) {
 
 static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
     if (!tbc || !sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(tbc)) return;
-    ApolloCancelIdleRevealTimer(tbc);
+
+    NSTimeInterval now = CACurrentMediaTime();
+    NSNumber *lastScheduled = objc_getAssociatedObject(tbc, &kApolloIdleRevealTimerScheduledAtKey);
+    dispatch_source_t existingTimer = objc_getAssociatedObject(tbc, &kApolloIdleRevealTimerKey);
+    if (existingTimer && [lastScheduled isKindOfClass:[NSNumber class]] &&
+        now - lastScheduled.doubleValue < ApolloIdleRevealRescheduleInterval) {
+        return;
+    }
+
+    if (existingTimer) {
+        dispatch_source_set_timer(existingTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ApolloIdleRevealDelaySeconds * NSEC_PER_SEC)),
+                                  DISPATCH_TIME_FOREVER,
+                                  (uint64_t)(50 * NSEC_PER_MSEC));
+        objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerScheduledAtKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
 
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
     if (!timer) return;
@@ -277,6 +322,7 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
         UITabBarController *strongTBC = weakTBC;
         if (!strongTBC) return;
         objc_setAssociatedObject(strongTBC, &kApolloIdleRevealTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(strongTBC, &kApolloIdleRevealTimerScheduledAtKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!sAutoHideTabBarShowOnIdle || !ApolloTabBarControllerWantsNativeMinimize(strongTBC)) return;
         ApolloApplyMinimizeBehavior(strongTBC, ApolloTabBarMinimizeBehaviorNever);
         __weak UITabBarController *rearmTBC = strongTBC;
@@ -288,18 +334,26 @@ static void ApolloScheduleIdleRevealTimer(UITabBarController *tbc) {
         });
     });
     objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(tbc, &kApolloIdleRevealTimerScheduledAtKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_resume(timer);
 }
 
 static UITabBarController *ApolloTabBarControllerForScrollView(UIScrollView *scrollView) {
     if (!scrollView) return nil;
+    ApolloAutoHideWeakTabBarControllerBox *cachedBox = objc_getAssociatedObject(scrollView, &kApolloScrollViewTabBarControllerBoxKey);
+    UITabBarController *cachedTBC = cachedBox.controller;
+    if (cachedTBC) return cachedTBC;
+
     UIResponder *responder = scrollView;
     while ((responder = responder.nextResponder)) {
         if (![responder isKindOfClass:[UIViewController class]]) continue;
         UIViewController *vc = (UIViewController *)responder;
         while (vc) {
             if ([vc isKindOfClass:[UITabBarController class]]) {
-                return (UITabBarController *)vc;
+                ApolloAutoHideWeakTabBarControllerBox *box = [ApolloAutoHideWeakTabBarControllerBox new];
+                box.controller = (UITabBarController *)vc;
+                objc_setAssociatedObject(scrollView, &kApolloScrollViewTabBarControllerBoxKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                return box.controller;
             }
             vc = vc.parentViewController;
         }
@@ -418,32 +472,55 @@ static void ApolloMirrorNavBarStateToTabBar(UINavigationController *nav, BOOL na
 
 %hook UIScrollView
 
+- (void)didMoveToWindow {
+    %orig;
+    objc_setAssociatedObject((UIScrollView *)self, &kApolloScrollViewTabBarControllerBoxKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 - (void)setContentOffset:(CGPoint)contentOffset {
+    if (!sAutoHideTabBarShowOnIdle || !ApolloSupportsNativeTabBarMinimize() || !self.window ||
+        !(self.tracking || self.dragging || self.decelerating)) {
+        %orig(contentOffset);
+        return;
+    }
+
     CGPoint oldOffset = self.contentOffset;
     CGFloat deltaY = contentOffset.y - oldOffset.y;
     UITabBarController *tbc = nil;
     BOOL shouldScheduleIdleReveal = NO;
 
-    if (sAutoHideTabBarShowOnIdle && ApolloSupportsNativeTabBarMinimize() && self.window &&
-        (self.tracking || self.dragging || self.decelerating) && fabs(deltaY) >= 0.5) {
+    if (fabs(deltaY) >= 0.5) {
         tbc = ApolloTabBarControllerForScrollView(self);
         if (ApolloTabBarControllerWantsNativeMinimize(tbc)) {
-            // Re-arm before UIKit processes this offset. If we wait until after
-            // %orig, a fast fling can spend its first scroll update in .never
-            // and miss the native Liquid Glass collapse threshold.
-            if (deltaY > 0.0) {
-                ApolloSetUpwardRevealDistance(tbc, 0.0);
-                if (ApolloLastAppliedMinimizeBehavior(tbc) == ApolloTabBarMinimizeBehaviorNever) {
-                    ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorOnScrollDown);
-                }
-            } else {
-                CGFloat upwardDistance = ApolloUpwardRevealDistance(tbc) + fabs(deltaY);
-                if (upwardDistance >= ApolloUpwardRevealDistanceThreshold) {
+            BOOL userDriven = self.tracking || self.dragging;
+            if (userDriven) {
+                // Re-arm before UIKit processes a deliberate downward drag. Use
+                // hysteresis so rubber-band/reversal noise doesn't thrash safe areas.
+                if (deltaY > 0.0) {
                     ApolloSetUpwardRevealDistance(tbc, 0.0);
-                    ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+                    CGFloat downwardDistance = ApolloDownwardCollapseDistance(tbc) + deltaY;
+                    if (ApolloLastAppliedMinimizeBehavior(tbc) != ApolloTabBarMinimizeBehaviorNever ||
+                        downwardDistance >= ApolloDownwardCollapseDistanceThreshold) {
+                        ApolloSetDownwardCollapseDistance(tbc, 0.0);
+                        if (ApolloLastAppliedMinimizeBehavior(tbc) == ApolloTabBarMinimizeBehaviorNever) {
+                            ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorOnScrollDown);
+                        }
+                    } else {
+                        ApolloSetDownwardCollapseDistance(tbc, downwardDistance);
+                    }
                 } else {
-                    ApolloSetUpwardRevealDistance(tbc, upwardDistance);
+                    ApolloSetDownwardCollapseDistance(tbc, 0.0);
+                    CGFloat upwardDistance = ApolloUpwardRevealDistance(tbc) + fabs(deltaY);
+                    if (upwardDistance >= ApolloUpwardRevealDistanceThreshold) {
+                        ApolloSetUpwardRevealDistance(tbc, 0.0);
+                        ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+                    } else {
+                        ApolloSetUpwardRevealDistance(tbc, upwardDistance);
+                    }
                 }
+            } else if (deltaY > 0.0) {
+                ApolloSetUpwardRevealDistance(tbc, 0.0);
+                ApolloSetDownwardCollapseDistance(tbc, 0.0);
             }
             shouldScheduleIdleReveal = YES;
         }

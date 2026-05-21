@@ -201,6 +201,20 @@ typedef NS_ENUM(NSInteger, Tag) {
     return (sPreferredGIFFallbackFormat == 0) ? @"GIF" : @"MP4";
 }
 
+- (BOOL)apollo_supportsAutoHideTabBarIdleSetting {
+    return IsLiquidGlass() &&
+        [UITabBarController instancesRespondToSelector:NSSelectorFromString(@"setTabBarMinimizeBehavior:")];
+}
+
+- (void)apollo_disableAutoHideTabBarIdleIfUnsupported {
+    if ([self apollo_supportsAutoHideTabBarIdleSetting]) return;
+    if (!sAutoHideTabBarShowOnIdle && ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoHideTabBarShowOnIdle]) return;
+
+    sAutoHideTabBarShowOnIdle = NO;
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyAutoHideTabBarShowOnIdle];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloAutoHideTabBarShowOnIdleChangedNotification" object:nil];
+}
+
 - (void)setPreferredGIFFallbackFormat:(NSInteger)format {
     sPreferredGIFFallbackFormat = (format == 0) ? 0 : 1;
     [[NSUserDefaults standardUserDefaults] setInteger:sPreferredGIFFallbackFormat forKey:UDKeyPreferredGIFFallbackFormat];
@@ -537,6 +551,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     self.title = @"Custom API";
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    [self apollo_disableAutoHideTabBarIdleIfUnsupported];
     [self apollo_applyTheme];
 }
 
@@ -791,6 +806,29 @@ typedef NS_ENUM(NSInteger, Tag) {
     return cell;
 }
 
+- (UITableViewCell *)switchCellWithIdentifier:(NSString *)identifier
+                                        label:(NSString *)label
+                                       detail:(NSString *)detail
+                                           on:(BOOL)on
+                                       action:(SEL)action {
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.numberOfLines = 0;
+        cell.detailTextLabel.numberOfLines = 0;
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+
+        UISwitch *toggleSwitch = [[UISwitch alloc] init];
+        [toggleSwitch addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggleSwitch;
+    }
+    cell.textLabel.text = label;
+    cell.detailTextLabel.text = detail;
+    ((UISwitch *)cell.accessoryView).on = on;
+    return cell;
+}
+
 - (UITableViewCell *)apiKeyCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
     switch (row) {
         case 0:
@@ -902,11 +940,19 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Open Steam Links in App"
                                                on:[defaults boolForKey:UDKeyOpenLinksInSteamApp]
                                            action:@selector(steamAppSwitchToggled:)];
-        case 7:
-            return [self switchCellWithIdentifier:@"Cell_Gen_TabBarIdle"
-                                            label:@"Tab Bar Re-Expands When Idle"
-                                               on:[defaults boolForKey:UDKeyAutoHideTabBarShowOnIdle]
-                                           action:@selector(autoHideTabBarShowOnIdleSwitchToggled:)];
+        case 7: {
+            BOOL idleSupported = [self apollo_supportsAutoHideTabBarIdleSetting];
+            UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_Gen_TabBarIdle"
+                                                             label:@"Tab Bar Re-Expands When Idle"
+                                                            detail:@"Requires Liquid Glass and Hide Bars on Scroll in General settings."
+                                                                on:idleSupported && [defaults boolForKey:UDKeyAutoHideTabBarShowOnIdle]
+                                                            action:@selector(autoHideTabBarShowOnIdleSwitchToggled:)];
+            UISwitch *toggleSwitch = [cell.accessoryView isKindOfClass:[UISwitch class]] ? (UISwitch *)cell.accessoryView : nil;
+            toggleSwitch.enabled = idleSupported;
+            cell.textLabel.enabled = idleSupported;
+            cell.detailTextLabel.enabled = idleSupported;
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1668,6 +1714,14 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)autoHideTabBarShowOnIdleSwitchToggled:(UISwitch *)sender {
+    if (![self apollo_supportsAutoHideTabBarIdleSetting]) {
+        sender.on = NO;
+        sAutoHideTabBarShowOnIdle = NO;
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyAutoHideTabBarShowOnIdle];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloAutoHideTabBarShowOnIdleChangedNotification" object:nil];
+        return;
+    }
+
     sAutoHideTabBarShowOnIdle = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sAutoHideTabBarShowOnIdle forKey:UDKeyAutoHideTabBarShowOnIdle];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloAutoHideTabBarShowOnIdleChangedNotification" object:nil];

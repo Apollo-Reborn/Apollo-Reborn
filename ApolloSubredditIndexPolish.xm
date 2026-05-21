@@ -28,6 +28,7 @@ static const CGFloat ApolloSubredditIndexSlotHeight = 14.0;
 static const CGFloat ApolloSubredditIndexTouchWidth = 56.0;
 static const CGFloat ApolloSubredditIndexGestureWidth = 34.0;
 static const CGFloat ApolloSubredditIndexRightInset = 38.0;
+static const CGFloat ApolloSubredditStarHitWidth = 60.0;
 static const CGFloat ApolloSubredditRowBalancedLeadingMargin = 18.0;
 static const CGFloat ApolloSubredditRowIconTextGap = 12.0;
 static const CGFloat ApolloSubredditRowStandardIconTextTrim = 2.0;
@@ -46,6 +47,8 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, strong) UISelectionFeedbackGenerator *selectionFeedbackGenerator;
 @property (nonatomic) NSInteger activeIndex;
 @property (nonatomic) NSInteger lastScrolledIndex;
+- (void)apollo_applyThemeTintToLabels;
+- (void)apollo_scheduleDeferredThemeTintRefresh;
 - (void)updateWithTableView:(UITableView *)tableView titles:(NSArray<NSString *> *)titles;
 @end
 
@@ -121,6 +124,18 @@ static UIColor *ApolloSubredditIndexThemeListBackgroundColor(UITableView *tableV
     return [UIColor clearColor];
 }
 
+static BOOL ApolloSubredditIndexOwningTitleLooksLikeSubreddits(UITableView *tableView) {
+    UIViewController *vc = ApolloSubredditIndexOwningViewController(tableView);
+    NSString *title = vc.navigationItem.title ?: vc.title;
+    return [title isEqualToString:@"Subreddits"];
+}
+
+static BOOL ApolloSubredditIndexShouldInspectTable(UITableView *tableView) {
+    if (!tableView) return NO;
+    if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) return YES;
+    return ApolloSubredditIndexOwningTitleLooksLikeSubreddits(tableView);
+}
+
 static NSArray<NSString *> *ApolloSubredditIndexTitlesForTable(UITableView *tableView) {
     id<UITableViewDataSource> dataSource = tableView.dataSource;
     if (!dataSource || ![dataSource respondsToSelector:@selector(sectionIndexTitlesForTableView:)]) return nil;
@@ -138,9 +153,7 @@ static NSArray<NSString *> *ApolloSubredditIndexTitlesForTable(UITableView *tabl
 }
 
 static BOOL ApolloSubredditIndexLooksLikeSubredditsTable(UITableView *tableView, NSArray<NSString *> *titles) {
-    UIViewController *vc = ApolloSubredditIndexOwningViewController(tableView);
-    NSString *title = vc.navigationItem.title ?: vc.title;
-    if (![title isEqualToString:@"Subreddits"]) return NO;
+    if (!ApolloSubredditIndexOwningTitleLooksLikeSubreddits(tableView)) return NO;
     if (titles.count < 10) return NO;
 
     BOOL hasA = [titles containsObject:@"A"];
@@ -226,15 +239,25 @@ static UITableViewCell *ApolloSubredditIndexCellForView(UIView *view) {
     return nil;
 }
 
+static Class ApolloSubredditIndexRedditListTableViewCellClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cls = NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell");
+    });
+    return cls;
+}
+
 static UIControl *ApolloSubredditIndexRedditListAccessoryButton(UITableViewCell *cell) {
     static Ivar accessoryButtonIvar = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Class cls = NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell");
+        Class cls = ApolloSubredditIndexRedditListTableViewCellClass();
         if (cls) accessoryButtonIvar = class_getInstanceVariable(cls, "accessoryButton");
     });
 
-    if (!accessoryButtonIvar || ![cell isKindOfClass:NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell")]) return nil;
+    Class cellClass = ApolloSubredditIndexRedditListTableViewCellClass();
+    if (!accessoryButtonIvar || !cellClass || ![cell isKindOfClass:cellClass]) return nil;
 
     id value = object_getIvar(cell, accessoryButtonIvar);
     return [value isKindOfClass:[UIControl class]] ? (UIControl *)value : nil;
@@ -379,7 +402,7 @@ static BOOL ApolloSubredditIndexStringLooksLikeSubredditName(NSString *string) {
 static BOOL ApolloSubredditIndexStringLooksLikeHeaderTitle(NSString *string) {
     NSString *trimmed = [string stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length == 0) return NO;
-    if ([trimmed isEqualToString:@"FAVORITES"] || [trimmed isEqualToString:@"MODERATOR"]) return YES;
+    if ([trimmed isEqualToString:@"FAVORITES"] || [trimmed isEqualToString:@"MODERATOR"] || [trimmed isEqualToString:@"MULTIREDDITS"]) return YES;
     if (trimmed.length == 1) {
         unichar ch = [trimmed characterAtIndex:0];
         if ([[NSCharacterSet uppercaseLetterCharacterSet] characterIsMember:ch]) return YES;
@@ -390,6 +413,8 @@ static BOOL ApolloSubredditIndexStringLooksLikeHeaderTitle(NSString *string) {
 }
 
 static UILabel *ApolloSubredditIndexHeaderLabelInView(UIView *view) {
+    if (!view) return nil;
+
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:view];
     while (stack.count > 0) {
         UIView *candidate = stack.lastObject;
@@ -439,6 +464,8 @@ static UITableView *ApolloSubredditIndexTableForView(UIView *view) {
 }
 
 static UILabel *ApolloSubredditIndexBestTitleLabelInView(UIView *view, UITableViewCell *cell) {
+    if (!view || !cell) return nil;
+
     UILabel *bestLabel = nil;
     CGFloat bestScore = -CGFLOAT_MAX;
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:view];
@@ -470,6 +497,8 @@ static UILabel *ApolloSubredditIndexBestTitleLabelInView(UIView *view, UITableVi
 }
 
 static NSString *ApolloSubredditIndexCellTitle(UITableViewCell *cell) {
+    if (!cell) return nil;
+
     NSString *title = cell.textLabel.text;
     title = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (ApolloSubredditIndexStringLooksLikeSubredditName(title)) return title;
@@ -562,27 +591,15 @@ static void ApolloSubredditIndexClearStarChrome(UIControl *control) {
 static CGRect ApolloSubredditIndexProxyFrameForCell(UITableViewCell *cell, UIControl *nativeControl) {
     CGFloat cellWidth = CGRectGetWidth(cell.bounds);
     CGFloat cellHeight = CGRectGetHeight(cell.bounds);
+    CGFloat width = MIN(ApolloSubredditStarHitWidth, MAX(cellWidth, 0.0));
 
-    // Anchor a comfortable, symmetric hit area on the native star control
-    // while still avoiding the index bar's gesture strip.
     if (!nativeControl) {
-        CGFloat fallbackWidth = 52.0;
-        return CGRectMake(MAX(cellWidth - fallbackWidth - 16.0, 0.0), 0.0, fallbackWidth, cellHeight);
+        return CGRectMake(MAX(cellWidth - width, 0.0), 0.0, width, cellHeight);
     }
 
     CGRect nativeFrame = [cell convertRect:nativeControl.bounds fromView:nativeControl];
-    CGFloat leftPadding = 46.0;
-    CGFloat rightPadding = 46.0;
-    CGFloat indexAvoidanceWidth = ApolloSubredditIndexGestureWidth + 4.0;
-    CGFloat maxX = MIN(CGRectGetMaxX(nativeFrame) + rightPadding, cellWidth - indexAvoidanceWidth);
-    CGFloat minX = MAX(0.0, CGRectGetMinX(nativeFrame) - leftPadding);
-    if (maxX <= CGRectGetMinX(nativeFrame)) {
-        maxX = MIN(cellWidth, CGRectGetMaxX(nativeFrame) + rightPadding);
-    }
-    CGFloat width = MAX(maxX - minX, 70.0);
-    if (minX + width > cellWidth) {
-        minX = MAX(0.0, cellWidth - width);
-    }
+    CGFloat minX = CGRectGetMidX(nativeFrame) - (width / 2.0);
+    minX = MIN(MAX(minX, 0.0), MAX(cellWidth - width, 0.0));
     return CGRectMake(minX, 0.0, width, cellHeight);
 }
 
@@ -692,6 +709,25 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     [self apollo_applyThemeTintToLabels];
 }
 
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self apollo_applyThemeTintToLabels];
+    [self apollo_scheduleDeferredThemeTintRefresh];
+}
+
+- (void)apollo_scheduleDeferredThemeTintRefresh {
+    __weak ApolloSubredditIndexOverlayView *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloSubredditIndexOverlayView *strongSelf = weakSelf;
+        [strongSelf apollo_applyThemeTintToLabels];
+    });
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ApolloSubredditIndexOverlayView *strongSelf = weakSelf;
+        [strongSelf apollo_applyThemeTintToLabels];
+    });
+}
+
 - (void)updateWithTableView:(UITableView *)tableView titles:(NSArray<NSString *> *)titles {
     self.tableView = tableView;
     self.titles = titles ?: @[];
@@ -721,6 +757,7 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     }
 
     [self apollo_applyThemeTintToLabels];
+    [self apollo_scheduleDeferredThemeTintRefresh];
     [self setNeedsLayout];
     [self applyMagnificationForIndex:self.activeIndex animated:NO];
 }
@@ -1027,6 +1064,8 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
 }
 
 static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
+    if (!ApolloSubredditIndexShouldInspectTable(tableView)) return;
+
     NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
     if (!ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles)) return;
 
@@ -1052,12 +1091,19 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
     CGFloat visibleHeight = MAX(CGRectGetHeight(tableFrame) - tableView.adjustedContentInset.top - tableView.adjustedContentInset.bottom - 8.0, 44.0);
     CGFloat desiredHeight = MIN(MAX(titles.count * ApolloSubredditIndexSlotHeight + 8.0, 240.0), visibleHeight);
     CGFloat originY = visibleTop + ((visibleHeight - desiredHeight) / 2.0);
-    overlay.frame = CGRectMake(CGRectGetMaxX(tableFrame) - width - rightPadding,
-                               originY,
-                               width,
-                               desiredHeight);
+    CGRect overlayFrame = CGRectMake(CGRectGetMaxX(tableFrame) - width - rightPadding,
+                                     originY,
+                                     width,
+                                     desiredHeight);
+    if (!CGRectEqualToRect(overlay.frame, overlayFrame)) {
+        overlay.frame = overlayFrame;
+    }
     [container bringSubviewToFront:overlay];
-    [overlay updateWithTableView:tableView titles:titles];
+    if (overlay.tableView != tableView || ![overlay.titles isEqualToArray:titles] || overlay.labels.count != titles.count) {
+        [overlay updateWithTableView:tableView titles:titles];
+    } else {
+        [overlay apollo_applyThemeTintToLabels];
+    }
 
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexLoggedKey) boolValue]) {
         objc_setAssociatedObject(tableView, &kApolloSubredditIndexLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1073,19 +1119,20 @@ static void ApolloSubredditIndexRefreshTablesInView(UIView *view) {
 
     if ([view isKindOfClass:[UITableView class]]) {
         UITableView *tableView = (UITableView *)view;
-        NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
-        BOOL isSubredditTable = [objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue] ||
-                                ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles);
-        if (isSubredditTable) {
-            objc_setAssociatedObject(tableView, &kApolloSubredditIndexTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(tableView);
-            ApolloSubredditIndexApplySeparatorInsets(tableView);
-            [UIView performWithoutAnimation:^{
-                [tableView reloadData];
-                [tableView layoutIfNeeded];
-                ApolloSubredditIndexInstallOrUpdate(tableView);
-                ApolloSubredditIndexRestoreScrollAnchor(tableView, anchor);
-            }];
+        if (ApolloSubredditIndexShouldInspectTable(tableView)) {
+            NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
+            BOOL isSubredditTable = ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles);
+            if (isSubredditTable) {
+                objc_setAssociatedObject(tableView, &kApolloSubredditIndexTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(tableView);
+                ApolloSubredditIndexApplySeparatorInsets(tableView);
+                [UIView performWithoutAnimation:^{
+                    [tableView reloadData];
+                    [tableView layoutIfNeeded];
+                    ApolloSubredditIndexInstallOrUpdate(tableView);
+                    ApolloSubredditIndexRestoreScrollAnchor(tableView, anchor);
+                }];
+            }
         }
     }
 
@@ -1103,6 +1150,7 @@ static void ApolloSubredditIndexRefreshAllVisibleTables(void) {
 static BOOL ApolloSubredditIndexEnsureSubredditTable(UITableView *tableView) {
     if (!tableView) return NO;
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) return YES;
+    if (!ApolloSubredditIndexShouldInspectTable(tableView)) return NO;
 
     NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
     if (!ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles)) return NO;
@@ -1116,7 +1164,8 @@ static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UI
 
     ApolloSubredditIndexApplySeparatorInsets(tableView);
     ApolloSubredditIndexApplyCellMarginsOnce(cell);
-    if ([cell isKindOfClass:NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell")]) {
+    Class redditListCellClass = ApolloSubredditIndexRedditListTableViewCellClass();
+    if (redditListCellClass && [cell isKindOfClass:redditListCellClass]) {
         ApolloSubredditIndexApplyRedditListCellPolishOnce(cell);
     }
 }
@@ -1124,6 +1173,7 @@ static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UI
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView) {
     if (!header || !tableView) return;
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
+        if (!ApolloSubredditIndexShouldInspectTable(tableView)) return;
         NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
         if (!ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles)) return;
         objc_setAssociatedObject(tableView, &kApolloSubredditIndexTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1358,6 +1408,9 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
 - (void)layoutSubviews {
     %orig;
+    Class redditListCellClass = ApolloSubredditIndexRedditListTableViewCellClass();
+    if (!redditListCellClass || ![(UITableViewCell *)self isKindOfClass:redditListCellClass]) return;
+
     UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
@@ -1366,6 +1419,9 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     %orig;
+    Class redditListCellClass = ApolloSubredditIndexRedditListTableViewCellClass();
+    if (!redditListCellClass || ![(UITableViewCell *)self isKindOfClass:redditListCellClass]) return;
+
     UITableView *tableView = ApolloSubredditIndexTableForCell((UITableViewCell *)self);
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
@@ -1378,7 +1434,7 @@ static UIStackView *ApolloSubredditIndexRedditListMainStackView(UITableViewCell 
     static Ivar mainStackIvar = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Class cls = NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell");
+        Class cls = ApolloSubredditIndexRedditListTableViewCellClass();
         if (cls) mainStackIvar = class_getInstanceVariable(cls, "mainStackView");
     });
     if (!mainStackIvar) return nil;

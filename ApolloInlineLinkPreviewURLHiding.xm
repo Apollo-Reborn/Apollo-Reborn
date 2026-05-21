@@ -263,6 +263,11 @@ static void ApolloLPInstallURLHidingObserver(void) {
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!ApolloLPURLHidingEnabled()) {
+        %orig;
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
         %orig;
         return;
@@ -287,6 +292,11 @@ static void ApolloLPInstallURLHidingObserver(void) {
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!ApolloLPURLHidingEnabled()) {
+        %orig;
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
         %orig;
         return;

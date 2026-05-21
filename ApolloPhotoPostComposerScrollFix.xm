@@ -984,6 +984,23 @@ static BOOL ApolloPhotoComposerClassLooksLikeComposer(NSString *className) {
     return ApolloPhotoComposerStringContains(className, @"ComposePostViewController");
 }
 
+static BOOL ApolloPhotoComposerControllerHasDirectScopeSignal(UIViewController *controller) {
+    if (![controller isKindOfClass:[UIViewController class]]) return NO;
+    if (controller == sApolloMediaComposerActiveBodyController || controller == sApolloMediaComposerLastBodyOwnerController) return YES;
+    if (objc_getAssociatedObject(controller, &kApolloPhotoComposerLoggedControllerKey) ||
+        objc_getAssociatedObject(controller, &kApolloMediaComposerBodyContainerKey) ||
+        objc_getAssociatedObject(controller, &kApolloMediaComposerBodyNativeEditorActiveKey)) {
+        return YES;
+    }
+
+    NSString *className = NSStringFromClass(controller.class);
+    if (ApolloPhotoComposerClassLooksLikeComposer(className)) return YES;
+
+    NSString *title = controller.navigationItem.title ?: controller.title;
+    return ApolloPhotoComposerStringContains(title, @"Photo Post") ||
+        ApolloPhotoComposerStringContains(title, @"Media Post");
+}
+
 static NSString *ApolloPhotoComposerTextForView(UIView *view) {
     if ([view isKindOfClass:[UILabel class]]) return ((UILabel *)view).text;
     if ([view isKindOfClass:[UITextField class]]) return ((UITextField *)view).text;
@@ -1814,6 +1831,7 @@ static void ApolloMediaComposerConfigureTitleBodyControl(UITableViewCell *cell, 
 static BOOL ApolloMediaComposerControllerLooksLikeNativeTextEditor(UIViewController *controller) {
     NSString *title = controller.navigationItem.title ?: controller.title;
     if (ApolloPhotoComposerStringContains(title, @"Post Text")) return YES;
+    if (!sApolloMediaComposerActiveBodyController) return NO;
     return controller.isViewLoaded && ApolloPhotoComposerViewContainsText(controller.view, @"Post Text");
 }
 
@@ -3030,6 +3048,8 @@ static void ApolloPhotoComposerApplyScrollFix(UICollectionView *collectionView) 
 }
 
 static void ApolloPhotoComposerRepairController(UIViewController *controller, NSString *reason) {
+    if (!ApolloPhotoComposerControllerHasDirectScopeSignal(controller)) return;
+
     UIViewController *bodyController = ApolloMediaComposerCanonicalBodyController(controller);
     if (!ApolloPhotoComposerControllerIsInScope(controller)) {
         ApolloMediaComposerRemoveBodyEditor(bodyController ?: controller);
@@ -3052,6 +3072,8 @@ static void ApolloPhotoComposerRepairController(UIViewController *controller, NS
 }
 
 static void ApolloPhotoComposerRepairControllerSoon(UIViewController *controller, NSString *reason) {
+    if (!ApolloPhotoComposerControllerHasDirectScopeSignal(controller)) return;
+
     __weak UIViewController *weakController = controller;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIViewController *strongController = weakController;
@@ -3060,6 +3082,8 @@ static void ApolloPhotoComposerRepairControllerSoon(UIViewController *controller
 }
 
 static void ApolloPhotoComposerRepairControllerAfterDelay(UIViewController *controller, NSString *reason, NSTimeInterval delay) {
+    if (!ApolloPhotoComposerControllerHasDirectScopeSignal(controller)) return;
+
     __weak UIViewController *weakController = controller;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIViewController *strongController = weakController;

@@ -47,6 +47,7 @@ static const void *kApolloProfileUsernameCopyMissLoggedKey = &kApolloProfileUser
 static const void *kApolloProfileTabOriginalImageKey = &kApolloProfileTabOriginalImageKey;
 static const void *kApolloProfileTabOriginalSelectedImageKey = &kApolloProfileTabOriginalSelectedImageKey;
 static const void *kApolloProfileTabAppliedUsernameKey = &kApolloProfileTabAppliedUsernameKey;
+static const void *kApolloProfileTabAppliedImageKey = &kApolloProfileTabAppliedImageKey;
 
 @interface ApolloProfileHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
@@ -76,6 +77,7 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
 static void ApolloProfileRefreshControllersForUsername(NSString *username);
 static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController);
 static void ApolloProfileApplyTabAvatarForVisibleWindows(void);
+static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason);
 
 @implementation ApolloProfileHeaderView
 
@@ -946,6 +948,7 @@ static NSUInteger sApolloInlineAvatarAppliedLogCount = 0;
 static NSUInteger sApolloInlineAvatarGaveUpLogCount = 0;
 static NSUInteger sApolloInlineAvatarLateReapplyLogCount = 0;
 static NSUInteger sApolloInlineAvatarRewriteLogCount = 0;
+static BOOL sApolloProfileTabSyncingView = NO;
 
 static BOOL ApolloInlineAvatarShouldLog(NSUInteger *counter) {
     if (!counter || *counter >= ApolloInlineAvatarLogLimit) return NO;
@@ -1685,11 +1688,111 @@ static void ApolloProfileRestoreTabAvatarItem(UITabBarItem *item) {
     objc_setAssociatedObject(item, kApolloProfileTabOriginalImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, kApolloProfileTabOriginalSelectedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(item, kApolloProfileTabAppliedUsernameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(item, kApolloProfileTabAppliedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static UIImage *ApolloProfileTabAvatarImage(UIImage *sourceImage) {
     UIImage *avatar = ApolloCircularAvatarImage(sourceImage, ApolloProfileTabAvatarDiameter);
     return [avatar imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+static UIImage *ApolloProfileTabOriginalRenderingImage(UIImage *image) {
+    if (!image) return nil;
+    return image.renderingMode == UIImageRenderingModeAlwaysOriginal ? image : [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+static UIImage *ApolloProfileTabAppliedAvatarForItem(UITabBarItem *item) {
+    if (!item || ![objc_getAssociatedObject(item, ApolloProfileTabAvatarActiveKey()) boolValue]) return nil;
+    return ApolloProfileTabOriginalRenderingImage(objc_getAssociatedObject(item, kApolloProfileTabAppliedImageKey));
+}
+
+static void ApolloProfileDisableSystemTemplateTreatment(UIImageView *imageView) {
+    if (![imageView isKindOfClass:[UIImageView class]]) return;
+
+    imageView.image = ApolloProfileTabOriginalRenderingImage(imageView.image);
+    imageView.highlightedImage = ApolloProfileTabOriginalRenderingImage(imageView.highlightedImage);
+
+    SEL setEnableMonochromaticTreatment = NSSelectorFromString(@"_setEnableMonochromaticTreatment:");
+    if ([imageView respondsToSelector:setEnableMonochromaticTreatment]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(imageView, setEnableMonochromaticTreatment, NO);
+    }
+}
+
+static UITabBarItem *ApolloProfileTabItemForTabBarButton(id button) {
+    if (!button || ![button respondsToSelector:@selector(tabBar)]) return nil;
+    UITabBar *tabBar = ((UITabBar *(*)(id, SEL))objc_msgSend)(button, @selector(tabBar));
+    if (![tabBar isKindOfClass:[UITabBar class]]) return nil;
+
+    SEL tabBarButtonSelector = NSSelectorFromString(@"_tabBarButton");
+    for (UITabBarItem *item in tabBar.items) {
+        if (![item respondsToSelector:tabBarButtonSelector]) continue;
+        id tabBarButton = ((id (*)(id, SEL))objc_msgSend)(item, tabBarButtonSelector);
+        if (tabBarButton == button) return item;
+    }
+    return nil;
+}
+
+static UITabBarItem *ApolloProfileTabItemFromFloatingItem(id item) {
+    if ([item isKindOfClass:[UITabBarItem class]]) return item;
+
+    NSArray<NSString *> *selectors = @[@"_linkedTabBarItem", @"tabBarItem"];
+    for (NSString *selectorName in selectors) {
+        SEL selector = NSSelectorFromString(selectorName);
+        if (![item respondsToSelector:selector]) continue;
+        id linkedItem = ((id (*)(id, SEL))objc_msgSend)(item, selector);
+        if ([linkedItem isKindOfClass:[UITabBarItem class]]) return linkedItem;
+    }
+    return nil;
+}
+
+static void ApolloProfileSyncLegacyTabButtonAvatar(id button) {
+    if (sApolloProfileTabSyncingView) return;
+    UITabBarItem *item = ApolloProfileTabItemForTabBarButton(button);
+    UIImage *avatar = ApolloProfileTabAppliedAvatarForItem(item);
+    if (!avatar) return;
+
+    id imageView = ApolloObjectIvarValue(button, @"_imageView");
+    sApolloProfileTabSyncingView = YES;
+    @try {
+        if ([imageView respondsToSelector:@selector(setImage:)]) {
+            ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageView, @selector(setImage:), avatar);
+        }
+        SEL setAlternateImage = NSSelectorFromString(@"setAlternateImage:");
+        if ([imageView respondsToSelector:setAlternateImage]) {
+            ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageView, setAlternateImage, avatar);
+        }
+        ApolloProfileDisableSystemTemplateTreatment((UIImageView *)imageView);
+    } @finally {
+        sApolloProfileTabSyncingView = NO;
+    }
+}
+
+static void ApolloProfileSyncFloatingTabItemViewAvatar(id itemView) {
+    if (sApolloProfileTabSyncingView) return;
+    if (!itemView || ![itemView respondsToSelector:@selector(item)]) return;
+    id floatingItem = ((id (*)(id, SEL))objc_msgSend)(itemView, @selector(item));
+    UITabBarItem *item = ApolloProfileTabItemFromFloatingItem(floatingItem);
+    UIImage *avatar = ApolloProfileTabAppliedAvatarForItem(item);
+    if (!avatar) return;
+
+    UIImageView *imageView = nil;
+    if ([itemView respondsToSelector:@selector(imageView)]) {
+        id value = ((id (*)(id, SEL))objc_msgSend)(itemView, @selector(imageView));
+        if ([value isKindOfClass:[UIImageView class]]) imageView = value;
+    }
+    if (!imageView) {
+        imageView = (UIImageView *)ApolloObjectIvarValue(itemView, @"_imageView");
+    }
+    if (![imageView isKindOfClass:[UIImageView class]]) return;
+
+    sApolloProfileTabSyncingView = YES;
+    @try {
+        imageView.image = avatar;
+        imageView.highlightedImage = avatar;
+        ApolloProfileDisableSystemTemplateTreatment(imageView);
+    } @finally {
+        sApolloProfileTabSyncingView = NO;
+    }
 }
 
 static void ApolloProfileSetTabAvatarImage(UITabBarItem *item, UIImage *sourceImage, NSString *username) {
@@ -1704,6 +1807,7 @@ static void ApolloProfileSetTabAvatarImage(UITabBarItem *item, UIImage *sourceIm
     item.image = avatar;
     item.selectedImage = avatar;
     objc_setAssociatedObject(item, kApolloProfileTabAppliedUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(item, kApolloProfileTabAppliedImageKey, avatar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController) {
@@ -1768,10 +1872,27 @@ static void ApolloProfileApplyTabAvatarForVisibleWindows(void) {
     });
 }
 
+static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason) {
+    if (!sUseProfileAvatarTabIcon) return;
+
+    ApolloProfileApplyTabAvatarForVisibleWindows();
+    NSArray<NSNumber *> *delays = @[@0.10, @0.50, @1.25];
+    for (NSNumber *delayNumber in delays) {
+        NSTimeInterval delay = delayNumber.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!sUseProfileAvatarTabIcon) return;
+            ApolloProfileApplyTabAvatarForVisibleWindows();
+        });
+    }
+
+    if (reason.length > 0) {
+        ApolloLog(@"[UserAvatars] Scheduled profile tab avatar refresh after %@", reason);
+    }
+}
+
 static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {
     if (!sUseProfileAvatarTabIcon) return;
-    ApolloProfileApplyTabAvatarForVisibleWindows();
-    ApolloLog(@"[UserAvatars] Scheduled profile tab avatar refresh after %@", reason ?: @"account change");
+    ApolloProfileScheduleTabAvatarRefresh(reason ?: @"account change");
 }
 
 static void ApolloProfileOpenURL(NSURL *url) {
@@ -1788,6 +1909,11 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!sShowUserAvatars) {
+        %orig;
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kApolloAvatarApplyingTextKey) boolValue]) {
         %orig;
         return;
@@ -1813,6 +1939,11 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (!sShowUserAvatars) {
+        %orig;
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kApolloAvatarApplyingTextKey) boolValue]) {
         %orig;
         return;
@@ -1839,6 +1970,7 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 
 - (void)didLoad {
     %orig;
+    if (!sShowUserAvatars) return;
     ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"comment"), ApolloCommentInlineAvatarDiameter);
 }
 
@@ -1848,6 +1980,7 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 
 - (void)didLoad {
     %orig;
+    if (!sShowUserAvatars) return;
     ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
 }
 
@@ -1857,6 +1990,7 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 
 - (void)didLoad {
     %orig;
+    if (!sShowUserAvatars) return;
     ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
 }
 
@@ -1866,6 +2000,7 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 
 - (void)didLoad {
     %orig;
+    if (!sShowUserAvatars) return;
     ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"link"), ApolloFeedInlineAvatarDiameter);
 }
 
@@ -1931,6 +2066,16 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
     ApolloProfileApplyTabAvatarForController(self);
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloProfileApplyTabAvatarForController(self);
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    %orig(previousTraitCollection);
+    ApolloProfileScheduleTabAvatarRefresh(nil);
+}
+
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers {
     %orig(viewControllers);
     ApolloProfileApplyTabAvatarForController(self);
@@ -1939,6 +2084,87 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
     %orig(viewControllers, animated);
     ApolloProfileApplyTabAvatarForController(self);
+}
+
+%end
+
+%hook UITabBar
+
+- (void)didMoveToWindow {
+    %orig;
+    ApolloProfileScheduleTabAvatarRefresh(nil);
+}
+
+- (void)tintColorDidChange {
+    %orig;
+    ApolloProfileScheduleTabAvatarRefresh(nil);
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    %orig(previousTraitCollection);
+    ApolloProfileScheduleTabAvatarRefresh(nil);
+}
+
+%end
+
+%hook UITabBarButton
+
+- (void)_updateToMatchCurrentState {
+    %orig;
+    ApolloProfileSyncLegacyTabButtonAvatar(self);
+}
+
+- (void)setItemAppearanceData:(id)data {
+    %orig(data);
+    ApolloProfileSyncLegacyTabButtonAvatar(self);
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    %orig(previousTraitCollection);
+    ApolloProfileSyncLegacyTabButtonAvatar(self);
+}
+
+%end
+
+%hook UITabBarSwappableImageView
+
+- (void)setImage:(UIImage *)image {
+    %orig(image);
+    ApolloProfileSyncLegacyTabButtonAvatar(((UIView *)self).superview);
+}
+
+- (void)setAlternateImage:(UIImage *)image {
+    %orig(image);
+    ApolloProfileSyncLegacyTabButtonAvatar(((UIView *)self).superview);
+}
+
+- (void)setCurrentImage {
+    %orig;
+    ApolloProfileSyncLegacyTabButtonAvatar(((UIView *)self).superview);
+}
+
+%end
+
+%hook _UIFloatingTabBarItemView
+
+- (void)reloadItemView {
+    %orig;
+    ApolloProfileSyncFloatingTabItemViewAvatar(self);
+}
+
+- (void)_updateImage {
+    %orig;
+    ApolloProfileSyncFloatingTabItemViewAvatar(self);
+}
+
+- (void)_updateFontAndColors {
+    %orig;
+    ApolloProfileSyncFloatingTabItemViewAvatar(self);
+}
+
+- (void)setHasSelectionHighlight:(BOOL)hasSelectionHighlight {
+    %orig(hasSelectionHighlight);
+    ApolloProfileSyncFloatingTabItemViewAvatar(self);
 }
 
 %end
@@ -2002,12 +2228,30 @@ static void ApolloProfileOpenRedditProfileEditor(void) {
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
-        ApolloProfileApplyTabAvatarForVisibleWindows();
+        ApolloProfileScheduleTabAvatarRefresh(@"setting toggle");
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloUserProfileInfoUpdatedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
-        ApolloProfileApplyTabAvatarForVisibleWindows();
+        ApolloProfileScheduleTabAvatarRefresh(@"profile info update");
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloProfileScheduleTabAvatarRefresh(@"app foreground");
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloProfileScheduleTabAvatarRefresh(@"app active");
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        ApolloProfileScheduleTabAvatarRefresh(@"Apollo theme change");
     }];
 }
