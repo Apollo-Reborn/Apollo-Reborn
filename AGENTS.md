@@ -27,16 +27,10 @@ The Makefile automatically generates `src/Version.h` from the `control` file and
 
 | Path | Purpose |
 |------|---------|
-| `src/Tweak.xm` / `src/Tweak.h` | Main tweak: keychain spoofing, Imgur upload fixes, NSURLSession hooks, URL blocking, feature unlocks, `%ctor` |
-| `src/ApolloShareLinks.xm` | Share link resolution |
-| `src/ApolloMedia.xm` | Media handling: Giphy metadata synthesis, GIF speed fix, v.redd.it, Streamable |
-| `src/ApolloLiquidGlass.xm` | iOS 26 Liquid Glass UI patches (nav bar, tab bar, scroll fixes) |
-| `src/ApolloSettings.xm` | Settings injection into Apollo's Settings screen |
-| `src/ApolloRecentlyRead.xm` | "Recently Read" posts feature |
-| `src/ApolloSavedCategories.xm` | Sort fix for saved categories (ActionController + UIContextMenu) |
-| `src/ApolloVideoUnmute.xm` | Auto-unmute header video in CommentsViewController |
-| `src/ApolloCommon.{h,m}` | Shared utilities: `ApolloLog` macro, helper functions |
-| `src/ApolloState.{h,m}` | Global state: captured singletons, feature flags |
+| `src/Tweak.xm` / `src/Tweak.h` | Main tweak entry point and core runtime hooks |
+| `src/Apollo*.xm` | Feature-focused Logos modules; see `Makefile` for the current build list |
+| `src/ApolloCommon.{h,m}` | Shared utilities, including `ApolloLog` and helper functions |
+| `src/ApolloState.{h,m}` | Global state, captured singletons, and feature flags |
 
 ### Settings & UI
 
