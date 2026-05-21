@@ -23,9 +23,9 @@ liquid-glass/
     └── LiquidGlassIconPreviews.gen.h   # base64 PNG blob + LGIconRows + primary icon
 ```
 
-The Liquid Glass runtime patches live in `ApolloLiquidGlass.xm` and
-`ApolloLiquidGlassIconPicker.xm` at the repo root, alongside the other
-`Apollo*.xm` modules.
+The Liquid Glass runtime patches live in `src/ApolloLiquidGlass.xm` and
+`src/ApolloLiquidGlassIconPicker.xm`, alongside the other `src/Apollo*.xm`
+modules.
 
 ## Bundled icons
 

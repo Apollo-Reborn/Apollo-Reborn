@@ -18,7 +18,7 @@ make package
 ./build-ipa.sh --ipa /tmp/Apollo-base-liquid-glass.ipa --deb ./packages/<tweak>.deb -o ./packages/Apollo-Test.ipa
 ```
 
-The Makefile automatically generates `Version.h` from the `control` file and links FFmpegKit libraries.
+The Makefile automatically generates `src/Version.h` from the `control` file and links FFmpegKit libraries.
 `THEOS` is available at `~/theos`. Do not rely on Azule/Cyan living in `/tmp`; `build-ipa.sh` uses the repo-local `scripts/inject-deb-local.sh` first for this repo's already-injected `Apollo-base.ipa` flow, then falls back to `azule`/`cyan` only for truly stock IPAs.
 
 ## Project Structure
@@ -27,32 +27,32 @@ The Makefile automatically generates `Version.h` from the `control` file and lin
 
 | Path | Purpose |
 |------|---------|
-| `Tweak.xm` / `Tweak.h` | Main tweak: keychain spoofing, Imgur upload fixes, NSURLSession hooks, URL blocking, feature unlocks, `%ctor` |
-| `ApolloShareLinks.xm` | Share link resolution |
-| `ApolloMedia.xm` | Media handling: Giphy metadata synthesis, GIF speed fix, v.redd.it, Streamable |
-| `ApolloLiquidGlass.xm` | iOS 26 Liquid Glass UI patches (nav bar, tab bar, scroll fixes) |
-| `ApolloSettings.xm` | Settings injection into Apollo's Settings screen |
-| `ApolloRecentlyRead.xm` | "Recently Read" posts feature |
-| `ApolloSavedCategories.xm` | Sort fix for saved categories (ActionController + UIContextMenu) |
-| `ApolloVideoUnmute.xm` | Auto-unmute header video in CommentsViewController |
-| `ApolloCommon.{h,m}` | Shared utilities: `ApolloLog` macro, helper functions |
-| `ApolloState.{h,m}` | Global state: captured singletons, feature flags |
+| `src/Tweak.xm` / `src/Tweak.h` | Main tweak: keychain spoofing, Imgur upload fixes, NSURLSession hooks, URL blocking, feature unlocks, `%ctor` |
+| `src/ApolloShareLinks.xm` | Share link resolution |
+| `src/ApolloMedia.xm` | Media handling: Giphy metadata synthesis, GIF speed fix, v.redd.it, Streamable |
+| `src/ApolloLiquidGlass.xm` | iOS 26 Liquid Glass UI patches (nav bar, tab bar, scroll fixes) |
+| `src/ApolloSettings.xm` | Settings injection into Apollo's Settings screen |
+| `src/ApolloRecentlyRead.xm` | "Recently Read" posts feature |
+| `src/ApolloSavedCategories.xm` | Sort fix for saved categories (ActionController + UIContextMenu) |
+| `src/ApolloVideoUnmute.xm` | Auto-unmute header video in CommentsViewController |
+| `src/ApolloCommon.{h,m}` | Shared utilities: `ApolloLog` macro, helper functions |
+| `src/ApolloState.{h,m}` | Global state: captured singletons, feature flags |
 
 ### Settings & UI
 
 | Path | Purpose |
 |------|---------|
-| `CustomAPIViewController.{h,m}` | Settings UI for API keys, subreddit sources, backup/restore, tweak options |
-| `SavedCategoriesViewController.{h,m}` | Saved post categories CRUD (add/rename/delete, stored in group NSUserDefaults) |
+| `src/CustomAPIViewController.{h,m}` | Settings UI for API keys, subreddit sources, backup/restore, tweak options |
+| `src/SavedCategoriesViewController.{h,m}` | Saved post categories CRUD (add/rename/delete, stored in group NSUserDefaults) |
 
 ### Runtime & Libraries
 
 | Path | Purpose |
 |------|---------|
-| `fishhook.{c,h}` | Facebook's fishhook for C function rebinding (Security framework, `swift_allocObject`) |
-| `ffmpeg-kit/` | FFmpegKit static libs for v.redd.it CMAF video processing |
-| `ZipArchive/` | SSZipArchive for settings backup/restore zip export |
-| `Tweaks/FLEXing/` | FLEX debugging tools (git submodule) |
+| `src/fishhook.{c,h}` | Facebook's fishhook for C function rebinding (Security framework, `swift_allocObject`) |
+| `modules/ffmpeg-kit/` | FFmpegKit static libs for v.redd.it CMAF video processing |
+| `modules/ZipArchive/` | SSZipArchive for settings backup/restore zip export |
+| `modules/FLEXing/` | FLEX debugging tools (git submodule) |
 
 ### Reference & Build
 
@@ -61,7 +61,7 @@ The Makefile automatically generates `Version.h` from the `control` file and lin
 | `Headers/` | Class-dump headers for Apollo |
 | `packages/` | Build output (.deb files) |
 | `control` | Debian package metadata (name, version, depends) |
-| `Makefile` | Theos build config; auto-generates `Version.h`, links FFmpegKit |
+| `Makefile` | Theos build config; auto-generates `src/Version.h`, links FFmpegKit |
 
 ## Theos & Logos Conventions
 

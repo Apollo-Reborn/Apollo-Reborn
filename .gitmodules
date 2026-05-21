@@ -1,10 +1,10 @@
-[submodule "Tweaks/FLEXing"]
-    path = Tweaks/FLEXing
-    url = https://github.com/PoomSmart/FLEXing
-    branch = rootless
-[submodule "ffmpeg-kit"]
-	path = ffmpeg-kit
+[submodule "modules/FLEXing"]
+	path = modules/FLEXing
+	url = https://github.com/PoomSmart/FLEXing
+	branch = rootless
+[submodule "modules/ffmpeg-kit"]
+	path = modules/ffmpeg-kit
 	url = https://github.com/JeffreyCA/ffmpeg-kit-ios
-[submodule "ZipArchive"]
-	path = ZipArchive
+[submodule "modules/ZipArchive"]
+	path = modules/ZipArchive
 	url = https://github.com/ZipArchive/ZipArchive.git

@@ -9,57 +9,63 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ApolloImprovedCustomApi
 
-SSZIPARCHIVE_FILES = $(wildcard ZipArchive/SSZipArchive/*.m) \
-    $(wildcard ZipArchive/SSZipArchive/minizip/*.c) \
-    $(wildcard ZipArchive/SSZipArchive/minizip/compat/*.c)
+SRC_DIR := src
+MODULES_DIR := modules
+SSZIPARCHIVE_DIR := $(MODULES_DIR)/ZipArchive/SSZipArchive
+FFMPEG_KIT_DIR := $(MODULES_DIR)/ffmpeg-kit
+FLEXING_DIR := $(MODULES_DIR)/FLEXing
+
+SSZIPARCHIVE_FILES = $(wildcard $(SSZIPARCHIVE_DIR)/*.m) \
+    $(wildcard $(SSZIPARCHIVE_DIR)/minizip/*.c) \
+    $(wildcard $(SSZIPARCHIVE_DIR)/minizip/compat/*.c)
 
 ApolloImprovedCustomApi_FILES = \
-    Tweak.xm \
-    ApolloCommon.m \
-    ApolloRedditMediaUpload.m \
-    ApolloNotificationBackend.m \
-    ApolloUserProfileCache.m \
-    ApolloUserAvatars.xm \
-    ApolloImageUploadHost.xm \
-    ApolloPhotoPostComposerScrollFix.xm \
-    ApolloCreatedAtAlert.xm \
-    ApolloState.m \
-    ApolloShareLinks.xm \
-    ApolloMedia.xm \
-    ApolloCommentsCollapse.xm \
-    ApolloLiquidGlass.xm \
-    ApolloLiquidGlassIconPicker.xm \
-    ApolloAutoHideTabBar.xm \
-    ApolloSettings.xm \
-    ApolloRecentlyRead.xm \
-    ApolloSavedCategories.xm \
-    ApolloNativeActionMenus.xm \
-    ApolloTranslation.xm \
-    ApolloVideoUnmute.xm \
-    ApolloVideoSwipeFix.xm \
-    ApolloSubredditIndexPolish.xm \
-    ApolloTagFilters.xm \
-    ApolloLinkPreviewModel.m \
-    ApolloLinkPreviewCache.m \
-    ApolloLinkPreviewFetcher.m \
-    ApolloInlineImages.xm \
-    ApolloInlineLinkPreviews.xm \
-    ApolloTweetBuddy.xm \
-    CustomAPIViewController.m \
-    TranslationSettingsViewController.m \
-    SavedCategoriesViewController.m \
-    TagFiltersViewController.m \
-    Defaults.m \
-    UIWindow+Apollo.m \
-    fishhook.c \
+    $(SRC_DIR)/Tweak.xm \
+    $(SRC_DIR)/ApolloCommon.m \
+    $(SRC_DIR)/ApolloRedditMediaUpload.m \
+    $(SRC_DIR)/ApolloNotificationBackend.m \
+    $(SRC_DIR)/ApolloUserProfileCache.m \
+    $(SRC_DIR)/ApolloUserAvatars.xm \
+    $(SRC_DIR)/ApolloImageUploadHost.xm \
+    $(SRC_DIR)/ApolloPhotoPostComposerScrollFix.xm \
+    $(SRC_DIR)/ApolloCreatedAtAlert.xm \
+    $(SRC_DIR)/ApolloState.m \
+    $(SRC_DIR)/ApolloShareLinks.xm \
+    $(SRC_DIR)/ApolloMedia.xm \
+    $(SRC_DIR)/ApolloCommentsCollapse.xm \
+    $(SRC_DIR)/ApolloLiquidGlass.xm \
+    $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
+    $(SRC_DIR)/ApolloAutoHideTabBar.xm \
+    $(SRC_DIR)/ApolloSettings.xm \
+    $(SRC_DIR)/ApolloRecentlyRead.xm \
+    $(SRC_DIR)/ApolloSavedCategories.xm \
+    $(SRC_DIR)/ApolloNativeActionMenus.xm \
+    $(SRC_DIR)/ApolloTranslation.xm \
+    $(SRC_DIR)/ApolloVideoUnmute.xm \
+    $(SRC_DIR)/ApolloVideoSwipeFix.xm \
+    $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
+    $(SRC_DIR)/ApolloTagFilters.xm \
+    $(SRC_DIR)/ApolloLinkPreviewModel.m \
+    $(SRC_DIR)/ApolloLinkPreviewCache.m \
+    $(SRC_DIR)/ApolloLinkPreviewFetcher.m \
+    $(SRC_DIR)/ApolloInlineImages.xm \
+    $(SRC_DIR)/ApolloInlineLinkPreviews.xm \
+    $(SRC_DIR)/ApolloTweetBuddy.xm \
+    $(SRC_DIR)/CustomAPIViewController.m \
+    $(SRC_DIR)/TranslationSettingsViewController.m \
+    $(SRC_DIR)/SavedCategoriesViewController.m \
+    $(SRC_DIR)/TagFiltersViewController.m \
+    $(SRC_DIR)/Defaults.m \
+    $(SRC_DIR)/UIWindow+Apollo.m \
+    $(SRC_DIR)/fishhook.c \
     $(SSZIPARCHIVE_FILES)
 ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO StoreKit
 ApolloImprovedCustomApi_LIBRARIES = z iconv
-ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -Iliquid-glass/generated -IZipArchive/SSZipArchive -IZipArchive/SSZipArchive/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
+ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/$(SRC_DIR) -I$(THEOS_PROJECT_DIR)/liquid-glass/generated -I$(THEOS_PROJECT_DIR)/$(MODULES_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR)/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 
-ApolloImprovedCustomApi_OBJ_FILES = $(shell find ffmpeg-kit -name '*.a')
+ApolloImprovedCustomApi_OBJ_FILES = $(shell find $(FFMPEG_KIT_DIR) -name '*.a')
 
-SUBPROJECTS += Tweaks/FLEXing/libflex
+SUBPROJECTS += $(FLEXING_DIR)/libflex
 
 CONTROL_FILE = $(THEOS_PROJECT_DIR)/control
 
@@ -69,7 +75,8 @@ before-all:: generate_version_h
 generate_version_h:
 	@echo "Generating Version.h from control file"
 	@version=$$(grep '^Version:' $(CONTROL_FILE) | cut -d' ' -f2); \
-	echo "#define TWEAK_VERSION \"v$${version}\"" > $(THEOS_PROJECT_DIR)/Version.h
+	mkdir -p $(THEOS_PROJECT_DIR)/$(SRC_DIR); \
+	echo "#define TWEAK_VERSION \"v$${version}\"" > $(THEOS_PROJECT_DIR)/$(SRC_DIR)/Version.h
 
 # Liquid Glass icon preview header is generated explicitly by running 'make lg-previews'
 LG_DIR = $(THEOS_PROJECT_DIR)/liquid-glass
