@@ -2,10 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## [v2.14.0] - 2026-05-20
 
-- Optional **Notification Backend** support: point Apollo at your own forked self-hosted [apollo-backend](https://github.com/nickclyde/apollo-backend) instance so push registrations, watchers, and inbox checks route there instead of being silently dropped. Configure in **Settings > Custom API > Notification Backend** with the backend URL and optional registration token. Leave empty to keep current blocking behavior. APNs delivery still requires a paid Apple Developer account on the signing side.
-- New **Reddit API Secret** field in **Settings > Custom API > API Keys** so per-account Reddit credentials can be forwarded to a self-hosted notification backend that performs token refreshes server-side. Usually left empty for installed-app Reddit credentials.
+### Features
+
+- **Notification Backend** support (requires paid Apple Developer account): point Apollo at your own forked self-hosted [apollo-backend](https://github.com/nickclyde/apollo-backend) instance so push registrations, watchers, and inbox checks route there instead of being silently dropped. (Thanks @nickclyde!)
+    - Configure in **Settings > Custom API > Notification Backend** with the backend URL and optional registration token. Leave empty to keep current blocking behavior.
+    - APNs delivery still requires a paid Apple Developer account on the signing side. 
+- New **Reddit API Secret** field in **Settings > Custom API > API Keys** so per-account Reddit credentials can be forwarded to a self-hosted notification backend that performs token refreshes server-side. Usually left empty for installed-app Reddit credentials. (Thanks @nickclyde!)
+
+### Fixes
+
+- Improve **Profile Picture Tab Icon** reliability across Liquid Glass tab bar refreshes, theme changes, and app foregrounding.
+- Refine Liquid Glass **Hide Bars on Scroll** idle behavior with smoother re-collapse/re-expand handling and disable the idle setting on unsupported iOS versions.
+- Improve performance and stability across subreddit list polish, rich link previews, and the media post composer.
 
 ## [v2.13.0] - 2026-05-19
 
@@ -419,6 +429,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v2.14.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.12.0b...v2.13.0
 [v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
 [v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0

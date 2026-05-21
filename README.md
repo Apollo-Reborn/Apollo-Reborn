@@ -173,6 +173,10 @@ Thank you to these wonderful people:
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/ryannair05"><img src="https://avatars.githubusercontent.com/u/23365226?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="ryannair05"/></a><br /><sub><b>ryannair05</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=ryannair05" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/ichitaso"><img src="https://avatars.githubusercontent.com/u/980215?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="ichitaso"/></a><br /><sub><b>ichitaso</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=ichitaso" title="Code">Code</a></td>
     </tr>
+    <tr>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/epheterson"><img src="https://avatars.githubusercontent.com/u/151483?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="epheterson"/></a><br /><sub><b>epheterson</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=epheterson" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/nickclyde"><img src="https://avatars.githubusercontent.com/u/9121162?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="nickclyde"/></a><br /><sub><b>nickclyde</b></sub><br /><a href="https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/commits?author=nickclyde" title="Code">Code</a></td>
+    </tr>
   </tbody>
 </table>
 
