@@ -93,6 +93,7 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 static void ApolloSubredditDismissHeaderPickersForViewController(UIViewController *viewController);
 static void ApolloSubredditRefreshBannerForSubreddit(NSString *subredditName);
 static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName);
+static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right);
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
                                                UIView *originalHeader,
@@ -379,7 +380,19 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
             } else {
                 saved = [[ApolloSubredditCustomBannerCache sharedCache] saveBanner:image forSubreddit:subredditName error:&saveError];
             }
-            if (saved) return;
+            if (saved) {
+                if (header && ApolloSubredditNamesEqual(header.subredditName, subredditName)) {
+                    ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
+                    if (assetKind == ApolloSubredditHeaderAssetKindIcon) {
+                        ApolloSubredditApplyIconForHeader(header, subredditName, info);
+                    } else {
+                        ApolloSubredditApplyBannerForHeader(header, subredditName, info);
+                    }
+                    [header setNeedsLayout];
+                    [header layoutIfNeeded];
+                }
+                return;
+            }
 
             UIViewController *host = header.hostViewController;
             if (!host) return;
@@ -449,6 +462,13 @@ static NSString *ApolloNormalizedSubredditName(NSString *subredditName) {
                                 @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
     if ([clean rangeOfCharacterFromSet:invalid].location != NSNotFound) return nil;
     return clean;
+}
+
+static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right) {
+    NSString *normalizedLeft = ApolloNormalizedSubredditName(left);
+    NSString *normalizedRight = ApolloNormalizedSubredditName(right);
+    if (normalizedLeft.length == 0 || normalizedRight.length == 0) return NO;
+    return [normalizedLeft caseInsensitiveCompare:normalizedRight] == NSOrderedSame;
 }
 
 static id ApolloSubredditObjectIvarValue(id object, NSString *name) {
@@ -1071,7 +1091,7 @@ static void ApolloSubredditRefreshBannerInTree(UIViewController *viewController,
     if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
-    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
+    if (ApolloSubredditNamesEqual(ApolloSubredditNameFromViewController(viewController), subredditName)) {
         ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
         if (header) {
             ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
@@ -1103,7 +1123,7 @@ static void ApolloSubredditRefreshIconInTree(UIViewController *viewController,
     if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
-    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
+    if (ApolloSubredditNamesEqual(ApolloSubredditNameFromViewController(viewController), subredditName)) {
         ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
         if (header) {
             ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
