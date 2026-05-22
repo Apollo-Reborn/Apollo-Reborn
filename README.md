@@ -4,7 +4,9 @@
 iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you continue using Apollo with your own API keys after its shutdown in June 2023. The tweak also unlocks several Ultra features and includes several enhancements and fixes.
 
 > [!IMPORTANT]
-> **Project renamed: Apollo-ImprovedCustomApi → Apollo-Reborn.** The project is moving forward under team-based maintainership to keep Apollo polished and sustainably maintained for the community. For background, see JeffreyCA's [original community announcement](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/263).
+> **Apollo-ImprovedCustomApi** is now **Apollo-Reborn**
+>
+> _May 22, 2026_ — The project is moving forward under team-based maintainership to keep Apollo polished and sustainably maintained for the community. For background, see JeffreyCA's [original community announcement](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/263).
 
 | | | | |
 |:--:|:--:|:--:|:--:|
