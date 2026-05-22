@@ -17,7 +17,7 @@ on:
         description: 'Output IPA filename (without .ipa extension)'
         required: false
         type: string
-        default: 'Apollo-ImprovedCustomApi'
+        default: 'Apollo-Reborn'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -87,7 +87,7 @@ jobs:
         run: |
           OUTPUT_NAME="${{ github.event.inputs.output_name }}"
           if [ -z "$OUTPUT_NAME" ]; then
-            OUTPUT_NAME="Apollo-ImprovedCustomApi"
+            OUTPUT_NAME="Apollo-Reborn"
           fi
           OUTPUT_IPA="${OUTPUT_NAME}.ipa"
           echo "Injecting ${{ steps.locate_deb.outputs.deb_path }} into Apollo.ipa..."

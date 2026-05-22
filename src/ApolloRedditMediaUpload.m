@@ -578,7 +578,7 @@ ApolloRedditMediaUploadOperation *ApolloUploadMediaDataToRedditCancellable(NSDat
 
     NSString *resolvedMIMEType = ApolloMediaMIMETypeForFilename(filename, mimeType);
     NSString *resolvedFilename = ApolloNormalizedFilename(filename, resolvedMIMEType);
-    NSString *resolvedUserAgent = userAgent.length > 0 ? userAgent : @"Apollo-ImprovedCustomApi/RedditMediaUpload";
+    NSString *resolvedUserAgent = userAgent.length > 0 ? userAgent : @"Apollo-Reborn/RedditMediaUpload";
 
     ApolloRequestRedditMediaAsset(mediaData, nil, resolvedFilename, resolvedMIMEType, bearerToken, resolvedUserAgent, operation, safeCompletion);
     return operation;
@@ -606,7 +606,7 @@ ApolloRedditMediaUploadOperation *ApolloUploadMediaFileToRedditCancellable(NSURL
 
     NSString *resolvedMIMEType = ApolloMediaMIMETypeForFilename(filename ?: mediaFileURL.lastPathComponent, mimeType);
     NSString *resolvedFilename = ApolloNormalizedFilename(filename.length > 0 ? filename : mediaFileURL.lastPathComponent, resolvedMIMEType);
-    NSString *resolvedUserAgent = userAgent.length > 0 ? userAgent : @"Apollo-ImprovedCustomApi/RedditMediaUpload";
+    NSString *resolvedUserAgent = userAgent.length > 0 ? userAgent : @"Apollo-Reborn/RedditMediaUpload";
 
     ApolloRequestRedditMediaAsset(nil, mediaFileURL, resolvedFilename, resolvedMIMEType, bearerToken, resolvedUserAgent, operation, safeCompletion);
     return operation;
