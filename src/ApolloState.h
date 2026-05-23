@@ -31,6 +31,15 @@ extern BOOL sModernSubredditDividers;
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
 // link + optional link card) is preserved. See ApolloInlineImages.xm.
 extern BOOL sEnableInlineImages;
+
+// Horizontal alignment for inline media containers narrower than the row width
+// (tall portrait images, height-capped images). Has no effect on full-width media.
+typedef NS_ENUM(NSInteger, ApolloInlineImageAlignment) {
+    ApolloInlineImageAlignmentCenter = 0,
+    ApolloInlineImageAlignmentLeft   = 1,
+    ApolloInlineImageAlignmentRight  = 2,
+};
+extern NSInteger sInlineImageAlignment;
 typedef NS_ENUM(NSInteger, ApolloLinkPreviewMode) {
     ApolloLinkPreviewModeOff = 0,
     ApolloLinkPreviewModeCompact = 1,
