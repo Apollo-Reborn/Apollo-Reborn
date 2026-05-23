@@ -51,6 +51,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInlineImages.xm \
     $(SRC_DIR)/ApolloInlineLinkPreviews.xm \
     $(SRC_DIR)/ApolloTweetBuddy.xm \
+	$(SRC_DIR)/ApolloVisionOSFix.xm \
     $(SRC_DIR)/CustomAPIViewController.m \
     $(SRC_DIR)/TranslationSettingsViewController.m \
     $(SRC_DIR)/SavedCategoriesViewController.m \
