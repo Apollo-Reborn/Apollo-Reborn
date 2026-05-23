@@ -1,7 +1,7 @@
 // ApolloTweetBuddy.xm
 //
 // Vendored from DeltAndy123's PR #215:
-// https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/pull/215
+// https://github.com/Apollo-Reborn/Apollo-Reborn/pull/215
 //
 // Intercepts Apollo's TweetBuddy network requests to apollogur.download (now
 // defunct) and replaces them with live fetches against X/Twitter's internal

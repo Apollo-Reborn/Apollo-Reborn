@@ -7,7 +7,7 @@ THEOS_LEAN_AND_MEAN = 1
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = ApolloImprovedCustomApi
+TWEAK_NAME = ApolloReborn
 
 SRC_DIR := src
 MODULES_DIR := modules
@@ -19,7 +19,7 @@ SSZIPARCHIVE_FILES = $(wildcard $(SSZIPARCHIVE_DIR)/*.m) \
     $(wildcard $(SSZIPARCHIVE_DIR)/minizip/*.c) \
     $(wildcard $(SSZIPARCHIVE_DIR)/minizip/compat/*.c)
 
-ApolloImprovedCustomApi_FILES = \
+ApolloReborn_FILES = \
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
@@ -64,11 +64,11 @@ ApolloImprovedCustomApi_FILES = \
     $(SRC_DIR)/UIWindow+Apollo.m \
     $(SRC_DIR)/fishhook.c \
     $(SSZIPARCHIVE_FILES)
-ApolloImprovedCustomApi_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO StoreKit PhotosUI
-ApolloImprovedCustomApi_LIBRARIES = z iconv
-ApolloImprovedCustomApi_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/$(SRC_DIR) -I$(THEOS_PROJECT_DIR)/liquid-glass/generated -I$(THEOS_PROJECT_DIR)/$(MODULES_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR)/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
+ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation OSLog NaturalLanguage ImageIO StoreKit PhotosUI
+ApolloReborn_LIBRARIES = z iconv
+ApolloReborn_CFLAGS = -fobjc-arc -Wno-unguarded-availability-new -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/$(SRC_DIR) -I$(THEOS_PROJECT_DIR)/liquid-glass/generated -I$(THEOS_PROJECT_DIR)/$(MODULES_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR) -I$(THEOS_PROJECT_DIR)/$(SSZIPARCHIVE_DIR)/minizip -DHAVE_ARC4RANDOM_BUF -DHAVE_ICONV -DHAVE_INTTYPES_H -DHAVE_PKCRYPT -DHAVE_STDINT_H -DHAVE_WZAES -DHAVE_ZLIB -DZLIB_COMPAT
 
-ApolloImprovedCustomApi_OBJ_FILES = $(shell find $(FFMPEG_KIT_DIR) -name '*.a')
+ApolloReborn_OBJ_FILES = $(shell find $(FFMPEG_KIT_DIR) -name '*.a')
 
 SUBPROJECTS += $(FLEXING_DIR)/libflex
 

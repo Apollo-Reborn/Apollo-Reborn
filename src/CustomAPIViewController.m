@@ -1213,7 +1213,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     switch (row) {
         case 0: return [self subtitleCellWithIdentifier:@"Cell_About_GitHub"
                                                   title:@"Open Source on GitHub"
-                                               subtitle:@"@JeffreyCA"
+                                               subtitle:@"@Apollo-Reborn"
                                                b64Image:B64Github];
         case 1: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_ThanksTo"];
@@ -1295,7 +1295,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. You may be able to use credentials from another 3rd-party app ("
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"more info"
-            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/JeffreyCA/Apollo-ImprovedCustomApi?tab=readme-ov-file#dont-have-an-api-key"]}]];
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@")."
             attributes:plainAttrs]];
     } else if (section == SectionSubreddits) {
@@ -1384,7 +1384,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
     } else if (indexPath.section == SectionAbout) {
         if (indexPath.row == 0) {
-            [self presentURLInApolloBrowser:[NSURL URLWithString:@"https://github.com/JeffreyCA/Apollo-ImprovedCustomApi"]];
+            [self presentURLInApolloBrowser:[NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn"]];
         } else if (indexPath.row == 1) {
             [self pushThanksToViewController];
         } else if (indexPath.row == 2) {
@@ -2127,7 +2127,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
 #pragma mark - ApolloThanksToViewController
 
-static NSString *const kThanksToContributorsURL = @"https://raw.githubusercontent.com/JeffreyCA/Apollo-ImprovedCustomApi/refs/heads/main/contributors.json";
+static NSString *const kThanksToContributorsURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
 static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
 @implementation ApolloThanksToViewController {

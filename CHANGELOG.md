@@ -305,7 +305,7 @@ The Custom API settings view has also been redesigned and is now accessible dire
 
 - Fix occassional crashes when scrolling on iOS 26 with Liquid Glass patch (thanks @dankrichtofen for the original implementation)
 - Fix crashes when tapping share URL link buttons on iOS 26
-    - Note that this is **not** a full fix. Tapping the link button now navigates to a webview on iOS 26. As a workaround, tap the inline text (see [comment here](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/62#issuecomment-3247359652)).
+    - Note that this is **not** a full fix. Tapping the link button now navigates to a webview on iOS 26. As a workaround, tap the inline text (see [comment here](https://github.com/Apollo-Reborn/Apollo-Reborn/issues/62#issuecomment-3247359652)).
 - Fix debug logging on iOS 26
 
 ## [v1.2.4] - 2025-08-23
@@ -315,7 +315,7 @@ The Custom API settings view has also been redesigned and is now accessible dire
 ## [v1.2.3] - 2025-04-07
 
 - Fix issue with Imgur multi-image uploads consistently failing. Note that multi-image uploads still fail on the first attempt but should succeed on the next attempt.
-- Update Custom API settings with link to [new GitHub discussion](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/discussions/60) where you can share your own subreddit sources with others.
+- Update Custom API settings with link to [new GitHub discussion](https://github.com/Apollo-Reborn/Apollo-Reborn/discussions/60) where you can share your own subreddit sources with others.
 
 ## [v1.2.2] - 2025-01-16
 
@@ -393,14 +393,14 @@ Add support for /u/ share links (e.g. `reddit.com/u/username/s/xxxxxx`).
 ## [v1.0.8] - 2023-12-15
 
 - Lower minimum iOS version requirement to 14.0
-- Toggleable settings for blocking announcements and some Ultra settings (not fully working, see [#1](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/1)). **These are the same as the previous experimental builds.**
+- Toggleable settings for blocking announcements and some Ultra settings (not fully working, see [#1](https://github.com/Apollo-Reborn/Apollo-Reborn/issues/1)). **These are the same as the previous experimental builds.**
     - All toggles are located in Settings -> General -> Custom API
     - New Comments Highlightifier shows new comment count badge, but doesn't highlight comments inside a thread
     - Subreddit Weather and Time widget doesn't seem to work (not showing or loads infinitely)
 
 ## [v1.0.7] - 2023-12-07
 
-- Add support for resolving Reddit media share links ([#9](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/pull/9)) - thanks [@mmshivesh](https://github.com/mmshivesh)!
+- Add support for resolving Reddit media share links ([#9](https://github.com/Apollo-Reborn/Apollo-Reborn/pull/9)) - thanks [@mmshivesh](https://github.com/mmshivesh)!
 
 ## [v1.0.5] - 2023-12-02
 
@@ -429,58 +429,58 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
-[v2.14.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.13.0...v2.14.0
-[v2.13.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.12.0b...v2.13.0
-[v2.12.0b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.11.0...v2.12.0b
-[v2.11.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.10.0...v2.11.0
-[v2.10.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.9.0...v2.10.0
-[v2.9.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.8.0...v2.9.0
-[v2.8.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.2...v2.8.0
-[v2.7.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.1...v2.7.2
-[v2.7.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.7.0...v2.7.1
-[v2.7.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.6.1...v2.7.0
-[v2.6.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.6.0...v2.6.1
-[v2.6.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.5.0...v2.6.0
-[v2.5.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.4.0...v2.5.0
-[v2.4.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.3.0...v2.4.0
-[v2.3.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.2.1...v2.3.0
-[v2.2.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.2.0...v2.2.1
-[v2.2.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.1.0...v2.2.0
-[v2.1.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v2.0.0...v2.1.0
-[v2.0.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.5...v2.0.0
-[v1.4.5]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.4...v1.4.5
-[v1.4.4]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.3...v1.4.4
-[v1.4.3]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.2...v1.4.3
-[v1.4.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.1...v1.4.2
-[v1.4.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.4.0...v1.4.1
-[v1.4.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.3.2...v1.4.0
-[v1.3.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.3.1...v1.3.2
-[v1.3.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.3.0...v1.3.1
-[v1.3.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.6...v1.3.0
-[v1.2.6]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.5...v1.2.6
-[v1.2.5]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.4...v1.2.5
-[v1.2.4]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.3...v1.2.4
-[v1.2.3]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.2...v1.2.3
-[v1.2.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.2.1...v1.2.2
-[v1.2.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.8...v1.2.1
-[v1.1.8]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.7b...v1.1.8
-[v1.1.7b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.7...v1.1.7b
-[v1.1.7]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.6...v1.1.7
-[v1.1.6]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.5b...v1.1.6
-[v1.1.5b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.4...v1.1.5b
-[v1.1.4]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.3...v1.1.4
-[v1.1.3]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.2...v1.1.3
-[v1.1.2]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.1.1...v1.1.2
-[v1.1.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.12...v1.1.1
-[v1.0.12]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.11...v1.0.12
-[v1.0.11]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.10...v1.0.11
-[v1.0.10]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.9...v1.0.10
-[v1.0.9]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.8...v1.0.9
-[v1.0.8]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.7...v1.0.8
-[v1.0.7]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.5...v1.0.7
-[v1.0.5]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.4...v1.0.5
-[v1.0.4]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.3b...v1.0.4
-[v1.0.3b]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.2c...v1.0.3b
-[v1.0.2c]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.1...v1.0.2c
-[v1.0.1]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.0...v1.0.1
-[v1.0.0]: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/compare/v1.0.0
+[v2.14.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.13.0...v2.14.0
+[v2.13.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.12.0b...v2.13.0
+[v2.12.0b]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.11.0...v2.12.0b
+[v2.11.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.10.0...v2.11.0
+[v2.10.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.9.0...v2.10.0
+[v2.9.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.8.0...v2.9.0
+[v2.8.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.7.2...v2.8.0
+[v2.7.2]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.7.1...v2.7.2
+[v2.7.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.7.0...v2.7.1
+[v2.7.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.6.1...v2.7.0
+[v2.6.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.6.0...v2.6.1
+[v2.6.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.5.0...v2.6.0
+[v2.5.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.4.0...v2.5.0
+[v2.4.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.3.0...v2.4.0
+[v2.3.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.2.1...v2.3.0
+[v2.2.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.2.0...v2.2.1
+[v2.2.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.1.0...v2.2.0
+[v2.1.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.0.0...v2.1.0
+[v2.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.5...v2.0.0
+[v1.4.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.4...v1.4.5
+[v1.4.4]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.3...v1.4.4
+[v1.4.3]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.2...v1.4.3
+[v1.4.2]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.1...v1.4.2
+[v1.4.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.4.0...v1.4.1
+[v1.4.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.3.2...v1.4.0
+[v1.3.2]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.3.1...v1.3.2
+[v1.3.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.3.0...v1.3.1
+[v1.3.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.6...v1.3.0
+[v1.2.6]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.5...v1.2.6
+[v1.2.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.4...v1.2.5
+[v1.2.4]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.3...v1.2.4
+[v1.2.3]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.2...v1.2.3
+[v1.2.2]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.2.1...v1.2.2
+[v1.2.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.8...v1.2.1
+[v1.1.8]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.7b...v1.1.8
+[v1.1.7b]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.7...v1.1.7b
+[v1.1.7]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.6...v1.1.7
+[v1.1.6]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.5b...v1.1.6
+[v1.1.5b]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.4...v1.1.5b
+[v1.1.4]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.3...v1.1.4
+[v1.1.3]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.2...v1.1.3
+[v1.1.2]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.1.1...v1.1.2
+[v1.1.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.12...v1.1.1
+[v1.0.12]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.11...v1.0.12
+[v1.0.11]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.10...v1.0.11
+[v1.0.10]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.9...v1.0.10
+[v1.0.9]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.8...v1.0.9
+[v1.0.8]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.7...v1.0.8
+[v1.0.7]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.5...v1.0.7
+[v1.0.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.4...v1.0.5
+[v1.0.4]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.3b...v1.0.4
+[v1.0.3b]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.2c...v1.0.3b
+[v1.0.2c]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.1...v1.0.2c
+[v1.0.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.0...v1.0.1
+[v1.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.0.0

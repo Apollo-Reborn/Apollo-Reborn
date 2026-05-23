@@ -1,5 +1,5 @@
 {
-  "repo": "JeffreyCA/Apollo-ImprovedCustomApi",
+  "repo": "Apollo-Reborn/Apollo-Reborn",
   "readme": "README.md",
   "contributorsPerRow": 7,
   "contributors": [
@@ -8,16 +8,24 @@
       "github": "JeffreyCA"
     },
     {
-      "role": "code",
-      "github": "EthanArbuckle"
-    },
-    {
-      "role": "code",
+      "role": "maintainer",
       "github": "icpryde"
     },
     {
-      "role": "code",
+      "role": "maintainer",
       "github": "jordanearle"
+    },
+    {
+      "role": "maintainer",
+      "github": "nickclyde"
+    },
+    {
+      "role": "maintainer",
+      "github": "DeltAndy123"
+    },
+    {
+      "role": "code",
+      "github": "EthanArbuckle"
     },
     {
       "role": "code",
@@ -26,10 +34,6 @@
     {
       "role": "code",
       "github": "hllvc"
-    },
-    {
-      "role": "code",
-      "github": "DeltAndy123"
     },
     {
       "role": "code",
@@ -62,10 +66,6 @@
     {
       "role": "code",
       "github": "epheterson"
-    },
-    {
-      "role": "code",
-      "github": "nickclyde"
     },
     {
       "role": "design",
