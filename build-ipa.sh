@@ -17,7 +17,7 @@ usage() {
     echo ""
     echo "Examples:"
     echo "  $0 --ipa ./Apollo.ipa"
-    echo "  $0 --ipa ./Apollo.ipa --deb ./packages/ca.jeffrey.apollo-improvedcustomapi_*.deb -o ./packages/Apollo-Tweaked.ipa"
+    echo "  $0 --ipa ./Apollo.ipa --deb ./packages/com.apollo.reborn_*.deb -o ./packages/Apollo-Tweaked.ipa"
 }
 
 while [[ $# -gt 0 ]]; do

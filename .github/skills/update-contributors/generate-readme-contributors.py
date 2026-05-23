@@ -25,7 +25,7 @@ ROLE_BADGES = {
     "design": ("Design", "Icon and design"),
 }
 
-DESIGN_CREDIT_URL = "https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/tree/main/liquid-glass#bundled-icons"
+DESIGN_CREDIT_URL = "https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/liquid-glass#bundled-icons"
 
 
 def load_config() -> dict:

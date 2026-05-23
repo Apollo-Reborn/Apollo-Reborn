@@ -2,7 +2,7 @@ name: Patch IPA (does not inject tweak)
 
 # Generic IPA patching workflow (DOES NOT inject the tweak)
 # Supports:
-# - Liquid Glass patch for iOS 26 (credit to @ryannair05: https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/63)
+# - Liquid Glass patch for iOS 26 (credit to @ryannair05: https://github.com/Apollo-Reborn/Apollo-Reborn/issues/63)
 # - Custom URL schemes injection for OAuth redirects
 
 on:

@@ -8,3 +8,6 @@
 [submodule "modules/ZipArchive"]
 	path = modules/ZipArchive
 	url = https://github.com/ZipArchive/ZipArchive.git
+[submodule "Headers"]
+	path = Headers
+	url = https://github.com/Apollo-Reborn/Apollo-Headers
