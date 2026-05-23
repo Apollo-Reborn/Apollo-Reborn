@@ -51,6 +51,8 @@ static const void *kApolloSubredditBannerPickerCoordinatorKey = &kApolloSubreddi
 static const void *kApolloSubredditIconPickerCoordinatorKey = &kApolloSubredditIconPickerCoordinatorKey;
 static const void *kApolloSubredditInstallInProgressKey = &kApolloSubredditInstallInProgressKey;
 
+static Class sPostsViewControllerClass = Nil;
+
 typedef NS_ENUM(NSInteger, ApolloSubredditHeaderAssetKind) {
     ApolloSubredditHeaderAssetKindBanner = 0,
     ApolloSubredditHeaderAssetKindIcon = 1,
@@ -471,16 +473,66 @@ static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right) {
     return [normalizedLeft caseInsensitiveCompare:normalizedRight] == NSOrderedSame;
 }
 
-static id ApolloSubredditObjectIvarValue(id object, NSString *name) {
+static BOOL ApolloSubredditIsLikelyObjectPointer(id value) {
+    if (!value) return NO;
+    uintptr_t addr = (uintptr_t)(__bridge void *)value;
+#if __arm64__
+    // Tagged pointers are valid ObjC objects on arm64.
+    if (addr & 0x1) return YES;
+#endif
+    // Reject inline Swift string bits and other non-heap addresses (e.g. 0x726563636f73 = "soccer").
+    if (addr < 0x100000000ULL || addr > 0x8000000000ULL) return NO;
+    return YES;
+}
+
+static id ApolloSubredditObjectIvar(id object, NSString *name) {
     if (!object || name.length == 0) return nil;
     for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
         Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
         if (!ivar) continue;
+        const char *type = ivar_getTypeEncoding(ivar);
+        if (!type || type[0] != '@') continue;
         @try {
-            return object_getIvar(object, ivar);
+            id value = object_getIvar(object, ivar);
+            return ApolloSubredditIsLikelyObjectPointer(value) ? value : nil;
         } @catch (__unused NSException *exception) {
             return nil;
         }
+    }
+    return nil;
+}
+
+static NSString *ApolloSubredditSwiftStringIvar(id object, NSString *name) {
+    if (!object || name.length == 0) return nil;
+    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
+        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
+        if (!ivar) continue;
+
+        const char *type = ivar_getTypeEncoding(ivar);
+        if (type && type[0] == '@') continue;
+
+        ptrdiff_t offset = ivar_getOffset(ivar);
+        uint8_t *base = (uint8_t *)(__bridge void *)object + offset;
+        uint64_t low = 0;
+        uint64_t high = 0;
+        memcpy(&low, base, sizeof(low));
+        memcpy(&high, base + sizeof(high), sizeof(high));
+
+        uint8_t discriminator = (uint8_t)(high >> 56);
+        if (discriminator < 0xE0 || discriminator > 0xEF) continue;
+
+        NSUInteger length = discriminator - 0xE0;
+        if (length == 0 || length > 15) continue;
+
+        char buffer[16] = {0};
+        for (NSUInteger i = 0; i < length && i < 8; i++) {
+            buffer[i] = (char)((low >> (i * 8)) & 0xFF);
+        }
+        for (NSUInteger i = 8; i < length; i++) {
+            buffer[i] = (char)((high >> ((i - 8) * 8)) & 0xFF);
+        }
+
+        return [[NSString alloc] initWithBytes:buffer length:length encoding:NSUTF8StringEncoding];
     }
     return nil;
 }
@@ -522,14 +574,21 @@ static NSString *ApolloSubredditNameFromViewController(UIViewController *viewCon
                                             @"subreddit", @"subredditName", @"community",
                                             @"source", @"listing", @"collection"];
     for (NSString *ivarName in preferredIvars) {
-        id value = ApolloSubredditObjectIvarValue(viewController, ivarName);
-        if (!value) continue;
-        if ([value isKindOfClass:[NSString class]]) {
-            NSString *name = ApolloNormalizedSubredditName(value);
+        id value = ApolloSubredditObjectIvar(viewController, ivarName);
+        if (value) {
+            if ([value isKindOfClass:[NSString class]]) {
+                NSString *name = ApolloNormalizedSubredditName(value);
+                if (name.length > 0) return name;
+            }
+            NSString *name = ApolloSubredditNameFromModelObject(value);
             if (name.length > 0) return name;
         }
-        NSString *name = ApolloSubredditNameFromModelObject(value);
-        if (name.length > 0) return name;
+
+        NSString *swiftValue = ApolloSubredditSwiftStringIvar(viewController, ivarName);
+        if (swiftValue.length > 0) {
+            NSString *name = ApolloNormalizedSubredditName(swiftValue);
+            if (name.length > 0) return name;
+        }
     }
 
     NSString *title = viewController.navigationItem.title ?: viewController.title;
@@ -1091,7 +1150,7 @@ static void ApolloSubredditRefreshBannerInTree(UIViewController *viewController,
     if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
-    if (ApolloSubredditNamesEqual(ApolloSubredditNameFromViewController(viewController), subredditName)) {
+    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
         ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
         if (header) {
             ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
@@ -1123,7 +1182,7 @@ static void ApolloSubredditRefreshIconInTree(UIViewController *viewController,
     if (!viewController || subredditName.length == 0 || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
-    if (ApolloSubredditNamesEqual(ApolloSubredditNameFromViewController(viewController), subredditName)) {
+    if ([ApolloSubredditNameFromViewController(viewController) isEqualToString:subredditName]) {
         ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
         if (header) {
             ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
@@ -1153,8 +1212,9 @@ static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewCo
     if (!viewController || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
-    if (objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey) ||
-        ApolloSubredditNameFromViewController(viewController).length > 0) {
+    BOOL isPostsVC = sPostsViewControllerClass && [viewController isKindOfClass:sPostsViewControllerClass];
+    BOOL alreadyWrapped = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey) != nil;
+    if (isPostsVC || alreadyWrapped) {
         ApolloSubredditInstallOrUpdateHeader(viewController);
     }
 
@@ -1321,6 +1381,8 @@ static BOOL ApolloSubredditShouldBlockOffset(UITableView *tableView, CGPoint new
 %end
 
 %ctor {
+    sPostsViewControllerClass = objc_getClass("_TtC6Apollo19PostsViewController");
+
     [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloSubredditHeaderToggleChangedNotification"
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
