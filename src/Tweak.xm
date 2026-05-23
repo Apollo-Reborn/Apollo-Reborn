@@ -949,6 +949,7 @@ static void initializeRandomSources() {
                                     UDKeyUnmuteCommentsVideos: @0,
                                     UDKeyProxyImgurDDG: @NO,
                                     UDKeyEnableInlineImages: @YES,
+                                    UDKeyInlineImageAlignment: @(ApolloInlineImageAlignmentCenter),
                                     UDKeyLinkPreviewBodyMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCommentsMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCardColor: @(ApolloLinkPreviewCardColorNeutral),
@@ -990,6 +991,11 @@ static void initializeRandomSources() {
     sUnmuteCommentsVideos = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyUnmuteCommentsVideos];
     sProxyImgurDDG = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG];
     sEnableInlineImages = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages];
+    sInlineImageAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyInlineImageAlignment];
+    if (sInlineImageAlignment < ApolloInlineImageAlignmentCenter || sInlineImageAlignment > ApolloInlineImageAlignmentRight) {
+        sInlineImageAlignment = ApolloInlineImageAlignmentCenter;
+        [standardDefaults setInteger:sInlineImageAlignment forKey:UDKeyInlineImageAlignment];
+    }
     sLinkPreviewBodyMode = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyLinkPreviewBodyMode];
     if (sLinkPreviewBodyMode < ApolloLinkPreviewModeOff || sLinkPreviewBodyMode > ApolloLinkPreviewModeFull) {
         sLinkPreviewBodyMode = ApolloLinkPreviewModeFull;

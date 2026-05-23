@@ -31,6 +31,9 @@ static NSString *const UDKeyAutoHideTabBarShowOnIdle = @"AutoHideTabBarShowOnIdl
 // Render image URLs (i.redd.it, preview.redd.it, i.imgur.com, generic .png/.jpg/.jpeg/.webp)
 // inline within post selftext and comments instead of leaving them as plain text links.
 static NSString *const UDKeyEnableInlineImages = @"EnableInlineImages";
+// Horizontal alignment for inline media that is narrower than the row (e.g. tall portrait images).
+// 0 = Center (default), 1 = Left, 2 = Right.
+static NSString *const UDKeyInlineImageAlignment = @"InlineImageAlignment";
 
 // Bulk translation feature
 static NSString *const UDKeyEnableBulkTranslation = @"EnableBulkTranslation";
