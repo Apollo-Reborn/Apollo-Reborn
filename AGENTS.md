@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Apollo-ImprovedCustomApi is an iOS tweak for the Apollo for Reddit app that adds in-app configurable API keys and several bug fixes/improvements. Built using the Theos framework, it hooks into Apollo's runtime to provide custom API credential management, sideload fixes, and media handling improvements.
+Apollo-Reborn is an iOS tweak for the Apollo for Reddit app that adds in-app configurable API keys and several bug fixes/improvements. Built using the Theos framework, it hooks into Apollo's runtime to provide custom API credential management, sideload fixes, and media handling improvements.
 
 ## Build & Development Commands
 
@@ -61,7 +61,7 @@ The Makefile automatically generates `src/Version.h` from the `control` file and
 
 - Use Logos directives (`%hook`, `%orig`, `%group`, `%ctor`) for runtime patches
 - Use `%hookf` for C function hooks
-- Register new source files in `Makefile` under `ApolloImprovedCustomApi_FILES`
+- Register new source files in `Makefile` under `ApolloReborn_FILES`
 - Keep related hooks grouped together
 - **`%orig` passes original arguments**: `%orig;` always calls the original method with the original captured arguments, even if you've reassigned the local parameter variables. To pass modified values, use explicit arguments: `%orig(arg1, modifiedArg2, arg3)`. This matters when normalizing URLs in blocks/callbacks — the ignoreHandler must use `%orig(textNode, attr, val, point, range)` not bare `%orig;` if `val` was modified.
 - **`MSHookIvar` only works inside `%hook` blocks**: It's a Logos macro. In static helper functions, use `class_getInstanceVariable` + `object_getIvar` from the ObjC runtime instead.

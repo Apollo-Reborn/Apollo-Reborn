@@ -1,9 +1,9 @@
-Package: ca.jeffrey.apollo-improvedcustomapi
-Name: Apollo-ImprovedCustomApi
+Package: com.apollo.reborn
+Name: Apollo-Reborn
 Version: 2.14.0
 Architecture: iphoneos-arm
 Description: Apollo for Reddit tweak with in-app configurable API keys
-Maintainer: JeffreyCA
-Author: JeffreyCA
+Maintainer: Apollo Reborn team
+Author: Apollo Reborn team
 Section: Tweaks
 Depends: mobilesubstrate (>= 0.9.5000)
