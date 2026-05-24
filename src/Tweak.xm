@@ -948,6 +948,7 @@ static void initializeRandomSources() {
                                     UDKeyPreferredGIFFallbackFormat: @1,
                                     UDKeyUnmuteCommentsVideos: @0,
                                     UDKeyProxyImgurDDG: @NO,
+                                    UDKeyImageChestAPIToken: @"",
                                     UDKeyEnableInlineImages: @YES,
                                     UDKeyLinkPreviewBodyMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCommentsMode: @(ApolloLinkPreviewModeFull),
@@ -955,6 +956,7 @@ static void initializeRandomSources() {
                                     UDKeyImageUploadProvider: @(ImageUploadProviderImgur),
                                     UDKeyShowUserAvatars: @NO,
                                     UDKeyUseProfileAvatarTabIcon: @NO,
+                                    UDKeyShowSubredditHeaders: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @NO,
                                     UDKeyEnableBulkTranslation: @NO,
                                     UDKeyAutoTranslateOnAppear: @YES,
@@ -981,6 +983,7 @@ static void initializeRandomSources() {
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
     sRedditClientSecret = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientSecret] ?: @"" copy];
     sImgurClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyImgurClientId] ?: @"" copy];
+    sImageChestAPIToken = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyImageChestAPIToken] ?: @"" copy];
     sRedirectURI = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedirectURI] ?: @"" copy];
     sUserAgent = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyUserAgent] ?: @"" copy];
     sBlockAnnouncements = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBlockAnnouncements];
@@ -1009,6 +1012,7 @@ static void initializeRandomSources() {
     sImageUploadProvider = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyImageUploadProvider];
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
+    sShowSubredditHeaders = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders];
     sAutoHideTabBarShowOnIdle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoHideTabBarShowOnIdle];
     sModernSubredditDividers = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];

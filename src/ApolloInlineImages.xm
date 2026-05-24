@@ -8,12 +8,14 @@
 //
 
 #import "ApolloCommon.h"
+#import "ApolloImageChestResolver.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <math.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -143,6 +145,7 @@ static char kApolloAspectRatioKey;             // NSNumber height/width — NIL 
 static char kApolloLongPressInstalledKey;      // NSNumber BOOL — gate for one-shot UIContextMenuInteraction install
 static char kApolloPlayOverlayViewKey;         // UIView play overlay container, also used as install gate
 static char kApolloStackedCardSyncerKey;       // ApolloStackedCardSyncer — keeps the multi-image card peeking behind imageNode
+static char kApolloImageChestItemsKey;         // NSArray<NSDictionary *> direct ImageChest CDN image entries for album pager
 
 // MARK: - Class lookups (cached)
 
@@ -479,6 +482,7 @@ static void ApolloResolveImgurURL(NSURL *url, void (^completion)(NSDictionary *r
     }
 }
 
+// Image Chest album metadata is resolved by ApolloImageChestResolver.
 static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *host = [[url host] lowercaseString];
@@ -489,7 +493,7 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
     // Imgur album/gallery URLs (imgur.com/a/<id>, imgur.com/gallery/<id>) —
     // resolved asynchronously via Imgur API; URL is deferred until
     // resolution completes.
-    if (ApolloIsImgurShareURL(url) || ApolloIsImgurAlbumOrGalleryURL(url)) return YES;
+    if (ApolloIsImgurShareURL(url) || ApolloIsImgurAlbumOrGalleryURL(url) || ApolloImageChestIsPostURL(url)) return YES;
 
     NSString *ext = [[[url path] pathExtension] lowercaseString];
     static NSSet *imageExts;
@@ -522,6 +526,7 @@ static BOOL ApolloIsInlineRenderableImageURL(NSURL *url) {
             @"twimg.com",
             @"discordapp.com",
             @"discordapp.net",
+            @"imgchest.com",
         ];
     });
     for (NSString *parent in allowedParentDomains) {
@@ -892,6 +897,357 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
     return (CGFloat)(hv / wv);
 }
 
+@interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
+@property (nonatomic, copy) NSArray<NSDictionary *> *items;
+@property (nonatomic) NSInteger initialIndex;
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) UILabel *counterLabel;
+@property (nonatomic, strong) UILabel *loadingLabel;
+@property (nonatomic, strong) UIButton *closeButton;
+@property (nonatomic, strong) NSTimer *autoHideTimer;
+@property (nonatomic) NSInteger imageLoadCompletedCount;
+@property (nonatomic) NSInteger imageLoadTotalCount;
+@property (nonatomic) BOOL controlsVisible;
+@property (nonatomic) CGSize lastLayoutSize;
+- (instancetype)initWithItems:(NSArray<NSDictionary *> *)items initialIndex:(NSInteger)initialIndex;
+@end
+
+@implementation ApolloImageChestAlbumViewController
+
+- (instancetype)initWithItems:(NSArray<NSDictionary *> *)items initialIndex:(NSInteger)initialIndex {
+    self = [super init];
+    if (self) {
+        _items = [items copy] ?: @[];
+        _initialIndex = MAX(0, MIN(initialIndex, (NSInteger)_items.count - 1));
+        _controlsVisible = YES;
+        self.modalPresentationStyle = UIModalPresentationFullScreen;
+    }
+    return self;
+}
+
+- (BOOL)prefersStatusBarHidden {
+    return YES;
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIInterfaceOrientation orientation = ((UIWindowScene *)scene).interfaceOrientation;
+        if (orientation != UIInterfaceOrientationUnknown) return orientation;
+    }
+    return UIInterfaceOrientationPortrait;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+    self.imageLoadTotalCount = (NSInteger)self.items.count;
+    self.imageLoadCompletedCount = 0;
+
+    self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
+    self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.scrollView.pagingEnabled = YES;
+    self.scrollView.delegate = self;
+    self.scrollView.showsHorizontalScrollIndicator = NO;
+    self.scrollView.showsVerticalScrollIndicator = NO;
+    self.scrollView.backgroundColor = UIColor.blackColor;
+    [self.view addSubview:self.scrollView];
+
+    for (NSUInteger i = 0; i < self.items.count; i++) {
+        UIView *page = [[UIView alloc] initWithFrame:CGRectZero];
+        page.backgroundColor = UIColor.blackColor;
+        page.tag = 2000 + (NSInteger)i;
+
+        UIScrollView *zoomScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+        zoomScrollView.tag = 4000 + (NSInteger)i;
+        zoomScrollView.delegate = self;
+        zoomScrollView.minimumZoomScale = 1.0;
+        zoomScrollView.maximumZoomScale = 4.0;
+        zoomScrollView.bouncesZoom = YES;
+        zoomScrollView.showsHorizontalScrollIndicator = NO;
+        zoomScrollView.showsVerticalScrollIndicator = NO;
+        zoomScrollView.backgroundColor = UIColor.blackColor;
+        zoomScrollView.panGestureRecognizer.enabled = NO;
+        if (@available(iOS 11.0, *)) {
+            zoomScrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        }
+
+        UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        imageView.tag = 3000 + (NSInteger)i;
+        imageView.backgroundColor = UIColor.blackColor;
+        imageView.contentMode = UIViewContentModeScaleAspectFit;
+        [zoomScrollView addSubview:imageView];
+        [page addSubview:zoomScrollView];
+        [self.scrollView addSubview:page];
+
+        NSURL *imageURL = [self.items[i][@"url"] isKindOfClass:[NSURL class]] ? self.items[i][@"url"] : nil;
+        if (imageURL) {
+            __weak UIImageView *weakImageView = imageView;
+            __weak UIScrollView *weakZoomScrollView = zoomScrollView;
+            __weak ApolloImageChestAlbumViewController *weakSelf = self;
+            NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:imageURL
+                                                                     completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                UIImage *image = (!error && data.length > 0) ? [UIImage imageWithData:data] : nil;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (image) {
+                        weakImageView.image = image;
+                        [weakSelf apollo_layoutZoomScrollView:weakZoomScrollView resetZoom:(weakZoomScrollView.zoomScale <= weakZoomScrollView.minimumZoomScale + 0.01)];
+                    }
+                    [weakSelf apollo_imageLoadFinished];
+                });
+            }];
+            [task resume];
+        } else {
+            [self apollo_imageLoadFinished];
+        }
+    }
+
+    self.counterLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.counterLabel.textColor = UIColor.whiteColor;
+    self.counterLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    self.counterLabel.textAlignment = NSTextAlignmentCenter;
+    self.counterLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+    self.counterLabel.layer.cornerRadius = 14.0;
+    self.counterLabel.clipsToBounds = YES;
+    [self.view addSubview:self.counterLabel];
+
+    self.loadingLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.loadingLabel.textColor = UIColor.whiteColor;
+    self.loadingLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+    self.loadingLabel.textAlignment = NSTextAlignmentCenter;
+    self.loadingLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+    self.loadingLabel.layer.cornerRadius = 13.0;
+    self.loadingLabel.clipsToBounds = YES;
+    [self.view addSubview:self.loadingLabel];
+
+    self.closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.closeButton setTitle:@"Done" forState:UIControlStateNormal];
+    self.closeButton.tintColor = UIColor.whiteColor;
+    self.closeButton.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    self.closeButton.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+    self.closeButton.layer.cornerRadius = 16.0;
+    self.closeButton.clipsToBounds = YES;
+    [self.closeButton addTarget:self action:@selector(apollo_close) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.closeButton];
+
+    UITapGestureRecognizer *tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_viewerTapped:)];
+    tapRecognizer.numberOfTapsRequired = 1;
+    tapRecognizer.cancelsTouchesInView = NO;
+    tapRecognizer.delegate = self;
+    [self.view addGestureRecognizer:tapRecognizer];
+
+    [self updateCounterForPage:self.initialIndex];
+    [self apollo_updateLoadingProgress];
+    [self apollo_setControlsVisible:YES animated:NO reschedule:YES];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self apollo_cancelControlsAutoHide];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGRect bounds = self.view.bounds;
+    self.scrollView.frame = bounds;
+    self.scrollView.contentSize = CGSizeMake(bounds.size.width * self.items.count, bounds.size.height);
+    BOOL resetZoom = CGSizeEqualToSize(self.lastLayoutSize, CGSizeZero) || !CGSizeEqualToSize(self.lastLayoutSize, bounds.size);
+
+    for (NSUInteger i = 0; i < self.items.count; i++) {
+        UIView *page = [self.scrollView viewWithTag:2000 + (NSInteger)i];
+        page.frame = CGRectMake(bounds.size.width * i, 0, bounds.size.width, bounds.size.height);
+        UIScrollView *zoomScrollView = [page viewWithTag:4000 + (NSInteger)i];
+        zoomScrollView.frame = page.bounds;
+        [self apollo_layoutZoomScrollView:zoomScrollView resetZoom:resetZoom];
+    }
+
+    CGFloat safeTop = 16.0;
+    if (@available(iOS 11.0, *)) safeTop += self.view.safeAreaInsets.top;
+    self.closeButton.frame = CGRectMake(bounds.size.width - 84.0, safeTop, 68.0, 32.0);
+    self.counterLabel.frame = CGRectMake((bounds.size.width - 86.0) * 0.5, safeTop, 86.0, 28.0);
+    self.loadingLabel.frame = CGRectMake((bounds.size.width - 132.0) * 0.5, CGRectGetMaxY(self.counterLabel.frame) + 8.0, 132.0, 26.0);
+    [self.scrollView setContentOffset:CGPointMake(bounds.size.width * self.initialIndex, 0.0) animated:NO];
+    self.lastLayoutSize = bounds.size;
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    if (scrollView != self.scrollView) return;
+    NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / MAX(scrollView.bounds.size.width, 1.0));
+    [self updateCounterForPage:page];
+    [self apollo_scheduleControlsAutoHide];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != self.scrollView) return;
+    NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / MAX(scrollView.bounds.size.width, 1.0));
+    [self updateCounterForPage:page];
+}
+
+- (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView {
+    if (scrollView == self.scrollView) return nil;
+    UIView *imageView = [scrollView viewWithTag:scrollView.tag - 1000];
+    return [imageView isKindOfClass:[UIImageView class]] ? imageView : nil;
+}
+
+- (void)scrollViewWillBeginZooming:(UIScrollView *)scrollView withView:(UIView *)view {
+    if (scrollView == self.scrollView) return;
+    [self apollo_setControlsVisible:NO animated:YES reschedule:NO];
+}
+
+- (void)scrollViewDidZoom:(UIScrollView *)scrollView {
+    if (scrollView == self.scrollView) return;
+    scrollView.panGestureRecognizer.enabled = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01;
+    UIImageView *imageView = (UIImageView *)[self viewForZoomingInScrollView:scrollView];
+    [self apollo_centerImageView:imageView inScrollView:scrollView];
+}
+
+- (void)updateCounterForPage:(NSInteger)page {
+    if (self.items.count == 0) {
+        self.counterLabel.text = @"";
+        return;
+    }
+    NSInteger clamped = MAX(0, MIN(page, (NSInteger)self.items.count - 1));
+    self.initialIndex = clamped;
+    self.counterLabel.text = [NSString stringWithFormat:@"%ld / %lu", (long)clamped + 1, (unsigned long)self.items.count];
+}
+
+- (void)apollo_close {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)apollo_imageLoadFinished {
+    self.imageLoadCompletedCount = MIN(self.imageLoadCompletedCount + 1, self.imageLoadTotalCount);
+    [self apollo_updateLoadingProgress];
+}
+
+- (void)apollo_updateLoadingProgress {
+    NSInteger total = MAX(self.imageLoadTotalCount, 0);
+    NSInteger done = MAX(0, MIN(self.imageLoadCompletedCount, total));
+    if (total <= 0 || done >= total) {
+        self.loadingLabel.text = total > 0 ? @"Loaded" : @"";
+        [UIView animateWithDuration:0.2 animations:^{
+            self.loadingLabel.alpha = 0.0;
+        }];
+        return;
+    }
+
+    NSInteger percent = (NSInteger)llround(((double)done / (double)total) * 100.0);
+    self.loadingLabel.alpha = self.controlsVisible ? 1.0 : 0.0;
+    self.loadingLabel.text = [NSString stringWithFormat:@"Loading %ld / %ld (%ld%%)", (long)done, (long)total, (long)percent];
+}
+
+- (BOOL)apollo_loadingInProgress {
+    NSInteger total = MAX(self.imageLoadTotalCount, 0);
+    NSInteger done = MAX(0, MIN(self.imageLoadCompletedCount, total));
+    return total > 0 && done < total;
+}
+
+- (void)apollo_viewerTapped:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateRecognized) return;
+    [self apollo_setControlsVisible:!self.controlsVisible animated:YES reschedule:YES];
+}
+
+- (void)apollo_setControlsVisible:(BOOL)visible animated:(BOOL)animated reschedule:(BOOL)reschedule {
+    self.controlsVisible = visible;
+    self.closeButton.userInteractionEnabled = visible;
+    CGFloat controlsAlpha = visible ? 1.0 : 0.0;
+    CGFloat loadingAlpha = (visible && [self apollo_loadingInProgress]) ? 1.0 : 0.0;
+    void (^changes)(void) = ^{
+        self.closeButton.alpha = controlsAlpha;
+        self.counterLabel.alpha = controlsAlpha;
+        self.loadingLabel.alpha = loadingAlpha;
+    };
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:changes];
+    } else {
+        changes();
+    }
+    if (visible && reschedule) {
+        [self apollo_scheduleControlsAutoHide];
+    } else if (!visible) {
+        [self apollo_cancelControlsAutoHide];
+    }
+}
+
+- (void)apollo_scheduleControlsAutoHide {
+    [self apollo_cancelControlsAutoHide];
+    if (!self.controlsVisible) return;
+    self.autoHideTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
+                                                          target:self
+                                                        selector:@selector(apollo_autoHideControlsTimerFired:)
+                                                        userInfo:nil
+                                                         repeats:NO];
+}
+
+- (void)apollo_cancelControlsAutoHide {
+    [self.autoHideTimer invalidate];
+    self.autoHideTimer = nil;
+}
+
+- (void)apollo_autoHideControlsTimerFired:(NSTimer *)timer {
+    [self apollo_setControlsVisible:NO animated:YES reschedule:NO];
+}
+
+- (CGRect)apollo_aspectFitFrameForImage:(UIImage *)image inBounds:(CGRect)bounds {
+    if (!image || image.size.width <= 0.0 || image.size.height <= 0.0 || bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
+        return bounds;
+    }
+    CGFloat scale = MIN(bounds.size.width / image.size.width, bounds.size.height / image.size.height);
+    CGSize size = CGSizeMake(image.size.width * scale, image.size.height * scale);
+    return CGRectMake((bounds.size.width - size.width) * 0.5,
+                      (bounds.size.height - size.height) * 0.5,
+                      size.width,
+                      size.height);
+}
+
+- (void)apollo_layoutZoomScrollView:(UIScrollView *)zoomScrollView resetZoom:(BOOL)resetZoom {
+    if (![zoomScrollView isKindOfClass:[UIScrollView class]]) return;
+    UIImageView *imageView = (UIImageView *)[self viewForZoomingInScrollView:zoomScrollView];
+    if (![imageView isKindOfClass:[UIImageView class]]) return;
+
+    if (resetZoom || zoomScrollView.zoomScale <= zoomScrollView.minimumZoomScale + 0.01) {
+        zoomScrollView.zoomScale = zoomScrollView.minimumZoomScale;
+        imageView.frame = [self apollo_aspectFitFrameForImage:imageView.image inBounds:zoomScrollView.bounds];
+        zoomScrollView.contentSize = imageView.frame.size;
+    }
+    zoomScrollView.panGestureRecognizer.enabled = zoomScrollView.zoomScale > zoomScrollView.minimumZoomScale + 0.01;
+    [self apollo_centerImageView:imageView inScrollView:zoomScrollView];
+}
+
+- (void)apollo_centerImageView:(UIImageView *)imageView inScrollView:(UIScrollView *)zoomScrollView {
+    if (![imageView isKindOfClass:[UIImageView class]] || ![zoomScrollView isKindOfClass:[UIScrollView class]]) return;
+    CGSize boundsSize = zoomScrollView.bounds.size;
+    CGRect frame = imageView.frame;
+    frame.origin.x = frame.size.width < boundsSize.width ? (boundsSize.width - frame.size.width) * 0.5 : 0.0;
+    frame.origin.y = frame.size.height < boundsSize.height ? (boundsSize.height - frame.size.height) * 0.5 : 0.0;
+    imageView.frame = frame;
+    zoomScrollView.contentSize = frame.size;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    UIView *view = touch.view;
+    while (view) {
+        if (view == self.closeButton) return NO;
+        view = view.superview;
+    }
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
+    return YES;
+}
+
+@end
+
 // MARK: - Tap dispatcher + UIContextMenuInteraction delegate (singleton)
 
 @interface ApolloInlineImageDispatcher : NSObject <UIContextMenuInteractionDelegate>
@@ -900,6 +1256,11 @@ static CGFloat ApolloAspectRatioFromURL(NSURL *url) {
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image;
 - (void)updateAspectRatioForImageNode:(id)imageNode imageSize:(CGSize)size;
 @end
+
+static UIViewController *ApolloTopVCFromView(UIView *v);
+static BOOL ApolloPresentImageChestItems(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex);
+static void ApolloOpenImageChestURLNormally(NSURL *url);
+static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceView, void (^fallback)(void));
 
 @implementation ApolloInlineImageDispatcher
 
@@ -923,6 +1284,12 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
 }
 
 - (void)imageNodeTapped:(id)imageNode {
+    NSArray *imageChestItems = objc_getAssociatedObject(imageNode, &kApolloImageChestItemsKey);
+    if (imageChestItems.count > 0) {
+        UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+        if (ApolloPresentImageChestItems(imageChestItems, view, 0)) return;
+    }
+
     // Prefer the original album/gallery/share URL when present so taps
     // route to Apollo's full multi-image album viewer (for albums) or
     // the user-posted URL (for normalized share links); otherwise use
@@ -930,6 +1297,13 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
     NSURL *url = objc_getAssociatedObject(imageNode, &kApolloOriginalImageURLKey)
               ?: objc_getAssociatedObject(imageNode, &kApolloImageURLKey);
     if (![url isKindOfClass:[NSURL class]]) return;
+    if (ApolloImageChestIsPostURL(url)) {
+        UIView *view = [imageNode respondsToSelector:@selector(view)] ? [imageNode view] : nil;
+        ApolloPresentOrResolveImageChestAlbumURL(url, view, ^{
+            ApolloOpenImageChestURLNormally(url);
+        });
+        return;
+    }
 
     ASDisplayNode *host = objc_getAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey);
     SEL sel = @selector(textNode:tappedLinkAttribute:value:atPoint:textRange:);
@@ -966,6 +1340,44 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
     UIViewController *vc = window.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     return vc;
+}
+
+static BOOL ApolloPresentImageChestItems(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex) {
+    if (items.count == 0) return NO;
+    UIViewController *top = ApolloTopVCFromView(sourceView);
+    if (!top) return NO;
+
+    ApolloImageChestAlbumViewController *viewer = [[ApolloImageChestAlbumViewController alloc] initWithItems:items initialIndex:initialIndex];
+    [top presentViewController:viewer animated:YES completion:nil];
+    return YES;
+}
+
+static void ApolloOpenImageChestURLNormally(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+    });
+}
+
+static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceView, void (^fallback)(void)) {
+    if (!ApolloImageChestIsPostURL(url)) return NO;
+
+    NSDictionary *cached = ApolloImageChestCachedResolution(url);
+    NSArray *cachedItems = [cached[@"images"] isKindOfClass:[NSArray class]] ? cached[@"images"] : nil;
+    if (cachedItems.count > 0) {
+        ApolloPresentImageChestItems(cachedItems, sourceView, 0);
+        return YES;
+    }
+
+    ApolloImageChestResolveURL(url, ^(NSDictionary *result) {
+        NSArray *items = [result[@"images"] isKindOfClass:[NSArray class]] ? result[@"images"] : nil;
+        if (items.count > 0) {
+            ApolloPresentImageChestItems(items, sourceView, 0);
+        } else if (fallback) {
+            fallback();
+        }
+    });
+    return YES;
 }
 
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction
@@ -1098,6 +1510,26 @@ static UIViewController *ApolloTopVCFromView(UIView *v) {
 
 %end
 
+static BOOL ApolloTopControllerIsImageChestViewer(UIWindow *window) {
+    UIViewController *vc = window.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return [vc isKindOfClass:[ApolloImageChestAlbumViewController class]];
+}
+
+// Apollo's app delegate clamps most screens to portrait when Smart Rotation
+// Lock is enabled, with a native exception for the Media Viewer. Give the
+// Image Chest album viewer the same media-viewer orientation allowance.
+%hook _TtC6Apollo11AppDelegate
+
+- (NSUInteger)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+    if (ApolloTopControllerIsImageChestViewer(window)) {
+        return UIInterfaceOrientationMaskAllButUpsideDown;
+    }
+    return %orig;
+}
+
+%end
+
 // MARK: - Image-node construction
 
 // Forward decl: defined further down (after layout helpers). Used by
@@ -1131,17 +1563,20 @@ static void ApolloSetOriginalImageURL(ASNetworkImageNode *imageNode, NSURL *orig
     ApolloMirrorImageURLsToLoadedView(imageNode);
 }
 
-// Apply an Imgur API resolution result to an imageNode. Sets the load
+// Apply an async album resolution result to an imageNode. Sets the load
 // URL, captures aspect ratio if available, and triggers cell relayout.
-// Preserves kApolloOriginalImageURLKey (album URL) so tap still routes
-// to Apollo's multi-image album viewer instead of opening just the
-// resolved cover image.
-static void ApolloApplyResolvedImgurImage(ASNetworkImageNode *imageNode, NSDictionary *result) {
+// Preserves kApolloOriginalImageURLKey so copy/share still use the user
+// posted album URL instead of only the resolved cover image.
+static void ApolloApplyResolvedAlbumImage(ASNetworkImageNode *imageNode, NSDictionary *result) {
     if (![result isKindOfClass:[NSDictionary class]]) return;
     NSURL *imageURL = [result[@"url"] isKindOfClass:[NSURL class]] ? result[@"url"] : nil;
     if (![imageURL isKindOfClass:[NSURL class]]) return;
 
     imageNode.URL = imageURL;
+    NSArray *images = [result[@"images"] isKindOfClass:[NSArray class]] ? result[@"images"] : nil;
+    if (images.count > 0) {
+        objc_setAssociatedObject(imageNode, &kApolloImageChestItemsKey, images, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     // Set kApolloImageURLKey only if there's no album/gallery original
     // URL — otherwise tap should route to the album URL.
     if (!objc_getAssociatedObject(imageNode, &kApolloOriginalImageURLKey)) {
@@ -1487,14 +1922,16 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     Class imageNodeClass = ApolloASNetworkImageNodeClass();
     if (!imageNodeClass) return nil;
 
-    // Imgur album/gallery URLs need an API roundtrip to resolve to a
+    // Imgur/ImageChest album URLs need an API roundtrip or page fetch to resolve to a
     // renderable image. Defer setting imageNode.URL until resolution
     // completes — otherwise PINRemoteImage tries to fetch the album
     // page HTML as an image.
     BOOL deferredImgur = ApolloIsImgurAlbumOrGalleryURL(normalizedURL);
+    BOOL deferredImageChest = ApolloImageChestIsPostURL(normalizedURL);
+    BOOL deferredAlbum = deferredImgur || deferredImageChest;
 
     ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
-    if (!deferredImgur) {
+    if (!deferredAlbum) {
         imageNode.URL = normalizedURL;
     }
     imageNode.shouldRenderProgressImages = YES;
@@ -1531,12 +1968,11 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
     // both key on this. For Imgur albums the loaded URL changes when
     // resolution completes, so we can't use imageNode.URL.
     objc_setAssociatedObject(imageNode, &kApolloImageCacheKey, normalizedURL.absoluteString, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (!deferredImgur) {
+    if (!deferredAlbum) {
         objc_setAssociatedObject(imageNode, &kApolloImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
-        // For Imgur albums/galleries, record the album URL as "original"
-        // so taps route to Apollo's multi-image viewer even after we
-        // resolve and load a single cover image into imageNode.URL.
+        // For album URLs, record the album URL as "original" so
+        // copy/share/open actions keep what the user posted.
         objc_setAssociatedObject(imageNode, &kApolloOriginalImageURLKey, normalizedURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     objc_setAssociatedObject(imageNode, &kApolloHostMarkdownNodeKey, hostMarkdownNode, OBJC_ASSOCIATION_ASSIGN);
@@ -1544,16 +1980,27 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(ratio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // Kick off Imgur album/gallery resolution. Result is applied
-    // asynchronously via ApolloApplyResolvedImgurImage, which sets the
+    // Kick off Imgur/ImageChest album resolution. Result is applied
+    // asynchronously via ApolloApplyResolvedAlbumImage, which sets the
     // load URL, captures aspect ratio, and triggers cell relayout.
     __weak ASNetworkImageNode *weakImage = imageNode;
     if (deferredImgur) {
         ApolloResolveImgurURL(normalizedURL, ^(NSDictionary *result) {
             ASNetworkImageNode *strong = weakImage;
             if (!strong || !result) return;
-            ApolloApplyResolvedImgurImage(strong, result);
+            ApolloApplyResolvedAlbumImage(strong, result);
         });
+    } else if (deferredImageChest) {
+        NSDictionary *cached = ApolloImageChestCachedResolution(normalizedURL);
+        if (cached) {
+            ApolloApplyResolvedAlbumImage(imageNode, cached);
+        } else {
+            ApolloImageChestResolveURL(normalizedURL, ^(NSDictionary *result) {
+                ASNetworkImageNode *strong = weakImage;
+                if (!strong || !result) return;
+                ApolloApplyResolvedAlbumImage(strong, result);
+            });
+        }
     }
 
     // Long-press: install a UIContextMenuInteraction once the imageNode's
@@ -1712,6 +2159,28 @@ static ASTextNode *ApolloMakeTextSegmentNode(ASTextNode *templateTextNode, NSAtt
     return tn;
 }
 
+static void ApolloRequestMarkdownRelayout(ASDisplayNode *hostMarkdownNode) {
+    if (!hostMarkdownNode) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ASDisplayNode *n = hostMarkdownNode;
+        while (n) {
+            if ([n respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+                [n invalidateCalculatedLayout];
+            }
+            if ([n respondsToSelector:@selector(setNeedsLayout)]) {
+                [n setNeedsLayout];
+            }
+            n = n.supernode;
+        }
+        SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+        if ([hostMarkdownNode respondsToSelector:relayoutSel]) {
+            ((void (*)(id, SEL))objc_msgSend)(hostMarkdownNode, relayoutSel);
+        }
+    });
+}
+
+static NSUInteger ApolloUniqueImageChestPostLinkCount(NSAttributedString *attr);
+
 // Returns an array of leaf nodes (ASTextNode + ASNetworkImageNode instances)
 // in the order they should appear in the augmented stack, replacing the
 // original text node. Returns nil if the text node has no inline media URLs.
@@ -1728,7 +2197,10 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
     // displayed text matches the original form, not the normalized one.
     NSMutableArray<NSURL *> *originalURLs = [NSMutableArray array];
     NSMutableArray<NSNumber *> *isVideoURL = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *isImageChestURL = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *isBareURL = [NSMutableArray array];
     NSMutableSet<NSString *> *seenAbs = [NSMutableSet set];
+    NSUInteger imageChestPostLinkCount = ApolloUniqueImageChestPostLinkCount(attr);
 
     [attr enumerateAttributesInRange:NSMakeRange(0, attr.length)
                              options:0
@@ -1737,6 +2209,20 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             id val = attrs[k];
             if (![val isKindOfClass:[NSURL class]]) continue;
             NSURL *url = (NSURL *)val;
+            if (ApolloImageChestIsPostURL(url) && imageChestPostLinkCount != 1) {
+                continue;
+            }
+            if (ApolloImageChestIsPostURL(url) && !ApolloImageChestCachedResolution(url)) {
+                // Avoid deleting the text/link until the public page has
+                // resolved; failed/private/deleted albums keep Apollo's normal
+                // link behavior rather than becoming a blank inline slot.
+                if (!ApolloImageChestCachedFailureExists(url)) {
+                    ApolloImageChestResolveURL(url, ^(NSDictionary *result) {
+                        if (result) ApolloRequestMarkdownRelayout(hostMarkdownNode);
+                    });
+                }
+                continue;
+            }
             BOOL isImage = ApolloIsInlineRenderableImageURL(url);
             BOOL isVideo = !isImage && ApolloIsInlineRenderableVideoURL(url);
             if (!isImage && !isVideo) continue;
@@ -1749,6 +2235,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             NSURL *normalized = ApolloNormalizeInlineImageURL(url);
             NSString *abs = normalized.absoluteString;
             if (!abs.length || [seenAbs containsObject:abs]) continue;
+            BOOL imageChestURL = ApolloImageChestIsPostURL(url);
+            BOOL bareURL = ApolloRangeTextLooksLikeBareURL(attr, fullRange, url);
             [seenAbs addObject:abs];
             ApolloRegisterInlineSuppressionURL(url);
             ApolloRegisterInlineSuppressionURL(normalized);
@@ -1756,6 +2244,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             [urls addObject:normalized];
             [originalURLs addObject:url];
             [isVideoURL addObject:@(isVideo)];
+            [isImageChestURL addObject:@(imageChestURL)];
+            [isBareURL addObject:@(bareURL)];
         }
     }];
 
@@ -1790,6 +2280,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
             if (r.location >= pStart && NSMaxRange(r) <= pEnd) [pIdx addObject:iNum];
         }
 
+        NSMutableArray *prefixImageNodes = [NSMutableArray array];
+        NSMutableArray *appendImageNodes = [NSMutableArray array];
         for (NSNumber *iNum in pIdx) {
             NSUInteger leafIndex = iNum.unsignedIntegerValue;
             ASNetworkImageNode *img = [isVideoURL[leafIndex] boolValue]
@@ -1804,16 +2296,19 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
                 if (original && ![original.absoluteString isEqualToString:urls[leafIndex].absoluteString]) {
                     ApolloSetOriginalImageURL(img, original);
                 }
-                [leaves addObject:img];
+                BOOL appendAfterText = [isImageChestURL[leafIndex] boolValue] && ![isBareURL[leafIndex] boolValue];
+                [(appendAfterText ? appendImageNodes : prefixImageNodes) addObject:img];
             }
         }
+
+        [leaves addObjectsFromArray:prefixImageNodes];
 
         NSMutableAttributedString *remaining = [[attr attributedSubstringFromRange:pRange] mutableCopy];
         // Reverse-order deletion of bare-URL ranges (paragraph-relative).
         for (NSInteger n = (NSInteger)pIdx.count - 1; n >= 0; n--) {
             NSUInteger ri = [pIdx[n] unsignedIntegerValue];
             NSRange r = [ranges[ri] rangeValue];
-            if (ApolloRangeTextLooksLikeBareURL(attr, r, originalURLs[ri])) {
+            if ([isBareURL[ri] boolValue]) {
                 [remaining deleteCharactersInRange:NSMakeRange(r.location - pStart, r.length)];
             }
         }
@@ -1826,6 +2321,8 @@ static NSArray *ApolloBuildLeavesForTextNode(ASTextNode *textNode,
                 [hostMarkdownNode addSubnode:tn];
             }
         }
+
+        [leaves addObjectsFromArray:appendImageNodes];
     };
 
     NSUInteger pStart = 0;
@@ -1865,7 +2362,14 @@ static ASNetworkImageNode *ApolloImageNodeForURL(NSURL *normalizedURL,
             ApolloResolveImgurURL(normalizedURL, ^(NSDictionary *result) {
                 ASNetworkImageNode *strong = weakImage;
                 if (!strong || !result) return;
-                ApolloApplyResolvedImgurImage(strong, result);
+                ApolloApplyResolvedAlbumImage(strong, result);
+            });
+        } else if (ApolloImageChestIsPostURL(normalizedURL) && !objc_getAssociatedObject(existing, &kApolloImageURLKey)) {
+            __weak ASNetworkImageNode *weakImage = existing;
+            ApolloImageChestResolveURL(normalizedURL, ^(NSDictionary *result) {
+                ASNetworkImageNode *strong = weakImage;
+                if (!strong || !result) return;
+                ApolloApplyResolvedAlbumImage(strong, result);
             });
         }
         return existing;
@@ -1937,6 +2441,23 @@ static BOOL ApolloModelRepresentsInlineHost(id model, BOOL isComment) {
     return NO;
 }
 
+static NSUInteger ApolloUniqueImageChestPostLinkCount(NSAttributedString *attr) {
+    if (![attr isKindOfClass:[NSAttributedString class]] || attr.length == 0) return 0;
+
+    NSMutableSet<NSString *> *postIDs = [NSMutableSet set];
+    [attr enumerateAttributesInRange:NSMakeRange(0, attr.length)
+                             options:0
+                          usingBlock:^(NSDictionary<NSAttributedStringKey, id> *attrs, __unused NSRange range, __unused BOOL *stop) {
+        for (NSAttributedStringKey key in attrs) {
+            id value = attrs[key];
+            if (![value isKindOfClass:[NSURL class]]) continue;
+            NSString *postID = ApolloImageChestPostIDFromURL((NSURL *)value);
+            if (postID.length > 0) [postIDs addObject:postID];
+        }
+    }];
+    return postIDs.count;
+}
+
 static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
     for (ASDisplayNode *n = linkButtonNode; n; n = n.supernode) {
         id comment = ApolloModelFromNodeIvar(n, "comment");
@@ -1955,6 +2476,21 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
 // MARK: - %hook _TtC6Apollo12MarkdownNode
 
 %hook _TtC6Apollo12MarkdownNode
+
+- (void)textNode:(id)textNode tappedLinkAttribute:(id)attribute value:(id)value atPoint:(CGPoint)point textRange:(NSRange)range {
+    NSURL *url = [value isKindOfClass:[NSURL class]] ? (NSURL *)value : ([value isKindOfClass:[NSString class]] ? [NSURL URLWithString:(NSString *)value] : nil);
+    if (ApolloImageChestIsPostURL(url)) {
+        UIView *sourceView = [(id)self respondsToSelector:@selector(view)] ? ((UIView *(*)(id, SEL))objc_msgSend)(self, @selector(view)) : nil;
+        if (ApolloPresentOrResolveImageChestAlbumURL(url, sourceView, ^{
+            ApolloOpenImageChestURLNormally(url);
+        })) {
+            ApolloLog(@"[ImageChest] intercepted markdown tap %@", url);
+            return;
+        }
+    }
+
+    %orig(textNode, attribute, value, point, range);
+}
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
     id origSpec = %orig;
@@ -2074,11 +2610,11 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
     NSURL *url = [NSURL URLWithString:urlString];
     if (!ApolloIsInlineRenderableImageURL(url) && !ApolloIsInlineRenderableVideoURL(url)) return %orig;
 
-    // For Imgur albums/galleries the inline rendering depends on an
-    // async API resolution. Until that succeeds, keep Apollo's native
-    // LinkButtonNode preview so private/deleted/bad albums don't turn
-    // into a blank gap.
+    // Album inline rendering depends on async resolution. Until that succeeds,
+    // keep Apollo's native LinkButtonNode preview so private/deleted/bad albums
+    // don't turn into a blank gap.
     if (ApolloIsImgurAlbumOrGalleryURL(url) && !ApolloCachedImgurResolution(url)) return %orig;
+    if (ApolloImageChestIsPostURL(url) && !ApolloImageChestCachedResolution(url)) return %orig;
 
     // Only hide if there's a MarkdownNode body that would carry the
     // inline replacement. LinkButtonNode is sometimes measured while
