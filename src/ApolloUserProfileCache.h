@@ -18,6 +18,8 @@ extern NSString * const ApolloUserProfileUsernameKey;
 @property(nonatomic) BOOL defaultSnoo;
 @property(nonatomic) BOOL hasSnoovatar;
 @property(nonatomic) BOOL isSuspended;
+// YES once about.json has populated isSuspended at least once for this entry.
+@property(nonatomic) BOOL suspensionChecked;
 
 - (instancetype)initWithUsername:(NSString *)username
                           iconURL:(NSURL *)iconURL

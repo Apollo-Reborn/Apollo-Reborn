@@ -794,6 +794,7 @@ static BOOL ApolloBannedProfileURLMatchesUserListEndpoint(NSURL *url) {
     if (!sProfileViewControllerClass) {
         sProfileViewControllerClass = NSClassFromString(@"Apollo.ProfileViewController");
     }
+    ApolloLog(@"[BannedProfile] module loaded");
     sBlockedNavTitles = [NSSet setWithObjects:
         @"accounts", @"account", @"profile", @"settings", @"overview",
         @"comments", @"comment", @"posts", @"post", @"inbox", @"search",

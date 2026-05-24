@@ -699,12 +699,24 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
         BOOL staleRedditSubreddit = ApolloRedditSubredditFromURL(url).length > 0
             && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
-        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky && !staleRedditUser && !staleRedditSubreddit) {
+        NSString *redditUsername = ApolloRedditUsernameFromProfileURL(url);
+        ApolloUserProfileInfo *redditProfileInfo = redditUsername.length > 0
+            ? [[ApolloUserProfileCache sharedCache] cachedInfoForUsername:redditUsername]
+            : nil;
+        BOOL previewSaysBanned = [cached.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()];
+        BOOL staleRedditUserSuspension = redditUsername.length > 0
+            && [cached.previewKind isEqualToString:@"reddit-user-profile"]
+            && ((redditProfileInfo && !redditProfileInfo.suspensionChecked)
+                || (ApolloBannedProfileCachedIsSuspended(redditUsername) != previewSaysBanned));
+        if (!botWall && !weakAcademic && !weakGeneric && !staleBluesky && !staleRedditUser && !staleRedditSubreddit && !staleRedditUserSuspension) {
             if (completion) completion(cached);
             return;
         }
         ApolloLog(@"[LinkPreviews] refetching cached preview host=%@ reason=%@",
-                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : (staleBluesky ? @"stale-bluesky" : (staleRedditUser ? @"stale-reddit-user" : @"stale-reddit-subreddit")))));
+                  logHost, botWall ? @"bot-wall" : (weakAcademic ? @"weak-academic" : (weakGeneric ? @"weak-generic" : (staleBluesky ? @"stale-bluesky" : (staleRedditUserSuspension ? @"stale-reddit-user-suspension" : (staleRedditUser ? @"stale-reddit-user" : @"stale-reddit-subreddit"))))));
+        if (staleRedditUserSuspension && redditUsername.length > 0) {
+            [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:redditUsername];
+        }
     }
 
     NSString *key = url.absoluteString ?: @"";
@@ -942,7 +954,11 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
         completion(preview);
     };
 
-    if (cachedInfo || ApolloBannedProfileCachedIsSuspended(username)) {
+    if (cachedInfo && cachedInfo.suspensionChecked) {
+        deliver(cachedInfo);
+        return;
+    }
+    if (ApolloBannedProfileCachedIsSuspended(username)) {
         deliver(cachedInfo);
         return;
     }

@@ -1,6 +1,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloBannedProfile.h"
 #import "ApolloCommon.h"
+#import "ApolloLinkPreviewCache.h"
 #import "ApolloState.h"
 
 NSString * const ApolloUserProfileInfoUpdatedNotification = @"ApolloUserProfileInfoUpdatedNotification";
@@ -8,6 +9,7 @@ NSString * const ApolloUserProfileUsernameKey = @"username";
 
 static NSTimeInterval const ApolloUserProfileCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
 static NSUInteger const ApolloUserProfileDiskCacheMaxEntries = 2000;
+static NSInteger const ApolloUserProfileCacheSchemaVersion = 2;
 
 static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     if (!image || image.images.count > 0 || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
@@ -166,6 +168,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     dict[@"defaultSnoo"] = @(info.defaultSnoo);
     dict[@"hasSnoovatar"] = @(info.hasSnoovatar);
     dict[@"isSuspended"] = @(info.isSuspended);
+    dict[@"suspensionChecked"] = @(info.suspensionChecked);
     dict[@"fetchedAt"] = @([info.fetchedAt timeIntervalSince1970]);
     return dict;
 }
@@ -184,11 +187,17 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     BOOL defaultSnoo = [dict[@"defaultSnoo"] boolValue];
     BOOL hasSnoovatar = snoovatarURL || [dict[@"hasSnoovatar"] boolValue];
     BOOL isSuspended = [dict[@"isSuspended"] boolValue];
+    BOOL suspensionChecked = [dict[@"suspensionChecked"] boolValue];
     NSTimeInterval timestamp = [dict[@"fetchedAt"] doubleValue];
     NSDate *fetchedAt = timestamp > 0 ? [NSDate dateWithTimeIntervalSince1970:timestamp] : [NSDate distantPast];
     if (!dict[@"hasSnoovatar"] && !dict[@"snoovatarURL"]) fetchedAt = [NSDate distantPast];
     if (!dict[@"decoratorURL"] && !dict[@"avatarFrameKind"]) fetchedAt = [NSDate distantPast];
     if (!dict[@"displayName"] && !dict[@"aboutText"]) fetchedAt = [NSDate distantPast];
+    // Entries cached before banned-profile support never recorded suspension; force refetch.
+    if (!dict[@"isSuspended"]) {
+        fetchedAt = [NSDate distantPast];
+        suspensionChecked = NO;
+    }
     ApolloUserProfileInfo *info = [[ApolloUserProfileInfo alloc] initWithUsername:username iconURL:iconURL bannerURL:bannerURL defaultSnoo:defaultSnoo fetchedAt:fetchedAt];
     info.snoovatarURL = snoovatarURL;
     info.decoratorURL = decoratorURL;
@@ -197,6 +206,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     info.aboutText = aboutText;
     info.hasSnoovatar = hasSnoovatar;
     info.isSuspended = isSuspended;
+    info.suspensionChecked = suspensionChecked;
     return info;
 }
 
@@ -228,11 +238,26 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     if (error || ![json isKindOfClass:[NSDictionary class]]) return;
 
     NSDictionary *root = (NSDictionary *)json;
-    for (NSString *key in root) {
+    NSInteger schemaVersion = [root[@"schemaVersion"] respondsToSelector:@selector(integerValue)] ? [root[@"schemaVersion"] integerValue] : 1;
+    NSDictionary *entries = [root[@"entries"] isKindOfClass:[NSDictionary class]] ? root[@"entries"] : root;
+    BOOL needsSchemaMigration = schemaVersion < ApolloUserProfileCacheSchemaVersion;
+
+    for (NSString *key in entries) {
         if (![key isKindOfClass:[NSString class]]) continue;
-        ApolloUserProfileInfo *info = [self infoFromDictionary:root[key] fallbackUsername:key];
+        if ([key isEqualToString:@"schemaVersion"]) continue;
+        id value = entries[key];
+        if (![value isKindOfClass:[NSDictionary class]]) continue;
+        ApolloUserProfileInfo *info = [self infoFromDictionary:(NSDictionary *)value fallbackUsername:key];
         if (!info) continue;
+        if (needsSchemaMigration && !((NSDictionary *)value)[@"isSuspended"]) {
+            info.fetchedAt = [NSDate distantPast];
+            info.suspensionChecked = NO;
+        }
         self.diskInfo[key] = info;
+    }
+
+    if (needsSchemaMigration) {
+        ApolloLog(@"[BannedProfile] migrated profile cache schema v%ld -> v%ld", (long)schemaVersion, (long)ApolloUserProfileCacheSchemaVersion);
     }
 
     [self pruneDiskInfoLocked];
@@ -245,10 +270,15 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
 - (void)saveDiskCacheLocked {
     [self pruneDiskInfoLocked];
 
-    NSMutableDictionary *root = [NSMutableDictionary dictionary];
+    NSMutableDictionary *entries = [NSMutableDictionary dictionary];
     for (NSString *key in self.diskInfo) {
-        root[key] = [self dictionaryForInfo:self.diskInfo[key]];
+        entries[key] = [self dictionaryForInfo:self.diskInfo[key]];
     }
+
+    NSDictionary *root = @{
+        @"schemaVersion": @(ApolloUserProfileCacheSchemaVersion),
+        @"entries": entries,
+    };
 
     NSData *data = [NSJSONSerialization dataWithJSONObject:root options:0 error:nil];
     if (data.length) {
@@ -342,6 +372,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     info.aboutText = aboutText;
     info.hasSnoovatar = snoovatarURL != nil;
     info.isSuspended = isSuspended;
+    info.suspensionChecked = YES;
     return info;
 }
 
@@ -360,6 +391,9 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (info) {
+                if (info.isSuspended) {
+                    [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:key];
+                }
                 [[NSNotificationCenter defaultCenter] postNotificationName:ApolloUserProfileInfoUpdatedNotification
                                                                     object:self
                                                                   userInfo:@{ApolloUserProfileUsernameKey: key}];
@@ -430,7 +464,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         if (info && completion) {
             dispatch_async(dispatch_get_main_queue(), ^{ completion(info); });
         }
-        if (info && [self isFreshInfo:info]) return;
+        if (info && [self isFreshInfo:info] && info.suspensionChecked) return;
 
         NSMutableArray<void (^)(ApolloUserProfileInfo *)> *callbacks = self.infoCompletions[key];
         if (callbacks) {
@@ -568,6 +602,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
 
 - (BOOL)cachedIsSuspendedForUsername:(NSString *)username {
     ApolloUserProfileInfo *info = [self cachedInfoForUsername:username];
+    if (!info || !info.suspensionChecked) return NO;
     return info.isSuspended;
 }
 

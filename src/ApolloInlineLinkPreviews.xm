@@ -303,6 +303,26 @@ static NSString *ApolloLPNormalizedRedditUsername(NSString *username) {
     return clean.length > 0 ? clean : nil;
 }
 
+static BOOL ApolloLPRedditUserPreviewSaysBanned(ApolloLinkPreview *preview) {
+    return [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()];
+}
+
+static BOOL ApolloLPRedditUserPreviewNeedsSuspensionRefetch(NSURL *url, ApolloLinkPreview *preview) {
+    if (!ApolloLPIsRedditUserProfileURL(url) || !preview) return NO;
+    NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (username.length == 0 && preview.authorHandle.length > 0) {
+        username = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (username.length == 0) return NO;
+
+    ApolloUserProfileInfo *profileInfo = [[ApolloUserProfileCache sharedCache] cachedInfoForUsername:username];
+    if (profileInfo && !profileInfo.suspensionChecked) return YES;
+
+    BOOL previewSaysBanned = ApolloLPRedditUserPreviewSaysBanned(preview);
+    BOOL cacheSaysBanned = ApolloBannedProfileCachedIsSuspended(username);
+    return previewSaysBanned != cacheSaysBanned;
+}
+
 static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     if (![subreddit isKindOfClass:[NSString class]]) return nil;
     NSString *clean = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -1894,6 +1914,26 @@ static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, A
     NSString *aboutText = isBannedUser ? ApolloBannedProfileBannedDescriptionText() : (preview.desc.length > 0 ? preview.desc : handleText);
     NSURL *avatarURL = isBannedUser ? nil : (preview.avatarURL ?: preview.imageURL);
 
+    NSString *cardUsername = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (cardUsername.length == 0) {
+        cardUsername = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (cardUsername.length > 0) {
+        static NSMutableSet<NSString *> *sLoggedRedditUserCardStates;
+        static dispatch_once_t sLoggedRedditUserCardStatesOnce;
+        dispatch_once(&sLoggedRedditUserCardStatesOnce, ^{
+            sLoggedRedditUserCardStates = [NSMutableSet set];
+        });
+        NSString *logKey = cardUsername.lowercaseString;
+        if (![sLoggedRedditUserCardStates containsObject:logKey]) {
+            [sLoggedRedditUserCardStates addObject:logKey];
+            ApolloLog(@"[BannedProfile] reddit-user card u/%@ cachedSuspended=%@ previewBanned=%@",
+                      cardUsername,
+                      ApolloBannedProfileCachedIsSuspended(cardUsername) ? @"YES" : @"NO",
+                      isBannedUser ? @"YES" : @"NO");
+        }
+    }
+
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
@@ -2937,8 +2977,16 @@ static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL 
             && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
         BOOL staleRedditSubreddit = ApolloLPIsRedditSubredditURL(url)
             && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
-        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit) {
-            ApolloLPLogOncePerHost(host, staleRedditUser ? @"stale-reddit-user-refetch" : (staleRedditSubreddit ? @"stale-reddit-subreddit-refetch" : @"stale-reddit-empty-refetch"));
+        BOOL staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
+            && ApolloLPRedditUserPreviewNeedsSuspensionRefetch(url, cached);
+        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit || staleRedditUserSuspension) {
+            ApolloLPLogOncePerHost(host, staleRedditUserSuspension ? @"stale-reddit-user-suspension-refetch" : (staleRedditUser ? @"stale-reddit-user-refetch" : (staleRedditSubreddit ? @"stale-reddit-subreddit-refetch" : @"stale-reddit-empty-refetch")));
+            if (staleRedditUserSuspension) {
+                NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+                if (username.length > 0) {
+                    [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
+                }
+            }
             cached = nil;
         }
     }

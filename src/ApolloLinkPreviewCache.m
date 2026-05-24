@@ -177,6 +177,70 @@ static const NSTimeInterval ApolloLinkPreviewCacheDiskFlushInterval = 8.0;
     });
 }
 
+- (void)removePreviewForURL:(NSURL *)url {
+    if (![url isKindOfClass:[NSURL class]]) return;
+    NSString *key = [self cacheKeyForURL:url];
+    [self.memoryCache removeObjectForKey:key];
+    dispatch_async(self.queue, ^{
+        if (self.entries[key]) {
+            [self.entries removeObjectForKey:key];
+            [self markDiskDirtyLocked];
+        }
+    });
+}
+
+static NSString *ApolloLinkPreviewNormalizedRedditUsername(NSString *username) {
+    if (![username isKindOfClass:[NSString class]]) return nil;
+    NSString *clean = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([clean hasPrefix:@"u/"] || [clean hasPrefix:@"U/"]) clean = [clean substringFromIndex:2];
+    if (clean.length == 0) return nil;
+    return clean.lowercaseString;
+}
+
+static NSString *ApolloLinkPreviewRedditUsernameFromURL(NSURL *url) {
+    if (!url) return nil;
+    NSString *host = url.host.lowercaseString ?: @"";
+    if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count < 2) return nil;
+    NSString *prefix = clean[0].lowercaseString;
+    if (![prefix isEqualToString:@"user"] && ![prefix isEqualToString:@"u"]) return nil;
+    NSString *username = [clean[1] stringByRemovingPercentEncoding] ?: clean[1];
+    return ApolloLinkPreviewNormalizedRedditUsername(username);
+}
+
+- (void)removePreviewsForRedditUsername:(NSString *)username {
+    NSString *normalized = ApolloLinkPreviewNormalizedRedditUsername(username);
+    if (normalized.length == 0) return;
+
+    NSMutableArray<NSURL *> *urlsToRemove = [NSMutableArray array];
+    dispatch_sync(self.queue, ^{
+        for (NSString *key in [self.entries.allKeys copy]) {
+            NSDictionary *entry = self.entries[key];
+            NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
+            if (urlString.length == 0) continue;
+            NSURL *url = [NSURL URLWithString:urlString];
+            NSString *entryUsername = ApolloLinkPreviewRedditUsernameFromURL(url);
+            if (entryUsername.length > 0 && [entryUsername isEqualToString:normalized]) {
+                [urlsToRemove addObject:url];
+            }
+        }
+    });
+
+    for (NSURL *url in urlsToRemove) {
+        [self removePreviewForURL:url];
+    }
+    if (urlsToRemove.count > 0) {
+        ApolloLog(@"[BannedProfile] invalidated %lu reddit-user link preview(s) for u/%@", (unsigned long)urlsToRemove.count, normalized);
+    }
+}
+
 - (void)markNoMetadataForURL:(NSURL *)url {
     ApolloLinkPreview *preview = [ApolloLinkPreview new];
     preview.noMetadata = YES;
