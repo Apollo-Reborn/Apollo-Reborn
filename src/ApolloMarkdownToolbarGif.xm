@@ -1,6 +1,7 @@
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloCommon.h"
 #import "ApolloGiphyClient.h"
+#import "CustomAPIViewController.h"
 #import "GiphyPickerViewController.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloState.h"
@@ -24,6 +25,7 @@ static char kApolloMarkdownGifActiveComposeKey;
 static char kApolloMarkdownGifToolbarRootKey;
 static char kApolloMarkdownGifSessionInjectedKey;
 static char kApolloMarkdownGifLayoutLoggedKey;
+static char kApolloMarkdownGifPendingInjectionBlocksKey;
 static NSString *const kApolloMarkdownGifButtonIdentifier = @"apollo-tweak-gif-button";
 static const NSInteger kApolloMarkdownGifChipTag = 0x47494600;
 
@@ -40,6 +42,7 @@ typedef NS_ENUM(NSInteger, ApolloMarkdownGifInjectOutcome) {
 };
 
 @interface ApolloMarkdownGifTapTarget : NSObject
+@property (nonatomic, weak) UINavigationController *presentedAPIKeysNav;
 @end
 
 static ApolloMarkdownGifTapTarget *sApolloMarkdownGifTapTarget;
@@ -47,6 +50,8 @@ static BOOL sApolloMarkdownGifInstalled = NO;
 static BOOL sApolloMarkdownGifInjecting = NO;
 static BOOL sApolloMarkdownGifKeyboardVisible = NO;
 
+static void ApolloMarkdownGifCancelPendingInjections(UIViewController *composeController);
+static void ApolloMarkdownGifPresentMissingAPIKeyAlert(UIViewController *composeController);
 static UIViewController *ApolloMarkdownGifActiveComposeController(void);
 static ApolloMarkdownGifInsertResult ApolloMarkdownGifTryInjectInRoot(UIView *root, UIViewController *composeController);
 static ApolloMarkdownGifInjectOutcome ApolloMarkdownGifTryInjectForComposeController(UIViewController *composeController);
@@ -493,6 +498,11 @@ static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewContro
 
 @implementation ApolloMarkdownGifTapTarget
 
+- (void)dismissPresentedAPIKeys {
+    [self.presentedAPIKeysNav dismissViewControllerAnimated:YES completion:nil];
+    self.presentedAPIKeysNav = nil;
+}
+
 - (void)gifTapped:(__unused id)sender {
     UIViewController *composeController = ApolloMarkdownGifActiveComposeController();
     if (!composeController) {
@@ -502,6 +512,7 @@ static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewContro
 
     if ([ApolloGiphyClient configuredAPIKey].length == 0) {
         ApolloLog(@"[MarkdownGif] giphy picker skipped: no API key configured");
+        ApolloMarkdownGifPresentMissingAPIKeyAlert(composeController);
         return;
     }
 
@@ -973,6 +984,7 @@ static ApolloMarkdownGifInsertResult ApolloMarkdownGifTryInjectInRoot(UIView *ro
         ApolloMarkdownGifMarkToolbarContainer(toolbarContainer);
         if (composeController) {
             ApolloMarkdownGifMarkComposeSessionInjected(composeController);
+            ApolloMarkdownGifCancelPendingInjections(composeController);
             ApolloMarkdownGifLogLayoutOnce(composeController,
                 [NSString stringWithFormat:@"layout path=%@ container=%@ slots=%lu gap=%.1f reflowed=%lu mode=%@ containerW=%.0f slotW=%.0f spanBefore=%.0f spanAfter=%.0f skipped=%lu",
                  layoutPath ?: @"unknown",
@@ -989,7 +1001,10 @@ static ApolloMarkdownGifInsertResult ApolloMarkdownGifTryInjectInRoot(UIView *ro
         }
         ApolloLog(@"[MarkdownGif] inserted Gif button after Add photos");
     } else if (result == ApolloMarkdownGifInsertResultAlreadyPresent) {
-        if (composeController) ApolloMarkdownGifMarkComposeSessionInjected(composeController);
+        if (composeController) {
+            ApolloMarkdownGifMarkComposeSessionInjected(composeController);
+            ApolloMarkdownGifCancelPendingInjections(composeController);
+        }
     } else if (composeController) {
         ApolloMarkdownGifLogFailureOnce(composeController, @"insert failed");
     }
@@ -1099,6 +1114,45 @@ static ApolloMarkdownGifInjectOutcome ApolloMarkdownGifTryInjectForComposeContro
     return outcome;
 }
 
+static void ApolloMarkdownGifCancelPendingInjections(UIViewController *composeController) {
+    if (!composeController) return;
+    NSMutableArray<dispatch_block_t> *pending = objc_getAssociatedObject(composeController, &kApolloMarkdownGifPendingInjectionBlocksKey);
+    if (!pending) return;
+    for (dispatch_block_t block in pending) {
+        dispatch_block_cancel(block);
+    }
+    [pending removeAllObjects];
+}
+
+static void ApolloMarkdownGifTrackPendingInjectionBlock(UIViewController *composeController, dispatch_block_t block) {
+    if (!composeController || !block) return;
+    NSMutableArray<dispatch_block_t> *pending = objc_getAssociatedObject(composeController, &kApolloMarkdownGifPendingInjectionBlocksKey);
+    if (!pending) {
+        pending = [NSMutableArray array];
+        objc_setAssociatedObject(composeController, &kApolloMarkdownGifPendingInjectionBlocksKey, pending, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [pending addObject:block];
+}
+
+static void ApolloMarkdownGifPresentMissingAPIKeyAlert(UIViewController *composeController) {
+    if (!composeController) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Giphy API Key Required"
+                                                                   message:@"Add your free Giphy API key in Settings → API Keys to browse and post GIFs. Get one at developers.giphy.com."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Open API Keys" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        CustomAPIViewController *apiVC = [[CustomAPIViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:apiVC];
+        nav.modalPresentationStyle = UIModalPresentationFormSheet;
+        sApolloMarkdownGifTapTarget.presentedAPIKeysNav = nav;
+        apiVC.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+                                                                                                  target:sApolloMarkdownGifTapTarget
+                                                                                                  action:@selector(dismissPresentedAPIKeys)];
+        [composeController presentViewController:nav animated:YES completion:nil];
+    }]];
+    [composeController presentViewController:alert animated:YES completion:nil];
+}
+
 static UIViewController *ApolloMarkdownGifActiveComposeController(void) {
     return objc_getAssociatedObject([UIApplication sharedApplication], &kApolloMarkdownGifActiveComposeKey);
 }
@@ -1110,6 +1164,11 @@ static void ApolloMarkdownGifSetActiveComposeController(UIViewController *contro
 static void ApolloMarkdownGifScheduleInjection(UIViewController *composeController, NSString *reason) {
     if (composeController && ApolloMarkdownGifComposeSessionHasGif(composeController)) return;
 
+    UIViewController *targetController = composeController ?: ApolloMarkdownGifActiveComposeController();
+    if (targetController) {
+        ApolloMarkdownGifCancelPendingInjections(targetController);
+    }
+
     if (composeController) {
         ApolloMarkdownGifSetActiveComposeController(composeController);
         ApolloLog(@"[MarkdownGif] compose appeared class=%@ reason=%@",
@@ -1117,7 +1176,9 @@ static void ApolloMarkdownGifScheduleInjection(UIViewController *composeControll
     }
     __weak UIViewController *weakController = composeController;
     for (NSNumber *delay in @[@0.0, @0.1, @0.25, @0.5, @1.0, @2.0, @2.5]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __block dispatch_block_t block = nil;
+        block = dispatch_block_create((dispatch_block_flags_t)0, ^{
+            if (dispatch_block_testcancel(block)) return;
             UIViewController *strong = weakController ?: ApolloMarkdownGifActiveComposeController();
             if (strong && ApolloMarkdownGifComposeSessionHasGif(strong)) return;
             ApolloMarkdownGifInjectOutcome outcome = ApolloMarkdownGifTryInjectForComposeController(strong);
@@ -1125,6 +1186,8 @@ static void ApolloMarkdownGifScheduleInjection(UIViewController *composeControll
                 ApolloLog(@"[MarkdownGif] injection succeeded (reason=%@ delay=%@)", reason ?: @"", delay);
             }
         });
+        ApolloMarkdownGifTrackPendingInjectionBlock(targetController, block);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
     }
 }
 

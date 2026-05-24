@@ -65,9 +65,9 @@ static BOOL ApolloComputeShouldAutoplayInlineGIF(NSString **outMode) {
 }
 
 static BOOL ApolloNetworkIsOnWiFi(void) {
-    if (!sReachability) return YES;
+    if (!sReachability) return NO;
     SCNetworkReachabilityFlags flags = 0;
-    if (!SCNetworkReachabilityGetFlags(sReachability, &flags)) return YES;
+    if (!SCNetworkReachabilityGetFlags(sReachability, &flags)) return NO;
     if (!(flags & kSCNetworkReachabilityFlagsReachable)) return NO;
     if (flags & kSCNetworkReachabilityFlagsIsWWAN) return NO;
     return YES;
