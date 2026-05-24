@@ -61,7 +61,7 @@ static NSString *ApolloBannedProfileUsernameFromModelObject(id object) {
     return nil;
 }
 
-static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController *viewController) {
+static NSString *ApolloBannedProfileUsernameFromViewControllerDirect(UIViewController *viewController) {
     if (!viewController) return nil;
 
     NSArray<NSString *> *preferredIvars = @[@"username", @"userName", @"_username", @"account", @"user", @"profile", @"viewModel"];
@@ -75,20 +75,32 @@ static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController 
         if (username.length > 0) return username;
     }
 
-    NSString *title = viewController.navigationItem.title ?: viewController.title;
-    title = ApolloBannedProfileNormalizedUsername(title);
-    if (title.length > 0 && ![sBlockedNavTitles containsObject:title.lowercaseString]) {
-        if (![title containsString:@" "] && title.length <= 32) return title;
+    id titleValue = viewController.navigationItem.title ?: viewController.title;
+    if ([titleValue isKindOfClass:[NSString class]]) {
+        NSString *title = ApolloBannedProfileNormalizedUsername((NSString *)titleValue);
+        if (title.length > 0 && ![sBlockedNavTitles containsObject:title.lowercaseString]) {
+            if (![title containsString:@" "] && title.length <= 32) return title;
+        }
     }
 
+    return nil;
+}
+
+static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController *viewController) {
+    if (!viewController) return nil;
+
+    NSString *direct = ApolloBannedProfileUsernameFromViewControllerDirect(viewController);
+    if (direct.length > 0) return direct;
+
     for (UIViewController *controller in viewController.navigationController.viewControllers.reverseObjectEnumerator) {
+        if (controller == viewController) continue;
         if (sProfileViewControllerClass && [controller isKindOfClass:sProfileViewControllerClass]) {
-            NSString *username = ApolloBannedProfileUsernameFromViewController(controller);
+            NSString *username = ApolloBannedProfileUsernameFromViewControllerDirect(controller);
             if (username.length > 0) return username;
         }
         NSString *className = NSStringFromClass(controller.class);
         if ([className containsString:@"ProfileViewController"]) {
-            NSString *username = ApolloBannedProfileUsernameFromViewController(controller);
+            NSString *username = ApolloBannedProfileUsernameFromViewControllerDirect(controller);
             if (username.length > 0) return username;
         }
     }
@@ -97,7 +109,8 @@ static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController 
     NSString *backTitle = backItem.title;
     if (backTitle.length == 0 && viewController.navigationController.viewControllers.count > 1) {
         UIViewController *previous = viewController.navigationController.viewControllers[viewController.navigationController.viewControllers.count - 2];
-        backTitle = previous.navigationItem.title ?: previous.title;
+        id previousTitle = previous.navigationItem.title ?: previous.title;
+        backTitle = [previousTitle isKindOfClass:[NSString class]] ? (NSString *)previousTitle : nil;
     }
     backTitle = ApolloBannedProfileNormalizedUsername(backTitle);
     if (backTitle.length > 0 && ![sBlockedNavTitles containsObject:backTitle.lowercaseString]) {
