@@ -6,6 +6,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "ApolloMediaMetadata.h"
 #import "Tweak.h"
@@ -119,10 +120,28 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
 // Credits to @yoshimura-qcul for the original fix
 %hook FLAnimatedImageView
 
+- (void)setAnimatedImage:(FLAnimatedImage *)animatedImage {
+    %orig;
+    ApolloApplyFLAnimatedImageViewAutoplayGate(self);
+}
+
+- (void)startAnimating {
+    if (ApolloViewIsInlineGIF(self) && !ApolloInlineGIFViewShouldAutoplay(self)) {
+        MSHookIvar<BOOL>(self, "_shouldAnimate") = NO;
+        return;
+    }
+    %orig;
+}
+
 - (void)displayDidRefresh:(CADisplayLink *)displayLink {
     // Get required ivars
     FLAnimatedImage *animatedImage = MSHookIvar<FLAnimatedImage *>(self, "_animatedImage");
     if (!animatedImage) {
+        return;
+    }
+
+    if (ApolloViewIsInlineGIF(self) && !ApolloInlineGIFViewShouldAutoplay(self)) {
+        MSHookIvar<BOOL>(self, "_shouldAnimate") = NO;
         return;
     }
 
