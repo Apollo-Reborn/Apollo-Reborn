@@ -7,6 +7,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloMediaMetadata.h"
 #import "Tweak.h"
 
 #import "ffmpeg-kit/ffmpeg-kit/include/MediaInformationSession.h"
@@ -483,6 +484,21 @@ static NSDictionary *ApolloFixInvalidGiphyMetadata(NSDictionary *orig, NSUIntege
     return fixed ?: orig;
 }
 
+static NSDictionary *ApolloFixMediaMetadata(NSDictionary *orig, NSUInteger *outGiphyCount, NSUInteger *outRedditGifCount) {
+    if (outGiphyCount) *outGiphyCount = 0;
+    if (outRedditGifCount) *outRedditGifCount = 0;
+    if (![orig isKindOfClass:[NSDictionary class]] || orig.count == 0) return orig;
+
+    NSUInteger giphyCount = 0;
+    NSDictionary *fixed = ApolloFixInvalidGiphyMetadata(orig, &giphyCount);
+    NSUInteger redditGifCount = 0;
+    fixed = ApolloFixRedditHostedGifMetadata(fixed, &redditGifCount);
+
+    if (outGiphyCount) *outGiphyCount = giphyCount;
+    if (outRedditGifCount) *outRedditGifCount = redditGifCount;
+    return fixed;
+}
+
 // MARK: - "Processing img" Placeholder Fix (shared between RDKComment and RDKLink)
 
 // Resolve a single media ID to an image URL from media_metadata.
@@ -494,20 +510,9 @@ static NSString *ApolloResolveMediaURL(NSString *mediaId, NSDictionary *metadata
     if (![entry isKindOfClass:[NSDictionary class]]) return nil;
     if (![[entry objectForKey:@"status"] isEqualToString:@"valid"]) return nil;
 
-    NSString *url = nil;
-    NSDictionary *source = entry[@"s"];
-    if ([source isKindOfClass:[NSDictionary class]]) {
-        url = (sPreferredGIFFallbackFormat == 0)
-            ? (source[@"gif"] ?: source[@"mp4"] ?: source[@"u"])
-            : (source[@"mp4"] ?: source[@"gif"] ?: source[@"u"]);
-    }
-    if (!url) {
-        NSArray *previews = entry[@"p"];
-        if ([previews isKindOfClass:[NSArray class]] && previews.count > 0) {
-            url = [previews.lastObject objectForKey:@"u"];
-        }
-    }
-    if (![url isKindOfClass:[NSString class]] || url.length == 0) return nil;
+    BOOL preferMP4 = (sPreferredGIFFallbackFormat != 0);
+    NSString *url = ApolloMediaDisplayURLFromMetadataEntry(mediaId, entry, preferMP4);
+    if (url.length == 0) return nil;
 
     if (outLabel && [[entry objectForKey:@"e"] isEqualToString:@"AnimatedImage"]) *outLabel = @"GIF";
     return url;
@@ -563,8 +568,8 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
 %hook RDKComment
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
-    NSUInteger synthesizedCount = 0;
-    NSDictionary *fixed = ApolloFixInvalidGiphyMetadata(mediaMetadata, &synthesizedCount);
+    NSUInteger giphyCount = 0, redditGifCount = 0;
+    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
     %orig(fixed);
 }
 
@@ -577,8 +582,8 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
 %hook RDKLink
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
-    NSUInteger synthesizedCount = 0;
-    NSDictionary *fixed = ApolloFixInvalidGiphyMetadata(mediaMetadata, &synthesizedCount);
+    NSUInteger giphyCount = 0, redditGifCount = 0;
+    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
     %orig(fixed);
 }
 

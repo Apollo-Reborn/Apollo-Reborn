@@ -15,6 +15,7 @@
 #import "CustomAPIViewController.h"
 #import "UserDefaultConstants.h"
 #import "Defaults.h"
+#import "ApolloMarkdownToolbarGif.h"
 
 // MARK: - Sideload Fixes
 
@@ -949,6 +950,7 @@ static void initializeRandomSources() {
                                     UDKeyUnmuteCommentsVideos: @0,
                                     UDKeyProxyImgurDDG: @NO,
                                     UDKeyImageChestAPIToken: @"",
+                                    UDKeyGiphyAPIKey: @"",
                                     UDKeyEnableInlineImages: @YES,
                                     UDKeyLinkPreviewBodyMode: @(ApolloLinkPreviewModeFull),
                                     UDKeyLinkPreviewCommentsMode: @(ApolloLinkPreviewModeFull),
@@ -1108,6 +1110,8 @@ static void initializeRandomSources() {
     sTrendingSubredditsLimit = (NSString *)[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyTrendingSubredditsLimit];
 
     %init;
+
+    ApolloMarkdownGifInstall();
 
     // Ultra pre-migration
     [[NSUserDefaults standardUserDefaults] setObject:@"ya" forKey:@"awesome_notifications"];

@@ -34,10 +34,14 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloBannedProfile.xm \
     $(SRC_DIR)/ApolloImageUploadHost.xm \
     $(SRC_DIR)/ApolloPhotoPostComposerScrollFix.xm \
+    $(SRC_DIR)/ApolloMarkdownToolbarGif.xm \
+    $(SRC_DIR)/ApolloGiphyClient.m \
+    $(SRC_DIR)/GiphyPickerViewController.m \
     $(SRC_DIR)/ApolloCreatedAtAlert.xm \
     $(SRC_DIR)/ApolloState.m \
     $(SRC_DIR)/ApolloShareLinks.xm \
     $(SRC_DIR)/ApolloMedia.xm \
+    $(SRC_DIR)/ApolloMediaMetadata.m \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
     $(SRC_DIR)/ApolloLiquidGlass.xm \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \

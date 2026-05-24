@@ -5,6 +5,7 @@ static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // performs refresh-token exchanges server-side.
 static NSString *const UDKeyRedditClientSecret = @"RedditApiClientSecret";
 static NSString *const UDKeyImgurClientId = @"ImgurApiClientId";
+static NSString *const UDKeyGiphyAPIKey = @"GiphyAPIKey";
 static NSString *const UDKeyImageChestAPIToken = @"ImageChestAPIToken";
 static NSString *const UDKeyRedirectURI = @"RedirectURI";
 static NSString *const UDKeyUserAgent = @"UserAgent";
