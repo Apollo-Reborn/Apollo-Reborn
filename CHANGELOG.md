@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [v3.0.0] - YYYY-mm-dd
+
+### Features
+
+- Add **Image Chest** inline album support: bare single Image Chest links show the first image inline and open an in-app album viewer with tap-to-hide controls, idle auto-hide, and per-image pinch zoom (#241: @icpryde)
+    - To set up Image Chest integration, create an account at https://imgchest.com, then navigate to https://imgchest.com/profile/api to create an API token. Copy the token and set it in the **Img Chest API Key** field in **Settings > Custom API > API Keys**
+- Add **Subreddit Headers**: view subreddit banners and display icons on subreddit pages, with the option to tap any banner or icon to set a custom local image. Overrides can be reset anytime in Settings (#266: @jordanearle, @icpryde)
+- Add **editable user flair text** support to Apollo's flair selector (#255: @nunoo)
+- Show **banned profile state** with a dead Snoo overlay on user profiles, and surface comment author hints for banned/suspended users (#271, #278: @icpryde, @jordanearle)
+- Long-press peek now works on usernames and subreddit links inside threads and comments, using Apollo's native profile/community peek instead of bouncing through Safari's reddit.com age gate (#262: @icpryde)
+- Compact **u/username** and **r/subreddit** cards in rich link previews show avatar/icon, display name, member count, and an about snippet, with long-press peek into the native profile/community view (#262: @icpryde)
+- Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
+- Subreddit list (Modern mode) polish (#262: @icpryde):
+    - Soft themed overlay on row press instead of the legacy divider flash
+    - Expanded multireddit/custom-feed child rows with a clear background and a theme-accent indent line
+    - Transparent section headers (FAVORITES / MODERATOR / MULTIREDDITS / A–Z) with just an accent title and gradient line; classic mode is unchanged
+
+### Fixes
+
+- Fix scroll freeze / loading-spinner lockup that could occur while scrolling threads with rich link previews (avatar visibility and host shell updates no longer touch CALayer off the main thread) (#262: @icpryde)
+- Fix comment view layout shift when user avatars load by reserving avatar space in the placeholder (#262: @icpryde)
+- Replace the visible "MMMMMMMMMM" placeholder text in rich link previews with skeleton loading bars, and reduce flicker after navigation or peek dismiss (#262: @icpryde)
+- Fix a stray translucent star/blob appearing on rich link previews when using Share as Image (#262: @icpryde)
+- Fix visionOS (Vision Pro) use-after-free crash on multireddits (#270: @rebelancap)
+- Fix X and Edit buttons touching the top of the account switcher popup on Liquid Glass (#275: @lampemw)
+- Stability improvements around rapid subreddit navigation, image loading loops, and background memory management (#262, #266: @icpryde, @jordanearle)
+- Debounce rich link preview disk cache writes so scrolling no longer hammers sync I/O, with an immediate flush when the app backgrounds (#262: @icpryde)
+- Refresh stale cached user profiles and invalidate reddit-user link previews when a user is flagged suspended, so compact cards and peek UI reflect the banned/suspended state reliably (#278: @jordanearle, @icpryde)
+
 ## [v2.14.0] - 2026-05-20
 
 ### Features
@@ -429,6 +460,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.0.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.14.0...v3.0.0
 [v2.14.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.13.0...v2.14.0
 [v2.13.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.12.0b...v2.13.0
 [v2.12.0b]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v2.11.0...v2.12.0b
