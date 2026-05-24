@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Generate AltStore-compatible source JSON files from GitHub releases."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+RELEASE_TAG_RE = re.compile(r"^v(?P<apollo>[^_]+)_(?P<tweak>.+)$")
+ASSET_RE = re.compile(
+    r"^(?:(?P<prefix>NO-EXTENSIONS_GLASS|NO-EXTENSIONS|GLASS)_)?"
+    r"Apollo-(?P<apollo>[^_]+)_Apollo-Reborn-(?P<tweak>.+)\.ipa$"
+)
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def fetch_releases(repo: str) -> list[dict[str, Any]]:
+    api_url = f"https://api.github.com/repos/{repo}/releases"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Apollo-Reborn-Source-Generator",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = Request(api_url, headers=headers)
+    with urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def load_existing_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"apps": [{}], "news": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def format_release_notes(body: str, variant_name: str | None = None) -> str:
+    text = body.strip()
+    if variant_name:
+        return f"{variant_name}\n\n{text}" if text else variant_name
+    return text
+
+
+def parse_release_tag(tag: str) -> tuple[str, str] | None:
+    match = RELEASE_TAG_RE.match(tag)
+    if not match:
+        return None
+    return match.group("apollo"), match.group("tweak")
+
+
+def find_matching_asset(release: dict[str, Any], prefix: str | None) -> dict[str, Any] | None:
+    wanted = prefix or ""
+    for asset in release.get("assets", []):
+        name = asset.get("name", "")
+        match = ASSET_RE.match(name)
+        if not match:
+            continue
+        asset_prefix = match.group("prefix") or ""
+        if asset_prefix == wanted:
+            return asset
+    return None
+
+
+def build_version_entry(
+    release: dict[str, Any],
+    prefix: str | None,
+    variant_name: str | None,
+) -> dict[str, Any] | None:
+    parsed = parse_release_tag(release.get("tag_name", ""))
+    if not parsed:
+        return None
+
+    asset = find_matching_asset(release, prefix)
+    if not asset:
+        return None
+
+    apollo_version, tweak_version = parsed
+    localized = (
+        f'Apollo version: "v{apollo_version}"\n'
+        f'Apollo-Reborn version: "v{tweak_version}"\n\n'
+        f"{format_release_notes(release.get('body', ''), variant_name)}"
+    ).strip()
+    return {
+        "version": apollo_version,
+        "buildVersion": tweak_version,
+        "date": release.get("published_at"),
+        "localizedDescription": localized,
+        "downloadURL": asset.get("browser_download_url"),
+        "size": asset.get("size"),
+    }
+
+
+def build_news_entry(
+    release: dict[str, Any],
+    config: dict[str, Any],
+    variant_name: str | None,
+) -> dict[str, Any]:
+    parsed = parse_release_tag(release.get("tag_name", ""))
+    apollo_version, tweak_version = parsed if parsed else ("Unknown", "Unknown")
+    title = f"Apollo v{apollo_version} / Apollo-Reborn v{tweak_version}"
+    if variant_name:
+        title = f"{title} ({variant_name})"
+    return {
+        "title": title,
+        "identifier": release.get("tag_name"),
+        "caption": config["news"]["caption"],
+        "date": release.get("published_at"),
+        "tintColor": config["source"]["tintColor"],
+        "imageURL": config["news"]["imageURL"],
+        "url": release.get("html_url"),
+    }
+
+
+def update_source_json(
+    output_path: Path,
+    releases: list[dict[str, Any]],
+    config: dict[str, Any],
+    variant: dict[str, Any],
+) -> None:
+    data = load_existing_json(output_path)
+    if "apps" not in data or not data["apps"]:
+        data["apps"] = [{}]
+
+    app = data["apps"][0]
+    app.update(config["app"])
+    app.update(variant["app"])
+
+    seen: set[tuple[str, str]] = set()
+    versions: list[dict[str, Any]] = []
+    news: list[dict[str, Any]] = []
+
+    sorted_releases = sorted(
+        releases,
+        key=lambda item: item.get("published_at") or "",
+    )
+
+    for release in reversed(sorted_releases):
+        entry = build_version_entry(release, variant["prefix"], variant.get("notesLabel"))
+        if not entry:
+            continue
+        key = (entry["version"], entry["buildVersion"])
+        if key in seen:
+            continue
+        seen.add(key)
+        versions.append(entry)
+        news.append(build_news_entry(release, config, variant.get("newsLabel")))
+
+    app["versions"] = versions
+    if versions:
+        latest = versions[0]
+        app["version"] = latest["version"]
+        app["buildVersion"] = latest["buildVersion"]
+        app["versionDate"] = latest["date"]
+        app["versionDescription"] = latest["localizedDescription"]
+        app["downloadURL"] = latest["downloadURL"]
+        app["size"] = latest["size"]
+
+    data["name"] = variant["source"]["name"]
+    data["subtitle"] = variant["source"]["subtitle"]
+    data["description"] = variant["source"]["description"]
+    data["news"] = sorted(news, key=lambda item: item["date"], reverse=True)
+
+    output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def validate_config(config: dict[str, Any]) -> None:
+    required_top_level = {"repo", "source", "app", "news", "variants"}
+    missing = sorted(required_top_level - set(config))
+    if missing:
+        raise KeyError(f"missing config keys: {', '.join(missing)}")
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parent.parent
+    config_path = root / "distribution" / "config.json"
+    config = load_config(config_path)
+    validate_config(config)
+
+    try:
+        releases = fetch_releases(config["repo"])
+    except (HTTPError, URLError) as exc:
+        print(f"Error fetching releases: {exc}", file=sys.stderr)
+        return 1
+
+    for variant in config["variants"]:
+        output_path = root / variant["output"]
+        update_source_json(output_path, releases, config, variant)
+        print(f"Updated {output_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

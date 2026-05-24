@@ -139,6 +139,10 @@ make package
 ./build-ipa.sh --ipa ./Apollo.ipa [--deb ./packages/<tweak>.deb] [-o ./packages/Apollo-Tweaked.ipa]
 ```
 
+## Distribution
+
+For the in-house four-variant IPA release flow, AltStore/SideStore/Feather source generation, and the meaning of the “No Extensions” builds, see [DISTRIBUTION.md](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/DISTRIBUTION.md:1).
+
 ## Build
 
 **Requirements:**
