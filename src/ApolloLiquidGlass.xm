@@ -820,6 +820,22 @@ static void ApolloRecenterTitleControl(UIView *titleControl) {
 
 %end
 
+// MARK: - AccountManagerViewController top padding fix for Liquid Glass
+// In Liquid Glass mode the account switcher popup has no built-in top margin,
+// so the X and Edit bar buttons touch the top edge.
+//
+// Fix: Add additional 12 pts top padding via additionalSafeAreaInsets if using liquid glass.
+
+%hook _TtC6Apollo28AccountManagerViewController
+
+- (void)viewDidLoad {
+    %orig;
+    if (!IsLiquidGlass()) return;
+    ((UIViewController *)self).additionalSafeAreaInsets = UIEdgeInsetsMake(12.0, 0, 0, 0);
+}
+
+%end
+
 %ctor {
     %init;
 }
