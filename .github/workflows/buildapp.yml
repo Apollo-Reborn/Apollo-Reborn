@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: 'recursive'
 
@@ -38,7 +38,7 @@ jobs:
         run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
 
       - name: Setup Theos
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: theos/theos
           ref: master
@@ -68,7 +68,7 @@ jobs:
 
       - name: Create release
         id: create_release
-        uses: softprops/action-gh-release@v0.1.15
+        uses: softprops/action-gh-release@4c8d8e0ff9dddee0dddd4db3b5910452a3491d3a # v0.1.15
         env:
           TWEAK_VERSION: ${{ steps.parse_control.outputs.TWEAK_VERSION }}
         with:

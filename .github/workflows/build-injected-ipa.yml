@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: 'recursive'
 
@@ -43,7 +43,7 @@ jobs:
         run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
 
       - name: Setup Theos
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: theos/theos
           ref: master
@@ -101,7 +101,7 @@ jobs:
           echo "Injected IPA: $OUTPUT_IPA ($(wc -c < $OUTPUT_IPA) bytes)"
 
       - name: Upload injected IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.inject.outputs.output_ipa }}
           path: ${{ steps.inject.outputs.output_ipa }}
