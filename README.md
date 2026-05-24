@@ -141,7 +141,7 @@ make package
 
 ## Distribution
 
-For the in-house four-variant IPA release flow, AltStore/SideStore/Feather source generation, and the meaning of the “No Extensions” builds, see [DISTRIBUTION.md](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/DISTRIBUTION.md:1).
+For the in-house four-variant IPA release flow, AltStore/SideStore/Feather source generation, and the meaning of the “No Extensions” builds, see [DISTRIBUTION.md](DISTRIBUTION.md).
 
 ## Build
 

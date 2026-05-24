@@ -18,9 +18,6 @@ ASSET_RE = re.compile(
     r"^(?:(?P<prefix>NO-EXTENSIONS_GLASS|NO-EXTENSIONS|GLASS)_)?"
     r"Apollo-(?P<apollo>[^_]+)_Apollo-Reborn-(?P<tweak>.+)\.ipa$"
 )
-DEB_RE = re.compile(
-    r"^(?P<name>.+?)_(?P<tweak>.+)_(?P<arch>iphoneos-arm|iphoneos-arm64(?:_rootless)?)\.deb$"
-)
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -235,6 +232,9 @@ def update_source_json(
     variant: dict[str, Any],
 ) -> None:
     data = load_existing_json(output_path)
+    data.update(config["source"])
+    data.update(variant["source"])
+    data["featuredApps"] = data.get("featuredApps", [])
     if "apps" not in data or not data["apps"]:
         data["apps"] = [{}]
 
@@ -272,10 +272,7 @@ def update_source_json(
         app["downloadURL"] = latest["downloadURL"]
         app["size"] = latest["size"]
 
-    data["name"] = variant["source"]["name"]
-    data["subtitle"] = variant["source"]["subtitle"]
-    data["description"] = variant["source"]["description"]
-    data["news"] = sorted(news, key=lambda item: item["date"], reverse=True)
+    data["news"] = sorted(news, key=lambda item: item.get("date") or "", reverse=True)
 
     output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

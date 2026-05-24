@@ -185,7 +185,6 @@ rm -f "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA"
 echo ""
 echo "[1/4] Building standard injected IPA..."
 bash "${REPO_DIR}/build-ipa.sh" --ipa "$IPA_PATH" --deb "$DEB_PATH" -o "$STANDARD_IPA"
-strip_arm64e_from_substrate_in_ipa "$STANDARD_IPA"
 
 echo ""
 echo "[2/4] Building no-extensions injected IPA..."

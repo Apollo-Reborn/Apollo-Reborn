@@ -39,6 +39,7 @@
       "notesLabel": null,
       "newsLabel": "Standard",
       "source": {
+        "identifier": "app.apolloreborn.standard",
         "name": "Apollo-Reborn",
         "subtitle": "Standard Apollo-Reborn source",
         "description": "Standard Apollo-Reborn source. Includes the main app plus Apollo’s bundled app extensions."
@@ -54,6 +55,7 @@
       "notesLabel": "No Extensions build.",
       "newsLabel": "No Extensions",
       "source": {
+        "identifier": "app.apolloreborn.noextensions",
         "name": "Apollo-Reborn - No Extensions",
         "subtitle": "Apollo-Reborn source with app extensions removed",
         "description": "No Extensions Apollo-Reborn source. Strips Apollo’s app extensions so the sideloaded app uses 1 App ID instead of 7, which is useful on free Apple IDs."
@@ -69,6 +71,7 @@
       "notesLabel": "Liquid Glass build.",
       "newsLabel": "GLASS",
       "source": {
+        "identifier": "app.apolloreborn.glass",
         "name": "Apollo-Reborn - GLASS",
         "subtitle": "Apollo-Reborn source with Liquid Glass patch",
         "description": "GLASS Apollo-Reborn source. Includes the Liquid Glass iOS 26 patch and bundled Liquid Glass alternate icons."
@@ -84,6 +87,7 @@
       "notesLabel": "No Extensions + Liquid Glass build.",
       "newsLabel": "No Extensions + GLASS",
       "source": {
+        "identifier": "app.apolloreborn.noextensionsglass",
         "name": "Apollo-Reborn - No Extensions + GLASS",
         "subtitle": "Apollo-Reborn source without extensions and with Liquid Glass patch",
         "description": "No Extensions + GLASS Apollo-Reborn source. Uses 1 App ID and includes the Liquid Glass iOS 26 patch plus bundled Liquid Glass alternate icons."

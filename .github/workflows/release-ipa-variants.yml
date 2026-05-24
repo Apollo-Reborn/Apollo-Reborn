@@ -95,7 +95,7 @@ jobs:
       - name: Install cyan
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install --pre cyan
+          python3 -m pip install cyan==1.4.4
 
       - name: Download Apollo IPA
         run: |
@@ -113,6 +113,10 @@ jobs:
         id: meta
         run: |
           APOLLO_VERSION=$(unzip -p Apollo.ipa 'Payload/*.app/Info.plist' | grep -A1 'CFBundleShortVersionString' | grep string | sed -E 's/.*<string>([^<]+)<\/string>.*/\1/' | tr -d '[:space:]')
+          if [ -z "$APOLLO_VERSION" ]; then
+            echo "Error: could not determine Apollo version from Apollo.ipa" >&2
+            exit 1
+          fi
           TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g')
           TAG_NAME="v${APOLLO_VERSION}_${TWEAK_VERSION}"
           RELEASE_NAME="Apollo v${APOLLO_VERSION} with Apollo-Reborn v${TWEAK_VERSION}"
@@ -151,21 +155,22 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.release_name }}
           body_path: RELEASE_NOTES.md
-          draft: ${{ github.event.inputs.draft == 'true' }}
-          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          overwrite_files: true
           files: |
             dist/out/*.ipa
             packages/*.deb
 
       - name: Update source JSON files
-        if: github.event.inputs.update_sources == 'true'
+        if: github.ref == 'refs/heads/main' && inputs.update_sources
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 ./scripts/update_source_json.py
 
       - name: Commit updated source JSON files
-        if: github.event.inputs.update_sources == 'true'
+        if: github.ref == 'refs/heads/main' && inputs.update_sources
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -175,4 +180,5 @@ jobs:
             exit 0
           fi
           git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          git pull --rebase origin main
           git push

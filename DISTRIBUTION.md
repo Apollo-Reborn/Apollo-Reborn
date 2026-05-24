@@ -20,7 +20,7 @@ Apollo ships with six `.appex` bundles in addition to the main app:
 - `NotificationServiceExtension.appex`
 - `OpenInUIExtension.appex`
 
-Keeping them intact uses 7 App IDs total on free Apple IDs. Removing them leaves only the main app, so AltStore/SideStore only need 1 App ID for Apollo itself. AltStore documents the underlying limit here: <https://faq.altstore.io/altstore-classic/app-ids>.
+Keeping them intact uses 7 App IDs total on free Apple IDs: 1 for the main app plus 6 for the extensions above. Removing them leaves only the main app, so AltStore/SideStore only need 1 App ID for Apollo itself. AltStore documents the underlying limit here: <https://faq.altstore.io/altstore-classic/app-ids>.
 
 ## Local Build Flow
 
@@ -40,16 +40,16 @@ By default this writes the four output files to `dist/out/`.
 
 Implementation details:
 
-- Standard build goes through [`build-ipa.sh`](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/build-ipa.sh:1), so it can use the repo-local deterministic injector when the input IPA is already scaffolded.
+- Standard build goes through [`build-ipa.sh`](build-ipa.sh), so it can use the repo-local deterministic injector when the input IPA is already scaffolded.
 - No-extensions builds use `cyan -e`.
-- Glass variants are derived by running [`patch.sh --liquid-glass`](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/patch.sh:1) on the two injected outputs.
+- Glass variants are derived by running [`patch.sh --liquid-glass`](patch.sh) on the two injected outputs.
 - Unlike Balackburn’s older flow, `patch.sh` also installs the bundled Liquid Glass `Assets.car` and alternate icon metadata from `liquid-glass/icons.json`.
 
 ## GitHub Actions Release Flow
 
 Use the workflow:
 
-- [release-ipa-variants.yml](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/.github/workflows/release-ipa-variants.yml:1)
+- [.github/workflows/release-ipa-variants.yml](.github/workflows/release-ipa-variants.yml)
 
 Inputs:
 
@@ -65,10 +65,10 @@ The workflow:
 3. Builds the four IPA variants
 4. Creates a GitHub release tagged `v<apollo>_<tweak>`
 5. Optionally regenerates:
-   - [apps.json](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/apps.json:1)
-   - [apps_noext.json](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/apps_noext.json:1)
-   - [apps_glass.json](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/apps_glass.json:1)
-   - [apps_noext_glass.json](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/apps_noext_glass.json:1)
+   - [apps.json](apps.json)
+   - [apps_noext.json](apps_noext.json)
+   - [apps_glass.json](apps_glass.json)
+   - [apps_noext_glass.json](apps_noext_glass.json)
 
 ## AltStore Source Setup
 
@@ -89,7 +89,7 @@ python3 ./scripts/update_source_json.py
 
 That script reads:
 
-- [distribution/config.json](/Users/jordanearle/Developer/Apollo-ImprovedCustomApi/distribution/config.json:1)
+- [distribution/config.json](distribution/config.json)
 - the repo’s GitHub releases
 
 and updates the four JSON sources so each source only advertises the matching asset prefix.
