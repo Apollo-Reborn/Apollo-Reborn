@@ -1425,12 +1425,6 @@ static BOOL ApolloLPIsRedditSubredditURL(NSURL *url) {
     return ApolloLPRedditSubredditFromURL(url).length > 0;
 }
 
-static BOOL ApolloLPIsImageChestAlbumURL(NSURL *url) {
-    if (!url) return NO;
-    NSString *host = ApolloLPHost(url).lowercaseString;
-    return [host isEqualToString:@"imgchest.com"] || [host hasSuffix:@".imgchest.com"];
-}
-
 static BOOL ApolloLPIsPosterPreviewURL(NSURL *url, ApolloLinkPreview *preview) {
     if (!url || !preview) return NO;
 
