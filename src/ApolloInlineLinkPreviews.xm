@@ -7,6 +7,8 @@
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloLinkPreviewFetcher.h"
+#import "ApolloBannedProfile.h"
+#import "ApolloUserProfileCache.h"
 #import "ApolloState.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloTranslation.h"
@@ -156,6 +158,33 @@ static NSString *ApolloLPHost(NSURL *url) {
 static BOOL ApolloLPHostHasSuffix(NSURL *url, NSString *suffix) {
     NSString *host = ApolloLPHost(url);
     return [host isEqualToString:suffix] || [host hasSuffix:[@"." stringByAppendingString:suffix]];
+}
+
+static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url) {
+    if (!url) return nil;
+    NSString *host = ApolloLPHost(url).lowercaseString;
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count < 2) return nil;
+    NSString *prefix = clean[0].lowercaseString;
+    if (![prefix isEqualToString:@"user"] && ![prefix isEqualToString:@"u"]) return nil;
+    for (NSString *part in clean) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+    NSString *username = [clean[1] stringByRemovingPercentEncoding] ?: clean[1];
+    username = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([username isEqualToString:@"[deleted]"]) return nil;
+    return username.length > 0 ? username : nil;
+}
+
+static void ApolloLPPrefetchRedditUserProfileIfNeeded(NSURL *url) {
+    NSString *username = ApolloLPRedditUsernameFromProfileURL(url);
+    if (username.length == 0) return;
+    [[ApolloUserProfileCache sharedCache] requestInfoForUsername:username completion:nil];
 }
 
 static BOOL ApolloLPTrustedInlineImageHost(NSURL *url) {
@@ -403,16 +432,38 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
 }
 
 - (void)applyPreviewInfo:(ApolloLinkPreview *)preview {
+    NSString *username = self.username.length > 0 ? self.username : ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    if (ApolloBannedProfileCachedIsSuspended(username) ||
+        [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()]) {
+        [self applyBannedStateForUsername:username];
+        return;
+    }
+
     NSString *displayName = ApolloLPCleanDisplayText(preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.title);
     NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : (self.username.length > 0 ? [@"u/" stringByAppendingString:self.username] : @"Reddit profile");
     NSString *bio = ApolloLPCleanDisplayText(preview.desc);
 
     self.titleLabel.text = displayName.length > 0 ? displayName : (self.username.length > 0 ? self.username : @"Reddit Profile");
+    self.handleLabel.hidden = NO;
     self.handleLabel.text = [handle hasPrefix:@"u/"] ? handle : [@"u/" stringByAppendingString:handle];
     self.bioLabel.text = bio.length > 0 ? bio : @"Open this profile in Apollo to view posts and comments.";
 
     NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
     [self loadImageURL:avatarURL intoImageView:self.avatarView];
+}
+
+- (void)applyBannedStateForUsername:(NSString *)username {
+    username = ApolloLPNormalizedRedditUsername(username) ?: username;
+    NSString *handle = username.length > 0 ? [@"u/" stringByAppendingString:username] : @"Reddit profile";
+    self.titleLabel.text = handle;
+    self.handleLabel.hidden = YES;
+    self.bioLabel.text = ApolloBannedProfileBannedDescriptionText();
+    UIImage *icon = ApolloBannedProfileIconImage();
+    if (icon) {
+        self.avatarView.image = icon;
+        self.avatarView.tintColor = nil;
+        self.avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
+    }
 }
 
 - (void)loadProfileInfo {
@@ -433,11 +484,17 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
 }
 
 - (void)applyProfileInfo:(ApolloUserProfileInfo *)info {
+    NSString *username = ApolloLPNormalizedRedditUsername(info.username) ?: self.username;
+    if (info.isSuspended || ApolloBannedProfileCachedIsSuspended(username)) {
+        [self applyBannedStateForUsername:username];
+        return;
+    }
+
     NSString *displayName = ApolloLPCleanDisplayText(info.displayName);
     NSString *bio = ApolloLPCleanDisplayText(info.aboutText);
-    NSString *username = ApolloLPNormalizedRedditUsername(info.username) ?: self.username;
 
     self.titleLabel.text = displayName.length > 0 ? displayName : (username.length > 0 ? username : self.titleLabel.text);
+    self.handleLabel.hidden = NO;
     self.handleLabel.text = username.length > 0 ? [@"u/" stringByAppendingString:username] : self.handleLabel.text;
     if (bio.length > 0) self.bioLabel.text = bio;
 
@@ -1382,25 +1439,6 @@ static BOOL ApolloLPIsRedditSubredditURL(NSURL *url) {
     return ApolloLPRedditSubredditFromURL(url).length > 0;
 }
 
-static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url) {
-    if (!ApolloLPHostHasSuffix(url, @"reddit.com")) return nil;
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
-        if (part.length > 0) [parts addObject:part];
-    }
-    if (parts.count < 2) return nil;
-
-    NSString *prefix = parts[0].lowercaseString;
-    if (![prefix isEqualToString:@"u"] && ![prefix isEqualToString:@"user"]) return nil;
-    for (NSString *part in parts) {
-        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
-    }
-
-    NSString *username = [parts[1] stringByRemovingPercentEncoding] ?: parts[1];
-    username = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return username.length > 0 ? username : nil;
-}
-
 static BOOL ApolloLPIsPosterPreviewURL(NSURL *url, ApolloLinkPreview *preview) {
     if (!url || !preview) return NO;
 
@@ -1812,6 +1850,27 @@ static NSString *ApolloLPRedditUserHandleText(ApolloLinkPreview *preview) {
     return [handle hasPrefix:@"u/"] ? handle : [@"u/" stringByAppendingString:handle];
 }
 
+static BOOL ApolloLPShouldUseBannedUserPresentation(NSURL *url, ApolloLinkPreview *preview) {
+    NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (username.length == 0 && preview.authorHandle.length > 0) {
+        username = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (ApolloBannedProfileCachedIsSuspended(username)) return YES;
+    return [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()];
+}
+
+static void ApolloLPApplyBannedUserAvatarIfNeeded(ASNetworkImageNode *avatarNode, NSURL *url, ApolloLinkPreview *preview) {
+    if (!avatarNode || !ApolloLPShouldUseBannedUserPresentation(url, preview)) return;
+    UIImage *icon = ApolloBannedProfileIconImage();
+    if (!icon) return;
+    avatarNode.URL = nil;
+    avatarNode.image = icon;
+    if ([avatarNode respondsToSelector:@selector(setDefaultImage:)]) {
+        avatarNode.defaultImage = icon;
+    }
+    avatarNode.backgroundColor = nil;
+}
+
 static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview, NSString *variant) {
     NSDictionary *bundle = ApolloLPPreparedNodeBundle(hostNode, url, preview, variant);
     if (!bundle) return nil;
@@ -1831,16 +1890,21 @@ static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, A
 
     NSString *handleText = ApolloLPRedditUserHandleText(preview);
     NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : handleText);
-    NSString *aboutText = preview.desc.length > 0 ? preview.desc : handleText;
-    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+    BOOL isBannedUser = ApolloLPShouldUseBannedUserPresentation(url, preview);
+    NSString *aboutText = isBannedUser ? ApolloBannedProfileBannedDescriptionText() : (preview.desc.length > 0 ? preview.desc : handleText);
+    NSURL *avatarURL = isBannedUser ? nil : (preview.avatarURL ?: preview.imageURL);
 
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
-    ApolloLPSetNetworkImageURLPreservingImage(avatarNode, avatarURL);
-    ApolloLPSetImageNodeBackgroundForURL(avatarNode, avatarURL);
-    ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
+    if (isBannedUser) {
+        ApolloLPApplyBannedUserAvatarIfNeeded(avatarNode, url, preview);
+    } else {
+        ApolloLPSetNetworkImageURLPreservingImage(avatarNode, avatarURL);
+        ApolloLPSetImageNodeBackgroundForURL(avatarNode, avatarURL);
+        ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
+    }
     avatarNode.contentMode = UIViewContentModeScaleAspectFill;
     avatarNode.cornerRadius = 22.0;
     avatarNode.clipsToBounds = YES;
@@ -2809,16 +2873,26 @@ static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
     return empty;
 }
 
+static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL *url, id nativeSpec) {
+    NSString *redditUsername = ApolloLPRedditUsernameFromProfileURL(url);
+    if (redditUsername.length == 0 || !ApolloBannedProfileCachedIsSuspended(redditUsername)) {
+        return nativeSpec;
+    }
+    return ApolloBannedProfileWrapLinkButtonSpecWithBannedHint(linkButtonNode, nativeSpec, redditUsername);
+}
+
 %hook _TtC6Apollo14LinkButtonNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
-    if (ApolloLPAllModesDisabled()) {
-        ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
-    }
-
     NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
     NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+    ApolloLPPrefetchRedditUserProfileIfNeeded(url);
+
+    if (ApolloLPAllModesDisabled()) {
+        ApolloLPRestoreHostShell((ASDisplayNode *)self);
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
+    }
+
     if (!url) {
         ApolloLPLogOncePerHost(NSStringFromClass([(id)self class]), @"no-url");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
@@ -2838,7 +2912,7 @@ static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
     if (selectedMode == ApolloLinkPreviewModeOff) {
         ApolloLPLogOncePerHost(host, area == ApolloLPAreaComments ? @"comments-disabled" : @"body-disabled");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
     if (ApolloLPShouldDeferToInlineMedia(url)) {
@@ -2857,6 +2931,16 @@ static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
     if (cached && ApolloLPIsBlueskyPostURL(url) && !ApolloLPIsBlueskyPostPreview(url, cached)) {
         ApolloLPLogOncePerHost(host, @"stale-bluesky-inline-refetch");
         cached = nil;
+    }
+    if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
+        BOOL staleRedditUser = ApolloLPIsRedditUserProfileURL(url)
+            && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
+        BOOL staleRedditSubreddit = ApolloLPIsRedditSubredditURL(url)
+            && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
+        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit) {
+            ApolloLPLogOncePerHost(host, staleRedditUser ? @"stale-reddit-user-refetch" : (staleRedditSubreddit ? @"stale-reddit-subreddit-refetch" : @"stale-reddit-empty-refetch"));
+            cached = nil;
+        }
     }
     if (!cached) {
         BOOL compactPlaceholder = selectedMode == ApolloLinkPreviewModeCompact || ApolloLPShouldUseCompactPlaceholder(url) || ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url);
@@ -2902,13 +2986,13 @@ static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
             return placeholder;
         }
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
     if (![cached hasUsefulMetadata]) {
         ApolloLPLogOncePerHost(host, @"cache-hit-empty");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
     BOOL isRedditUser = ApolloLPIsRedditUserPreview(url, cached);
@@ -2962,7 +3046,7 @@ static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
     }
     ApolloLPLogOncePerHost(host, @"build-failed");
     ApolloLPRestoreHostShell((ASDisplayNode *)self);
-    return %orig;
+    return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
 }
 
 %end

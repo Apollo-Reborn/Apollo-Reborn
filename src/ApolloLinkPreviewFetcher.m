@@ -1,4 +1,6 @@
 #import "ApolloLinkPreviewFetcher.h"
+#import "ApolloBannedProfile.h"
+#import "ApolloUserProfileCache.h"
 
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
@@ -234,6 +236,20 @@ static NSString *ApolloRedditSubredditFromURL(NSURL *url) {
     [allowed addCharactersInString:@"_-"];
     if ([subreddit rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) return nil;
     return subreddit;
+}
+
+static NSString *ApolloLinkPreviewRedditUsernameFromListingURL(NSURL *url) {
+    if (!ApolloLinkPreviewIsRedditListingURL(url)) return nil;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
+        if (part.length > 0) [parts addObject:part];
+    }
+    if (parts.count < 2) return nil;
+    NSString *first = [parts[0] lowercaseString];
+    if (![first isEqualToString:@"user"] && ![first isEqualToString:@"u"]) return nil;
+    NSString *username = parts[1];
+    if ([username isEqualToString:@"[deleted]"]) return nil;
+    return username;
 }
 
 // Sniffs the supplied HTML for the giveaway signatures of an anti-bot
@@ -888,12 +904,27 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
     ApolloUserProfileCache *profileCache = [ApolloUserProfileCache sharedCache];
     ApolloUserProfileInfo *cachedInfo = [profileCache cachedInfoForUsername:username];
     void (^deliver)(ApolloUserProfileInfo *) = ^(ApolloUserProfileInfo *info) {
+        NSString *canonicalUsername = info.username.length > 0 ? info.username : username;
+        NSString *fallbackHandle = [@"u/" stringByAppendingString:(username ?: @"")];
+        BOOL isSuspended = (info.isSuspended) || ApolloBannedProfileCachedIsSuspended(canonicalUsername ?: username);
+
         ApolloLinkPreview *preview = [ApolloLinkPreview new];
         preview.siteName = @"Reddit";
         preview.previewKind = @"reddit-user-profile";
-        NSString *canonicalUsername = info.username.length > 0 ? info.username : username;
-        NSString *fallbackHandle = [@"u/" stringByAppendingString:(username ?: @"")];
         preview.authorHandle = canonicalUsername.length > 0 ? [@"u/" stringByAppendingString:canonicalUsername] : fallbackHandle;
+
+        if (isSuspended) {
+            preview.title = preview.authorHandle;
+            preview.authorDisplayName = nil;
+            preview.desc = ApolloBannedProfileBannedDescriptionText();
+            preview.avatarURL = nil;
+            preview.imageURL = nil;
+            preview.fetchedAt = [NSDate date];
+            ApolloLog(@"[LinkPreviews] Reddit user preview banned handle=%@", preview.authorHandle ?: fallbackHandle);
+            completion(preview);
+            return;
+        }
+
         preview.authorDisplayName = ApolloLinkPreviewCleanString(info.displayName);
         preview.title = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.authorHandle;
         preview.desc = ApolloLinkPreviewTruncatedString(info.aboutText, 160);
@@ -911,7 +942,7 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
         completion(preview);
     };
 
-    if (cachedInfo) {
+    if (cachedInfo || ApolloBannedProfileCachedIsSuspended(username)) {
         deliver(cachedInfo);
         return;
     }
@@ -986,6 +1017,13 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             // by a verification challenge that returns garbage metadata. Punt
             // back to Apollo's native card (which already paints a subreddit
             // icon + name) instead of trying to scrape.
+            NSString *redditUsername = ApolloLinkPreviewRedditUsernameFromListingURL(url);
+            if (redditUsername.length > 0) {
+                [[ApolloUserProfileCache sharedCache] requestInfoForUsername:redditUsername completion:nil];
+                if (ApolloBannedProfileCachedIsSuspended(redditUsername)) {
+                    ApolloLog(@"[LinkPreviews] Reddit user u/%@ is suspended; native profile UI will show banned state", redditUsername);
+                }
+            }
             ApolloLog(@"[LinkPreviews] Reddit listing URL skipped %@", url.absoluteString);
             ApolloLinkPreview *preview = [ApolloLinkPreview new];
             preview.noMetadata = YES;

@@ -1,4 +1,5 @@
 #import "ApolloUserProfileCache.h"
+#import "ApolloBannedProfile.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 
@@ -164,6 +165,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     dict[@"aboutText"] = info.aboutText ?: @"";
     dict[@"defaultSnoo"] = @(info.defaultSnoo);
     dict[@"hasSnoovatar"] = @(info.hasSnoovatar);
+    dict[@"isSuspended"] = @(info.isSuspended);
     dict[@"fetchedAt"] = @([info.fetchedAt timeIntervalSince1970]);
     return dict;
 }
@@ -181,6 +183,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     NSString *aboutText = [self cleanStringFromValue:dict[@"aboutText"]];
     BOOL defaultSnoo = [dict[@"defaultSnoo"] boolValue];
     BOOL hasSnoovatar = snoovatarURL || [dict[@"hasSnoovatar"] boolValue];
+    BOOL isSuspended = [dict[@"isSuspended"] boolValue];
     NSTimeInterval timestamp = [dict[@"fetchedAt"] doubleValue];
     NSDate *fetchedAt = timestamp > 0 ? [NSDate dateWithTimeIntervalSince1970:timestamp] : [NSDate distantPast];
     if (!dict[@"hasSnoovatar"] && !dict[@"snoovatarURL"]) fetchedAt = [NSDate distantPast];
@@ -193,6 +196,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     info.displayName = displayName;
     info.aboutText = aboutText;
     info.hasSnoovatar = hasSnoovatar;
+    info.isSuspended = isSuspended;
     return info;
 }
 
@@ -324,6 +328,12 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
         defaultSnoo = ([host containsString:@"redditstatic.com"] && [path containsString:@"avatar_default"]);
     }
 
+    BOOL isSuspended = NO;
+    id suspendedValue = dataDict[@"is_suspended"];
+    if ([suspendedValue respondsToSelector:@selector(boolValue)]) {
+        isSuspended = [suspendedValue boolValue];
+    }
+
     ApolloUserProfileInfo *info = [[ApolloUserProfileInfo alloc] initWithUsername:username iconURL:iconURL bannerURL:bannerURL defaultSnoo:defaultSnoo fetchedAt:[NSDate date]];
     info.snoovatarURL = snoovatarURL;
     info.decoratorURL = decoratorURL;
@@ -331,6 +341,7 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     info.displayName = displayName;
     info.aboutText = aboutText;
     info.hasSnoovatar = snoovatarURL != nil;
+    info.isSuspended = isSuspended;
     return info;
 }
 
@@ -352,6 +363,9 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:ApolloUserProfileInfoUpdatedNotification
                                                                     object:self
                                                                   userInfo:@{ApolloUserProfileUsernameKey: key}];
+                if (info.isSuspended) {
+                    ApolloBannedProfileRefreshProfilesForUsername(key);
+                }
             }
             for (void (^callback)(ApolloUserProfileInfo *) in callbacks) {
                 callback(info);
@@ -389,6 +403,9 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
             ApolloLog(@"[UserAvatars] Fetched profile info for u/%@ icon=%@ banner=%@ decorator=%@ frame=%@", key, info.iconURL.absoluteString ?: @"nil", info.bannerURL.absoluteString ?: @"nil", info.decoratorURL.absoluteString ?: @"nil", info.avatarFrameKind ?: @"nil");
         } else {
             ApolloLog(@"[UserAvatars] Fetched profile info for u/%@ but no avatar/banner URLs were present", key);
+        }
+        if (info.isSuspended) {
+            ApolloLog(@"[BannedProfile] about.json flagged u/%@ as suspended", key);
         }
         [self finishInfoRequestForKey:key info:info];
     }];
@@ -547,6 +564,11 @@ static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
 
         ApolloLog(@"[UserAvatars] Cleared profile cache (info entries=%lu, removeError=%@)", (unsigned long)infoCount, error.localizedDescription ?: @"none");
     });
+}
+
+- (BOOL)cachedIsSuspendedForUsername:(NSString *)username {
+    ApolloUserProfileInfo *info = [self cachedInfoForUsername:username];
+    return info.isSuspended;
 }
 
 @end

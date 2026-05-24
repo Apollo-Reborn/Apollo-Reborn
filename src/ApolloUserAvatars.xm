@@ -6,6 +6,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloUserProfileCache.h"
+#import "ApolloBannedProfile.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileTabAvatarIconChangedNotification = @"ApolloProfileTabAvatarIconChangedNotification";
@@ -1355,6 +1356,10 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
     void (^applyInfo)(ApolloUserProfileInfo *) = ^(ApolloUserProfileInfo *info) {
         if (!info) return;
         [header applyProfileInfo:info fallbackUsername:username];
+
+        if (header.hostViewController) {
+            ApolloBannedProfileRefreshViewController(header.hostViewController);
+        }
 
         BOOL showSnoovatar = info.hasSnoovatar && info.snoovatarURL != nil;
         ApolloProfileSetSnoovatarMode(header, showSnoovatar);
