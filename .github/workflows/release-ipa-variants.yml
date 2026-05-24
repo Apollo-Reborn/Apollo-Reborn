@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
 
@@ -48,7 +48,7 @@ jobs:
         run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Setup Theos
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: theos/theos
           ref: master
@@ -59,6 +59,38 @@ jobs:
         run: make package FINALPACKAGE=1
         env:
           THEOS: ${{ github.workspace }}/theos
+
+      - name: Locate rootful package
+        id: rootful_deb
+        run: |
+          DEB_PATH=$(ls -1t packages/*.deb | head -1)
+          if [ -z "$DEB_PATH" ]; then
+            echo "Error: no rootful .deb produced by make package"
+            exit 1
+          fi
+          echo "deb_path=$DEB_PATH" >> "$GITHUB_OUTPUT"
+          echo "Rootful tweak: $DEB_PATH"
+
+      - name: Clean before rootless build
+        run: make clean
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Build rootless tweak package
+        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Rename rootless package
+        run: |
+          ROOTLESS_DEB=$(ls packages/*-arm64.deb | head -1)
+          if [ -z "$ROOTLESS_DEB" ]; then
+            echo "Error: no rootless .deb produced by make package"
+            exit 1
+          fi
+          ROOTLESS_RENAMED="${ROOTLESS_DEB%-arm64.deb}-arm64_rootless.deb"
+          mv "$ROOTLESS_DEB" "$ROOTLESS_RENAMED"
+          echo "Rootless tweak: $ROOTLESS_RENAMED"
 
       - name: Install cyan
         run: |
@@ -71,7 +103,11 @@ jobs:
           unzip -t Apollo.ipa >/dev/null
 
       - name: Build IPA variants
-        run: bash ./scripts/build_release_variants.sh --ipa ./Apollo.ipa --output-dir ./dist/out
+        run: |
+          bash ./scripts/build_release_variants.sh \
+            --ipa ./Apollo.ipa \
+            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
+            --output-dir ./dist/out
 
       - name: Collect metadata
         id: meta
@@ -98,6 +134,11 @@ jobs:
           - Standard injected IPA + Liquid Glass patch
           - No Extensions injected IPA + Liquid Glass patch
 
+          ## Included tweak packages
+
+          - Rootful `.deb`
+          - Rootless `.deb`
+
           ## Variant notes
 
           - **No Extensions** removes Apollo's bundled app extensions so the sideloaded app uses 1 App ID instead of 7.
@@ -105,7 +146,7 @@ jobs:
           EOF
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.release_name }}
@@ -114,6 +155,7 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
           files: |
             dist/out/*.ipa
+            packages/*.deb
 
       - name: Update source JSON files
         if: github.event.inputs.update_sources == 'true'
