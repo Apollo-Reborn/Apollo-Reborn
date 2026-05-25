@@ -113,6 +113,29 @@ That script reads:
 
 and updates the four JSON sources so each source only advertises the matching asset prefix.
 
+### Source metadata and versioning
+
+Per-app metadata (icon, screenshots, description, `appPermissions`) lives in
+[distribution/config.json](distribution/config.json) under `app`, and per-variant
+overrides under each entry in `variants`. Notes on the model:
+
+- **Versioning**: each release entry uses `version` = the Apollo
+  `CFBundleShortVersionString` (e.g. `1.15.11`, which matches the installed
+  bundle so AltStore's update check behaves), while `buildVersion` and
+  `marketingVersion` carry the incrementing tweak version (e.g. `2.14.0`). The
+  tweak version is what users see and what makes each release a distinct entry,
+  so Feather/AltStore can list and re-download previous versions.
+- **`appPermissions`**: AltStore validates a source's declared entitlements and
+  privacy strings against the downloaded IPA and refuses to install on a
+  mismatch, so these are required. The values were extracted from the Apollo
+  base IPA (`codesign -d --entitlements` for entitlements, `Info.plist` for the
+  `NS*UsageDescription` privacy strings) and are identical across all four
+  variants -- the decrypted base carries the same minimal entitlement set on the
+  main app and every extension, so stripping extensions does not change them.
+- All four variants share Apollo's bundle identifier, so they cannot be combined
+  into one source (the schema forbids duplicate bundle identifiers per source);
+  one source per variant is required.
+
 Recommended hosting options:
 
 1. Use raw GitHub content URLs directly

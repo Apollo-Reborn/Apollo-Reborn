@@ -96,16 +96,17 @@ def build_version_entry(
         return None
 
     apollo_version, tweak_version = parsed
-    localized = (
-        f'Apollo version: "v{apollo_version}"\n'
-        f'Apollo-Reborn version: "v{tweak_version}"\n\n'
-        f"{format_release_notes(release.get('body', ''), variant_name)}"
-    ).strip()
     return {
+        # Keep `version` as the Apollo CFBundleShortVersionString so AltStore's
+        # update check matches the installed bundle. `buildVersion` and
+        # `marketingVersion` carry the (incrementing) tweak version, which makes
+        # each release a distinct, readable entry -- this is what restores
+        # Feather's version history and stops "1.15.11" repeating everywhere.
         "version": apollo_version,
         "buildVersion": tweak_version,
+        "marketingVersion": tweak_version,
         "date": release.get("published_at"),
-        "localizedDescription": localized,
+        "localizedDescription": format_release_notes(release.get("body", ""), variant_name),
         "downloadURL": asset.get("browser_download_url"),
         "size": asset.get("size"),
     }
@@ -234,7 +235,10 @@ def update_source_json(
     data = load_existing_json(output_path)
     data.update(config["source"])
     data.update(variant["source"])
-    data["featuredApps"] = data.get("featuredApps", [])
+    # Feature the app on the source's About page. An explicit empty list would
+    # suppress it; the AltStore schema otherwise defaults to the first app.
+    bundle_id = config["app"].get("bundleIdentifier")
+    data["featuredApps"] = [bundle_id] if bundle_id else data.get("featuredApps", [])
     if "apps" not in data or not data["apps"]:
         data["apps"] = [{}]
 
