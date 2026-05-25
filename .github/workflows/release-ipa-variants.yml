@@ -26,7 +26,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Do not cancel a release mid-run: a cancelled run can leave a created
+  # release without its committed source JSON / manifest update.
+  cancel-in-progress: false
 
 jobs:
   build-release:
@@ -51,7 +53,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: theos/theos
-          ref: master
+          ref: 9bc73406cf80b711ef4d02c15ff1dedc4478a275 # master @ 2026-04-09
           path: theos
           submodules: recursive
 
@@ -94,8 +96,12 @@ jobs:
 
       - name: Install cyan
         run: |
+          # cyan (the IPA injector) is not on PyPI under that name; the PyPI
+          # "cyan" package is an unrelated placeholder. Install asdfzxcvbn's
+          # pyzule-rw pinned to a tag so a cyan regression can't surprise a release.
           python3 -m pip install --upgrade pip
-          python3 -m pip install cyan==1.4.4
+          python3 -m pip install --force-reinstall \
+            "https://github.com/asdfzxcvbn/pyzule-rw/archive/refs/tags/v1.4.4.zip"
 
       - name: Download Apollo IPA
         run: |
@@ -157,20 +163,21 @@ jobs:
           body_path: RELEASE_NOTES.md
           draft: ${{ inputs.draft }}
           prerelease: ${{ inputs.prerelease }}
-          overwrite_files: true
           files: |
             dist/out/*.ipa
             packages/*.deb
 
       - name: Update source JSON files
-        if: github.ref == 'refs/heads/main' && inputs.update_sources
+        # Skip for draft releases: their assets aren't publicly downloadable, so
+        # committing source JSON that points at them would 404 for users.
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 ./scripts/update_source_json.py
 
       - name: Commit updated source JSON files
-        if: github.ref == 'refs/heads/main' && inputs.update_sources
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"

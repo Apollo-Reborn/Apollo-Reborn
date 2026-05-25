@@ -296,6 +296,12 @@ def main() -> int:
         print(f"Error fetching releases: {exc}", file=sys.stderr)
         return 1
 
+    # Only advertise published, stable releases. Draft assets aren't publicly
+    # downloadable, and prereleases shouldn't land in the stable sources.
+    releases = [
+        r for r in releases if not r.get("draft") and not r.get("prerelease")
+    ]
+
     for variant in config["variants"]:
         output_path = root / variant["output"]
         update_source_json(output_path, releases, config, variant)
