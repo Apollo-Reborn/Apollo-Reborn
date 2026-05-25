@@ -149,13 +149,18 @@ static char kApolloInlineAnimatedGIFKey;       // NSNumber BOOL — node loaded 
 static char kApolloInlineGIFAnimatedImageKey;  // id — retained animated image for tap-to-play restore
 static char kApolloInlineGIFCoverImageKey;     // UIImage — first-frame cover for static pause + refresh
 static char kApolloInlineGIFUserForcedPlayKey; // NSNumber BOOL — user tapped play on paused GIF
+static char kApolloInlineGIFPendingPolicyBlocksKey; // NSMutableArray<dispatch_block_t>
 static char kApolloStackedCardSyncerKey;       // ApolloStackedCardSyncer — keeps the multi-image card peeking behind imageNode
 static char kApolloImageChestItemsKey;         // NSArray<NSDictionary *> direct ImageChest CDN image entries for album pager
 
 static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imageNode, UIImage *cover, NSUInteger retryIndex);
 static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode);
 static void ApolloRestoreInlineGIFAnimatedImage(ASNetworkImageNode *imageNode);
+static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node);
+static void ApolloCancelInlineGIFPendingPolicyBlocks(ASDisplayNode *node);
+static void ApolloTrackInlineGIFPendingPolicyBlock(ASDisplayNode *node, dispatch_block_t block);
 static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node);
+static void ApolloRemovePlayOverlayFromNode(ASDisplayNode *node);
 static NSDictionary *ApolloMediaMetadataForHost(ASDisplayNode *hostMarkdownNode);
 
 // MARK: - Class lookups (cached)
@@ -1482,19 +1487,31 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 %hook ASImageNode
 
 - (void)_locked_setAnimatedImage:(id)animatedImage {
+    BOOL hosted = objc_getAssociatedObject(self, &kApolloHostMarkdownNodeKey) != nil;
     %orig;
-    if (!animatedImage) return;
-    // Only act on imageNodes we created — Apollo's own GIFs (e.g. in the
-    // MediaViewer) lack the host association and pass through unchanged.
-    if (!objc_getAssociatedObject(self, &kApolloHostMarkdownNodeKey)) return;
+    if (!hosted) return;
 
+    if (!animatedImage) {
+        __weak ASImageNode *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ASImageNode *strong = weakSelf;
+            if (!strong) return;
+            ApolloClearInlineGIFNodeState((ASNetworkImageNode *)strong);
+        });
+        return;
+    }
+
+    id retainedAnim = animatedImage;
     __weak ASImageNode *weakSelf = self;
-    __weak id weakAnim = animatedImage;
     dispatch_async(dispatch_get_main_queue(), ^{
         ASImageNode *strong = weakSelf;
-        id anim = weakAnim;
-        if (!strong || !anim) return;
+        if (!strong || !retainedAnim) return;
 
+        if ([objc_getAssociatedObject(strong, &kApolloInlineAnimatedGIFKey) boolValue]) {
+            ApolloClearInlineGIFNodeState((ASNetworkImageNode *)strong);
+        }
+
+        id anim = retainedAnim;
         UIImage *cover = nil;
         BOOL ready = YES;
         if ([anim respondsToSelector:@selector(coverImageReady)]) {
@@ -1534,18 +1551,26 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
         if (cover && cover.size.width > 0 && cover.size.height > 0) return;
         // Cover not ready yet — install the protocol's ready callback.
         if ([anim respondsToSelector:@selector(setCoverImageReadyCallback:)]) {
+            id capturedAnim = retainedAnim;
             void (^cb)(UIImage *) = ^(UIImage *coverImage) {
                 ApolloLog(@"[InlineImages] coverImageReadyCallback imageNode=%p coverSize=%@",
                           weakSelf, coverImage ? NSStringFromCGSize(coverImage.size) : @"nil");
                 ASImageNode *s = weakSelf;
                 if (!s || !coverImage || coverImage.size.width <= 0) return;
+                id storedAnim = objc_getAssociatedObject(s, &kApolloInlineGIFAnimatedImageKey);
+                if (storedAnim && storedAnim != capturedAnim) return;
                 objc_setAssociatedObject(s, &kApolloInlineAnimatedGIFKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                objc_setAssociatedObject(s, &kApolloInlineGIFAnimatedImageKey, anim, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(s, &kApolloInlineGIFAnimatedImageKey, capturedAnim, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 objc_setAssociatedObject(s, &kApolloInlineGIFCoverImageKey, coverImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 ApolloRegisterInlineGIFNode(s);
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [[ApolloInlineImageDispatcher shared] updateAspectRatioForImageNode:s imageSize:coverImage.size];
-                    ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)s, coverImage, 0);
+                    ASImageNode *readyNode = weakSelf;
+                    if (!readyNode) return;
+                    if (![objc_getAssociatedObject(readyNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+                    id currentAnim = objc_getAssociatedObject(readyNode, &kApolloInlineGIFAnimatedImageKey);
+                    if (currentAnim && currentAnim != capturedAnim) return;
+                    [[ApolloInlineImageDispatcher shared] updateAspectRatioForImageNode:readyNode imageSize:coverImage.size];
+                    ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)readyNode, coverImage, 0);
                 });
             };
             [anim performSelector:@selector(setCoverImageReadyCallback:) withObject:cb];
@@ -1779,6 +1804,53 @@ static UIImage *ApolloPlayOverlayImage(void) {
 // Idempotently add the play-circle overlay centered on the imageNode.
 // Uses KVO on the imageNode's layer bounds since Texture mutates
 // layer.frame directly (UIView setBounds: / layoutSubviews don't fire).
+static void ApolloRemovePlayOverlayFromNode(ASDisplayNode *node) {
+    if (!node) return;
+    UIView *container = objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey);
+    if (!container) return;
+    [container removeFromSuperview];
+    objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloCancelInlineGIFPendingPolicyBlocks(ASDisplayNode *node) {
+    if (!node) return;
+    NSMutableArray<dispatch_block_t> *pending = objc_getAssociatedObject(node, &kApolloInlineGIFPendingPolicyBlocksKey);
+    if (!pending) return;
+    for (dispatch_block_t block in pending) {
+        dispatch_block_cancel(block);
+    }
+    [pending removeAllObjects];
+}
+
+static void ApolloTrackInlineGIFPendingPolicyBlock(ASDisplayNode *node, dispatch_block_t block) {
+    if (!node || !block) return;
+    NSMutableArray<dispatch_block_t> *pending = objc_getAssociatedObject(node, &kApolloInlineGIFPendingPolicyBlocksKey);
+    if (!pending) {
+        pending = [NSMutableArray array];
+        objc_setAssociatedObject(node, &kApolloInlineGIFPendingPolicyBlocksKey, pending, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [pending addObject:block];
+}
+
+static void ApolloClearInlineGIFCoverImageReadyCallback(id anim) {
+    if (!anim) return;
+    if ([anim respondsToSelector:@selector(setCoverImageReadyCallback:)]) {
+        [anim performSelector:@selector(setCoverImageReadyCallback:) withObject:nil];
+    }
+}
+
+static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node) {
+    if (!node) return;
+    ApolloCancelInlineGIFPendingPolicyBlocks(node);
+    id anim = objc_getAssociatedObject(node, &kApolloInlineGIFAnimatedImageKey);
+    ApolloClearInlineGIFCoverImageReadyCallback(anim);
+    ApolloRemovePlayOverlayFromNode(node);
+    objc_setAssociatedObject(node, &kApolloInlineGIFAnimatedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(node, &kApolloInlineGIFCoverImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(node, &kApolloInlineAnimatedGIFKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(node, &kApolloInlineGIFUserForcedPlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     if (!v || !node) return;
     if (objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey)) return;
@@ -1804,14 +1876,6 @@ static void ApolloInstallPlayOverlayOnView(UIView *v, ASDisplayNode *node) {
     objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, container, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void ApolloRemovePlayOverlayFromNode(ASDisplayNode *node) {
-    if (!node) return;
-    UIView *container = objc_getAssociatedObject(node, &kApolloPlayOverlayViewKey);
-    if (!container) return;
-    [container removeFromSuperview];
-    objc_setAssociatedObject(node, &kApolloPlayOverlayViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
 static void ApolloApplyStaticCoverToPausedNode(ASNetworkImageNode *imageNode, UIImage *cover) {
     if (!imageNode || !cover) return;
     if ([imageNode respondsToSelector:@selector(setImage:)]) {
@@ -1828,6 +1892,10 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
     if (!imageNode) return;
     if (![objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
 
+    if (retryIndex == 0) {
+        ApolloCancelInlineGIFPendingPolicyBlocks(imageNode);
+    }
+
     if (cover && cover.size.width > 0 && cover.size.height > 0) {
         objc_setAssociatedObject(imageNode, &kApolloInlineGIFCoverImageKey, cover, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
@@ -1840,21 +1908,34 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
     static const NSTimeInterval kRetryDelays[] = {0.016, 0.050};
 
     __weak ASNetworkImageNode *weakNode = imageNode;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    __block dispatch_block_t block = nil;
+    block = dispatch_block_create((dispatch_block_flags_t)0, ^{
+        if (dispatch_block_testcancel(block)) return;
         ASNetworkImageNode *strong = weakNode;
         if (!strong) return;
+        if (![objc_getAssociatedObject(strong, &kApolloInlineAnimatedGIFKey) boolValue]) return;
         if (![strong respondsToSelector:@selector(isNodeLoaded)] || ![strong isNodeLoaded]) {
             if (retryIndex < 3) {
                 NSTimeInterval delay = (retryIndex == 0) ? 0.0 : kRetryDelays[retryIndex - 1];
                 if (delay > 0.0) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        ApolloApplyInlineGIFPlaybackPolicyWithCover(strong, cover, retryIndex + 1);
+                    __weak ASNetworkImageNode *weakRetry = strong;
+                    __block dispatch_block_t retryBlock = nil;
+                    retryBlock = dispatch_block_create((dispatch_block_flags_t)0, ^{
+                        if (dispatch_block_testcancel(retryBlock)) return;
+                        ASNetworkImageNode *retryNode = weakRetry;
+                        if (!retryNode || ![objc_getAssociatedObject(retryNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+                        ApolloApplyInlineGIFPlaybackPolicyWithCover(retryNode, cover, retryIndex + 1);
                     });
+                    ApolloTrackInlineGIFPendingPolicyBlock(strong, retryBlock);
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), retryBlock);
                 } else {
                     ApolloApplyInlineGIFPlaybackPolicyWithCover(strong, cover, retryIndex + 1);
                 }
             } else if ([strong respondsToSelector:@selector(onDidLoad:)]) {
+                __weak ASNetworkImageNode *weakLoad = strong;
                 [strong onDidLoad:^(__kindof ASDisplayNode *node) {
+                    if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) return;
+                    if (weakLoad && node != weakLoad) return;
                     UIImage *storedCover = objc_getAssociatedObject(node, &kApolloInlineGIFCoverImageKey);
                     ApolloApplyInlineGIFPlaybackPolicyWithCover((ASNetworkImageNode *)node, storedCover, 0);
                 }];
@@ -1897,20 +1978,29 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
         ApolloLog(@"[AutoplayGIF] policy node=%p retry=%lu pausedNoCover=1 shouldPlay=0",
                   strong, (unsigned long)retryIndex);
     });
+    ApolloTrackInlineGIFPendingPolicyBlock(imageNode, block);
+    dispatch_async(dispatch_get_main_queue(), block);
 }
 
 static void ApolloRestoreInlineGIFAnimatedImage(ASNetworkImageNode *imageNode) {
     if (!imageNode) return;
+    if (![objc_getAssociatedObject(imageNode, &kApolloInlineAnimatedGIFKey) boolValue]) return;
     id anim = objc_getAssociatedObject(imageNode, &kApolloInlineGIFAnimatedImageKey);
-    if (!anim) return;
-    SEL setter = NSSelectorFromString(@"setAnimatedImage:");
-    if ([imageNode respondsToSelector:setter]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(imageNode, setter, anim);
+    if (!anim || ![anim isKindOfClass:[NSObject class]]) {
+        objc_setAssociatedObject(imageNode, &kApolloInlineGIFAnimatedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
     @try {
+        SEL setter = NSSelectorFromString(@"setAnimatedImage:");
+        if ([imageNode respondsToSelector:setter]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(imageNode, setter, anim);
+            return;
+        }
         [imageNode setValue:anim forKey:@"animatedImage"];
-    } @catch (__unused NSException *e) {}
+    } @catch (NSException *e) {
+        ApolloLog(@"[AutoplayGIF] restore failed node=%p err=%@", imageNode, e);
+        objc_setAssociatedObject(imageNode, &kApolloInlineGIFAnimatedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
