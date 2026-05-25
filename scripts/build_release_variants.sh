@@ -32,11 +32,14 @@ find_latest_deb() {
 
 extract_apollo_version() {
     local ipa="$1"
-    unzip -p "$ipa" 'Payload/*.app/Info.plist' \
-        | /usr/bin/grep -A1 'CFBundleShortVersionString' \
-        | /usr/bin/grep string \
-        | sed -E 's/.*<string>([^<]+)<\/string>.*/\1/' \
+    local plist
+    plist="$(mktemp)"
+    # plutil reads both binary and XML plists; App Store IPAs ship a binary
+    # Info.plist, which the old grep/sed (XML-only) approach could not parse.
+    unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$plist" 2>/dev/null
+    plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null \
         | tr -d '[:space:]'
+    rm -f "$plist"
 }
 
 strip_arm64e_from_substrate_in_ipa() {
@@ -136,7 +139,7 @@ if [[ ! -f "$DEB_PATH" ]]; then
     exit 1
 fi
 
-for tool in unzip zip lipo python3; do
+for tool in unzip zip lipo python3 plutil; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Error: required tool '$tool' is not installed."
         exit 1

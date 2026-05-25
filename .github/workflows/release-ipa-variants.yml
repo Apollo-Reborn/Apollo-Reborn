@@ -126,7 +126,11 @@ jobs:
       - name: Collect metadata
         id: meta
         run: |
-          APOLLO_VERSION=$(unzip -p Apollo.ipa 'Payload/*.app/Info.plist' | grep -A1 'CFBundleShortVersionString' | grep string | sed -E 's/.*<string>([^<]+)<\/string>.*/\1/' | tr -d '[:space:]')
+          # Read the version with plutil so it works whether the IPA carries a
+          # binary or XML Info.plist (App Store IPAs ship a binary plist).
+          unzip -p Apollo.ipa 'Payload/*.app/Info.plist' > Apollo-Info.plist
+          APOLLO_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - Apollo-Info.plist | tr -d '[:space:]')
+          rm -f Apollo-Info.plist
           if [ -z "$APOLLO_VERSION" ]; then
             echo "Error: could not determine Apollo version from Apollo.ipa" >&2
             exit 1
@@ -193,7 +197,7 @@ jobs:
       - name: Generate source updater app token
         if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
         id: source_updater_token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.SOURCE_UPDATER_APP_ID }}
           private-key: ${{ secrets.SOURCE_UPDATER_APP_PRIVATE_KEY }}
