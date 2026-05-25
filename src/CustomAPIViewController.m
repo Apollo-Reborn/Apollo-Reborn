@@ -42,6 +42,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRedditClientSecret,
     TagImgurClientId,
     TagImageChestAPIToken,
+    TagGiphyAPIKey,
     TagRedirectURI,
     TagUserAgent,
     TagTrendingSubredditsSource,
@@ -606,7 +607,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
+        case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
         case SectionSubreddits: return 8;
@@ -867,6 +868,21 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                        text:sImageChestAPIToken
                                                         tag:TagImageChestAPIToken];
         case 4: {
+            UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Giphy"
+                                                                       label:@"Giphy API Key"
+                                                                 placeholder:@"Giphy API Key"
+                                                                        text:[[NSUserDefaults standardUserDefaults] stringForKey:UDKeyGiphyAPIKey] ?: @""
+                                                                         tag:TagGiphyAPIKey
+                                                                      detail:@"Required for GIF picker. Get one at developers.giphy.com"];
+            for (UIView *subview in cell.contentView.subviews) {
+                if ([subview isKindOfClass:[UITextField class]]) {
+                    ((UITextField *)subview).secureTextEntry = YES;
+                    break;
+                }
+            }
+            return cell;
+        }
+        case 5: {
             NSString *schemesDetail = [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", [[self registeredURLSchemes] componentsJoinedByString:@", "]];
             UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Redirect"
                                                                       label:@"Redirect URI"
@@ -884,13 +900,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_API_UserAgent"
                                                       label:@"User Agent"
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -899,7 +915,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 7: {
+        case 8: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
@@ -1389,9 +1405,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self restoreSettings];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        if (indexPath.row == 6) {
+        if (indexPath.row == 7) {
             [self pushTroubleshootingViewController];
-        } else if (indexPath.row == 7) {
+        } else if (indexPath.row == 8) {
             [self pushInstructionsViewController];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1461,7 +1477,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
@@ -1664,6 +1680,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         sImageChestAPIToken = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sImageChestAPIToken forKey:UDKeyImageChestAPIToken];
+    } else if (textField.tag == TagGiphyAPIKey) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        [[NSUserDefaults standardUserDefaults] setValue:textField.text ?: @"" forKey:UDKeyGiphyAPIKey];
     } else if (textField.tag == TagRedirectURI) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;

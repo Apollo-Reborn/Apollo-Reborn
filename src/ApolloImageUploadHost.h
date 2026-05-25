@@ -37,6 +37,9 @@ void ApolloRedditTransformCommentResponseAsync(NSData *originalData, ApolloReddi
 // Idempotent per delegate class.
 void ApolloRedditInstallResponseTransformerForDelegate(id delegate);
 
+// Records a Reddit media upload so comment/submit rewriting can map staged URLs to asset IDs.
+void ApolloRegisterRedditUploadedMedia(NSURL *mediaURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL);
+
 #ifdef __cplusplus
 }
 #endif
