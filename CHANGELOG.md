@@ -8,30 +8,34 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- Add **Image Chest** inline album support: bare single Image Chest links show the first image inline and open an in-app album viewer with tap-to-hide controls, idle auto-hide, and per-image pinch zoom (#241: @icpryde)
-    - To set up Image Chest integration, create an account at https://imgchest.com, then navigate to https://imgchest.com/profile/api to create an API token. Copy the token and set it in the **Img Chest API Key** field in **Settings > Custom API > API Keys**
-- Add **Subreddit Headers**: view subreddit banners and display icons on subreddit pages, with the option to tap any banner or icon to set a custom local image. Overrides can be reset anytime in Settings (#266: @jordanearle, @icpryde)
+- Add **Image Chest** inline album support: bare Image Chest links show the first image inline and open an in-app album viewer with tap-to-hide controls, idle auto-hide, and per-image pinch zoom (#241: @icpryde)
+    - To set up Image Chest, create an account at https://imgchest.com, generate an API token at https://imgchest.com/profile/api, and paste it into **Img Chest API Key** under **Settings > Custom API > API Keys**
+- Add **Subreddit Headers**: view subreddit banners and display icons on subreddit pages, with optional tap-to-set custom local images that can be reset anytime in Settings (#266: @jordanearle, @icpryde)
+- Post **GIFs in comments** again: a new **Gif** button in the compose toolbar opens a built-in Giphy browser (trending + search, Apollo-themed) and uploads selected GIFs natively to Reddit so they render inline on both Apollo and reddit.com. Inline playback honors **Settings > General > Autoplay GIFs/Videos** with a static cover + play overlay when paused (#276: @icpryde)
+    - Requires a free Giphy API key — set it in **Settings > Custom API > API Keys > Giphy API Key**. See the in-app **Giphy & ImgChest API Key Setup** guide for instructions (#285: @icpryde)
+- Compact **u/username** and **r/subreddit** cards in rich link previews show avatar/icon, display name, member count, and an about snippet, with long-press peek into the native profile/community view (#262: @icpryde)
 - Add **editable user flair text** support to Apollo's flair selector (#255: @nunoo)
 - Show **banned profile state** with a dead Snoo overlay on user profiles, and surface comment author hints for banned/suspended users (#271, #278: @icpryde, @jordanearle)
-- Long-press peek now works on usernames and subreddit links inside threads and comments, using Apollo's native profile/community peek instead of bouncing through Safari's reddit.com age gate (#262: @icpryde)
-- Compact **u/username** and **r/subreddit** cards in rich link previews show avatar/icon, display name, member count, and an about snippet, with long-press peek into the native profile/community view (#262: @icpryde)
-- Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
 - Subreddit list (Modern mode) polish (#262: @icpryde):
-    - Soft themed overlay on row press instead of the legacy divider flash
-    - Expanded multireddit/custom-feed child rows with a clear background and a theme-accent indent line
-    - Transparent section headers (FAVORITES / MODERATOR / MULTIREDDITS / A–Z) with just an accent title and gradient line; classic mode is unchanged
+- Long-press peek now works on usernames and subreddit links in threads and comments (#262: @icpryde)
+- Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
+- **Mask API keys** in Custom API settings: Reddit, Reddit Secret, Imgur, Img Chest, and Giphy fields show dots when idle and reveal only while editing (#276: @icpryde)
+- Add **Inline Media Alignment** option in **Settings > Custom API > Media** to left-align, center, or right-align inline images that don't fill the full content width (#273: @lampemw)
 
 ### Fixes
 
-- Fix scroll freeze / loading-spinner lockup that could occur while scrolling threads with rich link previews (avatar visibility and host shell updates no longer touch CALayer off the main thread) (#262: @icpryde)
-- Fix comment view layout shift when user avatars load by reserving avatar space in the placeholder (#262: @icpryde)
+- Fix scroll freeze / loading-spinner lockup while scrolling threads with rich link previews (#262: @icpryde)
+- Fix comment view layout shift when user avatars load, by reserving avatar space in the placeholder (#262: @icpryde)
 - Replace the visible "MMMMMMMMMM" placeholder text in rich link previews with skeleton loading bars, and reduce flicker after navigation or peek dismiss (#262: @icpryde)
-- Fix a stray translucent star/blob appearing on rich link previews when using Share as Image (#262: @icpryde)
+- Fix a stray translucent star/blob on rich link previews when using Share as Image (#262: @icpryde)
 - Fix visionOS (Vision Pro) use-after-free crash on multireddits (#270: @rebelancap)
 - Fix X and Edit buttons touching the top of the account switcher popup on Liquid Glass (#275: @lampemw)
 - Stability improvements around rapid subreddit navigation, image loading loops, and background memory management (#262, #266: @icpryde, @jordanearle)
-- Debounce rich link preview disk cache writes so scrolling no longer hammers sync I/O, with an immediate flush when the app backgrounds (#262: @icpryde)
-- Refresh stale cached user profiles and invalidate reddit-user link previews when a user is flagged suspended, so compact cards and peek UI reflect the banned/suspended state reliably (#278: @jordanearle, @icpryde)
+- Debounce rich link preview disk cache writes so scrolling no longer hammers sync I/O, with an immediate flush on app background (#262: @icpryde)
+- Refresh stale cached user profiles and invalidate reddit-user link previews on suspension, so compact cards and peek UI stay accurate (#278: @jordanearle, @icpryde)
+- Fix launch crash from the banned profile username lookup recursing through the nav stack on cold start (#276: @icpryde)
+- Fix crash on Reddit link previews when comments JSON has missing or unexpected preview fields (#276, #280: @JeffreyCA, @icpryde)
+- Fix Reddit-hosted GIFs stopping animation after leaving and returning to a thread, plus general GIF lifecycle/autoplay stability (#276: @icpryde)
 
 ## [v2.14.0] - 2026-05-20
 
