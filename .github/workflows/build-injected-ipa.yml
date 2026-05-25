@@ -80,10 +80,14 @@ jobs:
       - name: Install cyan injector
         run: |
           # cyan is not on PyPI under that name (the PyPI "cyan" is an unrelated
-          # placeholder); install asdfzxcvbn's pyzule-rw pinned to a tag.
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --force-reinstall \
+          # placeholder); install asdfzxcvbn's pyzule-rw pinned to a tag. Use a
+          # venv because the runner's Homebrew Python is externally managed
+          # (PEP 668); the venv bin is added to PATH so `cyan` is on PATH later.
+          python3 -m venv "$RUNNER_TEMP/cyan-venv"
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install \
             "https://github.com/asdfzxcvbn/pyzule-rw/archive/refs/tags/v1.4.4.zip"
+          echo "$RUNNER_TEMP/cyan-venv/bin" >> "$GITHUB_PATH"
 
       - name: Inject tweak into IPA
         id: inject

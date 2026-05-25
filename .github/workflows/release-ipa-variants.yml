@@ -99,9 +99,14 @@ jobs:
           # cyan (the IPA injector) is not on PyPI under that name; the PyPI
           # "cyan" package is an unrelated placeholder. Install asdfzxcvbn's
           # pyzule-rw pinned to a tag so a cyan regression can't surprise a release.
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --force-reinstall \
+          # Use a venv: the runner's Homebrew Python is externally managed
+          # (PEP 668), so a system-wide pip install is rejected. Adding the venv
+          # bin to PATH makes `cyan` available to later steps.
+          python3 -m venv "$RUNNER_TEMP/cyan-venv"
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install \
             "https://github.com/asdfzxcvbn/pyzule-rw/archive/refs/tags/v1.4.4.zip"
+          echo "$RUNNER_TEMP/cyan-venv/bin" >> "$GITHUB_PATH"
 
       - name: Download Apollo IPA
         run: |
