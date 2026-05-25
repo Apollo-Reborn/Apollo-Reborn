@@ -88,6 +88,9 @@ jobs:
           "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install \
             "https://github.com/asdfzxcvbn/pyzule-rw/archive/refs/tags/v1.4.4.zip"
           echo "$RUNNER_TEMP/cyan-venv/bin" >> "$GITHUB_PATH"
+          # Fail loudly here if cyan isn't runnable, rather than later in the build.
+          "$RUNNER_TEMP/cyan-venv/bin/cyan" --help >/dev/null
+          echo "cyan installed: $RUNNER_TEMP/cyan-venv/bin/cyan"
 
       - name: Inject tweak into IPA
         id: inject
