@@ -181,23 +181,37 @@ jobs:
         # source JSON pointing at them would 404. Drafts are instead handled
         # when published manually -- see publish-sources.yml, which fires on the
         # release:released event. A release created here uses GITHUB_TOKEN, which
-        # does NOT fire that event, so the two paths never double-run.
+        # does NOT fire that event, so the two paths never double-run. The final
+        # protected push is authenticated with a dedicated GitHub App token so
+        # this can update main without opening a PR.
         if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 ./scripts/update_source_json.py
 
+      - name: Generate source updater app token
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        id: source_updater_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.SOURCE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.SOURCE_UPDATER_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Commit updated source JSON files
         if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        env:
+          APP_TOKEN: ${{ steps.source_updater_token.outputs.token }}
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config user.name "apollo-source-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps.json apps_noext.json apps_glass.json apps_noext_glass.json release-manifest.json
           if git diff --cached --quiet; then
             echo "No source JSON changes to commit."
             exit 0
           fi
           git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main
-          git push
+          git push origin HEAD:main

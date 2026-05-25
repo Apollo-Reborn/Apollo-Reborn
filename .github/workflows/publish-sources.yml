@@ -38,12 +38,21 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 ./scripts/update_source_json.py
 
+      - name: Generate source updater app token
+        id: source_updater_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.SOURCE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.SOURCE_UPDATER_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - name: Commit and push
         env:
+          APP_TOKEN: ${{ steps.source_updater_token.outputs.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+          git config user.name "apollo-source-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apps.json apps_noext.json apps_glass.json apps_noext_glass.json release-manifest.json
           if git diff --cached --quiet; then
             echo "No source JSON changes to commit."
@@ -54,5 +63,6 @@ jobs:
             MSG="$MSG for $RELEASE_TAG"
           fi
           git commit -m "$MSG"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main
-          git push
+          git push origin HEAD:main
