@@ -606,7 +606,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
+        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + API key setup guide
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
         case SectionSubreddits: return 8;
@@ -904,8 +904,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.textLabel.numberOfLines = 0;
             }
-            cell.textLabel.text = @"Instructions (old)";
+            cell.textLabel.text = @"Giphy & ImgChest API Key Setup";
             return cell;
         }
         default: return [[UITableViewCell alloc] init];
@@ -1569,34 +1570,43 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self.navigationController pushViewController:vc animated:YES];
 }
 
-#pragma mark - Instructions VC
+#pragma mark - API Key Setup Instructions
 
 - (void)pushInstructionsViewController {
     UIViewController *vc = [[UIViewController alloc] init];
-    vc.title = @"Instructions (old)";
+    vc.title = @"Giphy & ImgChest API Key Setup";
     vc.view.backgroundColor = [self apollo_themeTableBackgroundColor];
     vc.view.tintColor = [self apollo_themeAccentColor];
 
     UITextView *textView = [[UITextView alloc] init];
     textView.editable = NO;
+    textView.selectable = YES;
+    textView.delegate = self;
     textView.backgroundColor = [UIColor clearColor];
     textView.translatesAutoresizingMaskIntoConstraints = NO;
+    textView.linkTextAttributes = @{
+        NSForegroundColorAttributeName: [self apollo_themeAccentColor],
+        NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+    };
 
     if (@available(iOS 15.0, *)) {
         NSString *instructionsText =
-            @"**Creating a Reddit API credential:**\n"
-            @"*You may need to sign out of all accounts in Apollo*\n\n"
-            @"1. Sign into your Reddit account and go to [reddit.com/prefs/apps](https://reddit.com/prefs/apps)\n"
-            @"2. Click the \"`are you a developer? create an app...`\" button\n"
-            @"3. Fill in the fields \n\t- Name: *anything* \n\t- Choose \"`Installed App`\" \n\t- Description: *anything*\n\t- About url: *anything* \n\t- Redirect uri: `apollo://reddit-oauth`\n"
-            @"4. Click \"`create app`\"\n"
-            @"5. After creating the app you'll get a client identifier which will be a bunch of random characters. **Enter the key in the API Keys section**.\n"
-            @"\n"
-            @"**Creating an Imgur API credential:**\n"
-            @"1. Sign into your Imgur account and go to [api.imgur.com/oauth2/addclient](https://api.imgur.com/oauth2/addclient)\n"
-            @"2. Fill in the fields \n\t- Application name: *anything* \n\t- Authorization type: `OAuth 2 auth with a callback URL` \n\t- Authorization callback URL: `https://www.getpostman.com/oauth2/callback`\n\t- Email: *your email* \n\t- Description: *anything*\n"
-            @"3. Click \"`submit`\"\n"
-            @"4. Enter the **Client ID** (not the client secret) in the API Keys section.";
+            @"**Giphy API Key**\n\n"
+            @"1. Go to [developers.giphy.com](https://developers.giphy.com/) and create an account if you do not have one.\n"
+            @"2. After signing in, click **Create an API Key** at the top of the page.\n"
+            @"3. Choose **SDK** (not API).\n"
+            @"4. Fill in the form:\n"
+            @"\t- **App name:** Apollo Reborn *(any name is fine)*\n"
+            @"\t- **Platform:** iOS\n"
+            @"\t- **App description:** Apollo API Key *(or anything brief)*\n"
+            @"5. Check the box to agree to the terms, then click **Create API Key**.\n"
+            @"6. On your dashboard, click your new API key to copy it.\n"
+            @"7. Paste it into **Giphy API Key** under Custom API → API Keys.\n\n"
+            @"**Img Chest API Key**\n\n"
+            @"1. Go to [imgchest.com](https://imgchest.com/) and click **Register** to create an account.\n"
+            @"2. After signing in, open the menu from your profile picture and choose **API**.\n"
+            @"3. Click **Create API Token**, give it a name, then click **Create**.\n"
+            @"4. Copy the token and paste it into **Img Chest API Key** under Custom API → API Keys.";
 
         NSAttributedStringMarkdownParsingOptions *markdownOptions = [[NSAttributedStringMarkdownParsingOptions alloc] init];
         markdownOptions.interpretedSyntax = NSAttributedStringMarkdownInterpretedSyntaxInlineOnly;
@@ -1611,20 +1621,24 @@ typedef NS_ENUM(NSInteger, Tag) {
         textView.attributedText = attributedText;
     } else {
         textView.font = [UIFont systemFontOfSize:15];
+        textView.dataDetectorTypes = UIDataDetectorTypeLink;
         textView.text =
-            @"Creating a Reddit API credential:\n"
-            @"You may need to sign out of all accounts in Apollo\n\n"
-            @"1. Sign into your Reddit account and go to reddit.com/prefs/apps\n"
-            @"2. Click the \"are you a developer? create an app...\" button\n"
-            @"3. Fill in the fields \n\t- Name: anything \n\t- Choose \"Installed App\" \n\t- Description: anything\n\t- About url: anything \n\t- Redirect uri: apollo://reddit-oauth\n"
-            @"4. Click \"create app\"\n"
-            @"5. After creating the app you'll get a client identifier which will be a bunch of random characters. Enter the key in the API Keys section.\n"
-            @"\n"
-            @"Creating an Imgur API credential:\n"
-            @"1. Sign into your Imgur account and go to api.imgur.com/oauth2/addclient\n"
-            @"2. Fill in the fields \n\t- Application name: anything \n\t- Authorization type: OAuth 2 auth with a callback URL \n\t- Authorization callback URL: https://www.getpostman.com/oauth2/callback\n\t- Email: your email \n\t- Description: anything\n"
-            @"3. Click \"submit\"\n"
-            @"4. Enter the Client ID (not the client secret) in the API Keys section.";
+            @"Giphy API Key\n\n"
+            @"1. Go to https://developers.giphy.com/ and create an account if you do not have one.\n"
+            @"2. After signing in, click Create an API Key at the top of the page.\n"
+            @"3. Choose SDK (not API).\n"
+            @"4. Fill in the form:\n"
+            @"   - App name: Apollo Reborn (any name is fine)\n"
+            @"   - Platform: iOS\n"
+            @"   - App description: Apollo API Key (or anything brief)\n"
+            @"5. Check the box to agree to the terms, then click Create API Key.\n"
+            @"6. On your dashboard, click your new API key to copy it.\n"
+            @"7. Paste it into Giphy API Key under Custom API → API Keys.\n\n"
+            @"Img Chest API Key\n\n"
+            @"1. Go to https://imgchest.com/ and click Register to create an account.\n"
+            @"2. After signing in, open the menu from your profile picture and choose API.\n"
+            @"3. Click Create API Token, give it a name, then click Create.\n"
+            @"4. Copy the token and paste it into Img Chest API Key under Custom API → API Keys.";
     }
     textView.textColor = UIColor.labelColor;
     textView.textContainerInset = UIEdgeInsetsMake(16, 16, 16, 16);
@@ -2120,6 +2134,11 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 }
 
 #pragma mark - In-App Browser
+
+- (BOOL)textView:(UITextView *)textView shouldInteractWithURL:(NSURL *)URL inRange:(NSRange)characterRange interaction:(UITextItemInteraction)interaction {
+    [self presentURLInApolloBrowser:URL];
+    return NO;
+}
 
 - (void)presentURLInApolloBrowser:(NSURL *)url {
     if (!url) return;
