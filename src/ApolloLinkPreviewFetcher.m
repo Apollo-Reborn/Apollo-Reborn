@@ -318,6 +318,18 @@ static NSString *ApolloLinkPreviewHost(NSURL *url) {
     return host;
 }
 
+static NSDictionary *ApolloLinkPreviewDictionaryValue(id value) {
+    return [value isKindOfClass:[NSDictionary class]] ? value : nil;
+}
+
+static NSArray *ApolloLinkPreviewArrayValue(id value) {
+    return [value isKindOfClass:[NSArray class]] ? value : nil;
+}
+
+static NSString *ApolloLinkPreviewStringValue(id value) {
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
 static BOOL ApolloLinkPreviewHostIs(NSURL *url, NSString *host) {
     NSString *lowerHost = ApolloLinkPreviewHost(url);
     return [lowerHost isEqualToString:host] || [lowerHost hasSuffix:[@"." stringByAppendingString:host]];
@@ -335,6 +347,27 @@ static NSString *ApolloRedditPostIDFromURL(NSURL *url) {
     NSUInteger commentsIndex = [clean indexOfObject:@"comments"];
     if (commentsIndex != NSNotFound && commentsIndex + 1 < clean.count) return clean[commentsIndex + 1];
     return nil;
+}
+
+static NSDictionary *ApolloRedditPostFromCommentsJSON(id jsonObject) {
+    NSArray *listingPair = ApolloLinkPreviewArrayValue(jsonObject);
+    NSDictionary *postListing = listingPair.count > 0 ? ApolloLinkPreviewDictionaryValue(listingPair[0]) : nil;
+    NSDictionary *listingData = ApolloLinkPreviewDictionaryValue(postListing[@"data"]);
+    NSArray *children = ApolloLinkPreviewArrayValue(listingData[@"children"]);
+    NSDictionary *firstChild = children.count > 0 ? ApolloLinkPreviewDictionaryValue(children[0]) : nil;
+    return ApolloLinkPreviewDictionaryValue(firstChild[@"data"]);
+}
+
+static NSString *ApolloRedditPreviewImageStringFromPost(NSDictionary *post) {
+    NSDictionary *preview = ApolloLinkPreviewDictionaryValue(post[@"preview"]);
+    NSArray *images = ApolloLinkPreviewArrayValue(preview[@"images"]);
+    NSDictionary *firstImage = images.count > 0 ? ApolloLinkPreviewDictionaryValue(images[0]) : nil;
+    NSDictionary *source = ApolloLinkPreviewDictionaryValue(firstImage[@"source"]);
+    NSString *image = ApolloLinkPreviewStringValue(source[@"url"]);
+    if (image.length > 0) return image;
+
+    NSString *thumbnail = ApolloLinkPreviewStringValue(post[@"thumbnail"]);
+    return ([thumbnail hasPrefix:@"http://"] || [thumbnail hasPrefix:@"https://"]) ? thumbnail : nil;
 }
 
 static NSURL *ApolloLinkPreviewURLFromString(NSString *string, NSURL *baseURL) {
@@ -1066,25 +1099,26 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
             return;
         }
 
-        NSArray *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-        NSDictionary *post = nil;
-        if ([json isKindOfClass:[NSArray class]] && json.count > 0) {
-            NSArray *children = json[0][@"data"][@"children"];
-            if ([children isKindOfClass:[NSArray class]] && children.count > 0) {
-                post = children[0][@"data"];
-            }
+        NSInteger statusCode = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        if (statusCode < 200 || statusCode >= 300) {
+            ApolloLog(@"[LinkPreviews] Reddit JSON failed %@ status=%ld", url.absoluteString, (long)statusCode);
+            completion(nil);
+            return;
+        }
+
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *post = ApolloRedditPostFromCommentsJSON(json);
+        if (!post) {
+            ApolloLog(@"[LinkPreviews] Reddit JSON missing post %@", url.absoluteString);
+            completion(nil);
+            return;
         }
 
         ApolloLinkPreview *preview = [ApolloLinkPreview new];
         preview.siteName = @"Reddit";
         preview.title = ApolloLinkPreviewCleanString(post[@"title"]);
         preview.desc = ApolloLinkPreviewTruncatedString(post[@"selftext"], 200);
-        NSString *image = post[@"preview"][@"images"][0][@"source"][@"url"];
-        if (![image isKindOfClass:[NSString class]] || image.length == 0) {
-            NSString *thumbnail = post[@"thumbnail"];
-            image = ([thumbnail hasPrefix:@"http://"] || [thumbnail hasPrefix:@"https://"]) ? thumbnail : nil;
-        }
-        preview.imageURL = ApolloLinkPreviewURLFromString(image, url);
+        preview.imageURL = ApolloLinkPreviewURLFromString(ApolloRedditPreviewImageStringFromPost(post), url);
         preview.fetchedAt = [NSDate date];
         completion(preview);
     }] resume];

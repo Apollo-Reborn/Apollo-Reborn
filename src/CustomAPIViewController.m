@@ -42,6 +42,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRedditClientSecret,
     TagImgurClientId,
     TagImageChestAPIToken,
+    TagGiphyAPIKey,
     TagRedirectURI,
     TagUserAgent,
     TagTrendingSubredditsSource,
@@ -54,6 +55,27 @@ typedef NS_ENUM(NSInteger, Tag) {
 };
 
 #pragma mark - Helpers
+
+- (UITextField *)apollo_textFieldInCell:(UITableViewCell *)cell {
+    for (UIView *subview in cell.contentView.subviews) {
+        if ([subview isKindOfClass:[UITextField class]]) {
+            return (UITextField *)subview;
+        }
+    }
+    return nil;
+}
+
+- (BOOL)apollo_isMaskedAPIKeyTag:(NSInteger)tag {
+    return tag == TagRedditClientId
+        || tag == TagRedditClientSecret
+        || tag == TagImgurClientId
+        || tag == TagImageChestAPIToken
+        || tag == TagGiphyAPIKey;
+}
+
+- (void)apollo_applySecureTextEntry:(BOOL)secure toCell:(UITableViewCell *)cell {
+    [self apollo_textFieldInCell:cell].secureTextEntry = secure;
+}
 
 - (NSArray<NSString *> *)registeredURLSchemes {
     NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
@@ -606,7 +628,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + API key setup guide
+        case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
         case SectionGeneral: return 8;
         case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
         case SectionSubreddits: return 8;
@@ -838,35 +860,48 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (UITableViewCell *)apiKeyCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
+    UITableViewCell *cell = nil;
     switch (row) {
         case 0:
-            return [self textFieldCellWithIdentifier:@"Cell_API_Reddit"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_Reddit"
                                                label:@"Reddit API Key"
                                          placeholder:@"Reddit API Key"
                                                 text:sRedditClientId
                                                  tag:TagRedditClientId
                                            numerical:NO];
+            break;
         case 1:
-            return [self textFieldCellWithIdentifier:@"Cell_API_RedditSecret"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_RedditSecret"
                                                label:@"Reddit API Secret"
                                          placeholder:@"(usually empty)"
                                                 text:sRedditClientSecret
                                                  tag:TagRedditClientSecret
                                            numerical:NO];
+            break;
         case 2:
-            return [self textFieldCellWithIdentifier:@"Cell_API_Imgur"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_Imgur"
                                                label:@"Imgur API Key"
                                          placeholder:@"Imgur API Key"
                                                 text:sImgurClientId
                                                  tag:TagImgurClientId
                                            numerical:NO];
+            break;
         case 3:
-            return [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
+            cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
                                                       label:@"Img Chest API Key"
                                                 placeholder:@"Img Chest API Key"
                                                        text:sImageChestAPIToken
                                                         tag:TagImageChestAPIToken];
-        case 4: {
+            break;
+        case 4:
+            cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Giphy"
+                                                      label:@"Giphy API Key"
+                                                placeholder:@"Giphy API Key"
+                                                       text:[[NSUserDefaults standardUserDefaults] stringForKey:UDKeyGiphyAPIKey] ?: @""
+                                                        tag:TagGiphyAPIKey
+                                                     detail:@"Required for GIF picker. Get one at developers.giphy.com"];
+            break;
+        case 5: {
             NSString *schemesDetail = [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", [[self registeredURLSchemes] componentsJoinedByString:@", "]];
             UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Redirect"
                                                                       label:@"Redirect URI"
@@ -884,13 +919,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_API_UserAgent"
                                                       label:@"User Agent"
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -899,7 +934,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 7: {
+        case 8: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
@@ -909,8 +944,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Giphy & ImgChest API Key Setup";
             return cell;
         }
-        default: return [[UITableViewCell alloc] init];
+        default:
+            return [[UITableViewCell alloc] init];
     }
+    [self apollo_applySecureTextEntry:YES toCell:cell];
+    return cell;
 }
 
 - (UITableViewCell *)generalCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
@@ -1390,9 +1428,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self restoreSettings];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        if (indexPath.row == 6) {
+        if (indexPath.row == 7) {
             [self pushTroubleshootingViewController];
-        } else if (indexPath.row == 7) {
+        } else if (indexPath.row == 8) {
             [self pushInstructionsViewController];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1462,7 +1500,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
     if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
     if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
@@ -1661,6 +1699,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     return YES;
 }
 
+- (void)textFieldDidBeginEditing:(UITextField *)textField {
+    if ([self apollo_isMaskedAPIKeyTag:textField.tag]) {
+        textField.secureTextEntry = NO;
+    }
+}
+
 - (void)textFieldDidEndEditing:(UITextField *)textField {
     if (textField.tag == TagRedditClientId) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -1678,6 +1722,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         sImageChestAPIToken = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sImageChestAPIToken forKey:UDKeyImageChestAPIToken];
+    } else if (textField.tag == TagGiphyAPIKey) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        [[NSUserDefaults standardUserDefaults] setValue:textField.text ?: @"" forKey:UDKeyGiphyAPIKey];
     } else if (textField.tag == TagRedirectURI) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;
@@ -1725,6 +1772,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         NSString *trimmed = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         textField.text = trimmed;
         [[NSUserDefaults standardUserDefaults] setValue:trimmed forKey:UDKeyNotificationBackendRegistrationToken];
+    }
+
+    if ([self apollo_isMaskedAPIKeyTag:textField.tag]) {
+        textField.secureTextEntry = YES;
     }
 }
 
