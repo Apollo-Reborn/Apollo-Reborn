@@ -69,6 +69,8 @@ RENDERING_INTENTS = {}      # asset name -> original/template/automatic
 TEMPLATE_ASSETS   = set()   # asset names that need template-rendering-intent
 SYMBOL_ASSETS     = set()   # asset names that have SVG glyph variants
 
+PREVIEW_VARIANTS  = ["default", "dark", "clear-light", "clear-dark"]
+
 
 # ---------------------------------------------------------------------------
 # Step 1 – load metadata from original Assets.car
@@ -303,6 +305,46 @@ def write_raster_imageset(name, entries, xcassets_path):
         json.dump(contents, f, indent=2)
 
 
+def write_preview_imagesets(xcassets_path):
+    """Write one imageset per icon×variant for the in-app icon picker preview.
+
+    Each asset is named `lg-preview-{iconID}-{variant}` so the tweak can load
+    it via [UIImage imageNamed:] from the main bundle's Assets.car rather than
+    decoding base64 blobs compiled into the tweak binary.
+
+    Preview PNGs live at: liquid-glass/icons/<id>/<variant>.png
+    """
+    with open(REGISTRY_PATH, "r") as fp:
+        registry = json.load(fp)
+
+    count = 0
+    missing = []
+    for entry in registry.get("icons", []):
+        icon_id = entry["id"]
+        for variant in PREVIEW_VARIANTS:
+            src = os.path.join(ICONS_ROOT, icon_id, f"{variant}.png")
+            if not os.path.isfile(src):
+                missing.append(src)
+                continue
+            asset_name = f"lg-preview-{icon_id}-{variant}"
+            imageset_path = os.path.join(xcassets_path, f"{asset_name}.imageset")
+            os.makedirs(imageset_path, exist_ok=True)
+            dst_name = f"{variant}.png"
+            shutil.copy2(src, os.path.join(imageset_path, dst_name))
+            contents = {
+                "images": [{"filename": dst_name, "idiom": "universal", "scale": "2x"}],
+                "info": {"author": "xcode", "version": 1},
+            }
+            with open(os.path.join(imageset_path, "Contents.json"), "w") as f:
+                json.dump(contents, f, indent=2)
+            count += 1
+
+    if missing:
+        print(f"  ⚠ {len(missing)} preview PNGs not found: {missing}")
+    print(f"  Added {count} lg-preview imagesets (loadable via [UIImage imageNamed:])")
+    return count
+
+
 def build_xcassets(symbol_variants, raster_groups):
     print(f"Building {XCASSETS_DIR}...")
     if os.path.exists(REBUILT_ROOT):
@@ -328,6 +370,8 @@ def build_xcassets(symbol_variants, raster_groups):
     )
     png_count = count - sym - pdf_count
     print(f"  Created {count} imagesets ({sym} symbol SVG, {pdf_count} vector PDF, {png_count} raster PNG)")
+
+    write_preview_imagesets(XCASSETS_DIR)
     return count
 
 
@@ -395,6 +439,32 @@ def compile_assets():
             return False
         print(f"✓ Assets.car ({os.path.getsize(compiled_car):,} bytes) → {compiled_car}")
 
+        # Thin for phone sideloading. Sideloaded IPAs bypass App Store thinning
+        # so every device receives the full compiled catalog. -i phone drops the
+        # pad idiom entries; -p p3 retains the 16-bit P3 tintable variant, which
+        # is what actually gets used on every iPhone capable of running iOS 18
+        # (iPhone XS and later all have P3 displays).
+        #
+        # Each scale must be its own group (paired -i/-s/-p) so that PDF imagesets
+        # keep their 1x, 2x, and 3x pre-rasterized bitmaps. A bare "-i phone -p p3"
+        # collapses PDF imagesets to scale 1 only, producing blurry art on 2x/3x
+        # devices.
+        print("Thinning for phone sideloading (phone s1/s2/s3 + P3)...")
+        try:
+            subprocess.run(
+                [
+                    "assetutil",
+                    "-i", "phone", "-s", "1", "-p", "p3",
+                    "-i", "phone", "-s", "2", "-p", "p3",
+                    "-i", "phone", "-s", "3", "-p", "p3",
+                    "-o", compiled_car, compiled_car,
+                ],
+                capture_output=True, text=True, check=True,
+            )
+            print(f"✓ Thinned to {os.path.getsize(compiled_car):,} bytes")
+        except subprocess.CalledProcessError as e:
+            print(f"⚠ assetutil thinning failed (continuing with unthinned catalog):\n{e.stderr}")
+
         # Copy into prebuilt/ for the patcher to pick up.
         os.makedirs(os.path.dirname(PREBUILT_CAR), exist_ok=True)
         shutil.copy2(compiled_car, PREBUILT_CAR)
@@ -452,7 +522,7 @@ def main():
         print("\n" + "=" * 60)
         print("✓ Rebuild complete!")
         print(f"  .xcassets : {XCASSETS_DIR}")
-        print(f"  Assets.car: {OUTPUT_DIR}/Assets.car")
+        print(f"  Assets.car: {OUTPUT_DIR}/Assets.car  (thinned: phone s1/s2/s3 + P3)")
         print(f"  Installed : {PREBUILT_CAR}")
         print("=" * 60)
         return 0

@@ -93,7 +93,7 @@ generate_version_h:
 	mkdir -p $(THEOS_PROJECT_DIR)/$(SRC_DIR); \
 	echo "#define TWEAK_VERSION \"v$${version}\"" > $(THEOS_PROJECT_DIR)/$(SRC_DIR)/Version.h
 
-# Liquid Glass icon preview header is generated explicitly by running 'make lg-previews'
+# Liquid Glass icon metadata header is generated explicitly by running 'make lg-previews'
 LG_DIR = $(THEOS_PROJECT_DIR)/liquid-glass
 LG_PREVIEW_HEADER = $(LG_DIR)/generated/LiquidGlassIconPreviews.gen.h
 

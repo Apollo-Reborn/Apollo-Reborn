@@ -5,7 +5,7 @@ Everything related to the iOS 26 Liquid Glass patch lives here:
 ```
 liquid-glass/
 ├── Assets.car                 # original Apollo 1.15.11 catalog used to rebuild prebuilt/Assets.car
-├── icons.json                 # single source of truth — add new icons here
+├── icons.json                 # single source of truth — icons, groups, and primary icon ID
 ├── icons/<id>/
 │   ├── <id>.icon/             # Icon Composer package, input to actool
 │   ├── default.png            # in-app picker preview — light mode
@@ -13,14 +13,14 @@ liquid-glass/
 │   ├── clear-light.png        #                          clear light
 │   └── clear-dark.png         #                          clear dark
 ├── prebuilt/
-│   ├── Assets.car             # pre-built asset catalog injected by patch.sh
+│   ├── Assets.car             # pre-built asset catalog injected by patch.sh (with all .icon packages and preview PNGs)
 │   └── asset-info.plist       # reference metadata for the catalog
 ├── scripts/
 │   ├── rebuild_assets.py      # rebuilds prebuilt/Assets.car from a fresh Apollo Assets.car
-│   ├── generate_icon_previews.py  # exports 120×120 PNG previews from .icon packages via ictool
+│   ├── generate_icon_previews.py  # exports 104×104 PNG previews from .icon packages via ictool
 │   └── generate_previews_header.py
 └── generated/
-    └── LiquidGlassIconPreviews.gen.h   # base64 PNG blob + LGIconRows + primary icon
+    └── LiquidGlassIconPreviews.gen.h   # group descriptor table + icon entries
 ```
 
 The Liquid Glass runtime patches live in `src/ApolloLiquidGlass.xm` and
@@ -37,6 +37,26 @@ modules.
 | **harunatsu**  | ![](icons/harunatsu/default.png)  | ![](icons/harunatsu/dark.png)  | ![](icons/harunatsu/clear-light.png)  | ![](icons/harunatsu/clear-dark.png)  |
 | **Sunset**     | ![](icons/bajader/default.png)    | ![](icons/bajader/dark.png)    | ![](icons/bajader/clear-light.png)    | ![](icons/bajader/clear-dark.png)    |
 
+## Adding a new group
+
+Groups are defined in `icons.json` under the top-level `"groups"` key. Each
+entry has an `id`, a `title` shown in the picker, and a `presentation`:
+
+- `"inline"` — icon rows appear directly in the injected section.
+- `"push"` — a single disclosure row that navigates to a full list.
+
+Icons are assigned to groups via their `"group"` field. Icons without a
+`"group"` field fall into the first group.
+
+After editing `icons.json`:
+
+```bash
+make lg-previews   # regenerates generated/LiquidGlassIconPreviews.gen.h with the new group and its icons
+```
+
+Then rebuild the tweak. Unless you add a new icon, running `rebuild_assets.py`
+is not needed — the preview PNGs for existing icons are already in Assets.car.
+
 ## Adding a new icon
 
 ### Prerequisites
@@ -52,20 +72,22 @@ modules.
    ```
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
    ```
-3. Append the icon to **`liquid-glass/icons.json`** with its `designer` metadata (this is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file).
-4. Generate the 120×120 PNG previews from the `.icon` package:
+3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and optionally `group` (defaults to the first group if omitted). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file.
+4. Generate the 104×104 @2x PNG previews from the `.icon` package:
    ```bash
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>
    ```
    This exports all four variants (`default`, `dark`, `clear-light`, `clear-dark`) via
-   `ictool` (included in Icon Composer) and compresses them by normalising to 8-bit depth.
-5. Regenerate the preview header and rebuild the asset catalog:
+   `ictool` (included in Icon Composer) and compresses them to 8-bit depth.
+5. Rebuild the asset catalog and regenerate the metadata header:
    ```bash
-   # From the repo root
-   make lg-previews
-
-   # Rebuild prebuilt/Assets.car using the checked-in liquid-glass/Assets.car
+   # Rebuild prebuilt/Assets.car — must run after step 4 because it reads
+   # the variant PNGs to embed them as named imagesets for the in-app picker.
    python3 liquid-glass/scripts/rebuild_assets.py
+
+   # Regenerate the group/icon descriptor header (reads icons.json only).
+   # From the repo root:
+   make lg-previews
    ```
 6. Commit the new `.icon` package, preview PNGs, regenerated
    `generated/LiquidGlassIconPreviews.gen.h`, and updated
@@ -75,7 +97,7 @@ modules.
 
 The pre-built catalog is what `patch.sh --liquid-glass` injects into the
 final IPA. It bundles Apollo's original assets plus the Liquid Glass
-`.icon` packages registered above.
+`.icon` packages registered above, with their preview PNGs.
 
 `liquid-glass/Assets.car` is checked in and used by default for rebuilds.
 
@@ -100,5 +122,10 @@ The script:
 1. Reads metadata from `liquid-glass/Assets.car` via `assetutil -I`.
 2. Extracts vector PDFs with `cartool` and symbol SVGs with `act`.
 3. Synthesises an `.xcassets` bundle preserving every original asset.
-4. Invokes `actool` with each `.icon` package listed in `icons.json` and
+4. Adds the 104×104 preview PNGs from each `icons/<id>/` directory as named
+   imagesets (`lg-preview-{id}-{variant}`) so the in-app icon picker can load
+   them via `[UIImage imageNamed:]` directly from the catalog.
+5. Invokes `actool` with each `.icon` package listed in `icons.json` and
    writes the result to `liquid-glass/prebuilt/Assets.car`.
+6. Thins the catalog with `assetutil -i phone -p p3` (drops pad idiom, keeps
+   P3 tintable) since sideloaded IPAs bypass App Store thinning.

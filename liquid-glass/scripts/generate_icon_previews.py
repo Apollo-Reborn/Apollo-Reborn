@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate 120×120 PNG preview images for each icon variant using ictool.
+"""Generate 104×104 PNG preview images for each icon variant using ictool.
 
 For each icon registered in icons.json, finds <id>/<id>.icon and exports
 four variants (default, dark, clear-light, clear-dark) via ictool into
-icons/<id>/<variant>.png at 120×120 px.
+icons/<id>/<variant>.png at 104×104 px (@2x for 52pt logical size).
 
 Usage:
     python3 scripts/generate_icon_previews.py [--icons <id1,id2,...>] [--size N]
@@ -11,7 +11,7 @@ Usage:
     --icons  Comma-separated list of icon IDs to (re)generate.
              Omit to regenerate all icons in icons.json.
     --size   Output size in logical points for both width and height
-             (default: 120).
+             (default: 104).
 """
 from __future__ import annotations
 
@@ -37,8 +37,9 @@ VARIANTS: dict[str, str] = {
     "clear-dark":  "ClearDark",
 }
 
-# Output size in logical points; scale=1 → pixel dimensions equal this value
-PREVIEW_SIZE  = 120
+# 52pt tile displayed at @2x → 104px; declared as @2x so UIKit sees exactly 52pt logical,
+# no scaling on @2x devices and a clean 1.5× on @3x.
+PREVIEW_SIZE  = 104
 PREVIEW_SCALE = 1
 
 
@@ -78,7 +79,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--icons", help="Comma-separated icon IDs to regenerate")
     parser.add_argument("--size", type=int, default=PREVIEW_SIZE,
-                        help=f"Output size in points, applied to both width and height (default: {PREVIEW_SIZE})")
+                        help=f"Output pixel size for both width and height (default: {PREVIEW_SIZE}, declared @2x = 52pt logical)")
     args = parser.parse_args()
 
     size = args.size

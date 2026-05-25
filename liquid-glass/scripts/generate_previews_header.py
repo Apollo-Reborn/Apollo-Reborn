@@ -1,44 +1,56 @@
 #!/usr/bin/env python3
-"""Generate LiquidGlassIconPreviews.gen.h from per-icon preview PNGs.
+"""Generate LiquidGlassIconPreviews.gen.h from icons.json.
 
-Reads the icon registry from ../icons.json (the single source of truth for
-the Liquid Glass icon set) and the preview PNGs from
-../icons/<id>/{default,dark,clear-light,clear-dark}.png.
+Groups are defined in icons.json under the top-level "groups" key:
 
-Emits three things into the header:
+  "groups": [
+    { "id": "community", "title": "Liquid Glass", "presentation": "inline" },
+    { "id": "classic",   "title": "Classic Icons", "presentation": "push"  }
+  ]
 
-  1. `kLGPreviewEntries[]`     — base64-encoded PNGs, decoded lazily by
-                                 the tweak and cached forever.
-  2. `kLGIconRows[]`           — (iconID, displayName, designer) triples for
-                                  the icon picker, in registry order.
-  3. `kLGPrimaryIconID`        — the icon ID treated as the bundle's
-                                 default (no alternate icon set).
+Each icon's "group" field assigns it to a group by ID. Icons without a
+"group" field go into the first group. The generator emits one per-group
+entry array and a kLGIconGroups[] descriptor table that the picker reads
+at runtime — no source changes are needed to add or rename groups.
+
+  "presentation": "inline" — icons rendered as rows directly in the
+                             injected table-view section.
+  "presentation": "push"   — one disclosure row that pushes a new
+                             LGGroupIconsViewController onto the nav stack.
+
+Preview images are NOT embedded here. They are compiled as named imagesets
+into the app's Assets.car by rebuild_assets.py and loaded at runtime via
+[UIImage imageNamed:@"lg-preview-{iconID}-{variant}"].
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
+import re
 import sys
 
-VARIANTS = ["default", "dark", "clear-light", "clear-dark"]
+
+PRESENTATION_MAP = {
+    "inline": "LGGroupPresentationInline",
+    "push":   "LGGroupPresentationPush",
+}
 
 
-def sanitize(name: str) -> str:
-    return name.replace("-", "_")
+def escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def chunked(s: str, width: int = 76):
-    for i in range(0, len(s), width):
-        yield s[i:i + width]
+def c_id(s: str) -> str:
+    """Convert an arbitrary string to a valid C identifier fragment."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", s)
 
 
-def load_registry(repo_lg_dir: str) -> dict:
-    registry_path = os.path.join(repo_lg_dir, "icons.json")
-    with open(registry_path, "r") as fp:
+def load_registry(lg_dir: str) -> dict:
+    path = os.path.join(lg_dir, "icons.json")
+    with open(path) as fp:
         registry = json.load(fp)
     if "icons" not in registry or "primaryIconID" not in registry:
-        print(f"invalid registry at {registry_path}", file=sys.stderr)
+        print(f"invalid registry at {path}", file=sys.stderr)
         sys.exit(1)
     return registry
 
@@ -53,79 +65,75 @@ def main() -> int:
     lg_dir = os.path.abspath(os.path.join(scripts_dir, ".."))
     registry = load_registry(lg_dir)
 
-    rows = []
-    arrays = []
-    icon_meta = []   # [(id, displayName, designer)]
+    raw_groups = registry.get("groups", [
+        {"id": "community", "title": "Liquid Glass", "presentation": "inline"},
+    ])
+    default_group = raw_groups[0]["id"]
 
+    # Bucket icons into groups, preserving registry order within each group.
+    buckets: dict[str, list[tuple[str, str, str]]] = {g["id"]: [] for g in raw_groups}
     for entry in registry["icons"]:
-        icon_id = entry["id"]
+        icon_id      = entry["id"]
         display_name = entry.get("displayName", icon_id)
-        designer = entry.get("designer", "")
-        icon_meta.append((icon_id, display_name, designer))
-
-        previews_dir = os.path.join(lg_dir, "icons", icon_id)
-        for variant in VARIANTS:
-            src = os.path.join(previews_dir, f"{variant}.png")
-            if not os.path.isfile(src):
-                print(f"missing preview asset: {src}", file=sys.stderr)
-                return 1
-
-            with open(src, "rb") as fp:
-                data = fp.read()
-
-            b64 = base64.b64encode(data).decode("ascii")
-            symbol = f"kLGPreviewB64_{sanitize(icon_id)}_{sanitize(variant)}"
-            # Emit one C string literal per chunked line. Adjacent string
-            # literals concatenate at compile time, so this is a single
-            # const char *.
-            literal_lines = "\n".join(f'    "{chunk}"' for chunk in chunked(b64))
-            arrays.append(
-                f"static const char {symbol}[] =\n{literal_lines};\n"
-            )
-            rows.append((icon_id, variant, symbol, len(data)))
+        designer     = entry.get("designer", "")
+        group        = entry.get("group", default_group)
+        if group not in buckets:
+            group = default_group
+        buckets[group].append((icon_id, display_name, designer))
 
     with open(out_path, "w") as fp:
         fp.write("// Auto-generated by liquid-glass/scripts/generate_previews_header.py.\n")
         fp.write("// Do not edit by hand. Regenerate with `make lg-previews`.\n")
         fp.write("#pragma once\n\n")
-        fp.write("#include <stddef.h>\n\n")
 
-        for blob in arrays:
-            fp.write(blob)
-            fp.write("\n")
-
-        fp.write("typedef struct {\n")
-        fp.write("    const char *iconID;\n")
-        fp.write("    const char *variant;\n")
-        fp.write("    const char *base64;\n")
-        fp.write("    size_t decodedLength;\n")
-        fp.write("} LGPreviewEntry;\n\n")
-
-        fp.write("static const LGPreviewEntry kLGPreviewEntries[] = {\n")
-        for icon_id, variant, symbol, decoded_length in rows:
-            fp.write(f'    {{ "{icon_id}", "{variant}", {symbol}, {decoded_length} }},\n')
-        fp.write("};\n\n")
-        fp.write(f"static const size_t kLGPreviewEntryCount = {len(rows)};\n\n")
-
+        # ── Types ──────────────────────────────────────────────────────────
         fp.write("typedef struct {\n")
         fp.write("    const char *iconID;\n")
         fp.write("    const char *displayName;\n")
         fp.write("    const char *designer;\n")
         fp.write("} LGIconRowEntry;\n\n")
 
-        fp.write("static const LGIconRowEntry kLGIconRowEntries[] = {\n")
-        for icon_id, display_name, designer in icon_meta:
-            # Escape any embedded quotes in the display name to keep the
-            # generated C literal well-formed.
-            safe_name = display_name.replace('\\', '\\\\').replace('"', '\\"')
-            safe_designer = designer.replace('\\', '\\\\').replace('"', '\\"')
-            fp.write(f'    {{ "{icon_id}", "{safe_name}", "{safe_designer}" }},\n')
+        fp.write("typedef enum {\n")
+        fp.write("    LGGroupPresentationInline = 0,\n")
+        fp.write("    LGGroupPresentationPush   = 1,\n")
+        fp.write("} LGGroupPresentation;\n\n")
+
+        fp.write("typedef struct {\n")
+        fp.write("    const char          *groupID;\n")
+        fp.write("    const char          *title;\n")
+        fp.write("    LGGroupPresentation  presentation;\n")
+        fp.write("    const LGIconRowEntry *entries;\n")
+        fp.write("    size_t               entryCount;\n")
+        fp.write("} LGIconGroupDef;\n\n")
+
+        # ── Per-group entry arrays ─────────────────────────────────────────
+        for g in raw_groups:
+            gid     = g["id"]
+            entries = buckets[gid]
+            fp.write(f"static const LGIconRowEntry kLGGroupEntries_{c_id(gid)}[] = {{\n")
+            for icon_id, display_name, designer in entries:
+                fp.write(f'    {{ "{escape(icon_id)}", "{escape(display_name)}", "{escape(designer)}" }},\n')
+            fp.write("};\n\n")
+
+        # ── Group descriptor table ─────────────────────────────────────────
+        fp.write("static const LGIconGroupDef kLGIconGroups[] = {\n")
+        for g in raw_groups:
+            gid   = g["id"]
+            title = g.get("title", gid)
+            pres  = PRESENTATION_MAP.get(g.get("presentation", "push"), "LGGroupPresentationPush")
+            arr   = f"kLGGroupEntries_{c_id(gid)}"
+            n     = len(buckets[gid])
+            fp.write(f'    {{ "{escape(gid)}", "{escape(title)}", {pres}, {arr}, {n} }},\n')
         fp.write("};\n\n")
-        fp.write(f"static const size_t kLGIconRowEntryCount = {len(icon_meta)};\n\n")
+
+        fp.write(f"static const size_t kLGIconGroupCount = {len(raw_groups)};\n\n")
 
         primary = registry["primaryIconID"]
-        fp.write(f'static const char *const kLGPrimaryIconIDCString = "{primary}";\n')
+        fp.write(f'static const char *const kLGPrimaryIconIDCString = "{escape(primary)}";\n')
 
+    total = sum(len(v) for v in buckets.values())
+    summary = ", ".join(f"{len(buckets[g['id']])} {g['id']}" for g in raw_groups)
+    print(f"Wrote {len(raw_groups)} groups ({summary}), {total} total → {out_path}")
     return 0
 
 
