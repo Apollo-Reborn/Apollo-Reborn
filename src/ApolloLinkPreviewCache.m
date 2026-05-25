@@ -1,6 +1,7 @@
 #import "ApolloLinkPreviewCache.h"
 
 #import <CommonCrypto/CommonDigest.h>
+#import <UIKit/UIKit.h>
 
 #import "ApolloCommon.h"
 
@@ -9,12 +10,15 @@ static const NSTimeInterval ApolloLinkPreviewNegativeTTL = 24.0 * 60.0 * 60.0;
 static const NSTimeInterval ApolloLinkPreviewDefaultTTL = 7.0 * 24.0 * 60.0 * 60.0;
 static const NSTimeInterval ApolloLinkPreviewRedditTTL = 24.0 * 60.0 * 60.0;
 static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 60.0;
+static const NSTimeInterval ApolloLinkPreviewCacheDiskFlushInterval = 8.0;
 
 @interface ApolloLinkPreviewCache ()
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *entries;
 @property (nonatomic, strong) NSCache<NSString *, ApolloLinkPreview *> *memoryCache;
 @property (nonatomic, strong) dispatch_queue_t queue;
 @property (nonatomic, copy) NSString *cachePath;
+@property (nonatomic) BOOL diskDirty;
+@property (nonatomic) BOOL diskFlushScheduled;
 @end
 
 @implementation ApolloLinkPreviewCache
@@ -40,8 +44,41 @@ static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 6
         _cachePath = [cacheDirectory stringByAppendingPathComponent:@"com.apollo.linkpreviews.json"];
         _entries = [[self loadEntriesFromDisk] mutableCopy] ?: [NSMutableDictionary dictionary];
         ApolloLog(@"[LinkPreviews] cache init: %lu entries loaded", (unsigned long)_entries.count);
+
+        __weak typeof(self) weakSelf = self;
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                            object:nil
+                                                             queue:nil
+                                                        usingBlock:^(__unused NSNotification *note) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            dispatch_async(strongSelf.queue, ^{
+                [strongSelf flushDiskNowLocked];
+            });
+        }];
     }
     return self;
+}
+
+- (void)markDiskDirtyLocked {
+    self.diskDirty = YES;
+    if (self.diskFlushScheduled) return;
+    self.diskFlushScheduled = YES;
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ApolloLinkPreviewCacheDiskFlushInterval * NSEC_PER_SEC)),
+                   self.queue, ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.diskFlushScheduled = NO;
+        [strongSelf flushDiskNowLocked];
+    });
+}
+
+- (void)flushDiskNowLocked {
+    if (!self.diskDirty) return;
+    self.diskDirty = NO;
+    [self writeEntriesToDiskLocked];
 }
 
 - (NSDictionary *)loadEntriesFromDisk {
@@ -108,7 +145,7 @@ static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 6
             self.entries[key] = updated;
         } else if (entry) {
             [self.entries removeObjectForKey:key];
-            [self writeEntriesToDiskLocked];
+            [self markDiskDirtyLocked];
             preview = nil;
         }
     });
@@ -136,8 +173,72 @@ static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 6
     dispatch_async(self.queue, ^{
         self.entries[key] = entry;
         [self evictIfNeededLocked];
-        [self writeEntriesToDiskLocked];
+        [self markDiskDirtyLocked];
     });
+}
+
+- (void)removePreviewForURL:(NSURL *)url {
+    if (![url isKindOfClass:[NSURL class]]) return;
+    NSString *key = [self cacheKeyForURL:url];
+    [self.memoryCache removeObjectForKey:key];
+    dispatch_async(self.queue, ^{
+        if (self.entries[key]) {
+            [self.entries removeObjectForKey:key];
+            [self markDiskDirtyLocked];
+        }
+    });
+}
+
+static NSString *ApolloLinkPreviewNormalizedRedditUsername(NSString *username) {
+    if (![username isKindOfClass:[NSString class]]) return nil;
+    NSString *clean = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([clean hasPrefix:@"u/"] || [clean hasPrefix:@"U/"]) clean = [clean substringFromIndex:2];
+    if (clean.length == 0) return nil;
+    return clean.lowercaseString;
+}
+
+static NSString *ApolloLinkPreviewRedditUsernameFromURL(NSURL *url) {
+    if (!url) return nil;
+    NSString *host = url.host.lowercaseString ?: @"";
+    if ([host hasPrefix:@"www."]) host = [host substringFromIndex:4];
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count < 2) return nil;
+    NSString *prefix = clean[0].lowercaseString;
+    if (![prefix isEqualToString:@"user"] && ![prefix isEqualToString:@"u"]) return nil;
+    NSString *username = [clean[1] stringByRemovingPercentEncoding] ?: clean[1];
+    return ApolloLinkPreviewNormalizedRedditUsername(username);
+}
+
+- (void)removePreviewsForRedditUsername:(NSString *)username {
+    NSString *normalized = ApolloLinkPreviewNormalizedRedditUsername(username);
+    if (normalized.length == 0) return;
+
+    NSMutableArray<NSURL *> *urlsToRemove = [NSMutableArray array];
+    dispatch_sync(self.queue, ^{
+        for (NSString *key in [self.entries.allKeys copy]) {
+            NSDictionary *entry = self.entries[key];
+            NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
+            if (urlString.length == 0) continue;
+            NSURL *url = [NSURL URLWithString:urlString];
+            NSString *entryUsername = ApolloLinkPreviewRedditUsernameFromURL(url);
+            if (entryUsername.length > 0 && [entryUsername isEqualToString:normalized]) {
+                [urlsToRemove addObject:url];
+            }
+        }
+    });
+
+    for (NSURL *url in urlsToRemove) {
+        [self removePreviewForURL:url];
+    }
+    if (urlsToRemove.count > 0) {
+        ApolloLog(@"[BannedProfile] invalidated %lu reddit-user link preview(s) for u/%@", (unsigned long)urlsToRemove.count, normalized);
+    }
 }
 
 - (void)markNoMetadataForURL:(NSURL *)url {
@@ -150,6 +251,8 @@ static const NSTimeInterval ApolloLinkPreviewYouTubeTTL = 30.0 * 24.0 * 60.0 * 6
 - (void)flushCache {
     [self.memoryCache removeAllObjects];
     dispatch_async(self.queue, ^{
+        self.diskDirty = NO;
+        self.diskFlushScheduled = NO;
         NSUInteger removed = self.entries.count;
         [self.entries removeAllObjects];
         [[NSFileManager defaultManager] removeItemAtPath:self.cachePath error:nil];

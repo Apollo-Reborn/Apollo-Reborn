@@ -17,6 +17,9 @@ extern NSString * const ApolloUserProfileUsernameKey;
 @property(nonatomic, copy) NSString *aboutText;
 @property(nonatomic) BOOL defaultSnoo;
 @property(nonatomic) BOOL hasSnoovatar;
+@property(nonatomic) BOOL isSuspended;
+// YES once about.json has populated isSuspended at least once for this entry.
+@property(nonatomic) BOOL suspensionChecked;
 
 - (instancetype)initWithUsername:(NSString *)username
                           iconURL:(NSURL *)iconURL
@@ -38,5 +41,7 @@ extern NSString * const ApolloUserProfileUsernameKey;
 - (void)requestImageForURL:(NSURL *)url completion:(void (^)(UIImage *image))completion;
 
 - (void)clearAllCaches;
+
+- (BOOL)cachedIsSuspendedForUsername:(NSString *)username;
 
 @end

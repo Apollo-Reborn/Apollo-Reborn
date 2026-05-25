@@ -7,12 +7,18 @@
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloLinkPreviewFetcher.h"
+#import "ApolloBannedProfile.h"
+#import "ApolloUserProfileCache.h"
 #import "ApolloState.h"
+#import "ApolloSubredditInfoCache.h"
+#import "ApolloTranslation.h"
+#import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
 
 #import <Foundation/Foundation.h>
 #import <math.h>
 #import <QuartzCore/QuartzCore.h>
+#import <SafariServices/SafariServices.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -45,10 +51,18 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 - (NSArray *)subnodes;
 - (id)style;
 - (UIView *)view;
+- (BOOL)isNodeLoaded;
+- (void)onDidLoad:(void(^)(__kindof ASDisplayNode *node))body;
 @property (nullable, nonatomic, copy) UIColor *backgroundColor;
 @property (nonatomic) CGFloat cornerRadius;
 @property (nonatomic) BOOL clipsToBounds;
-@property (nonatomic, readonly) CALayer *layer;
+@property (nonatomic) BOOL userInteractionEnabled;
+@property (nonatomic) CGFloat alpha;
+@property (nonatomic, getter=isHidden) BOOL hidden;
+@property (nonatomic) CGFloat borderWidth;
+@property (nonatomic) CGColorRef borderColor;
+@property (nonatomic) CGFloat shadowOpacity;
+@property (nonatomic) CGFloat shadowRadius;
 @end
 
 @interface ASTextNode : ASDisplayNode
@@ -60,6 +74,8 @@ typedef NS_ENUM(unsigned char, ApolloLinkPreviewStackAlignItems) {
 
 @interface ASNetworkImageNode : ASDisplayNode
 @property (nullable, copy) NSURL *URL;
+@property (nullable, nonatomic, strong) UIImage *image;
+@property (nullable, nonatomic, strong) UIImage *defaultImage;
 @property (nonatomic) UIViewContentMode contentMode;
 @property (nonatomic) BOOL clipsToBounds;
 @property (nonatomic) CGFloat cornerRadius;
@@ -104,6 +120,14 @@ static char kApolloLinkPreviewOriginalHostShellKey;
 static char kApolloLinkPreviewRenderedPlaceholderKey;
 static char kApolloLinkPreviewBackgroundColorPresetKey;
 static char kApolloLinkPreviewAreaKey;
+static char kApolloLinkPreviewContextMenuInstalledKey;
+static char kApolloLinkPreviewContextMenuInteractionKey;
+static char kApolloLinkPreviewURLKey;
+static char kApolloLinkPreviewImageFallbackURLKey;
+static char kApolloLinkPreviewImageFallbackScheduledKey;
+static char kApolloLinkPreviewImageFallbackInFlightKey;
+static char kApolloLinkPreviewImageFallbackAppliedURLKey;
+static char kApolloLinkPreviewRenderSignaturesKey;
 
 static NSHashTable<id> *sApolloLPRegisteredLinkNodes = nil;
 static dispatch_queue_t sApolloLPRegisteredLinkNodesQueue = NULL;
@@ -115,6 +139,11 @@ typedef struct {
 
 static void ApolloLPLogOncePerHost(NSString *host, NSString *event);
 static void ApolloLPTriggerRelayoutForHost(ASDisplayNode *node, NSString *host);
+static BOOL ApolloLPIsRedditUserProfileURL(NSURL *url);
+static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url);
+static BOOL ApolloLPIsRedditSubredditURL(NSURL *url);
+static NSString *ApolloLPRedditSubredditFromURL(NSURL *url);
+static NSString *ApolloLPCleanDisplayText(NSString *text);
 
 static Class ApolloLPClass(NSString *name) {
     return NSClassFromString(name);
@@ -131,10 +160,37 @@ static BOOL ApolloLPHostHasSuffix(NSURL *url, NSString *suffix) {
     return [host isEqualToString:suffix] || [host hasSuffix:[@"." stringByAppendingString:suffix]];
 }
 
+static NSString *ApolloLPRedditUsernameFromProfileURL(NSURL *url) {
+    if (!url) return nil;
+    NSString *host = ApolloLPHost(url).lowercaseString;
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return nil;
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count < 2) return nil;
+    NSString *prefix = clean[0].lowercaseString;
+    if (![prefix isEqualToString:@"user"] && ![prefix isEqualToString:@"u"]) return nil;
+    for (NSString *part in clean) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+    NSString *username = [clean[1] stringByRemovingPercentEncoding] ?: clean[1];
+    username = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([username isEqualToString:@"[deleted]"]) return nil;
+    return username.length > 0 ? username : nil;
+}
+
+static void ApolloLPPrefetchRedditUserProfileIfNeeded(NSURL *url) {
+    NSString *username = ApolloLPRedditUsernameFromProfileURL(url);
+    if (username.length == 0) return;
+    [[ApolloUserProfileCache sharedCache] requestInfoForUsername:username completion:nil];
+}
+
 static BOOL ApolloLPTrustedInlineImageHost(NSURL *url) {
     NSArray<NSString *> *suffixes = @[
         @"redd.it", @"imgur.com", @"giphy.com", @"tenor.com", @"redgifs.com",
-        @"twimg.com", @"discordapp.com", @"discordapp.net"
+        @"twimg.com", @"discordapp.com", @"discordapp.net", @"imgchest.com"
     ];
     for (NSString *suffix in suffixes) {
         if (ApolloLPHostHasSuffix(url, suffix)) return YES;
@@ -158,12 +214,26 @@ static BOOL ApolloLPIsImgurAlbumOrShareURL(NSURL *url) {
     return [clean.firstObject rangeOfCharacterFromSet:disallowed].location == NSNotFound;
 }
 
+static BOOL ApolloLPIsImageChestAlbumURL(NSURL *url) {
+    if (!ApolloLPHostHasSuffix(url, @"imgchest.com")) return NO;
+    if (url.pathExtension.length > 0) return NO;
+    NSArray<NSString *> *parts = [url.path componentsSeparatedByString:@"/"];
+    NSMutableArray<NSString *> *clean = [NSMutableArray array];
+    for (NSString *part in parts) {
+        if (part.length > 0) [clean addObject:part];
+    }
+    if (clean.count != 2 || ![[clean.firstObject lowercaseString] isEqualToString:@"p"]) return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"];
+    return [clean.lastObject rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
 static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
     NSString *extension = url.pathExtension.lowercaseString ?: @"";
     NSSet<NSString *> *imageExtensions = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"webp", @"gif", nil];
 
     if (ApolloLPIsImgurAlbumOrShareURL(url)) return YES;
+    if (ApolloLPIsImageChestAlbumURL(url)) return YES;
     if ([imageExtensions containsObject:extension] && ApolloLPTrustedInlineImageHost(url)) return YES;
 
     NSString *host = ApolloLPHost(url);
@@ -197,6 +267,732 @@ static UIView *ApolloLPViewForNode(ASDisplayNode *node) {
     } @catch (__unused NSException *exception) {
         return nil;
     }
+}
+
+static BOOL ApolloLPURLIsHTTP(NSURL *url) {
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+}
+
+static UIViewController *ApolloLPTopViewControllerFromView(UIView *view) {
+    UIWindow *window = view.window;
+    if (!window) {
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+                    if (candidate.isKeyWindow) {
+                        window = candidate;
+                        break;
+                    }
+                }
+                if (window) break;
+            }
+        }
+    }
+
+    UIViewController *controller = window.rootViewController;
+    while (controller.presentedViewController) controller = controller.presentedViewController;
+    return controller;
+}
+
+static NSString *ApolloLPNormalizedRedditUsername(NSString *username) {
+    if (![username isKindOfClass:[NSString class]]) return nil;
+    NSString *clean = [username stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([clean.lowercaseString hasPrefix:@"u/"]) clean = [clean substringFromIndex:2];
+    return clean.length > 0 ? clean : nil;
+}
+
+static BOOL ApolloLPRedditUserPreviewSaysBanned(ApolloLinkPreview *preview) {
+    return [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()];
+}
+
+static BOOL ApolloLPRedditUserPreviewNeedsSuspensionRefetch(NSURL *url, ApolloLinkPreview *preview) {
+    if (!ApolloLPIsRedditUserProfileURL(url) || !preview) return NO;
+    NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (username.length == 0 && preview.authorHandle.length > 0) {
+        username = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (username.length == 0) return NO;
+
+    ApolloUserProfileInfo *profileInfo = [[ApolloUserProfileCache sharedCache] cachedInfoForUsername:username];
+    if (profileInfo && !profileInfo.suspensionChecked) return YES;
+
+    BOOL previewSaysBanned = ApolloLPRedditUserPreviewSaysBanned(preview);
+    BOOL cacheSaysBanned = ApolloBannedProfileCachedIsSuspended(username);
+    return previewSaysBanned != cacheSaysBanned;
+}
+
+static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
+    if (![subreddit isKindOfClass:[NSString class]]) return nil;
+    NSString *clean = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([clean.lowercaseString hasPrefix:@"r/"]) clean = [clean substringFromIndex:2];
+    if ([clean.lowercaseString hasPrefix:@"/r/"]) clean = [clean substringFromIndex:3];
+    return clean.length > 0 ? clean.lowercaseString : nil;
+}
+
+@interface ApolloLPRedditUserPreviewViewController : UIViewController
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview;
+@end
+
+@interface ApolloLPRedditUserPreviewViewController ()
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic, strong) ApolloLinkPreview *preview;
+@property(nonatomic, copy) NSString *username;
+@property(nonatomic, strong) UIImageView *avatarView;
+@property(nonatomic, strong) UILabel *titleLabel;
+@property(nonatomic, strong) UILabel *handleLabel;
+@property(nonatomic, strong) UILabel *bioLabel;
+@end
+
+@implementation ApolloLPRedditUserPreviewViewController
+
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        _url = url;
+        _preview = preview;
+        _username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url))
+            ?: ApolloLPNormalizedRedditUsername(preview.authorHandle)
+            ?: ApolloLPNormalizedRedditUsername(preview.title);
+        self.preferredContentSize = CGSizeMake(360.0, 230.0);
+    }
+    return self;
+}
+
+- (void)loadView {
+    UIView *root = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 360.0, 230.0)];
+    root.backgroundColor = [UIColor systemBackgroundColor];
+
+    UILabel *eyebrow = [UILabel new];
+    eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
+    eyebrow.text = @"REDDIT PROFILE";
+    eyebrow.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    eyebrow.textColor = [UIColor secondaryLabelColor];
+
+    UIImageView *avatarView = [UIImageView new];
+    avatarView.translatesAutoresizingMaskIntoConstraints = NO;
+    avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
+    avatarView.contentMode = UIViewContentModeScaleAspectFill;
+    avatarView.clipsToBounds = YES;
+    avatarView.layer.cornerRadius = 32.0;
+    avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
+    avatarView.tintColor = [UIColor secondaryLabelColor];
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.font = [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 1;
+
+    UILabel *handleLabel = [UILabel new];
+    handleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    handleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+    handleLabel.textColor = [UIColor secondaryLabelColor];
+    handleLabel.numberOfLines = 1;
+
+    UILabel *bioLabel = [UILabel new];
+    bioLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    bioLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
+    bioLabel.textColor = [UIColor secondaryLabelColor];
+    bioLabel.numberOfLines = 4;
+
+    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, handleLabel, bioLabel]];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.spacing = 4.0;
+    textStack.alignment = UIStackViewAlignmentFill;
+
+    UIStackView *headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[avatarView, textStack]];
+    headerStack.translatesAutoresizingMaskIntoConstraints = NO;
+    headerStack.axis = UILayoutConstraintAxisHorizontal;
+    headerStack.spacing = 14.0;
+    headerStack.alignment = UIStackViewAlignmentCenter;
+
+    UIView *card = [UIView new];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    card.layer.cornerRadius = 18.0;
+    card.clipsToBounds = YES;
+
+    [root addSubview:card];
+    [card addSubview:eyebrow];
+    [card addSubview:headerStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16.0],
+        [card.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16.0],
+        [card.topAnchor constraintEqualToAnchor:root.topAnchor constant:16.0],
+        [card.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16.0],
+
+        [eyebrow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [eyebrow.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [eyebrow.topAnchor constraintEqualToAnchor:card.topAnchor constant:16.0],
+
+        [headerStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [headerStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [headerStack.topAnchor constraintEqualToAnchor:eyebrow.bottomAnchor constant:14.0],
+        [headerStack.bottomAnchor constraintLessThanOrEqualToAnchor:card.bottomAnchor constant:-18.0],
+
+        [avatarView.widthAnchor constraintEqualToConstant:64.0],
+        [avatarView.heightAnchor constraintEqualToConstant:64.0],
+    ]];
+
+    self.avatarView = avatarView;
+    self.titleLabel = titleLabel;
+    self.handleLabel = handleLabel;
+    self.bioLabel = bioLabel;
+    self.view = root;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self applyPreviewInfo:self.preview];
+    [self loadProfileInfo];
+}
+
+- (void)applyPreviewInfo:(ApolloLinkPreview *)preview {
+    NSString *username = self.username.length > 0 ? self.username : ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    if (ApolloBannedProfileCachedIsSuspended(username) ||
+        [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()]) {
+        [self applyBannedStateForUsername:username];
+        return;
+    }
+
+    NSString *displayName = ApolloLPCleanDisplayText(preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.title);
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : (self.username.length > 0 ? [@"u/" stringByAppendingString:self.username] : @"Reddit profile");
+    NSString *bio = ApolloLPCleanDisplayText(preview.desc);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (self.username.length > 0 ? self.username : @"Reddit Profile");
+    self.handleLabel.hidden = NO;
+    self.handleLabel.text = [handle hasPrefix:@"u/"] ? handle : [@"u/" stringByAppendingString:handle];
+    self.bioLabel.text = bio.length > 0 ? bio : @"Open this profile in Apollo to view posts and comments.";
+
+    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+    [self loadImageURL:avatarURL intoImageView:self.avatarView];
+}
+
+- (void)applyBannedStateForUsername:(NSString *)username {
+    username = ApolloLPNormalizedRedditUsername(username) ?: username;
+    NSString *handle = username.length > 0 ? [@"u/" stringByAppendingString:username] : @"Reddit profile";
+    self.titleLabel.text = handle;
+    self.handleLabel.hidden = YES;
+    self.bioLabel.text = ApolloBannedProfileBannedDescriptionText();
+    UIImage *icon = ApolloBannedProfileIconImage();
+    if (icon) {
+        self.avatarView.image = icon;
+        self.avatarView.tintColor = nil;
+        self.avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
+    }
+}
+
+- (void)loadProfileInfo {
+    if (self.username.length == 0) return;
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:self.username];
+    if (cachedInfo) [self applyProfileInfo:cachedInfo];
+
+    __weak typeof(self) weakSelf = self;
+    [cache requestInfoForUsername:self.username completion:^(ApolloUserProfileInfo *info) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloLPRedditUserPreviewViewController *strongSelf = weakSelf;
+            if (!strongSelf || !info) return;
+            [strongSelf applyProfileInfo:info];
+        });
+    }];
+}
+
+- (void)applyProfileInfo:(ApolloUserProfileInfo *)info {
+    NSString *username = ApolloLPNormalizedRedditUsername(info.username) ?: self.username;
+    if (info.isSuspended || ApolloBannedProfileCachedIsSuspended(username)) {
+        [self applyBannedStateForUsername:username];
+        return;
+    }
+
+    NSString *displayName = ApolloLPCleanDisplayText(info.displayName);
+    NSString *bio = ApolloLPCleanDisplayText(info.aboutText);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (username.length > 0 ? username : self.titleLabel.text);
+    self.handleLabel.hidden = NO;
+    self.handleLabel.text = username.length > 0 ? [@"u/" stringByAppendingString:username] : self.handleLabel.text;
+    if (bio.length > 0) self.bioLabel.text = bio;
+
+    NSURL *avatarURL = info.hasSnoovatar && info.snoovatarURL ? info.snoovatarURL : info.iconURL;
+    [self loadImageURL:avatarURL intoImageView:self.avatarView];
+}
+
+- (void)loadImageURL:(NSURL *)url intoImageView:(UIImageView *)imageView {
+    if (!url || !imageView) return;
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    UIImage *cachedImage = [cache cachedImageForURL:url];
+    if (cachedImage) {
+        imageView.image = cachedImage;
+        return;
+    }
+
+    [cache requestImageForURL:url completion:^(UIImage *image) {
+        if (!image) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            imageView.image = image;
+        });
+    }];
+}
+
+@end
+
+@interface ApolloLPRedditSubredditPreviewViewController : UIViewController
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview;
+@end
+
+@interface ApolloLPRedditSubredditPreviewViewController ()
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic, strong) ApolloLinkPreview *preview;
+@property(nonatomic, copy) NSString *subredditName;
+@property(nonatomic, strong) UIImageView *avatarView;
+@property(nonatomic, strong) UILabel *titleLabel;
+@property(nonatomic, strong) UILabel *handleLabel;
+@property(nonatomic, strong) UILabel *memberLabel;
+@property(nonatomic, strong) UILabel *bioLabel;
+@end
+
+@implementation ApolloLPRedditSubredditPreviewViewController
+
+- (instancetype)initWithURL:(NSURL *)url preview:(ApolloLinkPreview *)preview {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        _url = url;
+        _preview = preview;
+        _subredditName = ApolloLPNormalizedRedditSubreddit(ApolloLPRedditSubredditFromURL(url))
+            ?: ApolloLPNormalizedRedditSubreddit(preview.authorHandle);
+        self.preferredContentSize = CGSizeMake(360.0, 250.0);
+    }
+    return self;
+}
+
+- (void)loadView {
+    UIView *root = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 360.0, 250.0)];
+    root.backgroundColor = [UIColor systemBackgroundColor];
+
+    UILabel *eyebrow = [UILabel new];
+    eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
+    eyebrow.text = @"REDDIT COMMUNITY";
+    eyebrow.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    eyebrow.textColor = [UIColor secondaryLabelColor];
+
+    UIImageView *avatarView = [UIImageView new];
+    avatarView.translatesAutoresizingMaskIntoConstraints = NO;
+    avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
+    avatarView.contentMode = UIViewContentModeScaleAspectFill;
+    avatarView.clipsToBounds = YES;
+    avatarView.layer.cornerRadius = 32.0;
+    avatarView.image = [UIImage systemImageNamed:@"person.2.fill"];
+    avatarView.tintColor = [UIColor secondaryLabelColor];
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.font = [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold];
+    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.numberOfLines = 1;
+
+    UILabel *handleLabel = [UILabel new];
+    handleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    handleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightMedium];
+    handleLabel.textColor = [UIColor secondaryLabelColor];
+    handleLabel.numberOfLines = 1;
+
+    UILabel *memberLabel = [UILabel new];
+    memberLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    memberLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightRegular];
+    memberLabel.textColor = [UIColor secondaryLabelColor];
+    memberLabel.numberOfLines = 1;
+
+    UILabel *bioLabel = [UILabel new];
+    bioLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    bioLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
+    bioLabel.textColor = [UIColor secondaryLabelColor];
+    bioLabel.numberOfLines = 4;
+
+    UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, handleLabel, memberLabel, bioLabel]];
+    textStack.translatesAutoresizingMaskIntoConstraints = NO;
+    textStack.axis = UILayoutConstraintAxisVertical;
+    textStack.spacing = 4.0;
+    textStack.alignment = UIStackViewAlignmentFill;
+
+    UIStackView *headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[avatarView, textStack]];
+    headerStack.translatesAutoresizingMaskIntoConstraints = NO;
+    headerStack.axis = UILayoutConstraintAxisHorizontal;
+    headerStack.spacing = 14.0;
+    headerStack.alignment = UIStackViewAlignmentCenter;
+
+    UIView *card = [UIView new];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    card.layer.cornerRadius = 18.0;
+    card.clipsToBounds = YES;
+
+    [root addSubview:card];
+    [card addSubview:eyebrow];
+    [card addSubview:headerStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16.0],
+        [card.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16.0],
+        [card.topAnchor constraintEqualToAnchor:root.topAnchor constant:16.0],
+        [card.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16.0],
+        [eyebrow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [eyebrow.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [eyebrow.topAnchor constraintEqualToAnchor:card.topAnchor constant:18.0],
+        [headerStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [headerStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [headerStack.topAnchor constraintEqualToAnchor:eyebrow.bottomAnchor constant:14.0],
+        [headerStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0],
+        [avatarView.widthAnchor constraintEqualToConstant:64.0],
+        [avatarView.heightAnchor constraintEqualToConstant:64.0],
+    ]];
+
+    self.avatarView = avatarView;
+    self.titleLabel = titleLabel;
+    self.handleLabel = handleLabel;
+    self.memberLabel = memberLabel;
+    self.bioLabel = bioLabel;
+    self.view = root;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self applyPreviewInfo:self.preview];
+    [self loadSubredditInfo];
+}
+
+- (void)applyPreviewInfo:(ApolloLinkPreview *)preview {
+    NSString *displayName = ApolloLPCleanDisplayText(preview.authorDisplayName.length > 0 ? preview.authorDisplayName : preview.title);
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : (self.subredditName.length > 0 ? [@"r/" stringByAppendingString:self.subredditName] : @"Reddit community");
+    NSString *bio = ApolloLPCleanDisplayText(preview.desc);
+    NSString *members = ApolloLPCleanDisplayText(preview.postText);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (self.subredditName.length > 0 ? self.subredditName : @"Reddit Community");
+    self.handleLabel.text = [handle hasPrefix:@"r/"] ? handle : [@"r/" stringByAppendingString:handle];
+    self.memberLabel.text = members.length > 0 ? members : @"";
+    self.memberLabel.hidden = members.length == 0;
+    self.bioLabel.text = bio.length > 0 ? bio : @"Open this community in Apollo to browse posts.";
+
+    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+    [self loadImageURL:avatarURL intoImageView:self.avatarView];
+}
+
+- (void)loadSubredditInfo {
+    if (self.subredditName.length == 0) return;
+
+    ApolloSubredditInfoCache *cache = [ApolloSubredditInfoCache sharedCache];
+    ApolloSubredditInfo *cachedInfo = [cache cachedInfoForSubreddit:self.subredditName];
+    if (cachedInfo) [self applySubredditInfo:cachedInfo];
+
+    __weak typeof(self) weakSelf = self;
+    [cache requestInfoForSubreddit:self.subredditName completion:^(ApolloSubredditInfo *info) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloLPRedditSubredditPreviewViewController *strongSelf = weakSelf;
+            if (!strongSelf || !info) return;
+            [strongSelf applySubredditInfo:info];
+        });
+    }];
+}
+
+- (void)applySubredditInfo:(ApolloSubredditInfo *)info {
+    NSString *displayName = ApolloLPCleanDisplayText(info.displayName);
+    NSString *bio = ApolloLPCleanDisplayText(info.aboutText);
+    NSString *subredditName = ApolloLPNormalizedRedditSubreddit(info.subredditName) ?: self.subredditName;
+    NSString *members = ApolloSubredditFormattedMemberCount(info.subscriberCount);
+
+    self.titleLabel.text = displayName.length > 0 ? displayName : (subredditName.length > 0 ? subredditName : self.titleLabel.text);
+    self.handleLabel.text = subredditName.length > 0 ? [@"r/" stringByAppendingString:subredditName] : self.handleLabel.text;
+    self.memberLabel.text = members.length > 0 ? members : @"";
+    self.memberLabel.hidden = members.length == 0;
+    if (bio.length > 0) self.bioLabel.text = bio;
+
+    [self loadImageURL:info.iconURL intoImageView:self.avatarView];
+}
+
+- (void)loadImageURL:(NSURL *)url intoImageView:(UIImageView *)imageView {
+    if (!url || !imageView) return;
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    UIImage *cachedImage = [cache cachedImageForURL:url];
+    if (cachedImage) {
+        imageView.image = cachedImage;
+        return;
+    }
+
+    [cache requestImageForURL:url completion:^(UIImage *image) {
+        if (!image) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            imageView.image = image;
+        });
+    }];
+}
+
+@end
+
+@interface ApolloLinkPreviewInteractionDelegate : NSObject <UIContextMenuInteractionDelegate>
++ (instancetype)sharedDelegate;
+@end
+
+@implementation ApolloLinkPreviewInteractionDelegate
+
++ (instancetype)sharedDelegate {
+    static ApolloLinkPreviewInteractionDelegate *delegate = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        delegate = [ApolloLinkPreviewInteractionDelegate new];
+    });
+    return delegate;
+}
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
+    UIView *view = interaction.view;
+    NSURL *url = objc_getAssociatedObject(view, &kApolloLinkPreviewURLKey);
+    if (!ApolloLPURLIsHTTP(url)) return nil;
+
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil
+                                                   previewProvider:^UIViewController *{
+        if (ApolloLPIsRedditUserProfileURL(url)) {
+            ApolloLinkPreview *preview = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
+            return [[ApolloLPRedditUserPreviewViewController alloc] initWithURL:url preview:preview];
+        }
+        if (ApolloLPIsRedditSubredditURL(url)) {
+            ApolloLinkPreview *preview = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
+            return [[ApolloLPRedditSubredditPreviewViewController alloc] initWithURL:url preview:preview];
+        }
+        return [[SFSafariViewController alloc] initWithURL:url];
+    } actionProvider:^UIMenu *(__unused NSArray<UIMenuElement *> *suggestedActions) {
+        __weak UIView *weakView = view;
+        UIAction *copyAction = [UIAction actionWithTitle:@"Copy Link"
+                                                   image:[UIImage systemImageNamed:@"doc.on.doc"]
+                                              identifier:nil
+                                                 handler:^(__unused UIAction *action) {
+            UIPasteboard.generalPasteboard.URL = url;
+        }];
+        UIAction *shareAction = [UIAction actionWithTitle:@"Share..."
+                                                    image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+                                               identifier:nil
+                                                  handler:^(__unused UIAction *action) {
+            UIView *strongView = weakView;
+            if (!strongView) return;
+            UIActivityViewController *activityController = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+            UIViewController *topController = ApolloLPTopViewControllerFromView(strongView);
+            if (!topController) return;
+            activityController.popoverPresentationController.sourceView = strongView;
+            activityController.popoverPresentationController.sourceRect = strongView.bounds;
+            [topController presentViewController:activityController animated:YES completion:nil];
+        }];
+        UIAction *openAction = [UIAction actionWithTitle:@"Open in Safari"
+                                                   image:[UIImage systemImageNamed:@"safari"]
+                                              identifier:nil
+                                                 handler:^(__unused UIAction *action) {
+            [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[copyAction, shareAction, openAction]];
+    }];
+}
+
+@end
+
+static void ApolloLPInstallContextMenuOnView(UIView *view, NSURL *url) {
+    if (!view || !ApolloLPURLIsHTTP(url)) return;
+    objc_setAssociatedObject(view, &kApolloLinkPreviewURLKey, url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([objc_getAssociatedObject(view, &kApolloLinkPreviewContextMenuInstalledKey) boolValue]) return;
+
+    UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:[ApolloLinkPreviewInteractionDelegate sharedDelegate]];
+    [view addInteraction:interaction];
+    objc_setAssociatedObject(view, &kApolloLinkPreviewContextMenuInteractionKey, interaction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kApolloLinkPreviewContextMenuInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloLPInstallContextMenuForNode(ASDisplayNode *node, NSURL *url) {
+    if (!node || !ApolloLPURLIsHTTP(url)) return;
+    objc_setAssociatedObject(node, &kApolloLinkPreviewURLKey, url, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    void (^install)(ASDisplayNode *) = ^(ASDisplayNode *loadedNode) {
+        NSURL *currentURL = objc_getAssociatedObject(loadedNode, &kApolloLinkPreviewURLKey) ?: url;
+        UIView *view = ApolloLPViewForNode(loadedNode);
+        ApolloLPInstallContextMenuOnView(view, currentURL);
+    };
+
+    if ([node respondsToSelector:@selector(isNodeLoaded)] && [node isNodeLoaded]) {
+        install(node);
+    }
+    if ([node respondsToSelector:@selector(onDidLoad:)]) {
+        [node onDidLoad:^(__kindof ASDisplayNode *loadedNode) {
+            install(loadedNode);
+        }];
+    }
+}
+
+static NSCache<NSString *, UIImage *> *ApolloLPFallbackImageCache(void) {
+    static NSCache *cache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSCache new];
+        cache.countLimit = 256;
+        cache.totalCostLimit = 40 * 1024 * 1024;
+    });
+    return cache;
+}
+
+static BOOL ApolloLPNetworkImageNodeHasImage(ASNetworkImageNode *imageNode) {
+    if (!imageNode || ![imageNode respondsToSelector:@selector(image)]) return NO;
+    UIImage *image = imageNode.image;
+    return [image isKindOfClass:[UIImage class]] && image.size.width > 0.0 && image.size.height > 0.0;
+}
+
+static void ApolloLPRememberRenderedImageForURL(ASNetworkImageNode *imageNode, NSURL *imageURL) {
+    if (!imageURL.absoluteString.length || !ApolloLPNetworkImageNodeHasImage(imageNode)) return;
+    UIImage *image = imageNode.image;
+    NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4.0);
+    [ApolloLPFallbackImageCache() setObject:image forKey:imageURL.absoluteString cost:cost];
+}
+
+static void ApolloLPSetNetworkImageURLPreservingImage(ASNetworkImageNode *imageNode, NSURL *imageURL) {
+    if (!imageNode) return;
+    NSURL *currentURL = imageNode.URL;
+    if (!currentURL && !imageURL) return;
+    if ([currentURL.absoluteString isEqualToString:imageURL.absoluteString]) {
+        ApolloLPRememberRenderedImageForURL(imageNode, imageURL);
+        return;
+    }
+
+    ApolloLPRememberRenderedImageForURL(imageNode, currentURL);
+    objc_setAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackAppliedURLKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    // Only clear the persisted defaultImage when we're switching to an
+    // empty URL. Keeping defaultImage for non-empty new URLs lets the old
+    // image keep showing for the brief moment before the new URL's image
+    // loads, instead of flashing the placeholder gray. Texture will replace
+    // the displayed image as soon as the new URL resolves.
+    if (imageURL.absoluteString.length == 0
+        && [imageNode respondsToSelector:@selector(setDefaultImage:)]) {
+        imageNode.defaultImage = nil;
+    }
+    imageNode.URL = imageURL;
+}
+
+// Set imageNode.backgroundColor exactly once based on whether we expect a
+// real image to load. ASNetworkImageNode already paints `placeholderColor`
+// while the network image is loading (configured once in
+// ApolloLPNodeBundleForHost), so we only need backgroundColor as a fallback
+// when there is no URL at all. Re-flipping backgroundColor between nil and
+// gray on every layoutSpecThatFits: pass was the main per-paint flicker
+// source after entering / re-entering a thread, because Texture briefly
+// releases imageNode.image around display-range changes.
+static void ApolloLPSetImageNodeBackgroundForURL(ASNetworkImageNode *imageNode, NSURL *imageURL) {
+    if (!imageNode) return;
+    UIColor *target = imageURL.absoluteString.length > 0 ? nil : [UIColor tertiarySystemFillColor];
+    UIColor *current = imageNode.backgroundColor;
+    if ((!current && !target) || [current isEqual:target]) return;
+    imageNode.backgroundColor = target;
+}
+
+// layoutSpecThatFits: runs on Texture background layout threads — never touch
+// UIView/CALayer here (deadlocks with main-thread cornerRadius updates).
+static void ApolloLPSetAvatarNodeVisible(ASNetworkImageNode *avatarNode, BOOL visible) {
+    if (!avatarNode) return;
+    avatarNode.placeholderEnabled = visible;
+    avatarNode.alpha = visible ? 1.0 : 0.0;
+    avatarNode.hidden = !visible;
+}
+
+static void ApolloLPApplyFallbackImage(ASNetworkImageNode *imageNode, NSURL *imageURL, UIImage *image, NSString *host) {
+    if (!imageNode || !image || image.size.width <= 0.0 || image.size.height <= 0.0) return;
+    NSURL *currentURL = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackURLKey);
+    if (![currentURL.absoluteString isEqualToString:imageURL.absoluteString]) return;
+    if (ApolloLPNetworkImageNodeHasImage(imageNode)) return;
+
+    imageNode.image = image;
+    // Persist the decoded image as defaultImage so Texture keeps painting it
+    // when it releases imageNode.image outside the display range. Without
+    // this, re-entering a thread shows a blank/gray frame before the
+    // fallback path re-applies the image.
+    if ([imageNode respondsToSelector:@selector(setDefaultImage:)]) {
+        imageNode.defaultImage = image;
+    }
+    imageNode.backgroundColor = nil;
+    objc_setAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackAppliedURLKey, imageURL.absoluteString, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    ApolloLPLogOncePerHost(host ?: ApolloLPHost(imageURL), @"fallback-image-applied");
+}
+
+static void ApolloLPStartFallbackImageFetch(ASNetworkImageNode *imageNode, NSURL *imageURL, NSString *host) {
+    if (!imageNode || !ApolloLPURLIsHTTP(imageURL)) return;
+    NSString *key = imageURL.absoluteString;
+    if (key.length == 0) return;
+
+    UIImage *cachedImage = [ApolloLPFallbackImageCache() objectForKey:key];
+    if (cachedImage) {
+        ApolloLPApplyFallbackImage(imageNode, imageURL, cachedImage, host);
+        return;
+    }
+
+    if ([objc_getAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackInFlightKey) boolValue]) return;
+    objc_setAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackInFlightKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:imageURL cachePolicy:NSURLRequestReturnCacheDataElseLoad timeoutInterval:15.0];
+    [request setValue:@"image/avif,image/webp,image/apng,image/*,*/*;q=0.8" forHTTPHeaderField:@"Accept"];
+    [request setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+
+    __weak ASNetworkImageNode *weakImageNode = imageNode;
+    NSString *hostCopy = [host copy];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = data.length > 0 ? [UIImage imageWithData:data scale:UIScreen.mainScreen.scale] : nil;
+        if (image) {
+            NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4.0);
+            [ApolloLPFallbackImageCache() setObject:image forKey:key cost:cost];
+        } else {
+            NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
+            ApolloLog(@"[LinkPreviews] fallback-image failed host=%@ status=%ld bytes=%lu err=%@ url=%@",
+                      hostCopy ?: ApolloLPHost(imageURL),
+                      (long)httpResponse.statusCode,
+                      (unsigned long)data.length,
+                      error.localizedDescription ?: @"nil",
+                      imageURL.absoluteString);
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ASNetworkImageNode *strongImageNode = weakImageNode;
+            if (!strongImageNode) return;
+            objc_setAssociatedObject(strongImageNode, &kApolloLinkPreviewImageFallbackInFlightKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            ApolloLPApplyFallbackImage(strongImageNode, imageURL, image, hostCopy);
+        });
+    }] resume];
+}
+
+static void ApolloLPScheduleImageFallbackIfNeeded(ASNetworkImageNode *imageNode, NSURL *imageURL, NSString *host) {
+    if (!imageNode || !ApolloLPURLIsHTTP(imageURL)) return;
+    objc_setAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackURLKey, imageURL, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSString *cacheKey = imageURL.absoluteString;
+    UIImage *cachedImage = cacheKey.length > 0 ? [ApolloLPFallbackImageCache() objectForKey:cacheKey] : nil;
+    if (cachedImage && !ApolloLPNetworkImageNodeHasImage(imageNode)) {
+        ApolloLPApplyFallbackImage(imageNode, imageURL, cachedImage, host);
+    }
+    if (ApolloLPNetworkImageNodeHasImage(imageNode)) {
+        ApolloLPRememberRenderedImageForURL(imageNode, imageURL);
+        return;
+    }
+
+    NSString *scheduledURL = objc_getAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackScheduledKey);
+    if ([scheduledURL isEqualToString:imageURL.absoluteString]) return;
+    objc_setAssociatedObject(imageNode, &kApolloLinkPreviewImageFallbackScheduledKey, imageURL.absoluteString, OBJC_ASSOCIATION_COPY_NONATOMIC);
+
+    __weak ASNetworkImageNode *weakImageNode = imageNode;
+    NSURL *imageURLCopy = imageURL;
+    NSString *hostCopy = [host copy];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(900 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        ASNetworkImageNode *strongImageNode = weakImageNode;
+        if (!strongImageNode) return;
+        NSURL *currentURL = objc_getAssociatedObject(strongImageNode, &kApolloLinkPreviewImageFallbackURLKey);
+        if (![currentURL.absoluteString isEqualToString:imageURLCopy.absoluteString]) return;
+        if (ApolloLPNetworkImageNodeHasImage(strongImageNode)) return;
+        ApolloLPStartFallbackImageFetch(strongImageNode, imageURLCopy, hostCopy);
+    });
 }
 
 static UIColor *ApolloLPBlendColor(UIColor *foreground, UIColor *background, CGFloat foregroundAlpha, UITraitCollection *traitCollection) {
@@ -377,6 +1173,8 @@ static NSDictionary *ApolloLPNodeBundleForHost(ASDisplayNode *hostNode, NSURL *u
 
 static NSAttributedString *ApolloLPAttributedString(NSString *string, UIFont *font, UIColor *color) {
     if (string.length == 0) return nil;
+    string = [[string stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (string.length == 0) return nil;
     NSMutableParagraphStyle *style = [NSMutableParagraphStyle new];
     style.lineBreakMode = NSLineBreakByWordWrapping;
     NSDictionary *attrs = @{
@@ -385,6 +1183,47 @@ static NSAttributedString *ApolloLPAttributedString(NSString *string, UIFont *fo
         NSParagraphStyleAttributeName: style,
     };
     return [[NSAttributedString alloc] initWithString:string attributes:attrs];
+}
+
+static BOOL ApolloLPSetTextNodeAttributedTextIfChanged(ASTextNode *textNode, NSAttributedString *attributedText) {
+    if (!textNode) return NO;
+    NSAttributedString *current = textNode.attributedText;
+    BOOL unchanged = (!current && !attributedText) || (current && attributedText && [current isEqualToAttributedString:attributedText]);
+    if (unchanged) return NO;
+    textNode.attributedText = attributedText;
+    return YES;
+}
+
+static NSString *ApolloLPCleanDisplayText(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return text;
+    NSString *clean = [text stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "];
+    NSRegularExpression *tagRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>" options:0 error:nil];
+    clean = [tagRegex stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
+    NSRegularExpression *whitespace = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:nil];
+    clean = [whitespace stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
+    clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return clean.length > 0 ? clean : text;
+}
+
+static NSString *ApolloLPDisplayTitleForPreview(ApolloLinkPreview *preview) {
+    return ApolloLPCleanDisplayText(preview.title);
+}
+
+static NSString *ApolloLPDisplayDescriptionForPreview(ApolloLinkPreview *preview) {
+    return ApolloLPCleanDisplayText(preview.desc);
+}
+
+static NSURL *ApolloLPRepairedImageURLForPreviewURL(NSURL *previewURL, NSURL *imageURL) {
+    if (!imageURL) return nil;
+    NSString *previewHost = ApolloLPHost(previewURL);
+    if (![previewHost isEqualToString:@"balackburn.github.io"]) return imageURL;
+
+    NSString *absolute = imageURL.absoluteString ?: @"";
+    NSString *badPrefix = @"https://balackburn.github.io/images/";
+    if (![absolute hasPrefix:badPrefix]) return imageURL;
+
+    NSString *fileName = [absolute substringFromIndex:badPrefix.length];
+    return [NSURL URLWithString:[@"https://balackburn.github.io/Apollo/images/" stringByAppendingString:fileName]] ?: imageURL;
 }
 
 static void ApolloLPApplyStyleSize(id style, CGSize size) {
@@ -421,6 +1260,11 @@ static void ApolloLPResetTextNode(ASTextNode *textNode, NSUInteger maximumLines)
     textNode.userInteractionEnabled = NO;
     textNode.backgroundColor = [UIColor clearColor];
     textNode.clipsToBounds = NO;
+    // Clear placeholder-only skeleton bar styling/a11y suppression so the real
+    // text rendered by the final spec is unaffected by any prior placeholder
+    // pass on the same recycled node.
+    textNode.cornerRadius = 0.0;
+    textNode.isAccessibilityElement = YES;
 }
 
 static void ApolloLPClearHostShell(ASDisplayNode *node) {
@@ -432,10 +1276,10 @@ static void ApolloLPClearHostShell(ASDisplayNode *node) {
             @"background": node.backgroundColor ?: [NSNull null],
             @"cornerRadius": @(node.cornerRadius),
             @"clipsToBounds": @(node.clipsToBounds),
-            @"borderWidth": @(node.layer.borderWidth),
-            @"borderColor": node.layer.borderColor ? (__bridge id)node.layer.borderColor : [NSNull null],
-            @"shadowOpacity": @(node.layer.shadowOpacity),
-            @"shadowRadius": @(node.layer.shadowRadius),
+            @"borderWidth": @(node.borderWidth),
+            @"borderColor": node.borderColor ? (__bridge id)node.borderColor : [NSNull null],
+            @"shadowOpacity": @(node.shadowOpacity),
+            @"shadowRadius": @(node.shadowRadius),
         };
         objc_setAssociatedObject(node, &kApolloLinkPreviewOriginalHostShellKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -443,10 +1287,10 @@ static void ApolloLPClearHostShell(ASDisplayNode *node) {
     node.backgroundColor = [UIColor clearColor];
     node.cornerRadius = 0.0;
     node.clipsToBounds = NO;
-    node.layer.borderWidth = 0.0;
-    node.layer.borderColor = nil;
-    node.layer.shadowOpacity = 0.0;
-    node.layer.shadowRadius = 0.0;
+    node.borderWidth = 0.0;
+    node.borderColor = nil;
+    node.shadowOpacity = 0.0;
+    node.shadowRadius = 0.0;
 }
 
 static void ApolloLPRestoreHostShell(ASDisplayNode *node) {
@@ -458,11 +1302,11 @@ static void ApolloLPRestoreHostShell(ASDisplayNode *node) {
     node.backgroundColor = [background isKindOfClass:[NSNull class]] ? nil : background;
     node.cornerRadius = [original[@"cornerRadius"] doubleValue];
     node.clipsToBounds = [original[@"clipsToBounds"] boolValue];
-    node.layer.borderWidth = [original[@"borderWidth"] doubleValue];
+    node.borderWidth = [original[@"borderWidth"] doubleValue];
     id borderColor = original[@"borderColor"];
-    node.layer.borderColor = [borderColor isKindOfClass:[NSNull class]] ? nil : (__bridge CGColorRef)borderColor;
-    node.layer.shadowOpacity = [original[@"shadowOpacity"] floatValue];
-    node.layer.shadowRadius = [original[@"shadowRadius"] doubleValue];
+    node.borderColor = [borderColor isKindOfClass:[NSNull class]] ? nil : (__bridge CGColorRef)borderColor;
+    node.shadowOpacity = [original[@"shadowOpacity"] floatValue];
+    node.shadowRadius = [original[@"shadowRadius"] doubleValue];
 }
 
 typedef NS_ENUM(NSUInteger, ApolloLPContext) {
@@ -588,6 +1432,33 @@ static BOOL ApolloLPIsYouTubeURL(NSURL *url) {
     return NO;
 }
 
+static BOOL ApolloLPIsRedditUserProfileURL(NSURL *url) {
+    return ApolloLPRedditUsernameFromProfileURL(url).length > 0;
+}
+
+static NSString *ApolloLPRedditSubredditFromURL(NSURL *url) {
+    if (!ApolloLPHostHasSuffix(url, @"reddit.com")) return nil;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (NSString *part in [url.path componentsSeparatedByString:@"/"]) {
+        if (part.length > 0) [parts addObject:part];
+    }
+    if (parts.count < 2) return nil;
+
+    NSString *prefix = parts[0].lowercaseString;
+    if (![prefix isEqualToString:@"r"]) return nil;
+    for (NSString *part in parts) {
+        if ([part.lowercaseString isEqualToString:@"comments"]) return nil;
+    }
+
+    NSString *subreddit = [parts[1] stringByRemovingPercentEncoding] ?: parts[1];
+    subreddit = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return subreddit.length > 0 ? subreddit : nil;
+}
+
+static BOOL ApolloLPIsRedditSubredditURL(NSURL *url) {
+    return ApolloLPRedditSubredditFromURL(url).length > 0;
+}
+
 static BOOL ApolloLPIsPosterPreviewURL(NSURL *url, ApolloLinkPreview *preview) {
     if (!url || !preview) return NO;
 
@@ -662,20 +1533,27 @@ static NSDictionary *ApolloLPPreparedNodeBundle(ASDisplayNode *hostNode, NSURL *
     ApolloLPResetTextNode(titleNode, 3);
     ApolloLPResetTextNode(descriptionNode, 4);
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
-    NSString *siteName = preview.siteName.length > 0 ? preview.siteName : ApolloLPHost(url);
-    imageNode.URL = preview.imageURL;
-    imageNode.backgroundColor = preview.imageURL.absoluteString.length > 0 ? nil : [UIColor tertiarySystemFillColor];
+    NSString *siteName = preview.siteName.length > 0 ? ApolloLPCleanDisplayText(preview.siteName) : ApolloLPHost(url);
+    NSURL *imageURL = ApolloLPRepairedImageURLForPreviewURL(url, preview.imageURL);
+    ApolloLPSetNetworkImageURLPreservingImage(imageNode, imageURL);
+    // Don't toggle backgroundColor per layout pass based on whether the
+    // imageNode currently has a UIImage loaded. ASNetworkImageNode already
+    // shows `placeholderColor` while loading (set once in
+    // ApolloLPNodeBundleForHost), so re-flipping backgroundColor between
+    // nil and gray on every layoutSpecThatFits: was a redundant paint
+    // source that flickered when Texture briefly released the image
+    // outside the display range.
+    ApolloLPSetImageNodeBackgroundForURL(imageNode, imageURL);
+    ApolloLPScheduleImageFallbackIfNeeded(imageNode, imageURL, ApolloLPHost(url));
     imageNode.contentMode = UIViewContentModeScaleAspectFill;
     imageNode.clipsToBounds = YES;
-    avatarNode.URL = nil;
-    avatarNode.backgroundColor = [UIColor tertiarySystemFillColor];
+    ApolloLPSetImageNodeBackgroundForURL(avatarNode, nil);
     avatarNode.contentMode = UIViewContentModeScaleAspectFill;
     avatarNode.clipsToBounds = YES;
     avatarNode.cornerRadius = 18.0;
-    siteNode.attributedText = ApolloLPAttributedString([siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
-    titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
-    descriptionNode.attributedText = ApolloLPAttributedString(preview.desc, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
-    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString([siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(ApolloLPDisplayTitleForPreview(preview), [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(ApolloLPDisplayDescriptionForPreview(preview), [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
 
     return bundle;
 }
@@ -695,7 +1573,7 @@ static id ApolloLPMeasuredWrapper(id cardSpec, Class insetClass) {
 }
 
 static NSUInteger ApolloLPCompactDescriptionLineCount(ApolloLinkPreview *preview) {
-    NSUInteger titleLength = preview.title.length;
+    NSUInteger titleLength = ApolloLPDisplayTitleForPreview(preview).length;
     if (titleLength >= 110) return 0;
     if (titleLength >= 70) return 1;
     return 2;
@@ -706,10 +1584,14 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-compact");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -757,7 +1639,7 @@ static id ApolloLPBuildCompactCardSpec(ASDisplayNode *hostNode, NSURL *url, Apol
 }
 
 static NSUInteger ApolloLPHeroDescriptionLineCount(ApolloLinkPreview *preview) {
-    NSUInteger titleLength = preview.title.length;
+    NSUInteger titleLength = ApolloLPDisplayTitleForPreview(preview).length;
     if (titleLength >= 120) return 0;
     return 1;
 }
@@ -767,10 +1649,14 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-hero");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -785,7 +1671,7 @@ static id ApolloLPBuildHeroCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloL
     NSUInteger descriptionLineCount = ApolloLPHeroDescriptionLineCount(preview);
     titleNode.maximumNumberOfLines = 2;
     descriptionNode.maximumNumberOfLines = descriptionLineCount;
-    titleNode.attributedText = ApolloLPAttributedString(preview.title, [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(ApolloLPDisplayTitleForPreview(preview), [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
     ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
@@ -878,15 +1764,17 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
 
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
+
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
     Class ratioClass = ApolloLPClass(@"ASRatioLayoutSpec");
     Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
     if (!stackClass || !insetClass) return nil;
 
-    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : @"Bluesky");
+    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (ApolloLPDisplayTitleForPreview(preview).length > 0 ? ApolloLPDisplayTitleForPreview(preview) : @"Bluesky");
     NSString *handleText = ApolloLPBlueskyHandleText(preview);
-    NSString *postText = preview.postText.length > 0 ? preview.postText : preview.desc;
+    NSString *postText = preview.postText.length > 0 ? ApolloLPCleanDisplayText(preview.postText) : ApolloLPDisplayDescriptionForPreview(preview);
     BOOL imageIsAvatar = preview.avatarURL.absoluteString.length > 0
         && [preview.imageURL.absoluteString isEqualToString:preview.avatarURL.absoluteString];
     BOOL hasPostImage = preview.imageURL.absoluteString.length > 0 && !imageIsAvatar && !preview.imageIsFallbackIcon;
@@ -895,14 +1783,24 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     backgroundNode.cornerRadius = 10.0;
     backgroundNode.clipsToBounds = YES;
 
-    imageNode.URL = hasPostImage ? preview.imageURL : nil;
-    imageNode.backgroundColor = hasPostImage ? nil : [UIColor clearColor];
+    ApolloLPSetNetworkImageURLPreservingImage(imageNode, hasPostImage ? preview.imageURL : nil);
+    // Bluesky cards use a clear (transparent) imageNode background even
+    // when no post image is loaded, because the avatar column carries the
+    // visible chrome. Set this once regardless of load state so we don't
+    // flip-flop with the placeholder gray across layout passes.
+    UIColor *targetImageBg = hasPostImage ? nil : [UIColor clearColor];
+    if (![imageNode.backgroundColor isEqual:targetImageBg]
+        && !(!imageNode.backgroundColor && !targetImageBg)) {
+        imageNode.backgroundColor = targetImageBg;
+    }
+    if (hasPostImage) ApolloLPScheduleImageFallbackIfNeeded(imageNode, preview.imageURL, ApolloLPHost(url));
     imageNode.contentMode = UIViewContentModeScaleAspectFill;
     imageNode.cornerRadius = 10.0;
     imageNode.clipsToBounds = YES;
 
-    avatarNode.URL = preview.avatarURL;
-    avatarNode.backgroundColor = preview.avatarURL.absoluteString.length > 0 ? nil : [UIColor tertiarySystemFillColor];
+    ApolloLPSetNetworkImageURLPreservingImage(avatarNode, preview.avatarURL);
+    ApolloLPSetImageNodeBackgroundForURL(avatarNode, preview.avatarURL);
+    ApolloLPScheduleImageFallbackIfNeeded(avatarNode, preview.avatarURL, ApolloLPHost(url));
     avatarNode.cornerRadius = 18.0;
     avatarNode.clipsToBounds = YES;
     ApolloLPApplyStyleSize([avatarNode style], CGSizeMake(36.0, 36.0));
@@ -910,9 +1808,9 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     titleNode.maximumNumberOfLines = 1;
     siteNode.maximumNumberOfLines = 1;
     descriptionNode.maximumNumberOfLines = 10;
-    titleNode.attributedText = ApolloLPAttributedString(displayName, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]);
-    siteNode.attributedText = ApolloLPAttributedString(handleText, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]);
-    descriptionNode.attributedText = ApolloLPAttributedString(postText, [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], [UIColor labelColor]);
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(displayName, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString(handleText, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(postText, [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular], [UIColor labelColor]));
 
     ASStackLayoutSpec *authorTextStack = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionVertical
                                                                           spacing:1.0
@@ -960,6 +1858,207 @@ static id ApolloLPBuildBlueskyPostCardSpec(ASDisplayNode *hostNode, NSURL *url, 
     return ApolloLPMeasuredWrapper(card, insetClass);
 }
 
+static BOOL ApolloLPIsRedditUserPreview(NSURL *url, ApolloLinkPreview *preview) {
+    return ApolloLPIsRedditUserProfileURL(url)
+        && [preview.previewKind isEqualToString:@"reddit-user-profile"]
+        && (preview.title.length > 0 || preview.authorHandle.length > 0);
+}
+
+static NSString *ApolloLPRedditUserHandleText(ApolloLinkPreview *preview) {
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : preview.title;
+    if (handle.length == 0) return @"Reddit profile";
+    return [handle hasPrefix:@"u/"] ? handle : [@"u/" stringByAppendingString:handle];
+}
+
+static BOOL ApolloLPShouldUseBannedUserPresentation(NSURL *url, ApolloLinkPreview *preview) {
+    NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (username.length == 0 && preview.authorHandle.length > 0) {
+        username = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (ApolloBannedProfileCachedIsSuspended(username)) return YES;
+    return [preview.desc isEqualToString:ApolloBannedProfileBannedDescriptionText()];
+}
+
+static void ApolloLPApplyBannedUserAvatarIfNeeded(ASNetworkImageNode *avatarNode, NSURL *url, ApolloLinkPreview *preview) {
+    if (!avatarNode || !ApolloLPShouldUseBannedUserPresentation(url, preview)) return;
+    UIImage *icon = ApolloBannedProfileIconImage();
+    if (!icon) return;
+    avatarNode.URL = nil;
+    avatarNode.image = icon;
+    if ([avatarNode respondsToSelector:@selector(setDefaultImage:)]) {
+        avatarNode.defaultImage = icon;
+    }
+    avatarNode.backgroundColor = nil;
+}
+
+static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview, NSString *variant) {
+    NSDictionary *bundle = ApolloLPPreparedNodeBundle(hostNode, url, preview, variant);
+    if (!bundle) return nil;
+
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
+    ASTextNode *siteNode = bundle[@"site"];
+    ASTextNode *titleNode = bundle[@"title"];
+    ASTextNode *descriptionNode = bundle[@"description"];
+    ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
+
+    Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
+    Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
+    Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
+    if (!stackClass || !insetClass) return nil;
+
+    NSString *handleText = ApolloLPRedditUserHandleText(preview);
+    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : handleText);
+    BOOL isBannedUser = ApolloLPShouldUseBannedUserPresentation(url, preview);
+    NSString *aboutText = isBannedUser ? ApolloBannedProfileBannedDescriptionText() : (preview.desc.length > 0 ? preview.desc : handleText);
+    NSURL *avatarURL = isBannedUser ? nil : (preview.avatarURL ?: preview.imageURL);
+
+    NSString *cardUsername = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+    if (cardUsername.length == 0) {
+        cardUsername = ApolloLPNormalizedRedditUsername(preview.authorHandle);
+    }
+    if (cardUsername.length > 0) {
+        static NSMutableSet<NSString *> *sLoggedRedditUserCardStates;
+        static dispatch_once_t sLoggedRedditUserCardStatesOnce;
+        dispatch_once(&sLoggedRedditUserCardStatesOnce, ^{
+            sLoggedRedditUserCardStates = [NSMutableSet set];
+        });
+        NSString *logKey = cardUsername.lowercaseString;
+        if (![sLoggedRedditUserCardStates containsObject:logKey]) {
+            [sLoggedRedditUserCardStates addObject:logKey];
+            ApolloLog(@"[BannedProfile] reddit-user card u/%@ cachedSuspended=%@ previewBanned=%@",
+                      cardUsername,
+                      ApolloBannedProfileCachedIsSuspended(cardUsername) ? @"YES" : @"NO",
+                      isBannedUser ? @"YES" : @"NO");
+        }
+    }
+
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
+    backgroundNode.cornerRadius = 10.0;
+    backgroundNode.clipsToBounds = YES;
+
+    if (isBannedUser) {
+        ApolloLPApplyBannedUserAvatarIfNeeded(avatarNode, url, preview);
+    } else {
+        ApolloLPSetNetworkImageURLPreservingImage(avatarNode, avatarURL);
+        ApolloLPSetImageNodeBackgroundForURL(avatarNode, avatarURL);
+        ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
+    }
+    avatarNode.contentMode = UIViewContentModeScaleAspectFill;
+    avatarNode.cornerRadius = 22.0;
+    avatarNode.clipsToBounds = YES;
+    ApolloLPApplyStyleSize([avatarNode style], CGSizeMake(44.0, 44.0));
+
+    siteNode.maximumNumberOfLines = 1;
+    titleNode.maximumNumberOfLines = 1;
+    descriptionNode.maximumNumberOfLines = 2;
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString(handleText, [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(displayName, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(aboutText, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+
+    NSMutableArray *textChildren = [NSMutableArray array];
+    if (titleNode.attributedText.length > 0) [textChildren addObject:titleNode];
+    if (siteNode.attributedText.length > 0) [textChildren addObject:siteNode];
+    if (descriptionNode.attributedText.length > 0 && ![aboutText isEqualToString:handleText]) [textChildren addObject:descriptionNode];
+    if (textChildren.count == 0) return nil;
+
+    ASStackLayoutSpec *textStack = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionVertical
+                                                                    spacing:2.0
+                                                             justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                                 alignItems:ApolloLinkPreviewStackAlignItemsStretch
+                                                                   children:textChildren];
+    [[textStack style] setValue:@1.0 forKey:@"flexShrink"];
+
+    ASStackLayoutSpec *row = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionHorizontal
+                                                              spacing:10.0
+                                                       justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                           alignItems:ApolloLinkPreviewStackAlignItemsCenter
+                                                             children:@[avatarNode, textStack]];
+    ASInsetLayoutSpec *contentInset = [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0) child:row];
+    id card = ApolloLPBackgroundWrappedSpec(contentInset, backgroundNode, backgroundClass);
+    return ApolloLPMeasuredWrapper(card, insetClass);
+}
+
+static BOOL ApolloLPIsRedditSubredditPreview(NSURL *url, ApolloLinkPreview *preview) {
+    return ApolloLPIsRedditSubredditURL(url)
+        && [preview.previewKind isEqualToString:@"reddit-subreddit"]
+        && (preview.title.length > 0 || preview.authorHandle.length > 0);
+}
+
+static NSString *ApolloLPRedditSubredditHandleText(ApolloLinkPreview *preview) {
+    NSString *handle = preview.authorHandle.length > 0 ? preview.authorHandle : preview.title;
+    if (handle.length == 0) return @"Reddit community";
+    NSString *normalized = [handle hasPrefix:@"r/"] ? handle : [@"r/" stringByAppendingString:handle];
+    NSString *members = ApolloLPCleanDisplayText(preview.postText);
+    if (members.length == 0) return normalized;
+    return [NSString stringWithFormat:@"%@ · %@", normalized, members];
+}
+
+static id ApolloLPBuildRedditSubredditCardSpec(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview, NSString *variant) {
+    NSDictionary *bundle = ApolloLPPreparedNodeBundle(hostNode, url, preview, variant);
+    if (!bundle) return nil;
+
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
+    ASTextNode *siteNode = bundle[@"site"];
+    ASTextNode *titleNode = bundle[@"title"];
+    ASTextNode *descriptionNode = bundle[@"description"];
+    ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, YES);
+
+    Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
+    Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
+    Class backgroundClass = ApolloLPClass(@"ASBackgroundLayoutSpec");
+    if (!stackClass || !insetClass) return nil;
+
+    NSString *handleText = ApolloLPRedditSubredditHandleText(preview);
+    NSString *displayName = preview.authorDisplayName.length > 0 ? preview.authorDisplayName : (preview.title.length > 0 ? preview.title : handleText);
+    NSString *aboutText = preview.desc.length > 0 ? preview.desc : handleText;
+    NSURL *avatarURL = preview.avatarURL ?: preview.imageURL;
+
+    ApolloLPApplyCardBackgroundColor(hostNode, backgroundNode, url, NO);
+    backgroundNode.cornerRadius = 10.0;
+    backgroundNode.clipsToBounds = YES;
+
+    ApolloLPSetNetworkImageURLPreservingImage(avatarNode, avatarURL);
+    ApolloLPSetImageNodeBackgroundForURL(avatarNode, avatarURL);
+    ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
+    avatarNode.contentMode = UIViewContentModeScaleAspectFill;
+    avatarNode.cornerRadius = 22.0;
+    avatarNode.clipsToBounds = YES;
+    ApolloLPApplyStyleSize([avatarNode style], CGSizeMake(44.0, 44.0));
+
+    siteNode.maximumNumberOfLines = 1;
+    titleNode.maximumNumberOfLines = 1;
+    descriptionNode.maximumNumberOfLines = 2;
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString(handleText, [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(displayName, [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor labelColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(aboutText, [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor secondaryLabelColor]));
+
+    NSMutableArray *textChildren = [NSMutableArray array];
+    if (titleNode.attributedText.length > 0) [textChildren addObject:titleNode];
+    if (siteNode.attributedText.length > 0) [textChildren addObject:siteNode];
+    if (descriptionNode.attributedText.length > 0 && ![aboutText isEqualToString:handleText]) [textChildren addObject:descriptionNode];
+    if (textChildren.count == 0) return nil;
+
+    ASStackLayoutSpec *textStack = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionVertical
+                                                                    spacing:2.0
+                                                             justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                                 alignItems:ApolloLinkPreviewStackAlignItemsStretch
+                                                                   children:textChildren];
+    [[textStack style] setValue:@1.0 forKey:@"flexShrink"];
+
+    ASStackLayoutSpec *row = [stackClass stackLayoutSpecWithDirection:ApolloLinkPreviewStackDirectionHorizontal
+                                                              spacing:10.0
+                                                       justifyContent:ApolloLinkPreviewStackJustifyContentStart
+                                                           alignItems:ApolloLinkPreviewStackAlignItemsCenter
+                                                             children:@[avatarNode, textStack]];
+    ASInsetLayoutSpec *contentInset = [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0) child:row];
+    id card = ApolloLPBackgroundWrappedSpec(contentInset, backgroundNode, backgroundClass);
+    return ApolloLPMeasuredWrapper(card, insetClass);
+}
+
 static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, ApolloLPContext context, NSString *variant) {
     ApolloLinkPreview *preview = [ApolloLinkPreview new];
     preview.siteName = ApolloLPHost(url);
@@ -970,10 +2069,14 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     if (!bundle) return nil;
 
     ASNetworkImageNode *imageNode = bundle[@"image"];
+    ASNetworkImageNode *avatarNode = bundle[@"avatar"];
     ASTextNode *siteNode = bundle[@"site"];
     ASTextNode *titleNode = bundle[@"title"];
     ASTextNode *descriptionNode = bundle[@"description"];
     ASDisplayNode *backgroundNode = bundle[@"background"];
+
+    ApolloLPSetAvatarNodeVisible(avatarNode, NO);
+    ApolloLPLogOncePerHost(ApolloLPHost(url), @"hid-orphan-avatar-placeholder");
 
     Class stackClass = ApolloLPClass(@"ASStackLayoutSpec");
     Class insetClass = ApolloLPClass(@"ASInsetLayoutSpec");
@@ -982,16 +2085,32 @@ static id ApolloLPBuildPlaceholderSpec(ASDisplayNode *hostNode, NSURL *url, Apol
     if (!stackClass || !insetClass) return nil;
 
     UIColor *placeholder = [UIColor tertiarySystemFillColor];
-    imageNode.URL = nil;
-    imageNode.backgroundColor = placeholder;
+    ApolloLPSetNetworkImageURLPreservingImage(imageNode, nil);
+    ApolloLPSetImageNodeBackgroundForURL(imageNode, nil);
     imageNode.cornerRadius = context == ApolloLPContextSelfText ? 10.0 : 8.0;
-    siteNode.attributedText = ApolloLPAttributedString([preview.siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]);
     NSUInteger titleLines = context == ApolloLPContextSelfText ? 2 : 1;
     NSUInteger descriptionLines = context == ApolloLPContextSelfText ? 1 : 2;
     titleNode.maximumNumberOfLines = titleLines;
     descriptionNode.maximumNumberOfLines = context == ApolloLPContextSelfText ? descriptionLines : 1;
-    titleNode.attributedText = ApolloLPAttributedString(ApolloLPPlaceholderLines(titleLines, YES), context == ApolloLPContextSelfText ? [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold] : [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], placeholder);
-    descriptionNode.attributedText = ApolloLPAttributedString(ApolloLPPlaceholderLines(descriptionLines, NO), [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], placeholder);
+    ApolloLPSetTextNodeAttributedTextIfChanged(siteNode, ApolloLPAttributedString([preview.siteName uppercaseString], [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold], [UIColor secondaryLabelColor]));
+    // Render the placeholder Ms with clearColor text so they act as an
+    // invisible width hint, then paint the text node backgroundColor with
+    // the placeholder gray so each row appears as a solid skeleton bar.
+    // Without this, the Ms render as visible gray text characters because
+    // ASTextNode's backgroundColor defaults to clear and only the foreground
+    // glyphs get drawn in `tertiarySystemFillColor`.
+    ApolloLPSetTextNodeAttributedTextIfChanged(titleNode, ApolloLPAttributedString(ApolloLPPlaceholderLines(titleLines, YES), context == ApolloLPContextSelfText ? [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold] : [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold], [UIColor clearColor]));
+    ApolloLPSetTextNodeAttributedTextIfChanged(descriptionNode, ApolloLPAttributedString(ApolloLPPlaceholderLines(descriptionLines, NO), [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular], [UIColor clearColor]));
+    titleNode.backgroundColor = placeholder;
+    titleNode.cornerRadius = 3.0;
+    titleNode.clipsToBounds = YES;
+    descriptionNode.backgroundColor = placeholder;
+    descriptionNode.cornerRadius = 3.0;
+    descriptionNode.clipsToBounds = YES;
+    // Hide the placeholder Ms from VoiceOver / Translate / accessibility
+    // tools so they don't read "M M M M..." while metadata is loading.
+    titleNode.isAccessibilityElement = NO;
+    descriptionNode.isAccessibilityElement = NO;
 
     if (context == ApolloLPContextSelfText && ratioClass) {
         NSMutableArray *children = [NSMutableArray array];
@@ -1332,6 +2451,50 @@ static ApolloLPRegisteredRecolorResult ApolloLPRecolorRegisteredLinkPreviewBackg
     return result;
 }
 
+static NSUInteger ApolloLPInvalidateRegisteredLinkPreviewNodes(NSString *reason) {
+    NSArray *nodes = ApolloLPRegisteredLinkPreviewNodesSnapshot();
+    NSUInteger invalidated = 0;
+    for (id object in nodes) {
+        if (![object respondsToSelector:@selector(supernode)] && ![object respondsToSelector:@selector(subnodes)]) continue;
+        ApolloLPTriggerRelayoutForHost((ASDisplayNode *)object, reason ?: @"registered-refresh");
+        invalidated++;
+    }
+    return invalidated;
+}
+
+static BOOL ApolloLPURLsMatch(NSURL *lhs, NSURL *rhs) {
+    if (![lhs isKindOfClass:[NSURL class]] || ![rhs isKindOfClass:[NSURL class]]) return NO;
+    return [lhs.absoluteString isEqualToString:rhs.absoluteString];
+}
+
+static BOOL ApolloLPRegisteredNodeHasPreviewURL(ASDisplayNode *node, NSURL *url) {
+    if (!node || !url) return NO;
+    NSDictionary<NSString *, NSDictionary *> *bundles = objc_getAssociatedObject(node, &kApolloLinkPreviewNodesKey);
+    if (![bundles isKindOfClass:[NSDictionary class]]) return NO;
+
+    for (NSDictionary *bundle in bundles.allValues) {
+        if (![bundle isKindOfClass:[NSDictionary class]]) continue;
+        NSURL *bundleURL = bundle[@"url"];
+        if (ApolloLPURLsMatch(bundleURL, url)) return YES;
+    }
+    return NO;
+}
+
+static NSUInteger ApolloLPInvalidateRegisteredLinkPreviewNodesForURL(NSURL *url, NSString *reason) {
+    if (!url) return 0;
+
+    NSArray *nodes = ApolloLPRegisteredLinkPreviewNodesSnapshot();
+    NSUInteger invalidated = 0;
+    for (id object in nodes) {
+        if (![object respondsToSelector:@selector(supernode)] && ![object respondsToSelector:@selector(subnodes)]) continue;
+        ASDisplayNode *node = (ASDisplayNode *)object;
+        if (!ApolloLPRegisteredNodeHasPreviewURL(node, url)) continue;
+        ApolloLPTriggerRelayoutForHost(node, reason ?: ApolloLPHost(url));
+        invalidated++;
+    }
+    return invalidated;
+}
+
 static NSUInteger ApolloLPRecolorLinkPreviewBackgroundsInTree(id object, NSUInteger depth, NSHashTable *visitedObjects) {
     if (!object || depth == 0) return 0;
     if ([visitedObjects containsObject:object]) return 0;
@@ -1447,8 +2610,11 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
     dispatch_async(dispatch_get_main_queue(), ^{
         BOOL cardColorRefresh = [areaName isEqualToString:@"card-color"];
         ApolloLPRegisteredRecolorResult registeredResult = {0, 0};
+        NSUInteger registeredInvalidated = 0;
         if (cardColorRefresh) {
             registeredResult = ApolloLPRecolorRegisteredLinkPreviewBackgrounds();
+        } else {
+            registeredInvalidated = ApolloLPInvalidateRegisteredLinkPreviewNodes(areaName ?: @"mode-change");
         }
 
         NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
@@ -1501,23 +2667,108 @@ static void ApolloLPRefreshVisibleLayoutsForModeChange(NSString *areaName) {
                       (unsigned long)registeredResult.recolored,
                       (unsigned long)visibleRecolored);
         } else {
-            ApolloLog(@"[LinkPreviews] V12-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu",
-                      areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes);
+            ApolloLog(@"[LinkPreviews] V14-mode-change-layout-refresh area=%@ scrollViews=%lu linkNodes=%lu registeredNodes=%lu",
+                      areaName ?: @"unknown", (unsigned long)refreshCount, (unsigned long)invalidatedNodes, (unsigned long)registeredInvalidated);
         }
     });
 }
 
-static void ApolloLPScheduleCacheLayoutRefresh(NSString *host) {
-    static BOOL refreshPending = NO;
-    if (refreshPending) return;
-
-    refreshPending = YES;
-    NSString *hostCopy = [host copy];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        refreshPending = NO;
-        ApolloLog(@"[LinkPreviews] V12-cache-layout-refresh host=%@", hostCopy ?: @"(nohost)");
-        ApolloLPRefreshVisibleLayoutsForModeChange(@"cache-update");
+static NSMutableSet<NSString *> *ApolloLPPendingTranslationRefreshURLs(void) {
+    static NSMutableSet<NSString *> *urls;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        urls = [NSMutableSet set];
     });
+    return urls;
+}
+
+// Translation results post one notification per field (title, description,
+// site name, etc.) from ApolloTranslation.xm. Each notification used to
+// schedule its own debounced URL refresh, so a single card commonly got two
+// `V15-translation-url-refresh` cascades a few hundred ms apart (one for the
+// title and one for the description), each of which forced a layout pass on
+// the already-rendered card. Coalesce them: when a refresh is pending for a
+// URL, just record the latest enqueue time and the firing block reschedules
+// itself once if a newer enqueue arrived after it was originally armed.
+static NSMutableDictionary<NSString *, NSNumber *> *ApolloLPLatestTranslationRefreshEnqueueTimes(void) {
+    static NSMutableDictionary<NSString *, NSNumber *> *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = [NSMutableDictionary dictionary];
+    });
+    return map;
+}
+
+static void ApolloLPFireTranslationLayoutRefreshForURL(NSURL *url, NSString *urlKey);
+
+static void ApolloLPArmTranslationLayoutRefreshForURL(NSURL *url, NSString *urlKey, NSTimeInterval delay) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSNumber *latest = nil;
+        @synchronized (ApolloLPLatestTranslationRefreshEnqueueTimes()) {
+            latest = ApolloLPLatestTranslationRefreshEnqueueTimes()[urlKey];
+        }
+
+        NSTimeInterval latestEnqueue = latest.doubleValue;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        // If a newer enqueue arrived less than 250 ms before now, give it a
+        // second to coalesce more results (title + description typically
+        // complete within ~150 ms of each other).
+        if (latestEnqueue > 0.0 && (now - latestEnqueue) < 0.25) {
+            ApolloLPArmTranslationLayoutRefreshForURL(url, urlKey, 0.25);
+            return;
+        }
+
+        @synchronized (ApolloLPLatestTranslationRefreshEnqueueTimes()) {
+            [ApolloLPLatestTranslationRefreshEnqueueTimes() removeObjectForKey:urlKey];
+        }
+        @synchronized (ApolloLPPendingTranslationRefreshURLs()) {
+            [ApolloLPPendingTranslationRefreshURLs() removeObject:urlKey];
+        }
+
+        ApolloLPFireTranslationLayoutRefreshForURL(url, urlKey);
+    });
+}
+
+static void ApolloLPFireTranslationLayoutRefreshForURL(NSURL *url, NSString *urlKey) {
+    NSUInteger invalidated = ApolloLPInvalidateRegisteredLinkPreviewNodesForURL(url, @"translation-update-url");
+    ApolloLog(@"[LinkPreviews] V15-translation-url-refresh host=%@ invalidated=%lu",
+              ApolloLPHost(url) ?: @"(nohost)",
+              (unsigned long)invalidated);
+}
+
+static void ApolloLPScheduleTranslationLayoutRefreshForURL(NSURL *url) {
+    if (!url.absoluteString.length) {
+        static BOOL globalRefreshPending = NO;
+        if (globalRefreshPending) return;
+        globalRefreshPending = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            globalRefreshPending = NO;
+            ApolloLPRefreshVisibleLayoutsForModeChange(@"translation-settings-update");
+        });
+        return;
+    }
+
+    NSString *urlKey = [url.absoluteString copy];
+    NSNumber *nowNumber = @([NSDate timeIntervalSinceReferenceDate]);
+
+    BOOL alreadyPending = NO;
+    @synchronized (ApolloLPLatestTranslationRefreshEnqueueTimes()) {
+        ApolloLPLatestTranslationRefreshEnqueueTimes()[urlKey] = nowNumber;
+    }
+    @synchronized (ApolloLPPendingTranslationRefreshURLs()) {
+        alreadyPending = [ApolloLPPendingTranslationRefreshURLs() containsObject:urlKey];
+        if (!alreadyPending) [ApolloLPPendingTranslationRefreshURLs() addObject:urlKey];
+    }
+
+    if (alreadyPending) {
+        // Refresh already scheduled. The fire block re-checks the latest
+        // enqueue time and will reschedule once if a newer enqueue arrives
+        // within 250 ms of fire time, so this enqueue just updates the
+        // timestamp and falls through.
+        return;
+    }
+
+    ApolloLPArmTranslationLayoutRefreshForURL(url, urlKey, 0.30);
 }
 
 // Round 4 diagnostic flag: throttles the per-call logging so a feed scroll
@@ -1571,16 +2822,117 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     return [NSString stringWithFormat:@"%@-%@-mode%ld-%@", placeholder ? @"placeholder" : @"final", areaName, (long)mode, contextName];
 }
 
+static NSString *ApolloLPRenderSignature(NSURL *url, ApolloLinkPreview *preview, NSString *variant) {
+    CGSize imageSize = preview.imageSize;
+    return [NSString stringWithFormat:@"%@|%@|%ld|%@|%@|%@|%@|%@|%@|%@|%@|%@|%.1fx%.1f|%d",
+            variant ?: @"",
+            url.absoluteString ?: @"",
+            (long)sLinkPreviewCardColor,
+            ApolloLPDisplayTitleForPreview(preview) ?: @"",
+            ApolloLPDisplayDescriptionForPreview(preview) ?: @"",
+            ApolloLPCleanDisplayText(preview.siteName) ?: @"",
+            preview.imageURL.absoluteString ?: @"",
+            preview.avatarURL.absoluteString ?: @"",
+            preview.authorHandle ?: @"",
+            preview.authorDisplayName ?: @"",
+            preview.postText ?: @"",
+            preview.previewKind ?: @"",
+            imageSize.width,
+            imageSize.height,
+            preview.imageIsFallbackIcon];
+}
+
+static NSMutableDictionary<NSString *, NSNumber *> *ApolloLPConsecutiveDuplicateRenderCounts(void) {
+    static NSMutableDictionary<NSString *, NSNumber *> *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = [NSMutableDictionary dictionary];
+    });
+    return map;
+}
+
+static BOOL ApolloLPMarkRenderSignatureIfChanged(ASDisplayNode *hostNode, NSString *variant, NSString *signature, NSString *host) {
+    if (!hostNode || variant.length == 0 || signature.length == 0) return YES;
+
+    NSMutableDictionary<NSString *, NSString *> *signatures = objc_getAssociatedObject(hostNode, &kApolloLinkPreviewRenderSignaturesKey);
+    if (![signatures isKindOfClass:[NSMutableDictionary class]]) {
+        signatures = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(hostNode, &kApolloLinkPreviewRenderSignaturesKey, signatures, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    NSString *lastSignature = signatures[variant];
+    NSString *countKey = host.length > 0 ? host : @"(nohost)";
+    if ([lastSignature isEqualToString:signature]) {
+        ApolloLPLogOncePerHost(host, @"duplicate-render-signature");
+        // Track consecutive duplicate-signature renders per host so a
+        // follow-up log can confirm that re-entering a thread is no longer
+        // producing extra paints. The "stable" log fires at most once per
+        // host per session, on the third consecutive identical render.
+        @synchronized (ApolloLPConsecutiveDuplicateRenderCounts()) {
+            NSUInteger current = ApolloLPConsecutiveDuplicateRenderCounts()[countKey].unsignedIntegerValue;
+            current += 1;
+            ApolloLPConsecutiveDuplicateRenderCounts()[countKey] = @(current);
+            if (current == 3) {
+                ApolloLPLogOncePerHost(host, @"V17-thread-render-stable");
+            }
+        }
+        return NO;
+    }
+
+    signatures[variant] = signature;
+    @synchronized (ApolloLPConsecutiveDuplicateRenderCounts()) {
+        [ApolloLPConsecutiveDuplicateRenderCounts() removeObjectForKey:countKey];
+    }
+    return YES;
+}
+
+static ApolloLinkPreview *ApolloLPPreviewByApplyingTranslation(ASDisplayNode *hostNode, NSURL *url, ApolloLinkPreview *preview) {
+    if (!preview || !ApolloRichPreviewTranslationShouldTranslateForNode(hostNode)) return preview;
+
+    NSString *sourceTitle = ApolloLPDisplayTitleForPreview(preview);
+    NSString *sourceDesc = ApolloLPDisplayDescriptionForPreview(preview);
+    NSString *translatedTitle = ApolloRichPreviewTranslatedTextIfAvailable(url, @"title", sourceTitle, hostNode);
+    NSString *translatedDesc = ApolloRichPreviewTranslatedTextIfAvailable(url, @"description", sourceDesc, hostNode);
+    if (translatedTitle.length == 0 && translatedDesc.length == 0) return preview;
+
+    ApolloLinkPreview *displayPreview = [ApolloLinkPreview previewFromDictionary:[preview dictionaryRepresentation]];
+    if (!displayPreview) return preview;
+    displayPreview.title = sourceTitle;
+    displayPreview.desc = sourceDesc;
+    if (translatedTitle.length > 0) displayPreview.title = translatedTitle;
+    if (translatedDesc.length > 0) displayPreview.desc = translatedDesc;
+    return displayPreview;
+}
+
+static ASLayoutSpec *ApolloLPEmptyLayoutSpec(void) {
+    Class layoutSpecCls = ApolloLPClass(@"ASLayoutSpec");
+    if (!layoutSpecCls) return nil;
+
+    ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
+    ApolloLPApplyStyleSize([empty style], CGSizeZero);
+    return empty;
+}
+
+static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL *url, id nativeSpec) {
+    NSString *redditUsername = ApolloLPRedditUsernameFromProfileURL(url);
+    if (redditUsername.length == 0 || !ApolloBannedProfileCachedIsSuspended(redditUsername)) {
+        return nativeSpec;
+    }
+    return ApolloBannedProfileWrapLinkButtonSpecWithBannedHint(linkButtonNode, nativeSpec, redditUsername);
+}
+
 %hook _TtC6Apollo14LinkButtonNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
-    if (ApolloLPAllModesDisabled()) {
-        ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
-    }
-
     NSString *urlString = ApolloGetLinkButtonNodeURLString(self);
     NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+    ApolloLPPrefetchRedditUserProfileIfNeeded(url);
+
+    if (ApolloLPAllModesDisabled()) {
+        ApolloLPRestoreHostShell((ASDisplayNode *)self);
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
+    }
+
     if (!url) {
         ApolloLPLogOncePerHost(NSStringFromClass([(id)self class]), @"no-url");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
@@ -1589,11 +2941,18 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
 
     NSString *host = ApolloLPHost(url);
     ApolloLPArea area = ApolloLPAreaForLinkButton((ASDisplayNode *)self);
+    if (ApolloLPIsImageChestAlbumURL(url)) {
+        ApolloLPLogOncePerHost(host, @"suppress-imagechest-card");
+        ApolloLPRestoreHostShell((ASDisplayNode *)self);
+        ASLayoutSpec *empty = ApolloLPEmptyLayoutSpec();
+        return empty ?: %orig;
+    }
+
     NSInteger selectedMode = ApolloLPModeForArea(area);
     if (selectedMode == ApolloLinkPreviewModeOff) {
         ApolloLPLogOncePerHost(host, area == ApolloLPAreaComments ? @"comments-disabled" : @"body-disabled");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
     if (ApolloLPShouldDeferToInlineMedia(url)) {
@@ -1606,14 +2965,33 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
         return %orig;
     }
+    ApolloLPInstallContextMenuForNode((ASDisplayNode *)self, url);
 
     ApolloLinkPreview *cached = [[ApolloLinkPreviewCache sharedCache] cachedPreviewForURL:url];
     if (cached && ApolloLPIsBlueskyPostURL(url) && !ApolloLPIsBlueskyPostPreview(url, cached)) {
         ApolloLPLogOncePerHost(host, @"stale-bluesky-inline-refetch");
         cached = nil;
     }
+    if (cached && (ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url))) {
+        BOOL staleRedditUser = ApolloLPIsRedditUserProfileURL(url)
+            && ![cached.previewKind isEqualToString:@"reddit-user-profile"];
+        BOOL staleRedditSubreddit = ApolloLPIsRedditSubredditURL(url)
+            && ![cached.previewKind isEqualToString:@"reddit-subreddit"];
+        BOOL staleRedditUserSuspension = ApolloLPIsRedditUserProfileURL(url)
+            && ApolloLPRedditUserPreviewNeedsSuspensionRefetch(url, cached);
+        if (![cached hasUsefulMetadata] || staleRedditUser || staleRedditSubreddit || staleRedditUserSuspension) {
+            ApolloLPLogOncePerHost(host, staleRedditUserSuspension ? @"stale-reddit-user-suspension-refetch" : (staleRedditUser ? @"stale-reddit-user-refetch" : (staleRedditSubreddit ? @"stale-reddit-subreddit-refetch" : @"stale-reddit-empty-refetch")));
+            if (staleRedditUserSuspension) {
+                NSString *username = ApolloLPNormalizedRedditUsername(ApolloLPRedditUsernameFromProfileURL(url));
+                if (username.length > 0) {
+                    [[ApolloLinkPreviewCache sharedCache] removePreviewsForRedditUsername:username];
+                }
+            }
+            cached = nil;
+        }
+    }
     if (!cached) {
-        BOOL compactPlaceholder = selectedMode == ApolloLinkPreviewModeCompact || ApolloLPShouldUseCompactPlaceholder(url);
+        BOOL compactPlaceholder = selectedMode == ApolloLinkPreviewModeCompact || ApolloLPShouldUseCompactPlaceholder(url) || ApolloLPIsRedditUserProfileURL(url) || ApolloLPIsRedditSubredditURL(url);
         ApolloLPContext placeholderContext = compactPlaceholder ? ApolloLPContextCompact : ApolloLPContextSelfText;
         NSNumber *inFlight = objc_getAssociatedObject(self, &kApolloLinkPreviewFetchInFlightKey);
         if (![inFlight boolValue]) {
@@ -1630,12 +3008,23 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
                     ASDisplayNode *strongSelf = weakSelf;
                     if (!strongSelf) return;
                     objc_setAssociatedObject(strongSelf, &kApolloLinkPreviewFetchInFlightKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                    ApolloLPTriggerRelayoutForHost(strongSelf, host);
-                    ApolloLPScheduleCacheLayoutRefresh(host);
+                    if (preview) {
+                        NSUInteger invalidated = ApolloLPInvalidateRegisteredLinkPreviewNodesForURL(url, @"cache-update-url");
+                        ApolloLog(@"[LinkPreviews] V16-cache-url-refresh host=%@ invalidated=%lu",
+                                  host ?: @"(nohost)",
+                                  (unsigned long)invalidated);
+                        if (invalidated == 0) {
+                            ApolloLPTriggerRelayoutForHost(strongSelf, host);
+                        }
+                    } else {
+                        ApolloLPTriggerRelayoutForHost(strongSelf, host);
+                    }
                 });
             }];
         }
-        id placeholder = ApolloLPBuildPlaceholderSpec((ASDisplayNode *)self, url, placeholderContext, ApolloLPVariant(area, selectedMode, placeholderContext, YES));
+        NSString *placeholderVariant = ApolloLPVariant(area, selectedMode, placeholderContext, YES);
+        ApolloLPMarkRenderSignatureIfChanged((ASDisplayNode *)self, placeholderVariant, ApolloLPRenderSignature(url, nil, placeholderVariant), host);
+        id placeholder = ApolloLPBuildPlaceholderSpec((ASDisplayNode *)self, url, placeholderContext, placeholderVariant);
         if (placeholder) {
             objc_setAssociatedObject(self, &kApolloLinkPreviewRenderedPlaceholderKey, @(placeholderContext), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLPClearHostShell((ASDisplayNode *)self);
@@ -1645,30 +3034,39 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
             return placeholder;
         }
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
     if (![cached hasUsefulMetadata]) {
         ApolloLPLogOncePerHost(host, @"cache-hit-empty");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
-        return %orig;
+        return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
     }
 
-    BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, cached);
-    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ApolloLPContextForMode(selectedMode, cached);
-    ApolloLPLogMetadataOnce(host, cached, area, selectedMode, context);
-    if (!isBlueskyPost && cached.imageIsFallbackIcon) {
+    BOOL isRedditUser = ApolloLPIsRedditUserPreview(url, cached);
+    BOOL isRedditSubreddit = ApolloLPIsRedditSubredditPreview(url, cached);
+    ApolloLinkPreview *displayPreview = (isRedditUser || isRedditSubreddit) ? cached : ApolloLPPreviewByApplyingTranslation((ASDisplayNode *)self, url, cached);
+    BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, displayPreview);
+    ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ((isRedditUser || isRedditSubreddit) ? ApolloLPContextCompact : ApolloLPContextForMode(selectedMode, displayPreview));
+    ApolloLPLogMetadataOnce(host, displayPreview, area, selectedMode, context);
+    if (!isBlueskyPost && !isRedditUser && !isRedditSubreddit && displayPreview.imageIsFallbackIcon) {
         ApolloLPRememberCompactPlaceholderHost(url);
         ApolloLPLogOncePerHost(host, @"fallback-icon-compact");
-    } else if (!isBlueskyPost && selectedMode == ApolloLinkPreviewModeFull && context == ApolloLPContextCompact) {
+    } else if (!isBlueskyPost && !isRedditUser && !isRedditSubreddit && selectedMode == ApolloLinkPreviewModeFull && context == ApolloLPContextCompact) {
         ApolloLPRememberCompactPlaceholderHost(url);
         ApolloLPLogOncePerHost(host, @"full-fallback-compact");
     }
+    NSString *finalVariant = ApolloLPVariant(area, selectedMode, context, NO);
+    ApolloLPMarkRenderSignatureIfChanged((ASDisplayNode *)self, finalVariant, ApolloLPRenderSignature(url, displayPreview, finalVariant), host);
     id richSpec = isBlueskyPost
-        ? ApolloLPBuildBlueskyPostCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO))
+        ? ApolloLPBuildBlueskyPostCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
+        : isRedditUser
+        ? ApolloLPBuildRedditUserCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
+        : isRedditSubreddit
+        ? ApolloLPBuildRedditSubredditCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
         : (context == ApolloLPContextSelfText)
-        ? ApolloLPBuildHeroCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO))
-        : ApolloLPBuildCompactCardSpec((ASDisplayNode *)self, url, cached, ApolloLPVariant(area, selectedMode, context, NO));
+        ? ApolloLPBuildHeroCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant)
+        : ApolloLPBuildCompactCardSpec((ASDisplayNode *)self, url, displayPreview, finalVariant);
     if (richSpec) {
         NSNumber *renderedPlaceholder = objc_getAssociatedObject(self, &kApolloLinkPreviewRenderedPlaceholderKey);
         if (renderedPlaceholder) {
@@ -1690,13 +3088,13 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         }
         ApolloLPClearHostShell((ASDisplayNode *)self);
         ApolloLPLogOncePerHost(host, area == ApolloLPAreaComments ? @"area-comments" : @"area-body");
-        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"mode-bluesky-post" : (context == ApolloLPContextSelfText ? @"mode-full" : @"mode-compact"));
-        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"render-bluesky-post" : (context == ApolloLPContextSelfText ? @"render-hero" : @"render-compact"));
+        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"mode-bluesky-post" : (isRedditUser ? @"mode-reddit-user" : (isRedditSubreddit ? @"mode-reddit-subreddit" : (context == ApolloLPContextSelfText ? @"mode-full" : @"mode-compact"))));
+        ApolloLPLogOncePerHost(host, isBlueskyPost ? @"render-bluesky-post" : (isRedditUser ? @"render-reddit-user" : (isRedditSubreddit ? @"render-reddit-subreddit" : (context == ApolloLPContextSelfText ? @"render-hero" : @"render-compact"))));
         return richSpec;
     }
     ApolloLPLogOncePerHost(host, @"build-failed");
     ApolloLPRestoreHostShell((ASDisplayNode *)self);
-    return %orig;
+    return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
 }
 
 %end
@@ -1712,6 +3110,20 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
         NSString *areaName = [notification.userInfo[@"area"] isKindOfClass:[NSString class]] ? notification.userInfo[@"area"] : @"unknown";
         ApolloLPRefreshVisibleLayoutsForModeChange(areaName);
     }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloRichPreviewTranslationDidUpdateNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *notification) {
+        NSURL *url = [notification.userInfo[@"url"] isKindOfClass:[NSURL class]] ? notification.userInfo[@"url"] : nil;
+        NSString *reason = [notification.userInfo[@"reason"] isKindOfClass:[NSString class]] ? notification.userInfo[@"reason"] : @"unknown";
+        if (url) {
+            ApolloLPScheduleTranslationLayoutRefreshForURL(url);
+        } else if ([reason isEqualToString:@"settings-change"] || [reason isEqualToString:@"mode-toggle"]) {
+            ApolloLPScheduleTranslationLayoutRefreshForURL(nil);
+        } else {
+            ApolloLog(@"[LinkPreviews] V15-translation-refresh-ignored reason=%@", reason ?: @"unknown");
+        }
+    }];
 
     ApolloLog(@"[LinkPreviews] ctor: hook installed for _TtC6Apollo14LinkButtonNode bodyMode=%ld commentsMode=%ld cardColor=%ld", (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (long)sLinkPreviewCardColor);
     ApolloLog(@"[LinkPreviews] V5 polish active");
@@ -1724,4 +3136,6 @@ static NSString *ApolloLPVariant(ApolloLPArea area, NSInteger mode, ApolloLPCont
     ApolloLog(@"[LinkPreviews] V13 preset card colors and instant color refresh active");
     ApolloLog(@"[LinkPreviews] V12 cleanup hero sizing active");
     ApolloLog(@"[LinkPreviews] V12 hero image ratio cap 0.6 + nature/client-challenge bypass active");
+    ApolloLog(@"[LinkPreviews] V14 translation-aware metadata text active");
+    ApolloLog(@"[LinkPreviews] V15 targeted translation refresh active");
 }

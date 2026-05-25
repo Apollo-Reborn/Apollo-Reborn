@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=strip-substrate-arm64e.sh
+source "$SCRIPT_DIR/strip-substrate-arm64e.sh"
+
 IPA_PATH=""
 DEB_PATH=""
 OUTPUT_IPA=""
@@ -118,23 +122,118 @@ if [[ "${#dylibs[@]}" -eq 0 ]]; then
     exit 1
 fi
 
+declare -a ipa_loaded_dylibs=()
+while IFS= read -r loaded_path; do
+    [[ -z "$loaded_path" ]] && continue
+    ipa_loaded_dylibs+=("$(basename "$loaded_path")")
+done < <(otool -L "$executable_path" | tail -n +2 | awk '{print $1}' | grep '\.dylib$' || true)
+
+ipa_has_loaded_or_framework() {
+    local name="$1"
+    local item
+
+    for item in "${ipa_loaded_dylibs[@]}"; do
+        if [[ "$item" == "$name" ]]; then
+            return 0
+        fi
+    done
+
+    for framework_dylib in "$frameworks_dir"/*.dylib; do
+        [[ -f "$framework_dylib" ]] || continue
+        if [[ "$(basename "$framework_dylib")" == "$name" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+resolve_target_dylib_name() {
+    local source_name="$1"
+
+    if ipa_has_loaded_or_framework "$source_name"; then
+        printf '%s\n' "$source_name"
+        return 0
+    fi
+
+    case "$source_name" in
+        ApolloReborn.dylib)
+            if ipa_has_loaded_or_framework "ApolloImprovedCustomApi.dylib"; then
+                echo "Aliasing ApolloReborn.dylib -> ApolloImprovedCustomApi.dylib" >&2
+                printf '%s\n' "ApolloImprovedCustomApi.dylib"
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
+}
+
+apply_dylib_sideload_fixes() {
+    local dest_path="$1"
+    local target_name="$2"
+    local source_name="$3"
+
+    install_name_tool -id "@rpath/$target_name" "$dest_path" 2>/dev/null || true
+    install_name_tool -change \
+        "/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate" \
+        "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+        "$dest_path" 2>/dev/null || true
+    install_name_tool -change \
+        "/Library/MobileSubstrate/DynamicLibraries/$source_name" \
+        "@rpath/$target_name" \
+        "$dest_path" 2>/dev/null || true
+    if [[ "$source_name" != "$target_name" ]]; then
+        install_name_tool -change \
+            "/Library/MobileSubstrate/DynamicLibraries/$target_name" \
+            "@rpath/$target_name" \
+            "$dest_path" 2>/dev/null || true
+    fi
+}
+
+verify_dylib_substrate_linkage() {
+    local dest_path="$1"
+    if otool -L "$dest_path" | grep -Fq '/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate'; then
+        echo "Error: $dest_path still links jailbreak CydiaSubstrate path after install_name_tool."
+        return 1
+    fi
+    return 0
+}
+
 missing_loads=()
 for dylib in "${dylibs[@]}"; do
-    name="$(basename "$dylib")"
-    if ! otool -l "$executable_path" | /usr/bin/grep -F "$name" >/dev/null 2>&1 && [[ ! -f "$frameworks_dir/$name" ]]; then
-        missing_loads+=("$name")
+    source_name="$(basename "$dylib")"
+    target_name="$(resolve_target_dylib_name "$source_name" || true)"
+    if [[ -z "$target_name" ]]; then
+        missing_loads+=("$source_name")
         continue
     fi
-    cp "$dylib" "$frameworks_dir/$name"
-    install_name_tool -id "@rpath/$name" "$frameworks_dir/$name" 2>/dev/null || true
-    install_name_tool -change "/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate" "@rpath/CydiaSubstrate.framework/CydiaSubstrate" "$frameworks_dir/$name" 2>/dev/null || true
-    echo "Updated Frameworks/$name"
+
+    dest_path="$frameworks_dir/$target_name"
+    cp "$dylib" "$dest_path"
+    apply_dylib_sideload_fixes "$dest_path" "$target_name" "$source_name"
+    verify_dylib_substrate_linkage "$dest_path"
+    if [[ "$source_name" != "$target_name" ]]; then
+        echo "Updated Frameworks/$target_name (from deb $source_name)"
+    else
+        echo "Updated Frameworks/$target_name"
+    fi
 done
 
 if [[ "${#missing_loads[@]}" -gt 0 ]]; then
     echo "Error: IPA is not already prepared to load: ${missing_loads[*]}"
     echo "Use azule/cyan once for a truly stock IPA, then this local injector can update it deterministically."
     exit 2
+fi
+
+strip_arm64e_from_substrate_in_app "$app_bundle"
+
+resource_bundle="$tmpdir/deb/Library/Application Support/ApolloReborn/ApolloReborn.bundle"
+if [[ -d "$resource_bundle" ]]; then
+    resource_dest="$app_bundle/ApolloRebornResources"
+    mkdir -p "$resource_dest"
+    rsync -a "$resource_bundle/" "$resource_dest/"
+    echo "Copied ApolloReborn resources into app bundle"
 fi
 
 rm -f "$OUTPUT_IPA"

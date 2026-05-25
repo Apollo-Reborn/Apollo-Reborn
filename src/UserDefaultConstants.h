@@ -5,6 +5,7 @@ static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // performs refresh-token exchanges server-side.
 static NSString *const UDKeyRedditClientSecret = @"RedditApiClientSecret";
 static NSString *const UDKeyImgurClientId = @"ImgurApiClientId";
+static NSString *const UDKeyImageChestAPIToken = @"ImageChestAPIToken";
 static NSString *const UDKeyRedirectURI = @"RedirectURI";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
@@ -27,6 +28,7 @@ static NSString *const UDKeyProxyImgurDDG = @"ProxyImgurDDG";
 static NSString *const UDKeyImageUploadProvider = @"ImageUploadProvider";
 static NSString *const UDKeyShowUserAvatars = @"ShowUserAvatars";
 static NSString *const UDKeyUseProfileAvatarTabIcon = @"UseProfileAvatarTabIcon";
+static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 static NSString *const UDKeyAutoHideTabBarShowOnIdle = @"AutoHideTabBarShowOnIdle";
 // Render image URLs (i.redd.it, preview.redd.it, i.imgur.com, generic .png/.jpg/.jpeg/.webp)
 // inline within post selftext and comments instead of leaving them as plain text links.

@@ -4,6 +4,8 @@
 #import "ApolloState.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloLinkPreviewCache.h"
+#import "ApolloSubredditCustomBannerCache.h"
+#import "ApolloSubredditCustomIconCache.h"
 #import "UserDefaultConstants.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
@@ -39,6 +41,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRedditClientId = 0,
     TagRedditClientSecret,
     TagImgurClientId,
+    TagImageChestAPIToken,
     TagRedirectURI,
     TagUserAgent,
     TagTrendingSubredditsSource,
@@ -603,10 +606,10 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 7; // 5 text fields + Can't sign in? + Instructions
+        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
         case SectionGeneral: return 8;
         case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
-        case SectionSubreddits: return 6;
+        case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
         case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
         default: return 0;
@@ -782,8 +785,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     textField.text = text;
     textField.placeholder = placeholder;
-    textField.adjustsFontSizeToFitWidth = YES;
-    textField.minimumFontSize = 12;
+    if (tag == TagImageChestAPIToken) {
+        textField.textAlignment = NSTextAlignmentLeft;
+        textField.adjustsFontSizeToFitWidth = NO;
+    } else {
+        textField.adjustsFontSizeToFitWidth = YES;
+        textField.minimumFontSize = 12;
+    }
 
     return cell;
 }
@@ -852,7 +860,13 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                 text:sImgurClientId
                                                  tag:TagImgurClientId
                                            numerical:NO];
-        case 3: {
+        case 3:
+            return [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
+                                                      label:@"Img Chest API Key"
+                                                placeholder:@"Img Chest API Key"
+                                                       text:sImageChestAPIToken
+                                                        tag:TagImageChestAPIToken];
+        case 4: {
             NSString *schemesDetail = [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", [[self registeredURLSchemes] componentsJoinedByString:@", "]];
             UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Redirect"
                                                                       label:@"Redirect URI"
@@ -870,13 +884,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 4:
+        case 5:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_API_UserAgent"
                                                       label:@"User Agent"
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 5: {
+        case 6: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -885,7 +899,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
@@ -1108,35 +1122,50 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers]
                                            action:@selector(modernSubredditDividersSwitchToggled:)];
         case 1:
+            return [self switchCellWithIdentifier:@"Cell_Sub_Headers"
+                                            label:@"Show Subreddit Headers"
+                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders]
+                                           action:@selector(subredditHeadersSwitchToggled:)];
+        case 2:
             return [self textFieldCellWithIdentifier:@"Cell_Sub_TrendLimit"
                                                label:@"Trending Subreddits Limit"
                                          placeholder:@"(unlimited)"
                                                 text:sTrendingSubredditsLimit
                                                  tag:TagTrendingLimit
                                            numerical:YES];
-        case 2:
+        case 3:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Trending"
                                                       label:@"Trending Source"
                                                 placeholder:defaultTrendingSubredditsSource
                                                        text:sTrendingSubredditsSource
                                                         tag:TagTrendingSubredditsSource];
-        case 3:
+        case 4:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Random"
                                                       label:@"Random Source"
                                                 placeholder:defaultRandomSubredditsSource
                                                        text:sRandomSubredditsSource
                                                         tag:TagRandomSubredditsSource];
-        case 4:
+        case 5:
             return [self switchCellWithIdentifier:@"Cell_Sub_RandNSFW"
                                             label:@"Show RandNSFW in Search"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRandNsfw]
                                            action:@selector(randNsfwSwitchToggled:)];
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_RandNSFW_Source"
                                                       label:@"RandNSFW Source"
                                                 placeholder:@"(empty)"
                                                        text:sRandNsfwSubredditsSource
                                                         tag:TagRandNsfwSubredditsSource];
+        case 7: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Sub_ClearCustomBanners"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Sub_ClearCustomBanners"];
+            }
+            cell.textLabel.text = @"Clear Custom Banners & Icons";
+            cell.textLabel.textColor = self.view.tintColor;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            return cell;
+        }
         default: return [[UITableViewCell alloc] init];
     }
 }
@@ -1289,7 +1318,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             attributes:plainAttrs];
     } else if (section == SectionAPIKeys) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. You may be able to use credentials from another 3rd-party app ("
+            initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. Image Chest is optional and improves album metadata when a personal token is configured. You may be able to use credentials from another 3rd-party app ("
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"more info"
             attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
@@ -1374,9 +1403,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self restoreSettings];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        if (indexPath.row == 5) {
+        if (indexPath.row == 6) {
             [self pushTroubleshootingViewController];
-        } else if (indexPath.row == 6) {
+        } else if (indexPath.row == 7) {
             [self pushInstructionsViewController];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1386,6 +1415,11 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self pushThanksToViewController];
         } else if (indexPath.row == 2) {
             [self exportLogs];
+        }
+    } else if (indexPath.section == SectionSubreddits) {
+        if (indexPath.row == 7) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            [self promptClearCustomSubredditBannersFromSourceView:cell];
         }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
@@ -1443,7 +1477,8 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 5 || indexPath.row == 6)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
+    if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
     if (indexPath.section == SectionMedia) {
         NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
         return (row == 0 || row == 1 || row == 2 || row == 5 || row == 6 || row == 7 || row == 8 || row == 11 || row == 12);
@@ -1644,6 +1679,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sImgurClientId = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sImgurClientId forKey:UDKeyImgurClientId];
+    } else if (textField.tag == TagImageChestAPIToken) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        sImageChestAPIToken = textField.text;
+        [[NSUserDefaults standardUserDefaults] setValue:sImageChestAPIToken forKey:UDKeyImageChestAPIToken];
     } else if (textField.tag == TagRedirectURI) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;
@@ -1751,6 +1790,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
 }
 
+- (void)subredditHeadersSwitchToggled:(UISwitch *)sender {
+    sShowSubredditHeaders = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sShowSubredditHeaders forKey:UDKeyShowSubredditHeaders];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloSubredditHeaderToggleChangedNotification" object:nil];
+}
+
 - (void)userAvatarsSwitchToggled:(UISwitch *)sender {
     BOOL wasOn = sShowUserAvatars;
     sShowUserAvatars = sender.isOn;
@@ -1842,6 +1887,18 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setInteger:sInlineImageAlignment forKey:UDKeyInlineImageAlignment];
     NSIndexPath *alignmentRow = [NSIndexPath indexPathForRow:5 inSection:SectionMedia];
     [self.tableView reloadRowsAtIndexPaths:@[alignmentRow] withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)promptClearCustomSubredditBannersFromSourceView:(__unused UIView *)sourceView {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear Custom Banners & Icons?"
+                                                                   message:@"Locally saved custom subreddit banner and icon images will be removed. Official Reddit art will show again where available."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [[ApolloSubredditCustomBannerCache sharedCache] clearAllCustomBanners];
+        [[ApolloSubredditCustomIconCache sharedCache] clearAllCustomIcons];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)promptClearLinkPreviewCacheFromSourceView:(__unused UIView *)sourceView {
@@ -2048,6 +2105,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sRedditClientId = [defaults stringForKey:UDKeyRedditClientId];
     sRedditClientSecret = [defaults stringForKey:UDKeyRedditClientSecret] ?: @"";
     sImgurClientId = [defaults stringForKey:UDKeyImgurClientId];
+    sImageChestAPIToken = [defaults stringForKey:UDKeyImageChestAPIToken];
     sRedirectURI = [defaults stringForKey:UDKeyRedirectURI];
     sUserAgent = [defaults stringForKey:UDKeyUserAgent];
     sBlockAnnouncements = [defaults boolForKey:UDKeyBlockAnnouncements];
