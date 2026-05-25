@@ -70,6 +70,25 @@ The workflow:
    - [apps_glass.json](apps_glass.json)
    - [apps_noext_glass.json](apps_noext_glass.json)
 
+### When the source JSON / website updates
+
+The source JSON files and `release-manifest.json` (what the website reads) only
+ever point at **published** release assets — draft assets aren't publicly
+downloadable. There are two ways they get regenerated and pushed to `main`:
+
+- **Automated ship**: dispatch with `draft: false`. The build job creates the
+  release and regenerates + commits the sources inline in the same run.
+- **Review then publish**: dispatch with `draft: true` (the default). You get a
+  draft release to review/test. The sources are **not** touched yet. When you
+  press **Publish** on the release in the GitHub UI,
+  [.github/workflows/publish-sources.yml](.github/workflows/publish-sources.yml)
+  fires on the `release: released` event and regenerates + pushes the sources.
+
+These two paths never double-run: a release created by the build workflow's own
+`GITHUB_TOKEN` does not fire the `release` event, so only the inline path runs
+for `draft: false`. `publish-sources.yml` can also be dispatched manually to
+rebuild the sources on demand.
+
 ## AltStore Source Setup
 
 AltStore Classic sources are plain JSON files. Official schema: <https://faq.altstore.io/developers/make-a-source>.
