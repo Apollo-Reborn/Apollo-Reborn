@@ -1414,18 +1414,175 @@ static NSString *ApolloCommentTextByWrappingRedditUploadedMediaURLs(NSString *te
     return rewritten;
 }
 
+// Rewrites bare i.redd.it media URLs into markdown image syntax `![gif|image](url)`.
+// Used alongside richtext_json so clients that don't honor RTJSON (notably the
+// official Reddit iOS app) still have a renderable body markdown fallback.
+static NSString *ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(NSString *text) {
+    if (!ApolloStringContainsRedditUploadedMedia(text)) return text;
+    NSRegularExpression *regex = ApolloRedditUploadedMediaURLRegex();
+    if (!regex) return text;
+    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+    if (matches.count == 0) return text;
+
+    NSMutableString *rewritten = [text mutableCopy];
+    for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
+        NSRange range = match.range;
+        // Skip URLs that are already inside a markdown link/image: `](url)`.
+        if (range.location >= 2 && [[text substringWithRange:NSMakeRange(range.location - 2, 2)] isEqualToString:@"]("]) continue;
+        // Skip URLs already preceded by `![alt](` (already a markdown image).
+        NSString *url = [text substringWithRange:range];
+        NSString *alt = [url.lowercaseString hasSuffix:@".gif"] ? @"gif" : @"image";
+        [rewritten replaceCharactersInRange:range withString:[NSString stringWithFormat:@"![%@](%@)", alt, url]];
+    }
+    return rewritten;
+}
+
+// Matches `![gif](giphy|<id>)` markdown tokens emitted by ApolloMarkdownToolbarGif
+// for native Reddit Giphy embeds. Capture group 1 is the bare Giphy GIF ID.
+static NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
+    static NSRegularExpression *regex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:@"!\\[gif\\]\\(giphy\\|([A-Za-z0-9_\\-]+)\\)"
+                                                          options:NSRegularExpressionCaseInsensitive
+                                                            error:nil];
+    });
+    return regex;
+}
+
+// Builds a Reddit RTJSON `document` mixing text paragraphs and
+// `{e:gif,id:giphy|<id>}` blocks. Returns nil if no giphy tokens are found.
+// On return, `outStrippedText` receives the original text with all giphy
+// tokens removed (trimmed) — sent as the plain `text` caption so Reddit
+// doesn't double-render the literal markdown alongside the RTJSON gifs.
+static NSData *ApolloRedditRichTextJSONDataForGiphyText(NSString *text, NSString **outStrippedText) {
+    NSRegularExpression *regex = ApolloNativeGiphyMarkdownTokenRegex();
+    if (!regex || text.length == 0) return nil;
+    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+    if (matches.count == 0) return nil;
+
+    NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
+    NSMutableString *stripped = [NSMutableString string];
+    NSUInteger cursor = 0;
+    for (NSTextCheckingResult *match in matches) {
+        if (match.range.location > cursor) {
+            NSString *between = [text substringWithRange:NSMakeRange(cursor, match.range.location - cursor)];
+            NSDictionary *paragraph = ApolloRedditRichTextParagraphBlock(between);
+            if (paragraph) [blocks addObject:paragraph];
+            [stripped appendString:between];
+        }
+        NSString *gifID = [text substringWithRange:[match rangeAtIndex:1]];
+        [blocks addObject:@{ @"e": @"gif", @"id": [NSString stringWithFormat:@"giphy|%@", gifID] }];
+        cursor = NSMaxRange(match.range);
+    }
+    if (cursor < text.length) {
+        NSString *tail = [text substringFromIndex:cursor];
+        NSDictionary *paragraph = ApolloRedditRichTextParagraphBlock(tail);
+        if (paragraph) [blocks addObject:paragraph];
+        [stripped appendString:tail];
+    }
+    if (blocks.count == 0) return nil;
+    if (outStrippedText) {
+        *outStrippedText = [stripped stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    return [NSJSONSerialization dataWithJSONObject:@{ @"document": blocks } options:0 error:nil];
+}
+
 NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     if (!ApolloIsRedditCommentRequest(request)) return nil;
 
     NSData *bodyData = request.HTTPBody;
     if (bodyData.length == 0) return nil;
     NSString *body = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
+
+    // Native-Giphy fast path: when `text` contains `![gif](giphy|<id>)` tokens
+    // (emitted by ApolloMarkdownToolbarGif), build a proper Reddit RTJSON
+    // document with `{e:gif,id:giphy|<id>}` blocks and replace any existing
+    // `richtext_json`. Reddit's `/api/comment` does NOT render giphy via raw
+    // markdown — it requires RTJSON. Apollo's own placeholder richtext_json
+    // is malformed for this case, which produces "Error Submitting … Code: 501".
+    //
+    // The form-encoded body encodes `(` as `%28` and `|` as `%7C`, so the
+    // unambiguous signature is "giphy" followed by either `|` (decoded) or
+    // `%7C` (encoded). Matching the literal `](giphy|` would never fire on a
+    // properly URL-encoded body and is why v3 silently no-op'd.
+    BOOL hasGiphyTokenEncoded = body.length > 0 && [body rangeOfString:@"giphy%7C" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    BOOL hasGiphyTokenDecoded = body.length > 0 && [body rangeOfString:@"giphy|" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    if (hasGiphyTokenEncoded || hasGiphyTokenDecoded) {
+        ApolloLog(@"[RedditUpload] Native giphy: fast-path entered path=%@ bodyLen=%lu encoded=%@ decoded=%@",
+                  request.URL.path,
+                  (unsigned long)body.length,
+                  hasGiphyTokenEncoded ? @"yes" : @"no",
+                  hasGiphyTokenDecoded ? @"yes" : @"no");
+        NSArray<NSString *> *giphyPairs = [body componentsSeparatedByString:@"&"];
+        NSMutableArray<NSString *> *outPairs = [NSMutableArray arrayWithCapacity:giphyPairs.count + 2];
+        NSString *giphyRichTextJSONString = nil;
+        NSString *strippedText = nil;
+        BOOL wroteReturnRichTextJSON = NO;
+        BOOL replacedRichTextJSON = NO;
+        NSUInteger giphyBlockCount = 0;
+
+        for (NSString *pair in giphyPairs) {
+            NSRange eq = [pair rangeOfString:@"="];
+            NSString *key = ApolloFormDecodeComponent(eq.location == NSNotFound ? pair : [pair substringToIndex:eq.location]);
+            NSString *value = ApolloFormDecodeComponent(eq.location == NSNotFound ? @"" : [pair substringFromIndex:eq.location + 1]);
+
+            if ([key isEqualToString:@"text"]) {
+                NSData *rtData = ApolloRedditRichTextJSONDataForGiphyText(value, &strippedText);
+                if (rtData.length > 0) {
+                    giphyRichTextJSONString = [[NSString alloc] initWithData:rtData encoding:NSUTF8StringEncoding];
+                    NSRegularExpression *r = ApolloNativeGiphyMarkdownTokenRegex();
+                    giphyBlockCount = r ? [r numberOfMatchesInString:value options:0 range:NSMakeRange(0, value.length)] : 0;
+                    // Strip the literal tokens from `text` so Reddit doesn't
+                    // double-render them as markdown alongside the RTJSON gifs.
+                    value = strippedText ?: @"";
+                }
+            } else if ([key isEqualToString:@"richtext_json"] && giphyRichTextJSONString.length > 0) {
+                ApolloLog(@"[RedditUpload] Native giphy: replacing existing richtext_json (origLen=%lu, newLen=%lu)",
+                          (unsigned long)value.length, (unsigned long)giphyRichTextJSONString.length);
+                value = giphyRichTextJSONString;
+                replacedRichTextJSON = YES;
+            } else if ([key isEqualToString:@"return_rtjson"]) {
+                value = @"true";
+                wroteReturnRichTextJSON = YES;
+            }
+
+            [outPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(key), ApolloFormEncodeComponent(value)]];
+        }
+
+        if (giphyRichTextJSONString.length == 0) {
+            ApolloLog(@"[RedditUpload] Native giphy detected but no RTJSON built (text pair missing?) — leaving %@ submit untouched", request.URL.path);
+            return nil;
+        }
+
+        if (!replacedRichTextJSON) {
+            [outPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"richtext_json"), ApolloFormEncodeComponent(giphyRichTextJSONString)]];
+        }
+        if (!wroteReturnRichTextJSON) {
+            [outPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"return_rtjson"), ApolloFormEncodeComponent(@"true")]];
+        }
+
+        NSMutableURLRequest *giphyModified = [request mutableCopy];
+        NSData *newBody = [[outPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
+        [giphyModified setHTTPBody:newBody];
+        [giphyModified setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
+        ApolloLog(@"[RedditUpload] Native giphy: rewrote %@ submit (gifBlocks=%lu, captionLen=%lu, rtjsonLen=%lu, replacedExisting=%@, %lu bytes)",
+                  request.URL.path,
+                  (unsigned long)giphyBlockCount,
+                  (unsigned long)(strippedText.length),
+                  (unsigned long)giphyRichTextJSONString.length,
+                  replacedRichTextJSON ? @"yes" : @"no",
+                  (unsigned long)newBody.length);
+        return giphyModified;
+    }
+
     if (!ApolloStringContainsRedditUploadedMedia(body)) return nil;
 
     NSArray<NSString *> *pairs = [body componentsSeparatedByString:@"&"];
     NSMutableArray<NSString *> *rewrittenPairs = [NSMutableArray arrayWithCapacity:pairs.count + 2];
     BOOL changed = NO;
     BOOL wroteReturnRichTextJSON = NO;
+    BOOL replacedExistingRichTextJSON = NO;
     NSString *richTextJSONString = nil;
 
     for (NSString *pair in pairs) {
@@ -1438,30 +1595,55 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
             if (richTextJSONData.length > 0) {
                 richTextJSONString = [[NSString alloc] initWithData:richTextJSONData encoding:NSUTF8StringEncoding];
                 if (richTextJSONString.length > 0) {
-                    ApolloLog(@"[RedditUpload] Rewriting %@ text to richtext_json", request.URL.path);
+                    // Keep `text` populated alongside richtext_json: the official
+                    // Reddit iOS app renders comments from `body` markdown and shows
+                    // a blank comment when only richtext_json is provided. Rewrite
+                    // the bare i.redd.it URL to `![gif|image](url)` so all clients
+                    // (Apollo via inline-images, reddit.com via RTJSON, official app
+                    // via markdown image) display the GIF.
+                    NSString *embeddedValue = ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(value);
+                    if (![embeddedValue isEqualToString:value]) {
+                        value = embeddedValue;
+                    }
+                    ApolloLog(@"[RedditUpload] Rewriting %@ text to richtext_json (kept markdown body fallback len=%lu)",
+                              request.URL.path, (unsigned long)value.length);
                     changed = YES;
-                    continue;
+                    // Fall through so the `text` pair (with markdown image syntax) is re-emitted below.
                 }
             }
 
-            NSString *rewrittenValue = ApolloCommentTextByWrappingRedditUploadedMediaURLs(value);
-            if (![rewrittenValue isEqualToString:value]) {
-                ApolloLog(@"[RedditUpload] Rewriting %@ text to markdown-link fallback", request.URL.path);
-                value = rewrittenValue;
-                changed = YES;
+            if (richTextJSONString.length == 0) {
+                NSString *rewrittenValue = ApolloCommentTextByWrappingRedditUploadedMediaURLs(value);
+                if (![rewrittenValue isEqualToString:value]) {
+                    ApolloLog(@"[RedditUpload] Rewriting %@ text to markdown-link fallback", request.URL.path);
+                    value = rewrittenValue;
+                    changed = YES;
+                }
             }
         }
 
         if ([key isEqualToString:@"return_rtjson"]) { value = @"true"; wroteReturnRichTextJSON = YES; }
 
+        // Phase C: If the original body already contained a `richtext_json` pair
+        // (Apollo sometimes emits a placeholder), replace its value with the
+        // freshly-generated one rather than appending a second copy. Duplicate
+        // keys produce ambiguous server-side behavior.
+        if ([key isEqualToString:@"richtext_json"] && richTextJSONString.length > 0) {
+            ApolloLog(@"[RedditUpload] Replaced existing richtext_json (origLen=%lu, newLen=%lu)",
+                      (unsigned long)value.length, (unsigned long)richTextJSONString.length);
+            value = richTextJSONString;
+            replacedExistingRichTextJSON = YES;
+            changed = YES;
+        }
+
         [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(key), ApolloFormEncodeComponent(value)]];
     }
 
-    if (richTextJSONString.length > 0) {
+    if (richTextJSONString.length > 0 && !replacedExistingRichTextJSON) {
         [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"richtext_json"), ApolloFormEncodeComponent(richTextJSONString)]];
-        if (!wroteReturnRichTextJSON) {
-            [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"return_rtjson"), ApolloFormEncodeComponent(@"true")]];
-        }
+    }
+    if (richTextJSONString.length > 0 && !wroteReturnRichTextJSON) {
+        [rewrittenPairs addObject:[NSString stringWithFormat:@"%@=%@", ApolloFormEncodeComponent(@"return_rtjson"), ApolloFormEncodeComponent(@"true")]];
     }
 
     if (!changed) return nil;
@@ -1470,6 +1652,18 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
     [modifiedRequest setHTTPBody:newBody];
     [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
+
+    // Phase 1 diagnostic: log the final submitted form keys + value lengths so we can
+    // confirm `text` survives alongside `richtext_json`. No PII (lengths only).
+    NSMutableArray<NSString *> *summary = [NSMutableArray array];
+    for (NSString *pair in rewrittenPairs) {
+        NSRange eq = [pair rangeOfString:@"="];
+        NSString *k = eq.location == NSNotFound ? pair : [pair substringToIndex:eq.location];
+        NSUInteger vlen = eq.location == NSNotFound ? 0 : (pair.length - eq.location - 1);
+        [summary addObject:[NSString stringWithFormat:@"%@(%lu)", k, (unsigned long)vlen]];
+    }
+    ApolloLog(@"[RedditUpload] Final %@ submit fields: %@", request.URL.path, [summary componentsJoinedByString:@","]);
+
     return modifiedRequest;
 }
 
@@ -2186,6 +2380,26 @@ static NSData *ApolloRedditWrapCommentForApollo(NSMutableDictionary *comment) {
 }
 
 static void ApolloRedditPopulateAndDeliverComment(NSMutableDictionary *comment, ApolloRedditResponseDataCompletion completion) {
+    // Native-Giphy comments (`media_metadata` key `giphy|<id>`, body
+    // `![gif](giphy|<id>)`) need NO body merging: Reddit's response already
+    // contains valid metadata and Apollo's renderer handles the native token
+    // inline. Falling through to the generic media-URL merge would call
+    // ApolloRedditUploadFallbackURLForAssetID("giphy|<id>") and build a bogus
+    // `https://i.redd.it/giphy|<id>.jpeg` URL, which then gets prepended to
+    // comment[@"body"] by ApolloPopulateRedditCommentDisplayBody. That URL is
+    // unresolvable and surfaces in Apollo as the "If you are looking for an
+    // image, it was probably deleted." placeholder above the GIF, and (worse)
+    // shows up in the Edit Comment composer because the mutated body becomes
+    // the in-memory truth until a pull-to-refresh swaps it for Reddit's clean
+    // canonical body.
+    NSString *earlyAssetID = ApolloMediaAssetIDFromComment(comment);
+    if ([earlyAssetID hasPrefix:@"giphy|"]) {
+        ApolloLog(@"[RedditUpload] Native giphy comment: skipping body merge (assetID=%@)", earlyAssetID);
+        NSData *wrappedGiphy = ApolloRedditWrapCommentForApollo(comment);
+        completion(wrappedGiphy.length > 0 ? wrappedGiphy : nil);
+        return;
+    }
+
     NSString *assetID = nil, *mediaStatus = nil;
     NSString *mediaURL = ApolloBestDisplayURLForRedditComment(comment, YES, &assetID, &mediaStatus);
     if (mediaURL.length > 0) {
@@ -2199,6 +2413,15 @@ static void ApolloRedditPopulateAndDeliverComment(NSMutableDictionary *comment, 
 // Async-poll /api/info up to N times, then deliver the hydrated comment (or the
 // original with a fallback URL). Never blocks the caller. Worst case ~6.2s.
 static void ApolloRedditHydrateAndDeliverComment(NSMutableDictionary *comment, NSUInteger attemptIndex, ApolloRedditResponseDataCompletion completion) {
+    // Native-Giphy comments come back from /api/comment with valid
+    // media_metadata immediately — skip the hydration poll and deliver now so
+    // ApolloRedditPopulateAndDeliverComment can short-circuit the body merge.
+    NSString *giphyAssetID = ApolloMediaAssetIDFromComment(comment);
+    if ([giphyAssetID hasPrefix:@"giphy|"]) {
+        ApolloRedditPopulateAndDeliverComment(comment, completion);
+        return;
+    }
+
     NSString *fullName = [comment[@"name"] isKindOfClass:[NSString class]] ? comment[@"name"] : nil;
     NSString *currentMediaURL = ApolloBestDisplayURLForRedditComment(comment, NO, NULL, NULL);
 
