@@ -3,20 +3,8 @@
 #import "ApolloGiphyClient.h"
 #import "CustomAPIViewController.h"
 #import "GiphyPickerViewController.h"
-#import "ApolloRedditMediaUpload.h"
-#import "ApolloState.h"
-#import "Defaults.h"
 
 #import <objc/runtime.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-NSString *ApolloMediaComposerActivePostingBearerToken(void);
-void ApolloRegisterRedditUploadedMedia(NSURL *mediaURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL);
-#ifdef __cplusplus
-}
-#endif
 
 static char kApolloMarkdownGifToolbarLastAttemptKey;
 static char kApolloMarkdownGifLoggedDiscoveryKey;

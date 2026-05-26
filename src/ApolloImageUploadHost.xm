@@ -1653,17 +1653,6 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     [modifiedRequest setHTTPBody:newBody];
     [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
 
-    // Phase 1 diagnostic: log the final submitted form keys + value lengths so we can
-    // confirm `text` survives alongside `richtext_json`. No PII (lengths only).
-    NSMutableArray<NSString *> *summary = [NSMutableArray array];
-    for (NSString *pair in rewrittenPairs) {
-        NSRange eq = [pair rangeOfString:@"="];
-        NSString *k = eq.location == NSNotFound ? pair : [pair substringToIndex:eq.location];
-        NSUInteger vlen = eq.location == NSNotFound ? 0 : (pair.length - eq.location - 1);
-        [summary addObject:[NSString stringWithFormat:@"%@(%lu)", k, (unsigned long)vlen]];
-    }
-    ApolloLog(@"[RedditUpload] Final %@ submit fields: %@", request.URL.path, [summary componentsJoinedByString:@","]);
-
     return modifiedRequest;
 }
 
