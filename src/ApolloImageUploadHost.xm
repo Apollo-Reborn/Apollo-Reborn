@@ -10,6 +10,7 @@
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloImageUploadHost.h"
+#import "ApolloMarkdownToolbarGif.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
 #import "Defaults.h"
@@ -1429,7 +1430,6 @@ static NSString *ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(NSString *t
         NSRange range = match.range;
         // Skip URLs that are already inside a markdown link/image: `](url)`.
         if (range.location >= 2 && [[text substringWithRange:NSMakeRange(range.location - 2, 2)] isEqualToString:@"]("]) continue;
-        // Skip URLs already preceded by `![alt](` (already a markdown image).
         NSString *url = [text substringWithRange:range];
         NSString *alt = [url.lowercaseString hasSuffix:@".gif"] ? @"gif" : @"image";
         [rewritten replaceCharactersInRange:range withString:[NSString stringWithFormat:@"![%@](%@)", alt, url]];
@@ -1438,17 +1438,10 @@ static NSString *ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(NSString *t
 }
 
 // Matches `![gif](giphy|<id>)` markdown tokens emitted by ApolloMarkdownToolbarGif
-// for native Reddit Giphy embeds. Capture group 1 is the bare Giphy GIF ID.
-static NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
-    static NSRegularExpression *regex;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        regex = [NSRegularExpression regularExpressionWithPattern:@"!\\[gif\\]\\(giphy\\|([A-Za-z0-9_\\-]+)\\)"
-                                                          options:NSRegularExpressionCaseInsensitive
-                                                            error:nil];
-    });
-    return regex;
-}
+// for native Reddit Giphy embeds. The cached regex itself lives in
+// `ApolloMarkdownToolbarGif.xm` (declared in `ApolloMarkdownToolbarGif.h`) so
+// the toolbar, submit-rewriter, and body renderer all share one source of
+// truth for the token shape. Capture group 1 is the bare Giphy GIF ID.
 
 // Builds a Reddit RTJSON `document` mixing text paragraphs and
 // `{e:gif,id:giphy|<id>}` blocks. Returns nil if no giphy tokens are found.
@@ -1522,17 +1515,35 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
         BOOL replacedRichTextJSON = NO;
         NSUInteger giphyBlockCount = 0;
 
+        // Pre-scan: locate the `text` pair (if any) and pre-compute the RTJSON
+        // document + stripped caption BEFORE the rewriting loop. The previous
+        // implementation built these inline during the `text` branch and then
+        // assumed `text` would appear before `richtext_json` in the body —
+        // which happens to be true today but isn't guaranteed by any spec.
+        // Pre-computing makes the loop order-independent and lets the
+        // `richtext_json` branch always see a non-nil replacement when one is
+        // available.
+        for (NSString *pair in giphyPairs) {
+            NSRange eq = [pair rangeOfString:@"="];
+            NSString *key = ApolloFormDecodeComponent(eq.location == NSNotFound ? pair : [pair substringToIndex:eq.location]);
+            if (![key isEqualToString:@"text"]) continue;
+            NSString *value = ApolloFormDecodeComponent(eq.location == NSNotFound ? @"" : [pair substringFromIndex:eq.location + 1]);
+            NSData *rtData = ApolloRedditRichTextJSONDataForGiphyText(value, &strippedText);
+            if (rtData.length > 0) {
+                giphyRichTextJSONString = [[NSString alloc] initWithData:rtData encoding:NSUTF8StringEncoding];
+                NSRegularExpression *r = ApolloNativeGiphyMarkdownTokenRegex();
+                giphyBlockCount = r ? [r numberOfMatchesInString:value options:0 range:NSMakeRange(0, value.length)] : 0;
+            }
+            break;
+        }
+
         for (NSString *pair in giphyPairs) {
             NSRange eq = [pair rangeOfString:@"="];
             NSString *key = ApolloFormDecodeComponent(eq.location == NSNotFound ? pair : [pair substringToIndex:eq.location]);
             NSString *value = ApolloFormDecodeComponent(eq.location == NSNotFound ? @"" : [pair substringFromIndex:eq.location + 1]);
 
             if ([key isEqualToString:@"text"]) {
-                NSData *rtData = ApolloRedditRichTextJSONDataForGiphyText(value, &strippedText);
-                if (rtData.length > 0) {
-                    giphyRichTextJSONString = [[NSString alloc] initWithData:rtData encoding:NSUTF8StringEncoding];
-                    NSRegularExpression *r = ApolloNativeGiphyMarkdownTokenRegex();
-                    giphyBlockCount = r ? [r numberOfMatchesInString:value options:0 range:NSMakeRange(0, value.length)] : 0;
+                if (giphyRichTextJSONString.length > 0) {
                     // Strip the literal tokens from `text` so Reddit doesn't
                     // double-render them as markdown alongside the RTJSON gifs.
                     value = strippedText ?: @"";

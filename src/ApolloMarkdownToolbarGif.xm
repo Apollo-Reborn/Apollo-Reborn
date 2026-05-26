@@ -6,6 +6,17 @@
 
 #import <objc/runtime.h>
 
+NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
+    static NSRegularExpression *regex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:@"!\\[gif\\]\\(giphy\\|([A-Za-z0-9_\\-]+)\\)"
+                                                          options:NSRegularExpressionCaseInsensitive
+                                                            error:nil];
+    });
+    return regex;
+}
+
 static char kApolloMarkdownGifToolbarLastAttemptKey;
 static char kApolloMarkdownGifLoggedDiscoveryKey;
 static char kApolloMarkdownGifLoggedFailureKey;
@@ -434,7 +445,8 @@ static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewContro
 
     NSString *token = [NSString stringWithFormat:@"![gif](giphy|%@)", gifID];
     ApolloMarkdownGifInsertRawTokenInCompose(composeController, token);
-    ApolloLog(@"[MarkdownGif] inserted native giphy token id=%@", gifID);
+    // ApolloMarkdownGifInsertRawTokenInCompose already logs the full token; no
+    // need to log the bare gifID a second time here.
 }
 
 @implementation ApolloMarkdownGifTapTarget

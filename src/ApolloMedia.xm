@@ -9,6 +9,7 @@
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "ApolloMediaMetadata.h"
+#import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
 
 #import "ffmpeg-kit/ffmpeg-kit/include/MediaInformationSession.h"
@@ -603,13 +604,8 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
     if (text.length == 0) return text;
     if ([text rangeOfString:@"(giphy|"].location == NSNotFound) return text;
 
-    static NSRegularExpression *regex;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        regex = [NSRegularExpression regularExpressionWithPattern:@"!\\[gif\\]\\(giphy\\|([A-Za-z0-9_\\-]+)\\)"
-                                                          options:NSRegularExpressionCaseInsensitive
-                                                            error:nil];
-    });
+    NSRegularExpression *regex = ApolloNativeGiphyMarkdownTokenRegex();
+    if (!regex) return text;
 
     NSArray *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
     if (matches.count == 0) return text;
