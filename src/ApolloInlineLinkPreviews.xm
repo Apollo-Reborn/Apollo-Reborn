@@ -128,6 +128,7 @@ static char kApolloLinkPreviewImageFallbackScheduledKey;
 static char kApolloLinkPreviewImageFallbackInFlightKey;
 static char kApolloLinkPreviewImageFallbackAppliedURLKey;
 static char kApolloLinkPreviewRenderSignaturesKey;
+static char kApolloLinkPreviewV17LogCountKey;
 
 static NSHashTable<id> *sApolloLPRegisteredLinkNodes = nil;
 static dispatch_queue_t sApolloLPRegisteredLinkNodesQueue = NULL;
@@ -1398,20 +1399,171 @@ static id ApolloLPModelFromNodeIvar(ASDisplayNode *node, const char *ivarName) {
     return model;
 }
 
+// V17: positive class-based detection of the owning cell.
+//   _TtC6Apollo15CommentCellNode       — comments area
+//   _TtC6Apollo22CommentsHeaderCellNode — post selftext shown above the
+//      comment list. Apollo treats this as part of the *comments* experience
+//      (user-facing: `Rich Link Previews - Comments` controls cards here;
+//      `Rich Link Previews - Body` only applies to the feed). So we map it
+//      to comments to match the existing rendering observed when both
+//      cards are compact.
+static Class ApolloLPCommentCellClass(void) {
+    static Class cls; static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo15CommentCellNode"); });
+    return cls;
+}
+static Class ApolloLPCommentsHeaderCellClass(void) {
+    static Class cls; static dispatch_once_t once;
+    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode"); });
+    return cls;
+}
+
+// Walk supernodes; returns YES on positive detection via known cell class or
+// `comment` ivar. *outArea receives the resolved area; *outDepth receives the
+// number of supernodes walked (diagnostic — short chains indicate detached
+// measurement, the root cause of the vote-time compact→hero flip).
+static BOOL ApolloLPResolveAreaByWalk(ASDisplayNode *linkButtonNode, ApolloLPArea *outArea, NSUInteger *outDepth) {
+    NSUInteger depth = 0;
+    Class commentCellCls = ApolloLPCommentCellClass();
+    Class headerCellCls = ApolloLPCommentsHeaderCellClass();
+    for (ASDisplayNode *node = linkButtonNode; node; node = node.supernode) {
+        depth++;
+        Class cls = [node class];
+        if (commentCellCls && cls == commentCellCls) {
+            if (outArea) *outArea = ApolloLPAreaComments;
+            if (outDepth) *outDepth = depth;
+            return YES;
+        }
+        if (headerCellCls && cls == headerCellCls) {
+            // Header cell = OP selftext in comments view → comments area.
+            if (outArea) *outArea = ApolloLPAreaComments;
+            if (outDepth) *outDepth = depth;
+            return YES;
+        }
+        id comment = ApolloLPModelFromNodeIvar(node, "comment");
+        if (comment) {
+            if (outArea) *outArea = ApolloLPAreaComments;
+            if (outDepth) *outDepth = depth;
+            return YES;
+        }
+    }
+    if (outDepth) *outDepth = depth;
+    return NO;
+}
+
+static BOOL ApolloLPResolveAreaByWalk(ASDisplayNode *linkButtonNode, ApolloLPArea *outArea, NSUInteger *outDepth);
+static ASDisplayNode *ApolloLPEnclosingCellNode(ASDisplayNode *node);
+
 static ApolloLPArea ApolloLPAreaForLinkButton(ASDisplayNode *linkButtonNode) {
     NSNumber *cachedArea = objc_getAssociatedObject(linkButtonNode, &kApolloLinkPreviewAreaKey);
     if ([cachedArea isKindOfClass:[NSNumber class]]) {
         return (ApolloLPArea)cachedArea.unsignedIntegerValue;
     }
 
-    for (ASDisplayNode *node = linkButtonNode; node; node = node.supernode) {
-        id comment = ApolloLPModelFromNodeIvar(node, "comment");
-        if (comment) {
-            objc_setAssociatedObject(linkButtonNode, &kApolloLinkPreviewAreaKey, @(ApolloLPAreaComments), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return ApolloLPAreaComments;
+    ApolloLPArea resolved = ApolloLPAreaBody;
+    NSUInteger depth = 0;
+    if (ApolloLPResolveAreaByWalk(linkButtonNode, &resolved, &depth)) {
+        // Positive detection: cache forever. The mode-change refresh path
+        // does not rely on this cache being invalidated — it re-runs layout,
+        // and the cached area still correctly feeds ApolloLPModeForArea.
+        objc_setAssociatedObject(linkButtonNode, &kApolloLinkPreviewAreaKey, @(resolved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return resolved;
+    }
+    // Negative outcome: linkButtonNode is detached during this background
+    // measurement pass. Apollo recreates the comment cell on vote/etc, and
+    // Texture measures the new link button on a background thread before its
+    // supernode chain is wired up. This wrong measurement gets cached by
+    // Texture as `calculatedLayout` and shown until a full redisplay event
+    // (screenshot, page reentry) forces re-measure. Pull-to-refresh does NOT
+    // fix it because the cell's constrainedSize is unchanged.
+    //
+    // Mitigation: pick whichever area yields the *smaller* preview as the
+    // fallback. If the wrong area was guessed, the cached layout is at worst
+    // an undersized card — never overflows neighbors. Then schedule a
+    // deferred re-resolve that, if the resolved mode differs from the
+    // fallback mode, invalidates the *enclosing cell's* layout (link-button
+    // setNeedsLayout alone doesn't propagate enough to force Texture to drop
+    // the cached spec).
+    ApolloLPArea fallbackArea = (sLinkPreviewCommentsMode != ApolloLinkPreviewModeOff &&
+                                 sLinkPreviewCommentsMode < sLinkPreviewBodyMode)
+                                ? ApolloLPAreaComments
+                                : ApolloLPAreaBody;
+
+    __weak ASDisplayNode *weakNode = linkButtonNode;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ASDisplayNode *strongNode = weakNode;
+        if (!strongNode) return;
+        NSNumber *existing = objc_getAssociatedObject(strongNode, &kApolloLinkPreviewAreaKey);
+        if ([existing isKindOfClass:[NSNumber class]]) return;
+        ApolloLPArea deferredArea = ApolloLPAreaBody;
+        if (!ApolloLPResolveAreaByWalk(strongNode, &deferredArea, NULL)) return;
+        objc_setAssociatedObject(strongNode, &kApolloLinkPreviewAreaKey, @(deferredArea), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        NSInteger fallbackMode = ApolloLPModeForArea(fallbackArea);
+        NSInteger resolvedMode = ApolloLPModeForArea(deferredArea);
+        if (fallbackMode == resolvedMode) return;
+
+        // Force re-measure: invalidate both the link button and the
+        // enclosing cell. Cell invalidation is what actually makes Texture
+        // drop the cached spec and re-run layoutSpecThatFits on the row.
+        if ([strongNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(strongNode, @selector(invalidateCalculatedLayout));
+        }
+        if ([strongNode respondsToSelector:@selector(setNeedsLayout)]) {
+            [(id)strongNode setNeedsLayout];
+        }
+        ASDisplayNode *cell = ApolloLPEnclosingCellNode(strongNode);
+        if (cell) {
+            if ([cell respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+                ((void (*)(id, SEL))objc_msgSend)(cell, @selector(invalidateCalculatedLayout));
+            }
+            if ([cell respondsToSelector:@selector(setNeedsLayout)]) {
+                [(id)cell setNeedsLayout];
+            }
+        }
+        ApolloLog(@"[LinkPreviews] V18 deferred-upgrade fallback=%ld→resolved=%ld cell=%@",
+                  (long)fallbackMode, (long)resolvedMode,
+                  cell ? NSStringFromClass([cell class]) : @"(no-cell)");
+    });
+    return fallbackArea;
+}
+
+// Walk up from any ASDisplayNode to find an enclosing ASCellNode (the table's
+// cell). Returns nil if none found. Used by the deferred re-resolve path to
+// invalidate the *cell's* layout so the wrong cached spec is discarded.
+static ASDisplayNode *ApolloLPEnclosingCellNode(ASDisplayNode *node) {
+    static Class cellCls = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cellCls = objc_getClass("ASCellNode"); });
+    if (!cellCls) return nil;
+    for (ASDisplayNode *cur = node; cur; cur = cur.supernode) {
+        if ([cur isKindOfClass:cellCls]) return cur;
+    }
+    return nil;
+}
+
+// Pre-stamp a cell's link-button descendants with the correct area so the
+// first background-thread measurement (which may race ahead of supernode
+// chain attachment) sees the right area without walking. Called from the
+// CommentCellNode / CommentsHeaderCellNode didLoad hooks below.
+static void ApolloLPStampLinkButtonAreaInTree(ASDisplayNode *root, ApolloLPArea area) {
+    if (!root) return;
+    static Class linkButtonCls = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ linkButtonCls = objc_getClass("_TtC6Apollo14LinkButtonNode"); });
+    if (!linkButtonCls) return;
+    if ([root isKindOfClass:linkButtonCls]) {
+        NSNumber *existing = objc_getAssociatedObject(root, &kApolloLinkPreviewAreaKey);
+        if (![existing isKindOfClass:[NSNumber class]]) {
+            objc_setAssociatedObject(root, &kApolloLinkPreviewAreaKey, @(area), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
-    return ApolloLPAreaBody;
+    NSArray *subnodes = nil;
+    @try { subnodes = [root respondsToSelector:@selector(subnodes)] ? [(id)root subnodes] : nil; }
+    @catch (__unused NSException *e) { subnodes = nil; }
+    for (ASDisplayNode *child in subnodes) {
+        ApolloLPStampLinkButtonAreaInTree(child, area);
+    }
 }
 
 static BOOL ApolloLPIsYouTubeURL(NSURL *url) {
@@ -2941,6 +3093,26 @@ static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL 
 
     NSString *host = ApolloLPHost(url);
     ApolloLPArea area = ApolloLPAreaForLinkButton((ASDisplayNode *)self);
+
+    // V17 diagnostic logging: per-node rate-limited (max 6 calls) snapshot of
+    // area resolution + supernode chain depth to identify the vote-time
+    // compact→hero flip. Always-on; gated by per-node counter to bound noise.
+    {
+        NSNumber *countObj = objc_getAssociatedObject(self, &kApolloLinkPreviewV17LogCountKey);
+        NSUInteger count = [countObj isKindOfClass:[NSNumber class]] ? countObj.unsignedIntegerValue : 0;
+        if (count < 6) {
+            NSUInteger walkDepth = 0;
+            ApolloLPArea walkArea = ApolloLPAreaBody;
+            BOOL walkResolved = ApolloLPResolveAreaByWalk((ASDisplayNode *)self, &walkArea, &walkDepth);
+            NSNumber *cached = objc_getAssociatedObject(self, &kApolloLinkPreviewAreaKey);
+            ASDisplayNode *sup = [(id)self respondsToSelector:@selector(supernode)] ? [(id)self supernode] : nil;
+            ApolloLog(@"[LinkPreviews] V17 layout host=%@ area=%lu cached=%@ walk=%d walkArea=%lu depth=%lu super=%@ bodyMode=%ld commentsMode=%ld n=%lu",
+                      host, (unsigned long)area, cached, walkResolved, (unsigned long)walkArea, (unsigned long)walkDepth,
+                      sup ? NSStringFromClass([sup class]) : @"(nil)",
+                      (long)sLinkPreviewBodyMode, (long)sLinkPreviewCommentsMode, (unsigned long)count);
+            objc_setAssociatedObject(self, &kApolloLinkPreviewV17LogCountKey, @(count + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
     if (ApolloLPIsImageChestAlbumURL(url)) {
         ApolloLPLogOncePerHost(host, @"suppress-imagechest-card");
         ApolloLPRestoreHostShell((ASDisplayNode *)self);
@@ -3097,6 +3269,38 @@ static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL 
     return ApolloLPNativeLinkSpecWithBannedHintIfNeeded(self, url, %orig);
 }
 
+- (void)didLoad {
+    %orig;
+    // V17: by the time the view loads, the supernode chain is established.
+    // Walk up and cache the area so subsequent measurements never have to
+    // guess. This is the primary belt for the vote-time race; the dispatched
+    // re-resolve in ApolloLPAreaForLinkButton is the suspenders.
+    ApolloLPArea resolved = ApolloLPAreaBody;
+    if (ApolloLPResolveAreaByWalk((ASDisplayNode *)self, &resolved, NULL)) {
+        NSNumber *existing = objc_getAssociatedObject(self, &kApolloLinkPreviewAreaKey);
+        if (![existing isKindOfClass:[NSNumber class]]) {
+            objc_setAssociatedObject(self, &kApolloLinkPreviewAreaKey, @(resolved), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+%end
+
+// V17: pre-stamp area on link buttons inside comment cells so the first
+// background-thread measurement of a freshly-recreated cell (e.g. after a
+// vote) does not race the supernode chain attachment.
+%hook _TtC6Apollo15CommentCellNode
+- (void)didLoad {
+    %orig;
+    ApolloLPStampLinkButtonAreaInTree((ASDisplayNode *)self, ApolloLPAreaComments);
+}
+%end
+
+%hook _TtC6Apollo22CommentsHeaderCellNode
+- (void)didLoad {
+    %orig;
+    ApolloLPStampLinkButtonAreaInTree((ASDisplayNode *)self, ApolloLPAreaComments);
+}
 %end
 
 %ctor {
