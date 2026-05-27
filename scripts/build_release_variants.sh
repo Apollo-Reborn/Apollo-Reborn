@@ -42,6 +42,51 @@ extract_apollo_version() {
     rm -f "$plist"
 }
 
+read_source_build_version() {
+    python3 - <<'PY'
+from pathlib import Path
+import json
+
+config = json.loads(Path("distribution/config.json").read_text(encoding="utf-8"))
+print(config["app"]["buildVersion"])
+PY
+}
+
+set_main_app_bundle_versions_in_ipa() {
+    local ipa="$1"
+    local short_version="$2"
+    local build_version="$3"
+    local work plist app_dir
+    work="$(mktemp -d)"
+
+    if ! (cd "$work" && unzip -q "$ipa"); then
+        echo "Warning: could not unzip IPA for version update; leaving as-is."
+        rm -rf "$work"
+        return 0
+    fi
+
+    plist="$(find "$work/Payload" -maxdepth 2 -name Info.plist -path '*.app/Info.plist' -print -quit)"
+    if [[ -z "$plist" || ! -f "$plist" ]]; then
+        echo "Warning: could not find main app Info.plist in $(basename "$ipa"); leaving as-is."
+        rm -rf "$work"
+        return 0
+    fi
+
+    plutil -replace CFBundleShortVersionString -string "$short_version" "$plist"
+    plutil -replace CFBundleVersion -string "$build_version" "$plist"
+
+    app_dir="$(dirname "$plist")"
+    rm -rf "$app_dir/_CodeSignature"
+
+    rm -f "$ipa"
+    (
+        cd "$work"
+        zip -qry "$ipa" Payload
+    )
+
+    rm -rf "$work"
+}
+
 strip_arm64e_from_substrate_in_ipa() {
     local ipa="$1"
     local work
@@ -170,6 +215,7 @@ if not match:
 print(match.group(1).replace("~", "-"))
 PY
 )"
+APP_BUILD_VERSION="$(read_source_build_version)"
 
 BASE_NAME="${NAME_PREFIX}-${APOLLO_VERSION}_Apollo-Reborn-${TWEAK_VERSION}"
 STANDARD_IPA="${OUTPUT_DIR}/${BASE_NAME}.ipa"
@@ -181,6 +227,7 @@ echo "Input IPA     : $IPA_PATH"
 echo "Tweak DEB     : $DEB_PATH"
 echo "Apollo version: $APOLLO_VERSION"
 echo "Tweak version : $TWEAK_VERSION"
+echo "Build version : $APP_BUILD_VERSION"
 echo "Output dir    : $OUTPUT_DIR"
 
 rm -f "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA"
@@ -188,19 +235,23 @@ rm -f "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA"
 echo ""
 echo "[1/4] Building standard injected IPA..."
 bash "${REPO_DIR}/build-ipa.sh" --ipa "$IPA_PATH" --deb "$DEB_PATH" -o "$STANDARD_IPA"
+set_main_app_bundle_versions_in_ipa "$STANDARD_IPA" "$TWEAK_VERSION" "$APP_BUILD_VERSION"
 
 echo ""
 echo "[2/4] Building no-extensions injected IPA..."
 cyan -i "$IPA_PATH" -f "$DEB_PATH" -o "$NOEXT_IPA" -e
 strip_arm64e_from_substrate_in_ipa "$NOEXT_IPA"
+set_main_app_bundle_versions_in_ipa "$NOEXT_IPA" "$TWEAK_VERSION" "$APP_BUILD_VERSION"
 
 echo ""
 echo "[3/4] Applying Liquid Glass patch to standard IPA..."
 bash "${REPO_DIR}/patch.sh" "$STANDARD_IPA" --liquid-glass -o "$GLASS_IPA"
+set_main_app_bundle_versions_in_ipa "$GLASS_IPA" "$TWEAK_VERSION" "$APP_BUILD_VERSION"
 
 echo ""
 echo "[4/4] Applying Liquid Glass patch to no-extensions IPA..."
 bash "${REPO_DIR}/patch.sh" "$NOEXT_IPA" --liquid-glass -o "$NOEXT_GLASS_IPA"
+set_main_app_bundle_versions_in_ipa "$NOEXT_GLASS_IPA" "$TWEAK_VERSION" "$APP_BUILD_VERSION"
 
 echo ""
 echo "Created:"

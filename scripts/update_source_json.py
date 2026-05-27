@@ -98,14 +98,13 @@ def build_version_entry(
 
     apollo_version, tweak_version = parsed
     return {
-        # AltStore's VerifyAppOperation rejects an install when `version` does not
-        # equal the IPA's CFBundleShortVersionString, and (when present) when
-        # `buildVersion` does not equal its CFBundleVersion. Apollo's bundle is
-        # frozen, so both must mirror the IPA exactly: `version` is Apollo's
-        # 1.15.11 and `buildVersion` is its CFBundleVersion (from config). The
-        # incrementing tweak version surfaces via `marketingVersion`, which is
-        # display-only and is what clients show on the store page.
-        "version": apollo_version,
+        # AltStore's VerifyAppOperation rejects an install when `version` does
+        # not equal the IPA's CFBundleShortVersionString, and (when present)
+        # when `buildVersion` does not equal its CFBundleVersion. The release
+        # pipeline rewrites those fields to the tweak version and the source
+        # config's monotonic build number, so the source must mirror that exact
+        # pair.
+        "version": tweak_version,
         "buildVersion": build_version,
         "marketingVersion": tweak_version,
         "date": release.get("published_at"),
@@ -250,7 +249,6 @@ def update_source_json(
     app.update(variant["app"])
 
     build_version = config["app"].get("buildVersion")
-    seen: set[tuple[str, str | None]] = set()
     versions: list[dict[str, Any]] = []
     news: list[dict[str, Any]] = []
 
@@ -265,14 +263,11 @@ def update_source_json(
         )
         if not entry:
             continue
-        # Apollo's bundle is frozen, so every tweak release shares the same
-        # (version, buildVersion). AltStore requires version entries to be
-        # distinct on that pair, so we list only the newest installable build
-        # here (releases are iterated newest-first). The full per-release
-        # changelog lives in `news` below, which is keyed on the release tag.
-        key = (entry["version"], entry["buildVersion"])
-        if key not in seen:
-            seen.add(key)
+        # Historical IPAs were published before the bundle-version rewrite and
+        # still carry Apollo's original 1.15.11/285 plist values. The source
+        # config only knows the current build number, so advertise the newest
+        # installable asset while keeping the full release history in news.
+        if not versions:
             versions.append(entry)
         news.append(build_news_entry(release, config, variant.get("newsLabel")))
 
