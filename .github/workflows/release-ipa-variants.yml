@@ -121,13 +121,6 @@ jobs:
           curl -L --fail --retry 3 "${{ github.event.inputs.apollo_ipa_url }}" -o Apollo.ipa
           unzip -t Apollo.ipa >/dev/null
 
-      - name: Build IPA variants
-        run: |
-          bash ./scripts/build_release_variants.sh \
-            --ipa ./Apollo.ipa \
-            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
-            --output-dir ./dist/out
-
       - name: Collect metadata
         id: meta
         run: |
@@ -148,6 +141,16 @@ jobs:
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate release inputs
+        run: python3 ./scripts/validate_release_inputs.py "${{ steps.meta.outputs.apollo_version }}"
+
+      - name: Build IPA variants
+        run: |
+          bash ./scripts/build_release_variants.sh \
+            --ipa ./Apollo.ipa \
+            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
+            --output-dir ./dist/out
+
       - name: Generate release notes
         run: python3 ./scripts/generate_release_notes.py > RELEASE_NOTES.md
         env:
@@ -165,6 +168,36 @@ jobs:
           files: |
             dist/out/*.ipa
             packages/*.deb
+
+      - name: Summarize release outputs
+        run: |
+          BUILD_VERSION=$(python3 -c 'import json; print(json.load(open("distribution/config.json", encoding="utf-8"))["app"]["buildVersion"])')
+          {
+            echo "## Release"
+            echo ""
+            echo "- Tag: \`${{ steps.meta.outputs.tag_name }}\`"
+            echo "- Name: \`${{ steps.meta.outputs.release_name }}\`"
+            echo "- Apollo version: \`${{ steps.meta.outputs.apollo_version }}\`"
+            echo "- Apollo-Reborn version: \`${{ steps.meta.outputs.tweak_version }}\`"
+            echo "- Build version: \`${BUILD_VERSION}\`"
+            echo ""
+            echo "## IPA assets"
+            echo ""
+            for ipa in dist/out/*.ipa; do
+              echo "- \`$(basename "$ipa")\` ($(wc -c < "$ipa") bytes)"
+            done
+            echo ""
+            echo "## Source URLs"
+            echo ""
+            python3 - <<'PY'
+          import json
+          config = json.load(open("distribution/config.json", encoding="utf-8"))
+          base = config["distribution"]["sourceBaseURL"].rstrip("/")
+          for variant in config["variants"]:
+              print(f"- `{base}/{variant['output']}`")
+          print(f"- `{base}/{config['distribution']['manifestOutput']}`")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update source JSON files
         # Inline update for the automated path (draft=false dispatch). Skipped
@@ -203,6 +236,13 @@ jobs:
             exit 0
           fi
           git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          {
+            echo ""
+            echo "## Source update"
+            echo ""
+            echo "- Commit: \`${SOURCE_COMMIT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main

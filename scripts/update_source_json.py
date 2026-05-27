@@ -14,10 +14,19 @@ from urllib.request import Request, urlopen
 
 
 RELEASE_TAG_RE = re.compile(r"^v(?P<apollo>[^_]+)_(?P<tweak>.+)$")
-ASSET_RE = re.compile(
+LEGACY_ASSET_RE = re.compile(
     r"^(?:(?P<prefix>NO-EXTENSIONS_GLASS|NO-EXTENSIONS|GLASS)_)?"
     r"Apollo-(?P<apollo>[^_]+)_Apollo-Reborn-(?P<tweak>.+)\.ipa$"
 )
+REBORN_ASSET_RE = re.compile(
+    r"^Apollo-Reborn-(?P<tweak>.+?)(?:-(?P<suffix>GLASS-NOEXTENSIONS|NOEXTENSIONS|GLASS))?\.ipa$"
+)
+REBORN_SUFFIX_TO_PREFIX = {
+    None: "",
+    "GLASS": "GLASS",
+    "NOEXTENSIONS": "NO-EXTENSIONS",
+    "GLASS-NOEXTENSIONS": "NO-EXTENSIONS_GLASS",
+}
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -92,11 +101,12 @@ def find_matching_asset(release: dict[str, Any], prefix: str | None) -> dict[str
     wanted = prefix or ""
     for asset in release.get("assets", []):
         name = asset.get("name", "")
-        match = ASSET_RE.match(name)
-        if not match:
-            continue
-        asset_prefix = match.group("prefix") or ""
-        if asset_prefix == wanted:
+        reborn_match = REBORN_ASSET_RE.match(name)
+        if reborn_match and REBORN_SUFFIX_TO_PREFIX[reborn_match.group("suffix")] == wanted:
+            return asset
+
+        legacy_match = LEGACY_ASSET_RE.match(name)
+        if legacy_match and (legacy_match.group("prefix") or "") == wanted:
             return asset
     return None
 
@@ -226,6 +236,51 @@ def write_release_manifest(
     output_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def validate_generated_sources(root: Path, config: dict[str, Any]) -> None:
+    manifest_path = root / config["distribution"]["manifestOutput"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    release = manifest.get("release")
+    if not release:
+        raise ValueError("release-manifest.json has no published release")
+
+    tweak_version = release["tweakVersion"]
+    build_version = str(config["app"]["buildVersion"])
+    variants = manifest.get("variants") or {}
+    expected_variant_keys = {build_variant_key(variant["prefix"]) for variant in config["variants"]}
+    missing_variant_keys = sorted(expected_variant_keys - set(variants))
+    if missing_variant_keys:
+        raise ValueError(f"release-manifest.json is missing variants: {', '.join(missing_variant_keys)}")
+
+    for key, entry in variants.items():
+        if not entry.get("sourceURL"):
+            raise ValueError(f"manifest variant {key} is missing sourceURL")
+        if not entry.get("directDownloadURL"):
+            raise ValueError(f"manifest variant {key} is missing directDownloadURL")
+        if not entry.get("assetName"):
+            raise ValueError(f"manifest variant {key} is missing assetName")
+
+    for variant in config["variants"]:
+        output_path = root / variant["output"]
+        data = json.loads(output_path.read_text(encoding="utf-8"))
+        apps = data.get("apps") or []
+        if len(apps) != 1:
+            raise ValueError(f"{variant['output']} must contain exactly one app")
+
+        app = apps[0]
+        if app.get("version") != tweak_version:
+            raise ValueError(f"{variant['output']} version {app.get('version')} != {tweak_version}")
+        if str(app.get("buildVersion")) != build_version:
+            raise ValueError(f"{variant['output']} buildVersion {app.get('buildVersion')} != {build_version}")
+        if app.get("marketingVersion") != tweak_version:
+            raise ValueError(f"{variant['output']} marketingVersion {app.get('marketingVersion')} != {tweak_version}")
+        if not app.get("downloadURL"):
+            raise ValueError(f"{variant['output']} is missing downloadURL")
+        if data.get("featuredApps") != [config["app"]["bundleIdentifier"]]:
+            raise ValueError(f"{variant['output']} has an invalid featuredApps value")
+
+    print(f"Validated generated sources for Apollo-Reborn {tweak_version} build {build_version}")
+
+
 def build_news_entry(
     release: dict[str, Any],
     config: dict[str, Any],
@@ -339,6 +394,8 @@ def main() -> int:
     manifest_path = root / config["distribution"]["manifestOutput"]
     write_release_manifest(manifest_path, releases, config)
     print(f"Updated {manifest_path}")
+
+    validate_generated_sources(root, config)
 
     return 0
 
