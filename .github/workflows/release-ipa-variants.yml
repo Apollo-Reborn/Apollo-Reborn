@@ -149,27 +149,43 @@ jobs:
 
       - name: Generate release notes
         run: |
-          cat > RELEASE_NOTES.md <<EOF
-          Apollo version: \`v${{ steps.meta.outputs.apollo_version }}\`
-          Apollo-Reborn version: \`v${{ steps.meta.outputs.tweak_version }}\`
+          python3 - <<'PY' > RELEASE_NOTES.md
+          from pathlib import Path
+          import os
+          import re
 
-          ## Included IPA variants
+          apollo_version = os.environ["APOLLO_VERSION"]
+          tweak_version = os.environ["TWEAK_VERSION"]
+          changelog_path = Path("CHANGELOG.md")
 
-          - Standard injected IPA
-          - No Extensions injected IPA
-          - Standard injected IPA + Liquid Glass patch
-          - No Extensions injected IPA + Liquid Glass patch
+          def changelog_entry(version: str) -> str | None:
+              if not changelog_path.exists():
+                  return None
+              text = changelog_path.read_text(encoding="utf-8")
+              heading_re = re.compile(
+                  rf"^## \[v?{re.escape(version)}\](?:\s+-\s+.+)?\s*$",
+                  re.MULTILINE,
+              )
+              match = heading_re.search(text)
+              if not match:
+                  return None
+              next_match = re.search(r"^## \[", text[match.end():], re.MULTILINE)
+              end = match.end() + next_match.start() if next_match else len(text)
+              entry = text[match.end():end].strip()
+              return entry or None
 
-          ## Included tweak packages
-
-          - Rootful `.deb`
-          - Rootless `.deb`
-
-          ## Variant notes
-
-          - **No Extensions** removes Apollo's bundled app extensions so the sideloaded app uses 1 App ID instead of 7.
-          - **GLASS** applies the iOS 26 Liquid Glass binary patch and installs the bundled Liquid Glass icon catalog from this repo.
-          EOF
+          notes = changelog_entry(tweak_version)
+          if notes:
+              print(notes)
+          else:
+              print(f"Apollo version: `v{apollo_version}`")
+              print(f"Apollo-Reborn version: `v{tweak_version}`")
+              print()
+              print("This release includes the standard, No Extensions, GLASS, and No Extensions + GLASS IPA variants.")
+          PY
+        env:
+          APOLLO_VERSION: ${{ steps.meta.outputs.apollo_version }}
+          TWEAK_VERSION: ${{ steps.meta.outputs.tweak_version }}
 
       - name: Create release
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
