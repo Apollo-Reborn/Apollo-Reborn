@@ -212,7 +212,9 @@ control = Path("control").read_text(encoding="utf-8")
 match = re.search(r"^Version:\s*(.+)$", control, re.MULTILINE)
 if not match:
     raise SystemExit("missing Version in control")
-print(match.group(1).replace("~", "-"))
+# Drop the trailing dpkg packaging revision (e.g. 2.14.0-33 -> 2.14.0) so the
+# IPA name and in-app version track the semantic tweak version.
+print(re.sub(r"-[0-9]+$", "", match.group(1).replace("~", "-")))
 PY
 )"
 APP_BUILD_VERSION="$(read_source_build_version)"

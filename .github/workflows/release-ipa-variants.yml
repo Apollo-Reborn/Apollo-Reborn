@@ -133,7 +133,9 @@ jobs:
             echo "Error: could not determine Apollo version from Apollo.ipa" >&2
             exit 1
           fi
-          TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g')
+          # Use the semantic tweak version for the tag/name/IPA, dropping the
+          # trailing dpkg packaging revision in control (e.g. 2.14.0-33 -> 2.14.0).
+          TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g' | sed -E 's/-[0-9]+$//')
           TAG_NAME="v${APOLLO_VERSION}_${TWEAK_VERSION}"
           RELEASE_NAME="Apollo v${APOLLO_VERSION} with Apollo-Reborn v${TWEAK_VERSION}"
           echo "apollo_version=${APOLLO_VERSION}" >> "$GITHUB_OUTPUT"
@@ -184,8 +186,17 @@ jobs:
             echo "## IPA assets"
             echo ""
             for ipa in dist/out/*.ipa; do
-              echo "- \`$(basename "$ipa")\` ($(wc -c < "$ipa") bytes)"
+              echo "- \`$(basename "$ipa")\` ($(du -h "$ipa" | cut -f1))"
             done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize source URLs
+        # Only when this run actually regenerates/publishes the sources. Drafts
+        # (and runs that skip the source update) would otherwise advertise
+        # apps.json/manifest URLs for a release that has not been published.
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        run: |
+          {
             echo ""
             echo "## Source URLs"
             echo ""
@@ -236,6 +247,12 @@ jobs:
             exit 0
           fi
           git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          # Capture the SHA after the push so the summary reflects what actually
+          # landed on main; the rebase above can replay the commit to a new SHA.
           SOURCE_COMMIT=$(git rev-parse HEAD)
           {
             echo ""
@@ -243,7 +260,3 @@ jobs:
             echo ""
             echo "- Commit: \`${SOURCE_COMMIT}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git pull --rebase origin main
-          git push origin HEAD:main

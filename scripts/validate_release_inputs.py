@@ -37,6 +37,13 @@ def read_build_version() -> str:
     return build_version
 
 
+def marketing_version(version: str) -> str:
+    # Drop a trailing dpkg-style numeric revision (e.g. "3.0.0-1" -> "3.0.0") so
+    # the changelog/tag track the human-facing semantic version. Lettered
+    # versions like "2.12.0b" have no "-<number>" tail and are left untouched.
+    return re.sub(r"-[0-9]+$", "", version)
+
+
 def validate_changelog(version: str) -> None:
     changelog = ROOT / "CHANGELOG.md"
     if not changelog.exists():
@@ -68,16 +75,22 @@ def main() -> int:
         return 2
 
     apollo_version = sys.argv[1].strip()
+    if not apollo_version:
+        print("Usage: validate_release_inputs.py <apollo-version>", file=sys.stderr)
+        return 2
+
     try:
-        tweak_version = read_control_version()
+        # The changelog and release tag track the semantic tweak version, not the
+        # dpkg packaging revision carried in control (e.g. "2.14.0-33" -> "2.14.0").
+        release_version = marketing_version(read_control_version())
         build_version = read_build_version()
-        validate_changelog(tweak_version)
-        tag = validate_tag_available(apollo_version, tweak_version)
+        validate_changelog(release_version)
+        tag = validate_tag_available(apollo_version, release_version)
     except ValueError as exc:
         print(f"Release preflight failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Release preflight OK: Apollo {apollo_version}, Apollo-Reborn {tweak_version}, build {build_version}, tag {tag}")
+    print(f"Release preflight OK: Apollo {apollo_version}, Apollo-Reborn {release_version}, build {build_version}, tag {tag}")
     return 0
 
 

@@ -67,13 +67,15 @@ jobs:
             MSG="$MSG for $RELEASE_TAG"
           fi
           git commit -m "$MSG"
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase origin main
+          git push origin HEAD:main
+          # Capture the SHA after the push so the summary reflects what actually
+          # landed on main; the rebase above can replay the commit to a new SHA.
           SOURCE_COMMIT=$(git rev-parse HEAD)
           {
             echo "## Source update"
             echo ""
             echo "- Commit: \`${SOURCE_COMMIT}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          git config --local --unset-all http.https://github.com/.extraheader || true
-          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git pull --rebase origin main
-          git push origin HEAD:main
