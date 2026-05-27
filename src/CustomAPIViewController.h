@@ -5,3 +5,6 @@
     BOOL _isRestoreOperation;
 }
 @end
+
+@interface ApolloBuyUsACoffeeViewController : UITableViewController
+@end

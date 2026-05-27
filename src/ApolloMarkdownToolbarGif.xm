@@ -3,20 +3,19 @@
 #import "ApolloGiphyClient.h"
 #import "CustomAPIViewController.h"
 #import "GiphyPickerViewController.h"
-#import "ApolloRedditMediaUpload.h"
-#import "ApolloState.h"
-#import "Defaults.h"
 
 #import <objc/runtime.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-NSString *ApolloMediaComposerActivePostingBearerToken(void);
-void ApolloRegisterRedditUploadedMedia(NSURL *mediaURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL);
-#ifdef __cplusplus
+NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
+    static NSRegularExpression *regex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:@"!\\[gif\\]\\(giphy\\|([A-Za-z0-9_\\-]+)\\)"
+                                                          options:NSRegularExpressionCaseInsensitive
+                                                            error:nil];
+    });
+    return regex;
 }
-#endif
 
 static char kApolloMarkdownGifToolbarLastAttemptKey;
 static char kApolloMarkdownGifLoggedDiscoveryKey;
@@ -393,11 +392,14 @@ static NSString *ApolloMarkdownGifInsertStringForURL(NSString *urlString, NSStri
     return insert;
 }
 
-static void ApolloMarkdownGifInsertURLInCompose(UIViewController *composeController, NSString *urlString) {
-    if (!composeController || urlString.length == 0) return;
+// Inserts a raw markdown token at the caret with whitespace padding so the
+// token sits on its own line. Used for Reddit's native Giphy embed
+// `![gif](giphy|<id>)` which the server resolves into media_metadata.
+static void ApolloMarkdownGifInsertRawTokenInCompose(UIViewController *composeController, NSString *token) {
+    if (!composeController || token.length == 0) return;
     UITextView *textView = ApolloMarkdownGifFindBodyTextView(composeController);
     if (!textView) {
-        ApolloLog(@"[MarkdownGif] giphy insert failed: no text view");
+        ApolloLog(@"[MarkdownGif] giphy native insert failed: no text view");
         return;
     }
 
@@ -407,28 +409,11 @@ static void ApolloMarkdownGifInsertURLInCompose(UIViewController *composeControl
         selected.location = text.length;
     }
 
-    NSString *insert = ApolloMarkdownGifInsertStringForURL(urlString, text, selected);
+    NSString *insert = ApolloMarkdownGifInsertStringForURL(token, text, selected);
     textView.text = [text stringByReplacingCharactersInRange:selected withString:insert];
     textView.selectedRange = NSMakeRange(selected.location + insert.length, 0);
     ApolloMarkdownGifNotifyTextViewChanged(textView);
-    ApolloLog(@"[MarkdownGif] inserted reddit giphy upload url=%@", urlString);
-}
-
-static UIAlertController *ApolloMarkdownGifPresentUploadSpinner(UIViewController *composeController) {
-    if (!composeController) return nil;
-    UIAlertController *spinner = [UIAlertController alertControllerWithTitle:@"Uploading GIF…"
-                                                                       message:@"\n"
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-    UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    indicator.translatesAutoresizingMaskIntoConstraints = NO;
-    [indicator startAnimating];
-    [spinner.view addSubview:indicator];
-    [NSLayoutConstraint activateConstraints:@[
-        [indicator.centerXAnchor constraintEqualToAnchor:spinner.view.centerXAnchor],
-        [indicator.bottomAnchor constraintEqualToAnchor:spinner.view.bottomAnchor constant:-20],
-    ]];
-    [composeController presentViewController:spinner animated:YES completion:nil];
-    return spinner;
+    ApolloLog(@"[MarkdownGif] inserted native giphy token=%@", token);
 }
 
 static void ApolloMarkdownGifPresentUploadError(UIViewController *composeController, NSString *message) {
@@ -443,57 +428,25 @@ static void ApolloMarkdownGifPresentUploadError(UIViewController *composeControl
 static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewController *composeController) {
     if (!gif || !composeController) return;
 
-    NSString *token = ApolloMediaComposerActivePostingBearerToken();
-    if (token.length == 0) token = [sLatestRedditBearerToken copy];
-    if (token.length == 0) {
-        ApolloLog(@"[MarkdownGif] giphy upload skipped: no bearer token");
-        ApolloMarkdownGifPresentUploadError(composeController, @"Apollo has not captured a Reddit login token yet. Browse Reddit briefly, then try again.");
-        return;
-    }
-    if (!gif.downloadURL) {
-        ApolloLog(@"[MarkdownGif] giphy upload skipped: no download URL for gifID=%@", gif.gifID);
-        ApolloMarkdownGifPresentUploadError(composeController, @"This GIF could not be downloaded from Giphy.");
+    // Reddit natively understands `![gif](giphy|<GIPHY_ID>)` in comment markdown.
+    // The server resolves the Giphy ID to its CDN URL and populates media_metadata
+    // (e: "AnimatedImage", m: "image/gif") server-side. This is the same shape
+    // Reddit's own GIF picker emits and renders correctly in Apollo, reddit.com,
+    // and the official Reddit iOS app. Skip Reddit's media-upload pipeline
+    // entirely for Giphy GIFs — uploading + finalizing isn't needed and the
+    // resulting `![img](<assetID>)` form is invisible in the official iOS app
+    // without a follow-up websocket finalize handshake we don't implement.
+    NSString *gifID = gif.gifID;
+    if (gifID.length == 0) {
+        ApolloLog(@"[MarkdownGif] giphy insert skipped: missing gifID");
+        ApolloMarkdownGifPresentUploadError(composeController, @"This GIF is missing a Giphy ID.");
         return;
     }
 
-    UIAlertController *spinner = ApolloMarkdownGifPresentUploadSpinner(composeController);
-    __weak UIViewController *weakCompose = composeController;
-    [ApolloGiphyClient downloadGIFData:gif completion:^(NSData *data, NSError *error) {
-        UIViewController *compose = weakCompose;
-        if (!compose) return;
-        if (error || data.length == 0) {
-            ApolloLog(@"[MarkdownGif] giphy download failed: %@", error.localizedDescription ?: @"empty data");
-            [spinner dismissViewControllerAnimated:YES completion:^{
-                ApolloMarkdownGifPresentUploadError(compose, error.localizedDescription ?: @"Could not download GIF from Giphy.");
-            }];
-            return;
-        }
-
-        NSString *filename = [NSString stringWithFormat:@"giphy-%@.gif", gif.gifID.length > 0 ? gif.gifID : NSUUID.UUID.UUIDString];
-        NSString *userAgent = sUserAgent.length > 0 ? sUserAgent : defaultUserAgent;
-        ApolloUploadMediaDataToRedditCancellable(data, filename, @"image/gif", token, userAgent, nil,
-            ^(NSURL *mediaURL, NSString *assetID, NSString *webSocketURL, NSError *uploadError) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    UIViewController *activeCompose = weakCompose;
-                    if (!activeCompose) return;
-                    void (^finish)(void) = ^{
-                        if (uploadError || !mediaURL || assetID.length == 0) {
-                            ApolloLog(@"[MarkdownGif] giphy reddit upload failed: %@", uploadError.localizedDescription ?: @"missing media URL");
-                            ApolloMarkdownGifPresentUploadError(activeCompose, uploadError.localizedDescription ?: @"Reddit rejected the GIF upload.");
-                            return;
-                        }
-                        ApolloRegisterRedditUploadedMedia(mediaURL, assetID, @"image/gif", webSocketURL);
-                        ApolloMarkdownGifInsertURLInCompose(activeCompose, mediaURL.absoluteString);
-                        ApolloLog(@"[MarkdownGif] giphy reddit upload ok assetID=%@", assetID);
-                    };
-                    if (spinner.presentingViewController) {
-                        [spinner dismissViewControllerAnimated:YES completion:finish];
-                    } else {
-                        finish();
-                    }
-                });
-            });
-    }];
+    NSString *token = [NSString stringWithFormat:@"![gif](giphy|%@)", gifID];
+    ApolloMarkdownGifInsertRawTokenInCompose(composeController, token);
+    // ApolloMarkdownGifInsertRawTokenInCompose already logs the full token; no
+    // need to log the bare gifID a second time here.
 }
 
 @implementation ApolloMarkdownGifTapTarget

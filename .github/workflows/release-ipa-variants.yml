@@ -1,0 +1,221 @@
+name: Build and release IPA variants
+
+on:
+  workflow_dispatch:
+    inputs:
+      apollo_ipa_url:
+        description: 'Direct URL to a decrypted Apollo IPA or prepared Apollo base IPA'
+        required: true
+        type: string
+        default: 'https://downloads.apolloreborn.app/apollobase.ipa'
+      prerelease:
+        description: 'Mark GitHub release as prerelease'
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: 'Create the GitHub release as a draft'
+        required: false
+        default: true
+        type: boolean
+      update_sources:
+        description: 'Regenerate apps.json source files and push them back to main'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Do not cancel a release mid-run: a cancelled run can leave a created
+  # release without its committed source JSON / manifest update.
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build four IPA variants
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install ldid dpkg make
+
+      - name: Add GNU make to PATH
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Theos
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: theos/theos
+          ref: 9bc73406cf80b711ef4d02c15ff1dedc4478a275 # master @ 2026-04-09
+          path: theos
+          submodules: recursive
+
+      - name: Build rootful tweak package
+        run: make package FINALPACKAGE=1
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Locate rootful package
+        id: rootful_deb
+        run: |
+          DEB_PATH=$(ls -1t packages/*.deb | head -1)
+          if [ -z "$DEB_PATH" ]; then
+            echo "Error: no rootful .deb produced by make package"
+            exit 1
+          fi
+          echo "deb_path=$DEB_PATH" >> "$GITHUB_OUTPUT"
+          echo "Rootful tweak: $DEB_PATH"
+
+      - name: Clean before rootless build
+        run: make clean
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Build rootless tweak package
+        run: make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Rename rootless package
+        run: |
+          ROOTLESS_DEB=$(ls packages/*-arm64.deb | head -1)
+          if [ -z "$ROOTLESS_DEB" ]; then
+            echo "Error: no rootless .deb produced by make package"
+            exit 1
+          fi
+          ROOTLESS_RENAMED="${ROOTLESS_DEB%-arm64.deb}-arm64_rootless.deb"
+          mv "$ROOTLESS_DEB" "$ROOTLESS_RENAMED"
+          echo "Rootless tweak: $ROOTLESS_RENAMED"
+
+      - name: Install cyan
+        run: |
+          # cyan (the IPA injector) is not on PyPI under that name; the PyPI
+          # "cyan" package is an unrelated placeholder. Install asdfzxcvbn's
+          # pyzule-rw pinned to a tag so a cyan regression can't surprise a release.
+          # Use a venv: the runner's Homebrew Python is externally managed
+          # (PEP 668), so a system-wide pip install is rejected. Adding the venv
+          # bin to PATH makes `cyan` available to later steps.
+          python3 -m venv "$RUNNER_TEMP/cyan-venv"
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/cyan-venv/bin/python" -m pip install \
+            "https://github.com/asdfzxcvbn/pyzule-rw/archive/refs/tags/v1.4.4.zip"
+          echo "$RUNNER_TEMP/cyan-venv/bin" >> "$GITHUB_PATH"
+          # Fail loudly here if cyan isn't runnable, rather than later in the build.
+          "$RUNNER_TEMP/cyan-venv/bin/cyan" --help >/dev/null
+          echo "cyan installed: $RUNNER_TEMP/cyan-venv/bin/cyan"
+
+      - name: Download Apollo IPA
+        run: |
+          curl -L --fail --retry 3 "${{ github.event.inputs.apollo_ipa_url }}" -o Apollo.ipa
+          unzip -t Apollo.ipa >/dev/null
+
+      - name: Build IPA variants
+        run: |
+          bash ./scripts/build_release_variants.sh \
+            --ipa ./Apollo.ipa \
+            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
+            --output-dir ./dist/out
+
+      - name: Collect metadata
+        id: meta
+        run: |
+          # Read the version with plutil so it works whether the IPA carries a
+          # binary or XML Info.plist (App Store IPAs ship a binary plist).
+          unzip -p Apollo.ipa 'Payload/*.app/Info.plist' > Apollo-Info.plist
+          APOLLO_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - Apollo-Info.plist | tr -d '[:space:]')
+          rm -f Apollo-Info.plist
+          if [ -z "$APOLLO_VERSION" ]; then
+            echo "Error: could not determine Apollo version from Apollo.ipa" >&2
+            exit 1
+          fi
+          TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g')
+          TAG_NAME="v${APOLLO_VERSION}_${TWEAK_VERSION}"
+          RELEASE_NAME="Apollo v${APOLLO_VERSION} with Apollo-Reborn v${TWEAK_VERSION}"
+          echo "apollo_version=${APOLLO_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tweak_version=${TWEAK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        run: |
+          cat > RELEASE_NOTES.md <<EOF
+          Apollo version: \`v${{ steps.meta.outputs.apollo_version }}\`
+          Apollo-Reborn version: \`v${{ steps.meta.outputs.tweak_version }}\`
+
+          ## Included IPA variants
+
+          - Standard injected IPA
+          - No Extensions injected IPA
+          - Standard injected IPA + Liquid Glass patch
+          - No Extensions injected IPA + Liquid Glass patch
+
+          ## Included tweak packages
+
+          - Rootful `.deb`
+          - Rootless `.deb`
+
+          ## Variant notes
+
+          - **No Extensions** removes Apollo's bundled app extensions so the sideloaded app uses 1 App ID instead of 7.
+          - **GLASS** applies the iOS 26 Liquid Glass binary patch and installs the bundled Liquid Glass icon catalog from this repo.
+          EOF
+
+      - name: Create release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.release_name }}
+          body_path: RELEASE_NOTES.md
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            dist/out/*.ipa
+            packages/*.deb
+
+      - name: Update source JSON files
+        # Inline update for the automated path (draft=false dispatch). Skipped
+        # for drafts: their assets aren't publicly downloadable, so committing
+        # source JSON pointing at them would 404. Drafts are instead handled
+        # when published manually -- see publish-sources.yml, which fires on the
+        # release:released event. A release created here uses GITHUB_TOKEN, which
+        # does NOT fire that event, so the two paths never double-run. The final
+        # protected push is authenticated with a dedicated GitHub App token so
+        # this can update main without opening a PR.
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 ./scripts/update_source_json.py
+
+      - name: Generate source updater app token
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        id: source_updater_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SOURCE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.SOURCE_UPDATER_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Commit updated source JSON files
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        env:
+          APP_TOKEN: ${{ steps.source_updater_token.outputs.token }}
+        run: |
+          git config user.name "apollo-source-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps.json apps_noext.json apps_glass.json apps_noext_glass.json release-manifest.json
+          if git diff --cached --quiet; then
+            echo "No source JSON changes to commit."
+            exit 0
+          fi
+          git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase origin main
+          git push origin HEAD:main

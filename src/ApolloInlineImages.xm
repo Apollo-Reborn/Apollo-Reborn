@@ -2597,9 +2597,22 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
     ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
 
-    // Center the (possibly narrower) container horizontally.
-    CGFloat horizontalInset = MAX(0.0, (rowMaxWidth - containerWidth) * 0.5);
-    UIEdgeInsets insets = UIEdgeInsetsMake(4, horizontalInset, 4, horizontalInset);
+    // Position the container horizontally per user preference.
+    // Only has a visual effect when containerWidth < rowMaxWidth (tall portrait
+    // images, height-capped images). Wide / full-row images are unaffected.
+    CGFloat slack = MAX(0.0, rowMaxWidth - containerWidth);
+    CGFloat leftInset, rightInset;
+    if (sInlineImageAlignment == ApolloInlineImageAlignmentLeft) {
+        leftInset = 0;
+        rightInset = slack;
+    } else if (sInlineImageAlignment == ApolloInlineImageAlignmentRight) {
+        leftInset = slack;
+        rightInset = 0;
+    } else {
+        leftInset = slack * 0.5;
+        rightInset = slack * 0.5;
+    }
+    UIEdgeInsets insets = UIEdgeInsetsMake(4, leftInset, 4, rightInset);
     ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     return insetSpec;

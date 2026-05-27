@@ -6,6 +6,7 @@
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloSubredditInfoCache.h"
 #import "UserDefaultConstants.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
@@ -34,6 +35,9 @@ static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
 
 @interface ApolloThanksToViewController : UITableViewController
 @end
+
+static NSString *const kApolloRebornSubredditName = @"ApolloReborn";
+static char kAboutSubredditIconTaskKey;
 
 @implementation CustomAPIViewController
 
@@ -438,7 +442,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)setLinkPreviewMode:(NSInteger)mode body:(BOOL)body {
-    NSInteger row = body ? 5 : 6;
+    NSInteger row = (body ? 6 : 7) - (sEnableInlineImages ? 0 : 1);
     NSString *key = body ? UDKeyLinkPreviewBodyMode : UDKeyLinkPreviewCommentsMode;
     if (body) {
         sLinkPreviewBodyMode = mode;
@@ -479,7 +483,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                           @"cardColor": @(color),
                                                       }];
 
-    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:7 inSection:SectionMedia];
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:8 - (sEnableInlineImages ? 0 : 1) inSection:SectionMedia];
     if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
         [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
     }
@@ -574,10 +578,14 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.title = @"Custom API";
+    self.title = @"Apollo Reborn Options";
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self apollo_disableAutoHideTabBarIdleIfUnsupported];
     [self apollo_applyTheme];
+
+    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
+        (void)info;
+    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -630,10 +638,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
         case SectionGeneral: return 8;
-        case SectionMedia: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars] ? 12 : 11;
+        case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
         case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
-        case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
+        case SectionAbout: return 5; // GitHub + Reddit + Thanks To + Export Logs + Version
         default: return 0;
     }
 }
@@ -1011,6 +1019,8 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (UITableViewCell *)mediaCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
+    // When the alignment row is hidden, physical rows ≥ 5 map to the next logical row
+    if (row >= 5 && !sEnableInlineImages) row += 1;
     switch (row) {
         case 0: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_GIFFallbackFormat"];
@@ -1059,6 +1069,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableInlineImages]
                                            action:@selector(inlineImagesSwitchToggled:)];
         case 5: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_InlineImageAlignment"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_InlineImageAlignment"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Inline Media Alignment";
+            cell.detailTextLabel.text = [self inlineImageAlignmentText];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
+        case 6: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewBodyMode"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewBodyMode"];
@@ -1070,7 +1092,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewCommentsMode"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewCommentsMode"];
@@ -1082,7 +1104,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 7: {
+        case 8: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_LinkPreviewCardColor"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Media_LinkPreviewCardColor"];
@@ -1094,17 +1116,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
             return cell;
         }
-        case 8:
+        case 9:
             return [self switchCellWithIdentifier:@"Cell_Media_UserAvatars"
                                             label:@"Show User Profile Pictures"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]
                                            action:@selector(userAvatarsSwitchToggled:)];
-        case 9:
+        case 10:
             return [self switchCellWithIdentifier:@"Cell_Media_ProfileTabAvatar"
                                             label:@"Profile Picture Tab Icon"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon]
                                            action:@selector(profileTabAvatarSwitchToggled:)];
-        case 10: {
+        case 11: {
             BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
             if (avatarsOn) {
                 UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearAvatarCache"];
@@ -1125,7 +1147,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 11: {
+        case 12: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Media_ClearLinkPreviewCache"];
@@ -1267,6 +1289,16 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                subtitle:@"@Apollo-Reborn"
                                                b64Image:B64Github];
         case 1: {
+            UITableViewCell *cell = [self subtitleCellWithIdentifier:@"Cell_About_Reddit"
+                                                                  title:@"Apollo Reborn Subreddit"
+                                                               subtitle:@"r/ApolloReborn"
+                                                               b64Image:nil];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            [self configureAboutSubredditCell:cell subredditName:kApolloRebornSubredditName];
+            return cell;
+        }
+        case 2: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_ThanksTo"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_About_ThanksTo"];
@@ -1277,7 +1309,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 2: {
+        case 3: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_Logs"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_About_Logs"];
@@ -1287,7 +1319,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 3: {
+        case 4: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_Version"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_About_Version"];
@@ -1314,6 +1346,58 @@ typedef NS_ENUM(NSInteger, Tag) {
     }];
 }
 
+- (void)configureAboutSubredditCell:(UITableViewCell *)cell subredditName:(NSString *)subredditName {
+    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
+    if (existingTask) {
+        [existingTask cancel];
+        objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    cell.imageView.image = ApolloEmojiSettingsIcon(@"👽", [UIColor systemOrangeColor], 32.0);
+
+    ApolloSubredditInfo *cached = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
+    if (cached.iconURL) {
+        [self loadAboutSubredditIconFromURL:cached.iconURL intoCell:cell];
+    }
+
+    __weak UITableViewCell *weakCell = cell;
+    __weak CustomAPIViewController *weakSelf = self;
+    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:subredditName completion:^(ApolloSubredditInfo *info) {
+        __strong UITableViewCell *strongCell = weakCell;
+        CustomAPIViewController *strongSelf = weakSelf;
+        if (!strongCell || !strongSelf || !info.iconURL) return;
+        [strongSelf loadAboutSubredditIconFromURL:info.iconURL intoCell:strongCell];
+    }];
+}
+
+- (void)loadAboutSubredditIconFromURL:(NSURL *)iconURL intoCell:(UITableViewCell *)cell {
+    if (!iconURL || !cell) return;
+
+    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
+    if (existingTask) {
+        [existingTask cancel];
+    }
+
+    __weak UITableViewCell *weakCell = cell;
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:iconURL
+                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error || data.length == 0) return;
+        UIImage *image = [UIImage imageWithData:data];
+        if (!image) return;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UITableViewCell *strongCell = weakCell;
+            typeof(self) strongSelf = weakSelf;
+            if (!strongCell || !strongSelf) return;
+            strongCell.imageView.image = [strongSelf roundedImage:image size:32 cornerRadius:16];
+            [strongCell setNeedsLayout];
+        });
+    }];
+    objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, task, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [task resume];
+}
+
 - (UITableViewCell *)subtitleCellWithIdentifier:(NSString *)identifier
                                           title:(NSString *)title
                                        subtitle:(NSString *)subtitle
@@ -1325,8 +1409,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     cell.textLabel.text = title;
     cell.detailTextLabel.text = subtitle;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    if (b64Image) {
+    if (b64Image.length > 0) {
         cell.imageView.image = [self roundedImage:[self decodeBase64ToImage:b64Image] size:32 cornerRadius:5];
+    } else if (!cell.imageView.image) {
+        cell.imageView.image = nil;
     }
     return cell;
 }
@@ -1437,8 +1523,13 @@ typedef NS_ENUM(NSInteger, Tag) {
         if (indexPath.row == 0) {
             [self presentURLInApolloBrowser:[NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn"]];
         } else if (indexPath.row == 1) {
-            [self pushThanksToViewController];
+            NSURL *subredditURL = [NSURL URLWithString:@"https://reddit.com/r/ApolloReborn/"];
+            if (!ApolloRouteResolvedURLViaApolloScheme(subredditURL)) {
+                [self presentURLInApolloBrowser:subredditURL];
+            }
         } else if (indexPath.row == 2) {
+            [self pushThanksToViewController];
+        } else if (indexPath.row == 3) {
             [self exportLogs];
         }
     } else if (indexPath.section == SectionSubreddits) {
@@ -1448,22 +1539,24 @@ typedef NS_ENUM(NSInteger, Tag) {
         }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-        BOOL avatarsOn = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
-        if (indexPath.row == 0) {
+        NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
+        if (row == 0) {
             [self presentPreferredGIFFallbackFormatSheetFromSourceView:cell];
-        } else if (indexPath.row == 1) {
+        } else if (row == 1) {
             [self presentUnmuteCommentsVideosModeSheetFromSourceView:cell];
-        } else if (indexPath.row == 2) {
+        } else if (row == 2) {
             [self presentImageUploadProviderSheetFromSourceView:cell];
-        } else if (indexPath.row == 5) {
+        } else if (row == 5) {
+            [self presentInlineImageAlignmentSheetFromSourceView:cell];
+        } else if (row == 6) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:YES];
-        } else if (indexPath.row == 6) {
+        } else if (row == 7) {
             [self presentLinkPreviewModeSheetFromSourceView:cell body:NO];
-        } else if (indexPath.row == 7) {
+        } else if (row == 8) {
             [self presentLinkPreviewCardColorSheetFromSourceView:cell];
-        } else if (indexPath.row == 10 && avatarsOn) {
+        } else if (row == 11 && sShowUserAvatars) {
             [self promptClearProfilePictureCacheFromSourceView:cell];
-        } else if ((indexPath.row == 10 && !avatarsOn) || (indexPath.row == 11 && avatarsOn)) {
+        } else if ((row == 11 && !sShowUserAvatars) || (row == 12 && sShowUserAvatars)) {
             [self promptClearLinkPreviewCacheFromSourceView:cell];
         }
     } else if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) {
@@ -1501,9 +1594,12 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
     if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
-    if (indexPath.section == SectionMedia && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 5 || indexPath.row == 6 || indexPath.row == 7 || indexPath.row == 10 || indexPath.row == 11)) return YES;
     if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
-    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
+    if (indexPath.section == SectionMedia) {
+        NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
+        return (row == 0 || row == 1 || row == 2 || row == 5 || row == 6 || row == 7 || row == 8 || row == 11 || row == 12);
+    }
+    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 3)) return YES;
     if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) return YES;
     return NO;
 }
@@ -1532,7 +1628,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
                     UIPopoverPresentationController *popover = activityVC.popoverPresentationController;
                     if (popover) {
-                        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:2 inSection:SectionAbout];
+                        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:3 inSection:SectionAbout];
                         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
                         popover.sourceView = cell ?: self.view;
                         popover.sourceRect = cell ? cell.bounds : CGRectZero;
@@ -1639,12 +1735,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             @"\t- **App description:** Apollo API Key *(or anything brief)*\n"
             @"5. Check the box to agree to the terms, then click **Create API Key**.\n"
             @"6. On your dashboard, click your new API key to copy it.\n"
-            @"7. Paste it into **Giphy API Key** under Custom API → API Keys.\n\n"
+            @"7. Paste it into **Giphy API Key** under Apollo Reborn Options → API Keys.\n\n"
             @"**Img Chest API Key**\n\n"
             @"1. Go to [imgchest.com](https://imgchest.com/) and click **Register** to create an account.\n"
             @"2. After signing in, open the menu from your profile picture and choose **API**.\n"
             @"3. Click **Create API Token**, give it a name, then click **Create**.\n"
-            @"4. Copy the token and paste it into **Img Chest API Key** under Custom API → API Keys.";
+            @"4. Copy the token and paste it into **Img Chest API Key** under Apollo Reborn Options → API Keys.";
 
         NSAttributedStringMarkdownParsingOptions *markdownOptions = [[NSAttributedStringMarkdownParsingOptions alloc] init];
         markdownOptions.interpretedSyntax = NSAttributedStringMarkdownInterpretedSyntaxInlineOnly;
@@ -1671,12 +1767,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             @"   - App description: Apollo API Key (or anything brief)\n"
             @"5. Check the box to agree to the terms, then click Create API Key.\n"
             @"6. On your dashboard, click your new API key to copy it.\n"
-            @"7. Paste it into Giphy API Key under Custom API → API Keys.\n\n"
+            @"7. Paste it into Giphy API Key under Apollo Reborn Options → API Keys.\n\n"
             @"Img Chest API Key\n\n"
             @"1. Go to https://imgchest.com/ and click Register to create an account.\n"
             @"2. After signing in, open the menu from your profile picture and choose API.\n"
             @"3. Click Create API Token, give it a name, then click Create.\n"
-            @"4. Copy the token and paste it into Img Chest API Key under Custom API → API Keys.";
+            @"4. Copy the token and paste it into Img Chest API Key under Apollo Reborn Options → API Keys.";
     }
     textView.textColor = UIColor.labelColor;
     textView.textContainerInset = UIEdgeInsetsMake(16, 16, 16, 16);
@@ -1848,13 +1944,14 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sShowUserAvatars forKey:UDKeyShowUserAvatars];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloUserAvatarsToggleChangedNotification" object:nil];
     if (sShowUserAvatars == wasOn) return;
-    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:10 inSection:SectionMedia]];
+    NSInteger offset = sEnableInlineImages ? 0 : 1;
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:11 - offset inSection:SectionMedia]];
     if (sShowUserAvatars) {
         [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     } else {
         [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
     }
-    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 11 : 10) inSection:SectionMedia]]
+    [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(sShowUserAvatars ? 12 : 11) - offset inSection:SectionMedia]]
                           withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -1878,8 +1975,60 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)inlineImagesSwitchToggled:(UISwitch *)sender {
+    BOOL wasOn = sEnableInlineImages;
     sEnableInlineImages = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sEnableInlineImages forKey:UDKeyEnableInlineImages];
+    if (sEnableInlineImages == wasOn) return;
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:5 inSection:SectionMedia]];
+    if (sEnableInlineImages) {
+        [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (NSString *)inlineImageAlignmentText {
+    switch (sInlineImageAlignment) {
+        case ApolloInlineImageAlignmentLeft:  return @"Left";
+        case ApolloInlineImageAlignmentRight: return @"Right";
+        default:                              return @"Center";
+    }
+}
+
+- (void)presentInlineImageAlignmentSheetFromSourceView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Inline Media Alignment"
+                                                                   message:@"Choose how inline media is positioned"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSString *centerTitle = (sInlineImageAlignment == ApolloInlineImageAlignmentCenter) ? @"Center (Current)" : @"Center";
+    NSString *leftTitle   = (sInlineImageAlignment == ApolloInlineImageAlignmentLeft)   ? @"Left (Current)"   : @"Left";
+    NSString *rightTitle  = (sInlineImageAlignment == ApolloInlineImageAlignmentRight)  ? @"Right (Current)"  : @"Right";
+
+    [sheet addAction:[UIAlertAction actionWithTitle:centerTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentCenter];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:leftTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentLeft];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:rightTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setInlineImageAlignment:ApolloInlineImageAlignmentRight];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)setInlineImageAlignment:(ApolloInlineImageAlignment)alignment {
+    sInlineImageAlignment = alignment;
+    [[NSUserDefaults standardUserDefaults] setInteger:sInlineImageAlignment forKey:UDKeyInlineImageAlignment];
+    NSIndexPath *alignmentRow = [NSIndexPath indexPathForRow:5 inSection:SectionMedia];
+    [self.tableView reloadRowsAtIndexPaths:@[alignmentRow] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (void)promptClearCustomSubredditBannersFromSourceView:(__unused UIView *)sourceView {
@@ -2192,33 +2341,103 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 }
 
 - (void)presentURLInApolloBrowser:(NSURL *)url {
-    if (!url) return;
-    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
-    UIViewController *browser = nil;
-    if (apolloSafariClass) {
-        id alloced = [apolloSafariClass alloc];
-        SEL initSel = NSSelectorFromString(@"initWithURL:");
-        if ([alloced respondsToSelector:initSel]) {
-            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
-            browser = msgSend(alloced, initSel, url);
-        }
-    }
-    if (browser) {
-        [self presentViewController:browser animated:YES completion:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
+    ApolloPresentWebURLFromViewController(self, url);
 }
 
 @end
 
 #pragma mark - ApolloThanksToViewController
 
-static NSString *const kThanksToContributorsURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
+static NSString *const kContributorsJSONURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
 static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
+static NSString *ApolloContributorGitHubLogin(NSDictionary *contributor) {
+    NSString *github = [contributor[@"github"] isKindOfClass:[NSString class]] ? contributor[@"github"] : nil;
+    return github.length > 0 ? github : nil;
+}
+
+static NSString *ApolloContributorDisplayName(NSDictionary *contributor) {
+    NSString *github = ApolloContributorGitHubLogin(contributor);
+    if ([github isEqualToString:@"icpryde"]) return @"iCpryde";
+
+    NSString *display = [contributor[@"displayName"] isKindOfClass:[NSString class]] ? contributor[@"displayName"] : nil;
+    if (display.length > 0) return display;
+    if (github.length > 0) return github;
+    NSString *idStr = [contributor[@"id"] isKindOfClass:[NSString class]] ? contributor[@"id"] : nil;
+    return idStr ?: @"";
+}
+
+static BOOL ApolloContributorIsMaintainer(NSDictionary *contributor) {
+    NSString *role = [contributor[@"role"] isKindOfClass:[NSString class]] ? contributor[@"role"] : nil;
+    return role.length > 0 && [role caseInsensitiveCompare:@"maintainer"] == NSOrderedSame;
+}
+
+static NSArray<NSDictionary *> *ApolloContributorsForRole(NSArray<NSDictionary *> *rawContributors, NSString *role) {
+    NSMutableArray<NSDictionary *> *matched = [NSMutableArray array];
+    for (NSDictionary *contributor in rawContributors) {
+        NSString *contributorRole = [contributor[@"role"] isKindOfClass:[NSString class]] ? contributor[@"role"] : nil;
+        if ([contributorRole caseInsensitiveCompare:role] == NSOrderedSame) {
+            [matched addObject:contributor];
+        }
+    }
+    return matched;
+}
+
+static NSArray<NSDictionary *> *ApolloBuyCoffeeEntriesFromContributors(NSArray<NSDictionary *> *rawContributors) {
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (NSDictionary *contributor in rawContributors) {
+        if (![contributor isKindOfClass:[NSDictionary class]]) continue;
+        NSString *url = [contributor[@"buyMeACoffeeUrl"] isKindOfClass:[NSString class]] ? contributor[@"buyMeACoffeeUrl"] : nil;
+        if (url.length == 0) continue;
+        [entries addObject:@{
+            @"name": ApolloContributorDisplayName(contributor),
+            @"url": url,
+        }];
+    }
+    return entries;
+}
+
+static NSArray<NSDictionary *> *ApolloRawContributorsFromJSONDictionary(NSDictionary *json) {
+    NSMutableArray<NSDictionary *> *rawContributors = [NSMutableArray array];
+    id contribObj = json[@"contributors"];
+    if (![contribObj isKindOfClass:[NSArray class]]) return rawContributors;
+    for (id item in (NSArray *)contribObj) {
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            [rawContributors addObject:item];
+        }
+    }
+    return rawContributors;
+}
+
+static NSArray<NSDictionary *> *ApolloThanksToGroupedSections(NSArray<NSDictionary *> *rawContributors) {
+    if (rawContributors.count == 0) return @[];
+
+    NSMutableArray<NSDictionary *> *sections = [NSMutableArray array];
+
+    NSArray<NSDictionary *> *maintainers = ApolloContributorsForRole(rawContributors, @"maintainer");
+    if (maintainers.count > 0) {
+        [sections addObject:@{@"title": @"Maintainers", @"contributors": maintainers}];
+    }
+
+    NSArray<NSDictionary *> *codeContributors = ApolloContributorsForRole(rawContributors, @"code");
+    if (codeContributors.count > 0) {
+        [sections addObject:@{@"title": @"Code", @"contributors": codeContributors}];
+    }
+
+    NSArray<NSDictionary *> *designContributors = ApolloContributorsForRole(rawContributors, @"design");
+    if (designContributors.count > 0) {
+        [sections addObject:@{@"title": @"Icon & Design", @"contributors": designContributors}];
+    }
+
+    return sections;
+}
+
+static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
+    return ApolloContributorIsMaintainer(contributor);
+}
+
 @implementation ApolloThanksToViewController {
-    NSArray<NSDictionary *> *_contributors;
+    NSArray<NSDictionary *> *_sections;
     BOOL _isLoading;
     NSString *_errorMessage;
 }
@@ -2226,7 +2445,7 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        _contributors = @[];
+        _sections = @[];
     }
     return self;
 }
@@ -2243,11 +2462,11 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 }
 
 - (void)loadContributors {
-    _isLoading = (_contributors.count == 0);
+    _isLoading = (_sections.count == 0);
     _errorMessage = nil;
     [self.tableView reloadData];
 
-    NSURL *url = [NSURL URLWithString:kThanksToContributorsURL];
+    NSURL *url = [NSURL URLWithString:kContributorsJSONURL];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
                                                        cachePolicy:NSURLRequestReloadRevalidatingCacheData
                                                    timeoutInterval:15];
@@ -2266,7 +2485,7 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         }
 
         NSString *failureMessage = nil;
-        NSMutableArray<NSDictionary *> *parsed = [NSMutableArray array];
+        NSArray<NSDictionary *> *parsedSections = @[];
 
         if (error) {
             failureMessage = error.localizedDescription;
@@ -2275,25 +2494,19 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         } else {
             id contribObj = json[@"contributors"];
             if ([contribObj isKindOfClass:[NSArray class]]) {
-                for (id item in (NSArray *)contribObj) {
-                    if (![item isKindOfClass:[NSDictionary class]]) continue;
-                    NSDictionary *c = item;
-                    NSString *role = [c[@"role"] isKindOfClass:[NSString class]] ? c[@"role"] : nil;
-                    // Skip maintainer (already in About → Open Source on GitHub).
-                    if ([role caseInsensitiveCompare:@"maintainer"] == NSOrderedSame) continue;
-                    [parsed addObject:c];
-                }
+                NSArray<NSDictionary *> *rawContributors = ApolloRawContributorsFromJSONDictionary(json);
+                parsedSections = ApolloThanksToGroupedSections(rawContributors);
             }
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             strongSelf->_isLoading = NO;
             [strongSelf.refreshControl endRefreshing];
-            if (failureMessage && parsed.count == 0) {
+            if (failureMessage && parsedSections.count == 0) {
                 strongSelf->_errorMessage = failureMessage;
             } else {
                 strongSelf->_errorMessage = nil;
-                strongSelf->_contributors = parsed;
+                strongSelf->_sections = parsedSections;
             }
             [strongSelf.tableView reloadData];
         });
@@ -2303,13 +2516,35 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
 #pragma mark - Table
 
+- (NSDictionary *)sectionAtIndex:(NSInteger)section {
+    if (section < 0 || section >= (NSInteger)_sections.count) return nil;
+    return _sections[(NSUInteger)section];
+}
+
+- (NSDictionary *)contributorAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *section = [self sectionAtIndex:indexPath.section];
+    NSArray *contributors = [section[@"contributors"] isKindOfClass:[NSArray class]] ? section[@"contributors"] : nil;
+    if (!contributors || indexPath.row < 0 || indexPath.row >= (NSInteger)contributors.count) return nil;
+    return contributors[(NSUInteger)indexPath.row];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
+    if (_isLoading || _errorMessage) return 1;
+    return (NSInteger)_sections.count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (_isLoading || _errorMessage) return nil;
+    NSDictionary *sectionInfo = [self sectionAtIndex:section];
+    NSString *title = [sectionInfo[@"title"] isKindOfClass:[NSString class]] ? sectionInfo[@"title"] : nil;
+    return title.length > 0 ? title : nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (_isLoading || _errorMessage) return 1;
-    return (NSInteger)_contributors.count;
+    NSDictionary *sectionInfo = [self sectionAtIndex:section];
+    NSArray *contributors = [sectionInfo[@"contributors"] isKindOfClass:[NSArray class]] ? sectionInfo[@"contributors"] : nil;
+    return (NSInteger)contributors.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -2339,10 +2574,14 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kThanksToCellId];
     }
 
-    NSDictionary *c = _contributors[indexPath.row];
+    NSDictionary *c = [self contributorAtIndexPath:indexPath];
+    if (!c) return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+
     cell.textLabel.text = [self displayNameForContributor:c];
-    cell.detailTextLabel.text = [self roleLabelForContributor:c];
-    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.detailTextLabel.text = nil;
+    cell.textLabel.font = ApolloThanksToContributorIsPinned(c)
+        ? [UIFont boldSystemFontOfSize:17]
+        : [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.imageView.image = nil;
     return cell;
@@ -2357,34 +2596,24 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         return;
     }
 
-    NSDictionary *c = _contributors[indexPath.row];
+    NSDictionary *c = [self contributorAtIndexPath:indexPath];
+    if (!c) return;
+
     NSURL *url = [self profileURLForContributor:c];
     if (!url) return;
 
-    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
-    UIViewController *browser = nil;
-    if (apolloSafariClass) {
-        id alloced = [apolloSafariClass alloc];
-        SEL initSel = NSSelectorFromString(@"initWithURL:");
-        if ([alloced respondsToSelector:initSel]) {
-            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
-            browser = msgSend(alloced, initSel, url);
-        }
-    }
-    if (browser) {
-        [self presentViewController:browser animated:YES completion:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
+    ApolloPresentWebURLFromViewController(self, url);
 }
 
 #pragma mark - Contributor formatting
 
 - (NSString *)displayNameForContributor:(NSDictionary *)c {
+    NSString *github = ApolloContributorGitHubLogin(c);
+    if ([github isEqualToString:@"icpryde"]) return @"@iCpryde";
+    if (github.length > 0) return [@"@" stringByAppendingString:github];
+
     NSString *display = [c[@"displayName"] isKindOfClass:[NSString class]] ? c[@"displayName"] : nil;
     if (display.length > 0) return display;
-    NSString *github = [c[@"github"] isKindOfClass:[NSString class]] ? c[@"github"] : nil;
-    if (github.length > 0) return [@"@" stringByAppendingString:github];
     NSString *idStr = [c[@"id"] isKindOfClass:[NSString class]] ? c[@"id"] : nil;
     return idStr ?: @"";
 }
@@ -2406,6 +2635,158 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         return [NSURL URLWithString:[@"https://github.com/" stringByAppendingString:github]];
     }
     return nil;
+}
+
+@end
+
+#pragma mark - ApolloBuyUsACoffeeViewController
+
+static NSString *const kBuyCoffeeCellId = @"Cell_BuyCoffee";
+
+@implementation ApolloBuyUsACoffeeViewController {
+    NSArray<NSDictionary *> *_entries;
+    BOOL _isLoading;
+    NSString *_errorMessage;
+}
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _entries = @[];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Buy Us a Coffee";
+
+    UIRefreshControl *refresh = [[UIRefreshControl alloc] init];
+    [refresh addTarget:self action:@selector(loadEntries) forControlEvents:UIControlEventValueChanged];
+    self.refreshControl = refresh;
+
+    [self loadEntries];
+}
+
+- (void)loadEntries {
+    _isLoading = (_entries.count == 0);
+    _errorMessage = nil;
+    [self.tableView reloadData];
+
+    NSURL *url = [NSURL URLWithString:kContributorsJSONURL];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
+                                                       cachePolicy:NSURLRequestReloadRevalidatingCacheData
+                                                   timeoutInterval:15];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+                                                                completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSError *parseError = nil;
+        NSDictionary *json = nil;
+        if (data && !error) {
+            json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
+        }
+
+        NSString *failureMessage = nil;
+        NSArray<NSDictionary *> *parsedEntries = @[];
+
+        if (error) {
+            failureMessage = error.localizedDescription;
+        } else if (parseError || ![json isKindOfClass:[NSDictionary class]]) {
+            failureMessage = @"Couldn't parse contributors list.";
+        } else {
+            NSArray<NSDictionary *> *rawContributors = ApolloRawContributorsFromJSONDictionary(json);
+            parsedEntries = ApolloBuyCoffeeEntriesFromContributors(rawContributors);
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf->_isLoading = NO;
+            [strongSelf.refreshControl endRefreshing];
+            if (failureMessage && parsedEntries.count == 0) {
+                strongSelf->_errorMessage = failureMessage;
+            } else {
+                strongSelf->_errorMessage = nil;
+                strongSelf->_entries = parsedEntries;
+            }
+            [strongSelf.tableView reloadData];
+        });
+    }];
+    [task resume];
+}
+
+#pragma mark - Table
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 1;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (_isLoading || _errorMessage) return nil;
+    return @"If you're enjoying the updates, consider buying us a coffee!";
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (_isLoading || _errorMessage) return 1;
+    return (NSInteger)_entries.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (_isLoading) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        [spinner startAnimating];
+        cell.accessoryView = spinner;
+        cell.textLabel.text = @"Loading support links…";
+        cell.textLabel.textColor = [UIColor secondaryLabelColor];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+
+    if (_errorMessage) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        cell.textLabel.text = @"Couldn't load support links";
+        cell.textLabel.textColor = [UIColor secondaryLabelColor];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\nTap to retry.", _errorMessage];
+        cell.detailTextLabel.numberOfLines = 0;
+        cell.detailTextLabel.textColor = [UIColor tertiaryLabelColor];
+        return cell;
+    }
+
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kBuyCoffeeCellId];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kBuyCoffeeCellId];
+    }
+
+    NSDictionary *entry = _entries[(NSUInteger)indexPath.row];
+    cell.textLabel.text = [entry[@"name"] isKindOfClass:[NSString class]] ? entry[@"name"] : @"";
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    cell.imageView.image = ApolloBuyMeACoffeeSettingsIcon(32.0);
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (_isLoading) return;
+    if (_errorMessage) {
+        [self loadEntries];
+        return;
+    }
+
+    NSDictionary *entry = _entries[(NSUInteger)indexPath.row];
+    NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
+    NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+    if (!url) return;
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloPresentWebURLFromViewController(weakSelf, url);
+    });
 }
 
 @end

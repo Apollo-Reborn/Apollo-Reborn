@@ -9,6 +9,7 @@
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "ApolloMediaMetadata.h"
+#import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
 
 #import "ffmpeg-kit/ffmpeg-kit/include/MediaInformationSession.h"
@@ -584,6 +585,61 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
     return replacedCount > 0 ? fixed : text;
 }
 
+// Rewrite Reddit-native Giphy markdown tokens `![gif](giphy|<id>)` (which our
+// markdown toolbar inserts and Reddit's server recognizes natively) into real
+// Giphy CDN URLs so Apollo's inline-image renderer can display the GIF in the
+// optimistic local view right after submit — before Reddit's canonical
+// response (with proper `mediaMetadata` entries keyed by `giphy|<id>`) comes
+// back. Without this, Apollo tries to load `giphy|<id>` as a URL, fails, and
+// shows its built-in "If you are looking for an image, it was probably
+// deleted." placeholder.
+//
+// CRITICAL: only rewrite per-token when there is NO matching `mediaMetadata`
+// entry for that giphy ID. Once Reddit returns canonical metadata, Apollo's
+// own renderer uses the `giphy|<id>` token to look up the metadata entry and
+// render the GIF inline — rewriting the token would break that path and
+// produce "[Unknown Image]". The optimistic local case (no metadata yet) is
+// the only one where we want the rewrite.
+static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *metadata) {
+    if (text.length == 0) return text;
+    if ([text rangeOfString:@"(giphy|"].location == NSNotFound) return text;
+
+    NSRegularExpression *regex = ApolloNativeGiphyMarkdownTokenRegex();
+    if (!regex) return text;
+
+    NSArray *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+    if (matches.count == 0) return text;
+
+    BOOL hasMetadata = [metadata isKindOfClass:[NSDictionary class]] && metadata.count > 0;
+    NSMutableString *fixed = [text mutableCopy];
+    NSUInteger replacedCount = 0;
+    NSUInteger skippedHasMetadataCount = 0;
+    for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
+        NSString *giphyID = [fixed substringWithRange:[match rangeAtIndex:1]];
+        if (giphyID.length == 0) continue;
+
+        // Skip if Apollo's native renderer can handle this token via mediaMetadata.
+        if (hasMetadata) {
+            NSString *metadataKey = [NSString stringWithFormat:@"giphy|%@", giphyID];
+            id entry = metadata[metadataKey];
+            if ([entry isKindOfClass:[NSDictionary class]]) {
+                skippedHasMetadataCount++;
+                continue;
+            }
+        }
+
+        NSString *replacement = [NSString stringWithFormat:@"![GIF](https://media.giphy.com/media/%@/giphy.gif)", giphyID];
+        [fixed replaceCharactersInRange:match.range withString:replacement];
+        replacedCount++;
+    }
+
+    if (replacedCount > 0 || skippedHasMetadataCount > 0) {
+        ApolloLog(@"[NativeGiphyBody] rewrote=%lu skipped(hasMetadata)=%lu",
+            (unsigned long)replacedCount, (unsigned long)skippedHasMetadataCount);
+    }
+    return replacedCount > 0 ? fixed : text;
+}
+
 %hook RDKComment
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
@@ -593,7 +649,9 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
 }
 
 - (NSString *)body {
-    return ApolloFixProcessingImgPlaceholders(%orig, self.mediaMetadata, nil);
+    NSDictionary *metadata = self.mediaMetadata;
+    NSString *fixed = ApolloFixProcessingImgPlaceholders(%orig, metadata, nil);
+    return ApolloRewriteNativeGiphyTokens(fixed, metadata);
 }
 
 %end
@@ -618,7 +676,8 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
         if (fallbackExt.length == 0) fallbackExt = @"png";
     }
 
-    return ApolloFixProcessingImgPlaceholders(%orig, metadata, fallbackExt);
+    NSString *fixed = ApolloFixProcessingImgPlaceholders(%orig, metadata, fallbackExt);
+    return ApolloRewriteNativeGiphyTokens(fixed, metadata);
 }
 
 %end
