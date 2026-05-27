@@ -42,6 +42,10 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          # The source push at the end uses a GitHub App token that can bypass
+          # the protected main ruleset. Do not persist checkout's GITHUB_TOKEN
+          # auth header, or Git may push as github-actions[bot] instead.
+          persist-credentials: false
 
       - name: Install build dependencies
         run: brew install ldid dpkg make
@@ -216,6 +220,7 @@ jobs:
             exit 0
           fi
           git commit -m "Update distribution sources for ${{ steps.meta.outputs.tag_name }}"
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main
           git push origin HEAD:main
