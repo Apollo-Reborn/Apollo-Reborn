@@ -1,6 +1,52 @@
 {
-  "updatedAt": null,
-  "release": null,
-  "variants": {},
-  "packages": {}
+  "updatedAt": "2026-05-27T14:36:06Z",
+  "release": {
+    "tag": "v1.15.11_2.14.0-33",
+    "name": "Apollo v1.15.11 with Apollo-Reborn v2.14.0-33",
+    "url": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/tag/v1.15.11_2.14.0-33",
+    "apolloVersion": "1.15.11",
+    "tweakVersion": "2.14.0-33"
+  },
+  "variants": {
+    "standard": {
+      "label": "Standard Apollo-Reborn build",
+      "sourceURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump/apps.json",
+      "directDownloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "assetName": "Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "size": 116310744
+    },
+    "noExtensions": {
+      "label": "Apollo-Reborn build without app extensions",
+      "sourceURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump/apps_noext.json",
+      "directDownloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/NO-EXTENSIONS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "assetName": "NO-EXTENSIONS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "size": 79428165
+    },
+    "glass": {
+      "label": "Apollo-Reborn build with Liquid Glass patch",
+      "sourceURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump/apps_glass.json",
+      "directDownloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/GLASS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "assetName": "GLASS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "size": 158741037
+    },
+    "noExtensionsGlass": {
+      "label": "Apollo-Reborn build without extensions and with Liquid Glass patch",
+      "sourceURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump/apps_noext_glass.json",
+      "directDownloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/NO-EXTENSIONS_GLASS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "assetName": "NO-EXTENSIONS_GLASS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "size": 121858458
+    }
+  },
+  "packages": {
+    "rootful": {
+      "downloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/com.apollo.reborn_2.14.0-33_iphoneos-arm.deb",
+      "assetName": "com.apollo.reborn_2.14.0-33_iphoneos-arm.deb",
+      "size": 6725810
+    },
+    "rootless": {
+      "downloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/com.apollo.reborn_2.14.0-33_iphoneos-arm64_rootless.deb",
+      "assetName": "com.apollo.reborn_2.14.0-33_iphoneos-arm64_rootless.deb",
+      "size": 6718524
+    }
+  }
 }

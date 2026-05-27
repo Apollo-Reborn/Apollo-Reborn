@@ -1,7 +1,7 @@
 {
-  "repo": "Apollo-Reborn/Apollo-Reborn",
+  "repo": "jordanearle/Apollo-ImprovedCustomApi",
   "distribution": {
-    "sourceBaseURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main",
+    "sourceBaseURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump",
     "manifestOutput": "release-manifest.json"
   },
   "source": {
