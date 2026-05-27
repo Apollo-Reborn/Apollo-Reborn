@@ -41,6 +41,7 @@ Contributor fields:
 - `displayName`: optional label. For GitHub users, omit it unless you want to override the GitHub login.
 - `profileUrl`: optional profile link for non-GitHub contributors.
 - `avatarUrl`: optional image URL. Non-GitHub contributors can omit it; the README cell will render without an avatar.
+- `buyMeACoffeeUrl`: optional Buy Me a Coffee link. When present, the README generator adds a ☕ link under the contributor badge, and the in-app **Buy Us a Coffee** settings screen lists that maintainer.
 - `source`: optional note such as `reddit`.
 
 ## Step-by-step process

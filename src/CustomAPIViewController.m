@@ -2348,52 +2348,31 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
 #pragma mark - ApolloThanksToViewController
 
-static NSString *const kThanksToContributorsURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
+static NSString *const kContributorsJSONURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
 static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
-static NSArray<NSString *> *ApolloThanksToPinnedMaintainers(void) {
-    return @[@"JeffreyCA", @"icpryde", @"jordanearle", @"nickclyde", @"DeltAndy123"];
-}
-
-static NSString *ApolloThanksToGitHubLoginForContributor(NSDictionary *contributor) {
+static NSString *ApolloContributorGitHubLogin(NSDictionary *contributor) {
     NSString *github = [contributor[@"github"] isKindOfClass:[NSString class]] ? contributor[@"github"] : nil;
     return github.length > 0 ? github : nil;
 }
 
-static NSArray<NSDictionary *> *ApolloThanksToOrderedMaintainers(NSArray<NSDictionary *> *maintainers) {
-    if (maintainers.count == 0) return @[];
+static NSString *ApolloContributorDisplayName(NSDictionary *contributor) {
+    NSString *github = ApolloContributorGitHubLogin(contributor);
+    if ([github isEqualToString:@"icpryde"]) return @"iCpryde";
 
-    NSMutableDictionary<NSString *, NSDictionary *> *byGitHub = [NSMutableDictionary dictionary];
-    for (NSDictionary *contributor in maintainers) {
-        NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
-        if (github.length > 0) {
-            byGitHub[github] = contributor;
-        }
-    }
-
-    NSMutableArray<NSDictionary *> *ordered = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenGitHub = [NSMutableSet set];
-
-    for (NSString *github in ApolloThanksToPinnedMaintainers()) {
-        NSDictionary *contributor = byGitHub[github];
-        if (!contributor) continue;
-        [ordered addObject:contributor];
-        [seenGitHub addObject:github];
-    }
-
-    for (NSDictionary *contributor in maintainers) {
-        NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
-        if (github.length > 0) {
-            if ([seenGitHub containsObject:github]) continue;
-            [seenGitHub addObject:github];
-        }
-        [ordered addObject:contributor];
-    }
-
-    return ordered;
+    NSString *display = [contributor[@"displayName"] isKindOfClass:[NSString class]] ? contributor[@"displayName"] : nil;
+    if (display.length > 0) return display;
+    if (github.length > 0) return github;
+    NSString *idStr = [contributor[@"id"] isKindOfClass:[NSString class]] ? contributor[@"id"] : nil;
+    return idStr ?: @"";
 }
 
-static NSArray<NSDictionary *> *ApolloThanksToContributorsForRole(NSArray<NSDictionary *> *rawContributors, NSString *role) {
+static BOOL ApolloContributorIsMaintainer(NSDictionary *contributor) {
+    NSString *role = [contributor[@"role"] isKindOfClass:[NSString class]] ? contributor[@"role"] : nil;
+    return role.length > 0 && [role caseInsensitiveCompare:@"maintainer"] == NSOrderedSame;
+}
+
+static NSArray<NSDictionary *> *ApolloContributorsForRole(NSArray<NSDictionary *> *rawContributors, NSString *role) {
     NSMutableArray<NSDictionary *> *matched = [NSMutableArray array];
     for (NSDictionary *contributor in rawContributors) {
         NSString *contributorRole = [contributor[@"role"] isKindOfClass:[NSString class]] ? contributor[@"role"] : nil;
@@ -2404,23 +2383,48 @@ static NSArray<NSDictionary *> *ApolloThanksToContributorsForRole(NSArray<NSDict
     return matched;
 }
 
+static NSArray<NSDictionary *> *ApolloBuyCoffeeEntriesFromContributors(NSArray<NSDictionary *> *rawContributors) {
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (NSDictionary *contributor in rawContributors) {
+        if (![contributor isKindOfClass:[NSDictionary class]]) continue;
+        NSString *url = [contributor[@"buyMeACoffeeUrl"] isKindOfClass:[NSString class]] ? contributor[@"buyMeACoffeeUrl"] : nil;
+        if (url.length == 0) continue;
+        [entries addObject:@{
+            @"name": ApolloContributorDisplayName(contributor),
+            @"url": url,
+        }];
+    }
+    return entries;
+}
+
+static NSArray<NSDictionary *> *ApolloRawContributorsFromJSONDictionary(NSDictionary *json) {
+    NSMutableArray<NSDictionary *> *rawContributors = [NSMutableArray array];
+    id contribObj = json[@"contributors"];
+    if (![contribObj isKindOfClass:[NSArray class]]) return rawContributors;
+    for (id item in (NSArray *)contribObj) {
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            [rawContributors addObject:item];
+        }
+    }
+    return rawContributors;
+}
+
 static NSArray<NSDictionary *> *ApolloThanksToGroupedSections(NSArray<NSDictionary *> *rawContributors) {
     if (rawContributors.count == 0) return @[];
 
     NSMutableArray<NSDictionary *> *sections = [NSMutableArray array];
 
-    NSArray<NSDictionary *> *maintainers = ApolloThanksToOrderedMaintainers(
-        ApolloThanksToContributorsForRole(rawContributors, @"maintainer"));
+    NSArray<NSDictionary *> *maintainers = ApolloContributorsForRole(rawContributors, @"maintainer");
     if (maintainers.count > 0) {
         [sections addObject:@{@"title": @"Maintainers", @"contributors": maintainers}];
     }
 
-    NSArray<NSDictionary *> *codeContributors = ApolloThanksToContributorsForRole(rawContributors, @"code");
+    NSArray<NSDictionary *> *codeContributors = ApolloContributorsForRole(rawContributors, @"code");
     if (codeContributors.count > 0) {
         [sections addObject:@{@"title": @"Code", @"contributors": codeContributors}];
     }
 
-    NSArray<NSDictionary *> *designContributors = ApolloThanksToContributorsForRole(rawContributors, @"design");
+    NSArray<NSDictionary *> *designContributors = ApolloContributorsForRole(rawContributors, @"design");
     if (designContributors.count > 0) {
         [sections addObject:@{@"title": @"Icon & Design", @"contributors": designContributors}];
     }
@@ -2429,9 +2433,7 @@ static NSArray<NSDictionary *> *ApolloThanksToGroupedSections(NSArray<NSDictiona
 }
 
 static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
-    NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
-    if (github.length == 0) return NO;
-    return [ApolloThanksToPinnedMaintainers() containsObject:github];
+    return ApolloContributorIsMaintainer(contributor);
 }
 
 @implementation ApolloThanksToViewController {
@@ -2464,7 +2466,7 @@ static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
     _errorMessage = nil;
     [self.tableView reloadData];
 
-    NSURL *url = [NSURL URLWithString:kThanksToContributorsURL];
+    NSURL *url = [NSURL URLWithString:kContributorsJSONURL];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
                                                        cachePolicy:NSURLRequestReloadRevalidatingCacheData
                                                    timeoutInterval:15];
@@ -2492,11 +2494,7 @@ static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
         } else {
             id contribObj = json[@"contributors"];
             if ([contribObj isKindOfClass:[NSArray class]]) {
-                NSMutableArray<NSDictionary *> *rawContributors = [NSMutableArray array];
-                for (id item in (NSArray *)contribObj) {
-                    if (![item isKindOfClass:[NSDictionary class]]) continue;
-                    [rawContributors addObject:item];
-                }
+                NSArray<NSDictionary *> *rawContributors = ApolloRawContributorsFromJSONDictionary(json);
                 parsedSections = ApolloThanksToGroupedSections(rawContributors);
             }
         }
@@ -2610,12 +2608,12 @@ static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
 #pragma mark - Contributor formatting
 
 - (NSString *)displayNameForContributor:(NSDictionary *)c {
-    NSString *github = [c[@"github"] isKindOfClass:[NSString class]] ? c[@"github"] : nil;
+    NSString *github = ApolloContributorGitHubLogin(c);
     if ([github isEqualToString:@"icpryde"]) return @"@iCpryde";
+    if (github.length > 0) return [@"@" stringByAppendingString:github];
 
     NSString *display = [c[@"displayName"] isKindOfClass:[NSString class]] ? c[@"displayName"] : nil;
     if (display.length > 0) return display;
-    if (github.length > 0) return [@"@" stringByAppendingString:github];
     NSString *idStr = [c[@"id"] isKindOfClass:[NSString class]] ? c[@"id"] : nil;
     return idStr ?: @"";
 }
@@ -2645,23 +2643,79 @@ static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
 
 static NSString *const kBuyCoffeeCellId = @"Cell_BuyCoffee";
 
-static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
-    return @[
-        @{@"name": @"JeffreyCA", @"url": @"https://buymeacoffee.com/jeffreyca"},
-        @{@"name": @"iCpryde", @"url": @"https://buymeacoffee.com/icpryde"},
-    ];
+@implementation ApolloBuyUsACoffeeViewController {
+    NSArray<NSDictionary *> *_entries;
+    BOOL _isLoading;
+    NSString *_errorMessage;
 }
-
-@implementation ApolloBuyUsACoffeeViewController
 
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _entries = @[];
+    }
     return self;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Buy Us a Coffee";
+
+    UIRefreshControl *refresh = [[UIRefreshControl alloc] init];
+    [refresh addTarget:self action:@selector(loadEntries) forControlEvents:UIControlEventValueChanged];
+    self.refreshControl = refresh;
+
+    [self loadEntries];
+}
+
+- (void)loadEntries {
+    _isLoading = (_entries.count == 0);
+    _errorMessage = nil;
+    [self.tableView reloadData];
+
+    NSURL *url = [NSURL URLWithString:kContributorsJSONURL];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
+                                                       cachePolicy:NSURLRequestReloadRevalidatingCacheData
+                                                   timeoutInterval:15];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+                                                                completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        NSError *parseError = nil;
+        NSDictionary *json = nil;
+        if (data && !error) {
+            json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
+        }
+
+        NSString *failureMessage = nil;
+        NSArray<NSDictionary *> *parsedEntries = @[];
+
+        if (error) {
+            failureMessage = error.localizedDescription;
+        } else if (parseError || ![json isKindOfClass:[NSDictionary class]]) {
+            failureMessage = @"Couldn't parse contributors list.";
+        } else {
+            NSArray<NSDictionary *> *rawContributors = ApolloRawContributorsFromJSONDictionary(json);
+            parsedEntries = ApolloBuyCoffeeEntriesFromContributors(rawContributors);
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf->_isLoading = NO;
+            [strongSelf.refreshControl endRefreshing];
+            if (failureMessage && parsedEntries.count == 0) {
+                strongSelf->_errorMessage = failureMessage;
+            } else {
+                strongSelf->_errorMessage = nil;
+                strongSelf->_entries = parsedEntries;
+            }
+            [strongSelf.tableView reloadData];
+        });
+    }];
+    [task resume];
 }
 
 #pragma mark - Table
@@ -2671,20 +2725,43 @@ static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (_isLoading || _errorMessage) return nil;
     return @"If you're enjoying the updates, consider buying us a coffee!";
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)ApolloBuyCoffeeEntries().count;
+    if (_isLoading || _errorMessage) return 1;
+    return (NSInteger)_entries.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (_isLoading) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        [spinner startAnimating];
+        cell.accessoryView = spinner;
+        cell.textLabel.text = @"Loading support links…";
+        cell.textLabel.textColor = [UIColor secondaryLabelColor];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+
+    if (_errorMessage) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        cell.textLabel.text = @"Couldn't load support links";
+        cell.textLabel.textColor = [UIColor secondaryLabelColor];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\nTap to retry.", _errorMessage];
+        cell.detailTextLabel.numberOfLines = 0;
+        cell.detailTextLabel.textColor = [UIColor tertiaryLabelColor];
+        return cell;
+    }
+
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kBuyCoffeeCellId];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kBuyCoffeeCellId];
     }
 
-    NSDictionary *entry = ApolloBuyCoffeeEntries()[(NSUInteger)indexPath.row];
+    NSDictionary *entry = _entries[(NSUInteger)indexPath.row];
     cell.textLabel.text = [entry[@"name"] isKindOfClass:[NSString class]] ? entry[@"name"] : @"";
     cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     cell.imageView.image = ApolloBuyMeACoffeeSettingsIcon(32.0);
@@ -2695,7 +2772,13 @@ static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    NSDictionary *entry = ApolloBuyCoffeeEntries()[(NSUInteger)indexPath.row];
+    if (_isLoading) return;
+    if (_errorMessage) {
+        [self loadEntries];
+        return;
+    }
+
+    NSDictionary *entry = _entries[(NSUInteger)indexPath.row];
     NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
     NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
     if (!url) return;

@@ -103,10 +103,19 @@ def render_cell(contributor: dict, repo: str, width: str) -> str:
         parts.append(image)
     parts.append(f"<sub><b>{name}</b></sub>")
 
+    badge_link = (
+        f'<a href="{html.escape(badge_href)}" title="{html.escape(badge_title)}">'
+        f"{html.escape(badge_label)}</a>"
+    )
+    bmc_url = contributor.get("buyMeACoffeeUrl")
+    if bmc_url:
+        badge_link += (
+            f'<br /><a href="{html.escape(bmc_url)}" title="Buy Me a Coffee">☕</a>'
+        )
+
     return (
         f'      <td align="center" valign="top" width="{width}">'
-        f'{"<br />".join(parts)}<br /><a href="{html.escape(badge_href)}" '
-        f'title="{html.escape(badge_title)}">{html.escape(badge_label)}</a></td>'
+        f'{"<br />".join(parts)}<br />{badge_link}</td>'
     )
 
 
