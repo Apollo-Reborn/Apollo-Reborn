@@ -6,6 +6,7 @@
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloSubredditInfoCache.h"
 #import "UserDefaultConstants.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
@@ -34,6 +35,9 @@ static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
 
 @interface ApolloThanksToViewController : UITableViewController
 @end
+
+static NSString *const kApolloRebornSubredditName = @"ApolloReborn";
+static char kAboutSubredditIconTaskKey;
 
 @implementation CustomAPIViewController
 
@@ -578,6 +582,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self apollo_disableAutoHideTabBarIdleIfUnsupported];
     [self apollo_applyTheme];
+
+    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
+        (void)info;
+    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -633,7 +641,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
         case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
-        case SectionAbout: return 4; // GitHub + Thanks To + Export Logs + Version
+        case SectionAbout: return 5; // GitHub + Reddit + Thanks To + Export Logs + Version
         default: return 0;
     }
 }
@@ -1281,6 +1289,16 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                subtitle:@"@Apollo-Reborn"
                                                b64Image:B64Github];
         case 1: {
+            UITableViewCell *cell = [self subtitleCellWithIdentifier:@"Cell_About_Reddit"
+                                                                  title:@"Apollo Reborn Subreddit"
+                                                               subtitle:@"r/ApolloReborn"
+                                                               b64Image:nil];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            [self configureAboutSubredditCell:cell subredditName:kApolloRebornSubredditName];
+            return cell;
+        }
+        case 2: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_ThanksTo"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_About_ThanksTo"];
@@ -1291,7 +1309,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 2: {
+        case 3: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_Logs"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_About_Logs"];
@@ -1301,7 +1319,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
-        case 3: {
+        case 4: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_Version"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_About_Version"];
@@ -1328,6 +1346,58 @@ typedef NS_ENUM(NSInteger, Tag) {
     }];
 }
 
+- (void)configureAboutSubredditCell:(UITableViewCell *)cell subredditName:(NSString *)subredditName {
+    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
+    if (existingTask) {
+        [existingTask cancel];
+        objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    cell.imageView.image = ApolloEmojiSettingsIcon(@"👽", [UIColor systemOrangeColor], 32.0);
+
+    ApolloSubredditInfo *cached = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
+    if (cached.iconURL) {
+        [self loadAboutSubredditIconFromURL:cached.iconURL intoCell:cell];
+    }
+
+    __weak UITableViewCell *weakCell = cell;
+    __weak CustomAPIViewController *weakSelf = self;
+    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:subredditName completion:^(ApolloSubredditInfo *info) {
+        __strong UITableViewCell *strongCell = weakCell;
+        CustomAPIViewController *strongSelf = weakSelf;
+        if (!strongCell || !strongSelf || !info.iconURL) return;
+        [strongSelf loadAboutSubredditIconFromURL:info.iconURL intoCell:strongCell];
+    }];
+}
+
+- (void)loadAboutSubredditIconFromURL:(NSURL *)iconURL intoCell:(UITableViewCell *)cell {
+    if (!iconURL || !cell) return;
+
+    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
+    if (existingTask) {
+        [existingTask cancel];
+    }
+
+    __weak UITableViewCell *weakCell = cell;
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:iconURL
+                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error || data.length == 0) return;
+        UIImage *image = [UIImage imageWithData:data];
+        if (!image) return;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UITableViewCell *strongCell = weakCell;
+            typeof(self) strongSelf = weakSelf;
+            if (!strongCell || !strongSelf) return;
+            strongCell.imageView.image = [strongSelf roundedImage:image size:32 cornerRadius:16];
+            [strongCell setNeedsLayout];
+        });
+    }];
+    objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, task, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [task resume];
+}
+
 - (UITableViewCell *)subtitleCellWithIdentifier:(NSString *)identifier
                                           title:(NSString *)title
                                        subtitle:(NSString *)subtitle
@@ -1339,8 +1409,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     cell.textLabel.text = title;
     cell.detailTextLabel.text = subtitle;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    if (b64Image) {
+    if (b64Image.length > 0) {
         cell.imageView.image = [self roundedImage:[self decodeBase64ToImage:b64Image] size:32 cornerRadius:5];
+    } else if (!cell.imageView.image) {
+        cell.imageView.image = nil;
     }
     return cell;
 }
@@ -1451,8 +1523,13 @@ typedef NS_ENUM(NSInteger, Tag) {
         if (indexPath.row == 0) {
             [self presentURLInApolloBrowser:[NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn"]];
         } else if (indexPath.row == 1) {
-            [self pushThanksToViewController];
+            NSURL *subredditURL = [NSURL URLWithString:@"https://reddit.com/r/ApolloReborn/"];
+            if (!ApolloRouteResolvedURLViaApolloScheme(subredditURL)) {
+                [self presentURLInApolloBrowser:subredditURL];
+            }
         } else if (indexPath.row == 2) {
+            [self pushThanksToViewController];
+        } else if (indexPath.row == 3) {
             [self exportLogs];
         }
     } else if (indexPath.section == SectionSubreddits) {
@@ -1522,7 +1599,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
         return (row == 0 || row == 1 || row == 2 || row == 5 || row == 6 || row == 7 || row == 8 || row == 11 || row == 12);
     }
-    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2)) return YES;
+    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 3)) return YES;
     if (indexPath.section == SectionNotificationBackend && indexPath.row == 2) return YES;
     return NO;
 }
@@ -1551,7 +1628,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
                     UIPopoverPresentationController *popover = activityVC.popoverPresentationController;
                     if (popover) {
-                        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:2 inSection:SectionAbout];
+                        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:3 inSection:SectionAbout];
                         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
                         popover.sourceView = cell ?: self.view;
                         popover.sourceRect = cell ? cell.bounds : CGRectZero;
@@ -2264,22 +2341,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 }
 
 - (void)presentURLInApolloBrowser:(NSURL *)url {
-    if (!url) return;
-    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
-    UIViewController *browser = nil;
-    if (apolloSafariClass) {
-        id alloced = [apolloSafariClass alloc];
-        SEL initSel = NSSelectorFromString(@"initWithURL:");
-        if ([alloced respondsToSelector:initSel]) {
-            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
-            browser = msgSend(alloced, initSel, url);
-        }
-    }
-    if (browser) {
-        [self presentViewController:browser animated:YES completion:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
+    ApolloPresentWebURLFromViewController(self, url);
 }
 
 @end
@@ -2289,8 +2351,91 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 static NSString *const kThanksToContributorsURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/refs/heads/main/contributors.json";
 static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
+static NSArray<NSString *> *ApolloThanksToPinnedMaintainers(void) {
+    return @[@"JeffreyCA", @"icpryde", @"jordanearle", @"nickclyde", @"DeltAndy123"];
+}
+
+static NSString *ApolloThanksToGitHubLoginForContributor(NSDictionary *contributor) {
+    NSString *github = [contributor[@"github"] isKindOfClass:[NSString class]] ? contributor[@"github"] : nil;
+    return github.length > 0 ? github : nil;
+}
+
+static NSArray<NSDictionary *> *ApolloThanksToOrderedMaintainers(NSArray<NSDictionary *> *maintainers) {
+    if (maintainers.count == 0) return @[];
+
+    NSMutableDictionary<NSString *, NSDictionary *> *byGitHub = [NSMutableDictionary dictionary];
+    for (NSDictionary *contributor in maintainers) {
+        NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
+        if (github.length > 0) {
+            byGitHub[github] = contributor;
+        }
+    }
+
+    NSMutableArray<NSDictionary *> *ordered = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenGitHub = [NSMutableSet set];
+
+    for (NSString *github in ApolloThanksToPinnedMaintainers()) {
+        NSDictionary *contributor = byGitHub[github];
+        if (!contributor) continue;
+        [ordered addObject:contributor];
+        [seenGitHub addObject:github];
+    }
+
+    for (NSDictionary *contributor in maintainers) {
+        NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
+        if (github.length > 0) {
+            if ([seenGitHub containsObject:github]) continue;
+            [seenGitHub addObject:github];
+        }
+        [ordered addObject:contributor];
+    }
+
+    return ordered;
+}
+
+static NSArray<NSDictionary *> *ApolloThanksToContributorsForRole(NSArray<NSDictionary *> *rawContributors, NSString *role) {
+    NSMutableArray<NSDictionary *> *matched = [NSMutableArray array];
+    for (NSDictionary *contributor in rawContributors) {
+        NSString *contributorRole = [contributor[@"role"] isKindOfClass:[NSString class]] ? contributor[@"role"] : nil;
+        if ([contributorRole caseInsensitiveCompare:role] == NSOrderedSame) {
+            [matched addObject:contributor];
+        }
+    }
+    return matched;
+}
+
+static NSArray<NSDictionary *> *ApolloThanksToGroupedSections(NSArray<NSDictionary *> *rawContributors) {
+    if (rawContributors.count == 0) return @[];
+
+    NSMutableArray<NSDictionary *> *sections = [NSMutableArray array];
+
+    NSArray<NSDictionary *> *maintainers = ApolloThanksToOrderedMaintainers(
+        ApolloThanksToContributorsForRole(rawContributors, @"maintainer"));
+    if (maintainers.count > 0) {
+        [sections addObject:@{@"title": @"Maintainers", @"contributors": maintainers}];
+    }
+
+    NSArray<NSDictionary *> *codeContributors = ApolloThanksToContributorsForRole(rawContributors, @"code");
+    if (codeContributors.count > 0) {
+        [sections addObject:@{@"title": @"Code", @"contributors": codeContributors}];
+    }
+
+    NSArray<NSDictionary *> *designContributors = ApolloThanksToContributorsForRole(rawContributors, @"design");
+    if (designContributors.count > 0) {
+        [sections addObject:@{@"title": @"Icon & Design", @"contributors": designContributors}];
+    }
+
+    return sections;
+}
+
+static BOOL ApolloThanksToContributorIsPinned(NSDictionary *contributor) {
+    NSString *github = ApolloThanksToGitHubLoginForContributor(contributor);
+    if (github.length == 0) return NO;
+    return [ApolloThanksToPinnedMaintainers() containsObject:github];
+}
+
 @implementation ApolloThanksToViewController {
-    NSArray<NSDictionary *> *_contributors;
+    NSArray<NSDictionary *> *_sections;
     BOOL _isLoading;
     NSString *_errorMessage;
 }
@@ -2298,7 +2443,7 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 - (instancetype)init {
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
-        _contributors = @[];
+        _sections = @[];
     }
     return self;
 }
@@ -2315,7 +2460,7 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 }
 
 - (void)loadContributors {
-    _isLoading = (_contributors.count == 0);
+    _isLoading = (_sections.count == 0);
     _errorMessage = nil;
     [self.tableView reloadData];
 
@@ -2338,7 +2483,7 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         }
 
         NSString *failureMessage = nil;
-        NSMutableArray<NSDictionary *> *parsed = [NSMutableArray array];
+        NSArray<NSDictionary *> *parsedSections = @[];
 
         if (error) {
             failureMessage = error.localizedDescription;
@@ -2347,25 +2492,23 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         } else {
             id contribObj = json[@"contributors"];
             if ([contribObj isKindOfClass:[NSArray class]]) {
+                NSMutableArray<NSDictionary *> *rawContributors = [NSMutableArray array];
                 for (id item in (NSArray *)contribObj) {
                     if (![item isKindOfClass:[NSDictionary class]]) continue;
-                    NSDictionary *c = item;
-                    NSString *role = [c[@"role"] isKindOfClass:[NSString class]] ? c[@"role"] : nil;
-                    // Skip maintainer (already in About → Open Source on GitHub).
-                    if ([role caseInsensitiveCompare:@"maintainer"] == NSOrderedSame) continue;
-                    [parsed addObject:c];
+                    [rawContributors addObject:item];
                 }
+                parsedSections = ApolloThanksToGroupedSections(rawContributors);
             }
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             strongSelf->_isLoading = NO;
             [strongSelf.refreshControl endRefreshing];
-            if (failureMessage && parsed.count == 0) {
+            if (failureMessage && parsedSections.count == 0) {
                 strongSelf->_errorMessage = failureMessage;
             } else {
                 strongSelf->_errorMessage = nil;
-                strongSelf->_contributors = parsed;
+                strongSelf->_sections = parsedSections;
             }
             [strongSelf.tableView reloadData];
         });
@@ -2375,13 +2518,35 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
 
 #pragma mark - Table
 
+- (NSDictionary *)sectionAtIndex:(NSInteger)section {
+    if (section < 0 || section >= (NSInteger)_sections.count) return nil;
+    return _sections[(NSUInteger)section];
+}
+
+- (NSDictionary *)contributorAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *section = [self sectionAtIndex:indexPath.section];
+    NSArray *contributors = [section[@"contributors"] isKindOfClass:[NSArray class]] ? section[@"contributors"] : nil;
+    if (!contributors || indexPath.row < 0 || indexPath.row >= (NSInteger)contributors.count) return nil;
+    return contributors[(NSUInteger)indexPath.row];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
+    if (_isLoading || _errorMessage) return 1;
+    return (NSInteger)_sections.count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    if (_isLoading || _errorMessage) return nil;
+    NSDictionary *sectionInfo = [self sectionAtIndex:section];
+    NSString *title = [sectionInfo[@"title"] isKindOfClass:[NSString class]] ? sectionInfo[@"title"] : nil;
+    return title.length > 0 ? title : nil;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (_isLoading || _errorMessage) return 1;
-    return (NSInteger)_contributors.count;
+    NSDictionary *sectionInfo = [self sectionAtIndex:section];
+    NSArray *contributors = [sectionInfo[@"contributors"] isKindOfClass:[NSArray class]] ? sectionInfo[@"contributors"] : nil;
+    return (NSInteger)contributors.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -2411,10 +2576,14 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:kThanksToCellId];
     }
 
-    NSDictionary *c = _contributors[indexPath.row];
+    NSDictionary *c = [self contributorAtIndexPath:indexPath];
+    if (!c) return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+
     cell.textLabel.text = [self displayNameForContributor:c];
-    cell.detailTextLabel.text = [self roleLabelForContributor:c];
-    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.detailTextLabel.text = nil;
+    cell.textLabel.font = ApolloThanksToContributorIsPinned(c)
+        ? [UIFont boldSystemFontOfSize:17]
+        : [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     cell.imageView.image = nil;
     return cell;
@@ -2429,33 +2598,23 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         return;
     }
 
-    NSDictionary *c = _contributors[indexPath.row];
+    NSDictionary *c = [self contributorAtIndexPath:indexPath];
+    if (!c) return;
+
     NSURL *url = [self profileURLForContributor:c];
     if (!url) return;
 
-    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
-    UIViewController *browser = nil;
-    if (apolloSafariClass) {
-        id alloced = [apolloSafariClass alloc];
-        SEL initSel = NSSelectorFromString(@"initWithURL:");
-        if ([alloced respondsToSelector:initSel]) {
-            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
-            browser = msgSend(alloced, initSel, url);
-        }
-    }
-    if (browser) {
-        [self presentViewController:browser animated:YES completion:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
+    ApolloPresentWebURLFromViewController(self, url);
 }
 
 #pragma mark - Contributor formatting
 
 - (NSString *)displayNameForContributor:(NSDictionary *)c {
+    NSString *github = [c[@"github"] isKindOfClass:[NSString class]] ? c[@"github"] : nil;
+    if ([github isEqualToString:@"icpryde"]) return @"@iCpryde";
+
     NSString *display = [c[@"displayName"] isKindOfClass:[NSString class]] ? c[@"displayName"] : nil;
     if (display.length > 0) return display;
-    NSString *github = [c[@"github"] isKindOfClass:[NSString class]] ? c[@"github"] : nil;
     if (github.length > 0) return [@"@" stringByAppendingString:github];
     NSString *idStr = [c[@"id"] isKindOfClass:[NSString class]] ? c[@"id"] : nil;
     return idStr ?: @"";
@@ -2478,6 +2637,73 @@ static NSString *const kThanksToCellId = @"Cell_ThanksTo_Contributor";
         return [NSURL URLWithString:[@"https://github.com/" stringByAppendingString:github]];
     }
     return nil;
+}
+
+@end
+
+#pragma mark - ApolloBuyUsACoffeeViewController
+
+static NSString *const kBuyCoffeeCellId = @"Cell_BuyCoffee";
+
+static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
+    return @[
+        @{@"name": @"JeffreyCA", @"url": @"https://buymeacoffee.com/jeffreyca"},
+        @{@"name": @"iCpryde", @"url": @"https://buymeacoffee.com/icpryde"},
+    ];
+}
+
+@implementation ApolloBuyUsACoffeeViewController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Support Links";
+}
+
+#pragma mark - Table
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 1;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return @"Optional support links for maintainers. More can be added over time.";
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)ApolloBuyCoffeeEntries().count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kBuyCoffeeCellId];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kBuyCoffeeCellId];
+    }
+
+    NSDictionary *entry = ApolloBuyCoffeeEntries()[(NSUInteger)indexPath.row];
+    cell.textLabel.text = [entry[@"name"] isKindOfClass:[NSString class]] ? entry[@"name"] : @"";
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    cell.imageView.image = ApolloBuyMeACoffeeSettingsIcon(32.0);
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    NSDictionary *entry = ApolloBuyCoffeeEntries()[(NSUInteger)indexPath.row];
+    NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
+    NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+    if (!url) return;
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloPresentWebURLFromViewController(weakSelf, url);
+    });
 }
 
 @end

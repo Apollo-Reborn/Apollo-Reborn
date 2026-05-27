@@ -249,3 +249,193 @@ NSString *ApolloGetLinkButtonNodeURLString(id linkButtonNode) {
 
     return nil;
 }
+
+UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size) {
+    if (emoji.length == 0) return nil;
+    if (size <= 0.0) size = 29.0;
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGRect bounds = CGRectMake(0, 0, size, size);
+        UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:6.0];
+        UIColor *fill = backgroundColor ?: [UIColor secondarySystemFillColor];
+        [fill setFill];
+        [path fill];
+
+        [[UIColor separatorColor] setStroke];
+        path.lineWidth = 0.5;
+        [path stroke];
+
+        UIFont *font = [UIFont systemFontOfSize:size * 0.58];
+        NSDictionary *attrs = @{NSFontAttributeName: font};
+        CGSize textSize = [emoji sizeWithAttributes:attrs];
+        CGPoint origin = CGPointMake((size - textSize.width) / 2.0, (size - textSize.height) / 2.0 - 0.5);
+        [emoji drawAtPoint:origin withAttributes:attrs];
+    }];
+}
+
+static NSString *ApolloBuyMeACoffeeIconPath(void) {
+    NSBundle *mainBundle = [NSBundle mainBundle];
+    NSString *bundledPath = [mainBundle pathForResource:@"buymeacoffee-icon"
+                                                 ofType:@"png"
+                                            inDirectory:@"ApolloRebornResources"];
+    if (bundledPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:bundledPath]) {
+        return bundledPath;
+    }
+
+    bundledPath = [mainBundle pathForResource:@"buymeacoffee-icon" ofType:@"png"];
+    if (bundledPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:bundledPath]) {
+        return bundledPath;
+    }
+
+    NSArray<NSString *> *bundleRoots = @[
+        @"/Library/Application Support/ApolloReborn/ApolloReborn.bundle",
+        @"/var/jb/Library/Application Support/ApolloReborn/ApolloReborn.bundle",
+    ];
+    for (NSString *root in bundleRoots) {
+        NSBundle *resourceBundle = [NSBundle bundleWithPath:root];
+        NSString *path = [resourceBundle pathForResource:@"buymeacoffee-icon" ofType:@"png"];
+        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) return path;
+    }
+
+    NSArray<NSString *> *supportRoots = @[
+        @"/Library/Application Support/ApolloReborn",
+        @"/var/jb/Library/Application Support/ApolloReborn",
+    ];
+    for (NSString *root in supportRoots) {
+        NSString *path = [root stringByAppendingPathComponent:@"buymeacoffee-icon.png"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) return path;
+    }
+    return nil;
+}
+
+static UIImage *ApolloBuyMeACoffeeSourceImage(void) {
+    static UIImage *sourceImage = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *path = ApolloBuyMeACoffeeIconPath();
+        if (path.length > 0) {
+            sourceImage = [UIImage imageWithContentsOfFile:path];
+        }
+    });
+    return sourceImage;
+}
+
+UIImage *ApolloBuyMeACoffeeSettingsIcon(CGFloat size) {
+    UIImage *source = ApolloBuyMeACoffeeSourceImage();
+    if (!source) {
+        return ApolloEmojiSettingsIcon(@"☕️", [UIColor colorWithRed:0.98 green:0.74 blue:0.02 alpha:1.0], size > 0.0 ? size : 29.0);
+    }
+    if (size <= 0.0) size = 29.0;
+
+    CGFloat cornerRadius = MIN(6.0, size * 0.21);
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size, size) cornerRadius:cornerRadius] addClip];
+        [source drawInRect:CGRectMake(0, 0, size, size)];
+    }];
+}
+
+#pragma mark - In-app browser
+
+static NSURL *sLastPresentedBrowserURL = nil;
+static NSTimeInterval sLastPresentedBrowserTime = 0;
+
+static NSURL *ApolloNormalizedWebURL(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return nil;
+
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    if (!components || components.host.length == 0) return url;
+
+    if (components.scheme.length == 0) {
+        components.scheme = @"https";
+    }
+
+    NSString *host = components.host.lowercaseString;
+    if ([host hasPrefix:@"www."]) {
+        host = [host substringFromIndex:4];
+    }
+    components.host = host;
+
+    return components.URL ?: url;
+}
+
+static BOOL ApolloViewControllerIsInAppBrowser(UIViewController *viewController) {
+    if (!viewController) return NO;
+
+    NSString *className = NSStringFromClass([viewController class]);
+    if ([className containsString:@"ApolloSafariViewController"]) return YES;
+    if ([className containsString:@"SFSafariViewController"]) return YES;
+    return NO;
+}
+
+static BOOL ApolloShouldSkipDuplicateBrowserPresent(NSURL *url) {
+    if (!url) return YES;
+
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (sLastPresentedBrowserURL &&
+        [sLastPresentedBrowserURL.absoluteString isEqualToString:url.absoluteString] &&
+        (now - sLastPresentedBrowserTime) < 0.5) {
+        return YES;
+    }
+    return NO;
+}
+
+static void ApolloRecordBrowserPresent(NSURL *url) {
+    sLastPresentedBrowserURL = url;
+    sLastPresentedBrowserTime = CFAbsoluteTimeGetCurrent();
+}
+
+static UIViewController *ApolloApolloSafariBrowserForURL(NSURL *url) {
+    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
+    if (!apolloSafariClass) return nil;
+
+    id alloced = [apolloSafariClass alloc];
+    SEL initSel = NSSelectorFromString(@"initWithURL:");
+    if (![alloced respondsToSelector:initSel]) return nil;
+
+    id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
+    return msgSend(alloced, initSel, url);
+}
+
+void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *url) {
+    if (!presenter || !url) return;
+
+    NSURL *normalizedURL = ApolloNormalizedWebURL(url);
+    if (!normalizedURL) return;
+
+    if (ApolloShouldSkipDuplicateBrowserPresent(normalizedURL)) {
+        ApolloLog(@"[Browser] skip duplicate present url=%@", normalizedURL.absoluteString);
+        return;
+    }
+
+    UIViewController *existingPresentation = presenter.presentedViewController;
+    if (ApolloViewControllerIsInAppBrowser(existingPresentation)) {
+        ApolloLog(@"[Browser] dismissing existing browser before present url=%@", normalizedURL.absoluteString);
+        [presenter dismissViewControllerAnimated:NO completion:^{
+            ApolloPresentWebURLFromViewController(presenter, normalizedURL);
+        }];
+        return;
+    }
+
+    ApolloLog(@"[Browser] present url=%@ presenter=%@ alreadyPresented=%@",
+              normalizedURL.absoluteString,
+              NSStringFromClass([presenter class]),
+              existingPresentation ? NSStringFromClass([existingPresentation class]) : @"(none)");
+
+    UIViewController *browser = ApolloApolloSafariBrowserForURL(normalizedURL);
+    if (browser) {
+        ApolloRecordBrowserPresent(normalizedURL);
+        [presenter presentViewController:browser animated:YES completion:nil];
+        return;
+    }
+
+    ApolloLog(@"[Browser] fallback openURL url=%@", normalizedURL.absoluteString);
+    ApolloRecordBrowserPresent(normalizedURL);
+    [[UIApplication sharedApplication] openURL:normalizedURL options:@{} completionHandler:nil];
+}

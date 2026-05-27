@@ -63,6 +63,16 @@ static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *bgColor) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) {
+        UITableViewCell *cell = %orig;
+        NSString *label = cell.textLabel.text;
+        if ([label isEqualToString:@"Tip Jar"] || [label isEqualToString:@"Buy Us a Coffee"] || [label isEqualToString:@"Support Links"]) {
+            cell.textLabel.text = @"Support Links";
+            cell.imageView.image = ApolloBuyMeACoffeeSettingsIcon(29.0);
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+        return cell;
+    }
     if (indexPath.section == 1) {
         // Borrow a themed cell from the original section 1 row 0
         NSIndexPath *origFirst = [NSIndexPath indexPathForRow:0 inSection:1];
@@ -91,6 +101,16 @@ static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *bgColor) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        NSString *label = cell.textLabel.text;
+        if (indexPath.row == 0 || [label isEqualToString:@"Tip Jar"] || [label isEqualToString:@"Buy Us a Coffee"] || [label isEqualToString:@"Support Links"]) {
+            [tableView deselectRowAtIndexPath:indexPath animated:YES];
+            ApolloBuyUsACoffeeViewController *vc = [[ApolloBuyUsACoffeeViewController alloc] init];
+            [((UIViewController *)self).navigationController pushViewController:vc animated:YES];
+            return;
+        }
+    }
     if (indexPath.section == 1) {
         [tableView deselectRowAtIndexPath:indexPath animated:YES];
         if (indexPath.row == 0) {
@@ -195,7 +215,28 @@ static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *bgColor) {
 
 %end
 
+%group ApolloSafariBrowserLogging
+
+@interface ApolloSafariViewController : UIViewController
+- (instancetype)initWithURL:(NSURL *)url;
+@end
+
+%hook ApolloSafariViewController
+
+- (instancetype)initWithURL:(NSURL *)url {
+    ApolloLog(@"[Browser] ApolloSafari initWithURL: %@", url.absoluteString ?: @"(nil)");
+    return %orig;
+}
+
+%end
+
+%end
+
 %ctor {
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
           SettingsGeneralViewController=objc_getClass("_TtC6Apollo29SettingsGeneralViewController"));
+
+    if (objc_getClass("_TtC6Apollo26ApolloSafariViewController")) {
+        %init(ApolloSafariBrowserLogging);
+    }
 }
