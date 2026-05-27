@@ -32,6 +32,10 @@ jobs:
         with:
           # Release events check out the tag by default; we need main to commit to.
           ref: main
+          # The source push below uses a GitHub App token that can bypass the
+          # protected main ruleset. Do not leave checkout's GITHUB_TOKEN auth
+          # header in place, or Git may push as github-actions[bot] instead.
+          persist-credentials: false
 
       - name: Regenerate distribution sources
         env:
@@ -63,6 +67,7 @@ jobs:
             MSG="$MSG for $RELEASE_TAG"
           fi
           git commit -m "$MSG"
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main
           git push origin HEAD:main
