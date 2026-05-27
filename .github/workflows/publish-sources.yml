@@ -1,0 +1,68 @@
+name: Publish distribution sources
+
+# Regenerates the AltStore-style source JSON files + release manifest and pushes
+# them to main. Runs when a release is published (e.g. a draft built by
+# "Build and release IPA variants" is later published from the GitHub UI), and
+# can also be dispatched manually to rebuild the sources on demand.
+#
+# Note: releases created by the build workflow's own GITHUB_TOKEN do NOT fire
+# the release:released event (GitHub's anti-recursion rule), so the draft=false
+# dispatch path regenerates the sources inline instead (see
+# release-ipa-variants.yml). That means these two paths never double-run.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-sources
+  cancel-in-progress: false
+
+jobs:
+  update-sources:
+    name: Regenerate and push distribution sources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Release events check out the tag by default; we need main to commit to.
+          ref: main
+
+      - name: Regenerate distribution sources
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 ./scripts/update_source_json.py
+
+      - name: Generate source updater app token
+        id: source_updater_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SOURCE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.SOURCE_UPDATER_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Commit and push
+        env:
+          APP_TOKEN: ${{ steps.source_updater_token.outputs.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git config user.name "apollo-source-updater[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps.json apps_noext.json apps_glass.json apps_noext_glass.json release-manifest.json
+          if git diff --cached --quiet; then
+            echo "No source JSON changes to commit."
+            exit 0
+          fi
+          MSG="Update distribution sources"
+          if [ -n "$RELEASE_TAG" ]; then
+            MSG="$MSG for $RELEASE_TAG"
+          fi
+          git commit -m "$MSG"
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git pull --rebase origin main
+          git push origin HEAD:main

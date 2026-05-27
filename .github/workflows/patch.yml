@@ -43,7 +43,7 @@ jobs:
 
     steps:
     - name: Check out repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Validate inputs
       run: |
@@ -73,7 +73,7 @@ jobs:
 
     - name: Download Apollo IPA from Release
       if: github.event.inputs.apollo_ipa_url == '' && github.event.inputs.release_tag != ''
-      uses: robinraju/release-downloader@v1.10
+      uses: robinraju/release-downloader@c39a3b234af58f0cf85888573d361fb6fa281534 # v1.10
       with:
         repository: ${{ github.repository }}
         tag: ${{ github.event.inputs.release_tag }}
@@ -144,7 +144,7 @@ jobs:
         echo "patched_ipa_name=${OUTPUT_IPA_NAME}" >> $GITHUB_OUTPUT
 
     - name: Upload IPA Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ steps.patch_script.outputs.patched_ipa_name }}
         path: ${{ steps.patch_script.outputs.patched_ipa_name }}
@@ -169,7 +169,7 @@ jobs:
         echo "patches=${PATCHES}" >> $GITHUB_OUTPUT
 
     - name: Create release
-      uses: softprops/action-gh-release@v2.0.8
+      uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
       with:
         draft: true
         tag_name: apollo-patched-${{ github.run_number }}

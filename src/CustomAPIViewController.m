@@ -42,6 +42,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     TagRedditClientSecret,
     TagImgurClientId,
     TagImageChestAPIToken,
+    TagGiphyAPIKey,
     TagRedirectURI,
     TagUserAgent,
     TagTrendingSubredditsSource,
@@ -54,6 +55,27 @@ typedef NS_ENUM(NSInteger, Tag) {
 };
 
 #pragma mark - Helpers
+
+- (UITextField *)apollo_textFieldInCell:(UITableViewCell *)cell {
+    for (UIView *subview in cell.contentView.subviews) {
+        if ([subview isKindOfClass:[UITextField class]]) {
+            return (UITextField *)subview;
+        }
+    }
+    return nil;
+}
+
+- (BOOL)apollo_isMaskedAPIKeyTag:(NSInteger)tag {
+    return tag == TagRedditClientId
+        || tag == TagRedditClientSecret
+        || tag == TagImgurClientId
+        || tag == TagImageChestAPIToken
+        || tag == TagGiphyAPIKey;
+}
+
+- (void)apollo_applySecureTextEntry:(BOOL)secure toCell:(UITableViewCell *)cell {
+    [self apollo_textFieldInCell:cell].secureTextEntry = secure;
+}
 
 - (NSArray<NSString *> *)registeredURLSchemes {
     NSArray *urlTypes = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleURLTypes"];
@@ -606,7 +628,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch (section) {
         case SectionBackupRestore: return 2;
-        case SectionAPIKeys: return 8; // 6 text fields + Can't sign in? + Instructions
+        case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
         case SectionGeneral: return 8;
         case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
         case SectionSubreddits: return 8;
@@ -838,35 +860,48 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (UITableViewCell *)apiKeyCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
+    UITableViewCell *cell = nil;
     switch (row) {
         case 0:
-            return [self textFieldCellWithIdentifier:@"Cell_API_Reddit"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_Reddit"
                                                label:@"Reddit API Key"
                                          placeholder:@"Reddit API Key"
                                                 text:sRedditClientId
                                                  tag:TagRedditClientId
                                            numerical:NO];
+            break;
         case 1:
-            return [self textFieldCellWithIdentifier:@"Cell_API_RedditSecret"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_RedditSecret"
                                                label:@"Reddit API Secret"
                                          placeholder:@"(usually empty)"
                                                 text:sRedditClientSecret
                                                  tag:TagRedditClientSecret
                                            numerical:NO];
+            break;
         case 2:
-            return [self textFieldCellWithIdentifier:@"Cell_API_Imgur"
+            cell = [self textFieldCellWithIdentifier:@"Cell_API_Imgur"
                                                label:@"Imgur API Key"
                                          placeholder:@"Imgur API Key"
                                                 text:sImgurClientId
                                                  tag:TagImgurClientId
                                            numerical:NO];
+            break;
         case 3:
-            return [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
+            cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_ImageChest"
                                                       label:@"Img Chest API Key"
                                                 placeholder:@"Img Chest API Key"
                                                        text:sImageChestAPIToken
                                                         tag:TagImageChestAPIToken];
-        case 4: {
+            break;
+        case 4:
+            cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Giphy"
+                                                      label:@"Giphy API Key"
+                                                placeholder:@"Giphy API Key"
+                                                       text:[[NSUserDefaults standardUserDefaults] stringForKey:UDKeyGiphyAPIKey] ?: @""
+                                                        tag:TagGiphyAPIKey
+                                                     detail:@"Required for GIF picker. Get one at developers.giphy.com"];
+            break;
+        case 5: {
             NSString *schemesDetail = [NSString stringWithFormat:@"Must match the app whose API key you're using. URI scheme (part before ://) must be registered in Info.plist under CFBundleURLTypes. Registered: %@", [[self registeredURLSchemes] componentsJoinedByString:@", "]];
             UITableViewCell *cell = [self stackedTextFieldCellWithIdentifier:@"Cell_API_Redirect"
                                                                       label:@"Redirect URI"
@@ -884,13 +919,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             return cell;
         }
-        case 5:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_API_UserAgent"
                                                       label:@"User Agent"
                                                 placeholder:defaultUserAgent
                                                        text:sUserAgent
                                                         tag:TagUserAgent];
-        case 6: {
+        case 7: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Troubleshooting"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Troubleshooting"];
@@ -899,17 +934,21 @@ typedef NS_ENUM(NSInteger, Tag) {
             cell.textLabel.text = @"Can't sign in?";
             return cell;
         }
-        case 7: {
+        case 8: {
             UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_Instructions"];
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"Cell_Instructions"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.textLabel.numberOfLines = 0;
             }
-            cell.textLabel.text = @"Instructions (old)";
+            cell.textLabel.text = @"Giphy & ImgChest API Key Setup";
             return cell;
         }
-        default: return [[UITableViewCell alloc] init];
+        default:
+            return [[UITableViewCell alloc] init];
     }
+    [self apollo_applySecureTextEntry:YES toCell:cell];
+    return cell;
 }
 
 - (UITableViewCell *)generalCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
@@ -1403,9 +1442,9 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self restoreSettings];
         }
     } else if (indexPath.section == SectionAPIKeys) {
-        if (indexPath.row == 6) {
+        if (indexPath.row == 7) {
             [self pushTroubleshootingViewController];
-        } else if (indexPath.row == 7) {
+        } else if (indexPath.row == 8) {
             [self pushInstructionsViewController];
         }
     } else if (indexPath.section == SectionAbout) {
@@ -1477,7 +1516,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == SectionBackupRestore) return YES;
-    if (indexPath.section == SectionAPIKeys && (indexPath.row == 6 || indexPath.row == 7)) return YES;
+    if (indexPath.section == SectionAPIKeys && (indexPath.row == 7 || indexPath.row == 8)) return YES;
     if (indexPath.section == SectionSubreddits && indexPath.row == 7) return YES;
     if (indexPath.section == SectionMedia) {
         NSInteger row = (indexPath.row >= 5 && !sEnableInlineImages) ? indexPath.row + 1 : indexPath.row;
@@ -1588,34 +1627,43 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self.navigationController pushViewController:vc animated:YES];
 }
 
-#pragma mark - Instructions VC
+#pragma mark - API Key Setup Instructions
 
 - (void)pushInstructionsViewController {
     UIViewController *vc = [[UIViewController alloc] init];
-    vc.title = @"Instructions (old)";
+    vc.title = @"Giphy & ImgChest API Key Setup";
     vc.view.backgroundColor = [self apollo_themeTableBackgroundColor];
     vc.view.tintColor = [self apollo_themeAccentColor];
 
     UITextView *textView = [[UITextView alloc] init];
     textView.editable = NO;
+    textView.selectable = YES;
+    textView.delegate = self;
     textView.backgroundColor = [UIColor clearColor];
     textView.translatesAutoresizingMaskIntoConstraints = NO;
+    textView.linkTextAttributes = @{
+        NSForegroundColorAttributeName: [self apollo_themeAccentColor],
+        NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+    };
 
     if (@available(iOS 15.0, *)) {
         NSString *instructionsText =
-            @"**Creating a Reddit API credential:**\n"
-            @"*You may need to sign out of all accounts in Apollo*\n\n"
-            @"1. Sign into your Reddit account and go to [reddit.com/prefs/apps](https://reddit.com/prefs/apps)\n"
-            @"2. Click the \"`are you a developer? create an app...`\" button\n"
-            @"3. Fill in the fields \n\t- Name: *anything* \n\t- Choose \"`Installed App`\" \n\t- Description: *anything*\n\t- About url: *anything* \n\t- Redirect uri: `apollo://reddit-oauth`\n"
-            @"4. Click \"`create app`\"\n"
-            @"5. After creating the app you'll get a client identifier which will be a bunch of random characters. **Enter the key in the API Keys section**.\n"
-            @"\n"
-            @"**Creating an Imgur API credential:**\n"
-            @"1. Sign into your Imgur account and go to [api.imgur.com/oauth2/addclient](https://api.imgur.com/oauth2/addclient)\n"
-            @"2. Fill in the fields \n\t- Application name: *anything* \n\t- Authorization type: `OAuth 2 auth with a callback URL` \n\t- Authorization callback URL: `https://www.getpostman.com/oauth2/callback`\n\t- Email: *your email* \n\t- Description: *anything*\n"
-            @"3. Click \"`submit`\"\n"
-            @"4. Enter the **Client ID** (not the client secret) in the API Keys section.";
+            @"**Giphy API Key**\n\n"
+            @"1. Go to [developers.giphy.com](https://developers.giphy.com/) and create an account if you do not have one.\n"
+            @"2. After signing in, click **Create an API Key** at the top of the page.\n"
+            @"3. Choose **SDK** (not API).\n"
+            @"4. Fill in the form:\n"
+            @"\t- **App name:** Apollo Reborn *(any name is fine)*\n"
+            @"\t- **Platform:** iOS\n"
+            @"\t- **App description:** Apollo API Key *(or anything brief)*\n"
+            @"5. Check the box to agree to the terms, then click **Create API Key**.\n"
+            @"6. On your dashboard, click your new API key to copy it.\n"
+            @"7. Paste it into **Giphy API Key** under Custom API → API Keys.\n\n"
+            @"**Img Chest API Key**\n\n"
+            @"1. Go to [imgchest.com](https://imgchest.com/) and click **Register** to create an account.\n"
+            @"2. After signing in, open the menu from your profile picture and choose **API**.\n"
+            @"3. Click **Create API Token**, give it a name, then click **Create**.\n"
+            @"4. Copy the token and paste it into **Img Chest API Key** under Custom API → API Keys.";
 
         NSAttributedStringMarkdownParsingOptions *markdownOptions = [[NSAttributedStringMarkdownParsingOptions alloc] init];
         markdownOptions.interpretedSyntax = NSAttributedStringMarkdownInterpretedSyntaxInlineOnly;
@@ -1630,20 +1678,24 @@ typedef NS_ENUM(NSInteger, Tag) {
         textView.attributedText = attributedText;
     } else {
         textView.font = [UIFont systemFontOfSize:15];
+        textView.dataDetectorTypes = UIDataDetectorTypeLink;
         textView.text =
-            @"Creating a Reddit API credential:\n"
-            @"You may need to sign out of all accounts in Apollo\n\n"
-            @"1. Sign into your Reddit account and go to reddit.com/prefs/apps\n"
-            @"2. Click the \"are you a developer? create an app...\" button\n"
-            @"3. Fill in the fields \n\t- Name: anything \n\t- Choose \"Installed App\" \n\t- Description: anything\n\t- About url: anything \n\t- Redirect uri: apollo://reddit-oauth\n"
-            @"4. Click \"create app\"\n"
-            @"5. After creating the app you'll get a client identifier which will be a bunch of random characters. Enter the key in the API Keys section.\n"
-            @"\n"
-            @"Creating an Imgur API credential:\n"
-            @"1. Sign into your Imgur account and go to api.imgur.com/oauth2/addclient\n"
-            @"2. Fill in the fields \n\t- Application name: anything \n\t- Authorization type: OAuth 2 auth with a callback URL \n\t- Authorization callback URL: https://www.getpostman.com/oauth2/callback\n\t- Email: your email \n\t- Description: anything\n"
-            @"3. Click \"submit\"\n"
-            @"4. Enter the Client ID (not the client secret) in the API Keys section.";
+            @"Giphy API Key\n\n"
+            @"1. Go to https://developers.giphy.com/ and create an account if you do not have one.\n"
+            @"2. After signing in, click Create an API Key at the top of the page.\n"
+            @"3. Choose SDK (not API).\n"
+            @"4. Fill in the form:\n"
+            @"   - App name: Apollo Reborn (any name is fine)\n"
+            @"   - Platform: iOS\n"
+            @"   - App description: Apollo API Key (or anything brief)\n"
+            @"5. Check the box to agree to the terms, then click Create API Key.\n"
+            @"6. On your dashboard, click your new API key to copy it.\n"
+            @"7. Paste it into Giphy API Key under Custom API → API Keys.\n\n"
+            @"Img Chest API Key\n\n"
+            @"1. Go to https://imgchest.com/ and click Register to create an account.\n"
+            @"2. After signing in, open the menu from your profile picture and choose API.\n"
+            @"3. Click Create API Token, give it a name, then click Create.\n"
+            @"4. Copy the token and paste it into Img Chest API Key under Custom API → API Keys.";
     }
     textView.textColor = UIColor.labelColor;
     textView.textContainerInset = UIEdgeInsetsMake(16, 16, 16, 16);
@@ -1666,6 +1718,12 @@ typedef NS_ENUM(NSInteger, Tag) {
     return YES;
 }
 
+- (void)textFieldDidBeginEditing:(UITextField *)textField {
+    if ([self apollo_isMaskedAPIKeyTag:textField.tag]) {
+        textField.secureTextEntry = NO;
+    }
+}
+
 - (void)textFieldDidEndEditing:(UITextField *)textField {
     if (textField.tag == TagRedditClientId) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
@@ -1683,6 +1741,9 @@ typedef NS_ENUM(NSInteger, Tag) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         sImageChestAPIToken = textField.text;
         [[NSUserDefaults standardUserDefaults] setValue:sImageChestAPIToken forKey:UDKeyImageChestAPIToken];
+    } else if (textField.tag == TagGiphyAPIKey) {
+        textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        [[NSUserDefaults standardUserDefaults] setValue:textField.text ?: @"" forKey:UDKeyGiphyAPIKey];
     } else if (textField.tag == TagRedirectURI) {
         textField.text = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         sRedirectURI = textField.text;
@@ -1730,6 +1791,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         NSString *trimmed = [textField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         textField.text = trimmed;
         [[NSUserDefaults standardUserDefaults] setValue:trimmed forKey:UDKeyNotificationBackendRegistrationToken];
+    }
+
+    if ([self apollo_isMaskedAPIKeyTag:textField.tag]) {
+        textField.secureTextEntry = YES;
     }
 }
 
@@ -2192,6 +2257,11 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 }
 
 #pragma mark - In-App Browser
+
+- (BOOL)textView:(UITextView *)textView shouldInteractWithURL:(NSURL *)URL inRange:(NSRange)characterRange interaction:(UITextItemInteraction)interaction {
+    [self presentURLInApolloBrowser:URL];
+    return NO;
+}
 
 - (void)presentURLInApolloBrowser:(NSURL *)url {
     if (!url) return;

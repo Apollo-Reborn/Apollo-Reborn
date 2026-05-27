@@ -10,6 +10,7 @@
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloImageUploadHost.h"
+#import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
 #import "Defaults.h"
 #import "fishhook.h"
@@ -343,6 +344,19 @@ static void ApolloRecordRedditUploadedMediaInfo(NSURL *imageURL, NSString *asset
         sRedditUploadInfoByAssetID[assetID] = info;
     }
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void ApolloRegisterRedditUploadedMedia(NSURL *mediaURL, NSString *assetID, NSString *mimeType, NSString *webSocketURL) {
+    ApolloRecordRedditUploadedMediaAssetID(mediaURL, assetID);
+    ApolloRecordRedditUploadedMediaInfo(mediaURL, assetID, mimeType, webSocketURL);
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 static NSDictionary *ApolloRedditUploadInfoForAssetID(NSString *assetID) {
     if (assetID.length == 0) return nil;
@@ -1401,7 +1415,7 @@ static NSString *ApolloCommentTextByWrappingRedditUploadedMediaURLs(NSString *te
 }
 
 NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
-    if (sImageUploadProvider != ImageUploadProviderReddit || !ApolloIsRedditCommentRequest(request)) return nil;
+    if (!ApolloIsRedditCommentRequest(request)) return nil;
 
     NSData *bodyData = request.HTTPBody;
     if (bodyData.length == 0) return nil;
@@ -1971,19 +1985,13 @@ static NSString *ApolloMediaURLFromRedditMediaMetadata(NSDictionary *mediaMetada
     if (outStatus) *outStatus = status;
     if (requireValid && ![status isEqualToString:@"valid"]) return nil;
 
-    NSDictionary *source = [entry[@"s"] isKindOfClass:[NSDictionary class]] ? entry[@"s"] : nil;
-    NSString *urlString = nil;
-    if (source) {
-        urlString = [source[@"u"] isKindOfClass:[NSString class]] ? source[@"u"] : nil;
-        if (!urlString) urlString = [source[@"gif"] isKindOfClass:[NSString class]] ? source[@"gif"] : nil;
-        if (!urlString) urlString = [source[@"mp4"] isKindOfClass:[NSString class]] ? source[@"mp4"] : nil;
-    }
-    NSArray *previews = [entry[@"p"] isKindOfClass:[NSArray class]] ? entry[@"p"] : nil;
-    if (!urlString && previews.count > 0) {
-        NSDictionary *preview = [previews.lastObject isKindOfClass:[NSDictionary class]] ? previews.lastObject : nil;
-        urlString = [preview[@"u"] isKindOfClass:[NSString class]] ? preview[@"u"] : nil;
-    }
-    return ApolloDecodedRedditMediaURLString(urlString);
+    BOOL preferMP4 = (sPreferredGIFFallbackFormat != 0);
+    NSString *urlString = ApolloMediaDisplayURLFromMetadataEntry(assetID, entry, preferMP4);
+    if (urlString.length > 0) return ApolloDecodedRedditMediaURLString(urlString);
+
+    NSString *fallbackURL = ApolloRedditUploadFallbackURLForAssetID(assetID);
+    if (fallbackURL.length > 0) return ApolloDecodedRedditMediaURLString(fallbackURL);
+    return nil;
 }
 
 static NSString *ApolloMediaAssetIDFromComment(NSDictionary *comment) {
@@ -2016,6 +2024,23 @@ static NSString *ApolloCanonicalDisplayURLForRedditMedia(NSString *assetID, NSSt
     if ([mediaStatus isEqualToString:@"valid"] && [authoritativeHost isEqualToString:@"i.redd.it"] && decoded.length > 0) {
         return ApolloRedditMediaURLByStrippingQuery(decoded);
     }
+
+    NSString *lower = decoded.lowercaseString ?: @"";
+    BOOL looksLikeRedditGIFPreview = assetID.length > 0 && ![assetID hasPrefix:@"giphy|"]
+        && [lower containsString:@".gif"] && [lower containsString:@"redd.it"]
+        && ([lower containsString:@"format=mp4"] || [lower containsString:@"format=png8"]);
+    if (looksLikeRedditGIFPreview) {
+        NSString *gifURL = ApolloRedditHostedGIFDisplayURL(assetID);
+        if (gifURL.length > 0) return gifURL;
+    }
+
+    NSDictionary *info = ApolloRedditUploadInfoForAssetID(assetID);
+    NSString *mimeType = [info[@"mimeType"] isKindOfClass:[NSString class]] ? info[@"mimeType"] : nil;
+    if ([mimeType isEqualToString:@"image/gif"]) {
+        NSString *gifURL = ApolloRedditHostedGIFDisplayURL(assetID);
+        if (gifURL.length > 0) return gifURL;
+    }
+
     NSString *fallbackURL = ApolloRedditUploadFallbackURLForAssetID(assetID);
     if (fallbackURL.length > 0) return fallbackURL;
     return ApolloRedditMediaURLByStrippingQuery(decoded);

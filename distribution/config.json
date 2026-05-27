@@ -1,0 +1,101 @@
+{
+  "repo": "Apollo-Reborn/Apollo-Reborn",
+  "distribution": {
+    "sourceBaseURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main",
+    "manifestOutput": "release-manifest.json"
+  },
+  "source": {
+    "iconURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/settings.jpg",
+    "headerURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg",
+    "website": "https://github.com/Apollo-Reborn/Apollo-Reborn",
+    "tintColor": "#F0542D"
+  },
+  "app": {
+    "bundleIdentifier": "com.christianselig.Apollo",
+    "developerName": "Christian Selig (& Apollo-Reborn contributors)",
+    "iconURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/settings.jpg",
+    "tintColor": "#F0542D",
+    "category": "social",
+    "screenshots": [
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/settings.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/custom.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/recents.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/inline.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/avatar-profile.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/avatar-comments.jpg",
+      "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/translation.jpg"
+    ],
+    "localizedDescription": "Apollo-Reborn is the community-maintained Apollo sideload build powered by the Apollo-Reborn tweak.\n\nIt restores custom API support, media fixes, uploads, inline media, translation, saved categories, Liquid Glass support on iOS 26+, and the rest of the project’s ongoing fixes and enhancements.\n\nChoose the source variant that matches how you sideload:\n\n• Standard: full app bundle with extensions intact\n• No Extensions: strips Apollo’s app extensions to reduce App ID usage on free Apple IDs\n• GLASS: adds the Liquid Glass iOS 26 patch and bundled Liquid Glass icon catalog\n• No Extensions + GLASS: combines both options\n\nThis project is not affiliated with Apollo or Christian Selig."
+  },
+  "news": {
+    "caption": "Apollo-Reborn update available",
+    "imageURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg"
+  },
+  "variants": [
+    {
+      "output": "apps.json",
+      "prefix": null,
+      "notesLabel": null,
+      "newsLabel": "Standard",
+      "source": {
+        "identifier": "app.apolloreborn.standard",
+        "name": "Apollo-Reborn",
+        "subtitle": "Standard Apollo-Reborn source",
+        "description": "Standard Apollo-Reborn source. Includes the main app plus Apollo’s bundled app extensions."
+      },
+      "app": {
+        "name": "Apollo for Reddit",
+        "subtitle": "Standard Apollo-Reborn build"
+      }
+    },
+    {
+      "output": "apps_noext.json",
+      "prefix": "NO-EXTENSIONS",
+      "notesLabel": "No Extensions build.",
+      "newsLabel": "No Extensions",
+      "source": {
+        "identifier": "app.apolloreborn.noextensions",
+        "name": "Apollo-Reborn - No Extensions",
+        "subtitle": "Apollo-Reborn source with app extensions removed",
+        "description": "No Extensions Apollo-Reborn source. Strips Apollo’s app extensions so the sideloaded app uses 1 App ID instead of 7, which is useful on free Apple IDs."
+      },
+      "app": {
+        "name": "Apollo for Reddit - No Extensions",
+        "subtitle": "Apollo-Reborn build without app extensions"
+      }
+    },
+    {
+      "output": "apps_glass.json",
+      "prefix": "GLASS",
+      "notesLabel": "Liquid Glass build.",
+      "newsLabel": "GLASS",
+      "source": {
+        "identifier": "app.apolloreborn.glass",
+        "name": "Apollo-Reborn - GLASS",
+        "subtitle": "Apollo-Reborn source with Liquid Glass patch",
+        "description": "GLASS Apollo-Reborn source. Includes the Liquid Glass iOS 26 patch and bundled Liquid Glass alternate icons."
+      },
+      "app": {
+        "name": "Apollo for Reddit - GLASS",
+        "subtitle": "Apollo-Reborn build with Liquid Glass patch"
+      }
+    },
+    {
+      "output": "apps_noext_glass.json",
+      "prefix": "NO-EXTENSIONS_GLASS",
+      "notesLabel": "No Extensions + Liquid Glass build.",
+      "newsLabel": "No Extensions + GLASS",
+      "source": {
+        "identifier": "app.apolloreborn.noextensionsglass",
+        "name": "Apollo-Reborn - No Extensions + GLASS",
+        "subtitle": "Apollo-Reborn source without extensions and with Liquid Glass patch",
+        "description": "No Extensions + GLASS Apollo-Reborn source. Uses 1 App ID and includes the Liquid Glass iOS 26 patch plus bundled Liquid Glass alternate icons."
+      },
+      "app": {
+        "name": "Apollo for Reddit - No Extensions + GLASS",
+        "subtitle": "Apollo-Reborn build without extensions and with Liquid Glass patch"
+      }
+    }
+  ]
+}
