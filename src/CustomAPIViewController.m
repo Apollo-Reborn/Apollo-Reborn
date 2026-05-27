@@ -2671,7 +2671,7 @@ static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @"Optional support links for maintainers. More can be added over time.";
+    return @"If you're enjoying the updates, consider buying us a coffee!";
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
