@@ -18,6 +18,7 @@ BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
 void ApolloFlushReadPostIDsToDefaults(void);
 UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size);
 UIImage *ApolloBuyMeACoffeeSettingsIcon(CGFloat size);
+UIImage *ApolloRebornOptionsSettingsIcon(CGFloat size);
 
 // Returns the URL string a LinkButtonNode is presenting, by reading either
 // the obj-c .url getter (older iOS) or the urlTextNode's attributed text

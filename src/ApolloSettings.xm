@@ -113,7 +113,7 @@ static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *bgColor) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Apollo Reborn Options";
-            cell.imageView.image = createSettingsIcon(@"key.fill", [UIColor systemTealColor]);
+            cell.imageView.image = ApolloRebornOptionsSettingsIcon(29.0) ?: createSettingsIcon(@"key.fill", [UIColor systemTealColor]);
         } else if (indexPath.row == 1) {
             cell.textLabel.text = @"Saved Categories";
             cell.imageView.image = createSettingsIcon(@"bookmark.fill", [UIColor systemOrangeColor]);
