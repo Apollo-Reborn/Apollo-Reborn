@@ -578,7 +578,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.title = @"Apollo Reborn";
+    self.title = @"Apollo Reborn Options";
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self apollo_disableAutoHideTabBarIdleIfUnsupported];
     [self apollo_applyTheme];
@@ -1735,12 +1735,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             @"\t- **App description:** Apollo API Key *(or anything brief)*\n"
             @"5. Check the box to agree to the terms, then click **Create API Key**.\n"
             @"6. On your dashboard, click your new API key to copy it.\n"
-            @"7. Paste it into **Giphy API Key** under Apollo Reborn → API Keys.\n\n"
+            @"7. Paste it into **Giphy API Key** under Apollo Reborn Options → API Keys.\n\n"
             @"**Img Chest API Key**\n\n"
             @"1. Go to [imgchest.com](https://imgchest.com/) and click **Register** to create an account.\n"
             @"2. After signing in, open the menu from your profile picture and choose **API**.\n"
             @"3. Click **Create API Token**, give it a name, then click **Create**.\n"
-            @"4. Copy the token and paste it into **Img Chest API Key** under Apollo Reborn → API Keys.";
+            @"4. Copy the token and paste it into **Img Chest API Key** under Apollo Reborn Options → API Keys.";
 
         NSAttributedStringMarkdownParsingOptions *markdownOptions = [[NSAttributedStringMarkdownParsingOptions alloc] init];
         markdownOptions.interpretedSyntax = NSAttributedStringMarkdownInterpretedSyntaxInlineOnly;
@@ -1767,12 +1767,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             @"   - App description: Apollo API Key (or anything brief)\n"
             @"5. Check the box to agree to the terms, then click Create API Key.\n"
             @"6. On your dashboard, click your new API key to copy it.\n"
-            @"7. Paste it into Giphy API Key under Apollo Reborn → API Keys.\n\n"
+            @"7. Paste it into Giphy API Key under Apollo Reborn Options → API Keys.\n\n"
             @"Img Chest API Key\n\n"
             @"1. Go to https://imgchest.com/ and click Register to create an account.\n"
             @"2. After signing in, open the menu from your profile picture and choose API.\n"
             @"3. Click Create API Token, give it a name, then click Create.\n"
-            @"4. Copy the token and paste it into Img Chest API Key under Apollo Reborn → API Keys.";
+            @"4. Copy the token and paste it into Img Chest API Key under Apollo Reborn Options → API Keys.";
     }
     textView.textColor = UIColor.labelColor;
     textView.textContainerInset = UIEdgeInsetsMake(16, 16, 16, 16);
@@ -2661,7 +2661,7 @@ static NSArray<NSDictionary *> *ApolloBuyCoffeeEntries(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Support Links";
+    self.title = @"Buy Us a Coffee";
 }
 
 #pragma mark - Table
