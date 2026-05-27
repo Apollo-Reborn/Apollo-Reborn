@@ -1,7 +1,7 @@
 {
   "repo": "jordanearle/Apollo-ImprovedCustomApi",
   "distribution": {
-    "sourceBaseURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/codex/ipa-version-bump",
+    "sourceBaseURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/fork-release-e2e-test",
     "manifestOutput": "release-manifest.json"
   },
   "source": {
