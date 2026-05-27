@@ -407,6 +407,50 @@ def load_icon_packages():
     return packages
 
 
+def _find_xcode_26_0_1():
+    """
+    Return (developer_dir, True) if Xcode 26.0.1 can be found, else (None, False).
+
+    Xcode 26.0.1 is required for --enable-icon-stack-fallback-generation=disabled,
+    a hidden actool flag that strips ~100 MB of icon-stack fallback data from the
+    compiled catalog.  The flag exists only in 26.0.1; later Xcode versions silently
+    ignore it and produce a bloated Assets.car.
+
+    Search order:
+      1. XCODE_DEVELOPER_DIR env var (explicit override)
+      2. /Applications/Xcode_26.0.1.app (canonical install path)
+      3. mdfind Spotlight search (handles renamed/non-standard locations)
+    """
+    override = os.environ.get("XCODE_DEVELOPER_DIR")
+    if override:
+        if os.path.isdir(override):
+            print(f"  Using XCODE_DEVELOPER_DIR override: {override}")
+            return override, True
+        print(f"  ⚠ XCODE_DEVELOPER_DIR={override!r} does not exist — ignoring")
+
+    candidate = "/Applications/Xcode_26.0.1.app/Contents/Developer"
+    if os.path.isdir(candidate):
+        return candidate, True
+
+    try:
+        r = subprocess.run(
+            [
+                "mdfind",
+                "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"
+                " && kMDItemVersion == '26.0.1'",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.strip().splitlines():
+            dev = os.path.join(line.strip(), "Contents/Developer")
+            if os.path.isdir(dev):
+                return dev, True
+    except Exception:
+        pass
+
+    return None, False
+
+
 def compile_assets():
     print("\nCompiling Assets.car...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -417,6 +461,20 @@ def compile_assets():
     if icon_packages:
         names = [os.path.splitext(os.path.basename(p))[0] for p in icon_packages]
         print(f"  Including {len(icon_packages)} icon packages: {', '.join(names)}")
+
+    xcode_dev_dir, has_26_0_1 = _find_xcode_26_0_1()
+    if has_26_0_1:
+        print(f"  Xcode 26.0.1 found at: {xcode_dev_dir}")
+    else:
+        print("  ✗ Xcode 26.0.1 not found.")
+        print("    --enable-icon-stack-fallback-generation=disabled requires Xcode 26.0.1's")
+        print("    actool specifically; later versions silently ignore the flag and produce a")
+        print("    significantly larger catalog with the icon-stack fallback renditions included.")
+        print("    Install Xcode 26.0.1 or set XCODE_DEVELOPER_DIR to its Contents/Developer.")
+        return False
+
+    env = os.environ.copy()
+    env["DEVELOPER_DIR"] = xcode_dev_dir
 
     cmd = ["xcrun", "actool", XCASSETS_DIR]
 
@@ -430,8 +488,13 @@ def compile_assets():
         "--output-format", "human-readable-text",
     ])
 
-    # Register every icon as an alternate app icon
-    cmd.extend(["--include-all-app-icons"])
+    # Register every icon as an alternate app icon.
+    # --enable-icon-stack-fallback-generation=disabled is a hidden Xcode 26.0.1-only
+    # flag; without it actool generates 100+ MB of icon-stack fallback renditions.
+    cmd.extend([
+        "--include-all-app-icons",
+        "--enable-icon-stack-fallback-generation=disabled",
+    ])
 
     # --output-partial-info-plist is required when alternate icons are present
     if icon_packages:
@@ -439,39 +502,13 @@ def compile_assets():
 
     try:
         print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
         print(result.stdout)
         compiled_car = os.path.join(OUTPUT_DIR, "Assets.car")
         if not os.path.exists(compiled_car):
             print("⚠ Assets.car not found in output")
             return False
         print(f"✓ Assets.car ({os.path.getsize(compiled_car):,} bytes) → {compiled_car}")
-
-        # Thin for phone sideloading. Sideloaded IPAs bypass App Store thinning
-        # so every device receives the full compiled catalog. -i phone drops the
-        # pad idiom entries; -p p3 retains the 16-bit P3 tintable variant, which
-        # is what actually gets used on every iPhone capable of running iOS 18
-        # (iPhone XS and later all have P3 displays).
-        #
-        # Each scale must be its own group (paired -i/-s/-p) so that PDF imagesets
-        # keep their 1x, 2x, and 3x pre-rasterized bitmaps. A bare "-i phone -p p3"
-        # collapses PDF imagesets to scale 1 only, producing blurry art on 2x/3x
-        # devices.
-        print("Thinning for phone sideloading (phone s1/s2/s3 + P3)...")
-        try:
-            subprocess.run(
-                [
-                    "assetutil",
-                    "-i", "phone", "-s", "1", "-p", "p3",
-                    "-i", "phone", "-s", "2", "-p", "p3",
-                    "-i", "phone", "-s", "3", "-p", "p3",
-                    "-o", compiled_car, compiled_car,
-                ],
-                capture_output=True, text=True, check=True,
-            )
-            print(f"✓ Thinned to {os.path.getsize(compiled_car):,} bytes")
-        except subprocess.CalledProcessError as e:
-            print(f"⚠ assetutil thinning failed (continuing with unthinned catalog):\n{e.stderr}")
 
         # Copy into prebuilt/ for the patcher to pick up.
         os.makedirs(os.path.dirname(PREBUILT_CAR), exist_ok=True)

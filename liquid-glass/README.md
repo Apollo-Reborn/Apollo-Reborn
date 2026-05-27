@@ -32,7 +32,7 @@ modules.
 | Icon | Default | Dark | Clear Light | Clear Dark |
 |---|---|---|---|---|
 | **Canon**      | ![](icons/igerman00/default.png)  | ![](icons/igerman00/dark.png)  | ![](icons/igerman00/clear-light.png)  | ![](icons/igerman00/clear-dark.png)  |
-| **OG**         | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/og/clear-dark.png)      |
+| **OG**         | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/jryng/clear-dark.png)      |
 | **metalnakls** | ![](icons/metalnakls/default.png) | ![](icons/metalnakls/dark.png) | ![](icons/metalnakls/clear-light.png) | ![](icons/metalnakls/clear-dark.png) |
 | **harunatsu**  | ![](icons/harunatsu/default.png)  | ![](icons/harunatsu/dark.png)  | ![](icons/harunatsu/clear-light.png)  | ![](icons/harunatsu/clear-dark.png)  |
 | **Sunset**     | ![](icons/bajader/default.png)    | ![](icons/bajader/dark.png)    | ![](icons/bajader/clear-light.png)    | ![](icons/bajader/clear-dark.png)    |
@@ -79,7 +79,7 @@ is not needed — the preview PNGs for existing icons are already in Assets.car.
    ```
    This exports all four variants (`default`, `dark`, `clear-light`, `clear-dark`) via
    `ictool` (included in Icon Composer) and compresses them to 8-bit depth.
-5. Rebuild the asset catalog and regenerate the metadata header:
+5. Rebuild the asset catalog and regenerate the metadata header (also see next section):
    ```bash
    # Rebuild prebuilt/Assets.car — must run after step 4 because it reads
    # the variant PNGs to embed them as named imagesets for the in-app picker.
@@ -104,7 +104,7 @@ final IPA. It bundles Apollo's original assets plus the Liquid Glass
 ### Prerequisites
 
 - **Python 3**
-- **Xcode Command Line Tools** — provides `assetutil` and `xcrun actool`
+- **Xcode 26.0.1** — required for `actool`'s hidden `--enable-icon-stack-fallback-generation=disabled` flag, which skips generating fallback icon renditions. Newer Xcode versions ignore this flag so they can't be used. The script finds Xcode 26.0.1 automatically (canonical path, Spotlight, or `XCODE_DEVELOPER_DIR` env var override). (download from [Apple Developer](https://developer.apple.com/download/all/?q=Xcode%2026.0.1))
 - **[cartool](https://github.com/showxu/cartools)** — must be on your `PATH` ([binary release](https://github.com/showxu/cartools/releases/download/1.0.0-alpha/cartool-1.0.0-alpha.bigsur.bottle.tar.gz))
 - **[Asset Catalog Tinkerer](https://github.com/insidegui/AssetCatalogTinkerer)** — installed at `/Applications/Asset Catalog Tinkerer.app`
 
