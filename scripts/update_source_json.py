@@ -55,8 +55,27 @@ def load_existing_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def markdown_to_plain_text(markdown: str) -> str:
+    text = markdown.strip()
+    if not text:
+        return ""
+
+    # AltStore/Feather version history renders descriptions as plain text, so
+    # remove the most visible Markdown syntax while keeping the curated wording.
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    text = re.sub(r"^#{2,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s{2,}[-*]\s+", "  - ", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*]\s+", "- ", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def format_release_notes(body: str, variant_name: str | None = None) -> str:
-    text = body.strip()
+    text = markdown_to_plain_text(body)
     if variant_name:
         return f"{variant_name}\n\n{text}" if text else variant_name
     return text
