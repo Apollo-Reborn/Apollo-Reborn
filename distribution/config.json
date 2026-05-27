@@ -1,7 +1,7 @@
 {
-  "repo": "Apollo-Reborn/Apollo-Reborn",
+  "repo": "jordanearle/Apollo-ImprovedCustomApi",
   "distribution": {
-    "sourceBaseURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main",
+    "sourceBaseURL": "https://raw.githubusercontent.com/jordanearle/Apollo-ImprovedCustomApi/main",
     "manifestOutput": "release-manifest.json"
   },
   "source": {
@@ -12,7 +12,7 @@
   },
   "app": {
     "bundleIdentifier": "com.christianselig.Apollo",
-    "buildVersion": "285",
+    "buildVersion": "286",
     "developerName": "Christian Selig (& Apollo-Reborn contributors)",
     "iconURL": "https://apolloreborn.app/assets/icon.png",
     "tintColor": "#F0542D",

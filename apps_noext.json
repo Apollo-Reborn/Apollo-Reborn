@@ -1,0 +1,78 @@
+{
+  "apps": [
+    {
+      "bundleIdentifier": "com.christianselig.Apollo",
+      "buildVersion": "286",
+      "developerName": "Christian Selig (& Apollo-Reborn contributors)",
+      "iconURL": "https://apolloreborn.app/assets/icon.png",
+      "tintColor": "#F0542D",
+      "category": "social",
+      "screenshots": [
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/settings.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/custom.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/recents.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/inline.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/avatar-profile.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/avatar-comments.jpg",
+        "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/translation.jpg"
+      ],
+      "localizedDescription": "Apollo-Reborn is the community-maintained Apollo sideload build powered by the Apollo-Reborn tweak.\n\nIt restores custom API support, media fixes, uploads, inline media, translation, saved categories, Liquid Glass support on iOS 26+, and the rest of the project’s ongoing fixes and enhancements.\n\nThese sources are intended for AltStore Classic, SideStore, and Feather. Apollo-Reborn is not compatible with AltStore PAL.\n\nChoose the source variant that matches how you sideload:\n\n• Standard: full app bundle with extensions intact\n• No Extensions: strips Apollo’s app extensions to reduce App ID usage on free Apple IDs\n• GLASS: adds the Liquid Glass iOS 26 patch and bundled Liquid Glass icon catalog\n• No Extensions + GLASS: combines both options\n\nThis project is not affiliated with Apollo or Christian Selig.",
+      "name": "Apollo for Reddit - No Extensions",
+      "subtitle": "Apollo-Reborn build without app extensions",
+      "versions": [
+        {
+          "version": "2.14.0-33",
+          "buildVersion": "286",
+          "marketingVersion": "2.14.0-33",
+          "date": "2026-05-27T14:36:06Z",
+          "localizedDescription": "No Extensions build.\n\nApollo version: `v1.15.11`\nApollo-Reborn version: `v2.14.0-33`\n\n## Included IPA variants\n\n- Standard injected IPA\n- No Extensions injected IPA\n- Standard injected IPA + Liquid Glass patch\n- No Extensions injected IPA + Liquid Glass patch\n\n## Included tweak packages\n\n- Rootful \n- Rootless \n\n## Variant notes\n\n- **No Extensions** removes Apollo's bundled app extensions so the sideloaded app uses 1 App ID instead of 7.\n- **GLASS** applies the iOS 26 Liquid Glass binary patch and installs the bundled Liquid Glass icon catalog from this repo.",
+          "downloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/NO-EXTENSIONS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+          "size": 79428165
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "aps-environment",
+          "keychain-access-groups"
+        ],
+        "privacy": {
+          "NSCameraUsageDescription": "Used to take photos to upload for sharing.",
+          "NSPhotoLibraryUsageDescription": "Used to save media or to select images to upload for sharing.",
+          "NSPhotoLibraryAddUsageDescription": "Save media to photo library.",
+          "NSMotionUsageDescription": "Detect rotations in Media Viewer and offer corresponding options.",
+          "NSLocationWhenInUseUsageDescription": "Checked once to calculate sunset/sunrise times for the location.",
+          "NSFaceIDUsageDescription": "Unlock Apollo when re-opening in order to prevent unauthorized access."
+        }
+      },
+      "version": "2.14.0-33",
+      "marketingVersion": "2.14.0-33",
+      "versionDate": "2026-05-27T14:36:06Z",
+      "versionDescription": "No Extensions build.\n\nApollo version: `v1.15.11`\nApollo-Reborn version: `v2.14.0-33`\n\n## Included IPA variants\n\n- Standard injected IPA\n- No Extensions injected IPA\n- Standard injected IPA + Liquid Glass patch\n- No Extensions injected IPA + Liquid Glass patch\n\n## Included tweak packages\n\n- Rootful \n- Rootless \n\n## Variant notes\n\n- **No Extensions** removes Apollo's bundled app extensions so the sideloaded app uses 1 App ID instead of 7.\n- **GLASS** applies the iOS 26 Liquid Glass binary patch and installs the bundled Liquid Glass icon catalog from this repo.",
+      "downloadURL": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/download/v1.15.11_2.14.0-33/NO-EXTENSIONS_Apollo-1.15.11_Apollo-Reborn-2.14.0-33.ipa",
+      "size": 79428165
+    }
+  ],
+  "news": [
+    {
+      "title": "Apollo v1.15.11 / Apollo-Reborn v2.14.0-33 (No Extensions)",
+      "identifier": "v1.15.11_2.14.0-33",
+      "caption": "Apollo-Reborn update available",
+      "date": "2026-05-27T14:36:06Z",
+      "tintColor": "#F0542D",
+      "imageURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg",
+      "url": "https://github.com/jordanearle/Apollo-ImprovedCustomApi/releases/tag/v1.15.11_2.14.0-33"
+    }
+  ],
+  "iconURL": "https://apolloreborn.app/assets/icon.png",
+  "headerURL": "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/img/lg-icons.jpg",
+  "website": "https://apolloreborn.app",
+  "tintColor": "#F0542D",
+  "identifier": "app.apolloreborn.noextensions",
+  "name": "Apollo-Reborn - No Extensions",
+  "subtitle": "Apollo-Reborn source with app extensions removed",
+  "description": "No Extensions Apollo-Reborn source for AltStore Classic, SideStore, and Feather. Strips Apollo’s app extensions so the sideloaded app uses 1 App ID instead of 7, which is useful on free Apple IDs. Not compatible with AltStore PAL.",
+  "featuredApps": [
+    "com.christianselig.Apollo"
+  ]
+}

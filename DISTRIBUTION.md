@@ -121,12 +121,15 @@ Per-app metadata (icon, screenshots, description, `appPermissions`) lives in
 [distribution/config.json](distribution/config.json) under `app`, and per-variant
 overrides under each entry in `variants`. Notes on the model:
 
-- **Versioning**: each release entry uses `version` = the Apollo
-  `CFBundleShortVersionString` (e.g. `1.15.11`, which matches the installed
-  bundle so AltStore's update check behaves), while `buildVersion` and
-  `marketingVersion` carry the incrementing tweak version (e.g. `2.14.0`). The
-  tweak version is what users see and what makes each release a distinct entry,
-  so Feather/AltStore can list and re-download previous versions.
+- **Versioning**: the release pipeline rewrites the main app's
+  `CFBundleShortVersionString` to the Apollo-Reborn tweak version and
+  `CFBundleVersion` to the monotonic build number in
+  [distribution/config.json](distribution/config.json) (currently `286`). The
+  source generator mirrors those exact values in `version` and `buildVersion`
+  because AltStore validates them against the downloaded IPA before installing.
+  Historical IPAs used Apollo's original `1.15.11`/`285` values, so generated
+  sources advertise only the newest installable build while keeping older
+  release notes in `news`.
 - **`appPermissions`**: AltStore validates a source's declared entitlements and
   privacy strings against the downloaded IPA and refuses to install on a
   mismatch, so these are required. The values were extracted from the Apollo
