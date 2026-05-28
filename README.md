@@ -3,7 +3,7 @@
 
 iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you continue using Apollo with your own API keys after its shutdown in June 2023. The tweak also unlocks several Ultra features and includes several enhancements and fixes.
 
-> [!IMPORTANT]
+> [!NOTE]
 > **Apollo-ImprovedCustomApi** is now **Apollo-Reborn**
 >
 > _May 22, 2026_ — This project is now under team-based maintainership to keep Apollo polished and sustainably maintained for the community!
@@ -13,7 +13,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 
 ## Install
 
-Pre-built IPAs and AltStore Classic/SideStore/Feather sources are available at **[apolloreborn.app](https://apolloreborn.app/#download)**.
+Pre-built IPAs and AltStore Classic/SideStore/Feather sources are now available at **[apolloreborn.app](https://apolloreborn.app/#download)**!
 
 ## Features
 
