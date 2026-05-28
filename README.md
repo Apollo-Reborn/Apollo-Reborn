@@ -10,16 +10,17 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 >
 > **Apollo Reborn team:** @JeffreyCA, @icpryde, @jordanearle, @nickclyde, @DeltAndy123 ❤️
 
-| | | | |
-|:--:|:--:|:--:|:--:|
-| <img src="img/settings.jpg" alt="Settings" width="250"> | <img src="img/custom.jpg" alt="Custom API Settings" width="250"> | <img src="img/recents.jpg" alt="Recently Read" width="250"> | <img src="img/inline.jpg" alt="Inline Images" width="250"> |
-| <img src="img/lg-icons.jpg" alt="Liquid Glass Icons" width="250"> | <img src="img/avatar-profile.jpg" alt="User Profile Avatars" width="250"> | <img src="img/avatar-comments.jpg" alt="Comment Avatars" width="250"> | <img src="img/translation.jpg" alt="Translation" width="250"> |
 
 ## Install
 
 Pre-built IPAs and AltStore Classic/SideStore/Feather sources are available at **[apolloreborn.app](https://apolloreborn.app/#download)**.
 
 ## Features
+
+| | | | |
+|:--:|:--:|:--:|:--:|
+| <img src="img/settings.jpg" alt="Settings" width="250"> | <img src="img/custom.jpg" alt="Custom API Settings" width="250"> | <img src="img/recents.jpg" alt="Recently Read" width="250"> | <img src="img/inline.jpg" alt="Inline Images" width="250"> |
+| <img src="img/lg-icons.jpg" alt="Liquid Glass Icons" width="250"> | <img src="img/avatar-profile.jpg" alt="User Profile Avatars" width="250"> | <img src="img/avatar-comments.jpg" alt="Comment Avatars" width="250"> | <img src="img/translation.jpg" alt="Translation" width="250"> |
 
 ### General
 
