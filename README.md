@@ -8,7 +8,7 @@ iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you conti
 >
 > _May 22, 2026_ — This project is now under team-based maintainership to keep Apollo polished and sustainably maintained for the community!
 >
-> - **Apollo Reborn team** (@JeffreyCA, @icpryde, @jordanearle, @nickclyde, @DeltAndy123) ❤️
+> **Apollo Reborn team:** @JeffreyCA, @icpryde, @jordanearle, @nickclyde, @DeltAndy123 ❤️
 
 | | | | |
 |:--:|:--:|:--:|:--:|
