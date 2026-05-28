@@ -6,6 +6,7 @@
 #ifdef APOLLO_DELETED_COMMENTS_TESTING
 #define ApolloLog(fmt, ...) NSLog((fmt), ##__VA_ARGS__)
 BOOL sShowDeletedComments = YES;
+BOOL sTapToRevealDeletedComments = NO;
 #else
 #import "ApolloCommon.h"
 #import "ApolloState.h"
@@ -17,13 +18,108 @@ static const void *kApolloDeletedCommentsResponseDataKey = &kApolloDeletedCommen
 static NSMutableSet<NSString *> *sApolloDeletedCommentsDelegateTransformerInstalledClasses = nil;
 static NSString *sApolloDeletedCommentsLastObservedLinkFullName = nil;
 static NSDate *sApolloDeletedCommentsLastObservedLinkDate = nil;
+static NSMutableDictionary<NSString *, NSString *> *sApolloDeletedCommentsRecoveredReasonsByFullName = nil;
+static NSMutableSet<NSString *> *sApolloDeletedCommentsRecoveredBodyKeys = nil;
+static NSMutableSet<NSString *> *sApolloDeletedCommentsRevealedFullNames = nil;
+static NSMutableSet<NSString *> *sApolloDeletedCommentsRevealedBodyKeys = nil;
+static NSObject *sApolloDeletedCommentsRegistryLock = nil;
 
 static NSString *const ApolloDeletedCommentsMarkerKey = @"apollo_recovered_deleted_comment";
 static NSString *const ApolloDeletedCommentsReasonKey = @"apollo_recovered_deleted_reason";
 static NSString *const ApolloDeletedCommentsReasonUserDeleted = @"user_deleted";
 static NSString *const ApolloDeletedCommentsReasonModeratorRemoved = @"moderator_removed";
 
+static NSString *ApolloDeletedCommentsTrimmedString(NSString *s);
 static NSString *ApolloDeletedCommentsUnescapedHTMLText(NSString *s);
+
+#pragma mark - RecoveredCommentRegistry
+
+static NSObject *ApolloDeletedCommentsRegistryLock(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sApolloDeletedCommentsRegistryLock = [NSObject new];
+    });
+    return sApolloDeletedCommentsRegistryLock;
+}
+
+static NSString *ApolloDeletedCommentsRegistryBodyKey(NSString *author, NSString *body) {
+    NSString *trimmedBody = ApolloDeletedCommentsTrimmedString(body);
+    if (trimmedBody.length == 0) return nil;
+    NSString *trimmedAuthor = ApolloDeletedCommentsTrimmedString(author) ?: @"";
+    return [NSString stringWithFormat:@"%@\n%lu\n%@", trimmedAuthor, (unsigned long)trimmedBody.length, trimmedBody];
+}
+
+void ApolloDeletedCommentsRegisterRecoveredComment(NSString *fullName, NSString *reason) {
+    if (![fullName isKindOfClass:[NSString class]] || fullName.length == 0) return;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        if (!sApolloDeletedCommentsRecoveredReasonsByFullName) {
+            sApolloDeletedCommentsRecoveredReasonsByFullName = [NSMutableDictionary dictionary];
+        }
+        sApolloDeletedCommentsRecoveredReasonsByFullName[fullName] = reason.length > 0 ? reason : ApolloDeletedCommentsReasonModeratorRemoved;
+    }
+}
+
+static void ApolloDeletedCommentsRegisterRecoveredBody(NSString *author, NSString *body) {
+    NSString *key = ApolloDeletedCommentsRegistryBodyKey(author, body);
+    if (key.length == 0) return;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        if (!sApolloDeletedCommentsRecoveredBodyKeys) {
+            sApolloDeletedCommentsRecoveredBodyKeys = [NSMutableSet set];
+        }
+        [sApolloDeletedCommentsRecoveredBodyKeys addObject:key];
+    }
+}
+
+BOOL ApolloDeletedCommentsIsRecoveredComment(NSString *fullName) {
+    if (![fullName isKindOfClass:[NSString class]] || fullName.length == 0) return NO;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        return sApolloDeletedCommentsRecoveredReasonsByFullName[fullName] != nil;
+    }
+}
+
+BOOL ApolloDeletedCommentsIsRecoveredCommentBody(NSString *author, NSString *body) {
+    NSString *key = ApolloDeletedCommentsRegistryBodyKey(author, body);
+    if (key.length == 0) return NO;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        return [sApolloDeletedCommentsRecoveredBodyKeys containsObject:key];
+    }
+}
+
+BOOL ApolloDeletedCommentsIsCommentRevealed(NSString *fullName) {
+    if (![fullName isKindOfClass:[NSString class]] || fullName.length == 0) return NO;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        return [sApolloDeletedCommentsRevealedFullNames containsObject:fullName];
+    }
+}
+
+BOOL ApolloDeletedCommentsIsCommentBodyRevealed(NSString *author, NSString *body) {
+    NSString *key = ApolloDeletedCommentsRegistryBodyKey(author, body);
+    if (key.length == 0) return NO;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        return [sApolloDeletedCommentsRevealedBodyKeys containsObject:key];
+    }
+}
+
+void ApolloDeletedCommentsMarkCommentRevealed(NSString *fullName) {
+    if (![fullName isKindOfClass:[NSString class]] || fullName.length == 0) return;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        if (!sApolloDeletedCommentsRevealedFullNames) {
+            sApolloDeletedCommentsRevealedFullNames = [NSMutableSet set];
+        }
+        [sApolloDeletedCommentsRevealedFullNames addObject:fullName];
+    }
+}
+
+void ApolloDeletedCommentsMarkCommentBodyRevealed(NSString *author, NSString *body) {
+    NSString *key = ApolloDeletedCommentsRegistryBodyKey(author, body);
+    if (key.length == 0) return;
+    @synchronized(ApolloDeletedCommentsRegistryLock()) {
+        if (!sApolloDeletedCommentsRevealedBodyKeys) {
+            sApolloDeletedCommentsRevealedBodyKeys = [NSMutableSet set];
+        }
+        [sApolloDeletedCommentsRevealedBodyKeys addObject:key];
+    }
+}
 
 #pragma mark - RequestClassifier
 
@@ -330,6 +426,32 @@ static NSString *ApolloDeletedCommentsRedditBodyHTML(NSString *body) {
     return ApolloDeletedCommentsEscapeHTML(html);
 }
 
+static NSString *ApolloDeletedCommentsSpoilerMarkdownBody(NSString *body) {
+    NSString *trimmed = ApolloDeletedCommentsTrimmedString(body);
+    if (trimmed.length == 0) return nil;
+    return [NSString stringWithFormat:@">!%@!<", trimmed];
+}
+
+static NSString *ApolloDeletedCommentsRedditSpoilerBodyHTML(NSString *body) {
+    NSString *trimmed = ApolloDeletedCommentsTrimmedString(body);
+    if (trimmed.length == 0) return nil;
+
+    NSString *escaped = ApolloDeletedCommentsEscapeHTML(trimmed);
+    escaped = [escaped stringByReplacingOccurrencesOfString:@"\n" withString:@"<br/>"];
+    return [NSString stringWithFormat:@"<!-- SC_OFF --><div class=\"md\"><p><span class=\"md-spoiler-text\">%@</span></p>\n</div><!-- SC_ON -->", escaped];
+}
+
+static void ApolloDeletedCommentsSetRecoveredBody(NSMutableDictionary *data, NSString *body) {
+    NSString *trimmed = ApolloDeletedCommentsTrimmedString(body);
+    if (trimmed.length == 0) return;
+
+    NSString *displayBody = sTapToRevealDeletedComments ? ApolloDeletedCommentsSpoilerMarkdownBody(trimmed) : trimmed;
+    data[@"body"] = displayBody.length > 0 ? displayBody : trimmed;
+
+    NSString *bodyHTML = sTapToRevealDeletedComments ? ApolloDeletedCommentsRedditSpoilerBodyHTML(trimmed) : ApolloDeletedCommentsRedditBodyHTML(trimmed);
+    if (bodyHTML.length > 0) data[@"body_html"] = bodyHTML;
+}
+
 static void ApolloDeletedCommentsApplyNeutralVoteMetadata(NSMutableDictionary *data) {
     data[@"likes"] = [NSNull null];
     data[@"vote"] = [NSNull null];
@@ -339,6 +461,9 @@ static void ApolloDeletedCommentsApplyNeutralVoteMetadata(NSMutableDictionary *d
 
 static void ApolloDeletedCommentsApplyRecoveredMetadata(NSMutableDictionary *data, NSString *reason) {
     NSString *label = ApolloDeletedCommentsBadgeLabelForReason(reason);
+    NSString *fullName = ApolloDeletedCommentsCommentFullName(data);
+    NSString *author = [data[@"author"] isKindOfClass:[NSString class]] ? data[@"author"] : nil;
+    NSString *body = [data[@"body"] isKindOfClass:[NSString class]] ? data[@"body"] : nil;
     data[ApolloDeletedCommentsMarkerKey] = @YES;
     data[ApolloDeletedCommentsReasonKey] = reason.length > 0 ? reason : ApolloDeletedCommentsReasonModeratorRemoved;
     data[@"author_flair_text"] = label.length > 0 ? label : @"removed by mod";
@@ -346,6 +471,8 @@ static void ApolloDeletedCommentsApplyRecoveredMetadata(NSMutableDictionary *dat
     data[@"author_flair_type"] = @"text";
     data[@"author_flair_richtext"] = @[];
     ApolloDeletedCommentsApplyNeutralVoteMetadata(data);
+    ApolloDeletedCommentsRegisterRecoveredComment(fullName, reason);
+    ApolloDeletedCommentsRegisterRecoveredBody(author, body);
 }
 
 static void ApolloDeletedCommentsClearRemovalMetadata(NSMutableDictionary *data) {
@@ -589,13 +716,11 @@ static NSMutableDictionary *ApolloDeletedCommentsThingFromArchived(NSDictionary 
     if (identifier.length == 0 || body.length == 0 || ApolloDeletedCommentsBodyLooksDeleted(body)) return nil;
 
     NSString *author = [archived[@"author"] isKindOfClass:[NSString class]] ? archived[@"author"] : @"[deleted]";
-    NSString *bodyHTML = ApolloDeletedCommentsRedditBodyHTML(body);
     NSMutableDictionary *data = [NSMutableDictionary dictionary];
     data[@"id"] = identifier;
     data[@"name"] = fullName ?: [@"t1_" stringByAppendingString:identifier];
     data[@"author"] = author.length > 0 ? author : @"[deleted]";
-    data[@"body"] = body;
-    if (bodyHTML.length > 0) data[@"body_html"] = bodyHTML;
+    ApolloDeletedCommentsSetRecoveredBody(data, body);
     data[@"parent_id"] = [archived[@"parent_id"] isKindOfClass:[NSString class]] ? archived[@"parent_id"] : @"";
     data[@"link_id"] = [archived[@"link_id"] isKindOfClass:[NSString class]] ? archived[@"link_id"] : @"";
     data[@"subreddit"] = [archived[@"subreddit"] isKindOfClass:[NSString class]] ? archived[@"subreddit"] : @"";
@@ -769,9 +894,7 @@ static NSUInteger ApolloDeletedCommentsPatchRedditJSONNode(id node, NSDictionary
             if (currentLooksDeleted && archivedBody.length > 0 && !ApolloDeletedCommentsBodyLooksDeleted(archivedBody)) {
                 if (stats) stats->recoverableCount++;
                 NSString *author = [archived[@"author"] isKindOfClass:[NSString class]] ? archived[@"author"] : nil;
-                data[@"body"] = archivedBody;
-                NSString *bodyHTML = ApolloDeletedCommentsRedditBodyHTML(archivedBody);
-                if (bodyHTML.length > 0) data[@"body_html"] = bodyHTML;
+                ApolloDeletedCommentsSetRecoveredBody(data, archivedBody);
                 if (author.length > 0) data[@"author"] = author;
                 if ([archived[@"created_utc"] respondsToSelector:@selector(doubleValue)]) data[@"created_utc"] = archived[@"created_utc"];
                 if ([archived[@"score"] respondsToSelector:@selector(integerValue)]) data[@"score"] = archived[@"score"];

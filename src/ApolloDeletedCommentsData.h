@@ -11,6 +11,13 @@ typedef void (^ApolloDeletedCommentsURLSessionCompletion)(NSData *data, NSURLRes
 void ApolloDeletedCommentsHandleRequestObservation(NSURLRequest *request, NSString *source);
 ApolloDeletedCommentsURLSessionCompletion ApolloDeletedCommentsMaybeWrapCompletion(NSURLRequest *request, ApolloDeletedCommentsURLSessionCompletion completion);
 void ApolloDeletedCommentsInstallDelegateTransformerIfNeeded(NSURLSession *session, NSURLRequest *request);
+void ApolloDeletedCommentsRegisterRecoveredComment(NSString *fullName, NSString *reason);
+BOOL ApolloDeletedCommentsIsRecoveredComment(NSString *fullName);
+BOOL ApolloDeletedCommentsIsRecoveredCommentBody(NSString *author, NSString *body);
+BOOL ApolloDeletedCommentsIsCommentRevealed(NSString *fullName);
+BOOL ApolloDeletedCommentsIsCommentBodyRevealed(NSString *author, NSString *body);
+void ApolloDeletedCommentsMarkCommentRevealed(NSString *fullName);
+void ApolloDeletedCommentsMarkCommentBodyRevealed(NSString *author, NSString *body);
 
 #ifdef APOLLO_DELETED_COMMENTS_TESTING
 NSString *ApolloDeletedCommentsTestLinkFullNameFromRedditURL(NSURL *url);

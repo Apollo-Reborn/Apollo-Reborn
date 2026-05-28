@@ -637,7 +637,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     switch (section) {
         case SectionBackupRestore: return 2;
         case SectionAPIKeys: return 9; // 7 text fields + Can't sign in? + API key setup guide
-        case SectionGeneral: return 9;
+        case SectionGeneral: return sShowDeletedComments ? 10 : 9;
         case SectionMedia: return (sShowUserAvatars ? 13 : 12) + (sEnableInlineImages ? 0 : -1);
         case SectionSubreddits: return 8;
         case SectionNotificationBackend: return 3; // URL + Registration Token + Test Connection
@@ -961,7 +961,8 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (UITableViewCell *)generalCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    switch (row) {
+    NSInteger effectiveRow = (!sShowDeletedComments && row >= 4) ? row + 1 : row;
+    switch (effectiveRow) {
         case 0:
             return [self switchCellWithIdentifier:@"Cell_Gen_Announce"
                                             label:@"Block Announcements"
@@ -983,11 +984,16 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                on:[defaults boolForKey:UDKeyShowDeletedComments]
                                            action:@selector(showDeletedCommentsSwitchToggled:)];
         case 4:
+            return [self switchCellWithIdentifier:@"Cell_Gen_TapToRevealDeletedComments"
+                                            label:@"Tap to Reveal Deleted Comments"
+                                               on:[defaults boolForKey:UDKeyTapToRevealDeletedComments]
+                                           action:@selector(tapToRevealDeletedCommentsSwitchToggled:)];
+        case 5:
             return [self switchCellWithIdentifier:@"Cell_Gen_RRThumbs"
                                             label:@"Recently Read Thumbnails"
                                                on:[defaults boolForKey:UDKeyShowRecentlyReadThumbnails]
                                            action:@selector(showRecentlyReadThumbnailsSwitchToggled:)];
-        case 5: {
+        case 6: {
             NSString *readPostMaxStr = sReadPostMaxCount > 0 ? [NSString stringWithFormat:@"%ld", (long)sReadPostMaxCount] : @"";
             return [self textFieldCellWithIdentifier:@"Cell_Gen_ReadMax"
                                                label:@"Recently Read Posts Limit"
@@ -996,17 +1002,17 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                  tag:TagReadPostMaxCount
                                            numerical:YES];
         }
-        case 6:
+        case 7:
             return [self switchCellWithIdentifier:@"Cell_Gen_FilterNSFWRR"
                                             label:@"Hide NSFW in Recently Read"
                                                on:[defaults boolForKey:UDKeyFilterNSFWRecentlyRead]
                                            action:@selector(filterNSFWRecentlyReadSwitchToggled:)];
-        case 7:
+        case 8:
             return [self switchCellWithIdentifier:@"Cell_Gen_SteamApp"
                                             label:@"Open Steam Links in App"
                                                on:[defaults boolForKey:UDKeyOpenLinksInSteamApp]
                                            action:@selector(steamAppSwitchToggled:)];
-        case 8: {
+        case 9: {
             BOOL idleSupported = [self apollo_supportsAutoHideTabBarIdleSetting];
             UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_Gen_TabBarIdle"
                                                              label:@"Tab Bar Re-Expands When Idle"
@@ -1915,8 +1921,22 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)showDeletedCommentsSwitchToggled:(UISwitch *)sender {
+    BOOL wasOn = sShowDeletedComments;
     sShowDeletedComments = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sShowDeletedComments forKey:UDKeyShowDeletedComments];
+    if (sShowDeletedComments == wasOn) return;
+
+    NSArray<NSIndexPath *> *paths = @[[NSIndexPath indexPathForRow:4 inSection:SectionGeneral]];
+    if (sShowDeletedComments) {
+        [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    }
+}
+
+- (void)tapToRevealDeletedCommentsSwitchToggled:(UISwitch *)sender {
+    sTapToRevealDeletedComments = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sTapToRevealDeletedComments forKey:UDKeyTapToRevealDeletedComments];
 }
 
 - (void)filterNSFWRecentlyReadSwitchToggled:(UISwitch *)sender {
@@ -2266,6 +2286,8 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     sRandNsfwSubredditsSource = [defaults stringForKey:UDKeyRandNsfwSubredditsSource];
     sTrendingSubredditsLimit = [defaults stringForKey:UDKeyTrendingSubredditsLimit];
     sReadPostMaxCount = [defaults integerForKey:UDKeyReadPostMaxCount];
+    sShowDeletedComments = [defaults boolForKey:UDKeyShowDeletedComments];
+    sTapToRevealDeletedComments = [defaults boolForKey:UDKeyTapToRevealDeletedComments];
     sShowRecentlyReadThumbnails = [defaults boolForKey:UDKeyShowRecentlyReadThumbnails];
     sPreferredGIFFallbackFormat = ([defaults integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sUnmuteCommentsVideos = [defaults integerForKey:UDKeyUnmuteCommentsVideos];
