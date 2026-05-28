@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [v3.0.0] - YYYY-mm-dd
+## [v3.0.0] - 2026-05-29
 
 ### Features
 
@@ -21,6 +21,8 @@ All notable changes to this project will be documented in this file.
 - Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
 - **Mask API keys** in Custom API settings: Reddit, Reddit Secret, Imgur, Img Chest, and Giphy fields show dots when idle and reveal only while editing (#276: @icpryde)
 - Add **Inline Media Alignment** option in **Settings > Custom API > Media** to left-align, center, or right-align inline images that don't fill the full content width (#273: @lampemw)
+- Rename **Custom API** to **Apollo Reborn Options** in Settings, polish the **Thanks To** screen with maintainer/code/icon & design groupings sourced from `contributors.json`, and add an **Apollo Reborn Subreddit** row that opens r/ApolloReborn in-app (#294: @icpryde)
+- Add **Buy Us a Coffee** screen in Settings with maintainer links, and move Apollo's original **Tip Jar** to **Settings > About** above **What's New** (#294: @icpryde)
 
 ### Fixes
 
@@ -36,6 +38,8 @@ All notable changes to this project will be documented in this file.
 - Fix launch crash from the banned profile username lookup recursing through the nav stack on cold start (#276: @icpryde)
 - Fix crash on Reddit link previews when comments JSON has missing or unexpected preview fields (#276, #280: @JeffreyCA, @icpryde)
 - Fix Reddit-hosted GIFs stopping animation after leaving and returning to a thread, plus general GIF lifecycle/autoplay stability (#276: @icpryde)
+- Fix Giphy GIFs posted from Apollo not rendering in the official Reddit iOS app (and showing a "image was probably deleted" placeholder when editing in Apollo) — comments now use Reddit's native `![gif](giphy|...)` token end-to-end (#289: @icpryde)
+- Fix Compact link preview cards growing to hero size and overlapping the next comment after voting on a comment that contains a link (#290: @icpryde)
 
 ## [v2.14.0] - 2026-05-20
 
