@@ -567,7 +567,7 @@ def main():
         print("\n" + "=" * 60)
         print("✓ Rebuild complete!")
         print(f"  .xcassets : {XCASSETS_DIR}")
-        print(f"  Assets.car: {OUTPUT_DIR}/Assets.car  (thinned: phone s1/s2/s3 + P3)")
+        print(f"  Assets.car: {OUTPUT_DIR}/Assets.car")
         print(f"  Installed : {PREBUILT_CAR}")
         print("=" * 60)
         return 0
