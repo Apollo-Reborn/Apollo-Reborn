@@ -42,6 +42,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive
+          lfs: true
           # The source push at the end uses a GitHub App token that can bypass
           # the protected main ruleset. Do not persist checkout's GITHUB_TOKEN
           # auth header, or Git may push as github-actions[bot] instead.
@@ -120,13 +121,6 @@ jobs:
           curl -L --fail --retry 3 "${{ github.event.inputs.apollo_ipa_url }}" -o Apollo.ipa
           unzip -t Apollo.ipa >/dev/null
 
-      - name: Build IPA variants
-        run: |
-          bash ./scripts/build_release_variants.sh \
-            --ipa ./Apollo.ipa \
-            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
-            --output-dir ./dist/out
-
       - name: Collect metadata
         id: meta
         run: |
@@ -139,13 +133,25 @@ jobs:
             echo "Error: could not determine Apollo version from Apollo.ipa" >&2
             exit 1
           fi
-          TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g')
+          # Use the semantic tweak version for the tag/name/IPA, dropping the
+          # trailing dpkg packaging revision in control (e.g. 2.14.0-33 -> 2.14.0).
+          TWEAK_VERSION=$(sed -n 's/^Version: //p' control | sed 's/~/-/g' | sed -E 's/-[0-9]+$//')
           TAG_NAME="v${APOLLO_VERSION}_${TWEAK_VERSION}"
           RELEASE_NAME="Apollo v${APOLLO_VERSION} with Apollo-Reborn v${TWEAK_VERSION}"
           echo "apollo_version=${APOLLO_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tweak_version=${TWEAK_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release inputs
+        run: python3 ./scripts/validate_release_inputs.py "${{ steps.meta.outputs.apollo_version }}"
+
+      - name: Build IPA variants
+        run: |
+          bash ./scripts/build_release_variants.sh \
+            --ipa ./Apollo.ipa \
+            --deb "${{ steps.rootful_deb.outputs.deb_path }}" \
+            --output-dir ./dist/out
 
       - name: Generate release notes
         run: python3 ./scripts/generate_release_notes.py > RELEASE_NOTES.md
@@ -164,6 +170,45 @@ jobs:
           files: |
             dist/out/*.ipa
             packages/*.deb
+
+      - name: Summarize release outputs
+        run: |
+          BUILD_VERSION=$(python3 -c 'import json; print(json.load(open("distribution/config.json", encoding="utf-8"))["app"]["buildVersion"])')
+          {
+            echo "## Release"
+            echo ""
+            echo "- Tag: \`${{ steps.meta.outputs.tag_name }}\`"
+            echo "- Name: \`${{ steps.meta.outputs.release_name }}\`"
+            echo "- Apollo version: \`${{ steps.meta.outputs.apollo_version }}\`"
+            echo "- Apollo-Reborn version: \`${{ steps.meta.outputs.tweak_version }}\`"
+            echo "- Build version: \`${BUILD_VERSION}\`"
+            echo ""
+            echo "## IPA assets"
+            echo ""
+            for ipa in dist/out/*.ipa; do
+              echo "- \`$(basename "$ipa")\` ($(du -h "$ipa" | cut -f1))"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize source URLs
+        # Only when this run actually regenerates/publishes the sources. Drafts
+        # (and runs that skip the source update) would otherwise advertise
+        # apps.json/manifest URLs for a release that has not been published.
+        if: github.ref == 'refs/heads/main' && inputs.update_sources && !inputs.draft
+        run: |
+          {
+            echo ""
+            echo "## Source URLs"
+            echo ""
+            python3 - <<'PY'
+          import json
+          config = json.load(open("distribution/config.json", encoding="utf-8"))
+          base = config["distribution"]["sourceBaseURL"].rstrip("/")
+          for variant in config["variants"]:
+              print(f"- `{base}/{variant['output']}`")
+          print(f"- `{base}/{config['distribution']['manifestOutput']}`")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update source JSON files
         # Inline update for the automated path (draft=false dispatch). Skipped
@@ -206,3 +251,12 @@ jobs:
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git pull --rebase origin main
           git push origin HEAD:main
+          # Capture the SHA after the push so the summary reflects what actually
+          # landed on main; the rebase above can replay the commit to a new SHA.
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          {
+            echo ""
+            echo "## Source update"
+            echo ""
+            echo "- Commit: \`${SOURCE_COMMIT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

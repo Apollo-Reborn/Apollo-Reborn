@@ -1,19 +1,26 @@
 # Apollo-Reborn
-[![Build and release](https://github.com/Apollo-Reborn/Apollo-Reborn/actions/workflows/buildapp.yml/badge.svg)](https://github.com/Apollo-Reborn/Apollo-Reborn/actions/workflows/buildapp.yml) ![GitHub Release](https://img.shields.io/github/v/release/Apollo-Reborn/Apollo-Reborn)
+[![Subreddit](https://img.shields.io/reddit/subreddit-subscribers/ApolloReborn?style=flat&logoColor=purple&label=join%20r%2FApolloReborn&color=%238a02fe)](https://www.reddit.com/r/ApolloReborn/) ![GitHub Release](https://img.shields.io/github/v/release/Apollo-Reborn/Apollo-Reborn)
 
 iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you continue using Apollo with your own API keys after its shutdown in June 2023. The tweak also unlocks several Ultra features and includes several enhancements and fixes.
 
-> [!IMPORTANT]
+> [!NOTE]
 > **Apollo-ImprovedCustomApi** is now **Apollo-Reborn**
 >
-> _May 22, 2026_ — The project is moving forward under team-based maintainership to keep Apollo polished and sustainably maintained for the community. For background, see JeffreyCA's [original community announcement](https://github.com/JeffreyCA/Apollo-ImprovedCustomApi/issues/263).
+> _May 22, 2026_ — This project is now under team-based maintainership to keep Apollo polished and sustainably maintained for the community - join us at [r/ApolloReborn](https://www.reddit.com/r/ApolloReborn/)!
+>
+> **Apollo Reborn team:** @JeffreyCA, @icpryde, @jordanearle, @nickclyde, @DeltAndy123 ❤️
+
+
+## Install
+
+Pre-built IPAs and AltStore Classic/SideStore/Feather sources are now available at **[apolloreborn.app](https://apolloreborn.app/#download)**!
+
+## Features
 
 | | | | |
 |:--:|:--:|:--:|:--:|
 | <img src="img/settings.jpg" alt="Settings" width="250"> | <img src="img/custom.jpg" alt="Custom API Settings" width="250"> | <img src="img/recents.jpg" alt="Recently Read" width="250"> | <img src="img/inline.jpg" alt="Inline Images" width="250"> |
 | <img src="img/lg-icons.jpg" alt="Liquid Glass Icons" width="250"> | <img src="img/avatar-profile.jpg" alt="User Profile Avatars" width="250"> | <img src="img/avatar-comments.jpg" alt="Comment Avatars" width="250"> | <img src="img/translation.jpg" alt="Translation" width="250"> |
-
-## Features
 
 ### General
 
@@ -63,11 +70,7 @@ The legacy Apollo push backends went dark in June 2023 and are otherwise blocked
 
 ## Safari integration
 
-I recommend using the [Open-In-Apollo](https://github.com/AnthonyGress/Open-In-Apollo) userscript to automatically open Reddit links in Apollo.
-
-## Looking for IPA?
-
-One source where you can get the fully tweaked IPA is [Balackburn/Apollo](https://github.com/Balackburn/Apollo).
+We recommend using the [Open-In-Apollo](https://github.com/AnthonyGress/Open-In-Apollo) userscript to automatically open Reddit links in Apollo.
 
 ## Don't have an API key?
 
@@ -186,6 +189,8 @@ Thank you to these wonderful people:
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/ichitaso"><img src="https://avatars.githubusercontent.com/u/980215?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="ichitaso"/></a><br /><sub><b>ichitaso</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=ichitaso" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/epheterson"><img src="https://avatars.githubusercontent.com/u/151483?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="epheterson"/></a><br /><sub><b>epheterson</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=epheterson" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/nunoo"><img src="https://avatars.githubusercontent.com/u/50464167?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="nunoo"/></a><br /><sub><b>nunoo</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=nunoo" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/lampemw"><img src="https://avatars.githubusercontent.com/u/6135609?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="lampemw"/></a><br /><sub><b>lampemw</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=lampemw" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/rebelancap"><img src="https://avatars.githubusercontent.com/u/7285817?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="rebelancap"/></a><br /><sub><b>rebelancap</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=rebelancap" title="Code">Code</a></td>
     </tr>
   </tbody>
 </table>

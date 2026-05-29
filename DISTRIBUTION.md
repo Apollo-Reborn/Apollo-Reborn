@@ -4,10 +4,15 @@ This repo can publish the same four Apollo distribution variants that Balackburn
 
 ## Variants
 
-- `Apollo-<apollo>_Apollo-Reborn-<tweak>.ipa`: standard injected IPA
-- `NO-EXTENSIONS_Apollo-<apollo>_Apollo-Reborn-<tweak>.ipa`: standard IPA with app extensions removed
-- `GLASS_Apollo-<apollo>_Apollo-Reborn-<tweak>.ipa`: standard injected IPA plus `patch.sh --liquid-glass`
-- `NO-EXTENSIONS_GLASS_Apollo-<apollo>_Apollo-Reborn-<tweak>.ipa`: no-extensions IPA plus `patch.sh --liquid-glass`
+- `Apollo-Reborn-<tweak>.ipa`: standard injected IPA
+- `Apollo-Reborn-<tweak>-NOEXTENSIONS.ipa`: standard IPA with app extensions removed
+- `Apollo-Reborn-<tweak>-GLASS.ipa`: standard injected IPA plus `patch.sh --liquid-glass`
+- `Apollo-Reborn-<tweak>-GLASS-NOEXTENSIONS.ipa`: no-extensions IPA plus `patch.sh --liquid-glass`
+
+The GitHub release tag still includes the supported Apollo base version
+(`v<apollo>_<tweak>`, for example `v1.15.11_3.0.0`), but the IPA asset names
+are Apollo-Reborn first because the distributed app version is now the
+Apollo-Reborn version.
 
 ## What “No Extensions” Means
 
@@ -62,13 +67,19 @@ The workflow:
 
 1. Builds the rootful tweak `.deb`
 2. Downloads the input Apollo IPA
-3. Builds the four IPA variants
-4. Creates a GitHub release tagged `v<apollo>_<tweak>`
-5. Optionally regenerates:
+3. Validates release metadata before the expensive IPA variant build:
+   - `control` has the Apollo-Reborn tweak version
+   - `distribution/config.json` has a numeric monotonic `app.buildVersion`
+   - `CHANGELOG.md` has a matching `## [v<tweak>]` entry
+   - the computed release tag does not already exist
+4. Builds the four IPA variants
+5. Creates a GitHub release tagged `v<apollo>_<tweak>`
+6. Optionally regenerates and validates:
    - [apps.json](apps.json)
    - [apps_noext.json](apps_noext.json)
    - [apps_glass.json](apps_glass.json)
    - [apps_noext_glass.json](apps_noext_glass.json)
+   - [release-manifest.json](release-manifest.json)
 
 ### When the source JSON / website updates
 
@@ -130,6 +141,10 @@ overrides under each entry in `variants`. Notes on the model:
   Historical IPAs used Apollo's original `1.15.11`/`285` values, so generated
   sources advertise only the newest installable build while keeping older
   release notes in `news`.
+- **Build number policy**: `app.buildVersion` must increase for every shipped
+  public release, regardless of how the semantic tweak version changes. For
+  example: `3.0.0 -> 286`, `3.0.1 -> 287`, `3.1.0 -> 288`. Do not reuse a
+  build number, because AltStore/iOS use it to decide upgrade ordering.
 - **`appPermissions`**: AltStore validates a source's declared entitlements and
   privacy strings against the downloaded IPA and refuses to install on a
   mismatch, so these are required. The values were extracted from the Apollo

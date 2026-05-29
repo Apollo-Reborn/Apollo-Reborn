@@ -5,90 +5,50 @@
 
 // MARK: - Liquid Glass App Icon Picker
 //
-// Injects a "Liquid Glass" section into Apollo's native App Icon picker
-// (Settings -> App Icon, backed by _TtC6Apollo29SettingsAppIconViewController).
-// The injected section lives at table-view index 1, right after Apollo's
-// "current / primary icon" section. Rows in every section >= 1 in Apollo's
-// original layout get shifted down by 1; all hooked data-source and delegate
-// methods passthrough to %orig with a remapped section index.
+// Injects a section into Apollo's App Icon picker
+// (_TtC6Apollo29SettingsAppIconViewController) whose content is driven by
+// the `kLGIconGroups[]` table generated from liquid-glass/icons.json.
 //
-// Each row renders a 1x4 preview strip in a fixed variant order
-// (default / dark / clear / clear dark) for one bundled Liquid Glass icon.
-// Tapping a row calls
-// -[UIApplication setAlternateIconName:completionHandler:] with the icon ID
-// (or nil if the user picked the icon that matches the primary `jryng`
-// CFBundleIcon, so iOS stays in its "default icon" state when possible).
+// Each group in that table has a `presentation` field:
+//   • LGGroupPresentationInline — icon rows appear directly in the section.
+//   • LGGroupPresentationPush   — a single disclosure row that pushes a
+//                                 LGGroupIconsViewController onto the nav stack.
+//
+// Adding a new group or changing titles only requires editing icons.json and
+// running `make lg-previews` + `rebuild_assets.py` — no source changes needed.
 //
 // The hook self-disables on un-patched IPAs by checking CFBundleAlternateIcons
-// for the `jryng` entry the LG patch installs.
+// and looking for the entry for the `primaryIconID` key from icons.json.
 
-static NSString *const kLGSectionTitle = @"Liquid Glass";
-static NSString *const kLGCellReuseID = @"ApolloLGIconRow";
+static NSString *const kLGCellReuseID       = @"ApolloLGIconRow";
+static NSString *const kLGDisclosureReuseID  = @"ApolloLGDisclosure";
 static NSString *const kLGChangedIconNotification = @"com.christianselig.ChangedAppIcon";
-static const NSInteger kLGSectionIndex = 0;
-static const CGFloat kLGThumbnailSide = 52.0;
-static const CGFloat kLGThumbnailCorner = 11.5;
-static const CGFloat kLGTileSpacing = 12.0;
-static const CGFloat kLGRowHeight = 104.0;
+static const NSInteger kLGSectionIndex       = 0;
+static const CGFloat   kLGThumbnailSide      = 52.0;
+static const CGFloat   kLGThumbnailCorner    = 11.5;
+static const CGFloat   kLGTileSpacing        = 12.0;
+static const CGFloat   kLGRowHeight          = 104.0;
 
-#pragma mark - Bundled preview data
+#pragma mark - Generated group/icon data
 
 #include "LiquidGlassIconPreviews.gen.h"
 
-// The generated header exposes kLGPrimaryIconIDCString as a plain C string.
-// Wrap it in an NSString once for use in ObjC dictionary lookups.
 static NSString *LGPrimaryIconID(void) {
-    static NSString *cached;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cached = @(kLGPrimaryIconIDCString);
-    });
-    return cached;
+    static NSString *s;
+    static dispatch_once_t t;
+    dispatch_once(&t, ^{ s = @(kLGPrimaryIconIDCString); });
+    return s;
 }
 
 static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
     if (!iconID || !variant) return nil;
-
-    // Cache decoded UIImages forever (16 entries, small) so we only ever pay
-    // the base64-decode + PNG-decode cost on the first display.
-    static NSCache<NSString *, UIImage *> *cache;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cache = [NSCache new];
-        cache.name = @"ca.jeffrey.apollo.lg-icon-previews";
-    });
-    NSString *cacheKey = [NSString stringWithFormat:@"%@/%@", iconID, variant];
-    UIImage *cached = [cache objectForKey:cacheKey];
-    if (cached) return cached;
-
-    const char *cIcon = iconID.UTF8String;
-    const char *cVariant = variant.UTF8String;
-    for (size_t i = 0; i < kLGPreviewEntryCount; i++) {
-        const LGPreviewEntry *entry = &kLGPreviewEntries[i];
-        if (strcmp(entry->iconID, cIcon) != 0 || strcmp(entry->variant, cVariant) != 0) continue;
-
-        NSString *b64 = [[NSString alloc] initWithBytesNoCopy:(void *)entry->base64
-                                                       length:strlen(entry->base64)
-                                                     encoding:NSASCIIStringEncoding
-                                                 freeWhenDone:NO];
-        if (!b64) {
-            ApolloLog(@"[LGIconPicker] failed to wrap base64 cstring for %@/%@", iconID, variant);
-            return nil;
-        }
-        NSData *data = [[NSData alloc] initWithBase64EncodedString:b64
-                                                            options:0];
-        if (!data) {
-            ApolloLog(@"[LGIconPicker] base64 decode failed for %@/%@", iconID, variant);
-            return nil;
-        }
-        UIImage *img = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
-        if (img) [cache setObject:img forKey:cacheKey];
-        return img;
-    }
-    return nil;
+    // Preview imagesets are compiled into the app's Assets.car by rebuild_assets.py
+    // as named imagesets (lg-preview-{iconID}-{variant}).
+    NSString *name = [NSString stringWithFormat:@"lg-preview-%@-%@", iconID, variant];
+    return [UIImage imageNamed:name inBundle:NSBundle.mainBundle compatibleWithTraitCollection:nil];
 }
 
-#pragma mark - Icon model
+#pragma mark - Runtime icon model
 
 typedef struct {
     __unsafe_unretained NSString *iconID;
@@ -96,110 +56,155 @@ typedef struct {
     __unsafe_unretained NSString *designer;
 } LGIconRow;
 
-static NSDictionary *LGAlternateIconsForBundleIconsKey(NSString *bundleIconsKey) {
-    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[bundleIconsKey];
+static NSDictionary *LGAlternateIconsForKey(NSString *key) {
+    NSDictionary *icons = NSBundle.mainBundle.infoDictionary[key];
     if (![icons isKindOfClass:[NSDictionary class]]) return nil;
     NSDictionary *alts = icons[@"CFBundleAlternateIcons"];
-    if (![alts isKindOfClass:[NSDictionary class]]) return nil;
-    return alts;
+    return [alts isKindOfClass:[NSDictionary class]] ? alts : nil;
 }
 
 static BOOL LGAlternateIconRegisteredInInfoPlist(NSString *iconID) {
     if (!iconID.length) return NO;
-    NSDictionary *iphoneAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons");
-    NSDictionary *ipadAlts = LGAlternateIconsForBundleIconsKey(@"CFBundleIcons~ipad");
-    return iphoneAlts[iconID] != nil || ipadAlts[iconID] != nil;
+    return LGAlternateIconsForKey(@"CFBundleIcons")[iconID] != nil
+        || LGAlternateIconsForKey(@"CFBundleIcons~ipad")[iconID] != nil;
 }
 
-static const LGIconRow *LGIconRows(NSInteger *outCount) {
-    // The icon list lives in liquid-glass/icons.json. The header generated
-    // by liquid-glass/scripts/generate_previews_header.py exposes it as
-    // `kLGIconRowEntries` (C-string fields). Wrap each entry in an NSString
-    // once at first call, but only keep rows whose icon ID is actually
-    // registered in this IPA's Info.plist.
-    //
-    // We keep a static strong NSArray around so the NSStrings outlive every
-    // call without us having to manage refcounts through the calloc'd C array
-    // (whose __unsafe_unretained members ARC cannot track).
-    static LGIconRow *rows = NULL;
-    static NSInteger count = 0;
-    static NSArray<NSString *> *strongStorage = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSInteger generatedCount = (NSInteger)kLGIconRowEntryCount;
-        rows = (LGIconRow *)calloc((size_t)generatedCount, sizeof(LGIconRow));
-        NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(generatedCount * 3)];
-        for (NSInteger i = 0; i < generatedCount; i++) {
-            NSString *iconID = [@(kLGIconRowEntries[i].iconID) copy];
-            if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
-                ApolloLog(@"[LGIconPicker] omitting icon not registered in Info.plist: %@", iconID);
-                continue;
-            }
-
-            NSString *displayName = [@(kLGIconRowEntries[i].displayName) copy];
-            NSString *designer    = [@(kLGIconRowEntries[i].designer) copy];
-            [storage addObject:iconID];
-            [storage addObject:displayName];
-            [storage addObject:designer];
-            rows[count].iconID      = iconID;
-            rows[count].displayName = displayName;
-            rows[count].designer    = designer;
-            count++;
+// Builds a heap-allocated LGIconRow array from a generated entry table,
+// filtering out icons not registered in the IPA's Info.plist.
+static LGIconRow *LGBuildRows(const LGIconRowEntry *entries, NSInteger entryCount,
+                              NSInteger *outCount, NSArray<NSString *> **outStorage) {
+    if (entryCount <= 0) { *outCount = 0; *outStorage = @[]; return NULL; }
+    LGIconRow *rows = (LGIconRow *)calloc((size_t)entryCount, sizeof(LGIconRow));
+    NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(entryCount * 3)];
+    NSInteger count = 0;
+    for (NSInteger i = 0; i < entryCount; i++) {
+        NSString *iconID = [@(entries[i].iconID) copy];
+        if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
+            ApolloLog(@"[LGIconPicker] omitting icon not in Info.plist: %@", iconID);
+            continue;
         }
-        strongStorage = [storage copy];
-        (void)strongStorage;  // intentionally kept alive via static reference
-    });
-    if (outCount) *outCount = count;
+        NSString *dn = [@(entries[i].displayName) copy];
+        NSString *ds = [@(entries[i].designer) copy];
+        [storage addObject:iconID]; [storage addObject:dn]; [storage addObject:ds];
+        rows[count++] = (LGIconRow){ iconID, dn, ds };
+    }
+    *outCount   = count;
+    *outStorage = [storage copy];
     return rows;
 }
 
-static NSInteger LGIconRowCount(void) {
-    NSInteger c = 0;
-    LGIconRows(&c);
-    return c;
+#pragma mark - Runtime group table
+
+typedef struct {
+    __unsafe_unretained NSString *groupID;
+    __unsafe_unretained NSString *title;
+    LGGroupPresentation presentation;
+    LGIconRow *rows;
+    NSInteger count;
+} LGRuntimeGroup;
+
+// Forward declaration needed by LGAlternateIconsAvailable (defined below),
+// which is called before LGInitRuntimeGroups in some paths.
+static void LGInitRuntimeGroups(void);
+
+static LGRuntimeGroup *sGroups     = NULL;
+static NSInteger        sGroupCount = 0;
+static NSArray         *sGroupStringStorage = nil;  // keeps NSStrings alive
+
+static void LGInitRuntimeGroups(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSInteger cap = (NSInteger)kLGIconGroupCount;
+        sGroups = (LGRuntimeGroup *)calloc((size_t)cap, sizeof(LGRuntimeGroup));
+        NSMutableArray<NSString *> *storage = [NSMutableArray array];
+        for (NSInteger gi = 0; gi < cap; gi++) {
+            const LGIconGroupDef *def = &kLGIconGroups[gi];
+            NSString *groupID = [@(def->groupID) copy];
+            NSString *title   = [@(def->title) copy];
+            [storage addObject:groupID];
+            [storage addObject:title];
+            NSArray<NSString *> *rowStorage = nil;
+            NSInteger count = 0;
+            LGIconRow *rows = LGBuildRows(def->entries, (NSInteger)def->entryCount, &count, &rowStorage);
+            [storage addObjectsFromArray:rowStorage];
+            sGroups[sGroupCount++] = (LGRuntimeGroup){ groupID, title, def->presentation, rows, count };
+        }
+        sGroupStringStorage = [storage copy];
+        (void)sGroupStringStorage;
+    });
 }
 
-static const LGIconRow *LGIconRowAt(NSInteger index) {
-    NSInteger count = 0;
-    const LGIconRow *rows = LGIconRows(&count);
-    if (index < 0 || index >= count) return NULL;
-    return &rows[index];
+static const LGRuntimeGroup *LGGroupAt(NSInteger gi) {
+    LGInitRuntimeGroups();
+    if (gi < 0 || gi >= sGroupCount) return NULL;
+    return &sGroups[gi];
 }
 
-static NSString *LGCurrentAlternateIconName(void) __attribute__((unused));
-static NSString *LGCurrentAlternateIconName(void) {
-    return UIApplication.sharedApplication.alternateIconName;
+// ── Main section helpers ───────────────────────────────────────────────────
+
+// Total rows in the injected section: inline icon rows + one disclosure row
+// per push group that has at least one registered icon.
+static NSInteger LGMainSectionRowCount(void) {
+    LGInitRuntimeGroups();
+    NSInteger n = 0;
+    for (NSInteger i = 0; i < sGroupCount; i++) {
+        if (sGroups[i].count == 0) continue;
+        n += (sGroups[i].presentation == LGGroupPresentationInline) ? sGroups[i].count : 1;
+    }
+    return n;
+}
+
+// Title of the injected section — title of the first inline group with rows.
+static NSString *LGMainSectionTitle(void) {
+    LGInitRuntimeGroups();
+    for (NSInteger i = 0; i < sGroupCount; i++) {
+        if (sGroups[i].presentation == LGGroupPresentationInline && sGroups[i].count > 0)
+            return sGroups[i].title;
+    }
+    return @"Liquid Glass";
+}
+
+// Maps a row index in the main section to the owning group and local row.
+typedef struct { NSInteger groupIndex; NSInteger rowInGroup; BOOL isDisclosure; } LGMainRowInfo;
+
+static LGMainRowInfo LGResolveMainRow(NSInteger row) {
+    LGInitRuntimeGroups();
+    NSInteger cursor = 0;
+    for (NSInteger gi = 0; gi < sGroupCount; gi++) {
+        const LGRuntimeGroup *g = &sGroups[gi];
+        if (g->count == 0) continue;
+        if (g->presentation == LGGroupPresentationInline) {
+            if (row < cursor + g->count) return (LGMainRowInfo){ gi, row - cursor, NO };
+            cursor += g->count;
+        } else {
+            if (row == cursor) return (LGMainRowInfo){ gi, -1, YES };
+            cursor += 1;
+        }
+    }
+    return (LGMainRowInfo){ -1, -1, NO };
 }
 
 #pragma mark - Eligibility
 
 static BOOL LGAlternateIconsAvailable(void) {
-    // patch.sh registers every icon ID from liquid-glass/icons.json into
-    // CFBundleAlternateIcons (including the primary, as a no-op switch
-    // target so we never need to call setAlternateIconName:nil). We're
-    // patched iff the primary appears as an alternate.
-    //
-    // Don't gate on `[UIApplication.sharedApplication supportsAlternateIcons]`
-    // here: this helper is called from hooks AND %ctor, but %ctor runs before
-    // UIApplication exists (sharedApplication == nil) so supportsAlternateIcons
-    // would return NO at startup. Re-evaluating Info.plist on every call is
-    // cheap (dict lookup) and avoids any caching that would freeze a bad
-    // startup answer in place.
-    return LGAlternateIconRegisteredInInfoPlist(LGPrimaryIconID()) && LGIconRowCount() > 0;
+    // patch.sh registers every icon ID from icons.json into CFBundleAlternateIcons
+    // (including the primary). We're patched iff the primary appears as an alternate.
+    // Avoid gating on supportsAlternateIcons here: %ctor runs before UIApplication
+    // exists, so sharedApplication == nil at that point.
+    if (!LGAlternateIconRegisteredInInfoPlist(LGPrimaryIconID())) return NO;
+    LGInitRuntimeGroups();
+    for (NSInteger i = 0; i < sGroupCount; i++) {
+        if (sGroups[i].count > 0) return YES;
+    }
+    return NO;
 }
 
 #pragma mark - Section remap helpers
 
-static BOOL LGSectionIsOurs(NSInteger section) {
-    return section == kLGSectionIndex;
-}
+static BOOL LGSectionIsOurs(NSInteger section) { return section == kLGSectionIndex; }
 
 static NSInteger LGRemapSectionToOriginal(NSInteger section) {
-    // Hooks pass UIKit-visible section indices that include our injected
-    // section. Apollo's original logic needs the section index it would have
-    // used before injection.
-    if (section < kLGSectionIndex) return section;
-    return section - 1; // section > kLGSectionIndex
+    return (section < kLGSectionIndex) ? section : section - 1;
 }
 
 static NSIndexPath *LGRemapIndexPathToOriginal(NSIndexPath *indexPath) {
@@ -211,230 +216,180 @@ static NSIndexPath *LGRemapIndexPathToOriginal(NSIndexPath *indexPath) {
 
 #pragma mark - TLS remap scope
 //
-// While we are inside the Apollo data-source/delegate callouts with a remapped
-// (Apollo-perspective) indexPath, Apollo can call back into the table view
-// using that same remapped indexPath — e.g. -dequeueReusableCellWithIdentifier:forIndexPath:.
-// UIKit's row-data lookup uses our injected layout, so a remapped section that
-// happens to land on our 4-row LG section will assert out of bounds when
-// Apollo's original section had more rows.
-//
-// To bridge the two views, we set thread-local "remap-in-flight" state before
-// delegating to %orig with a remapped indexPath. UITableView's
-// dequeueReusableCellWithIdentifier:forIndexPath: / cellForRowAtIndexPath: hooks
-// rewrite the inbound indexPath from Apollo-perspective back to UIKit-perspective
-// when the TLS state is active, then call %orig with the UIKit-visible indexPath
-// so UIKit's row-data lookup matches its own table layout.
+// Apollo's data-source/delegate methods call back into the table view using
+// the Apollo-perspective indexPath we hand them. Hooks on UITableView rewrite
+// those indexPaths back to UIKit-visible ones while the remap is active.
 
-static __thread BOOL sLGRemapActive = NO;
-static __thread NSInteger sLGRemapApolloSection = -1;
-static __thread NSInteger sLGRemapUIKitSection = -1;
+static __thread BOOL       sLGRemapActive       = NO;
+static __thread NSInteger  sLGRemapApolloSection = -1;
+static __thread NSInteger  sLGRemapUIKitSection  = -1;
 static __thread __unsafe_unretained UITableView *sLGRemapActiveTable = nil;
 
 typedef struct {
-    BOOL prevActive;
-    NSInteger prevApolloSection;
-    NSInteger prevUIKitSection;
+    BOOL prevActive; NSInteger prevApollo; NSInteger prevUIKit;
     __unsafe_unretained UITableView *prevTable;
 } LGRemapScope;
 
-static inline void LGRemapScopeEnter(LGRemapScope *scope,
-                                     UITableView *tableView,
-                                     NSInteger apolloSection,
-                                     NSInteger uikitSection) {
-    scope->prevActive = sLGRemapActive;
-    scope->prevApolloSection = sLGRemapApolloSection;
-    scope->prevUIKitSection = sLGRemapUIKitSection;
-    scope->prevTable = sLGRemapActiveTable;
-    sLGRemapActive = YES;
-    sLGRemapApolloSection = apolloSection;
-    sLGRemapUIKitSection = uikitSection;
-    sLGRemapActiveTable = tableView;
+static inline void LGRemapScopeEnter(LGRemapScope *s, UITableView *tv,
+                                     NSInteger apollo, NSInteger uikit) {
+    s->prevActive = sLGRemapActive; s->prevApollo = sLGRemapApolloSection;
+    s->prevUIKit = sLGRemapUIKitSection; s->prevTable = sLGRemapActiveTable;
+    sLGRemapActive = YES; sLGRemapApolloSection = apollo;
+    sLGRemapUIKitSection = uikit; sLGRemapActiveTable = tv;
 }
 
-static inline void LGRemapScopeExit(LGRemapScope *scope) {
-    sLGRemapActive = scope->prevActive;
-    sLGRemapApolloSection = scope->prevApolloSection;
-    sLGRemapUIKitSection = scope->prevUIKitSection;
-    sLGRemapActiveTable = scope->prevTable;
+static inline void LGRemapScopeExit(LGRemapScope *s) {
+    sLGRemapActive = s->prevActive; sLGRemapApolloSection = s->prevApollo;
+    sLGRemapUIKitSection = s->prevUIKit; sLGRemapActiveTable = s->prevTable;
 }
 
-#define LG_REMAP_SCOPE(tv, apolloSection, uikitSection) \
+#define LG_REMAP_SCOPE(tv, apollo, uikit) \
     __attribute__((cleanup(LGRemapScopeExit))) LGRemapScope _lgScope; \
-    LGRemapScopeEnter(&_lgScope, (tv), (apolloSection), (uikitSection))
+    LGRemapScopeEnter(&_lgScope, (tv), (apollo), (uikit))
 
-static inline NSIndexPath *LGRewriteIndexPathForActiveScope(UITableView *tableView, NSIndexPath *indexPath) {
-    if (!sLGRemapActive) return indexPath;
-    if (sLGRemapActiveTable && tableView != sLGRemapActiveTable) return indexPath;
-    if (!indexPath || indexPath.section != sLGRemapApolloSection) return indexPath;
-    return [NSIndexPath indexPathForRow:indexPath.row inSection:sLGRemapUIKitSection];
+static inline NSIndexPath *LGRewriteForActiveScope(UITableView *tv, NSIndexPath *ip) {
+    if (!sLGRemapActive || (sLGRemapActiveTable && tv != sLGRemapActiveTable)) return ip;
+    if (!ip || ip.section != sLGRemapApolloSection) return ip;
+    return [NSIndexPath indexPathForRow:ip.row inSection:sLGRemapUIKitSection];
 }
 
-#pragma mark - Preview tile view
+#pragma mark - Preview tile
 
 @interface LGIconPreviewTile : UIView
-@property (nonatomic, strong) UIImageView *imageView;
-- (instancetype)initWithAccessibilityLabel:(NSString *)accessibilityLabel;
+- (instancetype)initWithAccessibilityLabel:(NSString *)label;
 - (void)setImage:(UIImage *)image;
 @end
 
-@implementation LGIconPreviewTile
+@implementation LGIconPreviewTile {
+    UIImageView *_iv;
+}
 
-- (instancetype)initWithAccessibilityLabel:(NSString *)accessibilityLabel {
+- (instancetype)initWithAccessibilityLabel:(NSString *)label {
     self = [super initWithFrame:CGRectZero];
     if (!self) return nil;
     self.translatesAutoresizingMaskIntoConstraints = NO;
     self.isAccessibilityElement = YES;
-    self.accessibilityLabel = accessibilityLabel;
+    self.accessibilityLabel = label;
 
-    self.imageView = [[UIImageView alloc] initWithFrame:CGRectZero];
-    self.imageView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.imageView.contentMode = UIViewContentModeScaleAspectFill;
-    self.imageView.clipsToBounds = YES;
-    self.imageView.layer.cornerRadius = kLGThumbnailCorner;
-    self.imageView.layer.cornerCurve = kCACornerCurveContinuous;
-    self.imageView.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
-    self.imageView.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
-    self.imageView.backgroundColor = [UIColor secondarySystemBackgroundColor];
-    [self addSubview:self.imageView];
+    _iv = [[UIImageView alloc] init];
+    _iv.translatesAutoresizingMaskIntoConstraints = NO;
+    _iv.contentMode = UIViewContentModeScaleAspectFill;
+    _iv.clipsToBounds = YES;
+    _iv.layer.cornerRadius = kLGThumbnailCorner;
+    _iv.layer.cornerCurve = kCACornerCurveContinuous;
+    _iv.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    _iv.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
+    _iv.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    [self addSubview:_iv];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.imageView.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [self.imageView.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-        [self.imageView.widthAnchor constraintEqualToConstant:kLGThumbnailSide],
-        [self.imageView.heightAnchor constraintEqualToConstant:kLGThumbnailSide],
-        [self.imageView.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor],
-        [self.imageView.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor],
-        [self.imageView.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [_iv.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [_iv.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
+        [_iv.widthAnchor constraintEqualToConstant:kLGThumbnailSide],
+        [_iv.heightAnchor constraintEqualToConstant:kLGThumbnailSide],
+        [_iv.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor],
+        [_iv.trailingAnchor constraintLessThanOrEqualToAnchor:self.trailingAnchor],
+        [_iv.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
     ]];
-
     return self;
 }
 
-- (void)setImage:(UIImage *)image {
-    self.imageView.image = image;
-}
+- (void)setImage:(UIImage *)image { _iv.image = image; }
 
 @end
 
-#pragma mark - Custom cell
+#pragma mark - Icon picker cell
 
 @interface LGIconPickerCell : UITableViewCell
-@property (nonatomic, copy) NSString *iconID;
-@property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) NSArray<LGIconPreviewTile *> *previewTiles;
-@property (nonatomic, strong) UIStackView *previewStack;
+- (void)configureWithRow:(const LGIconRow *)row;
 @end
 
-@implementation LGIconPickerCell
+@implementation LGIconPickerCell {
+    UILabel *_titleLabel;
+    NSArray<LGIconPreviewTile *> *_tiles;
+}
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseIdentifier];
     if (!self) return nil;
-
     self.selectionStyle = UITableViewCellSelectionStyleNone;
     self.textLabel.text = nil;
     self.detailTextLabel.text = nil;
-    // iOS 14+: prevent UIKit from re-asserting its default UIListContentConfiguration
-    // over our custom layout (which on iOS 26 clips our subviews and creates
-    // confusing top-edge artefacts).
     if (@available(iOS 14.0, *)) {
         self.automaticallyUpdatesContentConfiguration = NO;
         self.contentConfiguration = nil;
     }
 
-    self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
-    self.titleLabel.textColor = [UIColor labelColor];
-    self.titleLabel.numberOfLines = 1;
-    self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.contentView addSubview:self.titleLabel];
+    _titleLabel = [[UILabel alloc] init];
+    _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    _titleLabel.textColor = UIColor.labelColor;
+    _titleLabel.numberOfLines = 1;
+    _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.contentView addSubview:_titleLabel];
 
-    NSArray<NSString *> *variantNames = @[@"Default", @"Dark", @"Clear", @"Clear Dark"];
-    NSMutableArray<LGIconPreviewTile *> *tiles = [NSMutableArray arrayWithCapacity:variantNames.count];
-    for (NSString *variantName in variantNames) {
-        LGIconPreviewTile *tile = [[LGIconPreviewTile alloc] initWithAccessibilityLabel:variantName];
-        [tiles addObject:tile];
-    }
-    self.previewTiles = [tiles copy];
+    NSArray<NSString *> *labels = @[@"Default", @"Dark", @"Clear", @"Clear Dark"];
+    NSMutableArray<LGIconPreviewTile *> *tiles = [NSMutableArray arrayWithCapacity:labels.count];
+    for (NSString *l in labels) [tiles addObject:[[LGIconPreviewTile alloc] initWithAccessibilityLabel:l]];
+    _tiles = [tiles copy];
 
-    self.previewStack = [[UIStackView alloc] initWithArrangedSubviews:tiles];
-    self.previewStack.translatesAutoresizingMaskIntoConstraints = NO;
-    self.previewStack.axis = UILayoutConstraintAxisHorizontal;
-    self.previewStack.alignment = UIStackViewAlignmentTop;
-    self.previewStack.distribution = UIStackViewDistributionFillEqually;
-    self.previewStack.spacing = kLGTileSpacing;
-    [self.contentView addSubview:self.previewStack];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:tiles];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentTop;
+    stack.distribution = UIStackViewDistributionFillEqually;
+    stack.spacing = kLGTileSpacing;
+    [self.contentView addSubview:stack];
 
-    // Pin to contentView edges directly. layoutMarginsGuide in iOS 26 grouped
-    // cells sometimes overlaps the rounded section background and clips the top
-    // of subviews.
+    // Pin to contentView edges directly — layoutMarginsGuide on iOS 26 grouped
+    // cells can overlap the rounded section background and clip subviews.
     [NSLayoutConstraint activateConstraints:@[
-        [self.titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10.0],
-        [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
-        [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
-
-        [self.previewStack.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:10.0],
-        [self.previewStack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
-        [self.previewStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
-        [self.previewStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12.0],
+        [_titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
+        [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [stack.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:10],
+        [stack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+        [stack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16],
+        [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12],
     ]];
-
     return self;
 }
 
 - (void)configureWithRow:(const LGIconRow *)row {
     if (!row) return;
-    self.iconID = row->iconID;
     if (row->designer.length) {
         NSString *text = [NSString stringWithFormat:@"%@ by %@", row->displayName, row->designer];
-        NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:text];
-        NSRange nameRange = [text rangeOfString:row->displayName];
-        NSRange bylineRange = NSMakeRange(NSMaxRange(nameRange), text.length - NSMaxRange(nameRange));
-        [title addAttributes:@{
-            NSFontAttributeName: [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold],
-            NSForegroundColorAttributeName: UIColor.labelColor,
-        } range:nameRange];
-        [title addAttributes:@{
-            NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightRegular],
-            NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
-        } range:bylineRange];
-        self.titleLabel.attributedText = title;
+        NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:text];
+        NSRange nr = [text rangeOfString:row->displayName];
+        NSRange br = NSMakeRange(NSMaxRange(nr), text.length - NSMaxRange(nr));
+        [attr addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold],
+                               NSForegroundColorAttributeName: UIColor.labelColor } range:nr];
+        [attr addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightRegular],
+                               NSForegroundColorAttributeName: UIColor.secondaryLabelColor } range:br];
+        _titleLabel.attributedText = attr;
     } else {
-        self.titleLabel.attributedText = nil;
-        self.titleLabel.text = row->displayName;
+        _titleLabel.attributedText = nil;
+        _titleLabel.text = row->displayName;
     }
     self.accessibilityLabel = row->designer.length
         ? [NSString stringWithFormat:@"%@, by %@", row->displayName, row->designer]
         : row->displayName;
-    // Liquid Glass icons don't reliably reflect the currently-selected
-    // alternate icon (Apple's icon-stack assets don't round-trip cleanly
-    // through alternateIconName), so we omit the checkmark in this section
-    // rather than show stale state.
     self.accessoryType = UITableViewCellAccessoryNone;
 
     NSArray<NSString *> *variants = @[@"default", @"dark", @"clear-light", @"clear-dark"];
-    for (NSInteger i = 0; i < (NSInteger)self.previewTiles.count && i < (NSInteger)variants.count; i++) {
-        UIImage *img = LGPreviewImage(row->iconID, variants[i]);
-        [self.previewTiles[i] setImage:img];
-    }
+    for (NSInteger i = 0; i < (NSInteger)_tiles.count && i < (NSInteger)variants.count; i++)
+        [_tiles[i] setImage:LGPreviewImage(row->iconID, variants[i])];
 }
 
 @end
 
-#pragma mark - Selection plumbing
+#pragma mark - Alternate icon application
 
 static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
-    if (!iconID) return;
-
-    if (![UIApplication.sharedApplication supportsAlternateIcons]) {
-        ApolloLog(@"[LGIconPicker] supportsAlternateIcons=NO at tap; aborting swap for icon=%@", iconID);
-        return;
-    }
-
+    if (!iconID || ![UIApplication.sharedApplication supportsAlternateIcons]) return;
     ApolloLog(@"[LGIconPicker] requesting alternate icon=%@", iconID);
-    __weak UITableView *weakTable = tableView;
-    [UIApplication.sharedApplication setAlternateIconName:iconID completionHandler:^(NSError * _Nullable error) {
+    __weak UITableView *weakTV = tableView;
+    [UIApplication.sharedApplication setAlternateIconName:iconID completionHandler:^(NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
                 ApolloLog(@"[LGIconPicker] setAlternateIconName failed: %@", error);
@@ -443,64 +398,122 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
                                      message:error.localizedDescription ?: @"Unknown error."
                               preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                UIViewController *presenter = weakTable.window.rootViewController;
-                while (presenter.presentedViewController) presenter = presenter.presentedViewController;
-                [presenter presentViewController:alert animated:YES completion:nil];
+                UIViewController *root = weakTV.window.rootViewController;
+                while (root.presentedViewController) root = root.presentedViewController;
+                [root presentViewController:alert animated:YES completion:nil];
                 return;
             }
-            // Apollo observes this notification and reloads its table view.
             [[NSNotificationCenter defaultCenter] postNotificationName:kLGChangedIconNotification object:nil];
-            [weakTable reloadData];
+            [weakTV reloadData];
         });
     }];
 }
+
+#pragma mark - Push-group icon list view controller
+
+// Displays all icons in a single push-presentation group. Parameterised by
+// group index so no group-specific knowledge is hardcoded here.
+@interface LGGroupIconsViewController : UITableViewController
+- (instancetype)initWithGroupIndex:(NSInteger)groupIndex;
+@end
+
+@implementation LGGroupIconsViewController {
+    NSInteger _gi;
+}
+
+- (instancetype)initWithGroupIndex:(NSInteger)groupIndex {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (!self) return nil;
+    _gi = groupIndex;
+    const LGRuntimeGroup *g = LGGroupAt(groupIndex);
+    if (g) self.title = g->title;
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self.tableView registerClass:[LGIconPickerCell class] forCellReuseIdentifier:kLGCellReuseID];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    const LGRuntimeGroup *g = LGGroupAt(_gi);
+    return g ? g->count : 0;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    LGIconPickerCell *cell = (LGIconPickerCell *)[tableView dequeueReusableCellWithIdentifier:kLGCellReuseID
+                                                                                 forIndexPath:indexPath];
+    const LGRuntimeGroup *g = LGGroupAt(_gi);
+    if (g && indexPath.row < g->count) [cell configureWithRow:&g->rows[indexPath.row]];
+    return cell;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return kLGRowHeight;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    const LGRuntimeGroup *g = LGGroupAt(_gi);
+    if (g && indexPath.row < g->count) LGApplyAlternateIcon(tableView, g->rows[indexPath.row].iconID);
+}
+
+@end
 
 #pragma mark - Hooks
 
 %hook _TtC6Apollo29SettingsAppIconViewController
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    NSInteger original = %orig;
-    if (!LGAlternateIconsAvailable()) return original;
-    return original + 1;
+    return LGAlternateIconsAvailable() ? %orig + 1 : %orig;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (LGAlternateIconsAvailable()) {
-        if (LGSectionIsOurs(section)) return LGIconRowCount();
-        NSInteger remapped = LGRemapSectionToOriginal(section);
-        return %orig(tableView, remapped);
+        if (LGSectionIsOurs(section)) return LGMainSectionRowCount();
+        return %orig(tableView, LGRemapSectionToOriginal(section));
     }
     return %orig;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (LGAlternateIconsAvailable() && LGSectionIsOurs(indexPath.section)) {
-        LGIconPickerCell *cell = (LGIconPickerCell *)[tableView dequeueReusableCellWithIdentifier:kLGCellReuseID];
-        if (!cell || ![cell isKindOfClass:[LGIconPickerCell class]]) {
-            cell = [[LGIconPickerCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kLGCellReuseID];
+        LGMainRowInfo info = LGResolveMainRow(indexPath.row);
+        if (info.isDisclosure) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kLGDisclosureReuseID];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                     reuseIdentifier:kLGDisclosureReuseID];
+            const LGRuntimeGroup *g = LGGroupAt(info.groupIndex);
+            cell.textLabel.text = g
+                ? [NSString stringWithFormat:@"%@ (%ld)", g->title, (long)g->count]
+                : @"More Icons";
+            cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            return cell;
         }
-        const LGIconRow *row = LGIconRowAt(indexPath.row);
-        [cell configureWithRow:row];
+        LGIconPickerCell *cell = (LGIconPickerCell *)[tableView dequeueReusableCellWithIdentifier:kLGCellReuseID];
+        if (!cell || ![cell isKindOfClass:[LGIconPickerCell class]])
+            cell = [[LGIconPickerCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kLGCellReuseID];
+        const LGRuntimeGroup *g = LGGroupAt(info.groupIndex);
+        if (g && info.rowInGroup < g->count) [cell configureWithRow:&g->rows[info.rowInGroup]];
         return cell;
     }
     if (LGAlternateIconsAvailable()) {
-        NSIndexPath *remapped = LGRemapIndexPathToOriginal(indexPath);
-        LG_REMAP_SCOPE(tableView, remapped.section, indexPath.section);
-        return %orig(tableView, remapped);
+        NSIndexPath *r = LGRemapIndexPathToOriginal(indexPath);
+        LG_REMAP_SCOPE(tableView, r.section, indexPath.section);
+        return %orig(tableView, r);
     }
     return %orig;
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (LGAlternateIconsAvailable()) {
-        if (LGSectionIsOurs(indexPath.section)) {
-            // Skip Apollo's themed styling pass for our custom cell.
-            return;
-        }
-        NSIndexPath *remapped = LGRemapIndexPathToOriginal(indexPath);
-        LG_REMAP_SCOPE(tableView, remapped.section, indexPath.section);
-        %orig(tableView, cell, remapped);
+        if (LGSectionIsOurs(indexPath.section)) return; // skip Apollo's styled pass for our cells
+        NSIndexPath *r = LGRemapIndexPathToOriginal(indexPath);
+        LG_REMAP_SCOPE(tableView, r.section, indexPath.section);
+        %orig(tableView, cell, r);
         return;
     }
     %orig;
@@ -508,7 +521,7 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (LGAlternateIconsAvailable()) {
-        if (LGSectionIsOurs(section)) return kLGSectionTitle;
+        if (LGSectionIsOurs(section)) return LGMainSectionTitle();
         return %orig(tableView, LGRemapSectionToOriginal(section));
     }
     return %orig;
@@ -524,10 +537,13 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (LGAlternateIconsAvailable()) {
-        if (LGSectionIsOurs(indexPath.section)) return kLGRowHeight;
-        NSIndexPath *remapped = LGRemapIndexPathToOriginal(indexPath);
-        LG_REMAP_SCOPE(tableView, remapped.section, indexPath.section);
-        return %orig(tableView, remapped);
+        if (LGSectionIsOurs(indexPath.section)) {
+            LGMainRowInfo info = LGResolveMainRow(indexPath.row);
+            return info.isDisclosure ? UITableViewAutomaticDimension : kLGRowHeight;
+        }
+        NSIndexPath *r = LGRemapIndexPathToOriginal(indexPath);
+        LG_REMAP_SCOPE(tableView, r.section, indexPath.section);
+        return %orig(tableView, r);
     }
     return %orig;
 }
@@ -543,14 +559,21 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     if (LGAlternateIconsAvailable() && LGSectionIsOurs(indexPath.section)) {
         [tableView deselectRowAtIndexPath:indexPath animated:YES];
-        const LGIconRow *row = LGIconRowAt(indexPath.row);
-        if (row) LGApplyAlternateIcon(tableView, row->iconID);
+        LGMainRowInfo info = LGResolveMainRow(indexPath.row);
+        if (info.isDisclosure) {
+            LGGroupIconsViewController *vc = [[LGGroupIconsViewController alloc] initWithGroupIndex:info.groupIndex];
+            UINavigationController *nav = [(UIViewController *)self navigationController];
+            [nav pushViewController:vc animated:YES];
+        } else {
+            const LGRuntimeGroup *g = LGGroupAt(info.groupIndex);
+            if (g && info.rowInGroup < g->count) LGApplyAlternateIcon(tableView, g->rows[info.rowInGroup].iconID);
+        }
         return;
     }
     if (LGAlternateIconsAvailable()) {
-        NSIndexPath *remapped = LGRemapIndexPathToOriginal(indexPath);
-        LG_REMAP_SCOPE(tableView, remapped.section, indexPath.section);
-        %orig(tableView, remapped);
+        NSIndexPath *r = LGRemapIndexPathToOriginal(indexPath);
+        LG_REMAP_SCOPE(tableView, r.section, indexPath.section);
+        %orig(tableView, r);
         return;
     }
     %orig;
@@ -561,38 +584,35 @@ static void LGApplyAlternateIcon(UITableView *tableView, NSString *iconID) {
 #pragma mark - UITableView bridge hooks
 //
 // Apollo's data-source/delegate methods call back into the table view using
-// the Apollo-perspective indexPath we hand them. We rewrite those indexPaths
-// back to the UIKit-visible indexPath (where our injected section is shifted
-// to its real position) so UIKit's row-data lookups see the layout we
-// actually published.
+// the Apollo-perspective indexPath. Rewrite it to the UIKit-visible indexPath
+// while a remap scope is active so UIKit's row-data lookups see the correct layout.
 
 %hook UITableView
 
-- (__kindof UITableViewCell *)dequeueReusableCellWithIdentifier:(NSString *)identifier forIndexPath:(NSIndexPath *)indexPath {
-    NSIndexPath *rewritten = LGRewriteIndexPathForActiveScope(self, indexPath);
-    return %orig(identifier, rewritten);
+- (__kindof UITableViewCell *)dequeueReusableCellWithIdentifier:(NSString *)ident forIndexPath:(NSIndexPath *)ip {
+    return %orig(ident, LGRewriteForActiveScope(self, ip));
 }
-
-- (UITableViewCell *)cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSIndexPath *rewritten = LGRewriteIndexPathForActiveScope(self, indexPath);
-    return %orig(rewritten);
+- (UITableViewCell *)cellForRowAtIndexPath:(NSIndexPath *)ip {
+    return %orig(LGRewriteForActiveScope(self, ip));
 }
-
-- (CGRect)rectForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSIndexPath *rewritten = LGRewriteIndexPathForActiveScope(self, indexPath);
-    return %orig(rewritten);
+- (CGRect)rectForRowAtIndexPath:(NSIndexPath *)ip {
+    return %orig(LGRewriteForActiveScope(self, ip));
 }
-
-- (void)deselectRowAtIndexPath:(NSIndexPath *)indexPath animated:(BOOL)animated {
-    NSIndexPath *rewritten = LGRewriteIndexPathForActiveScope(self, indexPath);
-    %orig(rewritten, animated);
+- (void)deselectRowAtIndexPath:(NSIndexPath *)ip animated:(BOOL)animated {
+    %orig(LGRewriteForActiveScope(self, ip), animated);
 }
 
 %end
 
 %ctor {
     if (LGAlternateIconsAvailable()) {
-        ApolloLog(@"[LGIconPicker] ctor: injecting Liquid Glass section, %ld preview entries", (long)kLGPreviewEntryCount);
+        NSMutableString *summary = [NSMutableString string];
+        for (NSInteger i = 0; i < sGroupCount; i++) {
+            if (i) [summary appendString:@", "];
+            [summary appendFormat:@"%ld %@ (%@)", (long)sGroups[i].count, sGroups[i].groupID,
+             sGroups[i].presentation == LGGroupPresentationInline ? @"inline" : @"push"];
+        }
+        ApolloLog(@"[LGIconPicker] ctor: injecting section — %@", summary);
     } else {
         ApolloLog(@"[LGIconPicker] ctor: LG asset catalog not detected, hooks will passthrough");
     }

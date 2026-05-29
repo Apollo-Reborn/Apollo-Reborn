@@ -65,9 +65,12 @@ SYMBOL_SVG_RE = re.compile(
 # We only care about the base scale files (no numbered suffix = appearance 0 / universal-any)
 RASTER_PNG_RE = re.compile(r'^(.+)_Normal(@2x|@3x)?\.png$')
 
-RENDERING_INTENTS = {}      # asset name -> original/template/automatic
-TEMPLATE_ASSETS   = set()   # asset names that need template-rendering-intent
-SYMBOL_ASSETS     = set()   # asset names that have SVG glyph variants
+RENDERING_INTENTS  = {}      # asset name -> original/template/automatic
+TEMPLATE_ASSETS    = set()   # asset names that need template-rendering-intent
+SYMBOL_ASSETS      = set()   # asset names that have SVG glyph variants
+VECTOR_PRESERVED   = set()   # asset names whose original rasters carry Preserved Vector Representation
+
+PREVIEW_VARIANTS  = ["default", "dark", "clear-light", "clear-dark"]
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +84,7 @@ def load_metadata():
       rendering_intents:   dict of asset names to template-rendering-intent values
       symbol_assets:       set of asset names that have Glyph Size entries (SF Symbol-style)
     """
-    global RENDERING_INTENTS, TEMPLATE_ASSETS, SYMBOL_ASSETS
+    global RENDERING_INTENTS, TEMPLATE_ASSETS, SYMBOL_ASSETS, VECTOR_PRESERVED
 
     print(f"Reading metadata from {ORIGINAL_CAR}...")
     result = subprocess.run(
@@ -115,8 +118,12 @@ def load_metadata():
         if e.get("Glyph Size"):
             SYMBOL_ASSETS.add(name)
 
+        if e.get("Preserved Vector Representation"):
+            VECTOR_PRESERVED.add(name)
+
     print(f"  {len(rendition_to_assets)} unique rendition stems")
-    print(f"  {len(TEMPLATE_ASSETS)} template assets, {len(SYMBOL_ASSETS)} symbol assets")
+    print(f"  {len(TEMPLATE_ASSETS)} template assets, {len(SYMBOL_ASSETS)} symbol assets, "
+          f"{len(VECTOR_PRESERVED)} vector-preserved assets")
     return rendition_to_assets
 
 
@@ -294,13 +301,56 @@ def write_raster_imageset(name, entries, xcassets_path):
 
     has_pdf = any(fp.endswith(".pdf") for (fp, _, _) in entries)
     properties = {"template-rendering-intent": rendering_intent(name)}
-    if has_pdf:
+    # Only preserve vector representation for assets that had it in the original catalog.
+    # Applying it broadly (e.g. to launch-icon/launch-bg) causes the launch screen renderer
+    # to skip the pre-rasterized bitmaps and attempt PDF rendering, which fails silently.
+    if has_pdf and name in VECTOR_PRESERVED:
         properties["preserves-vector-representation"] = True
 
     contents = {"images": images, "info": {"author": "xcode", "version": 1}, "properties": properties}
 
     with open(os.path.join(imageset_path, "Contents.json"), "w") as f:
         json.dump(contents, f, indent=2)
+
+
+def write_preview_imagesets(xcassets_path):
+    """Write one imageset per icon×variant for the in-app icon picker preview.
+
+    Each asset is named `lg-preview-{iconID}-{variant}` so the tweak can load
+    it via [UIImage imageNamed:] from the main bundle's Assets.car rather than
+    decoding base64 blobs compiled into the tweak binary.
+
+    Preview PNGs live at: liquid-glass/icons/<id>/<variant>.png
+    """
+    with open(REGISTRY_PATH, "r") as fp:
+        registry = json.load(fp)
+
+    count = 0
+    missing = []
+    for entry in registry.get("icons", []):
+        icon_id = entry["id"]
+        for variant in PREVIEW_VARIANTS:
+            src = os.path.join(ICONS_ROOT, icon_id, f"{variant}.png")
+            if not os.path.isfile(src):
+                missing.append(src)
+                continue
+            asset_name = f"lg-preview-{icon_id}-{variant}"
+            imageset_path = os.path.join(xcassets_path, f"{asset_name}.imageset")
+            os.makedirs(imageset_path, exist_ok=True)
+            dst_name = f"{variant}.png"
+            shutil.copy2(src, os.path.join(imageset_path, dst_name))
+            contents = {
+                "images": [{"filename": dst_name, "idiom": "universal", "scale": "2x"}],
+                "info": {"author": "xcode", "version": 1},
+            }
+            with open(os.path.join(imageset_path, "Contents.json"), "w") as f:
+                json.dump(contents, f, indent=2)
+            count += 1
+
+    if missing:
+        print(f"  ⚠ {len(missing)} preview PNGs not found: {missing}")
+    print(f"  Added {count} lg-preview imagesets (loadable via [UIImage imageNamed:])")
+    return count
 
 
 def build_xcassets(symbol_variants, raster_groups):
@@ -328,6 +378,8 @@ def build_xcassets(symbol_variants, raster_groups):
     )
     png_count = count - sym - pdf_count
     print(f"  Created {count} imagesets ({sym} symbol SVG, {pdf_count} vector PDF, {png_count} raster PNG)")
+
+    write_preview_imagesets(XCASSETS_DIR)
     return count
 
 
@@ -355,6 +407,50 @@ def load_icon_packages():
     return packages
 
 
+def _find_xcode_26_0_1():
+    """
+    Return (developer_dir, True) if Xcode 26.0.1 can be found, else (None, False).
+
+    Xcode 26.0.1 is required for --enable-icon-stack-fallback-generation=disabled,
+    a hidden actool flag that strips ~100 MB of icon-stack fallback data from the
+    compiled catalog.  The flag exists only in 26.0.1; later Xcode versions silently
+    ignore it and produce a bloated Assets.car.
+
+    Search order:
+      1. XCODE_DEVELOPER_DIR env var (explicit override)
+      2. /Applications/Xcode_26.0.1.app (canonical install path)
+      3. mdfind Spotlight search (handles renamed/non-standard locations)
+    """
+    override = os.environ.get("XCODE_DEVELOPER_DIR")
+    if override:
+        if os.path.isdir(override):
+            print(f"  Using XCODE_DEVELOPER_DIR override: {override}")
+            return override, True
+        print(f"  ⚠ XCODE_DEVELOPER_DIR={override!r} does not exist — ignoring")
+
+    candidate = "/Applications/Xcode_26.0.1.app/Contents/Developer"
+    if os.path.isdir(candidate):
+        return candidate, True
+
+    try:
+        r = subprocess.run(
+            [
+                "mdfind",
+                "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"
+                " && kMDItemVersion == '26.0.1'",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.strip().splitlines():
+            dev = os.path.join(line.strip(), "Contents/Developer")
+            if os.path.isdir(dev):
+                return dev, True
+    except Exception:
+        pass
+
+    return None, False
+
+
 def compile_assets():
     print("\nCompiling Assets.car...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -365,6 +461,20 @@ def compile_assets():
     if icon_packages:
         names = [os.path.splitext(os.path.basename(p))[0] for p in icon_packages]
         print(f"  Including {len(icon_packages)} icon packages: {', '.join(names)}")
+
+    xcode_dev_dir, has_26_0_1 = _find_xcode_26_0_1()
+    if has_26_0_1:
+        print(f"  Xcode 26.0.1 found at: {xcode_dev_dir}")
+    else:
+        print("  ✗ Xcode 26.0.1 not found.")
+        print("    --enable-icon-stack-fallback-generation=disabled requires Xcode 26.0.1's")
+        print("    actool specifically; later versions silently ignore the flag and produce a")
+        print("    significantly larger catalog with the icon-stack fallback renditions included.")
+        print("    Install Xcode 26.0.1 or set XCODE_DEVELOPER_DIR to its Contents/Developer.")
+        return False
+
+    env = os.environ.copy()
+    env["DEVELOPER_DIR"] = xcode_dev_dir
 
     cmd = ["xcrun", "actool", XCASSETS_DIR]
 
@@ -378,8 +488,13 @@ def compile_assets():
         "--output-format", "human-readable-text",
     ])
 
-    # Register every icon as an alternate app icon
-    cmd.extend(["--include-all-app-icons"])
+    # Register every icon as an alternate app icon.
+    # --enable-icon-stack-fallback-generation=disabled is a hidden Xcode 26.0.1-only
+    # flag; without it actool generates 100+ MB of icon-stack fallback renditions.
+    cmd.extend([
+        "--include-all-app-icons",
+        "--enable-icon-stack-fallback-generation=disabled",
+    ])
 
     # --output-partial-info-plist is required when alternate icons are present
     if icon_packages:
@@ -387,7 +502,7 @@ def compile_assets():
 
     try:
         print(f"Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
         print(result.stdout)
         compiled_car = os.path.join(OUTPUT_DIR, "Assets.car")
         if not os.path.exists(compiled_car):
