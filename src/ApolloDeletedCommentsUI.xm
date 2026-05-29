@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloDeletedCommentsData.h"
+#import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 
@@ -13,10 +14,24 @@ static const void *kApolloDeletedCommentsHiddenOriginalTextKey = &kApolloDeleted
 static const void *kApolloDeletedCommentsHiddenFullNameKey = &kApolloDeletedCommentsHiddenFullNameKey;
 static const void *kApolloDeletedCommentsHiddenTextNodeKey = &kApolloDeletedCommentsHiddenTextNodeKey;
 static const void *kApolloDeletedCommentsSuppressNextCollapseKey = &kApolloDeletedCommentsSuppressNextCollapseKey;
+static const void *kApolloDeletedCommentsRevealFadeTimerKey = &kApolloDeletedCommentsRevealFadeTimerKey;
+static const void *kApolloDeletedCommentsRevealFadeStartKey = &kApolloDeletedCommentsRevealFadeStartKey;
+static const void *kApolloDeletedCommentsRevealFadeBaseTextKey = &kApolloDeletedCommentsRevealFadeBaseTextKey;
+static const void *kApolloDeletedCommentsRevealFadeAccentKey = &kApolloDeletedCommentsRevealFadeAccentKey;
+static const void *kApolloDeletedCommentsInternalTextUpdateKey = &kApolloDeletedCommentsInternalTextUpdateKey;
+
+static const NSTimeInterval kApolloDeletedCommentsRevealFadeDuration = 10.0;
+static const NSTimeInterval kApolloDeletedCommentsRevealFadeTickInterval = 0.15;
+static const CGFloat kApolloDeletedCommentsRevealFadePeakAlpha = 0.25;
+static const CGFloat kApolloDeletedCommentsSpoilerFillAlpha = 0.25;
 
 static NSString *const ApolloDeletedCommentsTapPlaceholderText = @"SHOW";
 static NSString *const ApolloDeletedCommentsRevealURLString = @"apollo-deleted-comments://reveal";
 static NSString *const ApolloDeletedCommentsRevealAttributeName = @"ApolloDeletedCommentsRevealAttribute";
+
+static id ApolloDeletedCommentsCommentCellNodeForTextNode(id textNode);
+static BOOL ApolloDeletedCommentsTextNodeBelongsToRecoveredComment(id textNode);
+static BOOL ApolloDeletedCommentsAttributedTextIsRevealPlaceholder(NSAttributedString *attributedText);
 
 static NSString *ApolloDeletedCommentsTrimmedString(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return nil;
@@ -244,13 +259,99 @@ static void ApolloDeletedCommentsRelayoutCellAndTextNode(id cellNode, id textNod
     }
 }
 
-static UIImage *ApolloDeletedCommentsSpoilerStyleImage(NSString *text, UIFont *font) {
+static UIView *ApolloDeletedCommentsViewForTextNode(id textNode) {
+    if (!textNode || ![textNode respondsToSelector:@selector(view)]) return nil;
+    @try {
+        UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(textNode, @selector(view));
+        return [view isKindOfClass:[UIView class]] ? view : nil;
+    } @catch (__unused NSException *e) {
+        return nil;
+    }
+}
+
+static UIColor *ApolloDeletedCommentsThemeAccent(id textNode) {
+    return ApolloThemeAccentFromView(ApolloDeletedCommentsViewForTextNode(textNode));
+}
+
+static UIColor *ApolloDeletedCommentsContrastingTextColorForAccent(UIColor *accent) {
+    if (![accent isKindOfClass:[UIColor class]]) return [UIColor whiteColor];
+    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
+    if (![accent getRed:&red green:&green blue:&blue alpha:&alpha]) return [UIColor whiteColor];
+    CGFloat luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+    return luminance > 0.62 ? [UIColor blackColor] : [UIColor whiteColor];
+}
+
+static BOOL ApolloDeletedCommentsIsGreySpoilerFillColor(UIColor *color) {
+    if (![color isKindOfClass:[UIColor class]]) return NO;
+    CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
+    if ([color getRed:&red green:&green blue:&blue alpha:&alpha]) {
+        BOOL isNeutral = (fabs(red - green) < 0.08 && fabs(green - blue) < 0.08);
+        BOOL isLightGrey = isNeutral && red > 0.65 && red < 0.95;
+        BOOL isDarkGrey = isNeutral && red > 0.15 && red < 0.55;
+        return (isLightGrey || isDarkGrey) && alpha > 0.08;
+    }
+    CGFloat white = 0.0;
+    if ([color getWhite:&white alpha:&alpha]) {
+        return white > 0.15 && white < 0.95 && alpha > 0.08;
+    }
+    return NO;
+}
+
+static BOOL ApolloDeletedCommentsAttributedTextHasSpoilerPillAttachment(NSAttributedString *attributedText) {
+    if (![attributedText isKindOfClass:[NSAttributedString class]] || attributedText.length == 0) return NO;
+    __block BOOL found = NO;
+    [attributedText enumerateAttribute:NSAttachmentAttributeName
+                               inRange:NSMakeRange(0, attributedText.length)
+                               options:0
+                            usingBlock:^(id value, NSRange range, BOOL *stop) {
+        if (![value isKindOfClass:[NSTextAttachment class]]) return;
+        NSTextAttachment *attachment = (NSTextAttachment *)value;
+        if (![attachment.image isKindOfClass:[UIImage class]]) return;
+        if (range.length >= attributedText.length || attributedText.length <= 12) {
+            found = YES;
+            *stop = YES;
+        }
+    }];
+    return found;
+}
+
+static BOOL ApolloDeletedCommentsIsInlineSpoilerPillAttributedText(NSAttributedString *attributedText) {
+    if (![attributedText isKindOfClass:[NSAttributedString class]] || attributedText.length == 0) return NO;
+    NSString *trimmed = ApolloDeletedCommentsTrimmedString(attributedText.string);
+    if (![trimmed isEqualToString:@"SPOILER"] && ![trimmed isEqualToString:@"Spoiler"]) return NO;
+    if (ApolloDeletedCommentsAttributedTextHasSpoilerPillAttachment(attributedText)) return YES;
+
+    __block BOOL hasSpoilerBackground = NO;
+    [attributedText enumerateAttribute:NSBackgroundColorAttributeName
+                               inRange:NSMakeRange(0, attributedText.length)
+                               options:0
+                            usingBlock:^(id value, NSRange range, BOOL *stop) {
+        if (ApolloDeletedCommentsIsGreySpoilerFillColor((UIColor *)value)) {
+            hasSpoilerBackground = YES;
+            *stop = YES;
+        }
+    }];
+    return hasSpoilerBackground;
+}
+
+static UIFont *ApolloDeletedCommentsSpoilerFontFromAttributes(NSDictionary *attributes) {
+    UIFont *font = attributes[NSFontAttributeName];
+    if (![font isKindOfClass:[UIFont class]]) {
+        return [UIFont boldSystemFontOfSize:15.0];
+    }
+    return [UIFont boldSystemFontOfSize:MAX(12.0, font.pointSize - 2.5)];
+}
+
+static UIImage *ApolloDeletedCommentsSpoilerStyleImage(NSString *text, UIFont *font, UIColor *accentColor) {
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return nil;
     if (![font isKindOfClass:[UIFont class]]) font = [UIFont boldSystemFontOfSize:15.0];
+    if (![accentColor isKindOfClass:[UIColor class]]) accentColor = [UIColor systemBlueColor];
 
+    UIColor *fillColor = [accentColor colorWithAlphaComponent:kApolloDeletedCommentsSpoilerFillAlpha];
+    UIColor *textColor = ApolloDeletedCommentsContrastingTextColorForAccent(accentColor);
     NSDictionary *attributes = @{
         NSFontAttributeName: font,
-        NSForegroundColorAttributeName: [UIColor blackColor],
+        NSForegroundColorAttributeName: textColor,
     };
     CGSize textSize = [text sizeWithAttributes:attributes];
     CGFloat horizontalPadding = 4.0;
@@ -265,7 +366,7 @@ static UIImage *ApolloDeletedCommentsSpoilerStyleImage(NSString *text, UIFont *f
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         CGRect bounds = CGRectMake(0.0, 0.0, imageSize.width, imageSize.height);
         UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:6.0];
-        [[UIColor colorWithWhite:0.84 alpha:1.0] setFill];
+        [fillColor setFill];
         [path fill];
 
         CGRect textRect = CGRectMake(horizontalPadding,
@@ -276,17 +377,16 @@ static UIImage *ApolloDeletedCommentsSpoilerStyleImage(NSString *text, UIFont *f
     }];
 }
 
-static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(NSAttributedString *original) {
+static NSAttributedString *ApolloDeletedCommentsThemeSpoilerChipAttributedText(id textNode,
+                                                                               NSString *pillText,
+                                                                               NSAttributedString *reference,
+                                                                               BOOL includeRevealLink) {
     NSDictionary *attributes = @{};
-    if ([original isKindOfClass:[NSAttributedString class]] && original.length > 0) {
-        attributes = [original attributesAtIndex:0 effectiveRange:NULL] ?: @{};
+    if ([reference isKindOfClass:[NSAttributedString class]] && reference.length > 0) {
+        attributes = [reference attributesAtIndex:0 effectiveRange:NULL] ?: @{};
     }
-    UIFont *font = attributes[NSFontAttributeName];
-    if (![font isKindOfClass:[UIFont class]]) {
-        font = [UIFont boldSystemFontOfSize:15.0];
-    } else {
-        font = [UIFont boldSystemFontOfSize:MAX(12.0, font.pointSize - 2.5)];
-    }
+    UIFont *font = ApolloDeletedCommentsSpoilerFontFromAttributes(attributes);
+    UIColor *accent = ApolloDeletedCommentsThemeAccent(textNode);
 
     NSMutableParagraphStyle *paragraphStyle = [NSMutableParagraphStyle new];
     paragraphStyle.lineSpacing = 0.0;
@@ -294,14 +394,17 @@ static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(NSAttr
     paragraphStyle.minimumLineHeight = ceil(font.lineHeight + 2.0);
     paragraphStyle.maximumLineHeight = ceil(font.lineHeight + 2.0);
 
-    UIImage *image = ApolloDeletedCommentsSpoilerStyleImage(ApolloDeletedCommentsTapPlaceholderText, font);
+    UIImage *image = ApolloDeletedCommentsSpoilerStyleImage(pillText, font, accent);
     if (![image isKindOfClass:[UIImage class]]) {
-        return [[NSAttributedString alloc] initWithString:ApolloDeletedCommentsTapPlaceholderText attributes:@{
-            NSFontAttributeName: font,
-            NSForegroundColorAttributeName: [UIColor blackColor],
-            NSParagraphStyleAttributeName: paragraphStyle,
-            ApolloDeletedCommentsRevealAttributeName: ApolloDeletedCommentsRevealURLString,
-        }];
+        NSMutableDictionary *fallbackAttributes = [attributes mutableCopy] ?: [NSMutableDictionary dictionary];
+        fallbackAttributes[NSFontAttributeName] = font;
+        fallbackAttributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsContrastingTextColorForAccent(accent);
+        fallbackAttributes[NSBackgroundColorAttributeName] = [accent colorWithAlphaComponent:kApolloDeletedCommentsSpoilerFillAlpha];
+        fallbackAttributes[NSParagraphStyleAttributeName] = paragraphStyle;
+        if (includeRevealLink) {
+            fallbackAttributes[ApolloDeletedCommentsRevealAttributeName] = ApolloDeletedCommentsRevealURLString;
+        }
+        return [[NSAttributedString alloc] initWithString:pillText attributes:fallbackAttributes];
     }
 
     NSTextAttachment *attachment = [NSTextAttachment new];
@@ -309,8 +412,106 @@ static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(NSAttr
     attachment.bounds = CGRectMake(0.0, -1.0, image.size.width, image.size.height);
     NSMutableAttributedString *result = [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
     [result addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:NSMakeRange(0, result.length)];
-    [result addAttribute:ApolloDeletedCommentsRevealAttributeName value:ApolloDeletedCommentsRevealURLString range:NSMakeRange(0, result.length)];
+    if (includeRevealLink) {
+        [result addAttribute:ApolloDeletedCommentsRevealAttributeName
+                       value:ApolloDeletedCommentsRevealURLString
+                       range:NSMakeRange(0, result.length)];
+    }
     return result;
+}
+
+static void ApolloDeletedCommentsSetAttributedTextPreservingFade(id textNode, NSAttributedString *attributedText) {
+    if (!textNode || ![textNode respondsToSelector:@selector(setAttributedText:)]) return;
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsInternalTextUpdateKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try {
+        ((void (*)(id, SEL, NSAttributedString *))objc_msgSend)(textNode, @selector(setAttributedText:), attributedText);
+    } @catch (__unused NSException *e) {}
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsInternalTextUpdateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloDeletedCommentsCancelRevealFade(id textNode) {
+    if (!textNode) return;
+    NSTimer *timer = objc_getAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeTimerKey);
+    [timer invalidate];
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeTimerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeStartKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeBaseTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeAccentKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloDeletedCommentsRevealFadeTimerFired(id textNode) {
+    if (!textNode) return;
+
+    NSDate *startDate = objc_getAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeStartKey);
+    NSAttributedString *baseText = objc_getAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeBaseTextKey);
+    UIColor *accent = objc_getAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeAccentKey);
+    if (![startDate isKindOfClass:[NSDate class]] ||
+        ![baseText isKindOfClass:[NSAttributedString class]] ||
+        ![accent isKindOfClass:[UIColor class]]) {
+        ApolloDeletedCommentsCancelRevealFade(textNode);
+        return;
+    }
+
+    NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:startDate];
+    if (elapsed >= kApolloDeletedCommentsRevealFadeDuration) {
+        ApolloDeletedCommentsCancelRevealFade(textNode);
+        ApolloDeletedCommentsSetAttributedTextPreservingFade(textNode, baseText);
+        id cellNode = ApolloDeletedCommentsCommentCellNodeForTextNode(textNode);
+        ApolloDeletedCommentsRelayoutCellAndTextNode(cellNode, textNode);
+        return;
+    }
+
+    CGFloat progress = (CGFloat)(elapsed / kApolloDeletedCommentsRevealFadeDuration);
+    CGFloat alpha = kApolloDeletedCommentsRevealFadePeakAlpha * (1.0 - progress);
+    NSMutableAttributedString *faded = [baseText mutableCopy];
+    if (alpha > 0.001) {
+        [faded addAttribute:NSBackgroundColorAttributeName
+                      value:[accent colorWithAlphaComponent:alpha]
+                      range:NSMakeRange(0, faded.length)];
+    } else {
+        [faded removeAttribute:NSBackgroundColorAttributeName range:NSMakeRange(0, faded.length)];
+    }
+    ApolloDeletedCommentsSetAttributedTextPreservingFade(textNode, faded);
+    id cellNode = ApolloDeletedCommentsCommentCellNodeForTextNode(textNode);
+    ApolloDeletedCommentsRelayoutCellAndTextNode(cellNode, textNode);
+}
+
+static void ApolloDeletedCommentsStartRevealFade(id cellNode, id textNode, NSAttributedString *revealedText) {
+    if (!textNode || ![revealedText isKindOfClass:[NSAttributedString class]] || revealedText.length == 0) return;
+
+    ApolloDeletedCommentsCancelRevealFade(textNode);
+    UIColor *accent = ApolloDeletedCommentsThemeAccent(textNode);
+    NSAttributedString *baseText = [revealedText copy];
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeBaseTextKey, baseText, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeAccentKey, accent, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeStartKey, [NSDate date], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSMutableAttributedString *highlighted = [baseText mutableCopy];
+    [highlighted addAttribute:NSBackgroundColorAttributeName
+                        value:[accent colorWithAlphaComponent:kApolloDeletedCommentsRevealFadePeakAlpha]
+                        range:NSMakeRange(0, highlighted.length)];
+    ApolloDeletedCommentsSetAttributedTextPreservingFade(textNode, highlighted);
+    ApolloDeletedCommentsRelayoutCellAndTextNode(cellNode, textNode);
+
+    __weak id weakTextNode = textNode;
+    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:kApolloDeletedCommentsRevealFadeTickInterval
+                                                     repeats:YES
+                                                       block:^(NSTimer *activeTimer) {
+        id strongTextNode = weakTextNode;
+        if (!strongTextNode) {
+            [activeTimer invalidate];
+            return;
+        }
+        ApolloDeletedCommentsRevealFadeTimerFired(strongTextNode);
+    }];
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsRevealFadeTimerKey, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(id textNode, NSAttributedString *original) {
+    return ApolloDeletedCommentsThemeSpoilerChipAttributedText(textNode,
+                                                             ApolloDeletedCommentsTapPlaceholderText,
+                                                             original,
+                                                             YES);
 }
 
 static BOOL ApolloDeletedCommentsAttributedTextIsRevealPlaceholder(NSAttributedString *attributedText) {
@@ -423,6 +624,8 @@ static id ApolloDeletedCommentsBestBodyTextNode(id cellNode, RDKComment *comment
 }
 
 static void ApolloDeletedCommentsRestoreHiddenBodyIfNeeded(id cellNode, id textNode) {
+    ApolloDeletedCommentsCancelRevealFade(textNode);
+
     NSAttributedString *original = objc_getAssociatedObject(textNode, kApolloDeletedCommentsHiddenOriginalTextKey);
     if (![original isKindOfClass:[NSAttributedString class]]) return;
 
@@ -537,7 +740,7 @@ static void __attribute__((unused)) ApolloDeletedCommentsApplyTapToRevealIfNeede
     objc_setAssociatedObject(textNode, kApolloDeletedCommentsHiddenFullNameKey, fullName, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSAttributedString *placeholder = ApolloDeletedCommentsPlaceholderAttributedText(current);
+    NSAttributedString *placeholder = ApolloDeletedCommentsPlaceholderAttributedText(textNode, current);
     @try {
         ((void (*)(id, SEL, NSAttributedString *))objc_msgSend)(textNode, @selector(setAttributedText:), placeholder);
     } @catch (__unused NSException *e) {}
@@ -608,14 +811,22 @@ static BOOL __attribute__((unused)) ApolloDeletedCommentsTouchHitsHiddenBody(id 
 
 static void ApolloDeletedCommentsRevealHiddenBodyForCell(id cellNode) {
     id textNode = objc_getAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodeKey);
-    if (!objc_getAssociatedObject(textNode, kApolloDeletedCommentsHiddenOriginalTextKey)) return;
+    NSAttributedString *original = objc_getAssociatedObject(textNode, kApolloDeletedCommentsHiddenOriginalTextKey);
+    if (![original isKindOfClass:[NSAttributedString class]]) return;
 
     RDKComment *comment = ApolloDeletedCommentsCommentFromCellNode(cellNode);
     NSString *fullName = ApolloDeletedCommentsFullNameForComment(comment);
     ApolloDeletedCommentsMarkCommentRevealed(fullName);
     ApolloDeletedCommentsMarkCommentBodyRevealed(comment.author, comment.body);
     objc_setAssociatedObject(comment, kApolloDeletedCommentsSuppressNextCollapseKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloDeletedCommentsRestoreHiddenBodyIfNeeded(cellNode, textNode);
+
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsHiddenOriginalTextKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloDeletedCommentsHiddenFullNameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (objc_getAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodeKey) == textNode) {
+        objc_setAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    ApolloDeletedCommentsStartRevealFade(cellNode, textNode, original);
     ApolloDeletedCommentsScheduleForceExpanded(comment, cellNode);
 }
 
@@ -659,24 +870,38 @@ static BOOL ApolloDeletedCommentsIsRevealLink(id attribute, id value) {
     return [urlString isEqualToString:ApolloDeletedCommentsRevealURLString];
 }
 
-static NSAttributedString *ApolloDeletedCommentsRenameRecoveredSpoilerLabel(id textNode, NSAttributedString *attributedText) {
-    if (!sShowDeletedComments || !sTapToRevealDeletedComments) return attributedText;
+static NSAttributedString *ApolloDeletedCommentsApplyThemeSpoilerStyling(id textNode, NSAttributedString *attributedText) {
+    if (ApolloDeletedCommentsAttributedTextIsRevealPlaceholder(attributedText)) return attributedText;
     if (![attributedText isKindOfClass:[NSAttributedString class]] || attributedText.length == 0) return attributedText;
-    NSString *text = ApolloDeletedCommentsTrimmedString(attributedText.string);
-    if (![text isEqualToString:@"SPOILER"]) return attributedText;
-    if (!ApolloDeletedCommentsTextNodeBelongsToRecoveredComment(textNode)) return attributedText;
 
-    NSMutableAttributedString *renamed = [attributedText mutableCopy];
-    [renamed replaceCharactersInRange:NSMakeRange(0, renamed.length) withString:@" SHOW "];
-    return renamed;
+    NSString *trimmed = ApolloDeletedCommentsTrimmedString(attributedText.string);
+    if ([trimmed isEqualToString:@"SPOILER"] &&
+        sShowDeletedComments &&
+        sTapToRevealDeletedComments &&
+        ApolloDeletedCommentsTextNodeBelongsToRecoveredComment(textNode)) {
+        return ApolloDeletedCommentsThemeSpoilerChipAttributedText(textNode, @"SHOW", attributedText, NO);
+    }
+
+    if (ApolloDeletedCommentsIsInlineSpoilerPillAttributedText(attributedText)) {
+        NSString *pillText = [trimmed isEqualToString:@"Spoiler"] ? @"Spoiler" : @"SPOILER";
+        return ApolloDeletedCommentsThemeSpoilerChipAttributedText(textNode, pillText, attributedText, NO);
+    }
+
+    return attributedText;
+}
+
+static NSAttributedString *ApolloDeletedCommentsProcessAttributedText(id textNode, NSAttributedString *attributedText) {
+    NSAttributedString *processed = ApolloDeletedCommentsApplyThemeSpoilerStyling(textNode, attributedText);
+    return ApolloDeletedCommentsStyledFlairText(processed);
 }
 
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    NSAttributedString *styledAttributedText = ApolloDeletedCommentsStyledFlairText(
-        ApolloDeletedCommentsRenameRecoveredSpoilerLabel((id)self, attributedText)
-    );
+    if (!objc_getAssociatedObject((id)self, kApolloDeletedCommentsInternalTextUpdateKey)) {
+        ApolloDeletedCommentsCancelRevealFade((id)self);
+    }
+    NSAttributedString *styledAttributedText = ApolloDeletedCommentsProcessAttributedText((id)self, attributedText);
     %orig(styledAttributedText);
     ApolloDeletedCommentsApplyFlairContainerStyle((id)self, styledAttributedText);
 }
@@ -689,14 +914,20 @@ static NSAttributedString *ApolloDeletedCommentsRenameRecoveredSpoilerLabel(id t
     } @catch (__unused NSException *e) {
         attributedText = nil;
     }
-    NSAttributedString *renamedAttributedText = ApolloDeletedCommentsRenameRecoveredSpoilerLabel((id)self, attributedText);
-    if (renamedAttributedText != attributedText) {
+    NSAttributedString *styledAttributedText = ApolloDeletedCommentsProcessAttributedText((id)self, attributedText);
+    if (styledAttributedText != attributedText) {
         @try {
-            ((void (*)(id, SEL, NSAttributedString *))objc_msgSend)((id)self, @selector(setAttributedText:), renamedAttributedText);
-            attributedText = renamedAttributedText;
+            ApolloDeletedCommentsSetAttributedTextPreservingFade((id)self, styledAttributedText);
+            attributedText = styledAttributedText;
         } @catch (__unused NSException *e) {}
     }
     ApolloDeletedCommentsApplyFlairContainerStyle((id)self, attributedText);
+}
+
+- (void)didExitDisplayState {
+    ApolloDeletedCommentsCancelRevealFade((id)self);
+    ApolloDeletedCommentsRestoreFlairContainer((id)self);
+    %orig;
 }
 
 %end

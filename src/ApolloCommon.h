@@ -31,4 +31,7 @@ NSString *ApolloBundledResourcePath(NSString *baseName, NSString *extension);
 // nil if neither path yields a usable string.
 NSString *ApolloGetLinkButtonNodeURLString(id linkButtonNode);
 void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *url);
+
+// Walk tab bar / nav bar / view tintColor chain for Apollo's selected theme accent.
+UIColor *ApolloThemeAccentFromView(UIView *view);
 __END_DECLS

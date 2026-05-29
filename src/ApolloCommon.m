@@ -250,6 +250,40 @@ NSString *ApolloGetLinkButtonNodeURLString(id linkButtonNode) {
     return nil;
 }
 
+static UIViewController *ApolloOwningViewControllerForView(UIView *view) {
+    UIResponder *responder = view;
+    while (responder) {
+        responder = responder.nextResponder;
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            return (UIViewController *)responder;
+        }
+    }
+    return nil;
+}
+
+UIColor *ApolloThemeAccentFromView(UIView *view) {
+    UIViewController *viewController = ApolloOwningViewControllerForView(view);
+    NSMutableArray<UIColor *> *candidates = [NSMutableArray array];
+
+    if (viewController.tabBarController.tabBar.tintColor) {
+        [candidates addObject:viewController.tabBarController.tabBar.tintColor];
+    }
+    if (viewController.navigationController.navigationBar.tintColor) {
+        [candidates addObject:viewController.navigationController.navigationBar.tintColor];
+    }
+    if (viewController.view.tintColor) [candidates addObject:viewController.view.tintColor];
+    if (view.tintColor) [candidates addObject:view.tintColor];
+    if (view.window.tintColor) [candidates addObject:view.window.tintColor];
+
+    for (UIColor *color in candidates) {
+        if ([color isKindOfClass:[UIColor class]]) return color;
+    }
+
+    if (view.tintColor) return view.tintColor;
+    if (@available(iOS 13.0, *)) return [UIColor systemBlueColor];
+    return [UIColor blueColor];
+}
+
 UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size) {
     if (emoji.length == 0) return nil;
     if (size <= 0.0) size = 29.0;
