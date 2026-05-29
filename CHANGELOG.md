@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- Post **GIFs in comments**: a new **Gif** button in the compose toolbar opens a built-in Giphy browser (trending + search, Apollo-themed) and uploads selected GIFs natively to Reddit so they render inline on both Apollo and reddit.com. Inline playback honors **Settings > General > Autoplay GIFs/Videos** with a static cover + play overlay when paused (#276: @icpryde)
+- Post **GIFs in comments**: a new **Gif** button in the compose toolbar opens a built-in Giphy browser (trending + search) and uploads selected GIFs natively to Reddit (#276: @icpryde)
     - Requires a free Giphy API key — set it in **Settings > Custom API > API Keys > Giphy API Key**. See the in-app **Giphy & ImgChest API Key Setup** guide for instructions (#285: @icpryde)
+    - Inline playback honors **Settings > General > Autoplay GIFs/Videos** with a static cover + play overlay when paused
 - Add **Image Chest** inline album support: bare Image Chest links show the first image inline and open an in-app album viewer with tap-to-hide controls, idle auto-hide, and per-image pinch zoom (#241: @icpryde)
     - To set up Image Chest, create an account at https://imgchest.com, generate an API token at https://imgchest.com/profile/api, and paste it into **Img Chest API Key** under **Settings > Custom API > API Keys**
 - Add **Subreddit Headers**: view subreddit banners and display icons on subreddit pages, with optional tap-to-set custom local images that can be reset anytime in Settings (#266: @jordanearle, @icpryde)
