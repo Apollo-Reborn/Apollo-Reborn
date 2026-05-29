@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- Add **GLASS Icons** and **No Extensions + GLASS Icons** distribution variants that bundle the Liquid Glass alternate icon catalog without opting the app into the iOS 26 UI runtime. The standard GLASS builds run `vtool -set-build-version ios 15.0 19.0`, which is what activates the new iOS 26 tab bar (whose horizontal swipe switches tabs); the icons-only variants skip that step so legacy UIKit behaviors — notably the bottom tab bar swipe-to-go-back/forward gesture — are preserved.
+- Add `--liquid-glass-icons` flag to `patch.sh` for producing the icons-only variant manually. `--liquid-glass` and `--liquid-glass-icons` are mutually exclusive.
+
 ## [v3.0.0] - 2026-05-29
 
 ### Features
