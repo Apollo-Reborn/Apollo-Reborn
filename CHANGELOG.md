@@ -8,37 +8,38 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- Post **GIFs in comments** again: a new **Gif** button in the compose toolbar opens a built-in Giphy browser (trending + search, Apollo-themed) and uploads selected GIFs natively to Reddit so they render inline on both Apollo and reddit.com. Inline playback honors **Settings > General > Autoplay GIFs/Videos** with a static cover + play overlay when paused (#276: @icpryde)
+    - Requires a free Giphy API key — set it in **Settings > Custom API > API Keys > Giphy API Key**. See the in-app **Giphy & ImgChest API Key Setup** guide for instructions (#285: @icpryde)
 - Add **Image Chest** inline album support: bare Image Chest links show the first image inline and open an in-app album viewer with tap-to-hide controls, idle auto-hide, and per-image pinch zoom (#241: @icpryde)
     - To set up Image Chest, create an account at https://imgchest.com, generate an API token at https://imgchest.com/profile/api, and paste it into **Img Chest API Key** under **Settings > Custom API > API Keys**
 - Add **Subreddit Headers**: view subreddit banners and display icons on subreddit pages, with optional tap-to-set custom local images that can be reset anytime in Settings (#266: @jordanearle, @icpryde)
-- Post **GIFs in comments** again: a new **Gif** button in the compose toolbar opens a built-in Giphy browser (trending + search, Apollo-themed) and uploads selected GIFs natively to Reddit so they render inline on both Apollo and reddit.com. Inline playback honors **Settings > General > Autoplay GIFs/Videos** with a static cover + play overlay when paused (#276: @icpryde)
-    - Requires a free Giphy API key — set it in **Settings > Custom API > API Keys > Giphy API Key**. See the in-app **Giphy & ImgChest API Key Setup** guide for instructions (#285: @icpryde)
 - Compact **u/username** and **r/subreddit** cards in rich link previews show avatar/icon, display name, member count, and an about snippet, with long-press peek into the native profile/community view (#262: @icpryde)
-- Add **editable user flair text** support to Apollo's flair selector (#255: @nunoo)
-- Show **banned profile state** with a dead Snoo overlay on user profiles, and surface comment author hints for banned/suspended users (#271, #278: @icpryde, @jordanearle)
-- Subreddit list (Modern mode) polish (#262: @icpryde):
 - Long-press peek now works on usernames and subreddit links in threads and comments (#262: @icpryde)
+- Show **banned profile state** with a dead Snoo overlay on user profiles, and surface comment author hints for banned/suspended users (#271, #278: @icpryde, @jordanearle)
+- Add **editable user flair text** support to Apollo's flair selector (#255: @nunoo)
 - Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
-- **Mask API keys** in Custom API settings: Reddit, Reddit Secret, Imgur, Img Chest, and Giphy fields show dots when idle and reveal only while editing (#276: @icpryde)
+- Subreddit list (Modern mode) polish (#262: @icpryde)
+- Add **41 new Liquid Glass icon variants** by @jryng under a new **New Variants** group, and reorganize the in-app App Icon picker into groups to reduce clutter (#287: @DeltAndy123, @jryng)
 - Add **Inline Media Alignment** option in **Settings > Custom API > Media** to left-align, center, or right-align inline images that don't fill the full content width (#273: @lampemw)
 - Rename **Custom API** to **Apollo Reborn Options** in Settings, polish the **Thanks To** screen with maintainer/code/icon & design groupings sourced from `contributors.json`, and add an **Apollo Reborn Subreddit** row that opens r/ApolloReborn in-app (#294: @icpryde)
+- **Mask API keys** in Custom API settings: Reddit, Reddit Secret, Imgur, Img Chest, and Giphy fields show dots when idle and reveal only while editing (#276: @icpryde)
 - Add **Buy Us a Coffee** screen in Settings with maintainer links, and move Apollo's original **Tip Jar** to **Settings > About** above **What's New** (#294: @icpryde)
 
 ### Fixes
 
 - Fix scroll freeze / loading-spinner lockup while scrolling threads with rich link previews (#262: @icpryde)
-- Fix comment view layout shift when user avatars load, by reserving avatar space in the placeholder (#262: @icpryde)
-- Replace the visible "MMMMMMMMMM" placeholder text in rich link previews with skeleton loading bars, and reduce flicker after navigation or peek dismiss (#262: @icpryde)
+- Fix comment layout shifting around as user avatars load in (#262: @icpryde)
+- Replace placeholder filler text in rich link previews with skeleton loading bars, and reduce flicker when previews reappear (#262: @icpryde)
 - Fix a stray translucent star/blob on rich link previews when using Share as Image (#262: @icpryde)
 - Fix visionOS (Vision Pro) use-after-free crash on multireddits (#270: @rebelancap)
 - Fix X and Edit buttons touching the top of the account switcher popup on Liquid Glass (#275: @lampemw)
-- Stability improvements around rapid subreddit navigation, image loading loops, and background memory management (#262, #266: @icpryde, @jordanearle)
-- Debounce rich link preview disk cache writes so scrolling no longer hammers sync I/O, with an immediate flush on app background (#262: @icpryde)
-- Refresh stale cached user profiles and invalidate reddit-user link previews on suspension, so compact cards and peek UI stay accurate (#278: @jordanearle, @icpryde)
-- Fix launch crash from the banned profile username lookup recursing through the nav stack on cold start (#276: @icpryde)
-- Fix crash on Reddit link previews when comments JSON has missing or unexpected preview fields (#276, #280: @JeffreyCA, @icpryde)
-- Fix Reddit-hosted GIFs stopping animation after leaving and returning to a thread, plus general GIF lifecycle/autoplay stability (#276: @icpryde)
-- Fix Giphy GIFs posted from Apollo not rendering in the official Reddit iOS app (and showing a "image was probably deleted" placeholder when editing in Apollo) — comments now use Reddit's native `![gif](giphy|...)` token end-to-end (#289: @icpryde)
+- General stability improvements around rapid subreddit navigation and image loading (#262, #266: @icpryde, @jordanearle)
+- Smoother scrolling through threads with lots of rich link previews (#262: @icpryde)
+- Keep user profile cards and peek previews up to date when an account is suspended or banned (#278: @jordanearle, @icpryde)
+- Fix launch crash when opening a banned user's profile (#276: @icpryde)
+- Fix crash on Reddit link previews in some comment threads (#276, #280: @JeffreyCA, @icpryde)
+- Fix Reddit-hosted GIFs stopping animation after leaving and returning to a thread (#276: @icpryde)
+- Fix Giphy GIFs posted from Apollo not rendering in the official Reddit iOS app (and showing a "image was probably deleted" placeholder when editing in Apollo) (#289: @icpryde)
 - Fix Compact link preview cards growing to hero size and overlapping the next comment after voting on a comment that contains a link (#290: @icpryde)
 
 ## [v2.14.0] - 2026-05-20
