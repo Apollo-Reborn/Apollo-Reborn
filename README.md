@@ -1,12 +1,12 @@
 # Apollo-Reborn
-[![Build and release](https://github.com/Apollo-Reborn/Apollo-Reborn/actions/workflows/buildapp.yml/badge.svg)](https://github.com/Apollo-Reborn/Apollo-Reborn/actions/workflows/buildapp.yml) ![GitHub Release](https://img.shields.io/github/v/release/Apollo-Reborn/Apollo-Reborn)
+[![Subreddit](https://img.shields.io/reddit/subreddit-subscribers/ApolloReborn?style=flat&logoColor=purple&label=join%20r%2FApolloReborn&color=%238a02fe)](https://www.reddit.com/r/ApolloReborn/) ![GitHub Release](https://img.shields.io/github/v/release/Apollo-Reborn/Apollo-Reborn)
 
 iOS tweak for [Apollo for Reddit app](https://apolloapp.io/) that lets you continue using Apollo with your own API keys after its shutdown in June 2023. The tweak also unlocks several Ultra features and includes several enhancements and fixes.
 
 > [!NOTE]
 > **Apollo-ImprovedCustomApi** is now **Apollo-Reborn**
 >
-> _May 22, 2026_ — This project is now under team-based maintainership to keep Apollo polished and sustainably maintained for the community!
+> _May 22, 2026_ — This project is now under team-based maintainership to keep Apollo polished and sustainably maintained for the community - join us at [r/ApolloReborn](https://www.reddit.com/r/ApolloReborn/)!
 >
 > **Apollo Reborn team:** @JeffreyCA, @icpryde, @jordanearle, @nickclyde, @DeltAndy123 ❤️
 
