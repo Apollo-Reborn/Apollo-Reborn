@@ -85,9 +85,26 @@ If you installed a **no-extensions** variant, or you're on a jailbreak/`.deb` in
 
 It auto-redirects Reddit pages to Apollo and rewrites Reddit links on Google/Bing/DuckDuckGo results. (Search-result rewriting is inspired by [AnthonyGress's userscript](https://github.com/AnthonyGress/Open-In-Apollo), which also works.)
 
-### Any other browser (Chrome, Firefox, Edge, Brave) — Share sheet
+### Any other browser (Chrome, Firefox, Edge, Brave) — Shortcut
 
-On iOS only Safari can run extensions or userscripts, so Chrome/Firefox/etc. can't auto-detect Reddit links. Instead, on any browser tap **Share → Open in Apollo**: Apollo ships an "Open in Apollo" share action that hands the current page to the app. (This action is part of the app's extensions, so it's present on the standard/Liquid Glass variants but not the *no-extensions* ones.)
+On iOS only Safari can run extensions or userscripts, and Apollo's bundled "Open in Apollo" share-sheet action no longer works on modern iOS (Apple no longer lets a share extension launch its containing app). For any other browser, use a one-time **Shortcut** that works from the share sheet everywhere — Firefox, Chrome, Edge, Brave, and beyond. It rewrites the `reddit.com` URL to Apollo's `apollo://` scheme and runs **Open URLs** — the one launch path iOS still allows from the share sheet (no private APIs; works on any sideload or jailbreak).
+
+<details>
+<summary><b>Build the "Open in Apollo" shortcut</b> (about a minute)</summary>
+
+In the **Shortcuts** app, create a shortcut named **Open in Apollo** with these actions, in order:
+
+1. **Get URLs from Shortcut Input** — coerces the shared link/web page into a URL.
+2. **Replace Text** — Find `^https?://([a-z0-9-]+\.)*reddit\.com`, Replace `apollo://reddit.com`, **Regular Expression: On**, input = the URLs from step 1.
+3. *(optional, for `redd.it` links)* **Replace Text** — Find `^https?://([a-z0-9-]+\.)*redd\.it`, Replace `apollo://redd.it`, **Regular Expression: On**, input = the Updated Text from step 2.
+4. **Open URLs** — input = the Updated Text from the last Replace Text.
+
+Then in the shortcut's settings (ⓘ) turn on **Show in Share Sheet** and, under **Share Sheet Types**, leave only **URLs** enabled.
+
+Only the scheme + host are rewritten, so the full path/query is preserved — comment permalinks, profiles, and `/s/` share links all open correctly (the same `apollo://reddit.com/<path>` form the Safari extension and userscript produce). To share it with others, open the shortcut → **Share → Copy iCloud Link**.
+</details>
+
+Then, in any browser, on a Reddit page tap **Share → Open in Apollo**.
 
 ## Don't have an API key?
 

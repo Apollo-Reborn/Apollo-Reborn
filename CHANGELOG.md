@@ -10,7 +10,8 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- Ship an Apollo-Reborn **userscript** (`userscript/open-in-apollo.user.js`) as an app-independent way to auto-open Reddit links in Apollo — handy for the no-extensions IPA variant and jailbreak installs. Install via the free **Userscripts** app. See the README "Opening links in Apollo" section, which also documents the cross-browser **Share sheet → Open in Apollo** path for Chrome/Firefox/etc.
+- Ship an Apollo-Reborn **userscript** (`userscript/open-in-apollo.user.js`) as an app-independent way to auto-open Reddit links in Apollo — handy for the no-extensions IPA variant and jailbreak installs. Install via the free **Userscripts** app.
+- Add an **"Open in Apollo" Shortcut** recipe (in the README) for opening Reddit links in Apollo from Chrome, Firefox, and other browsers via the share sheet. Apollo's bundled share-sheet action no longer works on modern iOS (Apple no longer lets a share extension launch its containing app), so a one-time Shortcut handles it instead.
 
 ## [v3.0.0] - 2026-05-29
 
