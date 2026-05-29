@@ -1425,7 +1425,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     if (section == SectionBackupRestore) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Restore does not affect accounts or existing ones. The backup .zip contains an accounts.txt with all account usernames for reference."
+            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup .zip contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
             attributes:plainAttrs];
     } else if (section == SectionAPIKeys) {
         text = [[NSMutableAttributedString alloc]
@@ -2175,7 +2175,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
     if (!_isRestoreOperation) {
         NSString *filename = urls.firstObject.lastPathComponent;
-        NSString *message = [NSString stringWithFormat:@"Settings saved as: %@", filename];
+        NSString *message = [NSString stringWithFormat:@"Settings saved as: %@\n\nThis file contains your logged-in account credentials. Keep it private.", filename];
         [self showAlertWithTitle:@"Backup Complete" message:message];
         return;
     }
@@ -2186,7 +2186,7 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
 - (void)confirmRestoreWithURL:(NSURL *)zipURL {
     UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"Confirm Restore"
-        message:@"This will replace all existing settings with the backup. This cannot be undone."
+        message:@"This will replace all existing settings and logged-in accounts with the backup. This cannot be undone."
         preferredStyle:UIAlertControllerStyleAlert];
 
     UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
@@ -2289,7 +2289,20 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     NSString *libreAPIKey = [defaults stringForKey:UDKeyLibreTranslateAPIKey];
     sLibreTranslateAPIKey = libreAPIKey.length > 0 ? libreAPIKey : nil;
 
-    // Restore group preferences, preserving account state from current install
+    // Restore group preferences, including logged-in accounts.
+    //
+    // The account keys (RedditAccounts2, RedditApplicationOnlyAccount2,
+    // CurrentRedditAccountIndex, LoggedInAccountDetails) hold the Reddit OAuth tokens as
+    // self-contained NSKeyedArchiver blobs (RDKClient -> RDKOAuthCredential ->
+    // RDKAccessToken). They carry no keychain dependency and no device binding, so writing
+    // them here and relaunching (exit(0) below) lets AccountManager reload them on next
+    // launch — the user is signed back in without reauthenticating. The restored API keys
+    // (main prefs) match the keys the tokens were minted under, keeping token refresh
+    // consistent.
+    //
+    // Non-destructive by design: only keys present in the backup are written. A backup made
+    // while logged out has no account keys, so the current install's accounts are left
+    // intact rather than wiped.
     NSString *groupPlistBackupPath = [extractDir stringByAppendingPathComponent:kGroupPlistFilename];
     if ([fileManager fileExistsAtPath:groupPlistBackupPath]) {
         NSDictionary *groupPrefs = [NSDictionary dictionaryWithContentsOfFile:groupPlistBackupPath];
@@ -2297,12 +2310,6 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
             NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:kGroupSuiteName];
 
             for (NSString *key in groupPrefs) {
-                if ([key isEqualToString:@"LoggedInAccountDetails"] ||
-                    [key isEqualToString:@"CurrentRedditAccountIndex"] ||
-                    [key isEqualToString:@"RedditAccounts2"] ||
-                    [key isEqualToString:@"RedditApplicationOnlyAccount2"]) {
-                    continue;
-                }
                 [groupDefaults setObject:groupPrefs[key] forKey:key];
             }
             [groupDefaults synchronize];
