@@ -20,7 +20,7 @@ All notable changes to this project will be documented in this file.
 - Add **editable user flair text** support to Apollo's flair selector (#255: @nunoo)
 - Rich link previews now support translation alongside the rest of post and comment content (#262: @icpryde)
 - Subreddit list (Modern mode) polish (#262: @icpryde)
-- Add **41 new Liquid Glass icon variants** by @jryng under a new **New Variants** group, and reorganize the in-app App Icon picker into groups to reduce clutter (#287: @DeltAndy123, @jryng)
+- Add **41 new Liquid Glass icon variants** by @jryng under a new **New Variants** group, plus new **Aperture Science** and **ApollOS** icon sets by @bajader, and reorganize the in-app App Icon picker into groups to reduce clutter (#287, #254: @DeltAndy123, @jryng, @bajader)
 - Add **Inline Media Alignment** option in **Settings > Custom API > Media** to left-align, center, or right-align inline images that don't fill the full content width (#273: @lampemw)
 - Rename **Custom API** to **Apollo Reborn Options** in Settings, polish the **Thanks To** screen with maintainer/code/icon & design groupings sourced from `contributors.json`, and add an **Apollo Reborn Subreddit** row that opens r/ApolloReborn in-app (#294: @icpryde)
 - **Mask API keys** in Custom API settings: Reddit, Reddit Secret, Imgur, Img Chest, and Giphy fields show dots when idle and reveal only while editing (#276: @icpryde)
