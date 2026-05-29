@@ -2,19 +2,22 @@
   "primaryIconID": "jryng",
   "groups": [
     { "id": "community", "title": "Liquid Glass", "presentation": "inline" },
-    { "id": "new-variants", "title": "New Variants", "presentation": "push" }
+    { "id": "new-variants", "title": "New Variants", "presentation": "push" },
+    { "id": "custom", "title": "Custom", "presentation": "push" }
   ],
   "icons": [
     { "id": "igerman00",                "displayName": "Canon",               "designer": "iGerman00", "group": "community" },
     { "id": "jryng",                    "displayName": "OG",                  "designer": "jryng", "group": "community" },
     { "id": "metalnakls",               "displayName": "metalnakls",          "designer": "metalnakls", "group": "community" },
     { "id": "harunatsu",                "displayName": "harunatsu",           "designer": "harunatsu91202024", "group": "community" },
-    { "id": "bajader",                  "displayName": "Sunset",              "designer": "bajader", "group": "community" },
+
+
     { "id": "jryng-morty",              "displayName": "Wubalubadubdub",      "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-duck",               "displayName": "Wilson",              "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-antenna",            "displayName": "Irradiate",           "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-spaceship",          "displayName": "Stanley",             "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-burnt-orange",       "displayName": "Nuclear Sunset",      "designer": "jryng", "group": "new-variants" },
+    { "id": "bajader-sunset",           "displayName": "Sunset",              "designer": "bajader", "group": "new-variants" },
     { "id": "jryng-green",              "displayName": "Danger Noodle",       "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-dark",               "displayName": "Lumos",               "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-orange",             "displayName": "Hugo",                "designer": "jryng", "group": "new-variants" },
@@ -53,6 +56,10 @@
 
     { "id": "jryng-andru",              "displayName": "Pro Wrestler",        "designer": "jryng", "group": "new-variants" },
     { "id": "jryng-eap",                "displayName": "EAP",                 "designer": "jryng", "group": "new-variants" },
-    { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng", "group": "new-variants" }
+    { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng", "group": "new-variants" },
+
+
+    { "id": "bajader-aperture-science", "displayName": "Aperture Science",    "designer": "bajader", "group": "custom" },
+    { "id": "bajader-apollos",          "displayName": "ApollOS",             "designer": "bajader", "group": "custom" }
   ]
 }

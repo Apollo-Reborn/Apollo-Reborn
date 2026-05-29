@@ -26,7 +26,6 @@ static const LGIconRowEntry kLGGroupEntries_community[] = {
     { "jryng", "OG", "jryng" },
     { "metalnakls", "metalnakls", "metalnakls" },
     { "harunatsu", "harunatsu", "harunatsu91202024" },
-    { "bajader", "Sunset", "bajader" },
 };
 
 static const LGIconRowEntry kLGGroupEntries_new_variants[] = {
@@ -35,6 +34,7 @@ static const LGIconRowEntry kLGGroupEntries_new_variants[] = {
     { "jryng-antenna", "Irradiate", "jryng" },
     { "jryng-spaceship", "Stanley", "jryng" },
     { "jryng-burnt-orange", "Nuclear Sunset", "jryng" },
+    { "bajader-sunset", "Sunset", "bajader" },
     { "jryng-green", "Danger Noodle", "jryng" },
     { "jryng-dark", "Lumos", "jryng" },
     { "jryng-orange", "Hugo", "jryng" },
@@ -73,11 +73,17 @@ static const LGIconRowEntry kLGGroupEntries_new_variants[] = {
     { "jryng-red", "Red", "jryng" },
 };
 
-static const LGIconGroupDef kLGIconGroups[] = {
-    { "community", "Liquid Glass", LGGroupPresentationInline, kLGGroupEntries_community, 5 },
-    { "new-variants", "New Variants", LGGroupPresentationPush, kLGGroupEntries_new_variants, 41 },
+static const LGIconRowEntry kLGGroupEntries_custom[] = {
+    { "bajader-aperture-science", "Aperture Science", "bajader" },
+    { "bajader-apollos", "ApollOS", "bajader" },
 };
 
-static const size_t kLGIconGroupCount = 2;
+static const LGIconGroupDef kLGIconGroups[] = {
+    { "community", "Liquid Glass", LGGroupPresentationInline, kLGGroupEntries_community, 4 },
+    { "new-variants", "New Variants", LGGroupPresentationPush, kLGGroupEntries_new_variants, 42 },
+    { "custom", "Custom", LGGroupPresentationPush, kLGGroupEntries_custom, 2 },
+};
+
+static const size_t kLGIconGroupCount = 3;
 
 static const char *const kLGPrimaryIconIDCString = "jryng";
