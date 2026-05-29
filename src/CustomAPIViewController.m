@@ -985,7 +985,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                            action:@selector(showDeletedCommentsSwitchToggled:)];
         case 4:
             return [self switchCellWithIdentifier:@"Cell_Gen_TapToRevealDeletedComments"
-                                            label:@"Tap to Reveal Deleted Comments"
+                                            label:@"Tap to Show Deleted Comments"
                                                on:[defaults boolForKey:UDKeyTapToRevealDeletedComments]
                                            action:@selector(tapToRevealDeletedCommentsSwitchToggled:)];
         case 5:
