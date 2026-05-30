@@ -6,6 +6,24 @@
 #import <objc/runtime.h>
 #include <dlfcn.h>
 
+// Private UIKit surface driving the iOS 26 Liquid Glass "morph from source"
+// menu presentation instead of the default rich/long-press "lift" look.
+@interface _UIContextMenuStyle : NSObject
++ (instancetype)defaultStyle;
+- (void)setPreferredLayout:(NSUInteger)preferredLayout;
+- (void)setShouldMenuOverlapSourcePreview:(BOOL)shouldMenuOverlapSourcePreview;
+@end
+
+@interface UIContextMenuInteraction (ApolloNativeActionMenus)
+// Compact (button-style) appearance: fallback driver style 1 => Compact.
+- (void)_setFallbackDriverStyle:(NSUInteger)style;
+@end
+
+// _UIContextMenuStyle.preferredLayout value for the compact button-attached menu.
+static const NSUInteger kApolloNativeActionMenuCompactLayout = 3;
+// _UIClickPresentationInteraction driver style that yields the compact appearance.
+static const NSUInteger kApolloNativeActionMenuCompactDriverStyle = 1;
+
 static char kApolloNativeActionMenuControllerKey;
 static char kApolloNativeActionMenuInvokingActionKey;
 static char kApolloNativeActionMenuWrappedModeratorActionKey;
@@ -22,8 +40,11 @@ static BOOL sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
 @interface ApolloNativeActionMenuPresenter : NSObject <UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIMenu *menu;
 @property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic, weak) UIView *morphSourceView;
+@property (nonatomic, assign) BOOL prefersCompactMorph;
 @property (nonatomic, strong) UIContextMenuInteraction *interaction;
 @property (nonatomic, assign) BOOL removeSourceViewOnEnd;
+- (void)finalizePresentation;
 @end
 
 static BOOL ApolloNativeActionMenusEnabled(void) {
@@ -681,9 +702,40 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     }];
 }
 
+- (_UIContextMenuStyle *)_contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
+    if (!self.prefersCompactMorph) return nil;
+
+    Class styleClass = objc_getClass("_UIContextMenuStyle");
+    if (![styleClass respondsToSelector:@selector(defaultStyle)]) return nil;
+
+    _UIContextMenuStyle *style = [styleClass defaultStyle];
+    // Compact layout + overlapping the source preview is what morphs the
+    // tapped control into the menu rather than lifting a preview beside it.
+    if ([style respondsToSelector:@selector(setPreferredLayout:)]) {
+        [style setPreferredLayout:kApolloNativeActionMenuCompactLayout];
+    }
+    if ([style respondsToSelector:@selector(setShouldMenuOverlapSourcePreview:)]) {
+        [style setShouldMenuOverlapSourcePreview:YES];
+    }
+    return style;
+}
+
 - (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
+    // Compact morph: provide a real preview of the tapped control so the
+    // system can morph it into the menu (the true native Liquid Glass look).
+    if (self.prefersCompactMorph) {
+        UIView *morphSourceView = self.morphSourceView;
+        if (morphSourceView && morphSourceView.window) {
+            UIPreviewParameters *parameters = [UIPreviewParameters new];
+            parameters.backgroundColor = UIColor.clearColor;
+            CGFloat radius = MIN(CGRectGetWidth(morphSourceView.bounds), CGRectGetHeight(morphSourceView.bounds)) / 2.0;
+            parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:morphSourceView.bounds cornerRadius:radius];
+            return [[UITargetedPreview alloc] initWithView:morphSourceView parameters:parameters];
+        }
+    }
+
     UIView *sourceView = self.sourceView;
-    if (!sourceView) return nil;
+    if (!sourceView || !sourceView.window) return nil;
 
     UIPreviewParameters *parameters = [UIPreviewParameters new];
     parameters.backgroundColor = UIColor.clearColor;
@@ -699,15 +751,32 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     return [self contextMenuInteraction:interaction previewForHighlightingMenuWithConfiguration:configuration];
 }
 
-- (void)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction willEndForConfiguration:(__unused UIContextMenuConfiguration *)configuration animator:(__unused id<UIContextMenuInteractionAnimating>)animator {
+- (void)finalizePresentation {
     UIView *sourceView = self.sourceView;
     UIContextMenuInteraction *menuInteraction = self.interaction;
-    if (sourceView && menuInteraction) {
-        [sourceView removeInteraction:menuInteraction];
-        objc_setAssociatedObject(sourceView, &kApolloNativeActionMenuControllerKey, nil, OBJC_ASSOCIATION_ASSIGN);
-        if (self.removeSourceViewOnEnd) {
-            [sourceView removeFromSuperview];
-        }
+    if (!sourceView || !menuInteraction) return;
+
+    [sourceView removeInteraction:menuInteraction];
+    // Only clear the association if it still points at this presenter; a rapid
+    // re-tap may have installed a newer presentation on the same host view.
+    if (objc_getAssociatedObject(sourceView, &kApolloNativeActionMenuControllerKey) == self) {
+        objc_setAssociatedObject(sourceView, &kApolloNativeActionMenuControllerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (self.removeSourceViewOnEnd) {
+        [sourceView removeFromSuperview];
+    }
+    self.interaction = nil;
+}
+
+- (void)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction willEndForConfiguration:(__unused UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
+    // Defer teardown until the dismissal/morph animation finishes. Removing the
+    // interaction here releases this presenter (it owns the interaction and is
+    // retained as the host's associated object), tearing down mid-animation —
+    // which leaves the morphed control hidden for ~1s before UIKit restores it.
+    if (animator && [animator respondsToSelector:@selector(addCompletion:)]) {
+        [animator addCompletion:^{ [self finalizePresentation]; }];
+    } else {
+        [self finalizePresentation];
     }
 }
 
@@ -788,6 +857,18 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 }
 %end
 
+static BOOL ApolloNativeActionMenuSourceIsTableCell(UIView *view) {
+    // Morphing portals the source into the menu's preview platter — fine for
+    // self-contained controls (buttons, bar items, Texture node buttons), but a
+    // UITableViewCell is a recycled, scrolling cell: it goes transparent, the
+    // morph-back lags ~1s, and scrolling mid-portal jelly/overshoots. Detect
+    // table cells so we present them from a proxy anchor instead.
+    for (UIView *v = view; v; v = v.superview) {
+        if ([v isKindOfClass:[UITableViewCell class]]) return YES;
+    }
+    return NO;
+}
+
 static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {
     if (!ApolloNativeActionMenusEnabled()) return NO;
     if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
@@ -816,33 +897,53 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
     }
     objc_setAssociatedObject(actionController, &kApolloNativeActionMenuSourceViewKey, sourceView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    BOOL removeAnchorViewOnEnd = NO;
-    UIView *anchorView = ApolloNativeActionMenuCreateProxyAnchorView(sourceView, &removeAnchorViewOnEnd);
-    if (!anchorView || !anchorView.window) {
-        ApolloLog(@"[NativeActionMenu] Could not create anchor view for %@", actionController);
-        return NO;
-    }
-
     ApolloNativeActionMenuPresenter *menuPresenter = [ApolloNativeActionMenuPresenter new];
     menuPresenter.menu = menu;
-    menuPresenter.sourceView = anchorView;
-    menuPresenter.removeSourceViewOnEnd = removeAnchorViewOnEnd;
 
     UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:menuPresenter];
     if (![interaction respondsToSelector:NSSelectorFromString(@"_presentMenuAtLocation:")]) {
         ApolloLog(@"[NativeActionMenu] UIContextMenuInteraction cannot present programmatically");
         return NO;
     }
-
     menuPresenter.interaction = interaction;
 
-    [anchorView addInteraction:interaction];
-    objc_setAssociatedObject(anchorView, &kApolloNativeActionMenuControllerKey, menuPresenter, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // When we can force the compact (button) appearance, host the interaction
+    // on the tapped control and target it with the highlight preview so iOS 26
+    // morphs the control into the menu. Otherwise present from a tiny invisible
+    // proxy anchor, where the menu just appears near the control with no morph.
+    UIView *hostView = nil;
+    BOOL removeHostViewOnEnd = NO;
+    if ([interaction respondsToSelector:@selector(_setFallbackDriverStyle:)]
+        && !ApolloNativeActionMenuSourceIsTableCell(sourceView)) {
+        // For a programmatic presentation (no gesture-driven driver), the click
+        // presentation uses this fallback driver style; style 1 maps to the
+        // compact appearance (preferredLayout 3), which combined with
+        // shouldMenuOverlapSourcePreview drives the morph.
+        [interaction _setFallbackDriverStyle:kApolloNativeActionMenuCompactDriverStyle];
+        menuPresenter.prefersCompactMorph = YES;
+        menuPresenter.morphSourceView = sourceView;
+        menuPresenter.sourceView = sourceView;
+        hostView = sourceView;
+    } else {
+        UIView *anchorView = ApolloNativeActionMenuCreateProxyAnchorView(sourceView, &removeHostViewOnEnd);
+        if (!anchorView || !anchorView.window) {
+            ApolloLog(@"[NativeActionMenu] Could not create anchor view for %@", actionController);
+            return NO;
+        }
+        menuPresenter.sourceView = anchorView;
+        hostView = anchorView;
+    }
+    menuPresenter.removeSourceViewOnEnd = removeHostViewOnEnd;
 
-    CGPoint location = CGPointMake(CGRectGetMidX(anchorView.bounds), CGRectGetMidY(anchorView.bounds));
+    [hostView addInteraction:interaction];
+    objc_setAssociatedObject(hostView, &kApolloNativeActionMenuControllerKey, menuPresenter, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    CGPoint location = CGPointMake(CGRectGetMidX(hostView.bounds), CGRectGetMidY(hostView.bounds));
     ((void (*)(id, SEL, CGPoint))objc_msgSend)(interaction, NSSelectorFromString(@"_presentMenuAtLocation:"), location);
 
-    ApolloLog(@"[NativeActionMenu] Presented native menu with %lu item(s)", (unsigned long)menu.children.count);
+    ApolloLog(@"[NativeActionMenu] Presented native menu (%@) with %lu item(s)",
+              menuPresenter.prefersCompactMorph ? @"compact morph" : @"anchor",
+              (unsigned long)menu.children.count);
     if (completion) completion();
     return YES;
 }
@@ -906,6 +1007,14 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo15CommentCellNode
 - (void)moreOptionsTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)modButtonTappedWithSender:(id)sender {
+    // Green moderator shield presents the moderator ActionController
+    // synchronously; anchor it to the shield button instead of the top-left.
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
@@ -1068,6 +1177,15 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
         sourceView = ApolloNativeActionMenuViewForObject(ApolloReadObjectIvar(self, "addBarButtonItem"));
     }
     ApolloNativeActionMenuBeginCapture(sourceView ?: sender, self);
+    %orig;
+    ApolloNativeActionMenuEndCapture();
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    // Swipe-to-unsubscribe presents the confirmation ActionController
+    // synchronously; anchor it to the swiped cell instead of the top-left.
+    UIView *sourceView = [tableView cellForRowAtIndexPath:indexPath] ?: tableView;
+    ApolloNativeActionMenuBeginCapture(sourceView, self);
     %orig;
     ApolloNativeActionMenuEndCapture();
 }
