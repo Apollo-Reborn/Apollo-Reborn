@@ -1,0 +1,147 @@
+#import <Foundation/Foundation.h>
+
+#import "ApolloDeletedCommentsData.h"
+
+static id MutableJSON(id object) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
+    return [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil];
+}
+
+static void Require(BOOL condition, NSString *message) {
+    if (!condition) {
+        @throw [NSException exceptionWithName:@"DeletedCommentsTestFailure" reason:message userInfo:nil];
+    }
+}
+
+static NSDictionary *Archived(NSString *identifier, NSString *body, NSDictionary *metadata) {
+    return @{
+        @"id": identifier,
+        @"name": [@"t1_" stringByAppendingString:identifier],
+        @"body": body ?: @"",
+        @"author": @"archive_author",
+        @"score": @42,
+        @"created_utc": @1700000000,
+        @"parent_id": @"t3_thread",
+        @"link_id": @"t3_thread",
+        @"_meta": metadata ?: @{},
+    };
+}
+
+static NSMutableDictionary *VisibleDeletedRoot(void) {
+    return MutableJSON(@{
+        @"kind": @"Listing",
+        @"data": @{
+            @"children": @[
+                @{
+                    @"kind": @"t1",
+                    @"data": @{
+                        @"id": @"c1",
+                        @"name": @"t1_c1",
+                        @"body": @"[deleted]",
+                        @"body_html": @"&lt;div class=\"md\"&gt;&lt;p&gt;[deleted]&lt;/p&gt;&lt;/div&gt;",
+                        @"author": @"[deleted]",
+                        @"score": @0,
+                        @"replies": @"",
+                    },
+                },
+            ],
+        },
+    });
+}
+
+static NSMutableDictionary *MoreRoot(NSArray *children, NSNumber *count) {
+    return MutableJSON(@{
+        @"kind": @"Listing",
+        @"data": @{
+            @"children": @[
+                @{
+                    @"kind": @"more",
+                    @"data": @{
+                        @"children": children,
+                        @"count": count,
+                        @"id": children.firstObject ?: @"",
+                        @"name": children.firstObject ? [@"t1_" stringByAppendingString:children.firstObject] : @"",
+                    },
+                },
+            ],
+        },
+    });
+}
+
+static void TestURLExtraction(void) {
+    Require([ApolloDeletedCommentsTestLinkFullNameFromRedditURL([NSURL URLWithString:@"https://www.reddit.com/r/test/comments/abc123/title/"]) isEqualToString:@"t3_abc123"], @"extracts /comments/<id>");
+    Require([ApolloDeletedCommentsTestLinkFullNameFromRedditURL([NSURL URLWithString:@"https://oauth.reddit.com/comments/abc123.json?raw_json=1"]) isEqualToString:@"t3_abc123"], @"extracts /comments/<id>.json");
+    Require([ApolloDeletedCommentsTestLinkFullNameFromRedditURL([NSURL URLWithString:@"https://oauth.reddit.com/api/morechildren?link_id=t3_link&children=a,b"]) isEqualToString:@"t3_link"], @"extracts link_id query");
+    Require([ApolloDeletedCommentsTestLinkFullNameFromRedditURL([NSURL URLWithString:@"https://oauth.reddit.com/api/info?id=abc123"]) isEqualToString:@"t3_abc123"], @"extracts id query");
+    Require([ApolloDeletedCommentsTestLinkFullNameFromRedditURL([NSURL URLWithString:@"https://oauth.reddit.com/foo?article=abc123"]) isEqualToString:@"t3_abc123"], @"extracts article query");
+}
+
+static void TestDeletedBodyPolicy(void) {
+    Require(ApolloDeletedCommentsTestBodyLooksDeleted(@"[deleted]", nil), @"detects [deleted]");
+    Require(ApolloDeletedCommentsTestBodyLooksDeleted(@"[removed]", nil), @"detects [removed]");
+    Require(ApolloDeletedCommentsTestBodyLooksDeleted(@"", nil), @"detects empty body");
+    Require(ApolloDeletedCommentsTestBodyLooksDeleted(@"hello", @"&lt;p&gt;Removed by moderator&lt;/p&gt;"), @"detects removed HTML");
+    Require(!ApolloDeletedCommentsTestBodyLooksDeleted(@"normal comment", nil), @"normal body is not deleted");
+}
+
+static void TestVisibleReplacement(void) {
+    NSMutableDictionary *root = VisibleDeletedRoot();
+    NSUInteger patched = ApolloDeletedCommentsTestPatchRedditJSONRoot(root, @{@"t1_c1": Archived(@"c1", @"Recovered body", @{@"removal_type": @"deleted"})});
+    NSDictionary *data = root[@"data"][@"children"][0][@"data"];
+    Require(patched == 1, @"patches one visible comment");
+    Require([data[@"body"] isEqualToString:@"Recovered body"], @"replaces body");
+    Require([data[@"author"] isEqualToString:@"archive_author"], @"replaces author");
+    Require([data[@"score"] isEqual:@42], @"replaces score");
+    Require([data[@"apollo_recovered_deleted_comment"] boolValue], @"sets marker");
+    Require([data[@"apollo_recovered_deleted_reason"] isEqualToString:@"user_deleted"], @"sets reason");
+    Require([data[@"user_vote"] isEqual:@0] && [data[@"likes"] isKindOfClass:[NSNull class]], @"neutralizes vote metadata");
+}
+
+static void TestMoreExpansion(void) {
+    NSMutableDictionary *root = MoreRoot(@[@"c1", @"c2"], @2);
+    NSDictionary *archive = @{
+        @"t1_c1": Archived(@"c1", @"Recovered one", @{@"was_deleted_later": @YES}),
+        @"t1_c2": Archived(@"c2", @"Recovered two", @{@"was_deleted_later": @YES}),
+    };
+    NSUInteger patched = ApolloDeletedCommentsTestPatchRedditJSONRoot(root, archive);
+    NSArray *children = root[@"data"][@"children"];
+    Require(patched == 2, @"expands complete more cluster");
+    Require(children.count == 2, @"replaces more with recovered things");
+    Require([children[0][@"kind"] isEqualToString:@"t1"], @"first replacement is comment");
+    Require([children[1][@"data"][@"body"] isEqualToString:@"Recovered two"], @"second replacement body");
+}
+
+static void TestMixedMoreKeepsRemainingChildren(void) {
+    NSMutableDictionary *root = MoreRoot(@[@"c1", @"c2"], @2);
+    NSDictionary *archive = @{
+        @"t1_c1": Archived(@"c1", @"Recovered one", @{@"was_deleted_later": @YES}),
+        @"t1_c2": Archived(@"c2", @"[deleted]", @{@"was_deleted_later": @YES}),
+    };
+    NSUInteger patched = ApolloDeletedCommentsTestPatchRedditJSONRoot(root, archive);
+    NSArray *children = root[@"data"][@"children"];
+    Require(patched == 1, @"partially expands mixed deleted cluster");
+    Require(children.count == 2, @"keeps one recovered thing and one more object");
+    Require([children[0][@"kind"] isEqualToString:@"t1"], @"inserts recoverable child");
+    Require([children[1][@"kind"] isEqualToString:@"more"], @"keeps unresolved child in more");
+    Require([children[1][@"data"][@"children"] isEqualToArray:@[@"c2"]], @"remaining more child preserved");
+}
+
+static void TestNoOp(void) {
+    NSMutableDictionary *root = VisibleDeletedRoot();
+    NSUInteger patched = ApolloDeletedCommentsTestPatchRedditJSONRoot(root, @{});
+    Require(patched == 0, @"no archive is no-op");
+    Require([root[@"data"][@"children"][0][@"data"][@"body"] isEqualToString:@"[deleted]"], @"body remains unchanged");
+}
+
+int main(void) {
+    @autoreleasepool {
+        TestURLExtraction();
+        TestDeletedBodyPolicy();
+        TestVisibleReplacement();
+        TestMoreExpansion();
+        TestMixedMoreKeepsRemainingChildren();
+        TestNoOp();
+        NSLog(@"deleted_comments_tests passed");
+    }
+    return 0;
+}

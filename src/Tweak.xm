@@ -8,6 +8,7 @@
 #import "fishhook.h"
 #import "ApolloCommon.h"
 #import "ApolloRedditMediaUpload.h"
+#import "ApolloDeletedCommentsData.h"
 #import "ApolloImageUploadHost.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloState.h"
@@ -369,6 +370,8 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
 
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession dataTaskWithRequest:");
+    ApolloDeletedCommentsHandleRequestObservation(request, @"dataTaskWithRequest:");
+    ApolloDeletedCommentsInstallDelegateTransformerIfNeeded((NSURLSession *)self, request);
 
     NSURLRequest *redditMediaSubmitRequest = ApolloRedditMaybeRewriteSubmitRequest(request);
     if (redditMediaSubmitRequest) {
@@ -474,6 +477,7 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
 // Imgur Delete and album creation
 - (NSURLSessionDataTask*)dataTaskWithRequest:(NSURLRequest*)request completionHandler:(void (^)(NSData*, NSURLResponse*, NSError*))completionHandler {
     ApolloRedditCaptureBearerTokenFromRequest(request, @"NSURLSession dataTaskWithRequest:completionHandler:");
+    ApolloDeletedCommentsHandleRequestObservation(request, @"dataTaskWithRequest:completionHandler:");
 
     NSURLRequest *redditMediaSubmitRequest = ApolloRedditMaybeRewriteSubmitRequest(request);
     if (redditMediaSubmitRequest) {
@@ -559,11 +563,14 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
         };
         return %orig(modifiedRequest, newCompletionHandler);
     }
-    return %orig;
+    return %orig(request, ApolloDeletedCommentsMaybeWrapCompletion(request, completionHandler));
 }
 
 // "Unproxy" Imgur requests
 - (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    NSURLRequest *observeRequest = url ? [NSURLRequest requestWithURL:url] : nil;
+    ApolloDeletedCommentsHandleRequestObservation(observeRequest, @"dataTaskWithURL:completionHandler:");
+
     if ([url.host isEqualToString:@"apollogur.download"]) {
         NSString *imageID = [url.lastPathComponent stringByDeletingPathExtension];
 
@@ -644,7 +651,7 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
             return %orig(modifiedURL, completionHandler);
         }
     }
-    return %orig;
+    return %orig(url, ApolloDeletedCommentsMaybeWrapCompletion(observeRequest, completionHandler));
 }
 
 %new
@@ -945,6 +952,8 @@ static void initializeRandomSources() {
                                     UDKeyTrendingSubredditsSource: defaultTrendingSubredditsSource,
                                     UDKeyReadPostMaxCount: @0,
                                     UDKeyModernSubredditDividers: @YES,
+                                    UDKeyShowDeletedComments: @NO,
+                                    UDKeyTapToRevealDeletedComments: @NO,
                                     UDKeyShowRecentlyReadThumbnails: @YES,
                                     UDKeyPreferredGIFFallbackFormat: @1,
                                     UDKeyUnmuteCommentsVideos: @0,
@@ -982,6 +991,10 @@ static void initializeRandomSources() {
 
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
+    if (!persistentDomain[UDKeyShowDeletedComments] && persistentDomain[UDKeyLegacyRevealDeletedComments]) {
+        [standardDefaults setBool:[standardDefaults boolForKey:UDKeyLegacyRevealDeletedComments] forKey:UDKeyShowDeletedComments];
+        persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
+    }
 
     sRedditClientId = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientId] ?: @"" copy];
     sRedditClientSecret = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedditClientSecret] ?: @"" copy];
@@ -990,6 +1003,8 @@ static void initializeRandomSources() {
     sRedirectURI = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyRedirectURI] ?: @"" copy];
     sUserAgent = (NSString *)[[[NSUserDefaults standardUserDefaults] objectForKey:UDKeyUserAgent] ?: @"" copy];
     sBlockAnnouncements = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBlockAnnouncements];
+    sShowDeletedComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowDeletedComments];
+    sTapToRevealDeletedComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTapToRevealDeletedComments];
     sShowRecentlyReadThumbnails = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRecentlyReadThumbnails];
     sPreferredGIFFallbackFormat = ([[NSUserDefaults standardUserDefaults] integerForKey:UDKeyPreferredGIFFallbackFormat] == 0) ? 0 : 1;
     sReadPostMaxCount = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyReadPostMaxCount];

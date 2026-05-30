@@ -12,6 +12,8 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sShowDeletedComments;
+extern BOOL sTapToRevealDeletedComments;
 extern BOOL sShowRecentlyReadThumbnails;
 extern NSInteger sPreferredGIFFallbackFormat;
 
