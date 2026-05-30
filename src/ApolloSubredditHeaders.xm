@@ -109,7 +109,14 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL restoreNativeHeader);
 static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController, NSString *reason);
 
-@implementation ApolloSubredditHeaderView
+@implementation ApolloSubredditHeaderView {
+    // Memoized about-text height; layoutSubviews fires often while scrolling, so
+    // avoid re-measuring the about string every pass. Keyed on text/font/width.
+    CGFloat _cachedAboutHeight;
+    CGFloat _cachedAboutWidth;
+    NSString *_cachedAboutText;
+    UIFont *_cachedAboutFont;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
@@ -172,12 +179,25 @@ static void ApolloSubredditScheduleRepairPasses(UIViewController *viewController
 }
 
 - (CGFloat)apollo_aboutHeightForWidth:(CGFloat)width {
-    if (self.aboutLabel.hidden || self.aboutLabel.text.length == 0 || width <= 0.0) return 0.0;
-    CGRect rect = [self.aboutLabel.text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
-                                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                  attributes:@{NSFontAttributeName: self.aboutLabel.font}
-                                                     context:nil];
-    return MIN(ApolloSubredditAboutMaxHeight, MAX(18.0, ceil(rect.size.height)));
+    NSString *text = self.aboutLabel.text;
+    if (self.aboutLabel.hidden || text.length == 0 || width <= 0.0) return 0.0;
+
+    UIFont *font = self.aboutLabel.font;
+    if (_cachedAboutText == text && _cachedAboutFont == font && _cachedAboutWidth == width) {
+        return _cachedAboutHeight;
+    }
+
+    CGRect rect = [text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                  attributes:@{NSFontAttributeName: font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]}
+                                     context:nil];
+    CGFloat height = MIN(ApolloSubredditAboutMaxHeight, MAX(18.0, ceil(rect.size.height)));
+
+    _cachedAboutText = text;
+    _cachedAboutFont = font;
+    _cachedAboutWidth = width;
+    _cachedAboutHeight = height;
+    return height;
 }
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {
