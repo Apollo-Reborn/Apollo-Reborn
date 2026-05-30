@@ -89,6 +89,7 @@ trap cleanup EXIT
 # Generic IPA patching script (DOES NOT inject the tweak)
 # Supports:
 # - Liquid Glass patch for iOS 26 (credit: @ryannair05)
+# - Liquid Glass icons only (icon catalog + plist metadata, no iOS 26 UI chrome)
 # - Custom URL schemes injection
 
 # --- Argument Parsing ---
@@ -96,6 +97,7 @@ INPUT_IPA=""
 OUTPUT_IPA="Apollo-Patched.ipa"
 REMOVE_CODE_SIGNATURE="false"
 LIQUID_GLASS="false"
+LIQUID_GLASS_ICONS_ONLY="false"
 URL_SCHEMES=""
 OUTPUT_IPA_PATH=""
 
@@ -106,11 +108,16 @@ print_usage() {
     echo "  -o, --output <file>           Output IPA filename (default: Apollo-Patched.ipa)"
     echo "  --remove-code-signature       Remove code signature from the binary"
     echo "  --liquid-glass                Apply Liquid Glass patch for iOS 26"
+    echo "  --liquid-glass-icons          Bundle the Liquid Glass icon catalog only,"
+    echo "                                without the iOS 26 UI chrome (no vtool"
+    echo "                                build-version bump). Cannot be combined"
+    echo "                                with --liquid-glass."
     echo "  --url-schemes <schemes>       Comma-separated list of URL schemes to add"
     echo "                                (e.g., 'custom,test,myapp')"
     echo ""
     echo "Examples:"
     echo "  $0 Apollo.ipa --liquid-glass"
+    echo "  $0 Apollo.ipa --liquid-glass-icons"
     echo "  $0 Apollo.ipa --url-schemes 'custom,test'"
     echo "  $0 Apollo.ipa --liquid-glass --url-schemes 'custom' -o MyApp.ipa"
 }
@@ -127,6 +134,10 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --liquid-glass)
             LIQUID_GLASS="true"
+            shift
+            ;;
+        --liquid-glass-icons)
+            LIQUID_GLASS_ICONS_ONLY="true"
             shift
             ;;
         --url-schemes)
@@ -155,6 +166,14 @@ if [ -z "$INPUT_IPA" ]; then
     exit 1
 fi
 
+# --liquid-glass and --liquid-glass-icons are mutually exclusive: the former
+# bumps LC_BUILD_VERSION to opt the app into the iOS 26 UI runtime, which is
+# the exact behavior the icons-only build is meant to avoid.
+if [ "${LIQUID_GLASS}" == "true" ] && [ "${LIQUID_GLASS_ICONS_ONLY}" == "true" ]; then
+    echo "Error: --liquid-glass and --liquid-glass-icons are mutually exclusive."
+    exit 1
+fi
+
 if [ ! -f "$INPUT_IPA" ]; then
     echo "Error: Input IPA file not found: $INPUT_IPA"
     exit 1
@@ -165,6 +184,7 @@ echo "Input IPA: ${INPUT_IPA}"
 echo "Output IPA: ${OUTPUT_IPA}"
 echo "Remove code signature: ${REMOVE_CODE_SIGNATURE}"
 echo "Liquid Glass patch: ${LIQUID_GLASS}"
+echo "Liquid Glass icons only: ${LIQUID_GLASS_ICONS_ONLY}"
 echo "URL schemes: ${URL_SCHEMES:-none}"
 
 if [[ "${OUTPUT_IPA}" = /* ]]; then
@@ -243,6 +263,27 @@ if [ "${LIQUID_GLASS}" == "true" ]; then
         echo "         git lfs install   # one-time per machine"
         echo "         git lfs pull"
         echo ""
+        exit 1
+    fi
+
+    echo "Replacing Assets.car with prebuilt Liquid Glass asset catalog..."
+    cp "${LIQUID_GLASS_ASSETS_CAR}" "Assets.car"
+
+    echo "Updating app icon metadata for Liquid Glass multi-icon catalog..."
+    ensure_liquid_glass_icon_metadata
+fi
+
+# --- 2a-icons. Liquid Glass icons-only Patch ---
+# Same Assets.car + plist work as --liquid-glass, but skip the vtool
+# build-version bump. That bump is what opts the app into the iOS 26 Liquid
+# Glass UI runtime, which replaces several legacy UIKit behaviors (notably
+# the bottom-tab horizontal swipe gesture). Users who want the new icon
+# catalog without that runtime swap can use this variant instead.
+if [ "${LIQUID_GLASS_ICONS_ONLY}" == "true" ]; then
+    echo "Applying Liquid Glass icons-only patch (no iOS 26 UI chrome)..."
+
+    if [ ! -f "${LIQUID_GLASS_ASSETS_CAR}" ]; then
+        echo "Error: Liquid Glass asset catalog not found at ${LIQUID_GLASS_ASSETS_CAR}"
         exit 1
     fi
 
