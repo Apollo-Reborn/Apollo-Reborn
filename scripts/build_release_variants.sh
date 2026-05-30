@@ -237,6 +237,10 @@ rm -f "$STANDARD_IPA" "$NOEXT_IPA" "$GLASS_IPA" "$NOEXT_GLASS_IPA"
 echo ""
 echo "[1/4] Building standard injected IPA..."
 bash "${REPO_DIR}/build-ipa.sh" --ipa "$IPA_PATH" --deb "$DEB_PATH" -o "$STANDARD_IPA"
+# Repair the bundled "Open in Apollo" Safari extension. The GLASS variant below
+# is derived from $STANDARD_IPA via patch.sh, so it inherits this fix; the two
+# no-extensions variants have no appex and the script no-ops on them.
+bash "${REPO_DIR}/scripts/fix-safari-extension.sh" "$STANDARD_IPA"
 set_main_app_bundle_versions_in_ipa "$STANDARD_IPA" "$TWEAK_VERSION" "$APP_BUILD_VERSION"
 
 echo ""
