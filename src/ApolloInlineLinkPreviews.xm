@@ -1601,6 +1601,49 @@ static void ApolloLPStampLinkButtonAreaInTree(ASDisplayNode *root, ApolloLPArea 
     }
 }
 
+// A link counts toward the "collapse multi-link comments to compact" threshold
+// only if it would actually render a preview card: a valid http(s) URL that is
+// not handed off to another renderer (inline media, ImageChest albums, Twitter).
+// This mirrors the skip gates in LinkButtonNode.layoutSpecThatFits: so the count
+// matches what the user will see. The check is URL-only (no metadata fetch
+// dependency) so the count is stable across measurement passes and never causes
+// a hero<->compact flip as previews load in.
+static BOOL ApolloLPURLEligibleForPreviewCard(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]]) return NO;
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) return NO;
+    if (ApolloLPIsImageChestAlbumURL(url)) return NO;
+    if (ApolloLPShouldDeferToInlineMedia(url)) return NO;
+    if ([ApolloLinkPreviewFetcher isTwitterURL:url]) return NO;
+    return YES;
+}
+
+// Count eligible preview links beneath a node (called on a comment cell).
+// Mirrors the subnode walk in ApolloLPStampLinkButtonAreaInTree. Intentionally
+// not cached: Texture reuses ASCellNode instances for different comments, so a
+// per-cell cached count could leak across reuse. Comment trees are small, so a
+// fresh walk at layout time is cheap and always correct.
+static NSUInteger ApolloLPCountEligiblePreviewLinksInTree(ASDisplayNode *root) {
+    if (!root) return 0;
+    static Class linkButtonCls = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ linkButtonCls = objc_getClass("_TtC6Apollo14LinkButtonNode"); });
+
+    NSUInteger count = 0;
+    if (linkButtonCls && [root isKindOfClass:linkButtonCls]) {
+        NSString *urlString = ApolloGetLinkButtonNodeURLString(root);
+        NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+        if (ApolloLPURLEligibleForPreviewCard(url)) count++;
+    }
+    NSArray *subnodes = nil;
+    @try { subnodes = [root respondsToSelector:@selector(subnodes)] ? [(id)root subnodes] : nil; }
+    @catch (__unused NSException *e) { subnodes = nil; }
+    for (ASDisplayNode *child in subnodes) {
+        count += ApolloLPCountEligiblePreviewLinksInTree(child);
+    }
+    return count;
+}
+
 static BOOL ApolloLPIsYouTubeURL(NSURL *url) {
     if (!url) return NO;
     NSString *host = url.host.lowercaseString ?: @"";
@@ -3255,6 +3298,26 @@ static id ApolloLPNativeLinkSpecWithBannedHintIfNeeded(id linkButtonNode, NSURL 
     ApolloLinkPreview *displayPreview = (isRedditUser || isRedditSubreddit) ? cached : ApolloLPPreviewByApplyingTranslation((ASDisplayNode *)self, url, cached);
     BOOL isBlueskyPost = ApolloLPIsBlueskyPostPreview(url, displayPreview);
     ApolloLPContext context = isBlueskyPost ? ApolloLPContextSelfText : ((isRedditUser || isRedditSubreddit) ? ApolloLPContextCompact : ApolloLPContextForMode(selectedMode, displayPreview));
+
+    // Multi-link comment collapse: in Full mode, a single comment that contains
+    // 2+ eligible preview links would otherwise stack that many tall hero cards,
+    // making the comment absurdly long. When this would-be hero card lives in a
+    // comment with 2+ eligible links, render it compact instead. Single-link
+    // comments keep their full hero card; post bodies/selftext are unaffected
+    // (this only applies to the Comments area). Reddit user/subreddit/Bluesky
+    // cards keep their own fixed context and are excluded above.
+    if (area == ApolloLPAreaComments && selectedMode == ApolloLinkPreviewModeFull &&
+        context == ApolloLPContextSelfText && !isBlueskyPost && !isRedditUser && !isRedditSubreddit) {
+        ASDisplayNode *cell = ApolloLPEnclosingCellNode((ASDisplayNode *)self);
+        if (cell) {
+            NSUInteger linkCount = ApolloLPCountEligiblePreviewLinksInTree(cell);
+            if (linkCount >= 2) {
+                context = ApolloLPContextCompact;
+                ApolloLPLogOncePerHost(host, @"multi-link-collapse-compact");
+            }
+        }
+    }
+
     ApolloLPLogMetadataOnce(host, displayPreview, area, selectedMode, context);
     if (!isBlueskyPost && !isRedditUser && !isRedditSubreddit && displayPreview.imageIsFallbackIcon) {
         ApolloLPRememberCompactPlaceholderHost(url);
