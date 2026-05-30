@@ -33,8 +33,8 @@ typedef struct ApolloASSizeRange {
 // Per-preview-node state. Stored as an associated NSNumber on the node.
 typedef NS_ENUM(NSInteger, ApolloShareGalleryState) {
     ApolloShareGalleryStateNone = 0,   // not yet examined / not a gallery
-    ApolloShareGalleryStateFetching,   // images are being fetched
-    ApolloShareGalleryStateApplied,    // collage injected, leave ivars as-is
+    ApolloShareGalleryStatePlaceholder,// placeholder injected, fetch in flight
+    ApolloShareGalleryStateApplied,    // real collage injected, leave ivars as-is
 };
 
 static const char kApolloShareGalleryStateKey = 0;     // NSNumber(ApolloShareGalleryState)
@@ -58,11 +58,26 @@ static id ApolloShareIvarObject(id obj, const char *name) {
     return value;
 }
 
+// Writes an object into a Swift STRONG ivar with balanced ARC ownership.
+//
+// object_setIvar() stores the raw pointer but does NOT add the +1 retain that a
+// Swift `strong` ivar slot is expected to own. When the host object is later
+// deallocated, Swift's deinit releases every strong ivar — including ours —
+// which over-releases the value we stored and produces a delayed EXC_BAD_ACCESS.
+//
+// To balance that future release we CFRetain the new value (so the slot truly
+// owns +1), and CFRelease whatever was already in the slot (we're taking over
+// its ownership). This mirrors what an ARC strong-property setter does.
 static void ApolloShareSetIvarObject(id obj, const char *name, id value) {
     if (!obj || !name) return;
     Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
     if (!ivar) return;
-    @try { object_setIvar(obj, ivar, value); } @catch (__unused NSException *e) {}
+    @try {
+        id previous = object_getIvar(obj, ivar);
+        if (value) CFRetain((__bridge CFTypeRef)value);   // slot now owns +1 on the new value
+        object_setIvar(obj, ivar, value);
+        if (previous) CFRelease((__bridge CFTypeRef)previous); // release the value we replaced
+    } @catch (__unused NSException *e) {}
 }
 
 // Swift Bool ivars are a single byte at the ivar offset; object_setIvar can't
@@ -272,18 +287,20 @@ static UIImage *ApolloShareGalleryRenderCollage(NSArray *images, NSInteger total
 
 #pragma mark - Apply / relayout
 
-// Injects the finished collage into the preview node via Apollo's own
-// single-image path, drops the link card, and requests a relayout so the
-// native snapshot pipeline re-renders with the collage.
-static void ApolloShareGalleryApplyCollage(id previewNode, UIImage *collage) {
-    if (!previewNode || ![collage isKindOfClass:[UIImage class]]) return;
+// Installs `image` into the preview node via Apollo's own single-image path and
+// requests a relayout. MUST run on the main thread (it creates an ASImageNode
+// and mutates the node tree). `isFinal` only affects the stored state and log.
+//
+// We keep strong associated refs to both the image and the ASImageNode so that,
+// even with the balanced ivar retain in ApolloShareSetIvarObject, nothing we
+// created is reclaimed out from under Apollo's layout between passes.
+static void ApolloShareGalleryInstallImage(id previewNode, UIImage *image, BOOL isFinal) {
+    if (!previewNode || ![image isKindOfClass:[UIImage class]]) return;
 
-    // Keep strong refs so ARC doesn't reclaim the image/node held only via
-    // Swift ivars (whose memory management we can't fully rely on).
-    objc_setAssociatedObject(previewNode, &kApolloShareGalleryCollageKey, collage,
+    objc_setAssociatedObject(previewNode, &kApolloShareGalleryCollageKey, image,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // Build an ASImageNode for the collage and route it through both the
+    // Build an ASImageNode for the image and route it through both the
     // imageForImagePost ivar (Apollo's single-image trigger) and the imageNode
     // ivar (the node the layout spec lays out). Setting both maximises the
     // chance the native layout spec includes the image regardless of which it
@@ -293,7 +310,7 @@ static void ApolloShareGalleryApplyCollage(id previewNode, UIImage *collage) {
     if (imageNodeClass) {
         @try {
             imageNode = [[imageNodeClass alloc] init];
-            ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageNode, @selector(setImage:), collage);
+            ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageNode, @selector(setImage:), image);
             if ([imageNode respondsToSelector:@selector(setContentMode:)]) {
                 ((void (*)(id, SEL, UIViewContentMode))objc_msgSend)(
                     imageNode, @selector(setContentMode:), UIViewContentModeScaleAspectFit);
@@ -306,17 +323,19 @@ static void ApolloShareGalleryApplyCollage(id previewNode, UIImage *collage) {
         ApolloShareSetIvarObject(previewNode, "imageNode", imageNode);
     }
 
-    ApolloShareSetIvarObject(previewNode, "imageForImagePost", collage);
+    ApolloShareSetIvarObject(previewNode, "imageForImagePost", image);
     ApolloShareSetIvarBool(previewNode, "includePostTextPollOrImage", YES);
-    // Drop the compact link card so only the collage shows.
+    // Drop the compact link card so only the collage shows. Cleared through the
+    // balanced helper so the old node's ownership is released, not leaked.
     ApolloShareSetIvarObject(previewNode, "linkButtonNode", nil);
 
     objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
-                             @(ApolloShareGalleryStateApplied),
+                             @(isFinal ? ApolloShareGalleryStateApplied
+                                       : ApolloShareGalleryStatePlaceholder),
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // Request a fresh layout pass; the ShareAsImageViewController re-snapshots
-    // the preview, so the exported image picks up the collage too.
+    // the preview, so the exported image picks up the image too.
     @try {
         if ([previewNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
             ((void (*)(id, SEL))objc_msgSend)(previewNode, @selector(invalidateCalculatedLayout));
@@ -329,25 +348,53 @@ static void ApolloShareGalleryApplyCollage(id previewNode, UIImage *collage) {
         }
     } @catch (__unused NSException *e) {}
 
-    ApolloLog(@"[ShareGallery] collage applied node=%p size=%@",
-              previewNode, NSStringFromCGSize(collage.size));
+    ApolloLog(@"[ShareGallery] %@ image installed node=%p size=%@",
+              isFinal ? @"final" : @"placeholder", previewNode,
+              NSStringFromCGSize(image.size));
 }
 
-// Examines a preview node once: if it's a gallery, starts the async fetch and
-// (on completion) applies the collage. Safe to call repeatedly (state-guarded)
-// and from Texture's background layout thread.
+// Hops to the main thread (or runs immediately if already there) before
+// installing — node-tree mutation must not happen on Texture's background
+// layout thread.
+static void ApolloShareGalleryInstallImageOnMain(id previewNode, UIImage *image, BOOL isFinal) {
+    if (!previewNode || !image) return;
+    if ([NSThread isMainThread]) {
+        ApolloShareGalleryInstallImage(previewNode, image, isFinal);
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloShareGalleryInstallImage(previewNode, image, isFinal);
+        });
+    }
+}
+
+// Builds a neutral grey placeholder collage with the same geometry the real
+// collage will use, so the first visible frame already shows the gallery grid
+// (never Apollo's compact link card) while the real images download.
+static UIImage *ApolloShareGalleryRenderPlaceholder(NSInteger totalCount) {
+    NSInteger visible = MIN(totalCount, kApolloShareGalleryMaxVisible);
+    if (visible < 1) return nil;
+    NSMutableArray *blanks = [NSMutableArray arrayWithCapacity:visible];
+    for (NSInteger i = 0; i < visible; i++) [blanks addObject:[NSNull null]];
+    // RenderCollage draws a neutral fill for NSNull tiles and keeps geometry.
+    return ApolloShareGalleryRenderCollage(blanks, totalCount);
+}
+
+// Examines a preview node once: if it's a gallery, immediately installs a
+// placeholder grid (so the link card never flashes), then fetches the real
+// images and swaps in the finished collage. Safe to call repeatedly
+// (state-guarded) and from Texture's background layout thread.
 static void ApolloShareGalleryPrepare(id previewNode) {
     if (!previewNode) return;
 
     NSNumber *stateNum = objc_getAssociatedObject(previewNode, &kApolloShareGalleryStateKey);
     ApolloShareGalleryState state = stateNum ? (ApolloShareGalleryState)stateNum.integerValue
                                              : ApolloShareGalleryStateNone;
-    if (state != ApolloShareGalleryStateNone) return; // already fetching/applied
+    if (state != ApolloShareGalleryStateNone) return; // already placeholder/applied
 
     id link = ApolloShareIvarObject(previewNode, "link");
     NSArray<NSURL *> *urls = ApolloShareGalleryImageURLs(link);
     if (urls.count < 2) {
-        // Not a multi-image gallery; mark fetching to avoid re-checking every
+        // Not a multi-image gallery; mark applied to avoid re-checking every
         // layout pass (cheap idempotency without a separate flag).
         objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
                                  @(ApolloShareGalleryStateApplied),
@@ -355,12 +402,20 @@ static void ApolloShareGalleryPrepare(id previewNode) {
         return;
     }
 
-    objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
-                             @(ApolloShareGalleryStateFetching),
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSInteger totalCount = (NSInteger)urls.count;
-    ApolloLog(@"[ShareGallery] gallery detected node=%p items=%ld — fetching",
+    ApolloLog(@"[ShareGallery] gallery detected node=%p items=%ld — placeholder + fetch",
               previewNode, (long)totalCount);
+
+    // Install the placeholder grid right away so the compact link card is never
+    // shown. This also flips the state to Placeholder, blocking re-entry.
+    UIImage *placeholder = ApolloShareGalleryRenderPlaceholder(totalCount);
+    if (placeholder) {
+        ApolloShareGalleryInstallImageOnMain(previewNode, placeholder, NO);
+    } else {
+        objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
+                                 @(ApolloShareGalleryStatePlaceholder),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     __weak id weakNode = previewNode;
     ApolloShareGalleryFetchImages(urls, ^(NSArray *images) {
@@ -374,9 +429,9 @@ static void ApolloShareGalleryPrepare(id previewNode) {
         ApolloLog(@"[ShareGallery] fetch complete node=%p ok=%ld/%ld collage=%@",
                   strongNode, (long)ok, (long)totalCount, collage ? @"built" : @"nil");
         if (collage) {
-            ApolloShareGalleryApplyCollage(strongNode, collage);
+            ApolloShareGalleryInstallImageOnMain(strongNode, collage, YES);
         } else {
-            // Couldn't build anything; leave Apollo's card in place.
+            // Couldn't build anything; keep the placeholder and mark applied.
             objc_setAssociatedObject(strongNode, &kApolloShareGalleryStateKey,
                                      @(ApolloShareGalleryStateApplied),
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
