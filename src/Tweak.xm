@@ -746,6 +746,25 @@ static NSURLRequest *ApolloLocalFastFailRequest(NSString *path) {
         NSMutableURLRequest *mutableRequest = [request mutableCopy];
         NSString *customUA = [sUserAgent length] > 0 ? sUserAgent : defaultUserAgent;
         [mutableRequest setValue:customUA forHTTPHeaderField:@"User-Agent"];
+
+        // Reddit now returns 403 for unauthenticated www.reddit.com/api/info.json
+        // requests, which Apollo issues natively to populate the Recently Read list
+        // (no Authorization header, browser UA). Reroute those to the authenticated
+        // oauth.reddit.com host with the captured bearer token so the list loads.
+        if ([requestURL.host isEqualToString:@"www.reddit.com"]
+            && [requestURL.path containsString:@"/api/info"]
+            && sLatestRedditBearerToken.length > 0
+            && [[request valueForHTTPHeaderField:@"Authorization"] length] == 0) {
+            NSURLComponents *components = [NSURLComponents componentsWithURL:requestURL resolvingAgainstBaseURL:NO];
+            components.host = @"oauth.reddit.com";
+            NSURL *oauthURL = components.URL;
+            if (oauthURL) {
+                [mutableRequest setURL:oauthURL];
+                [mutableRequest setValue:[@"Bearer " stringByAppendingString:sLatestRedditBearerToken] forHTTPHeaderField:@"Authorization"];
+                ApolloLog(@"[RecentlyRead] Rerouted unauthenticated info.json to oauth.reddit.com");
+            }
+        }
+
         [self setValue:mutableRequest forKey:@"_originalRequest"];
         [self setValue:mutableRequest forKey:@"_currentRequest"];
     } else if (sProxyImgurDDG
