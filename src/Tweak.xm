@@ -4090,13 +4090,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         // result once, then store the explicit Soft/Hard choice users now see.
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
-    } else if (sScrollEdgeEffectStyle == 3) {
-        // Retired Hidden mode: closest surviving intent (no hard cutoff line)
-        // is Soft. 3 stays reserved — see the enum note in ApolloState.h.
-        sScrollEdgeEffectStyle = ApolloScrollEdgeEffectStyleSoft;
-        [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     } else if (sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleSoft &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHard &&
+               sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHidden &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleBlur) {
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];

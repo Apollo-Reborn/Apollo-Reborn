@@ -231,7 +231,7 @@ extern BOOL sPerPostCommentSort;
 // iOS 26+ Liquid Glass. iOS 26 defaults to Soft; iOS 27 betas default to Hard,
 // which some users find jarring. Only the top (header) edge is governed — the
 // tab-bar/bottom edge always keeps the system's own treatment. See
-// ApolloScrollEdgeEffect.xm (Soft/Hard enforcement) and
+// ApolloScrollEdgeEffect.xm (Soft/Hard/Hidden enforcement) and
 // ApolloProgressiveBlur.xm (Blur's tweak-drawn variable blur).
 typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     // Retired user-facing System Default value. Load-time migration resolves
@@ -239,9 +239,8 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleAutomatic = 0,
     ApolloScrollEdgeEffectStyleSoft      = 1,
     ApolloScrollEdgeEffectStyleHard      = 2,
-    // 3 was Hidden, retired: visually indistinguishable from Soft, so stored 3s
-    // migrate to Soft at load (Tweak.xm). Never reuse 3 for a new mode — the
-    // migration could not tell an old Hidden user from a new-mode user.
+    // Preserve the original Hidden value for existing preferences/backups.
+    ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
 extern NSInteger sScrollEdgeEffectStyle;

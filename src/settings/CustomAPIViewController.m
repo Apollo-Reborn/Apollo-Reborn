@@ -1870,20 +1870,20 @@ typedef NS_ENUM(NSInteger, Tag) {
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Tap the top-right ellipsis to reveal navigation actions; scrolling collapses them. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default."
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Tap the top-right ellipsis to reveal navigation actions; scrolling collapses them. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
                                               rows:@[ userAvatars, scrollEdgeEffect ]];
 }
 
-// Display order of the Header Style picker. Raw values are NOT contiguous
-// (3 was the retired Hidden mode, Blur is 4), so the picker maps index↔value
-// through this table instead of using the enum value as the index.
+// Display order differs from stored values; Blur is optional, while Hidden
+// always remains the last choice. Map picker indices explicitly.
 static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailable) {
     const NSInteger values[] = {
         ApolloScrollEdgeEffectStyleSoft,
         ApolloScrollEdgeEffectStyleHard,
-        ApolloScrollEdgeEffectStyleBlur,
+        blurAvailable ? ApolloScrollEdgeEffectStyleBlur : ApolloScrollEdgeEffectStyleHidden,
+        ApolloScrollEdgeEffectStyleHidden,
     };
-    NSInteger count = blurAvailable ? 3 : 2;
+    NSInteger count = blurAvailable ? 4 : 3;
     if (index < 0 || index >= count) return ApolloScrollEdgeEffectStyleSoft;
     return values[index];
 }
@@ -1893,6 +1893,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         case ApolloScrollEdgeEffectStyleSoft: return @"Soft";
         case ApolloScrollEdgeEffectStyleHard: return @"Hard";
         case ApolloScrollEdgeEffectStyleBlur: return @"Blur";
+        case ApolloScrollEdgeEffectStyleHidden: return @"Hidden";
         default: return @"Soft";
     }
 }
@@ -1911,6 +1912,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSMutableArray<NSString *> *options =
         [NSMutableArray arrayWithObjects:@"Soft", @"Hard", nil];
     if (blurAvailable) [options addObject:@"Blur"];
+    [options addObject:@"Hidden"];
 
     NSInteger currentIndex = 0;
     NSInteger currentStyle = ApolloResolvedScrollEdgeEffectStyle();
