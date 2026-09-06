@@ -15,6 +15,7 @@
 //      the real Messages row as a legacy fallback.
 //   4. In that fallback, filter the IGListKit objects to chat-subject messages.
 
+#import "ApolloChatRoomDirectory.h"
 #import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
 #import "ApolloDirectChatWeb.h"
@@ -22,6 +23,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloWebSessionStore.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -114,13 +116,29 @@ static BOOL ApolloBadgeValueIsInteger(NSString *value, NSInteger *integer) {
     return valid;
 }
 
+// An OAuth (API-key) account fetches its inbox through Reddit's API, which
+// mirrors every chat conversation into it — so Apollo's own unread count
+// already includes chats. An API-key-free account fetches over cookie
+// transport, which carries no chat mirrors at all.
+static BOOL ApolloNativeInboxListsChatMirrors(void) {
+    return ApolloModernChatShouldOpen() && ApolloActiveWebSession() == nil;
+}
+
 static NSString *ApolloCombinedInboxBadgeValue(NSString *nativeValue) {
     NSInteger chatCount = ApolloModernChatUnreadBadgeCount();
     if (chatCount <= 0) return nativeValue;
 
     NSInteger nativeCount = 0;
     if (ApolloBadgeValueIsInteger(nativeValue, &nativeCount)) {
-        return [NSString stringWithFormat:@"%ld", (long)(nativeCount + chatCount)];
+        // Where the native inbox already counts unread chat conversations,
+        // adding the Chat count on top would count every unread chat twice.
+        // Keep whichever signal is larger instead: the Chat count is the
+        // fresher one (30s poll) until Apollo's next inbox refresh folds the
+        // same unreads into its own number. Without mirrors the two sets are
+        // disjoint and still add up.
+        NSInteger combined = ApolloNativeInboxListsChatMirrors()
+            ? MAX(nativeCount, chatCount) : nativeCount + chatCount;
+        return [NSString stringWithFormat:@"%ld", (long)combined];
     }
     // Apollo normally supplies a number or nil. If it supplies a symbolic dot,
     // prefer the useful Chat count; preserve threshold strings such as 99+.
@@ -1915,19 +1933,14 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
 #pragma mark - messages list: filter to chats
 
 // Reddit's legacy-inbox chat mirrors carry a bracketed whole-subject marker —
-// "[direct chat room]" / "[group chat room]" — never free text. Anchor the
-// match to that exact shape (single bracket pair spanning the entire trimmed
-// subject, ending in "chat room") so a real PM that merely mentions a chat
-// room in its subject can never be misclassified in either direction.
-// (Raised by @jordanearle in review.)
+// "[direct chat room]" / "[group chat room]" — never free text. The exact
+// shape rule (single bracket pair spanning the entire trimmed subject, ending
+// in "chat room", so a real PM that merely mentions a chat room can never be
+// misclassified in either direction — raised by @jordanearle in review) lives
+// in ApolloChatRoomDirectory, which also uses it to tell an unnamed room's
+// mirror from a titled one when a tapped row is resolved to its Chat room.
 static BOOL ApolloMessageSubjectIsChatRoomMirror(NSString *subject) {
-    if (![subject isKindOfClass:[NSString class]] || subject.length == 0) return NO;
-    NSString *trimmed = [[subject stringByTrimmingCharactersInSet:
-        [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    if (![trimmed hasPrefix:@"["] || ![trimmed hasSuffix:@" chat room]"]) return NO;
-    // Exactly one bracketed token and nothing outside it: the first closing
-    // bracket must be the subject's final character.
-    return [trimmed rangeOfString:@"]"].location == trimmed.length - 1;
+    return ApolloChatSubjectIsRoomMarker(subject);
 }
 
 static BOOL ApolloMessageIsChatRoomMirror(id msg) {
@@ -1955,32 +1968,13 @@ static NSArray *ApolloChatFilterToChats(NSArray *messages) {
 // the flag, so it stays unfiltered.
 static BOOL sChatFilterActive = NO;
 
-// Inverse of ApolloChatFilterToChats: drop the "[direct chat room]" /
-// "[group chat room]" marker items and keep everything else. Reddit mirrors
-// every chat message into the legacy message inbox; while modern Chat owns
-// the conversation surface those mirrors would render in
-// Notifications/Unread/Messages, open Apollo's LEGACY thread UI on tap, and
-// double-count the combined Inbox badge — the Chat mode of the switcher is
-// their real home now. Both directions share ApolloMessageIsChatRoomMirror,
-// so what the legacy list considers a chat and what the native inbox hides
-// can never drift apart.
-static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
-    if (![messages isKindOfClass:[NSArray class]]) return messages;
-    NSMutableArray *out = [NSMutableArray arrayWithCapacity:messages.count];
-    NSUInteger dropped = 0;
-    for (id msg in messages) {
-        if (ApolloMessageIsChatRoomMirror(msg)) {
-            dropped++;
-            continue;
-        }
-        [out addObject:msg];
-    }
-    if (dropped > 0) {
-        ChatsFilterLog(@"dropped %lu legacy chat mirror(s) from a native inbox page (modern Chat active)",
-                       (unsigned long)dropped);
-    }
-    return out;
-}
+// Reddit mirrors every chat message into the legacy message inbox, grouped
+// per conversation (one thread row per room, the newest message as its
+// preview). While modern Chat is on those rows stay listed — they are the
+// inbox-side signal that a conversation moved — and a tap routes them to the
+// Chat side (the ListAdapter hook at the end of this file), so Apollo's legacy
+// thread UI never opens for them and the Inbox badge counts them once
+// (ApolloCombinedInboxBadgeValue).
 
 %hook _TtC6Apollo19InboxViewController
 
@@ -2017,8 +2011,10 @@ static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = YES;
     ApolloInstallInboxModeSwitcher(self);
     // The user is looking at the Inbox: refresh the chat unread count now
-    // rather than waiting out the periodic cadence.
+    // rather than waiting out the periodic cadence, and warm the chat room
+    // directory so a tapped chat mirror can open its room without waiting.
     ApolloChatUnreadPollerKick();
+    ApolloChatRoomDirectoryPrefetch();
     if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen() &&
         !objc_getAssociatedObject(self, &kInboxAllChatHubKey)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
@@ -2207,66 +2203,16 @@ static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
 // ever toggled synchronously on the main thread around the nested call (the call just kicks off an
 // async task and returns), so a plain BOOL needs no lock.
 static BOOL sChatPagingInProgress = NO;
-// Same guard for the inverse (mirror-stripping) accumulator below.
-static BOOL sMirrorPagingInProgress = NO;
 static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse account can't page forever
 
 %hook RDKClient
 // NOTE: `category` is an enum (NSInteger), NOT an object — declaring it `id` makes ARC retain
 // the integer value as a pointer (EXC_BAD_ACCESS at 0x2). It MUST be a scalar type.
 - (id)messagesInCategory:(long long)category pagination:(id)pagination markRead:(BOOL)markRead completion:(id)completion {
-    ChatsFilterLog(@"messagesInCategory cat=%lld active=%d nested=%d/%d",
-                   category, sChatFilterActive, sChatPagingInProgress, sMirrorPagingInProgress);
+    ChatsFilterLog(@"messagesInCategory cat=%lld active=%d nested=%d",
+                   category, sChatFilterActive, sChatPagingInProgress);
     if (!completion) return %orig;
 
-    // Modern Chat active and no legacy chat-filter list on screen: strip the
-    // legacy chat mirrors from every native message fetch (see
-    // ApolloChatFilterOutChats). Uses the same accumulate-until-nonempty
-    // shape as the chat filter below — a page consisting entirely of chat
-    // mirrors would otherwise deliver an empty page, and IGListKit's
-    // LoadNextPage cell never appears for an empty list, stalling pagination.
-    if (!sChatFilterActive && ApolloModernChatShouldOpen()) {
-        if (sMirrorPagingInProgress) {
-            id wrapped = ^(NSArray *messages, id page, NSError *error) {
-                ((void (^)(NSArray *, id, NSError *))completion)(ApolloChatFilterOutChats(messages), page, error);
-            };
-            return %orig(category, pagination, NO, wrapped);
-        }
-        NSMutableArray *acc = [NSMutableArray array];
-        __block NSInteger pages = 0;
-        __weak id weakSelf = self;
-        void (^deliver)(id, NSError *) = ^(id page, NSError *error) {
-            ((void (^)(NSArray *, id, NSError *))completion)(acc, page, error);
-        };
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-retain-cycles"
-        __block void (^step)(NSArray *, id, NSError *) = nil;
-        step = ^(NSArray *kept, id page, NSError *error) {
-            [acc addObjectsFromArray:(kept ?: @[])];
-            pages++;
-            NSString *after = [page respondsToSelector:@selector(after)]
-                ? ((NSString *(*)(id, SEL))objc_msgSend)(page, @selector(after)) : nil;
-            BOOL morePages = ([after isKindOfClass:[NSString class]] && after.length > 0);
-            id ss = weakSelf;
-            if (acc.count == 0 && morePages && !error && ss && pages < kMaxChatFilterPages) {
-                ChatsFilterLog(@"page %ld was all chat mirrors; pulling next (after=%@)", (long)pages, after);
-                sMirrorPagingInProgress = YES;
-                ((id (*)(id, SEL, long long, id, BOOL, id))objc_msgSend)(
-                    ss, @selector(messagesInCategory:pagination:markRead:completion:), category, page, (BOOL)NO, step);
-                sMirrorPagingInProgress = NO;
-            } else {
-                deliver(page, error);
-                step = nil;   // break the recursive block's self-reference so it deallocs
-            }
-        };
-#pragma clang diagnostic pop
-        id firstWrapped = ^(NSArray *messages, id page, NSError *error) {
-            step(ApolloChatFilterOutChats(messages), page, error);
-        };
-        // Keep the caller's markRead for its own page; nested catch-up pulls
-        // above never mark anything read.
-        return %orig(category, pagination, markRead, firstWrapped);
-    }
     if (!sChatFilterActive) return %orig;
 
     // A nested page-pull kicked off by the accumulator below: filter this one page and pass the real
@@ -2608,6 +2554,235 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
                    badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
                    combinedValue ?: @"none");
     %orig(combinedValue);
+}
+
+%end
+
+#pragma mark - native inbox rows: open chat mirrors in modern Chat
+
+// Reddit mirrors every modern Chat message into the legacy inbox as a private
+// message, one thread row per conversation: direct chats under the
+// "[direct chat room]" marker, converted message threads and titled group
+// rooms under their title. Those rows are the inbox-side signal that a
+// conversation moved, but tapping one pushed Apollo's legacy thread, a dead
+// end next to the modern Chat surface one switch away. With modern Chat on,
+// the tap now resolves the mirror to its Chat room (ApolloChatRoomDirectory)
+// and opens it there: in place inside the Inbox (All) hub, or as a pushed Chat
+// controller from any other inbox list (Unread, Messages, Sent). When no room
+// can be matched the tap falls through to Apollo's own handler, so the legacy
+// thread stays the safety net. With modern Chat off nothing here runs.
+
+static BOOL sInboxChatMirrorBypass = NO;   // re-entry: run Apollo's handler for the fallback
+
+static UIViewController *ApolloInboxHostControllerForTableNode(id tableNode) {
+    Class inboxClass = objc_getClass("_TtC6Apollo19InboxViewController");
+    if (!inboxClass || ![tableNode respondsToSelector:@selector(view)]) return nil;
+    UIResponder *responder = ((UIView *(*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
+    while (responder) {
+        if ([responder isKindOfClass:inboxClass]) return (UIViewController *)responder;
+        responder = responder.nextResponder;
+    }
+    return nil;
+}
+
+// A private message that can be a chat mirror: not a post/comment reply or a
+// mention, not a subreddit/moderator message, not admin-distinguished.
+static BOOL ApolloInboxMessageMayBeChatMirror(id message) {
+    Class messageClass = objc_getClass("RDKMessage");
+    Class replyClass = objc_getClass("RDKCommentReplyMessage");
+    if (!messageClass || ![message isKindOfClass:messageClass]) return NO;
+    if (replyClass && [message isKindOfClass:replyClass]) return NO;
+    if ([message respondsToSelector:@selector(isCommentReply)] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(message, @selector(isCommentReply))) return NO;
+    long long contentType = [message respondsToSelector:@selector(contentType)]
+        ? ((long long (*)(id, SEL))objc_msgSend)(message, @selector(contentType)) : -1;
+    if (contentType >= 0 && contentType <= 2) return NO;   // post reply / comment reply / mention
+    if (ApolloInboxSubredditClean(ApolloInboxStringProp(message, @selector(subreddit)))) return NO;
+    if (ApolloInboxStringProp(message, @selector(distinguished)).length > 0) return NO;
+    return ApolloInboxStringProp(message, @selector(subject)).length > 0;
+}
+
+// Swap a Swift class-typed stored property — a plain strong reference the
+// ObjC runtime has no layout information for — the way the compiled setter
+// does: retain the new value, store it, release the old one.
+static BOOL ApolloInboxSwapObjectIvar(id object, const char *name, id value) {
+    if (!object || !name) return NO;
+    Ivar ivar = NULL;
+    for (Class cls = [object class]; cls && cls != [NSObject class] && !ivar; cls = class_getSuperclass(cls)) {
+        ivar = class_getInstanceVariable(cls, name);
+    }
+    ptrdiff_t offset = ivar ? ivar_getOffset(ivar) : 0;
+    if (offset <= 0) return NO;
+    void **slot = (void **)((uint8_t *)(__bridge void *)object + offset);
+    void *previous = *slot;
+    *slot = (__bridge_retained void *)value;
+    if (previous) CFRelease(previous);
+    return YES;
+}
+
+// The row's section controller, reachable as the cell node's action delegate
+// (a Swift existential whose first word is the object it wraps; a class check
+// guards the read).
+static id ApolloInboxSectionControllerForCellNode(id node) {
+    Class sectionClass = objc_getClass("_TtC6Apollo22InboxSectionController");
+    Ivar ivar = node ? class_getInstanceVariable([node class], "actionDelegate") : NULL;
+    ptrdiff_t offset = ivar ? ivar_getOffset(ivar) : 0;
+    if (!sectionClass || offset <= 0) return nil;
+    void *candidate = *(void **)((uint8_t *)(__bridge void *)node + offset);
+    if (!candidate) return nil;
+    id object = (__bridge id)candidate;
+    return [object isKindOfClass:sectionClass] ? object : nil;
+}
+
+// Opening the legacy thread marked the message read; do the same here, the
+// way Apollo's own swipe action does it: a read copy of the model, the API
+// call, the copy swapped into the row's section controller (so the row
+// rebuilds from it) and the ModelObjectUpdated broadcast every inbox list
+// observes to swap its own model. The broadcast alone updates the counts but
+// leaves the tapped row's cell painted unread — its cell is rebuilt through
+// Apollo's own cell builder by reloading the row.
+static void ApolloInboxMarkMessageRead(id message, id cellNode, id tableNode, NSIndexPath *indexPath) {
+    if (![message respondsToSelector:@selector(isUnread)] ||
+        !((BOOL (*)(id, SEL))objc_msgSend)(message, @selector(isUnread))) return;
+    if (![message conformsToProtocol:@protocol(NSCopying)]) return;
+    id updated = [message copy];
+    if (![updated respondsToSelector:@selector(setUnread:)]) return;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(updated, @selector(setUnread:), NO);
+    Class clientClass = objc_getClass("RDKClient");
+    id client = clientClass && [clientClass respondsToSelector:@selector(sharedClient)]
+        ? ((id (*)(id, SEL))objc_msgSend)(clientClass, @selector(sharedClient)) : nil;
+    if ([client respondsToSelector:@selector(markMessageAsRead:completion:)]) {
+        ((id (*)(id, SEL, id, id))objc_msgSend)(client, @selector(markMessageAsRead:completion:), updated, nil);
+    }
+    id sectionController = ApolloInboxSectionControllerForCellNode(cellNode);
+    BOOL swapped = ApolloInboxSwapObjectIvar(sectionController, "message", updated);
+    if (swapped) ApolloInboxSwapObjectIvar(cellNode, "message", updated);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"com.christianselig.ModelObjectUpdated"
+                                                        object:message
+                                                      userInfo:@{ @"newModel": updated }];
+    if (swapped && indexPath && [tableNode respondsToSelector:@selector(reloadRowsAtIndexPaths:withRowAnimation:)]) {
+        ((void (*)(id, SEL, id, NSInteger))objc_msgSend)(tableNode, @selector(reloadRowsAtIndexPaths:withRowAnimation:),
+                                                        @[indexPath], (NSInteger)UITableViewRowAnimationNone);
+    }
+    ChatsFilterLog(@"marked the tapped chat mirror read (row %@)", swapped ? @"rebuilt" : @"left to the list's next reload");
+}
+
+static void ApolloInboxOpenChatPath(UIViewController *host, NSString *chatPath) {
+    // A mirror of a pending chat request has no room to open yet: show the
+    // Requests list, where Reddit keeps it until it is accepted.
+    BOOL requests = [chatPath isEqualToString:ApolloChatRequestsPath];
+    if (ApolloInboxControllerIsAll(host)) {
+        // Same transition as tapping the Chat switch, then straight into the
+        // room; the hub's Messages section is where the room's Back leads.
+        ApolloSetInboxChatHubVisible(host, YES, YES);
+        ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+        if (hub && requests) {
+            [hub apollo_showSection:ApolloModernChatInboxSectionRequests animated:NO];
+            ChatsFilterLog(@"opened the Chat hub's Requests for a pending-request mirror");
+            return;
+        }
+        if (hub) {
+            [hub.sectionSwitcher apollo_setSelectedSection:ApolloModernChatInboxSectionMessages animated:NO];
+            ApolloModernChatControllerOpenConversationPath(hub.chatController, chatPath);
+            ChatsFilterLog(@"opened a chat mirror's room in the Inbox Chat hub");
+            return;
+        }
+    }
+    UIViewController *controller = ApolloCreateModernChatViewControllerForPath(chatPath);
+    [host.navigationController pushViewController:controller animated:YES];
+    ChatsFilterLog(@"opened a chat mirror's %@ in a pushed Chat controller",
+                   requests ? @"pending request list" : @"room");
+}
+
+static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIndexPath *indexPath) {
+    if (sInboxChatMirrorBypass || !ApolloModernChatShouldOpen()) return NO;
+    if (![tableNode respondsToSelector:@selector(nodeForRowAtIndexPath:)]) return NO;
+    id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, @selector(nodeForRowAtIndexPath:), indexPath);
+    Class cellClass = objc_getClass("_TtC6Apollo13InboxCellNode");
+    if (!cellClass || ![node isKindOfClass:cellClass]) return NO;
+    id message = ApolloInboxIvarValue(node, @"message");
+    if (!ApolloInboxMessageMayBeChatMirror(message)) return NO;
+    UIViewController *host = ApolloInboxHostControllerForTableNode(tableNode);
+    if (!host) return NO;
+
+    NSString *subject = ApolloInboxStringProp(message, @selector(subject));
+    NSString *author = ApolloInboxStringProp(message, @selector(author));
+    NSString *recipient = ApolloInboxStringProp(message, @selector(recipient));
+    NSString *me = ApolloInboxCurrentUser() ?: ApolloActiveWebSessionUsername();
+    BOOL sent = me.length > 0 && author.length > 0 && [me caseInsensitiveCompare:author] == NSOrderedSame;
+    NSString *partner = sent ? recipient : author;
+    if (partner.length == 0 || [partner hasPrefix:@"["]) partner = nil;   // "[deleted]"
+    NSDate *created = [message respondsToSelector:@selector(createdUTC)]
+        ? ((id (*)(id, SEL))objc_msgSend)(message, @selector(createdUTC)) : nil;
+    NSTimeInterval timestamp = [created isKindOfClass:[NSDate class]] ? created.timeIntervalSince1970 : 0;
+    ChatsFilterLog(@"chat mirror tapped (%@, partner %@); resolving its modern Chat room",
+                   ApolloChatSubjectIsRoomMarker(subject) ? @"unnamed room" : @"titled room",
+                   partner.length ? @"known" : @"unknown");
+
+    __weak id weakAdapter = listAdapter;
+    __weak id weakTable = tableNode;
+    __weak id weakNode = node;
+    __weak UIViewController *weakHost = host;
+    ApolloChatRoomDirectoryResolve(subject, partner, timestamp, ^(NSString *chatPath) {
+        id table = weakTable;
+        UIViewController *strongHost = weakHost;
+        if ([table respondsToSelector:@selector(deselectRowAtIndexPath:animated:)]) {
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(table, @selector(deselectRowAtIndexPath:animated:),
+                                                       indexPath, YES);
+        }
+        if (!strongHost || !strongHost.viewIfLoaded.window) return;   // the list went away meanwhile
+        if (!chatPath) {
+            id adapter = weakAdapter;
+            if (!adapter || !table) return;
+            ChatsFilterLog(@"no modern Chat room matched the tapped mirror; opening Apollo's legacy thread");
+            sInboxChatMirrorBypass = YES;
+            ((void (*)(id, SEL, id, id))objc_msgSend)(adapter, @selector(tableNode:didSelectRowAtIndexPath:),
+                                                      table, indexPath);
+            sInboxChatMirrorBypass = NO;
+            return;
+        }
+        ApolloInboxMarkMessageRead(message, weakNode, table, indexPath);
+        ApolloInboxOpenChatPath(strongHost, chatPath);
+    });
+    return YES;
+}
+
+// Apollo's shared list adapter is the table delegate of every Texture list;
+// only an InboxCellNode carrying a chat mirror is taken over here.
+%hook _TtC6Apollo11ListAdapter
+
+- (void)tableNode:(id)tableNode didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (ApolloInboxOpenChatMirrorIfNeeded(self, tableNode, indexPath)) return;
+    %orig;
+}
+
+%end
+
+// Mirrors carry the sender's account id (`author_fullname`), which RDKMessage
+// drops but direct rooms are keyed by. Note it as the message JSON goes by.
+static void ApolloInboxNoteMessageJSON(id json) {
+    if (![json isKindOfClass:[NSDictionary class]]) return;
+    NSDictionary *data = json;
+    if ([json[@"data"] isKindOfClass:[NSDictionary class]]) {
+        if (![json[@"kind"] isEqual:@"t4"]) return;
+        data = json[@"data"];
+    }
+    if (![data[@"subject"] isKindOfClass:[NSString class]]) return;   // messages only
+    ApolloChatRoomDirectoryNoteUserFullname(data[@"author"], data[@"author_fullname"]);
+}
+
+%hook MTLJSONAdapter
+
++ (id)modelOfClass:(Class)modelClass fromJSONDictionary:(NSDictionary *)JSONDictionary error:(NSError **)error {
+    ApolloInboxNoteMessageJSON(JSONDictionary);
+    return %orig;
+}
+
++ (id)modelsOfClass:(Class)modelClass fromJSONArray:(NSArray *)JSONArray error:(NSError **)error {
+    if ([JSONArray isKindOfClass:[NSArray class]]) {
+        for (id json in JSONArray) ApolloInboxNoteMessageJSON(json);
+    }
+    return %orig;
 }
 
 %end
