@@ -3770,6 +3770,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeySubredditShowBanner: @YES,
                                     UDKeySubredditShowJoinButton: @YES,
                                     UDKeySubredditShowDisplayName: @YES,
+                                    UDKeySubredditShowSubtitle: @YES,
+                                    UDKeySubredditShowDescription: @YES,
+                                    UDKeySubredditLayoutPreviewPinned: @YES,
                                     UDKeyCommunityHighlights: @NO,
                                     UDKeyCommunityHighlightsWeb: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @YES,
@@ -4030,6 +4033,8 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sSubredditShowBanner = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowBanner];
     sSubredditShowJoinButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowJoinButton];
     sSubredditShowDisplayName = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowDisplayName];
+    sSubredditShowSubtitle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowSubtitle];
+    sSubredditShowDescription = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowDescription];
     sCommunityHighlights = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlights];
     sCommunityHighlightsWeb = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb];
     sClassicTabBarScrollBehavior = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyClassicTabBarScrollBehavior];

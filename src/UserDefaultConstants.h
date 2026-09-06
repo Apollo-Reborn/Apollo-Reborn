@@ -226,6 +226,15 @@ static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersiv
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
+// Whether the Reborn header shows the community title + member-count line.
+// Before metadata it falls back to r/name; redundant titles leave only the count.
+// Defaults to YES; surfaced as "Subtitle".
+static NSString *const UDKeySubredditShowSubtitle = @"SubredditShowSubtitle";
+// Whether the Reborn subreddit header shows the community's about text.
+// Defaults to YES alongside the other header bands.
+static NSString *const UDKeySubredditShowDescription = @"SubredditShowDescription";
+// Keep the Subreddit Layout settings preview visible while scrolling. Default YES.
+static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPreviewPinned";
 // Backing values for the single Community Highlights picker. Keeping the old
 // keys maps existing settings naturally: both YES = Full, master only = Partial,
 // master NO = Off.
