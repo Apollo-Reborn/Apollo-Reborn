@@ -1649,24 +1649,24 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (ApolloSettingsSection *)buildPostsFeedSection {
     __weak typeof(self) weakSelf = self;
-
-    ApolloSettingsRow *textPostThumbnails =
-        [ApolloSettingsRow switchRowWithID:@"media.textPostThumbnails"
-                                     title:@"Text Post Thumbnails"
-                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedTextPostThumbnails]; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf textPostThumbnailsSwitchToggled:sender]; }];
-
+    
     ApolloSettingsRow *infoRow =
         [self hubDisclosureRowWithID:@"feat.infoRow"
-                               title:@"Info Row"
+                               title:@"Post Info Row"
                             subtitle:^NSString * { return [weakSelf infoRowSummaryText]; }
                                 push:^UIViewController * {
             return [[InfoRowSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
+    ApolloSettingsRow *textPostThumbnails =
+        [ApolloSettingsRow switchRowWithID:@"media.textPostThumbnails"
+                                     title:@"Image Previews for Text Posts"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedTextPostThumbnails]; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf textPostThumbnailsSwitchToggled:sender]; }];    
+                              
     ApolloSettingsRow *feedScrubber =
         [ApolloSettingsRow switchRowWithID:@"media.feedScrubber"
-                                     title:@"Feed Video Scrubber"
+                                     title:@"Feed Video Scrubbing"
                                       isOn:^BOOL { return sFeedVideoScrubber; }
                                   onToggle:^(UISwitch *sender) { [weakSelf feedVideoScrubberSwitchToggled:sender]; }];
 
@@ -1681,6 +1681,14 @@ typedef NS_ENUM(NSInteger, Tag) {
                                      title:@"Block Announcements"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBlockAnnouncements]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf blockAnnouncementsSwitchToggled:sender]; }];
+
+    return [ApolloSettingsSection sectionWithTitle:@"Feeds"
+                                            footer:@"Image Previews for Text Posts: Displays the first image linked in a text post as a preview in the feed.\n\nForget Forward Swipe After Scrolling: After scrolling a few posts, a forward swipe won't reopen the post you came from."
+                                              rows:@[ infoRow, textPostThumbnails, feedScrubber, forwardSwipeForget, blockAnnouncements ]];
+}
+
+- (ApolloSettingsSection *)buildLiveInteractivePostsSection {
+    __weak typeof(self) weakSelf = self;
 
     // Named for the whole class of Reddit Developer Platform posts, not the
     // sports ones it was first built against: the same widget mechanism carries
@@ -1703,9 +1711,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf devvitFeedPostsSwitchToggled:sender]; }];
     devvitFeedPosts.visible = ^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDevvitInteractivePosts]; };
 
-    return [ApolloSettingsSection sectionWithTitle:@"Feed"
-                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments."
-                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts ]];
+    return [ApolloSettingsSection sectionWithTitle:@"Live Interactive Posts"
+                                            footer:@"Shows live scores, polls, brackets, and other interactive posts instead of placeholder text."
+                                              rows:@[ devvitPosts, devvitFeedPosts ]];
 }
 
 - (ApolloSettingsSection *)buildPostsFloatingTabsSection {
@@ -4379,6 +4387,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildPostsRecentlyReadSection],
               [self buildPostsFeedSection],
+              [self buildLiveInteractivePostsSection],
               [self buildPostsFloatingTabsSection] ];
 }
 @end
