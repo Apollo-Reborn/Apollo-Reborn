@@ -53,6 +53,14 @@ static BOOL ApolloActionsIsAutoModClose(UIBarButtonItem *item) {
         [NSStringFromClass([item.target class]) isEqualToString:@"Apollo.AutoModeratorViewController"];
 }
 
+static BOOL ApolloActionsUsesPlainSubmitStyle(UIBarButtonItem *item) {
+    NSString *targetClass = NSStringFromClass([item.target class]);
+    return (item.action == NSSelectorFromString(@"submitBarButtonTapped:") &&
+            [targetClass isEqualToString:@"Apollo.ComposeViewController"]) ||
+           (item.action == NSSelectorFromString(@"updateBarButtonItemTappedWithSender:") &&
+            [targetClass isEqualToString:@"Apollo.FlairSelectorViewController"]);
+}
+
 static void ApolloActionsPrepareApprovedContent(UIView *content) {
     if (!content || objc_getAssociatedObject(content, &kActionsApprovedLayoutKey)) return;
     NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
@@ -568,6 +576,23 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     BOOL approvedSubmitters = [NSStringFromClass(controllerBox.controller.class)
         isEqualToString:@"Apollo.ModeratorApprovedSubmittersViewController"];
     for (UIBarButtonItem *item in items) {
+        // Legacy Done buttons become filled/prominent on Liquid Glass.
+        if (ApolloActionsUsesPlainSubmitStyle(item) && item.style != UIBarButtonItemStylePlain) {
+            item.style = UIBarButtonItemStylePlain;
+        }
+        if (ApolloActionsUsesPlainSubmitStyle(item)) {
+            for (NSNumber *stateValue in @[@(UIControlStateNormal), @(UIControlStateDisabled)]) {
+                UIControlState state = stateValue.unsignedIntegerValue;
+                NSMutableDictionary *attributes = [[item titleTextAttributesForState:state] mutableCopy]
+                    ?: [NSMutableDictionary dictionary];
+                UIColor *color = ApolloNavigationChromeColor();
+                if (state == UIControlStateDisabled) color = [color colorWithAlphaComponent:0.45];
+                if (![attributes[NSForegroundColorAttributeName] isEqual:color]) {
+                    attributes[NSForegroundColorAttributeName] = color;
+                    [item setTitleTextAttributes:attributes forState:state];
+                }
+            }
+        }
         ApolloActionsPinChrome(item);
         UIImage *image = ApolloActionsTemplateImage(item.image);
         if (image != item.image) item.image = image;
