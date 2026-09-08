@@ -109,3 +109,69 @@ public func ApolloSwiftListAdapterIndexPathForModelIdentifier(
     guard let path = mapping[token.key] else { return nil }
     return Unmanaged.passRetained(path as NSIndexPath).toOpaque()
 }
+
+/// The native ListAdapter inserts a SectionController before returning its
+/// asynchronous node factory. Both dictionary values are class references;
+/// retain the returned object without exposing Swift Dictionary storage to ObjC.
+@_cdecl("ApolloSwiftListAdapterSectionController")
+public func ApolloSwiftListAdapterSectionController(
+    _ storage: UnsafeRawPointer?, _ indexPathObject: UnsafeRawPointer?
+) -> UnsafeMutableRawPointer? {
+    guard let storage, let indexPathObject else { return nil }
+    let indexPath = Unmanaged<NSIndexPath>.fromOpaque(indexPathObject).takeUnretainedValue() as IndexPath
+    let mapping = storage.assumingMemoryBound(to: [IndexPath: NSObject].self).pointee
+    guard let section = mapping[indexPath] else { return nil }
+    return Unmanaged.passRetained(section).toOpaque()
+}
+
+@_cdecl("ApolloSwiftAssignInteractiveTransition")
+public func ApolloSwiftAssignInteractiveTransition(
+    _ storage: UnsafeMutableRawPointer?, _ object: UnsafeRawPointer?
+) {
+    guard let storage else { return }
+    let transition = object.map {
+        Unmanaged<UIPercentDrivenInteractiveTransition>.fromOpaque($0).takeUnretainedValue()
+    }
+    storage.assumingMemoryBound(to: Optional<UIPercentDrivenInteractiveTransition>.self).pointee = transition
+}
+
+// Apollo 1.15.11 PostsType's metadata records this exact case/payload order.
+// Its frozen in-module representation is two Strings plus a discriminator
+// (33 bytes, 40-byte stride). ObjC validates the surrounding ivars first.
+private enum ApolloPaneNativePostsType {
+    case subreddit(String), multireddit(String, String), upvoted(String)
+    case downvoted(String), submissions(String), random(Bool), home, hidden
+}
+
+@_cdecl("ApolloSwiftPanePostsScope")
+public func ApolloSwiftPanePostsScope(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard Thread.isMainThread, let storage,
+          MemoryLayout<ApolloPaneNativePostsType>.size == 33 else { return nil }
+    let tag = storage.load(fromByteOffset: 32, as: UInt8.self)
+    guard tag <= 6 else { return nil }
+    if tag >= 5 && storage.load(as: UInt8.self) > 1 { return nil }
+    let value = storage.assumingMemoryBound(to: ApolloPaneNativePostsType.self).pointee
+    let scope: String
+    switch value {
+    case .subreddit(let name): scope = "subreddit:" + name.lowercased()
+    case .multireddit(let name, let user): scope = "multi:" + user.lowercased() + "/" + name.lowercased()
+    case .upvoted(let user): scope = "upvoted:" + user.lowercased()
+    case .downvoted(let user): scope = "downvoted:" + user.lowercased()
+    case .submissions(let user): scope = "submissions:" + user.lowercased()
+    case .random(let nsfw): scope = nsfw ? "random:nsfw" : "random:safe"
+    case .home: scope = "home"
+    case .hidden: scope = "hidden"
+    }
+    return Unmanaged.passRetained(scope as NSString).toOpaque()
+}
+
+// AppDelegate.tabBarController is a strong Swift Optional, not an ObjC ivar
+// with an @ type encoding. Its native destructor releases one pointer slot.
+@_cdecl("ApolloSwiftExchangePaneTabs")
+public func ApolloSwiftExchangePaneTabs(_ storage: UnsafeMutableRawPointer?, _ object: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard let storage else { return nil }
+    let slot = storage.assumingMemoryBound(to: Optional<UITabBarController>.self)
+    let previous = slot.pointee
+    slot.pointee = object.map { Unmanaged<UITabBarController>.fromOpaque($0).takeUnretainedValue() }
+    return previous.map { Unmanaged.passRetained($0).toOpaque() }
+}

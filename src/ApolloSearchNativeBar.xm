@@ -41,6 +41,8 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
+#import "ipad/ApolloPaneChrome.h"
+#import "ipad/ApolloPaneLayout.h"
 
 // Forward ref for the geometry hooks (same pattern as ApolloSearchInPlace.xm).
 @interface ASTableView : UITableView
@@ -91,41 +93,60 @@ static BOOL NSBRetargetApolloTopPark(UIScrollView *sv, CGFloat *y);
 
 // MARK: - Session state
 //
-// Only one feed search is ever active at a time; the session is keyed to the
-// controller whose native bar last began editing. Everything is __weak so a
-// popped controller degrades to "no session" with no teardown bookkeeping.
-static __weak UIViewController *sNSBSessionVC    = nil;
-static __weak UIScrollView     *sNSBSessionTable = nil;
-static __weak UINavigationBar  *sNSBSessionNav   = nil;
-static BOOL sNSBSessionTyped   = NO;
-static BOOL sNSBTransitioning  = NO;  // feed VC is disappearing (push/pop in flight)  // Apollo's isSearching was engaged (needs a real dismiss)
-static BOOL sNSBUserScrolled   = NO;  // user dragged the results — stop pinning so they can browse
-static NSUInteger sNSBDismissGen = 0; // stale-timer guard for the settle snap
-// Separate generation for the clear button's DEFERRED reload. Kept apart from
-// sNSBDismissGen so bumping it can never perturb the dismiss settle timers:
-// any new keystroke, another clear, or a cancel invalidates a pending reload.
-static NSUInteger sNSBClearGen = 0;
-// YES for the length of a dismiss: refuse Apollo's spurious refreshControl=nil.
-static BOOL sNSBGuardRefreshControl = NO;
-// Dismiss window: for ~1.4s after cancel, Apollo's model-reset re-parks the
-// inset/offset for ITS resting shape (and mid-morph values). The final
-// geometry is already known when the X is tapped — the nav bar (palette
-// included) does not move during the cancel — so correct every re-park write
-// INLINE to the captured target. Without this the reload renders at the wrong
-// rest and the settle timers hop it into place a visible beat later.
-static BOOL    sNSBDismissWindow    = NO;
-static BOOL    sNSBDismissScrolling = NO;  // YES while the retargeted scroll-back animates
-// YES between the cancel tap and Apollo's scroll-back actually running. The
-// per-frame pins must stay down for that gap: firing one early snaps the feed
-// to the rest in a single frame, and Apollo's animation then has nothing left
-// to travel — the teleport we are trying to remove.
-static BOOL    sNSBAwaitingScroll    = NO;
-static CGFloat sNSBDismissTargetTop = 0.0;
+// A controller owns its query and geometry corrections. Views carry an O(1)
+// association to that session; no window traversal or process-global “active
+// search” can make a second scene cancel the first scene's pending work.
+@class ApolloNSBScrollTween;
+@interface ApolloNativeFeedSession : NSObject
+@property (nonatomic, weak) UIViewController *controller;
+@property (nonatomic, weak) UIScrollView *table;
+@property (nonatomic, weak) UINavigationBar *navigationBar;
+@property (nonatomic) BOOL typed;
+@property (nonatomic) BOOL transitioning;
+@property (nonatomic) BOOL userScrolled;
+@property (nonatomic) NSUInteger dismissGeneration;
+@property (nonatomic) NSUInteger clearGeneration;
+@property (nonatomic) BOOL guardRefreshControl;
+@property (nonatomic) BOOL dismissWindow;
+@property (nonatomic) BOOL dismissScrolling;
+@property (nonatomic) BOOL awaitingScroll;
+@property (nonatomic) BOOL chromeUpdatePending;
+@property (nonatomic) CGFloat dismissTargetTop;
+@property (nonatomic) CGFloat toolbarBand;
+@property (nonatomic, strong) ApolloNSBScrollTween *tween;
+@end
+@implementation ApolloNativeFeedSession
+- (instancetype)init {
+    if ((self = [super init])) _toolbarBand = 45.0;
+    return self;
+}
+@end
+@interface ApolloNativeFeedSession (SceneLifetime)
+- (void)sceneDeactivated:(NSNotification *)notification;
+@end
+static const void *kNSBSessionKey = &kNSBSessionKey;
+static ApolloNativeFeedSession *NSBSessionForView(UIView *view) {
+    return view ? objc_getAssociatedObject(view, kNSBSessionKey) : nil;
+}
+static ApolloNativeFeedSession *NSBSessionForVC(UIViewController *vc) {
+    if (!vc) return nil;
+    ApolloNativeFeedSession *session = objc_getAssociatedObject(vc, kNSBSessionKey);
+    if (!session) {
+        session = [ApolloNativeFeedSession new];
+        session.controller = vc;
+        [NSNotificationCenter.defaultCenter addObserver:session selector:@selector(sceneDeactivated:) name:UISceneWillDeactivateNotification object:nil];
+        objc_setAssociatedObject(vc, kNSBSessionKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return session;
+}
+static void NSBMarkSessionView(UIView *view, ApolloNativeFeedSession *session) {
+    if (view && NSBSessionForView(view) != session)
+        objc_setAssociatedObject(view, kNSBSessionKey, session, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 static const void *kNSBBridgeKey     = &kNSBBridgeKey;      // VC -> bridge delegate object
 static const void *kNSBFeedTableKey  = &kNSBFeedTableKey;   // ASTableView -> @YES (native-managed feed)
 static const void *kNSBAppearedKey   = &kNSBAppearedKey;    // VC -> @YES once it has appeared at least once
-static CGFloat sNSBToolbarBand = 45.0; // Apollo's resting toolbar height (the band its inset reserves)
 // How far above the safe area a resting write may sit and still count as one:
 // the toolbar band (45pt fresh, 37pt on a feed restored after a post) plus
 // room for the taller values Apollo computes mid nav-morph.
@@ -174,7 +195,13 @@ static BOOL NSBTraceEnabled(void) {
 // output back at us, and an earlier subtract-and-floor attempt compounded on
 // those echoes.
 static void NSBRelativizeInset(UIScrollView *sv, UIEdgeInsets *inset) {
+    ApolloNativeFeedSession *session = NSBSessionForView(sv);
     UIEdgeInsets safe = sv.safeAreaInsets;
+    // Pane hosts put the table below the real context row, so their safe top
+    // is legitimately zero. The hidden native toolbar still writes its band;
+    // the phone-only safe.top > 1 guard used to leave a blank 45pt pane row.
+    if (safe.top <= 1.0 && ApolloPaneUsesUnifiedChrome(sv) &&
+        inset->top >= 0.0 && inset->top <= kNSBBandSlack) inset->top = 0.0;
 
     // Top. A write within a band's reach of the safe area is a resting write —
     // that covers the settled shape, the smaller value Apollo runs while a
@@ -184,7 +211,7 @@ static void NSBRelativizeInset(UIScrollView *sv, UIEdgeInsets *inset) {
     // spinner) still gets its room. Idempotent: 0 maps back to 0.
     if (safe.top > 1.0 && inset->top >= safe.top - kNSBBandSlack) {
         CGFloat extra = inset->top - safe.top;
-        inset->top = (extra <= kNSBBandSlack) ? 0.0 : (extra - sNSBToolbarBand);
+        inset->top = (extra <= kNSBBandSlack) ? 0.0 : (extra - session.toolbarBand);
         if (inset->top < 0.0) inset->top = 0.0;
     }
 
@@ -201,7 +228,7 @@ static void NSBRelativizeInset(UIScrollView *sv, UIEdgeInsets *inset) {
 }
 
 BOOL ApolloNativeFeedSearchEnabled(void) {
-    return IsLiquidGlass();
+    return IsLiquidGlass() || ApolloPaneLayoutActive();
 }
 
 static BOOL NSBRetargetApolloTopPark(UIScrollView *sv, CGFloat *y) {
@@ -216,17 +243,18 @@ static BOOL NSBRetargetApolloTopPark(UIScrollView *sv, CGFloat *y) {
     return YES;
 }
 
-static NSString *NSBSessionQueryText(void) {
-    UIViewController *vc = sNSBSessionVC;
+static NSString *NSBSessionQueryText(ApolloNativeFeedSession *session) {
+    UIViewController *vc = session.controller;
     if (!vc) return nil;
     UITextField *field = (UITextField *)ApolloNSBObjectIvar(vc, "searchTextField");
     return [field isKindOfClass:[UITextField class]] ? field.text : nil;
 }
 
 BOOL ApolloNativeFeedSearchActiveQuery(UIScrollView *tableView) {
+    ApolloNativeFeedSession *session = NSBSessionForView(tableView);
     return ApolloNativeFeedSearchEnabled() && tableView != nil &&
-           tableView == sNSBSessionTable && sNSBSessionTyped &&
-           NSBSessionQueryText().length > 0;
+           tableView == session.table && session.typed &&
+           NSBSessionQueryText(session).length > 0;
 }
 
 // A feed controller we manage: an ASTableViewController with Apollo's search
@@ -242,7 +270,11 @@ static BOOL NSBIsNativeSearchFeedVC(UIViewController *vc) {
 static UIScrollView *NSBTableForVC(UIViewController *vc) {
     id tableNode = ApolloNSBObjectIvar(vc, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
-    return [tv isKindOfClass:objc_getClass("ASTableView")] ? (UIScrollView *)tv : nil;
+    if (![tv isKindOfClass:objc_getClass("ASTableView")]) return nil;
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
+    session.table = (UIScrollView *)tv;
+    NSBMarkSessionView(tv, session);
+    return (UIScrollView *)tv;
 }
 
 static UIViewController *NSBFeedVCForView(UIView *view) {
@@ -258,33 +290,34 @@ static UIViewController *NSBFeedVCForView(UIView *view) {
 // MARK: - Driving Apollo's pipeline
 
 // Both defined with the tween, below.
-static void NSBFinishScrollBack(void);
+static void NSBFinishScrollBack(ApolloNativeFeedSession *session);
 static void NSBDissolveSwap(UIScrollView *table);
 static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
                                     void (^completion)(BOOL didScroll));
 
 static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     UITextField *field = (UITextField *)ApolloNSBObjectIvar(vc, "searchTextField");
     if (![field isKindOfClass:[UITextField class]]) return;
     // A new query supersedes an in-flight dismiss: drop the geometry correction
     // AND bump the generation so a pending scroll-back completion can't tear
     // down the session the user just re-entered.
-    sNSBDismissWindow = NO;
-    ++sNSBDismissGen;
+    session.dismissWindow = NO;
+    ++session.dismissGeneration;
     // Bump the clear generation BEFORE ending the scroll-back. -finish runs the
     // tween's completion SYNCHRONOUSLY, and that completion is the one carrying
-    // the deferred reload — so with the bump after, its `clearGen != sNSBClearGen`
+    // the deferred reload — so with the bump after, its `clearGen != session.clearGeneration`
     // guard still compared equal and a superseded clear fired an empty-query
     // reload immediately before the real one, doubling the work on the very path
     // the deferral exists to keep clear.
-    NSUInteger clearGen = ++sNSBClearGen;
+    NSUInteger clearGen = ++session.clearGeneration;
     // End the scroll-back outright rather than letting it run out its clock:
     // it holds the offset against every other writer (NSBTweenHoldsOffset), so
     // left alive it would drag the feed to rest under the query the user is
     // typing and hand over to the surfacing pin only when it finished.
-    NSBFinishScrollBack();
+    NSBFinishScrollBack(session);
     ApolloNSBWriteBoolIvar(vc, "isSearching", YES);
-    sNSBSessionTyped = YES;
+    session.typed = YES;
     if (![field.text isEqualToString:(text ?: @"")]) field.text = text ?: @"";
 
     __weak UIViewController *weakVC = vc;
@@ -322,15 +355,15 @@ static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
     // the surfaced offset in one frame with nothing opposing it, which is the
     // flash in its worst form: no scroll at all. A drag DURING the restore still
     // wins; the tween bails on it in -step:.
-    sNSBUserScrolled = NO;
+    session.userScrolled = NO;
     NSBScrollBackAfterClear(vc, YES, ^(BOOL didScroll) {
-        if (clearGen != sNSBClearGen) return;  // typed again, or dismissed
+        if (clearGen != session.clearGeneration) return;  // typed again, or dismissed
         if (!didScroll) NSBDissolveSwap(NSBTableForVC(weakVC));
         reload();
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.85 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (clearGen != sNSBClearGen) return;
+        if (clearGen != session.clearGeneration) return;
         NSBScrollBackAfterClear(weakVC, NO, nil);
     });
 }
@@ -369,7 +402,11 @@ static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
 
 - (void)step:(CADisplayLink *)link {
     UIScrollView *sv = self.scrollView;
-    if (!sv) { [self finish]; return; }
+    if (!sv.window || sv.window.windowScene.activationState != UISceneActivationStateForegroundActive) {
+        self.completion = nil;
+        [self finish];
+        return;
+    }
     if (self.startTime == 0.0) self.startTime = link.timestamp;
     CGFloat t = (CGFloat)((link.timestamp - self.startTime) / self.duration);
     if (t < 0.0) t = 0.0;
@@ -394,12 +431,26 @@ static void NSBDriveApolloQuery(UIViewController *vc, NSString *text) {
 
 @end
 
-static ApolloNSBScrollTween *sNSBTween = nil;
+
+@implementation ApolloNativeFeedSession (SceneLifetime)
+- (void)sceneDeactivated:(NSNotification *)notification {
+    if (notification.object != self.controller.viewIfLoaded.window.windowScene) return;
+    self.dismissGeneration++;
+    self.clearGeneration++;
+    self.dismissWindow = NO;
+    self.dismissScrolling = NO;
+    self.awaitingScroll = NO;
+    self.guardRefreshControl = NO;
+    self.tween.completion = nil;
+    [self.tween finish];
+    self.tween = nil;
+}
+@end
 
 // End a scroll-back early (a new query supersedes it). Safe on nil, and on a
 // tween that already finished — -finish clears its own link and completion.
-static void NSBFinishScrollBack(void) {
-    [sNSBTween finish];
+static void NSBFinishScrollBack(ApolloNativeFeedSession *session) {
+    [session.tween finish];
 }
 
 // A running scroll-back owns its table's offset outright.
@@ -410,7 +461,7 @@ static void NSBFinishScrollBack(void) {
 // — keeps the feed up there. While they are up, UIKit's periodic re-clamp is
 // invisible, because the very next frame forces the offset back.
 //
-// The teardown stands those pins down (session cleared, sNSBAwaitingScroll
+// The teardown stands those pins down (session cleared, session.awaitingScroll
 // set) so the scroll-back has room to travel, and that is exactly when the
 // clamp becomes visible. Any inset or row-count change during the dismissal
 // runs -[UIScrollView _adjustContentOffsetIfNecessary], which drags the offset
@@ -424,7 +475,8 @@ static void NSBFinishScrollBack(void) {
 // current value over everything else. A user grab still wins — the tween
 // bails on it in -step: and the pin stands down here.
 static BOOL NSBTweenHoldsOffset(UIScrollView *sv, CGFloat *y) {
-    ApolloNSBScrollTween *tween = sNSBTween;
+    ApolloNativeFeedSession *session = NSBSessionForView(sv);
+    ApolloNSBScrollTween *tween = session.tween;
     if (!tween || !tween.link || tween.scrollView != sv) return NO;
     if (sv.isDragging || sv.isTracking) return NO;
     *y = tween.currentY;
@@ -448,7 +500,7 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv);
 // screen, let Apollo swap the rows underneath, and fade the snapshot out. The
 // nav bar is not covered, so the bar's own dismissal is untouched.
 static void NSBDissolveSwap(UIScrollView *table) {
-    if (!table) return;
+    if (!table.window || UIAccessibilityIsReduceMotionEnabled()) return;
     UIView *host = table.superview;
     if (!host || CGRectIsEmpty(table.bounds)) return;
     UIView *snap = [table snapshotViewAfterScreenUpdates:NO];
@@ -472,29 +524,30 @@ static void NSBDissolveSwap(UIScrollView *table) {
 // place, never while a scroll-back still owns the offset.
 static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
                                     void (^completion)(BOOL didScroll)) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     void (^done)(void) = ^{ if (completion) completion(NO); };
     if (!vc) { done(); return; }
     UIScrollView *sv = NSBTableForVC(vc);
     if (NSBTraceEnabled()) {
         ApolloLog(@"[NSBTrace] clear(anim=%d): sv=%d same=%d userScrolled=%d drag=%d/%d/%d "
                    "q=%lu tweenLive=%d off=%.1f rest=%.1f",
-                  (int)animated, (int)(sv != nil), (int)(sv == sNSBSessionTable),
-                  (int)sNSBUserScrolled, (int)sv.isDragging, (int)sv.isDecelerating,
-                  (int)sv.isTracking, (unsigned long)NSBSessionQueryText().length,
-                  (int)(sNSBTween && sNSBTween.link), sv.contentOffset.y,
+                  (int)animated, (int)(sv != nil), (int)(sv == session.table),
+                  (int)session.userScrolled, (int)sv.isDragging, (int)sv.isDecelerating,
+                  (int)sv.isTracking, (unsigned long)NSBSessionQueryText(session).length,
+                  (int)(session.tween && session.tween.link), sv.contentOffset.y,
                   -sv.adjustedContentInset.top);
     }
-    if (!sv || sv != sNSBSessionTable || sNSBUserScrolled) { done(); return; }
+    if (!sv || sv != session.table || session.userScrolled) { done(); return; }
     if (sv.isDragging || sv.isDecelerating || sv.isTracking) { done(); return; }
-    if (NSBSessionQueryText().length > 0) { done(); return; }  // user typed again
-    if (sNSBTween && sNSBTween.link) return;  // a scroll-back owns it; its own
+    if (NSBSessionQueryText(session).length > 0) { done(); return; }  // user typed again
+    if (session.tween && session.tween.link) return;  // a scroll-back owns it; its own
                                               // completion will run the reload
     CGFloat rest = -sv.adjustedContentInset.top;
     if (sv.contentOffset.y <= rest + 1.0) { done(); return; }
     // The banner has to be on screen to be seen sliding in; the surfacing pins
     // are already down (the query is empty), so nothing re-hides it.
     NSBRestoreHeaderForTable(sv);
-    if (!animated) {
+    if (!animated || UIAccessibilityIsReduceMotionEnabled()) {
         [sv setContentOffset:CGPointMake(0.0, rest) animated:NO];
         done();
         return;
@@ -504,8 +557,8 @@ static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
     tween.fromY = sv.contentOffset.y;
     tween.toY = rest;
     tween.duration = 0.32;
-    tween.completion = ^{ sNSBTween = nil; if (completion) completion(YES); };
-    sNSBTween = tween;
+    tween.completion = ^{ session.tween = nil; if (completion) completion(YES); };
+    session.tween = tween;
     [tween start];
 }
 
@@ -514,16 +567,17 @@ static void NSBApolloDismissNow(UIViewController *vc);
 
 
 static void NSBApolloDismiss(UIViewController *vc) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     if (!vc) return;
-    ++sNSBClearGen;  // a cancel supersedes a clear's deferred reload
+    ++session.clearGeneration;  // a cancel supersedes a clear's deferred reload
     UIScrollView *table = NSBTableForVC(vc);
     // Clear the session BEFORE Apollo's dismiss so our geometry pins are inert
     // and Apollo's own restore (offset/inset re-park) runs stock — verified clean.
-    sNSBSessionTyped = NO;
-    sNSBUserScrolled = NO;
+    session.typed = NO;
+    session.userScrolled = NO;
     if (table) NSBRestoreHeaderForTable(table);
-    sNSBDismissTargetTop = table ? NSBNavBottomForTable(table, vc) : 0.0;
-    sNSBDismissWindow = (sNSBDismissTargetTop > 1.0);
+    session.dismissTargetTop = table ? NSBNavBottomForTable(table, vc) : 0.0;
+    session.dismissWindow = (session.dismissTargetTop > 1.0);
 
     // Surfaced subreddit search: the chrome (banner + highlights) is parked
     // hundreds of points off the top. Teleporting it back is what read as a
@@ -533,8 +587,8 @@ static void NSBApolloDismiss(UIViewController *vc) {
     // the banner slides into place under the nav, and only then does Apollo's
     // reload swap the rows — by which point everything behind the glass is
     // already the banner, so the swap is invisible up there.
-    if (sNSBDismissWindow && table &&
-        table.contentOffset.y > -sNSBDismissTargetTop + 8.0 &&
+    if (!UIAccessibilityIsReduceMotionEnabled() && session.dismissWindow && table &&
+        table.contentOffset.y > -session.dismissTargetTop + 8.0 &&
         !table.isDragging && !table.isTracking) {
         // Give the feed its FINAL top inset before animating. While the search
         // is active Apollo runs a smaller inset (the palette is in its active
@@ -555,27 +609,27 @@ static void NSBApolloDismiss(UIViewController *vc) {
 
         // Hold the pins down for the animation: firing one snaps the feed to
         // the rest in a single frame and leaves the scroll nothing to travel.
-        sNSBAwaitingScroll = YES;
+        session.awaitingScroll = YES;
 
         // Scroll the chrome back first, then let Apollo swap the rows. Apollo's
         // own teardown scroll (aimed at ITS resting inset) is retargeted by the
         // setContentOffset:animated: hook below, so it agrees with this one
         // instead of cancelling it mid-flight.
-        NSUInteger scrollGen = ++sNSBDismissGen;
+        NSUInteger scrollGen = ++session.dismissGeneration;
         __weak UIViewController *weakVC = vc;
-        [sNSBTween finish];
+        [session.tween finish];
         ApolloNSBScrollTween *tween = [[ApolloNSBScrollTween alloc] init];
         tween.scrollView = table;
         tween.fromY = table.contentOffset.y;
-        tween.toY = -sNSBDismissTargetTop;
+        tween.toY = -session.dismissTargetTop;
         tween.duration = 0.32;
         tween.completion = ^{
-            sNSBAwaitingScroll = NO;
-            sNSBTween = nil;
-            if (scrollGen != sNSBDismissGen) return; // re-focused meanwhile
+            session.awaitingScroll = NO;
+            session.tween = nil;
+            if (scrollGen != session.dismissGeneration) return; // re-focused meanwhile
             NSBApolloDismissNow(weakVC);
         };
-        sNSBTween = tween;
+        session.tween = tween;
         [tween start];
         return;
     }
@@ -587,6 +641,7 @@ static void NSBApolloDismiss(UIViewController *vc) {
 
 // The teardown proper: hand the session back to Apollo and settle the geometry.
 static void NSBApolloDismissNow(UIViewController *vc) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     if (!vc) return;
     UIScrollView *table = NSBTableForVC(vc);
     id field = ApolloNSBObjectIvar(vc, "searchTextField");
@@ -602,7 +657,7 @@ static void NSBApolloDismissNow(UIViewController *vc) {
     // the control returns, and a pull still never reaches isRefreshing, because
     // the nil write has already torn down UIKit's refresh host. Refusing the
     // write leaves that host intact.
-    sNSBGuardRefreshControl = YES;
+    session.guardRefreshControl = YES;
     if ([vc respondsToSelector:@selector(dismissSearchBarButtonTappedWithSender:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(dismissSearchBarButtonTappedWithSender:), field);
     }
@@ -610,18 +665,19 @@ static void NSBApolloDismissNow(UIViewController *vc) {
     // Apollo's restore lands in an animation completion, so the guard has to
     // outlive this call; the dismiss window is the same shape.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ sNSBGuardRefreshControl = NO; });
+                   dispatch_get_main_queue(), ^{ session.guardRefreshControl = NO; });
 
     // Apollo's dismiss re-parks the offset for ITS resting inset (toolbar band
     // included), which leaves the feed a few rows' worth low against the native
     // rest. Once the dismiss animation settles, snap a near-top rest back flush.
     // Two checks because the re-park lands at slightly different times.
-    NSUInteger gen = ++sNSBDismissGen;
+    NSUInteger gen = ++session.dismissGeneration;
     __weak UIScrollView *weakTable = table;
     void (^settle)(void) = ^{
         UIScrollView *sv = weakTable;
-        if (!sv || gen != sNSBDismissGen || sNSBSessionTyped ||
-            sNSBDismissScrolling || sNSBAwaitingScroll) return;
+        if (!sv.window || sv.window.windowScene.activationState != UISceneActivationStateForegroundActive ||
+            gen != session.dismissGeneration || session.typed ||
+            session.dismissScrolling || session.awaitingScroll) return;
         if (sv.isDragging || sv.isDecelerating || sv.isTracking) return;
         // The inset needs no correction here any more: writes landing mid
         // nav-morph are computed against a transient height, but relativizing
@@ -638,8 +694,8 @@ static void NSBApolloDismissNow(UIViewController *vc) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.65 * NSEC_PER_SEC)), dispatch_get_main_queue(), settle);
     __weak UIViewController *weakPolicyVC = vc;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (gen == sNSBDismissGen) {
-            sNSBDismissWindow = NO;
+        if (gen == session.dismissGeneration) {
+            session.dismissWindow = NO;
             UIViewController *pvc = weakPolicyVC;
             if (pvc && !pvc.navigationItem.hidesSearchBarWhenScrolling) {
                 pvc.navigationItem.hidesSearchBarWhenScrolling = YES;
@@ -663,13 +719,14 @@ static BOOL NSBManagedHeader(UIScrollView *sv) {
 }
 
 static CGFloat NSBDesiredOffsetY(UIScrollView *sv) {
+    ApolloNativeFeedSession *session = NSBSessionForView(sv);
     // adjustedContentInset, not contentInset: it is the full chrome above the
     // first row in either inset-ownership mode (they are equal while the feed
     // runs behavior Never, and only the adjusted value is right once UIKit
     // owns the top through the safe area).
     CGFloat rest = -sv.adjustedContentInset.top;
     if (!NSBManagedHeader(sv)) return rest;
-    if (NSBSessionQueryText().length == 0) return rest;
+    if (NSBSessionQueryText(session).length == 0) return rest;
     UIView *hdr = [(UITableView *)sv tableHeaderView];
     CGFloat height = CGRectGetHeight(hdr.frame);
     if (height <= 1.0) return rest;
@@ -710,14 +767,16 @@ static CGFloat NSBDesiredOffsetY(UIScrollView *sv) {
 }
 
 static BOOL NSBIsSurfaced(UIScrollView *sv) {
-    if (!sv || sv != sNSBSessionTable || !sNSBSessionTyped || sNSBUserScrolled) return NO;
-    if (NSBSessionQueryText().length == 0) return NO;
+    ApolloNativeFeedSession *session = NSBSessionForView(sv);
+    if (!sv || sv != session.table || !session.typed || session.userScrolled) return NO;
+    if (NSBSessionQueryText(session).length == 0) return NO;
     return NSBDesiredOffsetY(sv) > (-sv.adjustedContentInset.top + 1.0);
 }
 
 static void NSBSetHeaderHidden(UIScrollView *sv, BOOL hidden) {
     if (!NSBManagedHeader(sv)) return;
     UIView *hdr = [(UITableView *)sv tableHeaderView];
+    NSBMarkSessionView(hdr, NSBSessionForView(sv));
     CGFloat a = hidden ? 0.0 : 1.0;
     if (hdr.alpha != a) {
         // Never animate this: the restore runs inside Apollo's dismiss
@@ -741,17 +800,20 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
 @implementation ApolloNativeSearchBridge
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    ApolloNativeFeedSession *session = NSBSessionForVC(self.feedVC);
     UIViewController *vc = self.feedVC;
     if (!vc) return;
-    sNSBSessionVC = vc;
-    sNSBSessionTable = NSBTableForVC(vc);
-    sNSBSessionNav = vc.navigationController.navigationBar;
-    sNSBUserScrolled = NO;
-    sNSBDismissWindow = NO;
-    ++sNSBDismissGen; // re-focusing cancels any pending dismiss work
+    session.controller = vc;
+    session.table = NSBTableForVC(vc);
+    session.navigationBar = vc.navigationController.navigationBar;
+    NSBMarkSessionView(session.navigationBar, session);
+    session.userScrolled = NO;
+    session.dismissWindow = NO;
+    ++session.dismissGeneration; // re-focusing cancels any pending dismiss work
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    ApolloNativeFeedSession *session = NSBSessionForVC(self.feedVC);
     UIViewController *vc = self.feedVC;
     if (!vc) return;
     // An empty change with the field unfocused is one of two very different
@@ -760,11 +822,11 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
     // the results the user is navigating into. At rest it is the user tapping
     // the bar's clear button on a restored query — that means "end the search".
     if (searchText.length == 0 && !searchBar.isFirstResponder) {
-        if (!sNSBTransitioning && sNSBSessionTyped) NSBApolloDismiss(vc);
+        if (!session.transitioning && session.typed) NSBApolloDismiss(vc);
         return;
     }
-    sNSBSessionVC = vc;
-    if (!sNSBSessionTable) sNSBSessionTable = NSBTableForVC(vc);
+    session.controller = vc;
+    if (!session.table) session.table = NSBTableForVC(vc);
     NSBDriveApolloQuery(vc, searchText);
 }
 
@@ -779,12 +841,13 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    ApolloNativeFeedSession *session = NSBSessionForVC(self.feedVC);
     // The explicit cancel is the ONLY place we end Apollo's session. A nav push
     // may deactivate the UIKit search UI without cancel — the results must
     // survive that so returning from a result keeps the search, like today.
     UIViewController *vc = self.feedVC;
     if (searchBar.text.length > 0) searchBar.text = @"";
-    if (sNSBSessionTyped) NSBApolloDismiss(vc);
+    if (session.typed) NSBApolloDismiss(vc);
 }
 
 @end
@@ -826,6 +889,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     // Attach laid-out-visible; the scroll-away policy flips it after the first
     // appearance (plain YES here parks the bar off-screen — no large title).
     navItem.searchController = sc;
+    ApolloPaneApplySearchPlacement(vc);
     navItem.hidesSearchBarWhenScrolling = NO;
 
     // Point UIKit's bar collapse tracking at the actual feed table — automatic
@@ -853,13 +917,14 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
 // Hide Apollo's own toolbar (the resting pill inside the feed). Re-asserted
 // every layout pass — Apollo can recreate or re-show it across reloads.
 static void NSBHideApolloToolbar(UIViewController *vc) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     UIView *toolbar = (UIView *)ApolloNSBObjectIvar(vc, "upperToolbar");
     if (![toolbar isKindOfClass:[UIView class]]) return;
     if (!toolbar.hidden) {
         // Measure the band ONLY from the live (pre-hide) toolbar — once hidden
         // its layout drifts to junk heights that must not update the band.
         CGFloat h = CGRectGetHeight(toolbar.bounds);
-        if (h > 1.0 && h < 100.0) sNSBToolbarBand = h;
+        if (h > 1.0 && h < 100.0) session.toolbarBand = h;
         toolbar.hidden = YES;
     }
 }
@@ -906,10 +971,11 @@ static BOOL NSBHasSettledFeedGeometry(UIViewController *vc, UIScrollView *table)
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
     UINavigationController *nav = vc.navigationController;
     return state.visible && nav.topViewController == vc && nav.visibleViewController == vc &&
-           !ApolloNavTransitionInFlight() && !nav.transitionCoordinator && !vc.transitionCoordinator;
+           !nav.transitionCoordinator && !vc.transitionCoordinator;
 }
 
 static void NSBInvalidateRestingSearch(UIViewController *vc) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     ApolloNativeSearchRestingState *state = objc_getAssociatedObject(vc, kNSBRestingStateKey);
     if (!state) return;
     state.visible = NO;
@@ -921,17 +987,18 @@ static void NSBInvalidateRestingSearch(UIViewController *vc) {
     state.revealInFlight = NO;
     // End only our own temporary reveal, before the appearance callback lets
     // UIKit capture the navigation item's policy for the transition.
-    if (wasRevealing && !(sNSBDismissWindow && vc == sNSBSessionVC)) {
+    if (wasRevealing && !(session.dismissWindow && vc == session.controller)) {
         vc.navigationItem.hidesSearchBarWhenScrolling = YES;
     }
 }
 
 static void NSBApplyScrollAwayPolicy(UIViewController *vc, UIScrollView *table) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
     if (!NSBHasSettledFeedGeometry(vc, table)) return;
     UINavigationItem *item = vc.navigationItem;
     if (item.searchController && !item.hidesSearchBarWhenScrolling &&
         objc_getAssociatedObject(vc, kNSBAppearedKey) != nil &&
-        !NSBRestingStateForVC(vc).revealInFlight && !sNSBDismissWindow) {
+        !NSBRestingStateForVC(vc).revealInFlight && !session.dismissWindow) {
         item.hidesSearchBarWhenScrolling = YES;
     }
 }
@@ -972,9 +1039,11 @@ static void NSBRecheckRevealAfterRefresh(UIViewController *vc, UIScrollView *tab
 }
 
 static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table) {
+    ApolloNativeFeedSession *session = NSBSessionForVC(vc);
+    if (ApolloPaneUsesUnifiedChrome(vc.viewIfLoaded)) return;
     if (!NSBHasSettledFeedGeometry(vc, table)) return;
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
-    if (state.revealInFlight || state.revealAttemptedAtTop || sNSBDismissWindow) return;
+    if (state.revealInFlight || state.revealAttemptedAtTop || session.dismissWindow) return;
     if (table.isDragging || table.isDecelerating || table.isTracking) return;
     UINavigationItem *navItem = vc.navigationItem;
     UISearchController *sc = navItem.searchController;
@@ -1032,6 +1101,7 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
 // pulled it down by hand. The feed's own geometry setters DO run on those
 // paths, so ask from there as well, coalesced to one check per runloop turn.
 static void NSBScheduleRevealCheck(UIScrollView *table) {
+    if (ApolloPaneUsesUnifiedChrome(table)) return;
     if (!table) return;
     if (objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
     UIViewController *vc = NSBFeedVCForView(table);
@@ -1075,9 +1145,13 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 %hook _TtC6Apollo21ASTableViewController
 
 - (void)viewWillAppear:(BOOL)animated {
+    ApolloNativeFeedSession *session = (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchFeedVC((id)self))
+        ? NSBSessionForVC((UIViewController *)self) : nil;
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
+    session.navigationBar = [(UIViewController *)self navigationController].navigationBar;
+    NSBMarkSessionView(session.navigationBar, session);
     NSBAttachNativeSearch((UIViewController *)self);
     NSBHideApolloToolbar((UIViewController *)self);
     // Returning to a live search (e.g. back from an opened result): keep the
@@ -1090,20 +1164,23 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         // Returning to a live query: Apollo's restore re-applies its
         // search-active layout (nav-bar transform/alpha hide) straight from
         // isSearching — no focus involved — so arm the whole session (including
-        // typed, which a cancel in a DIFFERENT feed may have cleared globally)
+        // its controller-owned typed state)
         // before it runs.
-        sNSBSessionVC = (UIViewController *)self;
-        sNSBSessionTable = NSBTableForVC((UIViewController *)self);
-        sNSBSessionNav = [(UIViewController *)self navigationController].navigationBar;
-        sNSBSessionTyped = YES;
+        session.controller = (UIViewController *)self;
+        session.table = NSBTableForVC((UIViewController *)self);
+        session.navigationBar = [(UIViewController *)self navigationController].navigationBar;
+        NSBMarkSessionView(session.navigationBar, session);
+        session.typed = YES;
     }
 }
 
 
 - (void)viewDidAppear:(BOOL)animated {
+    ApolloNativeFeedSession *session = (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchFeedVC((id)self))
+        ? NSBSessionForVC((UIViewController *)self) : nil;
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
-    sNSBTransitioning = NO;
+    session.transitioning = NO;
     // Record the appearance before anything can bail: the scroll-away policy is
     // applied from the layout pass too (see below), and on the paths where the
     // search controller is attached late this is the only thing that tells that
@@ -1118,17 +1195,29 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     // Safety net for the return-to-live-query path: if Apollo's search-active
     // layout hid the nav bar before the guard armed, put it back.
     UINavigationBar *nav = [(UIViewController *)self navigationController].navigationBar;
-    if (sNSBSessionTyped && nav && nav == sNSBSessionNav) {
+    if (session.typed && nav && nav == session.navigationBar) {
         if (nav.transform.ty < -1.0) nav.transform = CGAffineTransformIdentity;
         if (nav.alpha < 1.0) nav.alpha = 1.0;
     }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
+    ApolloNativeFeedSession *session = (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchFeedVC((id)self))
+        ? NSBSessionForVC((UIViewController *)self) : nil;
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
-    sNSBTransitioning = YES;
+    session.transitioning = YES;
+    if (NSBSessionForView(session.navigationBar) == session) NSBMarkSessionView(session.navigationBar, nil);
+    ++session.dismissGeneration;
+    ++session.clearGeneration;
+    session.dismissWindow = NO;
+    session.awaitingScroll = NO;
+    session.dismissScrolling = NO;
+    session.guardRefreshControl = NO;
+    session.tween.completion = nil;
+    NSBFinishScrollBack(session);
+    session.tween = nil;
     // Leaving the feed (e.g. opening a result) with the search UI presented:
     // deactivate it cleanly. Keeping it active across a push leaves UIKit's
     // presentation half-restored after the pop (missing nav bar, collapsed
@@ -1139,20 +1228,25 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 }
 
 - (void)viewDidLayoutSubviews {
+    ApolloNativeFeedSession *session = (ApolloNativeFeedSearchEnabled() && NSBIsNativeSearchFeedVC((id)self))
+        ? NSBSessionForVC((UIViewController *)self) : nil;
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
-    // The toolbar/field ivars can be nil on the very first willAppear; attach
-    // lazily here too (idempotent — bails once a searchController exists).
-    NSBAttachNativeSearch((UIViewController *)self);
-    NSBHideApolloToolbar((UIViewController *)self);
-    // Late attachment can happen after didAppear; schedule the policy update
-    // here too, without driving another layout from this callback.
-    UIScrollView *table = NSBTableForVC((UIViewController *)self);
-    if (table && table == sNSBSessionTable) {
-        NSBSetHeaderHidden(table, NSBIsSurfaced(table));
-    }
-    // Recovery drives layout itself; never re-enter it from a layout callback.
-    NSBScheduleRevealCheck(table);
+    // Native toolbar ivars can arrive after willAppear. Coalesce late setup
+    // outside UIKit's layout callback; never change layout inputs recursively.
+    if (session.chromeUpdatePending) return;
+    session.chromeUpdatePending = YES;
+    __weak UIViewController *weakVC = (UIViewController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        session.chromeUpdatePending = NO;
+        UIViewController *vc = weakVC;
+        if (!vc.viewIfLoaded.window) return;
+        NSBAttachNativeSearch(vc);
+        NSBHideApolloToolbar(vc);
+        UIScrollView *table = NSBTableForVC(vc);
+        if (table) NSBSetHeaderHidden(table, NSBIsSurfaced(table));
+        NSBScheduleRevealCheck(table);
+    });
 }
 
 %end
@@ -1225,6 +1319,7 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 }
 
 - (void)setContentOffset:(CGPoint)offset {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
     UIScrollView *sv = (UIScrollView *)self;
     if (ApolloNativeFeedSearchEnabled()) NSBScheduleRevealCheck(sv);
     if (ApolloNativeFeedSearchEnabled() && NSBRetargetApolloTopPark(sv, &offset.y) &&
@@ -1232,20 +1327,20 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         ApolloLog(@"[NSBTrace] retarget offset -> %.1f (inTop=%.1f adjTop=%.1f)",
                   offset.y, sv.contentInset.top, sv.adjustedContentInset.top);
     }
-    if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
-        !sNSBDismissScrolling && !sNSBAwaitingScroll &&
-        sv == sNSBSessionTable && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
-        fabs(offset.y + sNSBDismissTargetTop) > 0.5) {
+    if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
+        !session.dismissScrolling && !session.awaitingScroll &&
+        sv == session.table && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
+        fabs(offset.y + session.dismissTargetTop) > 0.5) {
         // Pin in BOTH directions: Apollo's teardown re-park overshoots ABOVE
         // the top (into the rubber-band region) as well as landing below it.
-        offset.y = -sNSBDismissTargetTop;
+        offset.y = -session.dismissTargetTop;
     }
-    if (ApolloNativeFeedSearchEnabled() && sv == sNSBSessionTable &&
-        sNSBSessionTyped && NSBSessionQueryText().length > 0) {
+    if (ApolloNativeFeedSearchEnabled() && sv == session.table &&
+        session.typed && NSBSessionQueryText(session).length > 0) {
         CGFloat target = NSBDesiredOffsetY(sv);
-        if (sv.isDragging) sNSBUserScrolled = YES;
-        else if (offset.y <= target + 1.0) sNSBUserScrolled = NO;
-        if (!sv.isDragging && !sv.isDecelerating && !sNSBUserScrolled) {
+        if (sv.isDragging) session.userScrolled = YES;
+        else if (offset.y <= target + 1.0) session.userScrolled = NO;
+        if (!sv.isDragging && !sv.isDecelerating && !session.userScrolled) {
             if (NSBManagedHeader(sv) && target > -sv.adjustedContentInset.top + 1.0) {
                 offset.y = target;          // surfaced: chrome held off the top
             } else if (offset.y > target) {
@@ -1268,6 +1363,7 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 }
 
 - (void)setBounds:(CGRect)bounds {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
     UIScrollView *sv = (UIScrollView *)self;
     if (NSBTraceEnabled() && objc_getAssociatedObject(self, kNSBFeedTableKey) != nil &&
         bounds.origin.y < -sv.adjustedContentInset.top - 4.0) {
@@ -1297,13 +1393,13 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         ApolloLog(@"[NSBTrace] retarget bounds -> %.1f (inTop=%.1f adjTop=%.1f)",
                   bounds.origin.y, sv.contentInset.top, sv.adjustedContentInset.top);
     }
-    if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
-        !sNSBDismissScrolling && !sNSBAwaitingScroll &&
-        sv == sNSBSessionTable && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
-        fabs(bounds.origin.y + sNSBDismissTargetTop) > 0.5) {
-        bounds.origin.y = -sNSBDismissTargetTop;
+    if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
+        !session.dismissScrolling && !session.awaitingScroll &&
+        sv == session.table && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
+        fabs(bounds.origin.y + session.dismissTargetTop) > 0.5) {
+        bounds.origin.y = -session.dismissTargetTop;
     }
-    if (ApolloNativeFeedSearchEnabled() && sv == sNSBSessionTable &&
+    if (ApolloNativeFeedSearchEnabled() && sv == session.table &&
         !sv.isDragging && !sv.isDecelerating && NSBIsSurfaced(sv)) {
         CGFloat want = NSBDesiredOffsetY(sv);
         if (fabs(bounds.origin.y - want) > 0.5) bounds.origin.y = want;
@@ -1323,8 +1419,9 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 // priorRefreshControl it never captured under the native bar, which nils the
 // feed's control and kills pull-to-refresh for the rest of the screen's life.
 - (void)setRefreshControl:(UIRefreshControl *)refreshControl {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
     if (ApolloNativeFeedSearchEnabled() && refreshControl == nil &&
-        sNSBGuardRefreshControl &&
+        session.guardRefreshControl &&
         objc_getAssociatedObject(self, kNSBFeedTableKey) != nil &&
         [(UITableView *)self refreshControl] != nil) {
         if (NSBTraceEnabled()) ApolloLog(@"[NSBTrace] blocked refreshControl=nil during dismiss");
@@ -1353,9 +1450,10 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 %hook ApolloSubredditHeaderWrapperView
 
 - (void)setAlpha:(CGFloat)alpha {
-    if (alpha > 0.0 && sNSBSessionTable &&
-        (UIView *)self == [(UITableView *)sNSBSessionTable tableHeaderView] &&
-        NSBIsSurfaced(sNSBSessionTable)) {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
+    if (alpha > 0.0 && session.table &&
+        (UIView *)self == [(UITableView *)session.table tableHeaderView] &&
+        NSBIsSurfaced(session.table)) {
         %orig(0.0);
         return;
     }
@@ -1378,8 +1476,9 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 %hook UINavigationBar
 
 - (void)setTransform:(CGAffineTransform)transform {
-    if (ApolloNativeFeedSearchEnabled() && self == sNSBSessionNav &&
-        sNSBSessionTyped && transform.ty < -1.0) {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
+    if (ApolloNativeFeedSearchEnabled() && self == session.navigationBar &&
+        session.typed && transform.ty < -1.0) {
         %orig(CGAffineTransformIdentity);
         return;
     }
@@ -1387,8 +1486,9 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 }
 
 - (void)setAlpha:(CGFloat)alpha {
-    if (ApolloNativeFeedSearchEnabled() && self == sNSBSessionNav &&
-        sNSBSessionTyped && alpha < 1.0) {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
+    if (ApolloNativeFeedSearchEnabled() && self == session.navigationBar &&
+        session.typed && alpha < 1.0) {
         %orig(1.0);
         return;
     }
@@ -1408,6 +1508,7 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 %hook UIScrollView
 
 - (void)setContentOffset:(CGPoint)offset animated:(BOOL)animated {
+    ApolloNativeFeedSession *session = NSBSessionForView((UIView *)self);
     // The animated entry point is how Apollo's tab-bar scroll-to-top travels;
     // retarget it here so the whole animation aims at the real rest rather
     // than landing short and being corrected afterwards.
@@ -1416,19 +1517,19 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         ApolloLog(@"[NSBTrace] retarget animated -> %.1f (inTop=%.1f adjTop=%.1f)",
                   offset.y, self.contentInset.top, self.adjustedContentInset.top);
     }
-    if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
-        (UIScrollView *)self == sNSBSessionTable &&
+    if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
+        (UIScrollView *)self == session.table &&
         !self.isDragging && !self.isTracking) {
-        CGFloat want = -sNSBDismissTargetTop;
+        CGFloat want = -session.dismissTargetTop;
         if (fabs(offset.y - want) > 0.5) offset.y = want;
-        animated = YES;
+        animated = !UIAccessibilityIsReduceMotionEnabled();
         // Stand the per-frame pins down for the length of the animation, or
         // they would clamp it back to a standstill on its first frame.
-        sNSBDismissScrolling = YES;
+        session.dismissScrolling = YES;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            sNSBDismissScrolling = NO;
-            sNSBAwaitingScroll = NO; // pins take over holding the final rest
+            session.dismissScrolling = NO;
+            session.awaitingScroll = NO; // pins take over holding the final rest
         });
     }
     %orig(offset, animated);

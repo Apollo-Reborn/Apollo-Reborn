@@ -1,3 +1,4 @@
+#import "ipad/ApolloPaneChrome.h"
 #import "ApolloImmersiveHeaderBackground.h"
 
 #import <CoreImage/CoreImage.h>
@@ -324,6 +325,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 @property(nonatomic, strong) UIView *contentContainer;
 @property(nonatomic, strong) UIImageView *backdropView;
 @property(nonatomic, strong) CAGradientLayer *veilLayer;
+@property(nonatomic, strong) UIView *paneChromeCover;
 @property(nonatomic, strong) UIView *sharpClip;
 @property(nonatomic, strong) UIImageView *sharpView;
 @property(nonatomic, strong) CAGradientLayer *sharpFeatherMask;
@@ -396,6 +398,10 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     // theme's chrome text color in both light and dark.
     _chromeScrimLayer = [CAGradientLayer layer];
     [_contentContainer.layer addSublayer:_chromeScrimLayer];
+    _paneChromeCover = [UIView new];
+    _paneChromeCover.userInteractionEnabled = NO;
+    _paneChromeCover.hidden = YES;
+    [self addSubview:_paneChromeCover];
     return self;
 }
 
@@ -466,6 +472,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     CGFloat extendedHeight = MIN(self.extendedHeight, totalHeight);
     UIColor *pageColor = [self.pageColor resolvedColorWithTraitCollection:self.traitCollection];
     self.backgroundColor = pageColor;
+    CGFloat boundary = ApolloPaneContextBottomInView(self);
+    BOOL hideCover = boundary <= 0.0;
+    if (self.paneChromeCover.hidden != hideCover) self.paneChromeCover.hidden = hideCover;
+    if (![self.paneChromeCover.backgroundColor isEqual:pageColor]) self.paneChromeCover.backgroundColor = pageColor;
+    CGRect coverFrame = CGRectMake(0, 0, width, MIN(totalHeight, boundary));
+    if (!CGRectEqualToRect(self.paneChromeCover.frame, coverFrame)) self.paneChromeCover.frame = coverFrame;
 
     CGAffineTransform transform = self.contentContainer.transform;
     self.contentContainer.transform = CGAffineTransformIdentity;

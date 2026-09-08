@@ -2622,13 +2622,15 @@ static const void *kApolloDeletedCommentsLinkTapGestureKey = &kApolloDeletedComm
 // "links to reddit posts take you out of Apollo, into the web view"); everything else
 // opens in Apollo's web view.
 static void ApolloDeletedCommentsOpenRecoveredBodyURL(UIViewController *presenter, NSURL *url) {
-    if (!url) return;
+    UIWindowScene *scene = presenter.viewIfLoaded.window.windowScene;
+    if (!url || !scene) return;
     NSString *host = [url.host lowercaseString] ?: @"";
     BOOL isReddit = [host isEqualToString:@"redd.it"] ||
                     [host hasSuffix:@".redd.it"] ||
                     [host isEqualToString:@"reddit.com"] ||
                     [host hasSuffix:@".reddit.com"];
-    if (isReddit && ApolloRouteURLThroughApp(url)) return;
+    if (isReddit && ApolloRouteURLThroughAppInScene(
+        ApolloURLByConvertingResolvedURLToApolloScheme(url) ?: url, scene)) return;
     ApolloPresentWebURLFromViewController(presenter, url);
 }
 

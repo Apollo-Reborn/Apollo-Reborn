@@ -16,24 +16,36 @@
 
 #import <UIKit/UIKit.h>
 #import <UserNotifications/UserNotifications.h>
+#import <objc/runtime.h>
 #import "ApolloPaneLayout.h"
 #import "ApolloPaneSplitViewController.h"
+#import "ApolloPaneSidebar.h"
 #import "../ApolloCommon.h"
 
 // UIKit entry callbacks are main-thread APIs. A counter, rather than a BOOL,
 // preserves the scope if another hooked entry point is invoked synchronously.
 static NSUInteger sApolloPaneNativeEntryDepth = 0;
-
-static BOOL ApolloPaneNativeEntryCompatibilityActive(void) {
-    return sApolloPaneNativeEntryDepth > 0 && ApolloPaneLayoutActive();
+static NSMutableArray *sApolloPaneEntryTabs;
+static UITabBarController *ApolloPaneEntryTabsForDelegate(id delegate) {
+    Ivar ivar = class_getInstanceVariable([delegate class], "tabBarController");
+    id value = ivar ? object_getIvar(delegate, ivar) : nil;
+    return [value isKindOfClass:UITabBarController.class] ? value : nil;
 }
 
-static void ApolloPaneBeginNativeEntry(void) {
-    if (ApolloPaneLayoutActive()) sApolloPaneNativeEntryDepth++;
+static BOOL ApolloPaneNativeEntryCompatibilityActive(UITabBarController *tabs) {
+    return sApolloPaneNativeEntryDepth > 0 && ApolloPaneLayoutActive() &&
+        sApolloPaneEntryTabs.lastObject == tabs;
+}
+
+static void ApolloPaneBeginNativeEntry(UITabBarController *tabs) {
+    if (!sApolloPaneEntryTabs) sApolloPaneEntryTabs = [NSMutableArray array];
+    [sApolloPaneEntryTabs addObject:tabs ?: NSNull.null];
+    sApolloPaneNativeEntryDepth++;
 }
 
 static void ApolloPaneEndNativeEntry(void) {
     if (sApolloPaneNativeEntryDepth > 0) sApolloPaneNativeEntryDepth--;
+    [sApolloPaneEntryTabs removeLastObject];
 }
 
 static NSArray<UIViewController *> *ApolloPaneActualTabChildren(UITabBarController *tabBarController) {
@@ -69,7 +81,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 
 - (UIViewController *)selectedViewController {
     UIViewController *actual = %orig;
-    if (!ApolloPaneNativeEntryCompatibilityActive() ||
+    if (!ApolloPaneNativeEntryCompatibilityActive(self) ||
         ![actual isKindOfClass:[ApolloPaneSplitViewController class]]) return actual;
     UIViewController *compatible = [(ApolloPaneSplitViewController *)actual
         apollo_navigationControllerForColumn:ApolloPaneColumnPrimary] ?: actual;
@@ -79,7 +91,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 
 - (NSArray<UIViewController *> *)viewControllers {
     NSArray<UIViewController *> *actual = %orig;
-    if (!ApolloPaneNativeEntryCompatibilityActive()) return actual;
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) return actual;
 
     NSMutableArray<UIViewController *> *compatible =
         [NSMutableArray arrayWithCapacity:actual.count];
@@ -97,7 +109,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)setSelectedIndex:(NSUInteger)selectedIndex {
-    if (!ApolloPaneNativeEntryCompatibilityActive()) { %orig; return; }
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
     @try {
@@ -108,7 +120,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)setSelectedViewController:(UIViewController *)selectedViewController {
-    if (!ApolloPaneNativeEntryCompatibilityActive()) { %orig; return; }
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
     UIViewController *actual = ApolloPaneActualChildForSyntheticChild(self, selectedViewController);
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
@@ -124,7 +136,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 %hook _TtC6Apollo11AppDelegate
 
 - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary *)options {
-    ApolloPaneBeginNativeEntry();
+    ApolloPaneBeginNativeEntry(ApolloPaneEntryTabsForDelegate(self));
     ApolloLog(@"[PaneEntry] AppDelegate URL callback active=%d", ApolloPaneLayoutActive());
     @try {
         return %orig(application, url, options);
@@ -136,7 +148,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
  didReceiveNotificationResponse:(UNNotificationResponse *)response
          withCompletionHandler:(void (^)(void))completionHandler {
-    ApolloPaneBeginNativeEntry();
+    ApolloPaneBeginNativeEntry(ApolloPaneEntryTabsForDelegate(self));
     ApolloLog(@"[PaneEntry] AppDelegate notification callback active=%d", ApolloPaneLayoutActive());
     @try {
         %orig(center, response, completionHandler);
@@ -162,7 +174,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
         compatible = [(ApolloPaneSplitViewController *)viewController
             apollo_navigationControllerForColumn:ApolloPaneColumnPrimary] ?: viewController;
     }
-    ApolloPaneBeginNativeEntry();
+    ApolloPaneBeginNativeEntry(tabBarController);
     @try {
         return %orig(tabBarController, compatible);
     } @finally {
@@ -171,7 +183,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)scene:(UIScene *)scene openURLContexts:(NSSet *)URLContexts {
-    ApolloPaneBeginNativeEntry();
+    ApolloPaneBeginNativeEntry(ApolloPaneEntryTabsForDelegate(self));
     ApolloLog(@"[PaneEntry] SceneDelegate URL callback active=%d", ApolloPaneLayoutActive());
     @try {
         %orig(scene, URLContexts);
@@ -183,7 +195,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 - (void)windowScene:(UIWindowScene *)windowScene
  performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem
    completionHandler:(void (^)(BOOL succeeded))completionHandler {
-    ApolloPaneBeginNativeEntry();
+    ApolloPaneBeginNativeEntry(ApolloPaneEntryTabsForDelegate(self));
     ApolloLog(@"[PaneEntry] SceneDelegate shortcut callback active=%d", ApolloPaneLayoutActive());
     @try {
         %orig(windowScene, shortcutItem, completionHandler);
@@ -193,7 +205,12 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)scene:(UIScene *)scene continueUserActivity:(NSUserActivity *)userActivity {
-    ApolloPaneBeginNativeEntry();
+    if ([scene isKindOfClass:UIWindowScene.class] &&
+        ApolloPaneReceiveSceneActivity((UIWindowScene *)scene, userActivity)) {
+        ApolloPaneOpenPendingSceneLink((UIWindowScene *)scene);
+        return;
+    }
+    ApolloPaneBeginNativeEntry(ApolloPaneEntryTabsForDelegate(self));
     ApolloLog(@"[PaneEntry] SceneDelegate activity callback active=%d", ApolloPaneLayoutActive());
     @try {
         %orig(scene, userActivity);
@@ -209,5 +226,6 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 %ctor {
     if (!ApolloPaneLayoutEnabled()) return;
     %init(ApolloPaneEntryPointsGroup);
+    ApolloPaneEntryPointsSetReady();
     ApolloLog(@"[PaneEntry] installed scoped native-entry compatibility adapter");
 }
