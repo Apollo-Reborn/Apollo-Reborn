@@ -44,6 +44,8 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloAutomaticBackupViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -352,6 +354,10 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
+@end
+
+@interface CustomAPIViewController ()
+@property (nonatomic) BOOL resolvingRestoreFolder;
 @end
 
 @implementation CustomAPIViewController
@@ -1142,7 +1148,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *backup =
         [ApolloSettingsRow buttonRowWithID:@"data.backup"
                                      title:@"Backup Settings"
-                                    action:^{ [weakSelf backupSettings]; }];
+                                    action:^{
+            ApolloAutomaticBackupViewController *controller = [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    backup.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -4261,11 +4273,35 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)restoreSettings {
+    if (self.resolvingRestoreFolder || self.presentedViewController) return;
+
+    ApolloAutomaticBackup *manager = [ApolloAutomaticBackup sharedManager];
+    if (!manager.hasSavedFolder) {
+        [self presentRestorePickerAtDirectory:nil];
+        return;
+    }
+
+    self.resolvingRestoreFolder = YES;
+    __weak typeof(self) weakSelf = self;
+    [manager selectedFolderURLWithCompletion:^(NSURL *folderURL, __unused NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.resolvingRestoreFolder = NO;
+        if (!self.viewIfLoaded.window || self.presentedViewController ||
+            (self.navigationController && self.navigationController.topViewController != self)) return;
+        // An unavailable provider should not prevent restoring a backup from
+        // another location. A nil directory keeps the normal Files browser.
+        [self presentRestorePickerAtDirectory:folderURL];
+    }];
+}
+
+- (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
     UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;
+    documentPicker.directoryURL = folderURL;
     [self presentViewController:documentPicker animated:YES completion:nil];
 }
 

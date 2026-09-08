@@ -174,6 +174,12 @@ echo "Found app bundle: ${app_bundle_name}"
 # --- 2. Apply Modifications (via shared modules) ---
 echo "Applying modifications..."
 
+# Directory bookmarks returned by UIDocumentPicker use in-place access. Declare
+# that behavior explicitly so Files providers (including iCloud Drive) can hand
+# the selected folder back to sideloaded builds on physical devices.
+/usr/libexec/PlistBuddy -c "Set :LSSupportsOpeningDocumentsInPlace true" "$APP_BUNDLE/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$APP_BUNDLE/Info.plist"
+
 # Every patched Apollo build should expose the device's full adaptive refresh
 # range, regardless of whether Liquid Glass is also enabled.
 enable_promotion_in_app "$APP_BUNDLE"

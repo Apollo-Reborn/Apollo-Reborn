@@ -564,10 +564,11 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    // iPad popover anchoring; fall back to the presenter's view center.
-    UIView *anchor = sourceView ?: presenter.view;
+    // Anchor to the screen, not a reusable cell: row reloads can recycle the
+    // source cell for a different row while the picker is still open.
+    UIView *anchor = presenter.view;
     sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds
+    sheet.popoverPresentationController.sourceRect = sourceView ? [sourceView convertRect:sourceView.bounds toView:anchor]
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
     [presenter presentViewController:sheet animated:YES completion:nil];
 }
