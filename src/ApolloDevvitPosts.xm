@@ -45,7 +45,10 @@
 // (edge to edge on iPhone, the feed card's width, so blocks apps need no
 // re-layout), the pop hands it back, and scrolled-away rows park in the
 // pool. WebKit's processes are prewarmed the moment an interactive post is
-// first laid out, and the pre-reveal probe runs at a brisk cadence.
+// first laid out, and the pre-reveal probe runs at a brisk cadence. All of
+// that is for scrolling and navigation while the feature is ON: turning
+// either setting off tears every affected page down on the spot (live,
+// parked, detached, and the prewarm view) — see ApolloDevvitSettingsChanged.
 //
 // Auth: the embed seeds the per-account web session cookies from
 // ApolloWebSessionPollFor() when present — that covers BOTH keyless accounts
@@ -89,6 +92,9 @@
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName);
 static void ApolloDevvitScheduleStaleSweep(void);
 static void ApolloDevvitPrewarmWebKit(void);
+static void ApolloDevvitReleasePrewarm(void);
+static RDKLink *ApolloDevvitLinkOfParent(id parent);
+static void ApolloDevvitMountCommentsHeadersInView(UIView *root);
 
 NSString *const ApolloDevvitFeedOwnershipChangedNotification = @"ApolloDevvitFeedOwnershipChangedNotification";
 
@@ -823,42 +829,13 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
         poke.delaysTouchesEnded = NO;
         poke.delegate = self;
         [self addGestureRecognizer:poke];
-        // Cap total live WEB VIEWS (not widget shells): a torn-down widget
-        // stays in the weak table with webView == nil and costs nothing, so
-        // both the count and the eviction must look at webView, or the cap
-        // stops capping once four hosts have ever existed. Eviction is
-        // cap-gated (it used to fire on every creation, which is what kept
-        // killing a still-useful off-screen page) and prefers the keep-alive
-        // pool's oldest entry over a widget that merely happens to be
-        // off-window at this instant. Teardown runs outside the registry lock
-        // (it's pure main-thread UIKit work).
-        ApolloDevvitWidgetView *evict = nil;
+        // Registry only. The live-web-view cap is a HARD limit enforced where
+        // a widget is about to be created (ApolloDevvitReserveGlobalSlot):
+        // a host that cannot get a slot waits for one instead of creating a
+        // fifth page.
         @synchronized ([ApolloDevvitWidgetView class]) {
             if (!sDevvitLiveWidgets) sDevvitLiveWidgets = [NSHashTable weakObjectsHashTable];
-            NSUInteger liveCount = 0;
-            ApolloDevvitWidgetView *parkedCandidate = nil, *offWindowCandidate = nil;
-            for (ApolloDevvitWidgetView *w in sDevvitLiveWidgets.allObjects) {
-                if (!w.webView) continue;
-                liveCount += 1;
-                if (w.stashedForReadopt) continue;
-                if (w.parked) {
-                    if (!parkedCandidate || w.parkedAt < parkedCandidate.parkedAt) parkedCandidate = w;
-                } else if (!w.window && !offWindowCandidate) {
-                    offWindowCandidate = w;
-                }
-            }
-            if (liveCount >= kApolloDevvitMaxLiveWidgets) {
-                evict = parkedCandidate ?: offWindowCandidate;
-                if (!evict) {
-                    ApolloLog(@"[Devvit] %lu live web views, none evictable (all on-window)",
-                              (unsigned long)liveCount);
-                }
-            }
             [sDevvitLiveWidgets addObject:self];
-        }
-        if (evict) {
-            ApolloLog(@"[Devvit] cap: evicting %@ widget %@", evict.parked ? @"parked" : @"off-window", evict.fullName);
-            [evict teardown];
         }
     }
     return self;
@@ -1012,6 +989,7 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     [config.userContentController addUserScript:crop];
 
     WKWebView *web = [[WKWebView alloc] initWithFrame:self.bounds configuration:config];
+    ApolloDevvitReleasePrewarm();  // its job is done the moment a real page exists
     web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     // Same mobile UA the Direct Chat embed uses — a real Safari string keeps
     // reddit's bot heuristics happy and selects the phone breakpoint.
@@ -1467,6 +1445,10 @@ static NSURL *ApolloDevvitNormalizedPermalink(NSURL *url) {
 // first in line for eviction whenever a cap needs room, and shed outright on
 // a memory warning. Main thread only.
 static NSMutableDictionary<NSString *, ApolloDevvitWidgetView *> *sDevvitParkedWidgets;
+// fullName -> widget detached from a row that is about to reload (defined
+// with the pool because the shutdown paths below sweep both; the row-reload
+// section documents it).
+static NSMutableDictionary<NSString *, ApolloDevvitWidgetView *> *sDevvitDetachedWidgets;
 static const NSUInteger kApolloDevvitMaxParked = 2;
 static const NSTimeInterval kApolloDevvitParkTTL = 240.0;
 
@@ -1483,6 +1465,13 @@ static void ApolloDevvitPoolForget(ApolloDevvitWidgetView *widget) {
 static BOOL ApolloDevvitParkWidget(ApolloDevvitWidgetView *widget, NSString *reason) {
     if (!widget) return NO;
     if (!widget.webView || !widget.revealed || widget.failed || !widget.fullName) {
+        [widget teardown];
+        return NO;
+    }
+    // Parking is for scrolling and navigation while the feature is ON. An
+    // opt-out (either setting off) must not keep a page — and its realtime
+    // connection — alive for the pool's lifetime.
+    if (!sDevvitInteractivePosts || (widget.feedContext && !sDevvitFeedWidgets)) {
         [widget teardown];
         return NO;
     }
@@ -1620,9 +1609,106 @@ static void ApolloDevvitPrewarmWebKit(void) {
             sDevvitPrewarmView = warm;
             ApolloLog(@"[Devvit] prewarming WebKit");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ sDevvitPrewarmView = nil; });
+                           dispatch_get_main_queue(), ^{ ApolloDevvitReleasePrewarm(); });
         });
     });
+}
+
+static void ApolloDevvitReleasePrewarm(void) {
+    if (!sDevvitPrewarmView) return;
+    [sDevvitPrewarmView stopLoading];
+    sDevvitPrewarmView = nil;
+}
+
+#pragma mark - Live-web-view cap
+
+// The global cap counts every widget holding a page — on-window, parked, or
+// detached for a row reload. A creation that would exceed it first evicts
+// the pool's oldest entry, then any off-window widget; when everything is
+// on-window it is refused, and the host retries (ApolloDevvitScheduleMountRetry)
+// rather than creating a page past the limit. Main thread only.
+static NSUInteger ApolloDevvitLiveWebViewCount(void) {
+    NSUInteger count = 0;
+    @synchronized ([ApolloDevvitWidgetView class]) {
+        for (ApolloDevvitWidgetView *w in sDevvitLiveWidgets.allObjects) if (w.webView) count += 1;
+    }
+    return count;
+}
+
+static BOOL ApolloDevvitReserveGlobalSlot(void) {
+    ApolloDevvitWidgetView *evict = nil;
+    @synchronized ([ApolloDevvitWidgetView class]) {
+        NSUInteger liveCount = 0;
+        ApolloDevvitWidgetView *parkedCandidate = nil, *offWindowCandidate = nil;
+        for (ApolloDevvitWidgetView *w in sDevvitLiveWidgets.allObjects) {
+            if (!w.webView) continue;
+            liveCount += 1;
+            if (w.stashedForReadopt) continue;
+            if (w.parked) {
+                if (!parkedCandidate || w.parkedAt < parkedCandidate.parkedAt) parkedCandidate = w;
+            } else if (!w.window && !offWindowCandidate) {
+                offWindowCandidate = w;
+            }
+        }
+        if (liveCount < kApolloDevvitMaxLiveWidgets) return YES;
+        evict = parkedCandidate ?: offWindowCandidate;
+        if (!evict) {
+            ApolloLog(@"[Devvit] %lu live web views, none evictable (all on-window) — no slot",
+                      (unsigned long)liveCount);
+            return NO;
+        }
+    }
+    ApolloLog(@"[Devvit] cap: evicting %@ widget %@", evict.parked ? @"parked" : @"off-window", evict.fullName);
+    [evict teardown];
+    return YES;
+}
+
+#pragma mark - Settings changes
+
+static void ApolloDevvitRelayoutHosts(BOOL feedOnly);
+
+// An explicit opt-out is not cell reuse: turning "Live Interactive Posts" off
+// tears down EVERY widget (live, parked, detached) and the prewarm view;
+// turning "Show in Feed" off does the same for every feed-context one (a
+// widget the comments header borrowed from a row stays — the thread surface
+// is still on). Hosts left behind are hidden, and their rows re-laid out so
+// Apollo's own rendering returns at once. Turning a setting back on re-lays
+// the same rows so widgets mount again without a scroll.
+static void ApolloDevvitShutDownWidgets(BOOL feedOnly, NSString *reason) {
+    NSArray<ApolloDevvitWidgetView *> *widgets;
+    @synchronized ([ApolloDevvitWidgetView class]) { widgets = sDevvitLiveWidgets.allObjects; }
+    NSUInteger torn = 0;
+    for (ApolloDevvitWidgetView *w in widgets) {
+        if (!w.webView) continue;
+        if (feedOnly && !w.feedContext) continue;
+        UIView *hostView = w.superview;
+        [w teardown];
+        [w removeFromSuperview];
+        if (hostView) { ApolloDevvitRemoveGhost(hostView); hostView.hidden = YES; }
+        torn += 1;
+    }
+    for (NSString *key in sDevvitDetachedWidgets.allKeys) {
+        ApolloDevvitWidgetView *w = sDevvitDetachedWidgets[key];
+        if (feedOnly && !w.feedContext) continue;
+        [w teardown];
+        [sDevvitDetachedWidgets removeObjectForKey:key];
+    }
+    if (!feedOnly) [sDevvitParkedWidgets removeAllObjects];  // teardown emptied it; belt and braces
+    if (!feedOnly) ApolloDevvitReleasePrewarm();
+    ApolloLog(@"[Devvit] %@ — tore down %lu widget(s); %lu web view(s) remain",
+              reason, (unsigned long)torn, (unsigned long)ApolloDevvitLiveWebViewCount());
+    ApolloDevvitRelayoutHosts(feedOnly);
+}
+
+static void ApolloDevvitSettingsChanged(void) {
+    if (!sDevvitInteractivePosts) {
+        ApolloDevvitShutDownWidgets(NO, @"Live Interactive Posts turned off");
+    } else if (!sDevvitFeedWidgets) {
+        ApolloDevvitShutDownWidgets(YES, @"Show in Feed turned off");
+    } else {
+        ApolloLog(@"[Devvit] settings on (feed=%d) — re-laying out hosts", sDevvitFeedWidgets);
+        ApolloDevvitRelayoutHosts(NO);
+    }
 }
 
 #pragma mark - Texture plumbing shared by both surfaces
@@ -1757,12 +1843,12 @@ static const void *kApolloDevvitMountRetryKey = &kApolloDevvitMountRetryKey;
 
 static void ApolloDevvitScheduleMountRetry(ASDisplayNode *host, RDKLink *link, BOOL feedContext, NSInteger attempt) {
     if (attempt > 15) {
-        ApolloLog(@"[Devvit] %@ still no feed slot after %ld retries — waiting for the next visibility event",
+        ApolloLog(@"[Devvit] %@ still no widget slot after %ld retries — waiting for the next visibility event",
                   ApolloDevvitFullName(link), (long)attempt);
         return;
     }
     if (objc_getAssociatedObject(host, kApolloDevvitMountRetryKey)) return;
-    if (attempt == 0) ApolloLog(@"[Devvit] feed cap reached, all on-window — deferring mount of %@", ApolloDevvitFullName(link));
+    if (attempt == 0) ApolloLog(@"[Devvit] widget cap reached, all on-window — deferring mount of %@", ApolloDevvitFullName(link));
     objc_setAssociatedObject(host, kApolloDevvitMountRetryKey, @(attempt), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak ASDisplayNode *weakHost = host;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
@@ -1806,7 +1892,7 @@ static void ApolloDevvitInstallWidget(ASDisplayNode *host, RDKLink *link, BOOL f
             widget.leavingScreen = NO;
             ApolloLog(@"[Devvit] re-adopted live widget for %@ (%@)", fullName, how);
         } else {
-            if (feedContext && !ApolloDevvitReserveFeedSlot()) {
+            if ((feedContext && !ApolloDevvitReserveFeedSlot()) || !ApolloDevvitReserveGlobalSlot()) {
                 ApolloDevvitScheduleMountRetry(host, link, feedContext, 0);
                 return;
             }
@@ -1869,6 +1955,25 @@ static UITableView *ApolloDevvitTableViewForNode(id node) {
     UIView *v = [node view];
     while (v && ![v isKindOfClass:[UITableView class]]) v = v.superview;
     return (UITableView *)v;
+}
+
+// Feed tables that have shown an interactive row (weak, main thread). A
+// settings re-enable has no registered parents to re-lay out — the rows were
+// rebuilt natively when the feature went off — so it reloads the visible
+// interactive rows of these tables instead.
+static NSHashTable<UITableView *> *sDevvitFeedTables;
+
+static void ApolloDevvitRegisterFeedTable(UITableView *table) {
+    if (!table) return;
+    if (!sDevvitFeedTables) sDevvitFeedTables = [NSHashTable weakObjectsHashTable];
+    [sDevvitFeedTables addObject:table];
+}
+
+static id ApolloDevvitNodeForRow(UITableView *table, NSIndexPath *indexPath) {
+    SEL sel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    if (!table || !indexPath || ![table respondsToSelector:sel]) return nil;
+    @try { return ((id (*)(id, SEL, NSIndexPath *))objc_msgSend)(table, sel, indexPath); }
+    @catch (__unused id e) { return nil; }
 }
 
 // The begin/endUpdates height re-query, deferred until the table is idle
@@ -1953,7 +2058,6 @@ static BOOL ApolloDevvitBurnReloadBudget(NSString *fullName) {
 // cell's install path re-adopts it (same permalink -> configureForPermalink
 // early-returns and the loaded page carries over). Entries expire after 10s in
 // case the reload was dropped; the widget then tears down for real.
-static NSMutableDictionary<NSString *, ApolloDevvitWidgetView *> *sDevvitDetachedWidgets;
 
 // Only a widget INSIDE the reloading row is stashed — never "the" live widget
 // for the post. The same post can have two live widgets at once (iPad split
@@ -2170,6 +2274,66 @@ static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName) {
     });
 }
 
+// Re-lay out every registered host after a settings change: comments headers
+// re-measure in place (the parent IS the cell), feed rows reload (the only
+// way a committed Texture row changes shape — see the row-reload section).
+static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
+        Class cellClass = NSClassFromString(@"_TtC6Apollo17LargePostCellNode");
+        // Registered hosts (the surfaces currently showing a widget host):
+        // comments headers re-measure in place, feed rows reload.
+        for (id parent in sDevvitHostParents.allObjects) {
+            BOOL isFeedRow = richMediaClass && [parent isKindOfClass:richMediaClass];
+            if (feedOnly && !isFeedRow) continue;
+            if (![parent isNodeLoaded] || ![parent view].window) continue;
+            if (!isFeedRow) {
+                ApolloDevvitInvalidateUpToCell((ASDisplayNode *)parent);
+                UITableView *table = ApolloDevvitTableViewForNode(parent);
+                if (table) ApolloDevvitRefreshTableHeights(table, 0);
+                continue;
+            }
+            ApolloDevvitInvalidateUpToCell((ASDisplayNode *)parent);
+            ApolloDevvitReloadRowForParent(parent, ApolloDevvitFullName(ApolloDevvitLinkOfParent(parent)));
+        }
+        if (!sDevvitInteractivePosts || (feedOnly && !sDevvitFeedWidgets)) return;
+        // Re-enable: rows rebuilt natively while the feature was off have no
+        // registered host — reload every visible interactive row of the feed
+        // tables we know, so their cells come back with a host and mount
+        // through the normal visibility event.
+        if (sDevvitFeedWidgets) {
+            for (UITableView *table in sDevvitFeedTables.allObjects) {
+                if (!table.window) continue;
+                for (NSIndexPath *indexPath in [table indexPathsForVisibleRows]) {
+                    id node = ApolloDevvitNodeForRow(table, indexPath);
+                    if (!cellClass || ![node isKindOfClass:cellClass]) continue;
+                    RDKLink *link = ApolloDevvitLinkOfParent(node);
+                    if (!ApolloDevvitLinkIsInteractive(link)) continue;
+                    id mediaNode = nil;
+                    Ivar iv = class_getInstanceVariable(object_getClass(node), "richMediaNode");
+                    if (iv) mediaNode = object_getIvar(node, iv);
+                    if (mediaNode && ApolloDevvitWidgetInHost(objc_getAssociatedObject(mediaNode, kApolloDevvitHostNodeKey))) continue;
+                    ApolloDevvitScheduleRowReload(table, indexPath, ApolloDevvitFullName(link), 0);
+                }
+            }
+        }
+        // Comments headers keep their node across the off/on cycle, so the
+        // re-measure above re-splices the host — but nothing installs into it
+        // (didLoad already fired). Mount once the layout has settled.
+        if (!feedOnly) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                for (id parent in sDevvitHostParents.allObjects) {
+                    if (richMediaClass && [parent isKindOfClass:richMediaClass]) continue;
+                    if (![parent isNodeLoaded] || ![parent view].window) continue;
+                    ApolloDevvitMountCommentsHeadersInView([parent view].window);
+                    break;
+                }
+            });
+        }
+    });
+}
+
 #pragma mark - Comments header splice
 
 // Rebuild a stack preserving its layout attributes (AISummary's idiom — the
@@ -2277,6 +2441,9 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
         if (ApolloDevvitPostFailed(ApolloDevvitFullName(link))) return orig;
         ASDisplayNode *host = ApolloDevvitEnsureHostNode(self);
         if (!host) return orig;
+        if ([host isNodeLoaded]) {  // hidden by an earlier opt-out (ShutDownWidgets)
+            dispatch_async(dispatch_get_main_queue(), ^{ host.view.hidden = NO; });
+        }
         ApolloDevvitSetNodeHeight(host, ApolloDevvitHeightForFullName(ApolloDevvitFullName(link)));
         ApolloDevvitRegisterHostParent(self);
         id placed = ApolloDevvitPlaceInSpec(orig, host, 0);
@@ -2334,11 +2501,17 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
             // hide it (carousel lesson #4).
             ASDisplayNode *stale = objc_getAssociatedObject(self, kApolloDevvitHostNodeKey);
             if (stale && [stale isNodeLoaded]) {
+                // Cell reuse parks the page for the pool; an opt-out (feed
+                // widgets off) tears it down — ParkWidget enforces the same
+                // rule, this just names the reason.
+                BOOL optedOut = !sDevvitFeedWidgets;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     stale.view.hidden = YES;
                     ApolloDevvitRemoveGhost(stale.view);
                     ApolloDevvitWidgetView *w = ApolloDevvitWidgetInHost(stale);
-                    if (w) ApolloDevvitParkWidget(w, @"cell recycled");
+                    if (!w) return;
+                    if (optedOut) { [w teardown]; [w removeFromSuperview]; }
+                    else ApolloDevvitParkWidget(w, @"cell recycled");
                 });
             }
             return %orig;
@@ -2391,6 +2564,7 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
         if (iv) mediaNode = object_getIvar(self, iv);
         if (!mediaNode) return;
         ASDisplayNode *host = objc_getAssociatedObject(mediaNode, kApolloDevvitHostNodeKey);
+        ApolloDevvitRegisterFeedTable(ApolloDevvitTableViewForNode(mediaNode));
         ApolloDevvitInstallWidget(host, link, YES);
         // Self-heal: a cell scrolling into view may still carry a row height
         // from before this post's real height was known (the correction fires
@@ -2592,6 +2766,47 @@ void ApolloDevvitDebugSweep(void) {
     });
 }
 
+// Simulator-only: population + footprint snapshot (`devvitstats`).
+void ApolloDevvitDebugStats(void);
+void ApolloDevvitDebugStats(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSArray<ApolloDevvitWidgetView *> *widgets;
+        @synchronized ([ApolloDevvitWidgetView class]) { widgets = sDevvitLiveWidgets.allObjects; }
+        NSUInteger live = 0, onWindow = 0, parked = 0, feed = 0;
+        for (ApolloDevvitWidgetView *w in widgets) {
+            if (!w.webView) continue;
+            live += 1;
+            if (w.window) onWindow += 1;
+            if (w.parked) parked += 1;
+            if (w.feedContext) feed += 1;
+            ApolloLog(@"[Devvit][stats]   %@ %@ window=%d parked=%d revealed=%d h=%.0f",
+                      w.fullName, w.feedContext ? @"feed" : @"thread", w.window != nil, w.parked, w.revealed,
+                      w.bounds.size.height);
+        }
+        ApolloLog(@"[Devvit][stats] live web views=%lu (cap %lu) on-window=%lu parked=%lu (pool %lu) feed=%lu detached=%lu prewarm=%d enabled=%d feed-enabled=%d",
+                  (unsigned long)live, (unsigned long)kApolloDevvitMaxLiveWidgets, (unsigned long)onWindow,
+                  (unsigned long)parked, (unsigned long)sDevvitParkedWidgets.count, (unsigned long)feed,
+                  (unsigned long)sDevvitDetachedWidgets.count, sDevvitPrewarmView != nil,
+                  sDevvitInteractivePosts, sDevvitFeedWidgets);
+    });
+}
+
+// Simulator-only: flip a setting exactly the way the settings switch does
+// (flag + defaults + notification) — `devvittoggle posts|feed on|off`.
+void ApolloDevvitDebugToggle(NSString *which, BOOL on);
+void ApolloDevvitDebugToggle(NSString *which, BOOL on) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([which isEqualToString:@"feed"]) {
+            sDevvitFeedWidgets = on;
+            [[NSUserDefaults standardUserDefaults] setBool:on forKey:UDKeyDevvitFeedWidgets];
+        } else {
+            sDevvitInteractivePosts = on;
+            [[NSUserDefaults standardUserDefaults] setBool:on forKey:UDKeyDevvitInteractivePosts];
+        }
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloDevvitFeedOwnershipChangedNotification object:nil];
+    });
+}
+
 // Simulator-only: dump every live widget's geometry against its host, then
 // force a layout pass on the host and dump again (`devvitlayout`).
 void ApolloDevvitDebugLayout(void);
@@ -2665,11 +2880,22 @@ void ApolloDevvitDebugEvaluateJS(NSString *js) {
             }
             NSUInteger shed = 0;
             for (ApolloDevvitWidgetView *w in widgets) {
-                // Parked (pooled) widgets are off-window too — shed with the rest.
+                // Parked (pooled) and detached widgets are off-window too —
+                // shed with the rest. Only pages actually on screen survive.
                 if (!w.window && w.webView) { [w teardown]; shed += 1; }
             }
-            if (shed) ApolloLog(@"[Devvit] memory warning — shed %lu off-screen widget(s)", (unsigned long)shed);
+            [sDevvitDetachedWidgets removeAllObjects];
+            ApolloDevvitReleasePrewarm();
+            ApolloLog(@"[Devvit] memory warning — shed %lu off-screen widget(s); %lu web view(s) remain (all on screen)",
+                      (unsigned long)shed, (unsigned long)ApolloDevvitLiveWebViewCount());
         }];
+        // Settings: an opt-out tears everything it covers down on the spot;
+        // the switch handlers post this after updating the flags.
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:ApolloDevvitFeedOwnershipChangedNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(__unused NSNotification *note) { ApolloDevvitSettingsChanged(); }];
         ApolloLog(@"[Devvit] interactive posts module loaded (enabled=%d feed=%d)",
                   sDevvitInteractivePosts, sDevvitFeedWidgets);
     }

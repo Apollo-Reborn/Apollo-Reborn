@@ -3565,12 +3565,55 @@ static void ApolloAIMaybeRouteDebugURL(void) {
 }
 #endif
 
+// The Live Interactive Posts setting flipped. Turned OFF, such a post's body
+// is Apollo's own rendering again and the normal generation pass may
+// summarize it. Turned ON, its body is hidden behind the widget again — so a
+// post/link card generated in the meantime (the setting can be toggled with
+// the thread still open) describes text the user can no longer see: retire
+// it, drop its cache entry, and cancel anything in flight.
+static void ApolloAIDevvitSettingsChanged(void) {
+    if (!sDevvitInteractivePosts) return;
+    ApolloAIEnsureState();
+    BOOL persist = NO;
+    for (id headerNode in sHeaderNodes.allObjects) {
+        id link = ApolloAIScanForLink(headerNode);
+        if (!link || !ApolloDevvitLinkShowsWidget(link)) continue;
+        NSString *fullName = ApolloAILinkFullName(link);
+        if (fullName.length == 0) continue;
+        NSString *requestID = sPostRequestIDs[fullName];
+        if (requestID.length) [ApolloAIBridge() cancelRequest:requestID];
+        [sPostInFlight removeObject:fullName];
+        [sPostRequestIDs removeObjectForKey:fullName];
+        [sLinkSummaryPosts removeObject:fullName];
+        [sBothSummaryPosts removeObject:fullName];
+        [sPostEmpty removeObject:fullName];
+        ApolloAIClearFailure(fullName, YES);
+        if (sPostSummaryCache[fullName]) {
+            [sPostSummaryCache removeObjectForKey:fullName];
+            [sPostSummaryMode removeObjectForKey:fullName];
+            [sPostSummaryDetails removeObjectForKey:fullName];
+            [sPostSummaryProfiles removeObjectForKey:fullName];
+            persist = YES;
+        }
+        if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateNone, nil)) {
+            ApolloAIForceHeaderRemeasure(fullName);
+        }
+        ApolloLog(@"[AISummary] %@ is a live interactive post again — retired its post/link card", fullName);
+    }
+    if (persist) ApolloAIPersistSummaries();
+}
+
 %ctor {
     @autoreleasepool {
         ApolloAIEnsureState();
         ApolloFoundationModels *bridge = ApolloAIBridge();
         ApolloLog(@"[AISummary] loaded; bridge=%@ availabilityStatus=%ld",
                   bridge ? @"yes" : @"no", bridge ? (long)[bridge availabilityStatus] : -1);
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:ApolloDevvitFeedOwnershipChangedNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(__unused NSNotification *note) { ApolloAIDevvitSettingsChanged(); }];
 
 #if APOLLO_SIM_BUILD
         ApolloAIMaybeRouteDebugURL();

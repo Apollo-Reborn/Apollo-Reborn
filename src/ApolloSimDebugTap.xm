@@ -753,6 +753,31 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloDevvitDebugEvaluateJS([contents substringFromIndex:9]);
             return;
         }
+        // "devvitstats": live/parked/detached widget population + prewarm state.
+        if ([contents hasPrefix:@"devvitstats"]) {
+            extern void ApolloDevvitDebugStats(void);
+            ApolloDevvitDebugStats();
+            return;
+        }
+        // "devvittoggle posts|feed on|off": flip a Devvit setting like its switch.
+        if ([contents hasPrefix:@"devvittoggle "]) {
+            extern void ApolloDevvitDebugToggle(NSString *which, BOOL on);
+            NSArray *parts = [[contents substringFromIndex:13] componentsSeparatedByString:@" "];
+            if (parts.count >= 2) ApolloDevvitDebugToggle(parts[0], [parts[1] isEqualToString:@"on"]);
+            return;
+        }
+        // "memwarn": simulate a memory warning in-process.
+        if ([contents hasPrefix:@"memwarn"]) {
+            SEL sel = NSSelectorFromString(@"_performMemoryWarning");
+            UIApplication *app = UIApplication.sharedApplication;
+            if ([app respondsToSelector:sel]) {
+                ((void (*)(id, SEL))objc_msgSend)(app, sel);
+                ApolloLog(@"[SimDebugTap] memory warning simulated");
+            } else {
+                ApolloLog(@"[SimDebugTap] memory warning: _performMemoryWarning unavailable");
+            }
+            return;
+        }
         // "devvitlayout": dump widget-vs-host geometry, force a host layout
         // pass, dump again.
         if ([contents hasPrefix:@"devvitlayout"]) {
