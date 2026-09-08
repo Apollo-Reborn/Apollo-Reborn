@@ -92,7 +92,7 @@ static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
             ? @"Will turn on after Apollo quits and reopens. The current single-column layout remains active until then."
             : @"Will turn off after Apollo quits and reopens. The current multi-column layout remains active until then.";
     }
-    return @"Experimental on iPadOS 18 or newer. Puts your tabs in a sidebar and opens comments beside the post list instead of on top of it. Apollo restarts to apply changes.";
+    return @"Experimental on iPadOS 18+ and iOS 27. Opens detail beside the list when space allows, and returns to one column in narrow windows. Apollo restarts to apply changes.";
 }
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
@@ -1874,11 +1874,8 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf lgTitleGapCenteringSwitchToggled:sender]; }];
     titleGapCentering.visible = ^BOOL { return IsLiquidGlass(); };
 
-    // Experimental multi-column iPad layout. Hidden outright on iPhone rather
-    // than shown-disabled: it is a whole-app restructure with nothing to
-    // preview or explain on a device that will never run it.
-    // Installation happens at scene connect, so the handler confirms and
-    // restarts instead of pretending the change is live.
+    // Keep the opt-in visible even in a narrow supported phone window. The
+    // saved choice is read on launch; resizing then adapts the same hierarchy.
     ApolloSettingsRow *iPadPaneLayout =
         [ApolloSettingsRow customRowWithID:@"gen.iPadPaneLayout"
                                       cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {

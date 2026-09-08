@@ -2039,8 +2039,15 @@ static NSArray<UIBarButtonItem *> *ApolloPaneBarItemsByRemovingIdentity(
 }
 
 - (void)apollo_revealDetailAfterPrimarySelectionIfNeeded {
-    if (self.isCollapsed ||
-        self.displayMode != UISplitViewControllerDisplayModeOneOverSecondary) return;
+    if (self.isCollapsed) {
+        // A deep link can pop the primary to its root before replacing an
+        // existing detail branch. Updating that branch does not re-present
+        // UIKit's compact column bridge. Explicitly reveal the destination,
+        // including when the old detail still owns its compact chrome state.
+        if (!self.apollo_detailIsEmpty) [self showColumn:UISplitViewControllerColumnSecondary];
+        return;
+    }
+    if (self.displayMode != UISplitViewControllerDisplayModeOneOverSecondary) return;
     ApolloLog(@"[PaneDisplay] tab %ld dismissing primary overlay after detail selection",
               (long)self.apollo_tabIndex);
     [self hideColumn:UISplitViewControllerColumnPrimary];
@@ -2341,8 +2348,36 @@ apply:
     [self apollo_scheduleResolvedGeometryRefresh];
 }
 
+- (void)apollo_updateResizablePhoneColumnsForSize:(CGSize)size {
+    if (@available(iOS 27.0, *)) {
+        // The legacy tab host can keep a compact inherited trait when Device
+        // Hub starts resizing from a phone-sized window. Derive the split's
+        // local presentation from its own space, never UIScreen.main bounds or
+        // orientation. This changes only our container's trait; UIDevice and
+        // the scene retain their real idiom and platform traits.
+        if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone ||
+            size.width <= 0.0 || size.height <= 0.0) return;
+        UIUserInterfaceSizeClass sizeClass = ApolloPanePhoneHasRoomForColumns(size.width, size.height)
+            ? UIUserInterfaceSizeClassRegular : UIUserInterfaceSizeClassCompact;
+        // Reading a trait override that has not been set raises an assertion.
+        if ([self.traitOverrides containsTrait:UITraitHorizontalSizeClass.class] &&
+            self.traitOverrides.horizontalSizeClass == sizeClass) return;
+        self.traitOverrides.horizontalSizeClass = sizeClass;
+        ApolloLog(@"[PanePhone] tab %ld size=%.0fx%.0f columns=%d",
+                  (long)self.apollo_tabIndex, size.width, size.height,
+                  sizeClass == UIUserInterfaceSizeClassRegular ? 2 : 1);
+    }
+}
+
+- (void)viewIsAppearing:(BOOL)animated {
+    [super viewIsAppearing:animated];
+    // Offscreen tabs are updated when attached; their views stay lazy.
+    [self apollo_updateResizablePhoneColumnsForSize:self.view.bounds.size];
+}
+
 - (void)viewWillTransitionToSize:(CGSize)size
        withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [self apollo_updateResizablePhoneColumnsForSize:size];
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     __weak ApolloPaneSplitViewController *weakSelf = self;
     [coordinator animateAlongsideTransition:nil

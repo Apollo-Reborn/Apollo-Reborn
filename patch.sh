@@ -40,6 +40,7 @@ INPUT_IPA=""
 OUTPUT_IPA="Apollo-Patched.ipa"
 REMOVE_CODE_SIGNATURE="false"
 LIQUID_GLASS="false"
+RESIZABLE_APP="false"
 LIQUID_GLASS_ICONS_ONLY="false"
 URL_SCHEMES=""
 OUTPUT_IPA_PATH=""
@@ -53,6 +54,7 @@ print_usage() {
     echo "  -o, --output <file>           Output IPA filename (default: Apollo-Patched.ipa)"
     echo "  --remove-code-signature       Remove code signature from the binary"
     echo "  --liquid-glass                Apply Liquid Glass patch for iOS 26"
+    echo "  --resizable                  Experimental iOS 27 resizing (includes Liquid Glass)"
     echo "  --fix-safari-extension        Install the manual + legacy Safari extensions"
     echo "  --fix-openin-extension        Repair the bundled 'Open in Apollo' share-sheet action"
     echo "                                (needs the openin-extension dylib; run 'make package' first)"
@@ -78,6 +80,11 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --remove-code-signature)
             REMOVE_CODE_SIGNATURE="true"
+            shift
+            ;;
+        --resizable)
+            RESIZABLE_APP="true"
+            LIQUID_GLASS="true"
             shift
             ;;
         --liquid-glass)
@@ -188,6 +195,12 @@ if [ "${LIQUID_GLASS}" == "true" ]; then
     fi
     patch_liquid_glass_binary_in_app "$APP_BUNDLE"
     patch_liquid_glass_assets_in_app "$APP_BUNDLE"
+fi
+
+# Opt into the iOS 27 app-shell contract after the existing Glass preparation.
+# This is explicit: ordinary release variants keep their existing linked SDK.
+if [ "$RESIZABLE_APP" == "true" ]; then
+    python3 "$SCRIPT_DIR/scripts/prepare-resizable-app.py" "$APP_BUNDLE"
 fi
 
 # 2a-icons. Liquid Glass icons-only (assets only, no SDK bump)

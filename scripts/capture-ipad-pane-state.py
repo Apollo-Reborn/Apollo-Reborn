@@ -8,6 +8,7 @@ parser.add_argument('--work-dir', default='.sim/pane-redesign')
 parser.add_argument('--bundle-id', default='com.christianselig.Apollo')
 parser.add_argument('--base-ipa', default='Apollo-base.ipa')
 parser.add_argument('--label', default='capture')
+parser.add_argument('--display', help='simctl display name or ID (e.g. resizable for iOS 27 resize sessions)')
 args = parser.parse_args()
 root = pathlib.Path(__file__).resolve().parent.parent
 out = root / args.work_dir / 'evidence' / (time.strftime('%Y%m%d-%H%M%S-') + pathlib.Path(args.label).name)
@@ -28,7 +29,8 @@ try:
     data = json.loads(snapshot.read_text())
     if data['loadedTweakCopies'] != 1: raise SystemExit('Expected exactly one loaded tweak.')
     shutil.copy2(snapshot, out / 'panes.json')
-    subprocess.run(['xcrun','simctl','io',args.device,'screenshot',str(out / 'screen.png')],check=True)
+    display = ['--display=' + args.display] if args.display else []
+    subprocess.run(['xcrun','simctl','io',args.device,'screenshot',*display,str(out / 'screen.png')],check=True)
     dylib = root / args.work_dir / 'ApolloReborn.dylib'
     metadata = {'commit':run('git','-C',str(root),'rev-parse','HEAD'),
         'dirtyPaths':run('git','-C',str(root),'status','--short').splitlines(),
