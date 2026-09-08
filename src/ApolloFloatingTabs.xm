@@ -64,6 +64,8 @@
 #import <objc/message.h>
 
 #import "ApolloFloatingTabs.h"
+#import "ApolloUserFlair.h"
+#import "ApolloFloatingTabsCrests.h"
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
@@ -86,6 +88,7 @@ static const CGFloat kFTCloseHitRadius = 64.0;      // drop-to-close capture dis
 static const CGFloat kFTFlingVelocityThreshold = 250.0;  // below this a release stays put (same as PiP)
 static const CGFloat kFTTuckVelocityThreshold = 300.0;   // outward fling speed that tucks (same as PiP)
 static const NSInteger kFTMaxTabs = 5;
+static const NSInteger kFTCrestMaxAttempts = 3;    // catalogue + image fetch attempts per tab (per launch)
 // After a fan-out (magnet on), how long members linger spread out before
 // springing back into the pile. Long enough to tap one open or start dragging
 // one away, short enough that the pile feels like it never really left.
@@ -128,6 +131,13 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
 // MARK: - Model
 // =============================================================================
 
+typedef NS_ENUM(NSInteger, ApolloFTCrestState) {
+    ApolloFTCrestStateUnresolved = 0, // not looked at yet, or a catalogue fetch failed (worth retrying)
+    ApolloFTCrestStatePending,        // catalogue lookup in flight
+    ApolloFTCrestStateNone,           // final: not a match thread, or a side has no crest
+    ApolloFTCrestStateMatched,        // crestURLs/crestKey set; face cached, or fetchable again after eviction
+};
+
 @interface ApolloFloatingTab : NSObject
 @property (nonatomic, copy) NSString *linkKey;        // t3_xxx, lowercased (identity)
 @property (nonatomic, copy) NSString *permalink;      // "/r/sub/comments/..." (cold-reopen fallback; may be empty)
@@ -136,6 +146,12 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
 @property (nonatomic, copy) NSString *thumbnailURL;   // post thumbnail (bubble face when present; empty for text/NSFW/spoiler posts)
 @property (nonatomic, strong) UIViewController *commentsVC; // the LIVE screen; nil for cold tabs
 @property (nonatomic, strong) UIImage *snapshot;      // last-seen preview; nil for cold tabs / after memory warning
+// Match-thread crest face, derived from title + subreddit (never persisted;
+// re-resolved after a relaunch). See ApolloFloatingTabsCrests.h.
+@property (nonatomic, assign) NSInteger crestState;          // ApolloFTCrestState
+@property (nonatomic, assign) NSInteger crestAttempts;       // network attempts, capped at kFTCrestMaxAttempts
+@property (nonatomic, copy) NSArray<NSString *> *crestURLs;  // [home, away] crest PNG URLs once matched
+@property (nonatomic, copy) NSString *crestKey;              // composed-face cache key ("home|away")
 // Dock state
 @property (nonatomic, assign) NSInteger side;         // -1 left edge, +1 right edge
 @property (nonatomic, assign) CGFloat yFrac;          // resting center Y as a fraction of window height
@@ -164,6 +180,10 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
 @property (nonatomic, strong) UIImageView *badgeImageView;
 @property (nonatomic, strong) UILabel *badgeLabel;
 @property (nonatomic, assign) BOOL badgeConfigured;
+// When set, the monogram face shows this instead of the subreddit's first
+// letter (same-sub collision: the post's distinguishing letter becomes the
+// face and the subreddit moves to the rim badge).
+@property (nonatomic, copy) NSString *monogramOverride;
 - (void)applyMainImage:(UIImage *)image;                          // nil → subreddit monogram
 - (void)applyBadgeImage:(UIImage *)image initial:(NSString *)initial; // shows initial's first character; both nil → hidden
 - (void)applyMonogramColors;
@@ -253,6 +273,10 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
     self.iconContainer.backgroundColor = resolved;
     self.monogramLabel.textColor = ApolloColorIsLight(resolved) ? [UIColor blackColor] : [UIColor whiteColor];
 
+    if (self.monogramOverride.length > 0) {
+        self.monogramLabel.text = self.monogramOverride.uppercaseString;
+        return;
+    }
     NSString *name = self.tab.subreddit ?: @"";
     if ([name.lowercaseString hasPrefix:@"u_"] && name.length > 2) name = [name substringFromIndex:2];
     self.monogramLabel.text = name.length > 0 ? [[name substringToIndex:1] uppercaseString] : @"r";
@@ -426,6 +450,8 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
 @property (nonatomic, strong) NSCache<NSString *, UIImage *> *iconCache;         // lowercased subreddit -> image
 @property (nonatomic, strong) NSMutableSet<NSString *> *iconFetchesInFlight;
 @property (nonatomic, strong) NSCache<NSString *, UIImage *> *thumbCache;        // thumbnail URL -> image
+@property (nonatomic, strong) NSCache<NSString *, UIImage *> *crestCache;        // crestKey -> composed crest-pair face
+@property (nonatomic, strong) NSMutableSet<NSString *> *crestFetchesInFlight;   // crestKey
 @property (nonatomic, strong) NSMutableSet<NSString *> *thumbFetchesInFlight;
 @property (nonatomic, assign) BOOL didAttemptRestore;
 
@@ -477,6 +503,9 @@ static ApolloFloatingTabsController *sFTController = nil;
     _iconFetchesInFlight = [NSMutableSet set];
     _thumbCache = [[NSCache alloc] init];
     _thumbFetchesInFlight = [NSMutableSet set];
+    _crestCache = [[NSCache alloc] init];
+    _crestCache.countLimit = kFTMaxTabs * 2;
+    _crestFetchesInFlight = [NSMutableSet set];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleMemoryWarning)
                                                  name:UIApplicationDidReceiveMemoryWarningNotification
@@ -737,12 +766,17 @@ static ApolloFloatingTabsController *sFTController = nil;
 //   1. Post thumbnail as the face + subreddit icon (or its letter) as the rim
 //      badge — every tab reads distinctly even when several come from one
 //      subreddit, and the badge keeps the community identity visible.
-//   2. No thumbnail (text/NSFW/spoiler post): subreddit icon (or monogram) as
-//      the face. If ANOTHER badge-less tab shares the subreddit, each gets a
-//      post-title-initial badge so same-sub text posts still tell apart. The
-//      initial skips the words the colliding titles share ("Match Thread:",
-//      "[Serious]", "Daily Discussion"), so two r/soccer match threads badge
-//      by team (R / B) instead of both wearing an M — see
+//   2. Match thread without a thumbnail: the two teams' crests, half and half,
+//      as the face + the subreddit on the rim — the crests come from the
+//      subreddit's own flair emoji catalogue (ApolloFloatingTabsCrests.h), so
+//      no outside service is involved. Resolved asynchronously; until (unless)
+//      they land the tab is treated like any other text post below.
+//   3. No thumbnail (text/NSFW/spoiler post): subreddit icon (or monogram) as
+//      the face. If ANOTHER such tab shares the subreddit, each becomes a big
+//      accent monogram of its post title's distinguishing letter with the
+//      subreddit on the rim. The letter skips the words the colliding titles
+//      share ("Match Thread:", "[Serious]", "Daily Discussion"), so two
+//      r/soccer match threads read R / B instead of both wearing an M — see
 //      ApolloFTBadgeLettersForTitles.
 // Recomputed wholesale on every add/close/restore and image arrival —
 // identity is derived state, never patched incrementally.
@@ -825,6 +859,46 @@ static NSArray<NSString *> *ApolloFTBadgeLettersForTitles(NSArray<NSString *> *t
     return letters;
 }
 
+static CGRect ApolloFTAspectFitRect(CGSize imageSize, CGRect box) {
+    if (imageSize.width <= 0 || imageSize.height <= 0) return box;
+    CGFloat scale = MIN(box.size.width / imageSize.width, box.size.height / imageSize.height);
+    CGSize fitted = CGSizeMake(imageSize.width * scale, imageSize.height * scale);
+    return CGRectMake(CGRectGetMidX(box) - fitted.width / 2.0, CGRectGetMidY(box) - fitted.height / 2.0,
+                      fitted.width, fitted.height);
+}
+
+// Half-and-half crest face: home crest on the left, away on the right, on a
+// light disc with a hairline divider. Rendered once per pair at bubble size
+// and cached; the bubble's own circular clip trims the edges.
+static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
+    const CGFloat size = kFTBubbleSize;
+    const CGFloat crest = 26.0;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)
+                                                                               format:format];
+    return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
+        [[UIColor colorWithWhite:0.96 alpha:1.0] setFill];
+        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, size, size)] fill];
+        CGRect leftBox = CGRectMake(size / 4.0 - crest / 2.0, (size - crest) / 2.0, crest, crest);
+        CGRect rightBox = CGRectMake(size * 3.0 / 4.0 - crest / 2.0, (size - crest) / 2.0, crest, crest);
+        [home drawInRect:ApolloFTAspectFitRect(home.size, leftBox)];
+        [away drawInRect:ApolloFTAspectFitRect(away.size, rightBox)];
+        [[UIColor colorWithWhite:0.80 alpha:1.0] setFill];
+        UIRectFill(CGRectMake(size / 2.0 - 0.5, 9.0, 1.0, size - 18.0));
+    }];
+}
+
+- (UIImage *)crestFaceForTab:(ApolloFloatingTab *)tab {
+    return tab.crestKey.length > 0 ? [self.crestCache objectForKey:tab.crestKey] : nil;
+}
+
+// A tab that shows its SUBREDDIT as the face: no thumbnail and no crest pair
+// (yet). Judged by stored URL / cached face, so nothing flickers mid-download.
+- (BOOL)tabWearsSubredditFace:(ApolloFloatingTab *)tab {
+    return tab.thumbnailURL.length == 0 && ![self crestFaceForTab:tab];
+}
+
 - (void)refreshIdentityForTab:(ApolloFloatingTab *)tab {
     ApolloFloatingBubbleView *bubble = [self bubbleForTab:tab];
     if (!bubble) return;
@@ -839,31 +913,156 @@ static NSArray<NSString *> *ApolloFTBadgeLettersForTitles(NSArray<NSString *> *t
         return;
     }
 
-    [bubble applyMainImage:subIcon]; // nil → monogram
-    // Collision group = every tab that will wear this subreddit's face
-    // (judged by stored thumbnail URL, not fetch state, so badges don't
-    // flicker while a thumbnail is still downloading). Alone → no badge;
-    // otherwise the group's titles are lettered together, so each badge is
-    // the first word that tells its tab apart (ApolloFTBadgeLettersForTitles).
+    UIImage *crests = [self crestFaceForTab:tab];
+    if (crests) {
+        bubble.monogramOverride = nil;
+        [bubble applyMonogramColors];
+        [bubble applyMainImage:crests];
+        NSString *subInitial = subKey.length > 0 ? [subKey substringToIndex:1] : @"r";
+        [bubble applyBadgeImage:subIcon initial:(subIcon ? nil : subInitial)];
+        return;
+    }
+    [self resolveCrestsForTab:tab]; // no-op unless unresolved (or the face was evicted)
+
+    // Collision group = every tab that wears this subreddit's face.
     NSMutableArray<ApolloFloatingTab *> *group = [NSMutableArray array];
     for (ApolloFloatingTab *other in self.tabs) {
-        if (other.thumbnailURL.length == 0
+        if ([self tabWearsSubredditFace:other]
             && [other.subreddit.lowercaseString isEqualToString:subKey]) {
             [group addObject:other];
         }
     }
     if (![group containsObject:tab]) [group addObject:tab]; // refreshed before joining the roster
-    NSString *titleInitial = nil;
-    if (group.count > 1) {
-        NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:group.count];
-        for (ApolloFloatingTab *member in group) [titles addObject:member.title ?: @""];
-        titleInitial = ApolloFTBadgeLettersForTitles(titles)[[group indexOfObject:tab]];
+    if (group.count == 1) {
+        // Alone: the subreddit icon (or monogram) IS the identity.
+        bubble.monogramOverride = nil;
+        [bubble applyMonogramColors];
+        [bubble applyMainImage:subIcon]; // nil → monogram
+        [bubble applyBadgeImage:nil initial:nil];
+        return;
     }
-    [bubble applyBadgeImage:nil initial:titleInitial];
+    // Several same-sub text posts: the group's titles are lettered together
+    // (ApolloFTBadgeLettersForTitles) and each tab's distinguishing letter
+    // becomes its FACE — a big accent monogram — while the subreddit moves
+    // to the rim badge, exactly the thumbnail layout (unique face, community
+    // on the rim). A tiny badge letter on identical icons read as twins.
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:group.count];
+    for (ApolloFloatingTab *member in group) [titles addObject:member.title ?: @""];
+    bubble.monogramOverride = ApolloFTBadgeLettersForTitles(titles)[[group indexOfObject:tab]];
+    [bubble applyMonogramColors];
+    [bubble applyMainImage:nil]; // monogram face
+    NSString *subInitial = subKey.length > 0 ? [subKey substringToIndex:1] : @"r";
+    [bubble applyBadgeImage:subIcon initial:(subIcon ? nil : subInitial)];
 }
 
 - (void)refreshAllIdentities {
     for (ApolloFloatingTab *tab in self.tabs) [self refreshIdentityForTab:tab];
+}
+
+// Match-thread crests: title → two sides → the subreddit's flair emoji
+// catalogue → two crest PNGs → one composed face. Every step is a no-op once
+// it has a verdict; a network failure leaves the tab retryable (next identity
+// refresh, within kFTCrestMaxAttempts) rather than caching "no crests".
+- (void)resolveCrestsForTab:(ApolloFloatingTab *)tab {
+    if (tab.thumbnailURL.length > 0) return; // a real thumbnail always wins
+    if (tab.crestState == ApolloFTCrestStateMatched) {
+        [self fetchCrestPairForTab:tab]; // face evicted under memory pressure — fetch the pair again
+        return;
+    }
+    if (tab.crestState != ApolloFTCrestStateUnresolved || tab.crestAttempts >= kFTCrestMaxAttempts) return;
+    NSString *home = nil, *away = nil;
+    if (!ApolloFTCrestTeamsFromTitle(tab.title, &home, &away)) {
+        tab.crestState = ApolloFTCrestStateNone; // not a match thread — final, and free to decide
+        return;
+    }
+    tab.crestState = ApolloFTCrestStatePending;
+    tab.crestAttempts++;
+    NSString *subreddit = tab.subreddit ?: @"";
+    // Weak on both sides: a closed tab (or a torn-down controller) must not be
+    // kept alive by a slow catalogue fetch, and a verdict for a gone tab is moot.
+    __weak __typeof(self) weakSelf = self;
+    __weak ApolloFloatingTab *weakTab = tab;
+    ApolloUserFlairEnsureEmojisForSubreddit(subreddit, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __typeof(self) strongSelf = weakSelf;
+            ApolloFloatingTab *tab = weakTab;
+            if (!strongSelf || !tab) return;
+            NSArray<NSDictionary<NSString *, NSString *> *> *catalogue = ApolloUserFlairCachedEmojisForSubreddit(subreddit);
+            if (catalogue.count == 0) {
+                // No catalogue (offline, or the fetch failed): not a verdict.
+                tab.crestState = ApolloFTCrestStateUnresolved;
+                ApolloLog(@"[FloatingTabs] Crests: no flair emoji catalogue for r/%@ (attempt %ld)",
+                          subreddit, (long)tab.crestAttempts);
+                return;
+            }
+            NSString *homeName = nil, *awayName = nil;
+            NSString *homeURL = ApolloFTCrestURLForTeam(home, subreddit, catalogue, &homeName);
+            NSString *awayURL = ApolloFTCrestURLForTeam(away, subreddit, catalogue, &awayName);
+            if (homeURL.length == 0 || awayURL.length == 0) {
+                tab.crestState = ApolloFTCrestStateNone;
+                ApolloLog(@"[FloatingTabs] Crests: r/%@ \"%@\" → %@, \"%@\" → %@ — letter fallback",
+                          subreddit, home, homeName ?: @"no crest", away, awayName ?: @"no crest");
+                return;
+            }
+            tab.crestURLs = @[homeURL, awayURL];
+            tab.crestKey = [NSString stringWithFormat:@"%@|%@", homeURL, awayURL];
+            tab.crestState = ApolloFTCrestStateMatched;
+            ApolloLog(@"[FloatingTabs] Crests: r/%@ %@ / %@", subreddit, homeName, awayName);
+            if ([strongSelf.crestCache objectForKey:tab.crestKey]) {
+                [strongSelf refreshAllIdentities]; // same fixture as another tab — face already composed
+                return;
+            }
+            [strongSelf fetchCrestPairForTab:tab];
+        });
+    });
+}
+
+- (void)fetchCrestPairForTab:(ApolloFloatingTab *)tab {
+    NSString *key = tab.crestKey;
+    if (key.length == 0 || tab.crestURLs.count != 2) return;
+    if ([self.crestCache objectForKey:key] || [self.crestFetchesInFlight containsObject:key]) return;
+    if (tab.crestAttempts >= kFTCrestMaxAttempts) return;
+    NSURL *homeURL = [NSURL URLWithString:tab.crestURLs[0]];
+    NSURL *awayURL = [NSURL URLWithString:tab.crestURLs[1]];
+    if (!homeURL || !awayURL) { tab.crestState = ApolloFTCrestStateNone; return; }
+    tab.crestAttempts++;
+    [self.crestFetchesInFlight addObject:key];
+
+    // Two bounded downloads, composed once both have landed (main queue). A
+    // failure just drops the in-flight mark: the state stays Matched, so the
+    // next identity refresh retries within the attempt cap, and nothing
+    // re-triggers a refresh here (no failure loop).
+    __block UIImage *homeImage = nil, *awayImage = nil;
+    __block NSUInteger remaining = 2;
+    __weak __typeof(self) weakSelf = self;
+    __weak ApolloFloatingTab *weakTab = tab;
+    void (^landed)(void) = ^{
+        if (--remaining > 0) return;
+        __typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.crestFetchesInFlight removeObject:key];
+        UIImage *face = (homeImage && awayImage) ? ApolloFTComposeCrestPair(homeImage, awayImage) : nil;
+        if (!face) {
+            ApolloLog(@"[FloatingTabs] Crests: image fetch failed (attempt %ld)", (long)weakTab.crestAttempts);
+            return;
+        }
+        // Cache even if the tab is gone: a re-pinned post, or another tab of
+        // the same fixture, gets the face for free.
+        [strongSelf.crestCache setObject:face forKey:key];
+        [strongSelf refreshAllIdentities];
+    };
+    ApolloBoundedDataCompletion homeDone = ^(NSData *data, __unused NSHTTPURLResponse *response, __unused NSError *error) {
+        homeImage = data ? [UIImage imageWithData:data] : nil;
+        landed();
+    };
+    ApolloBoundedDataCompletion awayDone = ^(NSData *data, __unused NSHTTPURLResponse *response, __unused NSError *error) {
+        awayImage = data ? [UIImage imageWithData:data] : nil;
+        landed();
+    };
+    ApolloStartBoundedDataRequest([NSURLRequest requestWithURL:homeURL], 2 * 1024 * 1024, nil,
+                                  dispatch_get_main_queue(), homeDone);
+    ApolloStartBoundedDataRequest([NSURLRequest requestWithURL:awayURL], 2 * 1024 * 1024, nil,
+                                  dispatch_get_main_queue(), awayDone);
 }
 
 - (void)resolveIconForTab:(ApolloFloatingTab *)tab {
@@ -2244,6 +2443,25 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
         return;
     }
 
+    if ([command isEqualToString:@"emojis"] && parts.count > 1) {
+        // floattab emojis <subreddit> — dump the flair emoji catalogue names
+        // (the crest lookup's search space) so matcher rules can be checked
+        // against real data.
+        NSString *sub = parts[1];
+        ApolloUserFlairEnsureEmojisForSubreddit(sub, ^{
+            NSArray<NSDictionary<NSString *, NSString *> *> *emojis = ApolloUserFlairCachedEmojisForSubreddit(sub);
+            ApolloLog(@"[FloatingTabs][debug] emojis r/%@: %lu entries", sub, (unsigned long)emojis.count);
+            NSMutableArray<NSString *> *names = [NSMutableArray array];
+            for (NSDictionary *e in emojis) [names addObject:e[@"name"] ?: @"?"];
+            for (NSUInteger i = 0; i < names.count; i += 40) {
+                NSRange range = NSMakeRange(i, MIN(40, names.count - i));
+                ApolloLog(@"[FloatingTabs][debug] emojis[%lu]: %@", (unsigned long)i,
+                          [[names subarrayWithRange:range] componentsJoinedByString:@" "]);
+            }
+        });
+        return;
+    }
+
     if ([command isEqualToString:@"state"]) {
         ApolloLog(@"[FloatingTabs][debug] state: %lu tab(s), magnet=%d",
                   (unsigned long)controller.tabs.count, sFloatingPostTabsMagnet ? 1 : 0);
@@ -2255,7 +2473,9 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
                       tab.stackID ?: @"-", (long)tab.stackOrder,
                       tab.commentsVC != nil, tab.snapshot != nil,
                       bubble.center.x, bubble.center.y,
-                      bubble.iconView.hidden ? @"monogram" : @"image",
+                      bubble.iconView.hidden ? @"monogram"
+                          : ([controller crestFaceForTab:tab] && bubble.iconView.image == [controller crestFaceForTab:tab]
+                             ? @"crests" : @"image"),
                       bubble.badgeContainer.hidden ? @"-"
                           : (bubble.badgeLabel.hidden ? @"image" : bubble.badgeLabel.text));
             i++;
