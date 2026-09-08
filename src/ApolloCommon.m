@@ -1315,23 +1315,72 @@ static UIViewController *ApolloTabBarControllerIvarOn(id object) {
     }
 }
 
-UIViewController *ApolloMainTabBarController(void) {
-    UIApplication *application = UIApplication.sharedApplication;
+static UIViewController *ApolloTabBarControllerForWindowScene(UIWindowScene *scene) {
+    if (![scene isKindOfClass:UIWindowScene.class]) return nil;
 
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+    UIViewController *fromDelegate = ApolloTabBarControllerIvarOn(scene.delegate);
+    if (fromDelegate) return fromDelegate;
 
-        UIViewController *fromDelegate = ApolloTabBarControllerIvarOn([(UIWindowScene *)scene delegate]);
-        if (fromDelegate) return fromDelegate;
-
-        for (UIWindow *window in [(UIWindowScene *)scene windows]) {
-            UIViewController *root = window.rootViewController;
-            if ([root isKindOfClass:UITabBarController.class]) return root;
-            if ([root.presentedViewController isKindOfClass:UITabBarController.class]) return root.presentedViewController;
+    // Prefer the key window, then visible normal-level windows. A scene may
+    // also own transient keyboard/alert windows whose roots are unrelated to
+    // Apollo's tab hierarchy.
+    NSMutableArray<UIWindow *> *ordered = [NSMutableArray array];
+    for (UIWindow *window in scene.windows) if (window.isKeyWindow) [ordered addObject:window];
+    for (UIWindow *window in scene.windows) {
+        if (![ordered containsObject:window] && !window.hidden &&
+            window.windowLevel == UIWindowLevelNormal) [ordered addObject:window];
+    }
+    for (UIWindow *window in scene.windows) {
+        if (![ordered containsObject:window]) [ordered addObject:window];
+    }
+    for (UIWindow *window in ordered) {
+        UIViewController *root = window.rootViewController;
+        if ([root isKindOfClass:UITabBarController.class]) return root;
+        if ([root.presentedViewController isKindOfClass:UITabBarController.class]) {
+            return root.presentedViewController;
         }
     }
+    return nil;
+}
 
+UIViewController *ApolloMainTabBarControllerForScene(UIWindowScene *originatingScene) {
+    UIViewController *originating = ApolloTabBarControllerForWindowScene(originatingScene);
+    if (originating) return originating;
+
+    UIApplication *application = UIApplication.sharedApplication;
+    NSArray<UIScene *> *scenes = application.connectedScenes.allObjects;
+
+    // Prefer a foreground-active scene with a key window. Enumerating the
+    // connectedScenes set directly is unordered and can send an action into a
+    // background or external-display window when more than one scene exists.
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class] ||
+            candidate.activationState != UISceneActivationStateForegroundActive) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)candidate;
+        BOOL hasKeyWindow = NO;
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) { hasKeyWindow = YES; break; }
+        }
+        if (!hasKeyWindow) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene(windowScene);
+        if (controller) return controller;
+    }
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class] ||
+            candidate.activationState != UISceneActivationStateForegroundActive) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene((UIWindowScene *)candidate);
+        if (controller) return controller;
+    }
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class]) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene((UIWindowScene *)candidate);
+        if (controller) return controller;
+    }
     return ApolloTabBarControllerIvarOn(application.delegate);
+}
+
+UIViewController *ApolloMainTabBarController(void) {
+    return ApolloMainTabBarControllerForScene(nil);
 }
 
 // ApolloCommon is included by nearly every file, so it must not import the pane

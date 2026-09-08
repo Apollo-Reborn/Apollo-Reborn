@@ -95,6 +95,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)apollo_performCrossColumnNavigationTransaction:(dispatch_block_t)navigation;
 - (void)apollo_navigationTransitionDidSettle;
 - (void)apollo_resolvedDisplayStateMayHaveChanged;
+- (void)apollo_prepareDetailControllerForDisplay:(UIViewController *)viewController;
 - (void)apollo_revealDetailAfterPrimarySelectionIfNeeded;
 
 // A selected row is part of the semantic primary -> detail branch on iPad.
@@ -136,6 +137,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSString *)apollo_simResolvedLayoutState;
 - (BOOL)apollo_simActivateShowPrimaryItem;
 - (NSString *)apollo_simMasterSelectionState;
+- (NSString *)apollo_simLayoutPassStateReset:(BOOL)reset;
+- (void)apollo_simSetPreferredPrimaryColumnWidth:(CGFloat)width;
+- (NSString *)apollo_simPreferredPrimaryColumnWidthState;
+- (BOOL)apollo_simAdjustDivider:(NSString *)operation;
+- (NSString *)apollo_simThemeState;
 + (void)apollo_simRunDeallocatedSourceProbe;
 #endif
 
