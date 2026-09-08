@@ -214,25 +214,50 @@ static NSArray<ApolloFTCrestEntry *> *ApolloFTCrestIndexForCatalogue(NSString *s
     }
 }
 
-// 3 = identical tokens, 2 = every side token present verbatim, 1 = every side
-// token present verbatim or as a ≥3-character prefix either way, 0 = no.
-static NSInteger ApolloFTCrestScore(NSArray<NSString *> *side, NSArray<NSString *> *candidate) {
-    if ([side isEqualToArray:candidate]) return 3;
-    BOOL allExact = YES, allPrefix = YES;
+// How a side relates to a catalogue entry, strongest first:
+//   Exact    identical tokens, or identical once the spaces are removed —
+//            r/CFB names its schools "ohiostate" / "notredame" / "texasam".
+//   Forward  every side token is in the entry verbatim: "Marseille" →
+//            Olympique_de_Marseille. The entry is the longer name.
+//   Prefix   every side token is in the entry verbatim or as a ≥3-letter
+//            prefix either way: "Inter Milan" → FC_Internazionale_Milano.
+//   Reverse  every entry token is in the side verbatim: "Kansas City Chiefs"
+//            → Chiefs (r/nfl names teams by nickname). The side is longer.
+//            Ranked last because a namesake can hide in a longer side ("Inter
+//            Milan" contains AC_Milan's "Milan"), so it only wins when nothing
+//            above it matches.
+typedef NS_ENUM(NSInteger, ApolloFTCrestMatch) {
+    ApolloFTCrestMatchNone = 0,
+    ApolloFTCrestMatchReverse = 1,
+    ApolloFTCrestMatchPrefix = 2,
+    ApolloFTCrestMatchForward = 3,
+    ApolloFTCrestMatchExact = 4,
+};
+
+static BOOL ApolloFTCrestTokensContain(NSArray<NSString *> *haystack, NSArray<NSString *> *needles) {
+    for (NSString *needle in needles) if (![haystack containsObject:needle]) return NO;
+    return YES;
+}
+
+static ApolloFTCrestMatch ApolloFTCrestScore(NSArray<NSString *> *side, NSArray<NSString *> *candidate) {
+    if ([side isEqualToArray:candidate]) return ApolloFTCrestMatchExact;
+    if ([[side componentsJoinedByString:@""] isEqualToString:[candidate componentsJoinedByString:@""]]) {
+        return ApolloFTCrestMatchExact;
+    }
+    if (ApolloFTCrestTokensContain(candidate, side)) return ApolloFTCrestMatchForward;
+    BOOL prefix = YES;
     for (NSString *token in side) {
-        BOOL exact = NO, prefix = NO;
+        BOOL matched = NO;
         for (NSString *other in candidate) {
-            if ([other isEqualToString:token]) { exact = YES; break; }
             NSString *shorter = token.length <= other.length ? token : other;
             NSString *longer = token.length <= other.length ? other : token;
-            if (shorter.length >= 3 && [longer hasPrefix:shorter]) prefix = YES;
+            if (shorter.length >= 3 && [longer hasPrefix:shorter]) { matched = YES; break; }
         }
-        if (!exact) allExact = NO;
-        if (!exact && !prefix) allPrefix = NO;
+        if (!matched) { prefix = NO; break; }
     }
-    if (allExact) return 2;
-    if (allPrefix) return 1;
-    return 0;
+    if (prefix) return ApolloFTCrestMatchPrefix;
+    if (ApolloFTCrestTokensContain(side, candidate)) return ApolloFTCrestMatchReverse;
+    return ApolloFTCrestMatchNone;
 }
 
 NSString *ApolloFTCrestURLForTeam(NSString *team, NSString *subreddit,
@@ -241,17 +266,16 @@ NSString *ApolloFTCrestURLForTeam(NSString *team, NSString *subreddit,
     if (outName) *outName = nil;
     NSArray<NSString *> *side = ApolloFTCrestTokens(team ?: @"", YES);
     if (side.count == 0 || catalogue.count == 0) return nil;
-    // A side must carry at least one distinctive token; "AC" alone is nothing.
-    BOOL distinctive = NO;
-    for (NSString *token in side) if (token.length >= 4) { distinctive = YES; break; }
-    if (!distinctive) return nil;
 
-    // A partial (subset) match is only trusted when the side is specific
-    // enough: two words, or one long word ("Internazionale", "Leverkusen"),
-    // and the candidate adds at most one word ("Borussia Dortmund" for
-    // "Dortmund" is fine; "Chattanooga Red Wolves" for "Wolves" is not). The
-    // catalogue Reddit returns is capped, so a club's real entry can be
-    // missing and a namesake must not be picked in its place.
+    // Anything short of an exact match is only trusted when it can't be a
+    // namesake: a forward/prefix match needs a specific side (two words, or
+    // one long word — "Internazionale", "Leverkusen") and an entry adding at
+    // most one word ("Olympique de Marseille" for "Marseille" yes, "Chattanooga
+    // Red Wolves" for "Wolves" never); a reverse match needs an entry with a
+    // real word in it (≥4 letters, so "ES" or "PN" never match anything) and
+    // a side adding at most two ("Kansas City Chiefs" → Chiefs). The keyless
+    // catalogue is partial, so a club's real entry can be missing and a
+    // namesake must not be picked in its place.
     BOOL specific = side.count >= 2 || side.firstObject.length >= 9;
     NSArray<NSString *> *rawSide = ApolloFTCrestRawTokens(team);
 
@@ -264,10 +288,19 @@ NSString *ApolloFTCrestURLForTeam(NSString *team, NSString *subreddit,
     NSInteger bestScore = 0, bestRaw = 0;
     NSUInteger bestExtra = NSUIntegerMax;
     for (ApolloFTCrestEntry *entry in ApolloFTCrestIndexForCatalogue(subreddit, catalogue)) {
-        NSInteger score = ApolloFTCrestScore(side, entry.tokens);
-        if (score == 0) continue;
-        NSUInteger extra = entry.tokens.count > side.count ? entry.tokens.count - side.count : 0;
-        if (score < 3 && (!specific || extra > 1)) continue;
+        ApolloFTCrestMatch score = ApolloFTCrestScore(side, entry.tokens);
+        if (score == ApolloFTCrestMatchNone) continue;
+        NSUInteger longer = MAX(entry.tokens.count, side.count), shorter = MIN(entry.tokens.count, side.count);
+        NSUInteger extra = longer - shorter;
+        if (score != ApolloFTCrestMatchExact) {
+            if (score == ApolloFTCrestMatchReverse) {
+                BOOL entryHasWord = NO;
+                for (NSString *token in entry.tokens) if (token.length >= 4) { entryHasWord = YES; break; }
+                if (!entryHasWord || extra > 2) continue;
+            } else if (!specific || extra > 1) {
+                continue;
+            }
+        }
         NSInteger raw = ApolloFTCrestScore(rawSide, entry.rawTokens);
         if (!best || score > bestScore || (score == bestScore && extra < bestExtra)
             || (score == bestScore && extra == bestExtra && raw > bestRaw)) {
