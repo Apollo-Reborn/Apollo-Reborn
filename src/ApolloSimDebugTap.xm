@@ -792,6 +792,32 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             }];
             return;
         }
+        // "safari <url>" command: present Apollo's own in-app browser
+        // (ApolloSafariViewController, the SFSafariViewController subclass
+        // behind "In-App Safari") for a URL from the topmost view controller,
+        // exactly as a link tap would. Needs no Reddit session, so the
+        // loading-state appearance (issue #1008) can be exercised headlessly.
+        if ([contents hasPrefix:@"safari "]) {
+            NSString *urlString = [[contents substringFromIndex:7] stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+            if (!url) { ApolloLog(@"[SimDebugTap] malformed safari url: %@", urlString); return; }
+            UIViewController *top = nil;
+            for (UIWindow *window in ApolloAllWindows()) {
+                if (window.hidden || !window.rootViewController) continue;
+                top = window.rootViewController;
+                if (window.isKeyWindow) break;
+            }
+            while (top.presentedViewController) top = top.presentedViewController;
+            Class safariClass = objc_getClass("_TtC6Apollo26ApolloSafariViewController");
+            if (!top || !safariClass) { ApolloLog(@"[SimDebugTap] safari: no presenter/class"); return; }
+            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
+            UIViewController *safariVC = msgSend([safariClass alloc], @selector(initWithURL:), url);
+            ApolloLog(@"[SimDebugTap] safari: presenting %@ for %@ from %@",
+                      NSStringFromClass(safariVC.class), urlString, NSStringFromClass(top.class));
+            [top presentViewController:safariVC animated:YES completion:nil];
+            return;
+        }
         // "translate <google|libre|auto> <text>" command: run text through the
         // real translation provider pipeline and log the result. Needs no
         // Reddit session — isolates provider/network failures (issue #995).
