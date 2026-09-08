@@ -61,6 +61,11 @@ void ApolloChatRoomDirectoryResolve(NSString * _Nullable subject,
                                     NSTimeInterval messageTimestamp,
                                     void (^completion)(NSString * _Nullable chatPath));
 
+#if APOLLO_SIM_BUILD
+// Sim debug bridge ("chatrooms"): log the cached directory's rooms.
+void ApolloChatRoomDirectoryDebugDump(void);
+#endif
+
 __END_DECLS
 
 NS_ASSUME_NONNULL_END

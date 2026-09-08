@@ -2958,15 +2958,28 @@ static void ApolloInboxNoteMessageJSON(id json) {
     ApolloChatRoomDirectoryNoteUserFullname(data[@"author"], data[@"author_fullname"]);
 }
 
+// Every model RedditKit parses — posts, comments, subreddits, whole listings —
+// funnels through these two entry points. Only message models (mirrors are
+// RDKMessages) can carry the ids the room directory keys on, and only while
+// modern Chat can open a mirror at all, so anything else is passed straight
+// through without a look at its JSON.
+static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
+    if (!modelClass || !ApolloModernChatShouldOpen()) return NO;
+    static Class messageClass = Nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ messageClass = objc_getClass("RDKMessage"); });
+    return messageClass != Nil && [modelClass isSubclassOfClass:messageClass];
+}
+
 %hook MTLJSONAdapter
 
 + (id)modelOfClass:(Class)modelClass fromJSONDictionary:(NSDictionary *)JSONDictionary error:(NSError **)error {
-    ApolloInboxNoteMessageJSON(JSONDictionary);
+    if (ApolloInboxShouldNoteMessageJSONForClass(modelClass)) ApolloInboxNoteMessageJSON(JSONDictionary);
     return %orig;
 }
 
 + (id)modelsOfClass:(Class)modelClass fromJSONArray:(NSArray *)JSONArray error:(NSError **)error {
-    if ([JSONArray isKindOfClass:[NSArray class]]) {
+    if (ApolloInboxShouldNoteMessageJSONForClass(modelClass) && [JSONArray isKindOfClass:[NSArray class]]) {
         for (id json in JSONArray) ApolloInboxNoteMessageJSON(json);
     }
     return %orig;

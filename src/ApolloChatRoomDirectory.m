@@ -25,6 +25,10 @@ static const NSTimeInterval kRoomDirectoryFreshInterval = 5.0 * 60.0;
 static const NSTimeInterval kRoomDirectoryMissRefetchInterval = 20.0;
 // How long a tap waits for a resolution before the legacy thread opens instead.
 static const NSTimeInterval kRoomDirectoryTapDeadline = 6.0;
+// How far apart a mirror's creation time and a room's newest message may be
+// and still count as the same message (the mirror is written as the chat
+// message is sent; the two clocks are Reddit's own).
+static const NSTimeInterval kRoomDirectoryTimestampTolerance = 5.0;
 static const NSTimeInterval kRoomDirectoryRequestTimeout = 15.0;
 // Reddit answers an initial sync in sequenced pages of ~20 rooms (the
 // `com.reddit.sequenced_sync` flag stays set even once they run dry). Follow
@@ -347,6 +351,45 @@ static NSString *ApolloChatRoomDirectoryTrim(NSString *string) {
     return [string stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] ?: @"";
 }
 
+static BOOL ApolloChatRoomEntryHasPartner(ApolloChatRoomEntry *entry, NSString *partnerUserId) {
+    return partnerUserId.length > 0 && [entry.participants containsObject:partnerUserId];
+}
+
+static BOOL ApolloChatRoomEntryMatchesTimestamp(ApolloChatRoomEntry *entry, NSTimeInterval messageTimestamp) {
+    return messageTimestamp > 0 && entry.lastMessageTs > 0 &&
+        fabs(entry.lastMessageTs / 1000.0 - messageTimestamp) <= kRoomDirectoryTimestampTolerance;
+}
+
+// Whether a room vouches for a titled mirror beyond sharing its name: the
+// mirror's other participant is in the room, or the room's newest message was
+// sent when the mirror was. A plain private message can carry the same subject
+// as a chat room (a reply to a titled room's converted thread, or simply the
+// same words), and its name alone must not route it away from Apollo's legacy
+// thread — the thread is where such a message lives.
+static BOOL ApolloChatRoomEntryCorroborates(ApolloChatRoomEntry *entry, NSString *partnerUserId,
+                                            NSTimeInterval messageTimestamp) {
+    return ApolloChatRoomEntryHasPartner(entry, partnerUserId) ||
+        ApolloChatRoomEntryMatchesTimestamp(entry, messageTimestamp);
+}
+
+// YES when some room in the directory is named after `subject` (exactly, or
+// ignoring case and surrounding whitespace) — the cases the titled match below
+// considers. Lets the resolver spend a partner-id lookup only on a subject that
+// could match at all.
+static BOOL ApolloChatRoomDirectorySubjectNamesRoom(NSString *subject) {
+    if (!sDirectoryRooms || ApolloChatSubjectIsRoomMarker(subject)) return NO;
+    NSString *trimmedSubject = ApolloChatRoomDirectoryTrim(subject);
+    if (trimmedSubject.length == 0) return NO;
+    for (ApolloChatRoomEntry *entry in sDirectoryRooms.allValues) {
+        if (entry.name.length == 0) continue;
+        if ([entry.name isEqualToString:subject] ||
+            [ApolloChatRoomDirectoryTrim(entry.name) caseInsensitiveCompare:trimmedSubject] == NSOrderedSame) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 // Rank candidate rooms: a joined room beats a pending request, one the partner
 // is in beats one they are not, one whose newest message is the tapped mirror
 // beats the rest, and the most recently active room breaks remaining ties.
@@ -357,9 +400,8 @@ static ApolloChatRoomEntry *ApolloChatRoomDirectoryBest(NSArray<ApolloChatRoomEn
     for (ApolloChatRoomEntry *entry in candidates) {
         double score = 0.0;
         if (entry.joined) score += 4.0;
-        if (partnerUserId.length && [entry.participants containsObject:partnerUserId]) score += 3.0;
-        if (messageTimestamp > 0 && entry.lastMessageTs > 0 &&
-            fabs(entry.lastMessageTs / 1000.0 - messageTimestamp) <= 5.0) score += 2.0;
+        if (ApolloChatRoomEntryHasPartner(entry, partnerUserId)) score += 3.0;
+        if (ApolloChatRoomEntryMatchesTimestamp(entry, messageTimestamp)) score += 2.0;
         // Recency tiebreak, always below one full point.
         if (entry.lastMessageTs > 0) score += MIN(0.99, entry.lastMessageTs / 1.0e13);
         if (score > bestScore) {
@@ -420,14 +462,29 @@ static NSString *ApolloChatRoomDirectoryMatch(NSString *subject, NSString *partn
                 }
             }
         }
+        // A name is not enough on its own (see ApolloChatRoomEntryCorroborates):
+        // a room that shares the subject but has neither the mirror's partner
+        // nor its timestamp is not where this message lives.
+        NSUInteger named = candidates.count;
+        NSIndexSet *uncorroborated = [candidates indexesOfObjectsPassingTest:
+            ^BOOL(ApolloChatRoomEntry *entry, __unused NSUInteger idx, __unused BOOL *stop) {
+                return !ApolloChatRoomEntryCorroborates(entry, partnerUserId, messageTimestamp);
+            }];
+        [candidates removeObjectsAtIndexes:uncorroborated];
+        if (named > 0 && candidates.count == 0) {
+            ApolloLog(@"[ChatRooms] %lu room(s) share the mirror's subject but none has its partner%@ or timestamp; leaving Apollo's thread",
+                      (unsigned long)named, partnerUserId.length ? @"" : @" (unknown)");
+        }
     }
 
     if (candidates.count == 0 && messageTimestamp > 0) {
         // Last resort for a room whose name never reached us: the mirror is a
         // verbatim copy of a chat message, so the room whose newest message
-        // was sent at that exact moment is it — but only when unambiguous.
+        // was sent at that exact moment is it — but only when unambiguous,
+        // and never a room the mirror's partner is known to be absent from.
         for (ApolloChatRoomEntry *entry in sDirectoryRooms.allValues) {
-            if (entry.lastMessageTs > 0 && fabs(entry.lastMessageTs / 1000.0 - messageTimestamp) <= 2.0) {
+            if (entry.lastMessageTs > 0 && fabs(entry.lastMessageTs / 1000.0 - messageTimestamp) <= 2.0 &&
+                (partnerUserId.length == 0 || ApolloChatRoomEntryHasPartner(entry, partnerUserId))) {
                 consider(entry);
             }
         }
@@ -505,6 +562,23 @@ void ApolloChatRoomDirectoryFullnameForUser(NSString *username, void (^completio
     ApolloChatRoomDirectoryLookupFullname(username, completion);
 }
 
+#if APOLLO_SIM_BUILD
+// Sim debug bridge ("chatrooms"): log the cached directory's rooms so a
+// resolve probe ("chatresolve") can be aimed at real names and timestamps.
+void ApolloChatRoomDirectoryDebugDump(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloLog(@"[ChatRooms] debug dump: %lu rooms for u/%@ (fetched %.0fs ago)",
+                  (unsigned long)sDirectoryRooms.count, sDirectoryUsername ?: @"(none)",
+                  [NSDate date].timeIntervalSince1970 - sDirectoryFetchedAt);
+        for (ApolloChatRoomEntry *entry in sDirectoryRooms.allValues) {
+            ApolloLog(@"[ChatRooms]   %@ | %@ | name=%@ | joined=%d invited=%d | participants=%lu | lastTs=%.0f",
+                      entry.roomId, entry.chatType ?: @"?", entry.name ?: @"(unnamed)", entry.joined, entry.invited,
+                      (unsigned long)entry.participants.count, entry.lastMessageTs / 1000.0);
+        }
+    });
+}
+#endif
+
 #pragma mark - Resolve
 
 void ApolloChatRoomDirectoryResolve(NSString *subject, NSString *partner, NSTimeInterval messageTimestamp,
@@ -552,7 +626,13 @@ void ApolloChatRoomDirectoryResolve(NSString *subject, NSString *partner, NSTime
             finish(path);
             return;
         }
-        if (unnamed && knownFullname.length == 0 && partner.length > 0) {
+        // The partner's id is what an unnamed room is matched by, and the
+        // corroboration a titled subject usually needs (a mirror of a message
+        // the account sent carries only its own author_fullname, so the
+        // partner's id is often unknown here) — worth the one profile lookup
+        // for a subject that names a room at all.
+        if (knownFullname.length == 0 && partner.length > 0 &&
+            (unnamed || ApolloChatRoomDirectorySubjectNamesRoom(subject))) {
             ApolloChatRoomDirectoryLookupFullname(partner, ^(NSString *fullname) {
                 if (finished) return;
                 NSString *retry = fullname ? ApolloChatRoomDirectoryMatch(subject, fullname, messageTimestamp) : nil;

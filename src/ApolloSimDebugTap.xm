@@ -16,6 +16,7 @@
 #if APOLLO_SIM_BUILD
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloChatRoomDirectory.h"
 #import "ApolloCommentVoteInsights.h"
 #import "ApolloCommon.h"
 #import "ApolloFloatingTabs.h"
@@ -731,6 +732,26 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         if ([contents hasPrefix:@"chatjs "]) {
             extern void ApolloDirectChatDebugEvaluateJS(NSString *js);
             ApolloDirectChatDebugEvaluateJS([contents substringFromIndex:7]);
+            return;
+        }
+        // "chatrooms": log the cached chat room directory (names, participants,
+        // newest-message timestamps). "chatresolve <subject>|<partner>|<ts>":
+        // resolve a chat mirror's room the way a tapped inbox row does and log
+        // the result — exercises the titled-subject corroboration guard with
+        // arbitrary partner / timestamp combinations.
+        if ([contents hasPrefix:@"chatrooms"]) {
+            ApolloChatRoomDirectoryDebugDump();
+            return;
+        }
+        if ([contents hasPrefix:@"chatresolve "]) {
+            NSArray<NSString *> *parts = [[contents substringFromIndex:12] componentsSeparatedByString:@"|"];
+            NSString *subject = parts.count > 0 ? parts[0] : @"";
+            NSString *partner = parts.count > 1 && parts[1].length > 0 ? parts[1] : nil;
+            NSTimeInterval timestamp = parts.count > 2 ? parts[2].doubleValue : 0;
+            ApolloChatRoomDirectoryResolve(subject, partner, timestamp, ^(NSString *chatPath) {
+                ApolloLog(@"[SimDebugTap] chatresolve subject=%@ partner=%@ ts=%.0f -> %@",
+                          subject, partner ?: @"(nil)", timestamp, chatPath ?: @"(nil: legacy thread)");
+            });
             return;
         }
         // "devvitsweep": run the interactive-post stale-width sweep now, with
