@@ -95,6 +95,10 @@ static void ApolloDevvitPrewarmWebKit(void);
 static void ApolloDevvitReleasePrewarm(void);
 static RDKLink *ApolloDevvitLinkOfParent(id parent);
 static void ApolloDevvitMountCommentsHeadersInView(UIView *root);
+static BOOL ApolloDevvitReserveFeedSlot(void);
+static BOOL ApolloDevvitReserveGlobalSlot(void);
+static void ApolloDevvitSetFailedHeight(NSString *fullName, BOOL failed);
+static void ApolloDevvitShedPagesOfOtherAccounts(NSString *identity);
 
 NSString *const ApolloDevvitFeedOwnershipChangedNotification = @"ApolloDevvitFeedOwnershipChangedNotification";
 
@@ -260,6 +264,13 @@ static const CGFloat kApolloDevvitMaxHeight = 900.0;
 // app's expanded view): devvit's own "tall" size, which is what such a view
 // is designed for. Reverts through the normal correction path on close.
 static const CGFloat kApolloDevvitModalHeight = 512.0;
+// Row height while a widget shows its retry cover. The tall default exists so
+// a never-seen post measures final on its first pass; a post that then FAILED
+// on that first sight must not keep a screen-high reservation for a cover
+// with two lines of text (the "dead box mid-feed" #939 fixed). Per-process;
+// cleared the moment a later load reveals and measures for real.
+static const CGFloat kApolloDevvitFailedHeight = 100.0;
+static NSMutableSet<NSString *> *sDevvitFailedHeightPosts;
 // Post-reveal watchdog cadence: brisk while the widget is still moving (a user
 // expanding a compact card must not wait out a long tick with clipped content),
 // idle once it has held still, and a budget that stops an oscillating widget
@@ -286,6 +297,9 @@ static const NSInteger kApolloDevvitInventoryAttempt = 70;
 // page while the app was in the background) must not end the loop: the loop
 // continues from a watchdog instead, treating that tick as "not found".
 static const NSTimeInterval kApolloDevvitProbeWatchdog = 4.0;
+// After a give-up, visibility events inside this window keep the retry cover
+// (a tap always retries).
+static const NSTimeInterval kApolloDevvitFailedRetryBackoff = 60.0;
 static const NSTimeInterval kApolloDevvitActivePollInterval = 1.0;
 // Tap-to-commit latency budget: first look right after the tap, and a quick
 // re-look to confirm stability. Devvit's expand lays out its final height
@@ -352,10 +366,22 @@ static void ApolloDevvitPersistHeights(void) {
     [[NSUserDefaults standardUserDefaults] setObject:out forKey:kApolloDevvitHeightsDefaultsKey];
 }
 
+static void ApolloDevvitSetFailedHeight(NSString *fullName, BOOL failed) {
+    if (!fullName) return;
+    @synchronized (sDevvitHeights) {
+        if (!sDevvitFailedHeightPosts) sDevvitFailedHeightPosts = [NSMutableSet set];
+        if (failed) [sDevvitFailedHeightPosts addObject:fullName];
+        else [sDevvitFailedHeightPosts removeObject:fullName];
+    }
+}
+
 static CGFloat ApolloDevvitHeightForFullName(NSString *fullName) {
     if (!fullName) return kApolloDevvitDefaultHeight;
     NSNumber *n = nil;
-    @synchronized (sDevvitHeights) { n = sDevvitHeights[fullName]; }
+    @synchronized (sDevvitHeights) {
+        if ([sDevvitFailedHeightPosts containsObject:fullName]) return kApolloDevvitFailedHeight;
+        n = sDevvitHeights[fullName];
+    }
     return n ? MAX(kApolloDevvitMinHeight, MIN(kApolloDevvitMaxHeight, n.doubleValue))
              : kApolloDevvitDefaultHeight;
 }
@@ -758,6 +784,9 @@ static WKWebsiteDataStore *ApolloDevvitDataStoreForIdentity(NSString *identity, 
         }
         sDevvitDataStoreIdentity = [identity copy];
         sDevvitDataStoreSeeded = NO;
+        // Pages loaded under the previous account: none may be re-adopted
+        // (each adoption checks, but do not keep them around either).
+        ApolloDevvitShedPagesOfOtherAccounts(identity);
     }
     *needsSeeding = !sDevvitDataStoreSeeded;
     return sDevvitDataStore;
@@ -832,6 +861,14 @@ static NSString *ApolloDevvitCurrentIdentity(NSString **cookieHeaderOut) {
 // Reddit's own error card appeared inside the widget; its retry control was
 // clicked once — a second sighting gives up into our retry cover.
 @property (nonatomic) BOOL pageRetryClicked;
+// Account identity (ApolloDevvitCurrentIdentity) the page was loaded under.
+// A page never crosses accounts: every adoption compares this against the
+// current identity and tears a mismatch down instead of showing another
+// account's session inside the widget.
+@property (nonatomic, copy) NSString *identity;
+// CACurrentMediaTime() of the last give-up; visits inside the backoff keep
+// the retry cover rather than reloading on every scroll pass.
+@property (nonatomic) CFTimeInterval failedAt;
 @property (nonatomic, strong) UIImageView *retryIcon;
 // In the keep-alive pool (no host; page still live) — see ApolloDevvitParkWidget.
 @property (nonatomic) BOOL parked;
@@ -1036,6 +1073,11 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
 
 - (void)coverTapped {
     if (!self.failed) return;
+    // The same slot rules as a fresh mount — a tap must not create a fifth page.
+    if ((self.feedContext && !ApolloDevvitReserveFeedSlot()) || !ApolloDevvitReserveGlobalSlot()) {
+        ApolloLog(@"[Devvit] retry tapped for %@ but no widget slot is free", self.fullName);
+        return;
+    }
     ApolloLog(@"[Devvit] retry tapped for %@", self.fullName);
     self.failed = NO;
     self.autoRetried = NO;
@@ -1070,6 +1112,7 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
 
     NSString *cookieHeader = nil;
     NSString *identity = ApolloDevvitCurrentIdentity(&cookieHeader);
+    self.identity = identity;
     BOOL needsSeeding = NO;
     WKWebsiteDataStore *dataStore = ApolloDevvitDataStoreForIdentity(identity, &needsSeeding);
 
@@ -1410,6 +1453,7 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
 
 - (void)revealWithHeight:(CGFloat)height {
     self.revealed = YES;
+    ApolloDevvitSetFailedHeight(self.fullName, NO);
     // The width this layout was computed for — the rotation reload compares
     // against it (bounds can drift between load start and hydration).
     if (self.bounds.size.width > 0.0) self.loadedWidth = self.bounds.size.width;
@@ -1436,12 +1480,17 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     self.pollGeneration += 1;
     self.revealed = NO;
     self.failed = YES;
+    self.failedAt = CACurrentMediaTime();
     if (self.webView) {
         [self.webView stopLoading];
         [self.webView removeFromSuperview];
         self.webView = nil;
     }
     [self showCoverFailed];
+    // Compact row for the cover (the tall default is for a page that is
+    // about to hydrate, not for two lines of text); the reveal restores it.
+    ApolloDevvitSetFailedHeight(self.fullName, YES);
+    ApolloDevvitHeightDidChangeForFullName(self.fullName);
 }
 
 
@@ -1665,6 +1714,32 @@ static BOOL ApolloDevvitParkWidget(ApolloDevvitWidgetView *widget, NSString *rea
     return YES;
 }
 
+// The data store just moved to a new account identity: off-screen pages of
+// the previous one are dropped (on-screen ones are torn down by their own
+// surface as the UI reloads for the new account).
+static void ApolloDevvitShedPagesOfOtherAccounts(NSString *identity) {
+    NSArray<ApolloDevvitWidgetView *> *widgets;
+    @synchronized ([ApolloDevvitWidgetView class]) { widgets = sDevvitLiveWidgets.allObjects; }
+    NSUInteger shed = 0;
+    for (ApolloDevvitWidgetView *w in widgets) {
+        if (w.webView && !w.window && w.identity && ![w.identity isEqualToString:identity]) {
+            [w teardown]; [w removeFromSuperview]; shed += 1;
+        }
+    }
+    if (shed) ApolloLog(@"[Devvit] account identity changed — shed %lu off-screen page(s) of the previous one", (unsigned long)shed);
+}
+
+// A page is only ever re-used by the account it was loaded under.
+static BOOL ApolloDevvitWidgetMatchesCurrentAccount(ApolloDevvitWidgetView *w) {
+    if (!w.identity) return YES;  // never configured (shell) — nothing to protect
+    NSString *current = ApolloDevvitCurrentIdentity(NULL);
+    if ([w.identity isEqualToString:current]) return YES;
+    ApolloLog(@"[Devvit] %@ page belongs to another account — tearing down instead of re-using it", w.fullName);
+    [w teardown];
+    [w removeFromSuperview];
+    return NO;
+}
+
 static ApolloDevvitWidgetView *ApolloDevvitAdoptParkedWidget(NSString *fullName) {
     if (!fullName) return nil;
     ApolloDevvitWidgetView *w = sDevvitParkedWidgets[fullName];
@@ -1672,6 +1747,7 @@ static ApolloDevvitWidgetView *ApolloDevvitAdoptParkedWidget(NSString *fullName)
     [sDevvitParkedWidgets removeObjectForKey:fullName];
     w.parked = NO;
     if (!w.webView || w.failed) return nil;  // torn down (memory warning) while parked
+    if (!ApolloDevvitWidgetMatchesCurrentAccount(w)) return nil;
     return w;
 }
 
@@ -1713,6 +1789,7 @@ static ApolloDevvitWidgetView *ApolloDevvitBorrowFeedWidget(NSString *fullName) 
     for (ApolloDevvitWidgetView *w in widgets) {
         if (!w.feedContext || !w.webView || w.failed || w.stashedForReadopt || w.parked) continue;
         if (![w.fullName isEqualToString:fullName]) continue;
+        if (!ApolloDevvitWidgetMatchesCurrentAccount(w)) continue;
         if (w.revealed) ApolloDevvitLeaveGhost(w);
         [w removeFromSuperview];
         return w;
@@ -1733,6 +1810,7 @@ static ApolloDevvitWidgetView *ApolloDevvitBorrowLeavingCommentsWidget(NSString 
         if (w.feedContext || !w.leavingScreen || !w.webView || w.failed ||
             w.stashedForReadopt || w.parked) continue;
         if (![w.fullName isEqualToString:fullName]) continue;
+        if (!ApolloDevvitWidgetMatchesCurrentAccount(w)) continue;
         if (w.revealed) ApolloDevvitLeaveGhost(w);
         [w removeFromSuperview];
         w.leavingScreen = NO;
@@ -1993,7 +2071,9 @@ static BOOL ApolloDevvitReserveFeedSlot(void) {
 }
 
 // Install (or reconfigure) the widget view inside a host node's view.
-// Main thread only; node must be loaded.
+// Main thread only; node must be loaded. The core returns NO when the shell
+// is in place but no widget slot was free; the wrapper schedules the retry.
+static BOOL ApolloDevvitInstallWidgetCore(ASDisplayNode *host, RDKLink *link, BOOL feedContext);
 static void ApolloDevvitInstallWidget(ASDisplayNode *host, RDKLink *link, BOOL feedContext);
 
 // A cap-deferred mount used to wait for the NEXT visibility event, which never
@@ -2006,8 +2086,10 @@ static const void *kApolloDevvitMountRetryKey = &kApolloDevvitMountRetryKey;
 
 static void ApolloDevvitScheduleMountRetry(ASDisplayNode *host, RDKLink *link, BOOL feedContext, NSInteger attempt) {
     if (attempt > 15) {
-        ApolloLog(@"[Devvit] %@ still no widget slot after %ld retries — waiting for the next visibility event",
+        ApolloLog(@"[Devvit] %@ still no widget slot after %ld retries — retry cover until the next visit or tap",
                   ApolloDevvitFullName(link), (long)attempt);
+        ApolloDevvitWidgetView *shell = ApolloDevvitWidgetInHost(host);
+        if (shell && !shell.webView && !shell.failed) [shell showFailure];
         return;
     }
     if (objc_getAssociatedObject(host, kApolloDevvitMountRetryKey)) return;
@@ -2020,18 +2102,25 @@ static void ApolloDevvitScheduleMountRetry(ASDisplayNode *host, RDKLink *link, B
         if (!strongHost) return;
         objc_setAssociatedObject(strongHost, kApolloDevvitMountRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (![strongHost isNodeLoaded] || !strongHost.view.window) return;  // scrolled away — visibility event re-arms
-        ApolloDevvitInstallWidget(strongHost, link, feedContext);
-        // Still no widget (cap still saturated)? Keep trying, bounded.
-        if (!ApolloDevvitWidgetInHost(strongHost)) {
+        // The core, not the wrapper: the wrapper would re-schedule at attempt
+        // 0 and the count never advanced (an on-window row retried every
+        // second for as long as it stayed on screen).
+        if (!ApolloDevvitInstallWidgetCore(strongHost, link, feedContext)) {
             ApolloDevvitScheduleMountRetry(strongHost, link, feedContext, attempt + 1);
         }
     });
 }
 
 static void ApolloDevvitInstallWidget(ASDisplayNode *host, RDKLink *link, BOOL feedContext) {
-    if (!host || ![host isNodeLoaded]) return;
+    if (!ApolloDevvitInstallWidgetCore(host, link, feedContext)) {
+        ApolloDevvitScheduleMountRetry(host, link, feedContext, 0);
+    }
+}
+
+static BOOL ApolloDevvitInstallWidgetCore(ASDisplayNode *host, RDKLink *link, BOOL feedContext) {
+    if (!host || ![host isNodeLoaded]) return YES;
     NSURL *permalink = ApolloDevvitPermalinkURL(link);
-    if (!permalink) return;
+    if (!permalink) return YES;
     NSString *fullName = ApolloDevvitFullName(link);
     UIView *hostView = host.view;
     ApolloDevvitWidgetView *widget = nil;
@@ -2055,11 +2144,16 @@ static void ApolloDevvitInstallWidget(ASDisplayNode *host, RDKLink *link, BOOL f
             widget.leavingScreen = NO;
             ApolloLog(@"[Devvit] re-adopted live widget for %@ (%@)", fullName, how);
         } else {
-            if ((feedContext && !ApolloDevvitReserveFeedSlot()) || !ApolloDevvitReserveGlobalSlot()) {
-                ApolloDevvitScheduleMountRetry(host, link, feedContext, 0);
-                return;
-            }
+            // The shell (loading cover) goes in right away, page or not: a
+            // host waiting for a widget slot shows "Loading…" rather than an
+            // empty box, and a slot that never frees ends in the retry cover
+            // (ScheduleMountRetry) the user can act on.
             widget = [[ApolloDevvitWidgetView alloc] initWithFrame:hostView.bounds];
+            // Named from the start: a shell that never gets a slot gives up
+            // under its own post name (compact failed height, sensible log),
+            // and its retry cover has a permalink to rebuild from.
+            widget.fullName = fullName;
+            widget.permalinkURL = permalink;
         }
         ApolloDevvitRemoveGhost(hostView);
         // Geometry is explicit, not constraint-driven: Texture's host view
@@ -2075,13 +2169,34 @@ static void ApolloDevvitInstallWidget(ASDisplayNode *host, RDKLink *link, BOOL f
         widget.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         widget.frame = hostView.bounds;
         [hostView addSubview:widget];
+        // The host is often still 0×0 here (its frame lands on the next layout
+        // pass) and a shell with no page has no probe ticks to catch up from —
+        // it sat invisible while cap-deferred. Take the host's size as soon as
+        // it has one.
+        __weak ApolloDevvitWidgetView *weakWidget = widget;
+        for (NSNumber *delay in @[@0.0, @0.3, @1.0]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ [weakWidget syncFrameToHost]; });
+        }
     }
-    if (widget.failed) ApolloLog(@"[Devvit] %@ retrying a failed widget on visibility", fullName);
+    [widget syncFrameToHost];  // every visit (the retry ticks included) re-checks
     widget.feedContext = feedContext;
     widget.onMeasuredHeight = ^(NSString *fullName, CGFloat height) {
         ApolloDevvitHeightDidChangeForFullName(fullName);
     };
+    if (widget.failed) {
+        // A visit inside the backoff keeps the cover; the user's tap (or a
+        // later visit) is the retry — not every scroll pass over the row.
+        if (CACurrentMediaTime() - widget.failedAt < kApolloDevvitFailedRetryBackoff) return YES;
+        ApolloLog(@"[Devvit] %@ retrying a failed widget on visibility", fullName);
+    }
+    if (!widget.webView) {
+        // A shell without a page needs a slot (fresh, deferred, or failed).
+        if ((feedContext && !ApolloDevvitReserveFeedSlot()) || !ApolloDevvitReserveGlobalSlot()) return NO;
+        widget.failed = NO;
+    }
     [widget configureForPermalink:permalink fullName:ApolloDevvitFullName(link)];
+    return YES;
 }
 
 static ApolloDevvitWidgetView *ApolloDevvitWidgetInHost(ASDisplayNode *host) {
@@ -2240,7 +2355,9 @@ static void ApolloDevvitStashWidgetForReadopt(NSString *fullName, UIView *row) {
     }
     ApolloDevvitWidgetView *live = nil;
     for (ApolloDevvitWidgetView *w in widgets) {
-        if (w.webView && [w.fullName isEqualToString:fullName] && [w isDescendantOfView:row]) {
+        // A failed shell rides along too, so the reloaded row keeps its retry
+        // cover instead of starting a fresh load on every reload.
+        if ((w.webView || w.failed) && [w.fullName isEqualToString:fullName] && [w isDescendantOfView:row]) {
             live = w;
             break;
         }
@@ -2273,7 +2390,9 @@ static ApolloDevvitWidgetView *ApolloDevvitAdoptDetachedWidget(NSString *fullNam
     if (w.feedContext != feedContext) return nil;
     [sDevvitDetachedWidgets removeObjectForKey:fullName];
     w.stashedForReadopt = NO;
-    if (!w.webView || w.failed) return nil;  // torn down (memory warning) while detached
+    if (w.failed) return w;                // its retry cover carries over
+    if (!w.webView) return nil;            // torn down (memory warning) while detached
+    if (!ApolloDevvitWidgetMatchesCurrentAccount(w)) return nil;
     return w;
 }
 
@@ -2418,7 +2537,13 @@ static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName) {
                 // The host takes its new frame in that layout pass; the widget
                 // follows on the next turn (and on every probe tick after).
                 ApolloDevvitWidgetView *widget = ApolloDevvitWidgetInHost(host);
-                if (widget) dispatch_async(dispatch_get_main_queue(), ^{ [widget syncFrameToHost]; });
+                if (widget) {
+                    dispatch_async(dispatch_get_main_queue(), ^{ [widget syncFrameToHost]; });
+                    // A shell on its retry cover has no probe ticks to re-sync
+                    // from — look once more after the table has laid out.
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{ [widget syncFrameToHost]; });
+                }
                 continue;
             }
             // Feed row: reload it when its committed height no longer matches
@@ -3003,12 +3128,12 @@ void ApolloDevvitDebugLayout(void) {
         NSArray<ApolloDevvitWidgetView *> *widgets;
         @synchronized ([ApolloDevvitWidgetView class]) { widgets = sDevvitLiveWidgets.allObjects; }
         for (ApolloDevvitWidgetView *w in widgets) {
-            if (!w.webView) continue;
             UIView *host = w.superview;
-            ApolloLog(@"[Devvit][dbg] layout %@ widget=%@ host=%@ tamic=%d constraints=%lu hostNeedsLayout=%d window=%d",
-                      w.fullName, NSStringFromCGRect(w.frame), NSStringFromCGRect(host.bounds),
-                      w.translatesAutoresizingMaskIntoConstraints, (unsigned long)host.constraints.count,
-                      0, w.window != nil);
+            ApolloLog(@"[Devvit][dbg] layout %@ page=%d failed=%d widget=%@ host=%@ hostHidden=%d hostSuper=%@ window=%d cover=%@ alpha=%.1f",
+                      w.fullName, w.webView != nil, w.failed, NSStringFromCGRect(w.frame), NSStringFromCGRect(host.bounds),
+                      host.hidden, NSStringFromClass([host.superview class]), w.window != nil,
+                      NSStringFromCGRect(w.coverView.frame), w.coverView.alpha);
+            if (!w.webView) continue;
             [host setNeedsLayout];
             [host layoutIfNeeded];
             ApolloLog(@"[Devvit][dbg] after layoutIfNeeded %@ widget=%@ web=%@",
@@ -3097,7 +3222,9 @@ void ApolloDevvitDebugEvaluateJS(NSString *js) {
                         object:nil
                          queue:[NSOperationQueue mainQueue]
                     usingBlock:^(__unused NSNotification *note) { ApolloDevvitSettingsChanged(); }];
-        ApolloLog(@"[Devvit] interactive posts module loaded (enabled=%d feed=%d)",
-                  sDevvitInteractivePosts, sDevvitFeedWidgets);
+        // The settings flags are read by Tweak.xm's ctor, which runs AFTER this
+        // one (link order) — printing them here always says 0. The first
+        // layout/mount log lines are the tell that the feature is on.
+        ApolloLog(@"[Devvit] interactive posts module loaded");
     }
 }
