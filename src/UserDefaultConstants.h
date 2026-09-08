@@ -226,7 +226,7 @@ static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersiv
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
 // Show direct actions beside Join in Apollo Reborn's subreddit header.
-// User Flair is hidden automatically when the subreddit disallows it. Default YES.
+// Both default to NO; User Flair is also hidden when the subreddit disallows it.
 static NSString *const UDKeySubredditShowUserFlairButton = @"SubredditShowUserFlairButton";
 static NSString *const UDKeySubredditShowSidebarButton = @"SubredditShowSidebarButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
