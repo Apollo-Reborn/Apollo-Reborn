@@ -114,8 +114,11 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
         cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
         cell.accessoryType = hasFolder && !weakSelf.folderUnavailable
             ? UITableViewCellAccessoryNone : UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-        cell.contentView.alpha = canConfigure() ? 1.0 : 0.4;
+        // Presenting Files should not flash the row's highlight or dim its text
+        // while the folder permission check finishes. The enabled predicate
+        // still prevents another tap during preparation and presentation.
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.contentView.alpha = manager.isBackingUp || weakSelf.acceptingFolderSelection ? 0.4 : 1.0;
         [weakSelf apollo_applyPrimaryTextColorToCell:cell];
         return cell;
     } onSelect:^{
