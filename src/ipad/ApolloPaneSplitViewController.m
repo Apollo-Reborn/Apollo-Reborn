@@ -2039,8 +2039,15 @@ static NSArray<UIBarButtonItem *> *ApolloPaneBarItemsByRemovingIdentity(
 }
 
 - (void)apollo_revealDetailAfterPrimarySelectionIfNeeded {
-    if (self.isCollapsed ||
-        self.displayMode != UISplitViewControllerDisplayModeOneOverSecondary) return;
+    if (self.isCollapsed) {
+        // A deep link can pop the primary to its root before replacing an
+        // existing detail branch. Updating that branch does not re-present
+        // UIKit's compact column bridge. Explicitly reveal the destination,
+        // including when the old detail still owns its compact chrome state.
+        if (!self.apollo_detailIsEmpty) [self showColumn:UISplitViewControllerColumnSecondary];
+        return;
+    }
+    if (self.displayMode != UISplitViewControllerDisplayModeOneOverSecondary) return;
     ApolloLog(@"[PaneDisplay] tab %ld dismissing primary overlay after detail selection",
               (long)self.apollo_tabIndex);
     [self hideColumn:UISplitViewControllerColumnPrimary];
