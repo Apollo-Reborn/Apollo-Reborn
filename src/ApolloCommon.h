@@ -169,6 +169,11 @@ BOOL ApolloNavTransitionInFlight(void);
 // UI is still coming up (e.g. cold launch from a URL) — callers should retry.
 UIViewController *ApolloMainTabBarController(void);
 
+// Scene-scoped form for actions that originate from a UIScene callback or a
+// view already attached to a window. Passing nil uses the same deterministic
+// foreground/key-scene selection as ApolloMainTabBarController().
+UIViewController *ApolloMainTabBarControllerForScene(UIWindowScene *scene);
+
 // The navigation controller holding a tab's root stack.
 //
 // In the stock layout this is the identity function — a UITabBarController's
