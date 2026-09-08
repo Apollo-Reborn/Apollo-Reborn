@@ -28,14 +28,20 @@ static char kActionsStandardItemKey;
 static char kActionsStandardMoreKey;
 static char kActionsScrollOwnerKey;
 static char kActionsChromeKey;
+static char kActionsBlueDoneKey;
 static char kActionsApprovedLayoutKey;
 static NSUInteger sActionsModelWriteDepth;
 @class ApolloNavigationActionsOwner;
 
 // Keep right-item chrome neutral before it appears, including lone actions on
 // profile feeds. Mark only the actual item content, never the whole nav bar.
+static UIColor *ApolloActionsChromeColor(id object) {
+    return [objc_getAssociatedObject(object, &kActionsBlueDoneKey) boolValue]
+        ? UIColor.systemBlueColor : ApolloNavigationChromeColor();
+}
+
 static void ApolloActionsPinChrome(id object) {
-    UIColor *chrome = ApolloNavigationChromeColor();
+    UIColor *chrome = ApolloActionsChromeColor(object);
     if (!objc_getAssociatedObject(object, &kActionsChromeKey) ||
         ![[object tintColor] isEqual:chrome]) {
         [object setTintColor:chrome];
@@ -89,8 +95,9 @@ static void ApolloActionsPrepareApprovedContent(UIView *content) {
     objc_setAssociatedObject(content, &kActionsApprovedLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void ApolloActionsApplyChromeToView(UIView *view) {
+static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
     if (!view) return;
+    objc_setAssociatedObject(view, &kActionsBlueDoneKey, @(blueDone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloActionsPinChrome(view);
     if ([view isKindOfClass:UIButton.class]) {
         UIButton *button = (id)view;
@@ -102,7 +109,7 @@ static void ApolloActionsApplyChromeToView(UIView *view) {
             if (templated != image) [button setImage:templated forState:states[i]];
         }
     }
-    for (UIView *child in view.subviews) ApolloActionsApplyChromeToView(child);
+    for (UIView *child in view.subviews) ApolloActionsApplyChromeToView(child, blueDone);
 }
 
 @interface ApolloNavigationActionsControllerBox : NSObject
@@ -593,12 +600,15 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 }
             }
         }
+        BOOL blueDone = controllerBox.controller.isEditing &&
+            [NSStringFromClass(controllerBox.controller.class) isEqualToString:@"Apollo.RedditListViewController"];
+        objc_setAssociatedObject(item, &kActionsBlueDoneKey, @(blueDone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloActionsPinChrome(item);
         UIImage *image = ApolloActionsTemplateImage(item.image);
         if (image != item.image) item.image = image;
         UIView *source = ApolloNavigationActionsContentView(item);
         if (approvedSubmitters) ApolloActionsPrepareApprovedContent(source);
-        ApolloActionsApplyChromeToView(source);
+        ApolloActionsApplyChromeToView(source, blueDone);
         ApolloNavigationActionsStrip *strip = [item.customView isKindOfClass:ApolloNavigationActionsStrip.class]
             ? (id)item.customView : nil;
         UIButton *more = strip.more ?: ApolloActionsFindMore(source);
@@ -1057,7 +1067,7 @@ NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *bar) {
 %hook UIView
 - (void)setTintColor:(UIColor *)color {
     if (objc_getAssociatedObject(self, &kActionsChromeKey)) {
-        color = ApolloNavigationChromeColor();
+        color = ApolloActionsChromeColor(self);
         if ([self.tintColor isEqual:color]) return;
     }
     %orig(color);
@@ -1074,7 +1084,7 @@ NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *bar) {
 %hook UIBarButtonItem
 - (void)setTintColor:(UIColor *)color {
     if (objc_getAssociatedObject(self, &kActionsChromeKey) || ApolloActionsIsAutoModClose(self)) {
-        color = ApolloNavigationChromeColor();
+        color = ApolloActionsChromeColor(self);
         if ([self.tintColor isEqual:color]) return;
     }
     %orig(color);
