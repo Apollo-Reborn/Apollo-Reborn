@@ -56,6 +56,8 @@
 // highlight overlays' rendering blocks on their text nodes, puts back the
 // rendering block each of those nodes had before the search and redraws it
 // (see "Highlight bookkeeping" below for why it is a restore, not a clear).
+// That bookkeeping is per comments controller: a search only ever restores
+// the nodes of its own thread.
 //
 // Non-glass is untouched: nothing here runs unless ApolloSearchNativeBar has
 // attached a search controller to the comments controller, and it only does so
@@ -134,79 +136,6 @@ static BOOL FGReadMatchState(UIViewController *vc, NSInteger *outIndex, NSIntege
 NSString *ApolloFindInCommentsGlassPlaceholder(void) {
     return @"Find in Comments";
 }
-
-// MARK: - Highlight bookkeeping
-//
-// Apollo installs each match's highlight as a rendering block on the match's
-// text node (setDidDisplayNodeContentWithRenderingContext:) and never removes
-// it — a node that drops out of the match list keeps redrawing its stale range
-// until the cell is recycled, and clearing the search leaves the current
-// match's highlight behind the same way. That setter is not the search's
-// alone: MarkdownNode gives every comment body's text node a rendering block
-// of its own when it builds it (and MarkdownTableCellNode its cells), so the
-// highlight block REPLACES drawing the comment relies on. Two rules keep this
-// safe: the tracking window is opened only around Apollo's rebuild / selection
-// calls (FGRunApolloSelection), where the blocks are installed synchronously,
-// and never while merely scrolling a live search; and what we remember per
-// node is the block that was there BEFORE Apollo's first replacement, so
-// ending the search puts that original back (nil for a node that had none)
-// and redraws — rather than blanking the node. The hook is a static-BOOL test
-// outside the window.
-static BOOL sFGTrackHighlightBlocks = NO;
-static NSMapTable<ASTextNode *, id> *sFGOriginalBlocks = nil;   // weak node -> its pre-search block (NSNull for none)
-
-// Run one of Apollo's match-changing calls with the highlight tracker armed.
-static void FGRunApolloSelection(dispatch_block_t call) {
-    BOOL was = sFGTrackHighlightBlocks;
-    sFGTrackHighlightBlocks = YES;
-    call();
-    sFGTrackHighlightBlocks = was;
-}
-
-// Called from the setter hook BEFORE the replacement lands: the node's current
-// block is still the original. First sight wins — a later re-selection of the
-// same node sees Apollo's highlight block as "current", which is not it.
-static void FGNoteHighlightedNode(ASTextNode *node) {
-    if (!node) return;
-    if (!sFGOriginalBlocks) sFGOriginalBlocks = [NSMapTable weakToStrongObjectsMapTable];
-    if ([sFGOriginalBlocks objectForKey:node]) return;
-    id original = nil;
-    if ([node respondsToSelector:@selector(didDisplayNodeContentWithRenderingContext)]) {
-        original = [node didDisplayNodeContentWithRenderingContext];
-    }
-    [sFGOriginalBlocks setObject:(original ?: (id)NSNull.null) forKey:node];
-}
-
-static void FGClearHighlights(void) {
-    NSMapTable<ASTextNode *, id> *map = sFGOriginalBlocks;
-    sFGOriginalBlocks = nil;
-    if (map.count == 0) return;
-    NSUInteger restored = 0;
-    for (ASTextNode *node in map.keyEnumerator) {
-        id original = [map objectForKey:node];
-        if (original == (id)NSNull.null) original = nil;
-        if ([node respondsToSelector:@selector(setDidDisplayNodeContentWithRenderingContext:)]) {
-            [node setDidDisplayNodeContentWithRenderingContext:original];
-        }
-        if ([node isNodeLoaded]) [node setNeedsDisplay];
-        restored++;
-    }
-    ApolloLog(@"[FindGlass] restored %lu text nodes' pre-search rendering", (unsigned long)restored);
-}
-
-%hook ASTextNode
-- (void)setDidDisplayNodeContentWithRenderingContext:(id)block {
-    if (sFGTrackHighlightBlocks && block) FGNoteHighlightedNode((ASTextNode *)self);
-    %orig;
-}
-%end
-
-%hook ASTextNode2
-- (void)setDidDisplayNodeContentWithRenderingContext:(id)block {
-    if (sFGTrackHighlightBlocks && block) FGNoteHighlightedNode((ASTextNode *)self);
-    %orig;
-}
-%end
 
 // MARK: - Bridge
 //
@@ -375,6 +304,15 @@ static CGFloat FGCountReservedWidth(UIView *field) {
 
 @interface ApolloFindInCommentsGlassBridge : NSObject <UISearchBarDelegate, UISearchControllerDelegate>
 @property (nonatomic, weak) UIViewController *commentsVC;
+// This search's highlight bookkeeping (see "Highlight bookkeeping" below):
+// weak text node -> the rendering block it had before Apollo's first
+// replacement (NSNull for none). Per bridge, so a search only ever restores
+// nodes of its own thread — a searched thread left on the navigation stack
+// keeps its map while another thread searches and ends.
+@property (nonatomic, strong) NSMapTable<ASTextNode *, id> *originalBlocks;
+- (void)runApolloSelection:(dispatch_block_t)call;
+- (void)noteHighlightedNode:(ASTextNode *)node;
+- (void)restoreHighlights;
 @property (nonatomic, strong) UIBarButtonItem *navigatorItem;          // the one trailing item: [^ v]
 @property (nonatomic, strong) ApolloFindGlassNavigatorView *navigatorView;
 @property (nonatomic, copy) NSArray<UIBarButtonItem *> *savedRightItems; // Apollo's items, restored after the search
@@ -384,6 +322,10 @@ static CGFloat FGCountReservedWidth(UIView *field) {
 @property (nonatomic, strong) NSNumber *savedKeyboardDismissMode;
 @property (nonatomic, strong) NSNumber *savedJumpButtonAlpha;
 @end
+
+// The bridge whose Apollo call is running: the node setter hook hands the
+// highlighted nodes to it, and only it (see "Highlight bookkeeping").
+static __weak ApolloFindInCommentsGlassBridge *sFGTrackingBridge = nil;
 
 static ApolloFindInCommentsGlassBridge *FGBridge(UIViewController *vc, BOOL create) {
     if (!vc) return nil;
@@ -549,9 +491,9 @@ static UIColor *FGAccent(UIViewController *vc) {
     NSString *query = text ?: @"";
     if (![field.text isEqualToString:query]) field.text = query;
     if ([vc respondsToSelector:@selector(textFieldEditingChangedWithSender:)]) {
-        FGRunApolloSelection(^{
+        [self runApolloSelection:^{
             ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(textFieldEditingChangedWithSender:), field);
-        });
+        }];
     }
     [self updateNavigator];
 }
@@ -565,7 +507,7 @@ static UIColor *FGAccent(UIViewController *vc) {
     UITextField *field = FGApolloField(vc);
     BOOL hadQuery = field.text.length > 0;
     if (hadQuery || FGReadMatchState(vc, NULL, NULL)) [self driveQuery:@""];
-    FGClearHighlights();
+    [self restoreHighlights];
     [self removeNavigator];
     ApolloLog(@"[FindGlass] search ended (hadQuery=%d)", (int)hadQuery);
 }
@@ -574,9 +516,9 @@ static UIColor *FGAccent(UIViewController *vc) {
     UIViewController *vc = self.commentsVC;
     if (!vc) return;
     if ([vc respondsToSelector:@selector(previousResultButtonTappedWithSender:)]) {
-        FGRunApolloSelection(^{
+        [self runApolloSelection:^{
             ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(previousResultButtonTappedWithSender:), sender);
-        });
+        }];
     }
     [self updateNavigator];
 }
@@ -585,9 +527,9 @@ static UIColor *FGAccent(UIViewController *vc) {
     UIViewController *vc = self.commentsVC;
     if (!vc) return;
     if ([vc respondsToSelector:@selector(nextResultButtonTappedWithSender:)]) {
-        FGRunApolloSelection(^{
+        [self runApolloSelection:^{
             ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(nextResultButtonTappedWithSender:), sender);
-        });
+        }];
     }
     [self updateNavigator];
 }
@@ -625,7 +567,89 @@ static UIColor *FGAccent(UIViewController *vc) {
     [self endSearch];
 }
 
+// MARK: - Highlight bookkeeping
+//
+// Apollo installs each match's highlight as a rendering block on the match's
+// text node (setDidDisplayNodeContentWithRenderingContext:) and never removes
+// it — a node that drops out of the match list keeps redrawing its stale range
+// until the cell is recycled, and clearing the search leaves the current
+// match's highlight behind the same way. That setter is not the search's
+// alone: MarkdownNode gives every comment body's text node a rendering block
+// of its own when it builds it (and MarkdownTableCellNode its cells), so the
+// highlight block REPLACES drawing the comment relies on. Two rules keep this
+// safe: the tracking window is opened only around Apollo's rebuild / selection
+// calls (-runApolloSelection:), where the blocks are installed synchronously,
+// and never while merely scrolling a live search; and what we remember per
+// node is the block that was there BEFORE Apollo's first replacement, so
+// ending the search puts that original back (nil for a node that had none)
+// and redraws — rather than blanking the node.
+//
+// The map lives on the bridge, i.e. per comments controller: only the bridge
+// whose Apollo call is running is handed the nodes (sFGTrackingBridge is set
+// for exactly that synchronous window), and ending a search restores only that
+// thread's nodes. A searched thread further down the navigation stack keeps
+// its own map untouched while the thread on top searches and ends. The hook
+// is a static-pointer test outside the window.
+
+// Run one of Apollo's match-changing calls with this bridge receiving the
+// nodes Apollo installs highlight blocks on. Re-entrant: the previous tracker
+// (normally nil) is put back afterwards.
+- (void)runApolloSelection:(dispatch_block_t)call {
+    ApolloFindInCommentsGlassBridge *previous = sFGTrackingBridge;
+    sFGTrackingBridge = self;
+    call();
+    sFGTrackingBridge = previous;
+}
+
+// Called from the setter hook BEFORE the replacement lands: the node's current
+// block is still the original. First sight wins — a later re-selection of the
+// same node sees Apollo's highlight block as "current", which is not it.
+- (void)noteHighlightedNode:(ASTextNode *)node {
+    if (!node) return;
+    if (!self.originalBlocks) self.originalBlocks = [NSMapTable weakToStrongObjectsMapTable];
+    if ([self.originalBlocks objectForKey:node]) return;
+    id original = nil;
+    if ([node respondsToSelector:@selector(didDisplayNodeContentWithRenderingContext)]) {
+        original = [node didDisplayNodeContentWithRenderingContext];
+    }
+    [self.originalBlocks setObject:(original ?: (id)NSNull.null) forKey:node];
+}
+
+// Put every tracked node's pre-search rendering block back and redraw it.
+- (void)restoreHighlights {
+    NSMapTable<ASTextNode *, id> *map = self.originalBlocks;
+    self.originalBlocks = nil;
+    if (map.count == 0) return;
+    NSUInteger restored = 0;
+    for (ASTextNode *node in map.keyEnumerator) {
+        id original = [map objectForKey:node];
+        if (original == (id)NSNull.null) original = nil;
+        if ([node respondsToSelector:@selector(setDidDisplayNodeContentWithRenderingContext:)]) {
+            [node setDidDisplayNodeContentWithRenderingContext:original];
+        }
+        if ([node isNodeLoaded]) [node setNeedsDisplay];
+        restored++;
+    }
+    ApolloLog(@"[FindGlass] restored %lu text nodes' pre-search rendering", (unsigned long)restored);
+}
+
 @end
+
+%hook ASTextNode
+- (void)setDidDisplayNodeContentWithRenderingContext:(id)block {
+    ApolloFindInCommentsGlassBridge *tracker = sFGTrackingBridge;
+    if (tracker && block) [tracker noteHighlightedNode:(ASTextNode *)self];
+    %orig;
+}
+%end
+
+%hook ASTextNode2
+- (void)setDidDisplayNodeContentWithRenderingContext:(id)block {
+    ApolloFindInCommentsGlassBridge *tracker = sFGTrackingBridge;
+    if (tracker && block) [tracker noteHighlightedNode:(ASTextNode *)self];
+    %orig;
+}
+%end
 
 // MARK: - Appearance hooks (called from ApolloSearchNativeBar.xm)
 
