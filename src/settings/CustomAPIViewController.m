@@ -3437,9 +3437,14 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     // With an account the code is v2 and carries the OAuth refresh token —
     // that is what lets the widget read Home and private multireddits. Reddit
     // does not rotate refresh tokens on use, so the widget minting its own
-    // access tokens never invalidates the app's session.
+    // access tokens never invalidates the app's session. `issued` (unix
+    // seconds) lets the widgets treat the most recently copied code as the
+    // one that wins everywhere — so copying "without account" and pasting it
+    // into any widget is how account access is removed again.
     NSString *clientID = account[@"clientID"] ?: (sRedditClientId ?: @"");
-    NSMutableDictionary *payload = [@{ @"v": account ? @2 : @1, @"clientID": clientID } mutableCopy];
+    NSMutableDictionary *payload = [@{ @"v": account ? @2 : @1,
+                                       @"clientID": clientID,
+                                       @"issued": @((long long)[NSDate date].timeIntervalSince1970) } mutableCopy];
     if (sUserAgent.length > 0) payload[@"userAgent"] = sUserAgent;
     NSString *secret = ApolloSecretForClientId(clientID);
     if (secret.length > 0) payload[@"clientSecret"] = secret;
@@ -3461,11 +3466,11 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     };
     [[UIPasteboard generalPasteboard] setItems:@[item] options:options];
 
-    NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget.";
+    NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget";
     [self showAlertWithTitle:@"Copied"
                      message:account
-                         ? [NSString stringWithFormat:@"Setup code copied. %@ It includes your account login, so don't share it.", how]
-                         : [NSString stringWithFormat:@"Setup code copied. %@", how]];
+                         ? [NSString stringWithFormat:@"Setup code copied. %@. It includes your account login, so don't share it.", how]
+                         : [NSString stringWithFormat:@"Setup code copied. %@ and removes any account you added before.", how]];
 }
 
 - (void)testNotificationBackendConnection {

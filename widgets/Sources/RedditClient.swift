@@ -67,10 +67,20 @@ struct RedditClient {
     var hasAccount: Bool { !(refreshToken ?? "").isEmpty }
 
     /// Stable id of the signed-in account for per-account caches (never the
-    /// raw token). Nil without an account.
+    /// raw token; same derivation as `SetupCode.accountKey`). Nil without an
+    /// account.
     var accountKey: String? {
         guard let refreshToken, !refreshToken.isEmpty else { return nil }
         return String(fnv1a("\(clientID):\(refreshToken)"), radix: 36)
+    }
+
+    /// Drop the cached user access token if it belongs to `account`.
+    static func forgetUserToken(account: String) {
+        let d = defaults
+        guard d.string(forKey: userTokenAccountKey) == account else { return }
+        d.removeObject(forKey: userTokenKey)
+        d.removeObject(forKey: userTokenExpiryKey)
+        d.removeObject(forKey: userTokenAccountKey)
     }
 
     enum ClientError: Error {

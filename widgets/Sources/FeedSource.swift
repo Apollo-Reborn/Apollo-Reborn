@@ -66,6 +66,15 @@ enum FeedSource: Hashable {
         }
     }
 
+    /// Cache id scoped to the account when the source is read with one: Home
+    /// and the user's own multireddits differ per account, so their posts,
+    /// rotation offsets and Calendar picks must never be shared across an
+    /// account switch (an offline fallback or snapshot would otherwise show
+    /// the previous account's feed). Public sources keep the bare key.
+    func cacheKey(account: String?) -> String {
+        needsAccount ? "\(cacheKey)@\(account ?? "none")" : cacheKey
+    }
+
     /// Stable id for cache keys. A plain subreddit keeps its bare name so the
     /// caches of already-configured widgets carry over unchanged.
     var cacheKey: String {

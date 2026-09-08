@@ -14,8 +14,10 @@ import WidgetKit
 /// Format: base64( JSON { "v", "clientID", "userAgent", … } ).
 ///   v1  – clientID + userAgent: the app-only tier every widget started with.
 ///   v2  – adds `refreshToken` + `username` (copied "with account"), which is
-///         what Home and the user's own multireddits need, and `clientSecret`
-///         for "web app" API keys. Older widget builds ignore the extra keys.
+///         what Home and the user's own multireddits need, `clientSecret`
+///         for "web app" API keys, and `issued` (unix seconds the code was
+///         copied) so the most recently copied code can win — see `resolve`.
+///         Older widget builds ignore the extra keys.
 struct SetupCode: Codable {
     var v: Int
     var clientID: String
@@ -23,8 +25,18 @@ struct SetupCode: Codable {
     var clientSecret: String?
     var refreshToken: String?
     var username: String?
+    var issued: Double?
 
     var hasAccount: Bool { !(refreshToken ?? "").isEmpty }
+
+    /// Stable, non-secret id of the signed-in account (a hash of client id +
+    /// refresh token). Scopes every per-account cache — see `FeedSource
+    /// .cacheKey(account:)` — so switching accounts can never surface the
+    /// previous account's Home/multireddit posts. Nil without an account.
+    var accountKey: String? {
+        guard hasAccount, let refreshToken else { return nil }
+        return String(fnv1a("\(clientID):\(refreshToken)"), radix: 36)
+    }
 
     /// Decode a pasted code. Accepts either the base64 setup code OR, as a
     /// forgiving fallback, a bare Reddit client_id string (in which case a
@@ -68,24 +80,31 @@ struct SetupCode: Codable {
     /// Net effect: paste the code once into ANY widget and the rest pick it up
     /// on their next refresh — no per-widget pasting, no App Group needed.
     ///
-    /// A code copied *with account* outranks a plain one for the same API key:
-    /// pasting it into ONE widget upgrades every widget, and the plain codes
-    /// still sitting in the other widgets' fields don't downgrade the stash
-    /// back. Only the first stash and that upgrade reload every widget —
-    /// two widgets holding different codes would otherwise ping-pong
-    /// `reloadAllTimelines` at each other (each rebuild re-stashing its own).
+    /// **The most recently copied code wins everywhere.** Codes carry the time
+    /// they were copied (`issued`), so pasting a newer code into ANY widget —
+    /// with account, without account, or for another account — replaces the
+    /// stash for every widget, while the older codes still sitting in other
+    /// widgets' fields never drag it back (no reload ping-pong, and "Copy
+    /// without Account" pasted once is how account access gets removed).
+    /// Codes from older tweak builds have no timestamp: they're honoured in
+    /// their own widget but never replace a timestamped stash.
     static func resolve(_ raw: String?) -> SetupCode? {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let shared = SharedSetup.load().flatMap(parse)
-        if !trimmed.isEmpty, let own = parse(trimmed) {
-            if let shared, shared.hasAccount, !own.hasAccount, shared.clientID == own.clientID {
-                return shared
-            }
-            let upgrade = shared.map { own.hasAccount && !$0.hasAccount } ?? true
-            SharedSetup.store(trimmed, reloadOthers: upgrade)   // remember for the other widgets
+        let sharedRaw = SharedSetup.load()
+        let shared = sharedRaw.flatMap(parse)
+        guard !trimmed.isEmpty, let own = parse(trimmed) else { return shared }
+        guard let shared, trimmed != sharedRaw else {
+            if shared == nil { SharedSetup.store(trimmed, replacing: nil) }
             return own
         }
-        return shared                            // fall back to the shared stash
+        if (own.issued ?? 0) > (shared.issued ?? 0) {
+            SharedSetup.store(trimmed, replacing: shared)
+            return own
+        }
+        if let sharedIssued = shared.issued, (own.issued ?? 0) < sharedIssued {
+            return shared                        // a deliberately later paste elsewhere
+        }
+        return own                               // neither dated: each widget keeps its own
     }
 }
 
@@ -95,15 +114,18 @@ enum SharedSetup {
     private static let defaults = UserDefaults.standard
     private static let key = "rw.sharedSetupCode"
 
-    static func store(_ code: String, reloadOthers: Bool) {
-        // Only act on a genuine change. `reloadOthers` immediately reloads
-        // every widget so the ones with a blank field re-resolve against this
-        // freshly-shared code instead of waiting for their own next WidgetKit
-        // budget window — the caller limits that to the first stash and an
-        // account upgrade so differing codes can't chase each other.
+    /// Replace the stash with a newer code. When the account it carried is
+    /// gone (a plain code, or a different account), everything cached for
+    /// that account — posts, rotation offsets, Calendar picks, multireddit
+    /// names, the user token — is dropped so nothing of it can resurface.
+    /// Then every widget reloads so blank-field widgets re-resolve at once.
+    static func store(_ code: String, replacing previous: SetupCode?) {
         guard defaults.string(forKey: key) != code else { return }
         defaults.set(code, forKey: key)
-        if reloadOthers { WidgetCenter.shared.reloadAllTimelines() }
+        if let old = previous?.accountKey, old != SetupCode.parse(code)?.accountKey {
+            WidgetCaches.forget(account: old)
+        }
+        WidgetCenter.shared.reloadAllTimelines()
     }
     static func load() -> String? {
         let v = defaults.string(forKey: key)

@@ -43,11 +43,16 @@ When an API-key account is signed in, the button asks whether to **include
 your account**. That code additionally carries the account's OAuth refresh
 token, which is what lets the widgets read **Home** and your **private
 multireddits** (the app-only key can only see public listings). It's the same
-paste-once flow — a with-account code pasted into any widget upgrades every
-widget, and the plain codes still sitting in other widgets' fields don't
-downgrade it. Public sources keep using the app-only token, so a revoked
-account never breaks r/aww. The code includes your login — don't share it.
-Keyless (web-session) accounts have no refresh token, so they get the plain code.
+paste-once flow, and **the most recently copied code wins everywhere**: paste a
+with-account code into any widget and every widget gains the account; copy a
+plain code later and paste it into any widget and every widget drops the
+account again (its cached posts, rotation, Calendar picks and token are
+forgotten with it). Older codes still sitting in other widgets' fields never
+drag the shared code back. Public sources keep using the app-only token, so a
+revoked account never breaks r/aww. Home and multireddit caches are kept per
+account, so switching accounts never shows the previous account's posts. The
+code includes your login — don't share it. Keyless (web-session) accounts have
+no refresh token, so they get the plain code.
 
 ### Feed sources (Feed, Post, Photo, Headline, Calendar)
 The **Subreddit or Multireddit** field accepts everything people actually type

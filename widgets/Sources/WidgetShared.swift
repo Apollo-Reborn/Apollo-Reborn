@@ -254,11 +254,26 @@ func errorMessage(_ error: Error, source: FeedSource? = nil) -> String {
     return "Couldn't load posts."
 }
 
-/// Mutable holder so the fetch step of a timeline build can hand the source it
-/// actually used (after learning the account's multireddits) to `assemble`.
-final class SourceBox {
-    var source: FeedSource
-    init(_ source: FeedSource) { self.source = source }
+/// Everything the extension cached for one account, dropped when the shared
+/// setup code stops carrying that account (a plain code or another account
+/// was pasted later). Per-account keys all embed the account id: post caches,
+/// rotation offsets and Calendar picks as "<source>@<account>" (see
+/// `FeedSource.cacheKey(account:)`), the multireddit cache as ".<account>",
+/// plus the user access token.
+enum WidgetCaches {
+    static func forget(account: String) {
+        guard !account.isEmpty else { return }
+        let d = UserDefaults.standard
+        var dropped = 0
+        for key in d.dictionaryRepresentation().keys where key.hasPrefix("rw.") {
+            if key.contains("@\(account)") || key.hasSuffix(".\(account)") {
+                d.removeObject(forKey: key)
+                dropped += 1
+            }
+        }
+        RedditClient.forgetUserToken(account: account)
+        rwLog.log("forgot account \(account, privacy: .public): dropped \(dropped) cached value(s)")
+    }
 }
 
 /// Shared driver: parse creds → fetch (with cache fallback) → hand posts to a
@@ -266,7 +281,7 @@ final class SourceBox {
 func runPostTimeline(
     code: String?,
     cacheKey: String,
-    source: SourceBox? = nil,
+    source: FeedSource? = nil,
     fetch: @escaping (RedditClient) async throws -> [RedditPost],
     assemble: @escaping ([RedditPost]) async -> Timeline<WidgetEntry>,
     completion: @escaping (Timeline<WidgetEntry>) -> Void
@@ -312,39 +327,38 @@ func runPostTimeline(
             }
             let cached = PostCache.load(cacheKey)
             if !cached.isEmpty { completion(await assemble(cached)) }
-            else { completion(singleEntry(.error(errorMessage(error, source: source?.source)), refreshIn: 15 * 60)) }
+            else { completion(singleEntry(.error(errorMessage(error, source: source)), refreshIn: 15 * 60)) }
         }
     }
 }
 
 /// Source-aware driver over `runPostTimeline` for the configurable widgets.
-/// `resolve` maps the account's cached multireddit names to the source (so a
-/// bare "nintendo" can be m/nintendo when it's the user's); on the first build
-/// with an account the multireddits are fetched first and the source
-/// re-resolved. `assemble` gets the posts plus the source actually used, for
-/// the header label and deep link.
+/// With an account, the user's multireddit names are (re)learned first so
+/// `resolve` can map a bare "nintendo" to m/nintendo; the source is then fixed
+/// for the whole build, so `cacheKey` (which embeds the account for personal
+/// sources) always matches the posts stored under it. `assemble` gets the
+/// posts plus the source actually used, for the header label and deep link.
 func runSourceTimeline(
     code: String?,
-    cacheKey: String,
     resolve: @escaping (Set<String>) -> FeedSource,
+    cacheKey: @escaping (FeedSource) -> String,
     sort: WidgetSort,
     limit: Int,
     filter: @escaping ([RedditPost]) -> [RedditPost] = { $0 },
-    assemble: @escaping ([RedditPost], FeedSource) async -> Timeline<WidgetEntry>,
+    assemble: @escaping ([RedditPost], FeedSource, String) async -> Timeline<WidgetEntry>,
     completion: @escaping (Timeline<WidgetEntry>) -> Void
 ) {
-    let box = SourceBox(resolve(OwnMultis.names(for: widgetAccountKey(code))))
-    runPostTimeline(
-        code: code, cacheKey: cacheKey, source: box,
-        fetch: { client in
-            if client.hasAccount, OwnMultis.isStale(for: client.accountKey) {
-                await client.refreshOwnMultisIfStale()
-                box.source = resolve(OwnMultis.names(for: client.accountKey))
-            }
-            return filter(try await client.posts(source: box.source, sort: sort, limit: limit))
-        },
-        assemble: { await assemble($0, box.source) },
-        completion: completion)
+    let client = SetupCode.resolve(code).map { RedditClient(code: $0) }
+    Task {
+        if let client, client.hasAccount { await client.refreshOwnMultisIfStale() }
+        let source = resolve(OwnMultis.names(for: client?.accountKey))
+        let key = cacheKey(source)
+        runPostTimeline(
+            code: code, cacheKey: key, source: source,
+            fetch: { filter(try await $0.posts(source: source, sort: sort, limit: limit)) },
+            assemble: { await assemble($0, source, key) },
+            completion: completion)
+    }
 }
 
 /// Per-account cache id for the resolved setup code (nil without an account).

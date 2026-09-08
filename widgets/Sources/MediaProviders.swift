@@ -95,9 +95,10 @@ struct SinglePostProvider: IntentTimelineProvider {
                                    caption: caption))
             return
         }
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
         let sort = widgetSort(configuration.sort, default: .hot)
-        let post = PostCache.load("single.\(source.cacheKey)\(sortSuffix(sort))").first ?? WidgetSample.post
+        let post = PostCache.load("single.\(source.cacheKey(account: account))\(sortSuffix(sort))").first ?? WidgetSample.post
         completion(WidgetEntry(date: Date(), state: .posts([RenderPost(post: post, imageData: nil)]),
                                caption: caption))
     }
@@ -109,22 +110,23 @@ struct SinglePostProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
         let sort = widgetSort(configuration.sort, default: .hot)
         let caption = captionLevel(configuration.caption)
-        // Per-sort cache buckets so a fetch failure never falls back to a
-        // different sort's cached posts.
-        let key = "single.\(source.cacheKey)\(sortSuffix(sort))"
         // Lock-screen (accessory) widgets are text-only — skip image downloads
         // so the timeline builds fast and never risks the tight accessory
         // reload budget (a slow build shows the redacted placeholder skeleton).
         let accessory = isAccessoryFamily(context.family)
-        rwLog.log("getTimeline Post \(source.label, privacy: .public) family=\(familyName(context.family), privacy: .public) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        rwLog.log("getTimeline Post family=\(familyName(context.family), privacy: .public) pick=\(configuration.feedSource.rawValue) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
         runSourceTimeline(
-            code: configuration.setupCode, cacheKey: key,
+            code: configuration.setupCode,
             resolve: { Self.source(configuration, ownMultis: $0) },
+            // Per-sort (and, for personal sources, per-account) cache buckets
+            // so a fetch failure never falls back to another sort's or another
+            // account's cached posts.
+            cacheKey: { "single.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
             sort: sort, limit: 50,
-            assemble: { posts, _ in
+            assemble: { posts, _, key in
                 if accessory {
                     return stamped(assembleText(posts, key: key), caption: caption)
                 }
@@ -149,11 +151,12 @@ struct FeedProvider: IntentTimelineProvider {
 
     func getSnapshot(for configuration: Intent, in context: Context,
                      completion: @escaping (WidgetEntry) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
         let label = source.label
         if context.isPreview { completion(.sample(WidgetSample.feed, sourceLabel: label)); return }
         let sort = widgetSort(configuration.sort, default: .hot)
-        let cached = PostCache.load("feed.\(source.cacheKey)\(sortSuffix(sort))")
+        let cached = PostCache.load("feed.\(source.cacheKey(account: account))\(sortSuffix(sort))")
         if !cached.isEmpty {
             completion(WidgetEntry(date: Date(),
                                    state: .posts(cached.map { RenderPost(post: $0, imageData: nil) }),
@@ -163,17 +166,17 @@ struct FeedProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
         let sort = widgetSort(configuration.sort, default: .hot)
         let compact = configuration.compact?.boolValue ?? false
         let username = widgetUsername(configuration.setupCode)
-        let key = "feed.\(source.cacheKey)\(sortSuffix(sort))"
-        rwLog.log("Feed \(source.label, privacy: .public) pick=\(configuration.feedSource.rawValue) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        rwLog.log("Feed pick=\(configuration.feedSource.rawValue) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
         runSourceTimeline(
-            code: configuration.setupCode, cacheKey: key,
+            code: configuration.setupCode,
             resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "feed.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
             sort: sort, limit: 12,
-            assemble: { posts, used in
+            assemble: { posts, used, key in
                 // Compact rows hide thumbnails, so only download them otherwise.
                 let renders = compact
                     ? posts.prefix(8).map { RenderPost(post: $0, imageData: nil) }
@@ -202,9 +205,10 @@ struct PhotoProvider: IntentTimelineProvider {
                                    caption: caption))
             return
         }
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
         let sort = widgetSort(configuration.sort, default: .top)
-        let post = PostCache.load("photo.\(source.cacheKey)\(sortSuffix(sort))").first ?? WidgetSample.feed[4]
+        let post = PostCache.load("photo.\(source.cacheKey(account: account))\(sortSuffix(sort))").first ?? WidgetSample.feed[4]
         completion(WidgetEntry(date: Date(), state: .posts([RenderPost(post: post, imageData: nil)]),
                                caption: caption))
     }
@@ -215,18 +219,18 @@ struct PhotoProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
         // Photos default to Top (best images) when no sort is chosen.
         let sort = widgetSort(configuration.sort, default: .top)
         let caption = captionLevel(configuration.caption)
-        let key = "photo.\(source.cacheKey)\(sortSuffix(sort))"
-        rwLog.log("Photo \(source.label, privacy: .public) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        rwLog.log("Photo sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
         runSourceTimeline(
-            code: configuration.setupCode, cacheKey: key,
+            code: configuration.setupCode,
             resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "photo.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
             sort: sort, limit: 25,
             filter: { $0.filter { $0.isImagePost } },
-            assemble: { posts, _ in stamped(await assembleWithImages(posts, key: key, maxPixel: 800), caption: caption) },
+            assemble: { posts, _, key in stamped(await assembleWithImages(posts, key: key, maxPixel: 800), caption: caption) },
             completion: completion)
     }
 }

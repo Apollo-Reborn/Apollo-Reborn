@@ -149,8 +149,9 @@ struct CalendarProvider: IntentTimelineProvider {
             e.calendarStyle = style; e.calendarShowTitle = showTitle
             completion(e); return
         }
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
-        let cfg = configKey(source: source, sort: Self.calendarSort)
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
+        let cfg = configKey(source: source, account: account, sort: Self.calendarSort)
         let today = DailyPhoto.dayString(Date())
         if let locked = lockedPostForSnapshot(cfg: cfg, day: today) {
             var e = WidgetEntry(date: Date(), state: .posts([RenderPost(post: locked, imageData: nil)]))
@@ -169,26 +170,30 @@ struct CalendarProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
+        let account = widgetAccountKey(configuration.setupCode)
         let sort = Self.calendarSort
         let style = calendarStyle(configuration.dateStyle)
         let showTitle = configuration.showTitle?.boolValue ?? false
-        let cfg = configKey(source: source, sort: sort)
 
         runSourceTimeline(
-            code: configuration.setupCode, cacheKey: "calpool.\(source.cacheKey)",
+            code: configuration.setupCode,
             resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "calpool.\($0.cacheKey(account: account))" },
             sort: sort, limit: 50,
             filter: { $0.filter { $0.isImagePost } },
-            assemble: { pool, _ in
-                await assembleCalendar(pool, cfg: cfg, style: style, showTitle: showTitle,
-                                       windowDays: windowDays)
+            assemble: { pool, used, _ in
+                // The daily pick + history are keyed per source (and per
+                // account for personal sources) too, so a locked photo never
+                // carries over to another account's feed.
+                let cfg = self.configKey(source: used, account: account, sort: sort)
+                return await assembleCalendar(pool, cfg: cfg, style: style, showTitle: showTitle,
+                                              windowDays: windowDays)
             },
             completion: completion)
     }
 
-    private func configKey(source: FeedSource, sort: WidgetSort) -> String {
-        "cal.\(source.cacheKey.lowercased()).\(sort.path)\(sort.timeWindow ?? "")"
+    private func configKey(source: FeedSource, account: String?, sort: WidgetSort) -> String {
+        "cal.\(source.cacheKey(account: account).lowercased()).\(sort.path)\(sort.timeWindow ?? "")"
     }
 
     /// For the snapshot we only want a previously-locked pick; never lock a new

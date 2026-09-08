@@ -15,8 +15,9 @@ struct HeadlineProvider: IntentTimelineProvider {
     func getSnapshot(for configuration: Intent, in context: Context,
                      completion: @escaping (WidgetEntry) -> Void) {
         if context.isPreview { completion(.sample([WidgetSample.feed[0]])); return }
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
-        let post = PostCache.load("headline.\(source.cacheKey)").first ?? WidgetSample.feed[0]
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
+        let post = PostCache.load("headline.\(source.cacheKey(account: account))").first ?? WidgetSample.feed[0]
         completion(WidgetEntry(date: Date(), state: .posts([RenderPost(post: post, imageData: nil)])))
     }
 
@@ -26,14 +27,14 @@ struct HeadlineProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: widgetAccountKey(configuration.setupCode)))
-        let key = "headline.\(source.cacheKey)"
-        rwLog.log("getTimeline Headline \(source.label, privacy: .public) family=\(familyName(context.family), privacy: .public)")
+        let account = widgetAccountKey(configuration.setupCode)
+        rwLog.log("getTimeline Headline family=\(familyName(context.family), privacy: .public)")
         runSourceTimeline(
-            code: configuration.setupCode, cacheKey: key,
+            code: configuration.setupCode,
             resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "headline.\($0.cacheKey(account: account))" },
             sort: .hot, limit: 10,
-            assemble: { posts, _ in assembleText(posts, key: key) },   // rotates through the top posts
+            assemble: { posts, _, key in assembleText(posts, key: key) },   // rotates through the top posts
             completion: completion)
     }
 }
