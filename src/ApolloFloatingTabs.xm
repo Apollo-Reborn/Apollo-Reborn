@@ -165,7 +165,7 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
 @property (nonatomic, strong) UILabel *badgeLabel;
 @property (nonatomic, assign) BOOL badgeConfigured;
 - (void)applyMainImage:(UIImage *)image;                          // nil → subreddit monogram
-- (void)applyBadgeImage:(UIImage *)image initial:(NSString *)initial; // both nil → hidden
+- (void)applyBadgeImage:(UIImage *)image initial:(NSString *)initial; // shows initial's first character; both nil → hidden
 - (void)applyMonogramColors;
 - (void)updateTuckAppearance;
 - (void)refreshAccessibility;
@@ -280,7 +280,10 @@ static void ApolloFTHapticImpact(UIImpactFeedbackStyle style) {
         self.badgeLabel.hidden = YES;
         self.badgeContainer.backgroundColor = [UIColor clearColor];
     } else if (initial.length > 0) {
-        self.badgeLabel.text = [initial substringToIndex:1].uppercaseString;
+        // First composed character only (surrogate-safe), so a longer string
+        // can never widen the badge.
+        NSRange first = [initial rangeOfComposedCharacterSequenceAtIndex:0];
+        self.badgeLabel.text = [initial substringWithRange:first].uppercaseString;
         self.badgeLabel.hidden = NO;
         self.badgeImageView.hidden = YES;
         [self refreshBadgeColors];
@@ -736,9 +739,91 @@ static ApolloFloatingTabsController *sFTController = nil;
 //      subreddit, and the badge keeps the community identity visible.
 //   2. No thumbnail (text/NSFW/spoiler post): subreddit icon (or monogram) as
 //      the face. If ANOTHER badge-less tab shares the subreddit, each gets a
-//      post-title-initial badge so same-sub text posts still tell apart.
+//      post-title-initial badge so same-sub text posts still tell apart. The
+//      initial skips the words the colliding titles share ("Match Thread:",
+//      "[Serious]", "Daily Discussion"), so two r/soccer match threads badge
+//      by team (R / B) instead of both wearing an M — see
+//      ApolloFTBadgeLettersForTitles.
 // Recomputed wholesale on every add/close/restore and image arrival —
 // identity is derived state, never patched incrementally.
+
+// First alphanumeric character of `word` (taken as a composed sequence, so an
+// accented or non-BMP letter survives), uppercased; nil when the word has
+// none ("|", "—", an emoji).
+static NSString *ApolloFTWordInitial(NSString *word) {
+    NSCharacterSet *alphanumerics = [NSCharacterSet alphanumericCharacterSet];
+    NSUInteger index = 0;
+    while (index < word.length) {
+        NSRange range = [word rangeOfComposedCharacterSequenceAtIndex:index];
+        NSString *character = [word substringWithRange:range];
+        if ([character rangeOfCharacterFromSet:alphanumerics].location != NSNotFound) {
+            return character.uppercaseString;
+        }
+        index = NSMaxRange(range);
+    }
+    return nil;
+}
+
+// One badge letter per member of a same-subreddit collision group. Titles are
+// compared word by word: members that share an initial at `depth` are refined
+// one word deeper until they split, so each badge is the first word that tells
+// its tab apart from the others, never a prefix they all share:
+//   "Match Thread: Real Madrid vs Inter" / "Match Thread: Bayern vs Chelsea"
+//     → R / B   (not M / M)
+//   "Match Thread: Real Madrid …" / "Post Match Thread: Real Madrid …"
+//     → M / P   (a match thread and its post-match thread stay distinct)
+//   "Match Thread: Real Madrid …" / "Match Thread: Real Sociedad …"
+//     → M / S
+// A title that runs out of words while the others continue keeps its first
+// initial ("•" when it has none), so it still differs from the rest.
+static void ApolloFTAssignBadgeLetters(NSArray<NSArray<NSString *> *> *initials,
+                                       NSIndexSet *members, NSUInteger depth,
+                                       NSMutableArray<NSString *> *letters) {
+    // Partition members by their initial at `depth`; @"" = title exhausted.
+    NSMutableDictionary<NSString *, NSMutableIndexSet *> *buckets = [NSMutableDictionary dictionary];
+    NSMutableArray<NSString *> *bucketOrder = [NSMutableArray array];
+    [members enumerateIndexesUsingBlock:^(NSUInteger member, BOOL *stop) {
+        NSArray<NSString *> *words = initials[member];
+        NSString *key = depth < words.count ? words[depth] : @"";
+        if (!buckets[key]) {
+            buckets[key] = [NSMutableIndexSet indexSet];
+            [bucketOrder addObject:key];
+        }
+        [buckets[key] addIndex:member];
+    }];
+    for (NSString *key in bucketOrder) {
+        NSIndexSet *bucket = buckets[key];
+        if (key.length > 0 && bucket.count > 1) {
+            // Still tied on this word — split on the next one.
+            ApolloFTAssignBadgeLetters(initials, bucket, depth + 1, letters);
+            continue;
+        }
+        [bucket enumerateIndexesUsingBlock:^(NSUInteger member, BOOL *stop) {
+            NSString *letter = key.length > 0 ? key : initials[member].firstObject;
+            letters[member] = letter ?: @"•";
+        }];
+    }
+}
+
+static NSArray<NSString *> *ApolloFTBadgeLettersForTitles(NSArray<NSString *> *titles) {
+    NSMutableArray<NSArray<NSString *> *> *initials = [NSMutableArray arrayWithCapacity:titles.count];
+    NSMutableArray<NSString *> *letters = [NSMutableArray arrayWithCapacity:titles.count];
+    NSCharacterSet *separators = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    for (NSString *title in titles) {
+        NSMutableArray<NSString *> *words = [NSMutableArray array];
+        for (NSString *word in [title componentsSeparatedByCharactersInSet:separators]) {
+            NSString *initial = ApolloFTWordInitial(word);
+            if (initial) [words addObject:initial];
+        }
+        [initials addObject:words];
+        [letters addObject:@"•"];
+    }
+    if (titles.count > 0) {
+        NSIndexSet *all = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, titles.count)];
+        ApolloFTAssignBadgeLetters(initials, all, 0, letters);
+    }
+    return letters;
+}
 
 - (void)refreshIdentityForTab:(ApolloFloatingTab *)tab {
     ApolloFloatingBubbleView *bubble = [self bubbleForTab:tab];
@@ -755,27 +840,24 @@ static ApolloFloatingTabsController *sFTController = nil;
     }
 
     [bubble applyMainImage:subIcon]; // nil → monogram
-    // Collision = another tab that will ALSO wear this subreddit's face
+    // Collision group = every tab that will wear this subreddit's face
     // (judged by stored thumbnail URL, not fetch state, so badges don't
-    // flicker while a thumbnail is still downloading).
-    BOOL collision = NO;
+    // flicker while a thumbnail is still downloading). Alone → no badge;
+    // otherwise the group's titles are lettered together, so each badge is
+    // the first word that tells its tab apart (ApolloFTBadgeLettersForTitles).
+    NSMutableArray<ApolloFloatingTab *> *group = [NSMutableArray array];
     for (ApolloFloatingTab *other in self.tabs) {
-        if (other != tab && other.thumbnailURL.length == 0
+        if (other.thumbnailURL.length == 0
             && [other.subreddit.lowercaseString isEqualToString:subKey]) {
-            collision = YES;
-            break;
+            [group addObject:other];
         }
     }
+    if (![group containsObject:tab]) [group addObject:tab]; // refreshed before joining the roster
     NSString *titleInitial = nil;
-    if (collision) {
-        for (NSUInteger i = 0; i < tab.title.length; i++) {
-            unichar c = [tab.title characterAtIndex:i];
-            if ([[NSCharacterSet alphanumericCharacterSet] characterIsMember:c]) {
-                titleInitial = [tab.title substringWithRange:NSMakeRange(i, 1)];
-                break;
-            }
-        }
-        if (!titleInitial) titleInitial = @"•";
+    if (group.count > 1) {
+        NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:group.count];
+        for (ApolloFloatingTab *member in group) [titles addObject:member.title ?: @""];
+        titleInitial = ApolloFTBadgeLettersForTitles(titles)[[group indexOfObject:tab]];
     }
     [bubble applyBadgeImage:nil initial:titleInitial];
 }
@@ -2168,11 +2250,14 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
         NSInteger i = 0;
         for (ApolloFloatingTab *tab in controller.tabs) {
             ApolloFloatingBubbleView *bubble = [controller bubbleForTab:tab];
-            ApolloLog(@"[FloatingTabs][debug]   [%ld] %@ r/%@ side=%ld yFrac=%.3f tucked=%d stack=%@/%ld vc=%d snap=%d center=(%.0f,%.0f)",
+            ApolloLog(@"[FloatingTabs][debug]   [%ld] %@ r/%@ side=%ld yFrac=%.3f tucked=%d stack=%@/%ld vc=%d snap=%d center=(%.0f,%.0f) face=%@ badge=%@",
                       (long)i, tab.linkKey, tab.subreddit, (long)tab.side, tab.yFrac, tab.tucked,
                       tab.stackID ?: @"-", (long)tab.stackOrder,
                       tab.commentsVC != nil, tab.snapshot != nil,
-                      bubble.center.x, bubble.center.y);
+                      bubble.center.x, bubble.center.y,
+                      bubble.iconView.hidden ? @"monogram" : @"image",
+                      bubble.badgeContainer.hidden ? @"-"
+                          : (bubble.badgeLabel.hidden ? @"image" : bubble.badgeLabel.text));
             i++;
         }
         return;
