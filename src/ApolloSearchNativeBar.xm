@@ -1180,6 +1180,41 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     });
 }
 
+// Leaving a managed screen (feed or comments): note whether it left resting
+// at its top for the re-appearance hold, restore the policy after a cancelled
+// transition, and deactivate the search UI for the push. Shared by the base
+// hook (feeds) and the CommentsViewController hook (comments).
+static void NSBViewWillDisappear(UIViewController *vc) {
+    if (NSBIsNativeSearchCommentsVC(vc)) ApolloFindInCommentsGlassViewWillDisappear(vc);
+    else sNSBTransitioning = YES;
+    // Remember whether the list is leaving from its top rest; a re-appearance
+    // uses it to lay the bar out revealed for the transition (viewWillAppear).
+    // Measured live here, before the deactivation below can move the palette:
+    // once the view is off-screen its safe area — and so the adjusted inset
+    // the rest is measured against — is no longer trustworthy. Feeds and the
+    // comments screen alike.
+    ApolloNativeSearchRestingState *leavingState = NSBRestingStateForVC(vc);
+    UIScrollView *leavingTable = NSBTableForVC(vc);
+    leavingState.leftAtTop = leavingTable &&
+        leavingTable.contentOffset.y <= -leavingTable.adjustedContentInset.top + 2.0;
+    if (leavingState.reappearanceHold) {
+        // Still held here means viewDidAppear never ran (a cancelled
+        // interactive pop or forward swipe into this screen): put the scroll-away
+        // policy back so the next re-appearance can take the hold again
+        // instead of the next transition running with the policy stuck off.
+        leavingState.reappearanceHold = NO;
+        [vc navigationItem].hidesSearchBarWhenScrolling = YES;
+        ApolloLog(@"[NativeSearch] transition into the list cancelled with the hold still set: scroll-away policy restored");
+    }
+    // Leaving the feed (e.g. opening a result) with the search UI presented:
+    // deactivate it cleanly. Keeping it active across a push leaves UIKit's
+    // presentation half-restored after the pop (missing nav bar, collapsed
+    // inset). Apollo's query/results live on the VC, not on the controller, so
+    // nothing is lost — viewWillAppear re-syncs the bar text on return.
+    UISearchController *sc = [vc navigationItem].searchController;
+    if (sc.active) sc.active = NO;
+}
+
 %hook _TtC6Apollo21ASTableViewController
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1286,34 +1321,11 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchVC(self)) return;
-    if (NSBIsNativeSearchCommentsVC(self)) ApolloFindInCommentsGlassViewWillDisappear((UIViewController *)self);
-    else sNSBTransitioning = YES;
-    // Remember whether the list is leaving from its top rest; a re-appearance
-    // uses it to lay the bar out revealed for the transition (viewWillAppear).
-    // Measured live here, before the deactivation below can move the palette:
-    // once the view is off-screen its safe area — and so the adjusted inset
-    // the rest is measured against — is no longer trustworthy. Feeds and the
-    // comments screen alike.
-    ApolloNativeSearchRestingState *leavingState = NSBRestingStateForVC((UIViewController *)self);
-    UIScrollView *leavingTable = NSBTableForVC((UIViewController *)self);
-    leavingState.leftAtTop = leavingTable &&
-        leavingTable.contentOffset.y <= -leavingTable.adjustedContentInset.top + 2.0;
-    if (leavingState.reappearanceHold) {
-        // Still held here means viewDidAppear never ran (a cancelled
-        // interactive pop or forward swipe into this screen): put the scroll-away
-        // policy back so the next re-appearance can take the hold again
-        // instead of the next transition running with the policy stuck off.
-        leavingState.reappearanceHold = NO;
-        [(UIViewController *)self navigationItem].hidesSearchBarWhenScrolling = YES;
-        ApolloLog(@"[NativeSearch] transition into the list cancelled with the hold still set: scroll-away policy restored");
-    }
-    // Leaving the feed (e.g. opening a result) with the search UI presented:
-    // deactivate it cleanly. Keeping it active across a push leaves UIKit's
-    // presentation half-restored after the pop (missing nav bar, collapsed
-    // inset). Apollo's query/results live on the VC, not on the controller, so
-    // nothing is lost — viewWillAppear re-syncs the bar text on return.
-    UISearchController *sc = [(UIViewController *)self navigationItem].searchController;
-    if (sc.active) sc.active = NO;
+    // The comments screen is handled by its own hook below: it inherits this
+    // method, and an inherited method reached through other modules' subclass
+    // hooks does not reliably arrive here.
+    if (NSBIsNativeSearchCommentsVC(self)) return;
+    NSBViewWillDisappear((UIViewController *)self);
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1331,6 +1343,23 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     }
     // Recovery drives layout itself; never re-enter it from a layout callback.
     NSBScheduleRevealCheck(table);
+}
+
+%end
+
+// CommentsViewController does not implement viewWillDisappear: itself and
+// other modules hook it on the subclass. With the runtime's own dispatch a
+// subclass hook of an inherited method captures the superclass IMP at install
+// time, so the base-class hook above is skipped for it (seen on the sim: the
+// leave-at-top note was never written for a thread). Hook the subclass
+// directly; the base hook stands down for comments so this runs once.
+%hook _TtC6Apollo22CommentsViewController
+
+- (void)viewWillDisappear:(BOOL)animated {
+    if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
+    %orig;
+    if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchCommentsVC((UIViewController *)self)) return;
+    NSBViewWillDisappear((UIViewController *)self);
 }
 
 %end
