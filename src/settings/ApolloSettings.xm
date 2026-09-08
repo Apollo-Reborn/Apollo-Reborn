@@ -56,6 +56,13 @@ static NSString *const kApolloRebornFeatureRequestsURL = @"https://apolloreborn.
 static __weak UIViewController *sApolloLastSettingsVC = nil;
 static char kApolloRootNativeSurfaceKey;
 
+static void ApolloRootSettingsPreparePaneText(UITableViewCell *cell, UIViewController *controller) {
+    if (!ApolloPaneSplitControllerFor(controller)) return;
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody compatibleWithTraitCollection:controller.traitCollection];
+    cell.textLabel.adjustsFontForContentSizeCategory = YES;
+    cell.textLabel.numberOfLines = 0;
+}
+
 static void ApolloApplyRootNativeSurface(UITableViewCell *cell, UIColor *surface) {
     if (!cell || !surface) return;
     cell.backgroundColor = surface;
@@ -250,8 +257,10 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     %orig;
     UIViewController *controller = (UIViewController *)self;
-    if (!previousTraitCollection ||
-        previousTraitCollection.userInterfaceStyle == controller.traitCollection.userInterfaceStyle) return;
+    BOOL sizeChanged = ApolloPaneSplitControllerFor(controller) &&
+        ![previousTraitCollection.preferredContentSizeCategory isEqualToString:controller.traitCollection.preferredContentSizeCategory];
+    if (!previousTraitCollection || (!sizeChanged &&
+        previousTraitCollection.userInterfaceStyle == controller.traitCollection.userInterfaceStyle)) return;
 
     // The native surface captured below may be a trait-resolved color. Drop
     // it before rebuilding so the native rows donate their new appearance,
@@ -285,6 +294,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = indexPath.row == 0 ? @"Apollo Reborn" : @"Buy Us a Coffee";
+        ApolloRootSettingsPreparePaneText(cell, (UIViewController *)self);
         UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
@@ -306,6 +316,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = title;
+        ApolloRootSettingsPreparePaneText(cell, (UIViewController *)self);
         UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
@@ -406,8 +417,16 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) return 52.0;
-    if (indexPath.section == 2) return 52.0;
+    if (indexPath.section == 0 || indexPath.section == 2) {
+        // Native cell text grows at accessibility sizes. Let UIKit measure the
+        // multiline label instead of clipping it inside the ordinary 52pt row.
+        // This is the existing single owner of the root table, not a second
+        // delegate/remapper layered onto Apollo's General screen.
+        if (ApolloPaneSplitControllerFor((UIViewController *)self) &&
+            UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory))
+            return UITableViewAutomaticDimension;
+        return 52.0;
+    }
     return %orig;
 }
 

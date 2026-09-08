@@ -28,6 +28,9 @@
 #import "UserDefaultConstants.h"
 #import "UIWindow+Apollo.h"
 #import "ipad/ApolloPaneSplitViewController.h"
+#import "ipad/ApolloPaneLayout.h"
+#import "ipad/ApolloPaneSidebar.h"
+#import <mach-o/dyld.h>
 
 void ApolloSubredditIndexDebugDescribeTables(void); // ApolloSubredditIndexPolish.xm (sim-only)
 #import <objc/message.h>
@@ -1000,6 +1003,62 @@ static void ApolloSimDebugSetPaneMode(NSString *mode) {
     });
 }
 
+extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *, NSString *);
+static void ApolloSimDebugOpenVisiblePost(void) {
+    ApolloPaneSplitViewController *pane = ApolloSimDebugSelectedPane();
+    UIViewController *controller = [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary].topViewController;
+    Ivar tableIvar = class_getInstanceVariable(controller.class, "tableNode");
+    id node = tableIvar ? object_getIvar(controller, tableIvar) : nil;
+    UITableView *table = [node respondsToSelector:@selector(view)] ? (id)[node view] : nil;
+    if (![table isKindOfClass:UITableView.class]) return;
+    for (NSIndexPath *path in table.indexPathsForVisibleRows) {
+        id cell = ((id (*)(id, SEL, id))objc_msgSend)(node, NSSelectorFromString(@"nodeForRowAtIndexPath:"), path);
+        Ivar linkIvar = class_getInstanceVariable([cell class], "link");
+        id link = linkIvar ? object_getIvar(cell, linkIvar) : nil;
+        SEL selector = NSSelectorFromString(@"permalink");
+        if (![link respondsToSelector:selector]) continue;
+        id permalink = ((id (*)(id, SEL))objc_msgSend)(link, selector);
+        if ([permalink isKindOfClass:NSURL.class]) permalink = [permalink path];
+        if (![permalink isKindOfClass:NSString.class] || ![permalink hasPrefix:@"/"]) continue;
+        NSURLComponents *components = [NSURLComponents new];
+        components.scheme = @"apollo"; components.host = @"reddit.com"; components.path = permalink;
+        BOOL routed = ApolloRouteURLThroughAppInScene(components.URL, controller.viewIfLoaded.window.windowScene);
+        ApolloLog(@"[PaneReadPost] native route=%d", routed);
+        return;
+    }
+    ApolloLog(@"[PaneReadPost] no visible post model");
+}
+
+static void ApolloSimDebugWritePaneSnapshot(void) {
+    NSMutableArray *scenes = [NSMutableArray array];
+    for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class]) continue;
+        UIWindowScene *scene = (id)candidate;
+        UITabBarController *tabs = (id)ApolloMainTabBarControllerForScene(scene);
+        if (![tabs isKindOfClass:UITabBarController.class] || tabs.viewIfLoaded.window.windowScene != scene) continue;
+        NSMutableArray *panes = [NSMutableArray array];
+        for (UIViewController *child in tabs.viewControllers) {
+            if ([child isKindOfClass:ApolloPaneSplitViewController.class])
+                [panes addObject:[(ApolloPaneSplitViewController *)child apollo_simStructuredSnapshot]];
+        }
+        // Session identifier is opaque system identity, never account identity.
+        [scenes addObject:@{@"scene": scene.session.persistentIdentifier, @"activation": @(scene.activationState),
+            @"bounds": NSStringFromCGRect(scene.coordinateSpace.bounds), @"selectedTab": @(tabs.selectedIndex), @"panes": panes}];
+    }
+    NSUInteger copies = 0;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (name && [@((const char *)name).lastPathComponent isEqualToString:@"ApolloReborn.dylib"]) copies++;
+    }
+    NSDictionary *snapshot = @{@"schema": @1, @"uptime": @(NSProcessInfo.processInfo.systemUptime),
+        @"runtime": UIDevice.currentDevice.systemVersion, @"idiom": @(UIDevice.currentDevice.userInterfaceIdiom),
+        @"loadedTweakCopies": @(copies), @"scenes": scenes};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:NSJSONWritingPrettyPrinted error:nil];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/ApolloPaneSnapshot.json"];
+    [data writeToFile:path atomically:YES];
+    ApolloLog(@"[PaneSnapshot] wrote %lu scenes, tweak copies=%lu", (unsigned long)scenes.count, (unsigned long)copies);
+}
+
 static void ApolloSimDebugLogPaneStatus(void) {
     ApolloPaneSplitViewController *pane = ApolloSimDebugSelectedPane();
     ApolloLog(@"[PaneDisplayTest] status %@",
@@ -1129,7 +1188,7 @@ static void ApolloSimDebugRunInteractiveTransitionRace(BOOL shouldCommit) {
     ApolloPaneSplitViewController *pane = ApolloSimDebugSelectedPane();
     UINavigationController *detail =
         [pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary];
-    if (!pane || pane.isCollapsed || !detail.viewIfLoaded.window ||
+    if (!pane || !detail.viewIfLoaded.window ||
         detail.transitionCoordinator || sApolloSimTransitionRaceRunning) {
         ApolloLog(@"[SimDebugTap][transitionrace] detail unavailable");
         return;
@@ -1144,94 +1203,104 @@ static void ApolloSimDebugRunInteractiveTransitionRace(BOOL shouldCommit) {
         return;
     }
 
-    UIGestureRecognizer *apolloEdge =
-        ApolloSimDebugNavigationGesture(detail, "leftScreenEdgePanGestureRecognizer");
-    if (!apolloEdge) {
-        ApolloLog(@"[SimDebugTap][transitionrace] ERROR Apollo edge recognizer unavailable");
-        return;
-    }
-
-    UIWindow *window = detail.view.window;
-    CGPoint localStart = CGPointMake(8.0, CGRectGetMidY(detail.view.bounds));
-    CGPoint localEnd = CGPointMake(shouldCommit ? detail.view.bounds.size.width * 0.72 : 42.0,
-                                   localStart.y);
-    CGPoint start = [detail.view convertPoint:localStart toView:window];
-    CGPoint end = [detail.view convertPoint:localEnd toView:window];
-    UIView *hitView = [window hitTest:start withEvent:nil];
-    if (!hitView || ![hitView isDescendantOfView:detail.view]) {
-        ApolloLog(@"[SimDebugTap][transitionrace] invalid edge hit view=%@", hitView);
-        return;
-    }
-
-    UITouch *touch = [UITouch new];
-    [touch setWindow:window];
-    [touch setView:hitView];
-    [touch setTapCount:1];
-    if ([touch respondsToSelector:@selector(_setIsFirstTouchForView:)]) {
-        [touch _setIsFirstTouchForView:YES];
-    }
-    [touch _setLocationInWindow:start resetPrevious:YES];
-    [touch setPhase:UITouchPhaseBegan];
+    // The nonanimated fixture push still delivers appearance/gesture policy on
+    // the next run-loop turn. Begin the touch after that real settlement, as a
+    // user does after a completed push; a touch begun on a disabled recognizer
+    // cannot be recovered by enabling it midway through the same sequence.
     sApolloSimTransitionRaceRunning = YES;
-    ApolloSimDebugSendTouch(touch);
-
-    const int steps = 24;
-    __block BOOL raceVerified = NO;
-    for (int index = 1; index <= steps; index++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-            (int64_t)(index * 0.022 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                CGFloat progress;
-                if (!shouldCommit && index <= 4) {
-                    // Cross pan-recognition hysteresis promptly, then crawl to
-                    // the cancellation endpoint so terminal velocity stays low.
-                    progress = (28.0 - localStart.x) * ((CGFloat)index / 4.0) /
-                        (localEnd.x - localStart.x);
-                } else if (!shouldCommit) {
-                    CGFloat tail = (CGFloat)(index - 4) / (CGFloat)(steps - 4);
-                    progress = ((28.0 - localStart.x) +
-                        (localEnd.x - 28.0) * tail) / (localEnd.x - localStart.x);
-                } else {
-                    progress = (CGFloat)index / (CGFloat)steps;
-                }
-                CGPoint point = CGPointMake(start.x + (end.x - start.x) * progress,
-                                            start.y + (end.y - start.y) * progress);
-                [touch _setLocationInWindow:point resetPrevious:NO];
-                [touch setPhase:UITouchPhaseMoved];
-                ApolloSimDebugSendTouch(touch);
-            });
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        id<UIViewControllerTransitionCoordinator> coordinator = detail.transitionCoordinator;
-        UIGestureRecognizerState state = apolloEdge.state;
-        raceVerified = (state == UIGestureRecognizerStateBegan ||
-                        state == UIGestureRecognizerStateChanged) && coordinator.isInteractive;
-        ApolloLog(@"[SimDebugTap][transitionrace] verified=%d edgeState=%ld interactive=%d",
-                  raceVerified, (long)state, coordinator.isInteractive);
-        if (!raceVerified) {
-            ApolloLog(@"[SimDebugTap][transitionrace] ERROR interactive transition did not begin");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIGestureRecognizer *apolloEdge =
+            ApolloSimDebugNavigationGesture(detail, "leftScreenEdgePanGestureRecognizer");
+        if (!apolloEdge) {
+            ApolloLog(@"[SimDebugTap][transitionrace] ERROR Apollo edge recognizer unavailable");
+            sApolloSimTransitionRaceRunning = NO;
+            return;
         }
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (raceVerified) ApolloSimDebugSelectTransitionProbe(@"Race A");
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.24 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (raceVerified) ApolloSimDebugSelectTransitionProbe(@"Race B");
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.56 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [touch _setLocationInWindow:end resetPrevious:NO];
-        [touch setPhase:shouldCommit ? UITouchPhaseEnded : UITouchPhaseCancelled];
+
+        UIWindow *window = detail.view.window;
+        // Stay clear of the divider's intentional 44-point hit region at mid-height.
+        CGPoint localStart = CGPointMake(8.0, CGRectGetHeight(detail.view.bounds) * 0.25);
+        CGPoint localEnd = CGPointMake(shouldCommit ? detail.view.bounds.size.width * 0.72 : 42.0,
+                                       localStart.y);
+        CGPoint start = [detail.view convertPoint:localStart toView:window];
+        CGPoint end = [detail.view convertPoint:localEnd toView:window];
+        UIView *hitView = [window hitTest:start withEvent:nil];
+        if (!hitView || ![hitView isDescendantOfView:detail.view]) {
+            ApolloLog(@"[SimDebugTap][transitionrace] invalid edge hit view=%@", hitView);
+            sApolloSimTransitionRaceRunning = NO;
+            return;
+        }
+
+        UITouch *touch = [UITouch new];
+        [touch setWindow:window];
+        [touch setView:hitView];
+        [touch setTapCount:1];
+        if ([touch respondsToSelector:@selector(_setIsFirstTouchForView:)]) {
+            [touch _setIsFirstTouchForView:YES];
+        }
+        [touch _setLocationInWindow:start resetPrevious:YES];
+        [touch setPhase:UITouchPhaseBegan];
+        sApolloSimTransitionRaceRunning = YES;
         ApolloSimDebugSendTouch(touch);
-        ApolloLog(@"[SimDebugTap][transitionrace] gesture ended commit=%d verified=%d start=(%.0f,%.0f) end=(%.0f,%.0f)",
-                  shouldCommit, raceVerified, start.x, start.y, end.x, end.y);
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ApolloSimDebugDumpTransitionState();
-        sApolloSimTransitionRaceRunning = NO;
+
+        const int steps = 24;
+        __block BOOL raceVerified = NO;
+        for (int index = 1; index <= steps; index++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(index * 0.022 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    CGFloat progress;
+                    if (!shouldCommit && index <= 4) {
+                        // Cross pan-recognition hysteresis promptly, then crawl to
+                        // the cancellation endpoint so terminal velocity stays low.
+                        progress = (28.0 - localStart.x) * ((CGFloat)index / 4.0) /
+                            (localEnd.x - localStart.x);
+                    } else if (!shouldCommit) {
+                        CGFloat tail = (CGFloat)(index - 4) / (CGFloat)(steps - 4);
+                        progress = ((28.0 - localStart.x) +
+                            (localEnd.x - 28.0) * tail) / (localEnd.x - localStart.x);
+                    } else {
+                        progress = (CGFloat)index / (CGFloat)steps;
+                    }
+                    CGPoint point = CGPointMake(start.x + (end.x - start.x) * progress,
+                                                start.y + (end.y - start.y) * progress);
+                    [touch _setLocationInWindow:point resetPrevious:NO];
+                    [touch setPhase:UITouchPhaseMoved];
+                    ApolloSimDebugSendTouch(touch);
+                });
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            id<UIViewControllerTransitionCoordinator> coordinator = detail.transitionCoordinator;
+            UIGestureRecognizerState state = apolloEdge.state;
+            raceVerified = (state == UIGestureRecognizerStateBegan ||
+                            state == UIGestureRecognizerStateChanged) && coordinator.isInteractive;
+            ApolloLog(@"[SimDebugTap][transitionrace] verified=%d edgeState=%ld interactive=%d",
+                      raceVerified, (long)state, coordinator.isInteractive);
+            if (!raceVerified) {
+                ApolloLog(@"[SimDebugTap][transitionrace] ERROR interactive transition did not begin");
+            }
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (raceVerified) ApolloSimDebugSelectTransitionProbe(@"Race A");
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.24 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (raceVerified) ApolloSimDebugSelectTransitionProbe(@"Race B");
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.56 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [touch _setLocationInWindow:end resetPrevious:NO];
+            [touch setPhase:shouldCommit ? UITouchPhaseEnded : UITouchPhaseCancelled];
+            ApolloSimDebugSendTouch(touch);
+            ApolloLog(@"[SimDebugTap][transitionrace] gesture ended commit=%d verified=%d start=(%.0f,%.0f) end=(%.0f,%.0f)",
+                      shouldCommit, raceVerified, start.x, start.y, end.x, end.y);
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloSimDebugDumpTransitionState();
+            sApolloSimTransitionRaceRunning = NO;
+        });
     });
 }
 
@@ -1837,9 +1906,11 @@ static BOOL ApolloSimDebugHandleIntegratedMainCommand(NSString *contents) {
 
 static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *observer,
                                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    // Capture at notification receipt, before queueing main-thread delivery.
+    // Reading the shared command file later can execute a newer swipe twice.
+    NSString *contents = [NSString stringWithContentsOfFile:kApolloSimTapFile
+                                                   encoding:NSUTF8StringEncoding error:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSString *contents = [NSString stringWithContentsOfFile:kApolloSimTapFile
-                                                       encoding:NSUTF8StringEncoding error:nil];
         if (ApolloSimDebugHandleIntegratedMainCommand(contents)) return;
         if ([contents hasPrefix:@"insetbottom "]) {
             ApolloSimDebugForceBottomInset([[contents substringFromIndex:12] doubleValue]);
@@ -1860,6 +1931,17 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugForceCompactSplitColumns(on);
             return;
         }
+        if ([contents isEqualToString:@"panereadpost"]) { ApolloSimDebugOpenVisiblePost(); return; }
+        if ([contents isEqualToString:@"panenewwindow"]) { ApolloPaneOpenDetailInNewWindow(ApolloSimDebugSelectedPane()); return; }
+        if ([contents hasPrefix:@"panefind "]) {
+            UIViewController *detail = [ApolloSimDebugSelectedPane() apollo_navigationControllerForColumn:ApolloPaneColumnSecondary].topViewController;
+            ApolloLog(@"[PaneFindTest] %@", ApolloPaneSimFind(detail, [contents substringFromIndex:9])); return;
+        }
+        if ([contents hasPrefix:@"sidebar "]) {
+            if (@available(iOS 18.0, *)) ApolloSimDebugSelectedPane().tabBarController.sidebar.hidden = [[contents substringFromIndex:8] isEqualToString:@"hide"];
+            return;
+        }
+        if ([contents isEqualToString:@"panesnapshot"]) { ApolloSimDebugWritePaneSnapshot(); return; }
         if ([contents hasPrefix:@"panemode "]) {
             NSString *mode = [[contents substringFromIndex:9]
                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];

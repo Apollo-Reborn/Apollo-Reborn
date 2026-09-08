@@ -622,57 +622,44 @@ CGFloat ApolloNavItemTrailingContentInset(UINavigationItem *item) {
 // the AppDelegate's ivar is nil. The AppDelegate's application:openURL:options:
 // handler (sub_100161d08) reads AppDelegate.tabBarController for navigation,
 // so we ensure it has a reference before calling.
-static BOOL ApolloRouteURLThroughUIApplication(NSURL *url) {
-    if (![url isKindOfClass:[NSURL class]]) {
-        return NO;
-    }
-
-    UIApplication *application = [UIApplication sharedApplication];
-    id<UIApplicationDelegate> appDelegate = [application delegate];
-
-    if (![appDelegate respondsToSelector:@selector(application:openURL:options:)]) {
-        return NO;
-    }
-
-    // Ensure AppDelegate.tabBarController is populated
+extern void *ApolloSwiftExchangePaneTabs(void *storage, const void *object);
+BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene) {
+    if (![url isKindOfClass:NSURL.class] || !NSThread.isMainThread) return NO;
+    UIApplication *application = UIApplication.sharedApplication;
+    id appDelegate = application.delegate;
+    SEL selector = @selector(application:openURL:options:);
+    if (![appDelegate respondsToSelector:selector]) return NO;
+    // Apollo's AppDelegate router uses a legacy tab ivar. Scope that bridge to
+    // this synchronous callback and restore it even if native routing throws.
+    // Never persist one scene's tab controller into a process-global delegate.
+    UITabBarController *tabs = (id)ApolloMainTabBarControllerForScene(scene);
+    if (![tabs isKindOfClass:UITabBarController.class]) return NO;
+    if (scene && tabs.viewIfLoaded.window.windowScene != scene) return NO;
+    Ivar ivar = class_getInstanceVariable([appDelegate class], "tabBarController");
+    Ivar next = class_getInstanceVariable([appDelegate class], "apolloProProducts");
+    // Verified in AppDelegate's native destructor at 0x10016cb10: ldr +
+    // objc_release, followed by apolloProProducts eight bytes later. Swift's
+    // mangled Optional encoding is deliberately not interpreted as ObjC @.
+    if (![appDelegate isMemberOfClass:objc_getClass("_TtC6Apollo11AppDelegate")] || !ivar || !next ||
+        ivar_getOffset(next) - ivar_getOffset(ivar) != sizeof(void *)) return NO;
+    void *storage = (uint8_t *)(__bridge void *)appDelegate + ivar_getOffset(ivar);
+    id previous = (__bridge_transfer id)ApolloSwiftExchangePaneTabs(storage, (__bridge const void *)tabs);
     @try {
-        Ivar appTabBarIvar = class_getInstanceVariable([appDelegate class], "tabBarController");
-        if (appTabBarIvar && !object_getIvar(appDelegate, appTabBarIvar)) {
-            for (UIScene *scene in application.connectedScenes) {
-                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                id sceneDelegate = [(UIWindowScene *)scene delegate];
-                if (!sceneDelegate) continue;
-                Ivar sceneTabBarIvar = class_getInstanceVariable([sceneDelegate class], "tabBarController");
-                if (!sceneTabBarIvar) continue;
-                id sceneTabBar = object_getIvar(sceneDelegate, sceneTabBarIvar);
-                if (sceneTabBar) {
-                    ApolloLog(@"[ApolloRouteURL] Copying SceneDelegate tabBarController to AppDelegate");
-                    object_setIvar(appDelegate, appTabBarIvar, sceneTabBar);
-                    break;
-                }
-            }
-        }
-    } @catch (NSException *e) {
-        ApolloLog(@"[ApolloRouteURL] Failed to copy tabBarController: %@", e);
-    }
-
-    // Call the app delegate's URL handler directly — stays in-process,
-    // never hits iOS's URL scheme dispatch.
-    @try {
-        BOOL (*msgSend)(id, SEL, id, id, id) = (BOOL (*)(id, SEL, id, id, id))objc_msgSend;
-        msgSend(appDelegate, @selector(application:openURL:options:), application, url, @{});
-        return YES;
-    } @catch (NSException *exception) {
-        ApolloLog(@"[ApolloRouteURL] application:openURL:options: threw: %@", exception);
+        return ((BOOL (*)(id, SEL, id, id, id))objc_msgSend)(appDelegate, selector, application, url, @{});
+    } @catch (__unused NSException *exception) {
+        ApolloLog(@"[ApolloRouteURL] native route failed");
         return NO;
+    } @finally {
+        __unused id replaced = (__bridge_transfer id)ApolloSwiftExchangePaneTabs(storage, (__bridge const void *)previous);
     }
 }
 
-// Public wrapper: route a reddit URL through Apollo's own handler so posts,
-// comments, subreddits and users open the native views. Returns NO when the
-// handler is unavailable, so callers can fall back to a web view.
+static BOOL ApolloRouteURLThroughUIApplication(NSURL *url) {
+    return ApolloRouteURLThroughAppInScene(url, nil);
+}
+
 BOOL ApolloRouteURLThroughApp(NSURL *url) {
-    return ApolloRouteURLThroughUIApplication(url);
+    return ApolloRouteURLThroughAppInScene(url, nil);
 }
 
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url) {

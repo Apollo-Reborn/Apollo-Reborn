@@ -12,6 +12,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ApolloPaneSplitViewController : UISplitViewController
+- (void)apollo_sceneDidDisconnect;
+- (void)apollo_sceneBecameInactive;
+- (void)apollo_sceneBecameActive;
+- (void)apollo_resetPreferredPrimaryWidth;
 
 // `rootNavigationController` is the tab's ORIGINAL ApolloNavigationController,
 // moved verbatim into the primary column. Nothing about it is rebuilt: it keeps
@@ -64,6 +68,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)apollo_recordCompactViewController:(UIViewController *)viewController
                               logicalColumn:(ApolloPaneColumn)column;
 - (BOOL)apollo_compactViewControllerBelongsToDetail:(nullable UIViewController *)viewController;
+// Exact owned column/host identities, including UIKit's public nav wrapper.
+// Structural transfers must never enter the application route/intent queue.
+- (BOOL)apollo_isColumnBridgeController:(nullable UIViewController *)viewController;
 - (void)apollo_refreshCompactDetailChromeAfterRootReplacement;
 
 // The stable primary-context owner used by pending-route validation. Compact
@@ -131,6 +138,7 @@ NS_ASSUME_NONNULL_BEGIN
                                     cancelled:(BOOL)cancelled;
 
 #if APOLLO_SIM_BUILD
+- (NSDictionary *)apollo_simStructuredSnapshot;
 - (void)apollo_simSetCrossColumnNavigationBlocked:(BOOL)blocked;
 - (NSString *)apollo_simCrossColumnNavigationState;
 - (void)apollo_simSetResolvedLayoutMode:(NSString *)mode;

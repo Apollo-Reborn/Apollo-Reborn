@@ -1,5 +1,39 @@
 # iPad Pane Layout — Engineering Plan
 
+## Current implementation — 7 September 2026
+
+The original proposal below is retained as historical RE/design context. Current
+source implements **two content columns per tab**, inside Apollo's existing
+five-destination tab/sidebar controller. The system sidebar is a destination
+surface, not a third content navigation stack. Production eligibility is opt-in
+on iPadOS 18+, while the device tweak's deployment floor remains iOS 14.
+
+Primary selection replaces the detail root; navigation started in detail pushes
+within detail. Compact root Back uses a reversible native interactive transition;
+UIKit column wrappers are structural containment, never application routes.
+Scene-owned registration and native URL entry restore the exact originating tab
+hierarchy. Required runtime capabilities are checked before installation.
+
+The primary feed uses Apollo's compact native nodes by default, with a pane-local
+Comfortable option. `ApolloPaneChrome` owns native search/title policy. Comments
+Find uses one system `UIFindInteraction` adapter over Apollo's matcher; the old
+extra Find toolbar is suppressed. Context geometry follows actual native bars and
+the tab content guide, not a fixed 54-point constant. Text constraints and additive
+Settings insets are separate from full-width media layout.
+
+Host geometry, scheduling, settlement, chrome, content, focus, sidebar and tracing
+now live in separate `src/ipad/ApolloPane*` modules. No display link runs
+continuously for idle panes, and live divider samples update only the visible tab.
+The adaptive-phone switch is simulator-only and retains the phone idiom; it is
+preparation for resizable phones, not certified foldable support.
+
+See [Plan 002](../plans/002-ipad-pane-redesign.md) and
+[implementation results](../plans/003-ipad-pane-implementation-results.md) for the
+current specification and evidence. Physical-device performance/accessibility/OS
+gates remain open; the experiment must not be promoted from simulator results.
+
+## Historical proposal and reverse-engineering notes
+
 Branch: `je/ipad-pane-layout` (experimental, off `main`)
 
 Tracking issues: [#225](https://github.com/Apollo-Reborn/Apollo-Reborn/issues/225) (iPad support),

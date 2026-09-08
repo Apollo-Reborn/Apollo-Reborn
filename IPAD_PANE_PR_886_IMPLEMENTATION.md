@@ -1,5 +1,18 @@
 # iPad Pane Layout PR #886 — Implementation and Verification Tracker
 
+## Redesign follow-up — 7 September 2026
+
+All fourteen redesign work packages and seventeen audit findings now have source
+implementations in the working tree; see
+[the implementation/verification ledger](plans/003-ipad-pane-implementation-results.md).
+This includes unified chrome and system Find, compact list density, interactive
+Back, scene ownership, bounded settlement, visible-only divider scheduling,
+readable text, input ownership, sidebar links and a simulator-only phone probe.
+
+The existing task evidence below remains historical. **Device/OS/peripheral and
+Instruments gates A–G remain open.** New simulator evidence must not be treated
+as a physical 120 Hz performance result or actual continuous window resizing.
+
 Reviewed branch: `je/ipad-pane-layout`
 Review baseline: `5f6ea269d14904d02817d4335ef2535e708b0d70`
 

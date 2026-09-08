@@ -1,3 +1,4 @@
+#import "ipad/ApolloPaneChrome.h"
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -1072,7 +1073,7 @@ static BOOL ApolloRecenterTitleControl(UIView *titleControl);
         CGFloat targetAlpha = profileTitleLabel ? profileTitleLabel.alpha : 1.0;
         self.glassView.alpha = targetAlpha;
         [hostView insertSubview:self.glassView atIndex:0];
-        if (self.fadeNextInstall) {
+        if (self.fadeNextInstall && !UIAccessibilityIsReduceMotionEnabled()) {
             self.fadeNextInstall = NO;
             UIVisualEffectView *installed = self.glassView;
             installed.alpha = 0.0;
@@ -1141,6 +1142,12 @@ static NSUInteger ApolloJumpBarContentMetric(UIView *jumpBar) {
 
 - (void)refreshTargets {
     UIView *jumpBar = ApolloFindJumpBar(self.titleControl);
+    if (!jumpBar && ApolloPaneUsesUnifiedChrome(self.titleControl)) {
+        [self.glassView removeFromSuperview];
+        self.glassView = nil;
+        self.observationValid = NO;
+        return;
+    }
     UIView *hostView = jumpBar ?: self.titleControl;
     NSMutableArray<UIView *> *glassCandidates = [NSMutableArray array];
 
@@ -1203,8 +1210,12 @@ static NSUInteger ApolloJumpBarContentMetric(UIView *jumpBar) {
 
 - (void)scheduleTargetRefreshIfNeeded {
     UIView *titleControl = self.titleControl;
-    if (!titleControl) return;
+    if (!titleControl || self.refreshScheduled) return;
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
+    if (!jumpBar && ApolloPaneUsesUnifiedChrome(titleControl)) {
+        if (self.glassView) [self scheduleTargetRefresh];
+        return;
+    }
     BOOL unchanged = self.observationValid &&
         CGRectEqualToRect(self.observedTitleFrame, titleControl.frame) &&
         CGRectEqualToRect(self.observedTitleBounds, titleControl.bounds) &&
