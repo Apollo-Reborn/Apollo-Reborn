@@ -151,7 +151,8 @@ API_AVAILABLE(ios(18.0))
             identifier:nil handler:^(__unused UIAction *action) { ApolloPaneOpenCommunity(weakTabs, name, YES); }];
         UIAction *remove = [UIAction actionWithTitle:@"Unpin community" image:[UIImage systemImageNamed:@"pin.slash"]
             identifier:nil handler:^(__unused UIAction *action) { ApolloPaneChangePin(weakTabs, name, YES); }];
-        button.menu = [UIMenu menuWithTitle:@"" children:@[window, remove]];
+        button.menu = [UIMenu menuWithTitle:@"" children:UIApplication.sharedApplication.supportsMultipleScenes
+            ? @[window, remove] : @[remove]];
         [button addInteraction:[[UIDragInteraction alloc] initWithDelegate:self]];
         [self.stack addArrangedSubview:button];
     }];
@@ -239,7 +240,7 @@ void ApolloPaneSidebarFirstAppearance(UITabBarController *tabs) {
         // A single initial preference, never a resize/selection enforcement.
         // UIKit owns subsequent visibility and the user's collapse choice.
         if (CGRectGetWidth(tabs.view.bounds) >= 1100.0 &&
-            tabs.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad) tabs.sidebar.hidden = NO;
+            tabs.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular) tabs.sidebar.hidden = NO;
     }
 }
 
@@ -262,7 +263,8 @@ static NSURL *ApolloPanePostURL(UIViewController *controller) {
 }
 BOOL ApolloPaneCanOpenDetailInNewWindow(UISplitViewController *split) {
     ApolloPaneSplitViewController *pane = (id)split;
-    return ApolloPanePostURL([pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary].topViewController) != nil;
+    return UIApplication.sharedApplication.supportsMultipleScenes &&
+        ApolloPanePostURL([pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary].topViewController) != nil;
 }
 void ApolloPaneOpenDetailInNewWindow(UISplitViewController *split) {
     ApolloPaneSplitViewController *pane = (id)split;

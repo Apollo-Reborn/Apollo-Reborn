@@ -1052,7 +1052,11 @@ static void ApolloSimDebugWritePaneSnapshot(void) {
     }
     NSDictionary *snapshot = @{@"schema": @1, @"uptime": @(NSProcessInfo.processInfo.systemUptime),
         @"runtime": UIDevice.currentDevice.systemVersion, @"idiom": @(UIDevice.currentDevice.userInterfaceIdiom),
-        @"loadedTweakCopies": @(copies), @"scenes": scenes};
+        @"loadedTweakCopies": @(copies), @"scenes": scenes,
+        @"paneSupported": @(ApolloPaneLayoutSupported()),
+        @"paneEnabled": @(ApolloPaneLayoutEnabled()),
+        @"paneActive": @(ApolloPaneLayoutActive()),
+        @"paneDesired": @([NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout])};
     NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:NSJSONWritingPrettyPrinted error:nil];
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/ApolloPaneSnapshot.json"];
     [data writeToFile:path atomically:YES];
@@ -1942,6 +1946,13 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             return;
         }
         if ([contents isEqualToString:@"panesnapshot"]) { ApolloSimDebugWritePaneSnapshot(); return; }
+        // Persist the same preference as the UI, without changing this process's
+        // install decision. Tests must relaunch, exactly as users do.
+        if ([contents isEqualToString:@"panesetting on"] || [contents isEqualToString:@"panesetting off"]) {
+            [NSUserDefaults.standardUserDefaults setBool:[contents hasSuffix:@" on"] forKey:UDKeyIPadPaneLayout];
+            ApolloSimDebugWritePaneSnapshot();
+            return;
+        }
         if ([contents hasPrefix:@"panemode "]) {
             NSString *mode = [[contents substringFromIndex:9]
                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
