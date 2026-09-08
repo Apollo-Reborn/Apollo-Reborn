@@ -3,6 +3,15 @@
 #include <stdio.h>
 
 int main(void) {
+    assert(!ApolloPanePhoneHasRoomForColumns(402, 874));
+    assert(!ApolloPanePhoneHasRoomForColumns(874, 402));
+    assert(!ApolloPanePhoneHasRoomForColumns(759, 900));
+    assert(!ApolloPanePhoneHasRoomForColumns(900, 499));
+    assert(ApolloPanePhoneHasRoomForColumns(760, 500));
+    assert(ApolloPanePhoneHasRoomForColumns(820, 900));
+    assert(ApolloPanePhoneHasRoomForColumns(1161, 680));
+    assert(!ApolloPanePhoneHasRoomForColumns(NAN, 900));
+    assert(!ApolloPanePhoneHasRoomForColumns(900, INFINITY));
     assert(ApolloPanePreferredWidth(NAN) == 420);
     assert(ApolloPanePreferredWidth(INFINITY) == 420);
     assert(ApolloPanePreferredWidth(-1) == 340);

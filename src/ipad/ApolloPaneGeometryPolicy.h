@@ -17,3 +17,9 @@ static inline double ApolloPaneResolvedWidth(double preferred, double available)
 static inline bool ApolloPanePrimaryIsPhysicallyLeft(bool leading, bool rightToLeft) {
     return leading != rightToLeft;
 }
+
+// Two useful columns need 340pt for the list and 420pt for detail. The height
+// floor keeps a conventional landscape phone in its single browsing path.
+static inline bool ApolloPanePhoneHasRoomForColumns(double width, double height) {
+    return isfinite(width) && isfinite(height) && width >= 760.0 && height >= 500.0;
+}

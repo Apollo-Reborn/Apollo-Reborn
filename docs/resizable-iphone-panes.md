@@ -5,11 +5,14 @@ The setting defaults to OFF and applies after quitting and reopening Apollo.
 It is available on iPadOS 18+ and iOS 27 phones. Turning it off restores Apollo's
 ordinary navigation hierarchy on the next launch.
 
-With the setting on, UIKit adapts the same split controllers using the inherited
-size classes and actual available space. Narrow windows collapse to one browsing
-path; expanded windows show the list and detail side by side. No phone model,
-fold posture, orientation, screen dimensions, or idiom spoofing chooses columns.
-The device/OS check is only a capability gate for installing the experiment.
+With the setting on, UIKit adapts the same split controllers to the available
+space. On iOS 27 phones, the pane container sets its own horizontal size class
+from its view dimensions: at least 760 × 500 points allows list and detail side
+by side; smaller windows collapse to one browsing path. This avoids a stale
+compact trait when Device Hub starts resizing from a narrow window and keeps
+ordinary landscape phones collapsed. iPad retains its existing size-class policy.
+No phone model, fold posture, orientation, screen dimensions, or global idiom
+spoofing chooses columns. The device/OS check gates the supported platforms.
 The phone simulator override has been removed; tests use the persisted setting.
 
 ## Prepare and run
@@ -49,11 +52,17 @@ Wait for Apollo to finish launching before starting resize mode.
   policy and transition-observer lifecycle tests pass.
 - On an iOS 27 iPhone 17 Pro simulator (phone idiom throughout), setting OFF
   installed zero panes; setting ON installed five; narrow launch collapsed.
-- Actual resize-session transitions through 402×874, 820×900, 600×800, 1161×680,
-  402×874, and 1161×680 collapsed/expanded the selected Settings pane correctly.
-  The list/detail stack depths returned to 1/1 on expansion and 2/1 on collapse,
-  preserving the open detail. Every settled sample had zero pending navigation
-  and zero transition watchdogs. Screenshots confirmed adjacent panes at 1161×680.
+- Starting resize mode with Device Hub's toolbar while narrow, then widening to
+  1161×680, shows adjacent Settings index/detail panes. The phone-specific size
+  policy also passes narrow 402×874, landscape 874×402, and the 760×500 boundary.
+  Repeated shrinking/expansion preserves the open Interface page; settled stack
+  depths are 2/1 when collapsed and 1/1 when expanded, with no pending navigation
+  or transition watchdogs. The beta can constrain requested portrait geometry:
+  requests for 759×900 and 820×900 yielded actual app bounds of 675×900 in this
+  Device Hub session. Assertions use the app's actual bounds, not requested size.
+- A compact Settings deep link now reveals a replacement detail after popping
+  the primary root. The actual Multi-Column Layout switch presents its restart
+  prompt and pending-state subtitle correctly.
 - App-shell tests verify platform/deployment-target/code preservation, repeatable
   patching, no SDK downgrades, and rejection of malformed binaries before writes.
 
