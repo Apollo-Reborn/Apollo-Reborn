@@ -112,6 +112,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDeletedCommentsMenu.xm \
     $(SRC_DIR)/ApolloState.m \
     $(SRC_DIR)/ApolloShareLinks.xm \
+    $(SRC_DIR)/ApolloSafariDarkLoading.xm \
     $(SRC_DIR)/ApolloMedia.xm \
     $(SRC_DIR)/ApolloFeedGalleryCarousel.xm \
     $(SRC_DIR)/ApolloSwipeUpComments.xm \
@@ -154,6 +155,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloUserFlair.xm \
     $(SRC_DIR)/ApolloOwnCommentFlair.xm \
     $(SRC_DIR)/ApolloFlairColors.xm \
+    $(SRC_DIR)/ApolloBoldPostTitles.xm \
     $(SRC_DIR)/ApolloNativeActionMenus.xm \
     $(SRC_DIR)/ApolloContextMenuPreviewTheme.xm \
     $(SRC_DIR)/ApolloActionMenu.xm \
