@@ -26,6 +26,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloPaneLayout.h"
+#import "ApolloPaneSidebar.h"
 #import "ApolloPaneSplitViewController.h"
 #import "../ApolloCommon.h"   // ApolloLog, ApolloMainTabBarController
 #import "../ApolloState.h"    // sIPadPaneLayout
@@ -445,6 +446,12 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
 
 - (void)scene:(UIScene *)scene willConnectToSession:(id)session options:(id)options {
     %orig;
+    // Apollo's original cold-connection handler doesn't consume our explicit
+    // new-window route. Preserve only that URL until this exact scene activates.
+    if ([scene isKindOfClass:UIWindowScene.class]) {
+        for (NSUserActivity *activity in ((UISceneConnectionOptions *)options).userActivities)
+            ApolloPaneReceiveSceneActivity((UIWindowScene *)scene, activity);
+    }
 
 #if APOLLO_SIM_BUILD
     // Deterministic cold-entry harness for Xcode 27, whose URL dispatcher does
@@ -455,7 +462,7 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     NSString *coldURLString = NSProcessInfo.processInfo.environment[@"APOLLO_SIM_COLD_URL"];
     NSURL *coldURL = coldURLString.length > 0 ? [NSURL URLWithString:coldURLString] : nil;
     if (coldURL) {
-        BOOL routed = ApolloRouteURLThroughApp(coldURL);
+        BOOL routed = ApolloRouteURLThroughAppInScene(coldURL, (UIWindowScene *)scene);
         ApolloLog(@"[PaneInstall] simulator cold URL injection routed=%d scheme=%@",
                   routed, coldURL.scheme.lowercaseString);
     }
@@ -464,7 +471,7 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     // Re-check the gate here rather than trusting the %ctor decision alone: a
     // second scene (Stage Manager, an external display) connects later, and the
     // install must be idempotent per tab bar controller rather than per process.
-    if (!ApolloPaneLayoutEnabled()) return;
+    if (!ApolloPaneLayoutEnabled() || !ApolloPaneBootstrapReady()) return;
 
     UITabBarController *tabBarController = nil;
     @try {
@@ -492,7 +499,7 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     }
 
     if (ApolloPaneInstallIntoTabBarController(tabBarController)) {
-        ApolloPaneLayoutSetActive(YES);
+        ApolloPaneRegisterScene((UIWindowScene *)scene, tabBarController);
 #if APOLLO_SIM_BUILD
         ApolloPaneInstallSimWriteStatus(tabBarController, @"installed", YES, nil);
 #endif
@@ -520,5 +527,27 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     }
 
     %init(ApolloPaneInstallGroup, SceneDelegate = sceneDelegateClass);
+    // Observe UIKit's public scene events instead of assuming Apollo implements
+    // every optional delegate method. Enumerate the scene registry so hidden,
+    // detached tabs receive cancellation too, without loading their views.
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserverForName:UISceneWillDeactivateNotification object:nil queue:NSOperationQueue.mainQueue
+        usingBlock:^(NSNotification *note) {
+            if (![note.object isKindOfClass:UIWindowScene.class]) return;
+            for (ApolloPaneSplitViewController *pane in ApolloPaneSplitsForScene(note.object))
+                [pane apollo_sceneBecameInactive];
+        }];
+    [center addObserverForName:UISceneDidActivateNotification object:nil queue:NSOperationQueue.mainQueue
+        usingBlock:^(NSNotification *note) {
+            if (![note.object isKindOfClass:UIWindowScene.class]) return;
+            for (ApolloPaneSplitViewController *pane in ApolloPaneSplitsForScene(note.object))
+                [pane apollo_sceneBecameActive];
+            __weak UIWindowScene *weakScene = note.object;
+            dispatch_async(dispatch_get_main_queue(), ^{ ApolloPaneOpenPendingSceneLink(weakScene); });
+        }];
+    [center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue
+        usingBlock:^(NSNotification *note) {
+            if ([note.object isKindOfClass:UIWindowScene.class]) ApolloPaneDisconnectScene(note.object);
+        }];
     ApolloLog(@"[PaneInstall] scene delegate hook installed; awaiting scene connect");
 }

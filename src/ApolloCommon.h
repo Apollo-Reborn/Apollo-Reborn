@@ -148,6 +148,7 @@ void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *u
 // subreddit/user views). Returns NO if the handler is unavailable — fall back to
 // ApolloPresentWebURLFromViewController.
 BOOL ApolloRouteURLThroughApp(NSURL *url);
+BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene);
 
 // Returns all UIWindows across every connected UIWindowScene.
 // Use instead of the deprecated UIApplication.windows property.

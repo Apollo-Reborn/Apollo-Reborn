@@ -309,12 +309,10 @@ static BOOL ApolloTabChildWantsNativeMinimize(UIViewController *child) {
         sApolloAutoHidePaneTabScans++;
 #endif
         ApolloPaneSplitViewController *pane = (ApolloPaneSplitViewController *)child;
-        UINavigationController *primary =
-            [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary];
-        if (ApolloNavWantsNativeTabBarMinimize(primary)) return YES;
-        UINavigationController *detail =
-            [pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary];
-        return detail != primary && ApolloNavWantsNativeTabBarMinimize(detail);
+        if (!pane.isCollapsed) return NO; // Neighboring pane context rows stay fixed.
+        UIViewController *visible = [pane apollo_preferredContentColumnController];
+        return [visible isKindOfClass:UINavigationController.class] &&
+            ApolloNavWantsNativeTabBarMinimize((id)visible);
     }
 
     if ([child isKindOfClass:[UISplitViewController class]]) {
@@ -338,10 +336,7 @@ static BOOL ApolloTabChildWantsNativeMinimize(UIViewController *child) {
 
 static BOOL ApolloTabBarControllerWantsNativeMinimize(UITabBarController *tbc) {
     if (!tbc) return NO;
-    for (UIViewController *child in tbc.viewControllers) {
-        if (ApolloTabChildWantsNativeMinimize(child)) return YES;
-    }
-    return NO;
+    return ApolloTabChildWantsNativeMinimize(tbc.selectedViewController);
 }
 
 #if APOLLO_SIM_BUILD
