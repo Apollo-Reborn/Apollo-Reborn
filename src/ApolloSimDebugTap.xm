@@ -753,6 +753,13 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloDevvitDebugEvaluateJS([contents substringFromIndex:9]);
             return;
         }
+        // "devvitload <url>": load another URL in the first on-window widget.
+        if ([contents hasPrefix:@"devvitload "]) {
+            extern void ApolloDevvitDebugLoadURL(NSString *urlString);
+            ApolloDevvitDebugLoadURL([[contents substringFromIndex:11]
+                                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
+            return;
+        }
         // "devvitstats": live/parked/detached widget population + prewarm state.
         if ([contents hasPrefix:@"devvitstats"]) {
             extern void ApolloDevvitDebugStats(void);
