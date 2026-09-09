@@ -35,6 +35,7 @@
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloPerAccountFavorites.h"
+#import "ApolloFavoritesSorting.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
 #import "crash/ApolloCrashPromptCoordinator.h"
@@ -3620,6 +3621,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     }
     if (ApolloDefaultsKeyChangesNativeFavorites(key)) {
         ApolloPerAccountFavoritesNativeFavoritesDidChange();
+        ApolloFavoritesSortingSchedule();
     }
 }
 
@@ -3646,6 +3648,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     }
     if (ApolloDefaultsKeyChangesNativeFavorites(key)) {
         ApolloPerAccountFavoritesNativeFavoritesDidChange();
+        ApolloFavoritesSortingSchedule();
     }
 }
 
@@ -3712,11 +3715,13 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeySubredditFeedIconStyle: @(ApolloSubredditFeedIconStyleClassic),
                                     UDKeySubredditFeedLayout: @(ApolloSubredditFeedLayoutRows),
                                     UDKeyPerAccountFavoritesEnabled: @NO,
+                                    UDKeySortFavoritesAlphabetically: @NO,
                                     UDKeyModernSubredditDividers: @YES,
                                     UDKeyShowDeletedComments: @NO,
                                     UDKeyTapToRevealDeletedComments: @NO,
                                     UDKeyPassiveDeletedComments: @NO,
                                     UDKeyEnableFlairColors: @NO,
+                                    UDKeyBoldPostTitles: @NO,
                                     UDKeyShowRecentlyReadThumbnails: @YES,
                                     UDKeyFeedTextPostThumbnails: @YES,
                                     UDKeyFeedGalleryCarousel: @YES,
@@ -3765,6 +3770,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyProfileShowSocialLinks: @YES,
                                     UDKeyProfileShowActions: @YES,
                                     UDKeyProfileAvatarStyle: @0,
+                                    UDKeyProfileLayoutPreviewPinned: @NO,
                                     UDKeyShowSubredditHeaders: @NO,
                                     UDKeySubredditHeaderImmersive: @YES,
                                     UDKeySubredditShowBanner: @YES,
@@ -4007,14 +4013,10 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sHideTabBarTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles];
     ApolloNormalizeNativeHideUsernameForIconOnlyTabBar();
-    // The old master switch was retired in favour of the Profile Layout screen.
-    // Migrate existing installs that had it off so the visible per-band controls
-    // cannot appear to do nothing behind an unreachable legacy preference.
-    if (![standardDefaults boolForKey:UDKeyShowDetailedProfiles]) {
-        [standardDefaults setBool:YES forKey:UDKeyShowDetailedProfiles];
-        ApolloLog(@"[ProfileLayout] migrated retired detailed-profile master switch to enabled");
-    }
-    sShowDetailedProfiles = YES;
+    // Profile Layout exposes this master again as its Native density. The
+    // registered default remains ON for new installs; an explicit OFF now
+    // persists and restores Apollo's original profile page across launches.
+    sShowDetailedProfiles = [standardDefaults boolForKey:UDKeyShowDetailedProfiles];
     sBadgeBookEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBadgeBookEnabled];
     // No launch-time icon prewarm: sessions that never open a profile shouldn't
     // pay for decoded badge bitmaps. The strip (on first preview data) and the
@@ -4114,9 +4116,11 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         [standardDefaults setInteger:sSubredditFeedLayout forKey:UDKeySubredditFeedLayout];
     }
     sPerAccountFavoritesEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerAccountFavoritesEnabled];
+    sSortFavoritesAlphabetically = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySortFavoritesAlphabetically];
     sHideSubredditListDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideSubredditListDescriptions];
     sHideMultiredditDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideMultiredditDescriptions];
     sEnableFlairColors = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFlairColors];
+    sBoldPostTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBoldPostTitles];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoTranslateOnAppear];
     sTapToTranslate = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTapToTranslate];

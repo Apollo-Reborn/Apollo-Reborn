@@ -126,9 +126,11 @@ void ApolloNormalizeNativeHideUsernameForIconOnlyTabBar(void);
 // large avatar/snoovatar, display name, bio, and the Social Links band (Buy Me a
 // Coffee, Instagram, X, …). When OFF, profiles revert to Apollo's compact stock
 // layout — the detailed header is not installed and any existing one is torn down.
-// Independent of sShowUserAvatars (inline avatars). The Social Links band lives
-// inside this header, so it is gated on this same flag. Default ON via
-// registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.{h,m}.
+// Profile Layout exposes three densities with the same two-boolean encoding as
+// Subreddit Layout: Immersive = master + immersive, Compact = master + flat,
+// Native = !master. Independent of sShowUserAvatars (inline avatars). The Social
+// Links band lives inside this header, so it is gated on this same flag. Default
+// ON via registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.
 extern BOOL sShowDetailedProfiles;
 extern BOOL sBadgeBookEnabled;
 extern BOOL sProfileHeaderImmersive;
@@ -306,6 +308,8 @@ extern NSInteger sSubredditFeedLayout;
 // Opt-in per-account FavoriteSubreddits projection. Defaults OFF; see
 // ApolloPerAccountFavorites.{h,m}.
 extern BOOL sPerAccountFavoritesEnabled;
+// Effective sorting preference for the materialized favorites scope.
+extern BOOL sSortFavoritesAlphabetically;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;
@@ -317,6 +321,11 @@ extern BOOL sHideMultiredditDescriptions;
 // colors (filled pill + matching text color). When NO, Apollo's default grey
 // flair styling is preserved. See ApolloFlairColors.xm.
 extern BOOL sEnableFlairColors;
+
+// Render feed post titles (large + compact posts, crossposts, the post
+// context above a comment) in Semibold instead of Apollo's Regular.
+// Appearance > Posts > Bold Post Titles. See ApolloBoldPostTitles.xm.
+extern BOOL sBoldPostTitles;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text

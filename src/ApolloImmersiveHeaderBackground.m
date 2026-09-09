@@ -481,17 +481,16 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     self.contentContainer.frame = self.bounds;
     self.contentContainer.transform = transform;
 
-    // Banner Off keeps the ambient artwork but clips out the sharp banner.
-    // Production uses topInset == regionHeight; the chrome-free Settings
-    // preview uses topInset == regionHeight == 0.
+    // Keep ambient artwork when Banner is off: regionHeight == topInset hides
+    // the sharp band without removing its blurred continuation. Chrome-cropped
+    // settings previews express this with both values set to zero.
     CGFloat bannerTop = MIN(regionHeight, MAX(0.0, self.topInset));
     BOOL hasArtwork = self.sharpView.image != nil && extendedHeight > 0.0;
     BOOL hasSharpBanner = hasArtwork && regionHeight > bannerTop;
     self.backdropView.hidden = !hasArtwork;
     self.sharpClip.hidden = !hasSharpBanner;
     self.veilLayer.hidden = !hasArtwork;
-    // A zero top inset means the host has no chrome to shade; showing the scrim
-    // would add a false top-edge gradient.
+    // No top inset means no chrome to protect; a scrim would falsely fade the banner.
     self.chromeScrimLayer.hidden = !hasArtwork || self.topInset <= 0.0;
     if (!hasArtwork) return;
 

@@ -55,6 +55,11 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 // account's bucket back through Apollo's native FavoriteSubreddits key so every
 // stock reader/mutator continues to work unchanged.
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
+// Alphabetize shared favorites and disable manual reordering. Default NO.
+static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Per-account sorting preferences, keyed by the per-account favorites identity
+// (u:name / anonymous). Missing entries default OFF; shared preference is above.
+static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
 // Versioned envelope: { "version": 1, "buckets": { "u:name": [subreddits],
 // "anonymous": [subreddits] } }. Missing bucket and explicit empty bucket are
 // intentionally distinct; accounts created after the first migration start empty.
@@ -98,6 +103,10 @@ static NSString *const ApolloSubredditSectionsChangedNotification = @"ApolloSubr
 static NSString *const UDKeySubredditSectionsPreviewPinned = @"SubredditSectionsPreviewPinned";
 // Color post (link) and user/author flairs with Reddit's assigned colors. Default NO.
 static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
+// Feed post titles in Semibold instead of Apollo's Regular (large + compact
+// posts, crossposts, comment post context). Appearance > Posts > Bold Post
+// Titles; default NO. See ApolloBoldPostTitles.xm.
+static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
 static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
@@ -219,6 +228,9 @@ static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
+// UI-only preference: keep the Profile Layout preview visible while scrolling.
+// Default NO; independent of the subreddit preview and actual profile layout.
+static NSString *const UDKeyProfileLayoutPreviewPinned = @"ProfileLayoutPreviewPinned";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // New (Immersive, with the melt/ambient backdrop) vs Classic (same content,
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
