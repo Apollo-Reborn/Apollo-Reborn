@@ -80,6 +80,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
 @interface RedditListViewController : UIViewController // Apollo.RedditListViewController
@@ -901,6 +902,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
+    // Resolve the native section before enforcing the account's sort policy:
+    // Favorites need not be the first visible section in a customized list.
+    NSInteger section = map.active ? ApolloFollowingNativeSectionForVisible(map, indexPath.section) : indexPath.section;
+    if (sSortFavoritesAlphabetically && section == kApolloNativeSectionFavorites) return NO;
     if (!map.active) return %orig(tableView, indexPath);
     NSInteger nativeSection = ApolloFollowingNativeSectionForVisible(map, indexPath.section);
     if (nativeSection == kApolloFollowingSyntheticSection) return map.entries.count > 1;
@@ -911,6 +916,8 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath toProposedIndexPath:(NSIndexPath *)proposedDestinationIndexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
+    NSInteger section = map.active ? ApolloFollowingNativeSectionForVisible(map, sourceIndexPath.section) : sourceIndexPath.section;
+    if (sSortFavoritesAlphabetically && section == kApolloNativeSectionFavorites) return sourceIndexPath;
     if (!map.active) return %orig(tableView, sourceIndexPath, proposedDestinationIndexPath);
     NSInteger sourceNativeSection = ApolloFollowingNativeSectionForVisible(map, sourceIndexPath.section);
     if (sourceNativeSection == kApolloFollowingSyntheticSection) {
@@ -929,6 +936,13 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
+    NSInteger section = map.active ? ApolloFollowingNativeSectionForVisible(map, fromIndexPath.section) : fromIndexPath.section;
+    if (sSortFavoritesAlphabetically && section == kApolloNativeSectionFavorites) {
+        // Defend a move already in flight when an account/sort setting changed.
+        // UIKit has moved the visual row; reload to restore the unchanged model.
+        [tableView reloadData];
+        return;
+    }
     if (!map.active) {
         %orig(tableView, fromIndexPath, toIndexPath);
         return;

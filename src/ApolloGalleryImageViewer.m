@@ -993,10 +993,12 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 
     self.rotateOfferTargetOrientation = wanted;
     [self.rotateOfferButton setTitle:title forState:UIControlStateNormal];
-    if (self.rotateOfferButton.configuration) {
-        UIButtonConfiguration *configuration = self.rotateOfferButton.configuration;
-        configuration.title = title;
-        self.rotateOfferButton.configuration = configuration;
+    if (@available(iOS 15.0, *)) {
+        if (self.rotateOfferButton.configuration) {
+            UIButtonConfiguration *configuration = self.rotateOfferButton.configuration;
+            configuration.title = title;
+            self.rotateOfferButton.configuration = configuration;
+        }
     }
     if (self.rotateOfferHost.hidden) {
         self.rotateOfferHost.hidden = NO;

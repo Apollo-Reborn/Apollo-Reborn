@@ -50,6 +50,23 @@ static NSString *const UDKeyHideRPopularRedditList = @"HideRPopularRedditList";
 static NSString *const UDKeyHideRAllRedditList = @"HideRAllRedditList";
 static NSString *const UDKeyHideModeratorRedditList = @"HideModeratorRedditList";
 static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShortcutsChangedNotification";
+// Keep an independent FavoriteSubreddits list for each Reddit account. Opt-in:
+// default NO via registerDefaults. ApolloPerAccountFavorites projects the active
+// account's bucket back through Apollo's native FavoriteSubreddits key so every
+// stock reader/mutator continues to work unchanged.
+static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
+// Alphabetize shared favorites and disable manual reordering. Default NO.
+static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Per-account sorting preferences, keyed by the per-account favorites identity
+// (u:name / anonymous). Missing entries default OFF; shared preference is above.
+static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
+// Versioned envelope: { "version": 1, "buckets": { "u:name": [subreddits],
+// "anonymous": [subreddits] } }. Missing bucket and explicit empty bucket are
+// intentionally distinct; accounts created after the first migration start empty.
+static NSString *const UDKeyPerAccountFavoriteSubreddits = @"PerAccountFavoriteSubreddits";
+// Apollo's own active favorites projection and its native refresh notification.
+static NSString *const UDKeyApolloFavoriteSubreddits = @"FavoriteSubreddits";
+static NSString *const ApolloFavoriteSubredditsUpdatedNotification = @"com.christianselig.FavoriteSubredditsUpdated";
 // Subreddits the user moderates but chose to hide from the Subreddits list
 // (Reddit offers no way to leave or delete some dead subreddits). Array of
 // display names, compared case-insensitively.
@@ -81,8 +98,15 @@ static NSString *const UDKeySubredditSectionOrder = @"SubredditSectionOrder";
 // append in their natural alphabetical order.
 static NSString *const UDKeyFollowedUsersOrder = @"FollowedUsersOrder";
 static NSString *const ApolloSubredditSectionsChangedNotification = @"ApolloSubredditSectionsChangedNotification";
+// Whether the Subreddit Sections screen keeps its live preview pinned above
+// the options (YES, default) or lets it scroll away with them. Absent == YES.
+static NSString *const UDKeySubredditSectionsPreviewPinned = @"SubredditSectionsPreviewPinned";
 // Color post (link) and user/author flairs with Reddit's assigned colors. Default NO.
 static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
+// Feed post titles in Semibold instead of Apollo's Regular (large + compact
+// posts, crossposts, comment post context). Appearance > Posts > Bold Post
+// Titles; default NO. See ApolloBoldPostTitles.xm.
+static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
 static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
@@ -129,10 +153,15 @@ static NSString *const UDKeyNativeOpenLinksIn = @"OpenLinksIn";
 // Apollo NATIVE key + change notification for its "Hide Username on Tab Bar"
 // switch. Apollo observes the notification (hideUsernameOnTabBarChangedWithNotification:)
 // and re-lays-out the profile tab live, so mirrors must post it after writing
-// the key. Reborn's Profiles settings screen mirrors this row (gather-and-hide);
-// ApolloTabBarTitles.xm clears the key while Icon-Only Tab Bar is active.
+// the key. Reborn's Interface settings screen mirrors this row (gather-and-hide);
+// ApolloTabBarTitles.xm temporarily suspends the key while Icon-Only Tab Bar is
+// active, then restores the user's prior choice when labels return.
 static NSString *const UDKeyNativeHideUsernameOnTabBar = @"HideUsernameOnTabBar";
 static NSString *const ApolloNativeHideUsernameOnTabBarChangedNotification = @"com.christianselig.HideUsernameOnTabBarChanged";
+// Presence matters, so this key is intentionally NOT registered with a default.
+// It is a temporary snapshot taken when Icon-Only is enabled and removed after
+// the native Hide Username preference is restored.
+static NSString *const UDKeyIconOnlySavedHideUsernameOnTabBar = @"IconOnlySavedHideUsernameOnTabBar";
 // Reborn "Open in App" deep-link toggles — open these services' links in their
 // app via Universal Links (see ApolloShareLinks.xm). Default OFF (opt-in). The
 // key string literals are duplicated in ApolloShareLinks.xm; keep them in sync.
@@ -199,6 +228,9 @@ static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
+// UI-only preference: keep the Profile Layout preview visible while scrolling.
+// Default NO; independent of the subreddit preview and actual profile layout.
+static NSString *const UDKeyProfileLayoutPreviewPinned = @"ProfileLayoutPreviewPinned";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // New (Immersive, with the melt/ambient backdrop) vs Classic (same content,
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
@@ -211,25 +243,28 @@ static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayNam
 // master NO = Off.
 static NSString *const UDKeyCommunityHighlights = @"CommunityHighlights";
 static NSString *const UDKeyCommunityHighlightsWeb = @"CommunityHighlightsWeb";
+// Internal idle-re-expansion component shared by both selectable Scroll
+// Behavior modes. Always YES where native tab-bar behavior is supported; the
+// old key remains for preferences/backup compatibility.
 static NSString *const UDKeyAutoHideTabBarShowOnIdle = @"AutoHideTabBarShowOnIdle";
-// Which side the iOS 26 minimized (Liquid Glass) tab bar pill docks on when
-// "Hide Bars on Scroll" collapses it: 0 = Left (system default), 1 = Right.
-// Only meaningful while the native tabBarMinimizeBehavior path is active
-// (Liquid Glass); the pre-26 hide-bars path has no pill. The Left/Right/Off
-// choice is surfaced on Apollo's native Settings > General > "Hide Bars on
-// Scroll" row (Off = the native toggle off). See ApolloTabBarCollapseSide.xm.
+// Liquid Glass only. Selects Classic rather than Two-Gesture behavior. Classic
+// restores Apollo's bidirectional feel: scrolling down minimizes the tab bar,
+// and reversing toward the top expands it immediately. Default NO.
+static NSString *const UDKeyClassicTabBarScrollBehavior = @"ClassicTabBarScrollBehavior";
+// Apollo's native preference, mirrored in Reborn's Interface > Tab Bar screen
+// and consumed by the Liquid Glass compatibility layer as its source of truth.
+static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
+// Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
+// Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
+// bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
+// surfaced on Reborn's Interface > Tab Bar row (Off = the native toggle off).
+// See ApolloTabBarHideStyle.xm and ApolloAutoHideTabBar.xm.
 static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";
 // When ON, focusing the main feed / subreddit search keeps the nav bar and the search
 // field in place (results populate the feed below the field) instead of Apollo's stock
 // "search takeover" (nav slides away + fades, field docks to the top and grows). Mutually
 // exclusive with the default nav-hide mode. Liquid Glass only. Default NO. See ApolloSearchInPlace.xm.
 static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
-// Liquid Glass nav bar title placement. ON (default): center the title in the
-// gap between the back pill and the trailing pill so it reads balanced whatever
-// the trailing cluster holds (translation globe on or off). OFF: center it on
-// the screen itself, nudged just enough to clear a pill it would overlap.
-// See ApolloRecenterTitleControl in ApolloLiquidGlass.xm.
-static NSString *const UDKeyLGTitleGapCentering = @"LGTitleGapCentering";
 // iPad only, Liquid Glass only. When ON, forces the iOS 26 floating tab bar to
 // dock at the BOTTOM (classic tab bar) instead of the top-center pill, which on
 // iPad overlaps Apollo's search bar. Temporary stopgap for issue #387 until the
@@ -316,6 +351,11 @@ static NSString *const UDKeyAutoplayInlineGIFs = @"AutoplayInlineGIFs";
 // Display width of inline media (images/GIFs) in comments and selftext as a
 // percentage of the row width: 50, 75, or 100 (default).
 static NSString *const UDKeyInlineMediaSizePercent = @"InlineMediaSizePercent";
+
+// Inline Media settings screen: whether the live preview (title + card) stays
+// pinned below the nav bar while the list scrolls (default) or scrolls with it.
+// Toggled by tapping the preview card.
+static NSString *const UDKeyInlineMediaPreviewPinned = @"InlineMediaPreviewPinned";
 
 // Bulk translation feature
 static NSString *const UDKeyEnableBulkTranslation = @"EnableBulkTranslation";
@@ -631,6 +671,11 @@ static NSString *const UDKeyLinkPreviewCardColor = @"LinkPreviewCardColor";
 // means "Default" (no custom fill — the standard neutral card). A non-empty
 // hex paints the whole card that exact color, with auto-contrasted text.
 static NSString *const UDKeyLinkPreviewCardColorHex = @"LinkPreviewCardColorHex";
+// Whether the Rich Link Previews screen's live preview stays pinned while the
+// rows scroll beneath it (default) or scrolls away with them. Tap the card to
+// toggle (ApolloSettingsPinnedPreview); one key per screen, like
+// UDKeyInlineMediaPreviewPinned.
+static NSString *const UDKeyLinkPreviewPreviewPinned = @"LinkPreviewPreviewPinned";
 static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLinkPreviewModeDidChangeNotification";
 // Posted by the Inline Media settings screen when size/alignment changes so
 // visible comments re-measure their inline media immediately.
