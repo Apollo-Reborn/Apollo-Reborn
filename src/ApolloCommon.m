@@ -208,16 +208,23 @@ void ApolloAppendListLayoutDiag(NSString *line) {
 // (ApolloAutoHideTabBar's upward-reveal detection, the list bottom-inset
 // guard), where repeated class_getInstanceVariable lookups would pay a
 // runtime-lock toll per frame. Main-thread only, so plain statics suffice.
-static id ApolloTabBarVisualProvider(UITabBar *tabBar) {
+id ApolloTabBarVisualProvider(UITabBar *tabBar) {
     if (!tabBar) return nil;
     static Class barClass = Nil;
     static Ivar providerIvar = NULL;
+    static BOOL providerIvarValid = NO;
     Class cls = object_getClass(tabBar);
     if (cls != barClass) {
         providerIvar = class_getInstanceVariable(cls, "_visualProvider");
+        ptrdiff_t offset = providerIvar ? ivar_getOffset(providerIvar) : -1;
+        const char *encoding = providerIvar
+            ? ivar_getTypeEncoding(providerIvar) : NULL;
+        providerIvarValid = offset >= 0 &&
+            (size_t)offset + sizeof(id) <= class_getInstanceSize(cls) &&
+            (!encoding || encoding[0] == '\0' || encoding[0] == '@');
         barClass = cls;
     }
-    return providerIvar ? object_getIvar(tabBar, providerIvar) : nil;
+    return providerIvarValid ? object_getIvar(tabBar, providerIvar) : nil;
 }
 
 NSInteger ApolloTabBarVisualMorphTarget(UITabBar *tabBar, BOOL *known) {
@@ -581,32 +588,6 @@ BOOL IsLiquidGlass(void) {
     }
 
     return available;
-}
-
-// --- Liquid Glass trailing-cluster reservation (see ApolloCommon.h) ---
-// Plain associated storage on the navigation item; the recenter in
-// ApolloLiquidGlass.xm is the only reader and sole inset writer.
-static char kApolloNavItemTrailingHoldKey;
-static char kApolloNavItemTrailingInsetKey;
-
-void ApolloNavItemSetTrailingReservationHold(UINavigationItem *item, BOOL hold) {
-    if (!item) return;
-    objc_setAssociatedObject(item, &kApolloNavItemTrailingHoldKey,
-                             hold ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-BOOL ApolloNavItemTrailingReservationHold(UINavigationItem *item) {
-    return [objc_getAssociatedObject(item, &kApolloNavItemTrailingHoldKey) boolValue];
-}
-
-void ApolloNavItemNoteTrailingContentInset(UINavigationItem *item, CGFloat inset) {
-    if (!item || inset <= 0) return;
-    objc_setAssociatedObject(item, &kApolloNavItemTrailingInsetKey,
-                             @(inset), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-CGFloat ApolloNavItemTrailingContentInset(UINavigationItem *item) {
-    return [objc_getAssociatedObject(item, &kApolloNavItemTrailingInsetKey) doubleValue];
 }
 
 // Route a URL through Apollo's own URL handler, bypassing iOS URL dispatch.

@@ -875,62 +875,115 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
     return navBottomW - tableTopW;
 }
 
+// Navigation can temporarily collapse the search bar, including a deferred
+// layout after cancellation. Scope recovery to one visible appearance, and
+// restore the geometry and scroll policy together before another frame is drawn.
+@interface ApolloNativeSearchRestingState : NSObject
+@property (nonatomic) BOOL visible;
+@property (nonatomic) NSUInteger generation;
+@property (nonatomic) BOOL revealInFlight;
+@property (nonatomic) BOOL revealAttemptedAtTop;
+@property (nonatomic) BOOL revealCheckPending;
+@property (nonatomic) BOOL revealAfterRefreshPending;
+// Notes that outlive an appearance, so NSBInvalidateRestingSearch leaves them
+// alone: leftAtTop is written by viewWillDisappear when the feed leaves from
+// its top rest and consumed (one-shot) by the next viewWillAppear, which may
+// then hold the scroll-away policy off through the transition —
+// reappearanceHold — until viewDidAppear releases it (or viewWillDisappear
+// does, when the transition into the feed was cancelled).
+@property (nonatomic) BOOL leftAtTop;
+@property (nonatomic) BOOL reappearanceHold;
+@end
+@implementation ApolloNativeSearchRestingState
+@end
+
+static const void *kNSBRestingStateKey = &kNSBRestingStateKey;
+
+static ApolloNativeSearchRestingState *NSBRestingStateForVC(UIViewController *vc) {
+    if (!vc) return nil;
+    ApolloNativeSearchRestingState *state = objc_getAssociatedObject(vc, kNSBRestingStateKey);
+    if (!state) {
+        state = [ApolloNativeSearchRestingState new];
+        objc_setAssociatedObject(vc, kNSBRestingStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return state;
+}
+
+static BOOL NSBHasSettledFeedGeometry(UIViewController *vc, UIScrollView *table) {
+    if (!vc || !table.window || table.window != vc.viewIfLoaded.window) return NO;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    UINavigationController *nav = vc.navigationController;
+    return state.visible && nav.topViewController == vc && nav.visibleViewController == vc &&
+           !ApolloNavTransitionInFlight() && !nav.transitionCoordinator && !vc.transitionCoordinator;
+}
+
+static void NSBInvalidateRestingSearch(UIViewController *vc) {
+    ApolloNativeSearchRestingState *state = objc_getAssociatedObject(vc, kNSBRestingStateKey);
+    if (!state) return;
+    state.visible = NO;
+    state.generation++;
+    state.revealCheckPending = NO;
+    state.revealAfterRefreshPending = NO;
+    state.revealAttemptedAtTop = NO;
+    BOOL wasRevealing = state.revealInFlight;
+    state.revealInFlight = NO;
+    // End only our own temporary reveal, before the appearance callback lets
+    // UIKit capture the navigation item's policy for the transition.
+    if (wasRevealing && !(sNSBDismissWindow && vc == sNSBSessionVC)) {
+        vc.navigationItem.hidesSearchBarWhenScrolling = YES;
+    }
+}
+
+static void NSBApplyScrollAwayPolicy(UIViewController *vc, UIScrollView *table) {
+    if (!NSBHasSettledFeedGeometry(vc, table)) return;
+    UINavigationItem *item = vc.navigationItem;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    if (item.searchController && !item.hidesSearchBarWhenScrolling &&
+        objc_getAssociatedObject(vc, kNSBAppearedKey) != nil &&
+        !state.revealInFlight && !state.reappearanceHold && !sNSBDismissWindow) {
+        item.hidesSearchBarWhenScrolling = YES;
+    }
+}
+
 // Resting at the very top with the palette collapsed is a dead-end state: it
 // is reached through pull-to-refresh spring-backs and programmatic snaps (the
 // collapse tracking only re-expands on a settling drag), and it leaves the bar
 // unreachable without another pull. When the feed settles exactly at its top
-// rest with the bar away, force the reveal with the #975 flip: expand via
-// hidesSearchBarWhenScrolling = NO, then restore the scroll-away policy a beat
-// later. No-op while the search is active or a reveal is already in flight.
-static BOOL sNSBRevealInFlight = NO;
+// rest with the bar away, expand and re-anchor it in one layout transaction.
+// Restore the scroll-away policy before returning to the run loop, so a new
+// drag can never cache a non-collapsible search bar.
 // Poll a live refresh out and then re-run the reveal check. Bounded so a stuck
 // refresh cannot keep this alive forever.
-static BOOL sNSBRevealAfterRefreshPending = NO;
 static void NSBScheduleRevealCheck(UIScrollView *table);
-static void NSBRecheckRevealAfterRefresh(UIScrollView *table, NSUInteger attempt) {
+static void NSBRecheckRevealAfterRefresh(UIViewController *vc, UIScrollView *table,
+                                        NSUInteger generation, NSUInteger attempt) {
+    __weak UIViewController *weakVC = vc;
     __weak UIScrollView *weakTable = table;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        UIViewController *strongVC = weakVC;
         UIScrollView *sv = weakTable;
-        if (!sv) { sNSBRevealAfterRefreshPending = NO; return; }
+        ApolloNativeSearchRestingState *state = NSBRestingStateForVC(strongVC);
+        if (!state || state.generation != generation) return;
+        if (!NSBHasSettledFeedGeometry(strongVC, sv)) {
+            state.revealAfterRefreshPending = NO;
+            return;
+        }
         UIRefreshControl *rc = [sv respondsToSelector:@selector(refreshControl)]
             ? [(UITableView *)sv refreshControl] : nil;
         if (attempt < 25 && (rc.isRefreshing || sv.isDragging || sv.isTracking)) {
-            NSBRecheckRevealAfterRefresh(sv, attempt + 1);
+            NSBRecheckRevealAfterRefresh(strongVC, sv, generation, attempt + 1);
             return;
         }
-        sNSBRevealAfterRefreshPending = NO;
+        state.revealAfterRefreshPending = NO;
         NSBScheduleRevealCheck(sv);
     });
 }
 
-// Re-arm the scroll-away policy once the feed is genuinely settled. Bounded so
-// a table that never stops moving cannot hold the reveal open forever.
-static void NSBScheduleScrollAwayRestore(UIViewController *vc, UIScrollView *table,
-                                         NSUInteger attempt) {
-    __weak UIViewController *weakVC = vc;
-    __weak UIScrollView *weakTable = table;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIViewController *strongVC = weakVC;
-        UIScrollView *sv = weakTable;
-        UIRefreshControl *rc = [sv respondsToSelector:@selector(refreshControl)]
-            ? [(UITableView *)sv refreshControl] : nil;
-        if (attempt < 10 && sv &&
-            (sv.isDragging || sv.isTracking || sv.isDecelerating || rc.isRefreshing)) {
-            NSBScheduleScrollAwayRestore(strongVC, sv, attempt + 1);
-            return;
-        }
-        sNSBRevealInFlight = NO;
-        if (!strongVC) return;
-        if (!strongVC.navigationItem.hidesSearchBarWhenScrolling) {
-            strongVC.navigationItem.hidesSearchBarWhenScrolling = YES;
-        }
-    });
-}
-
 static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table) {
-    if (sNSBRevealInFlight || !vc || !table) return;
+    if (!NSBHasSettledFeedGeometry(vc, table)) return;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    if (state.revealInFlight || state.revealAttemptedAtTop || sNSBDismissWindow) return;
     if (table.isDragging || table.isDecelerating || table.isTracking) return;
     UINavigationItem *navItem = vc.navigationItem;
     UISearchController *sc = navItem.searchController;
@@ -949,26 +1002,37 @@ static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table)
     if (rc.isRefreshing) return;
     if (fabs(table.contentOffset.y + table.adjustedContentInset.top) > 2.0) return; // not at the rest
     if (CGRectGetHeight(sc.searchBar.bounds) > 1.0) return;            // already revealed
-    sNSBRevealInFlight = YES;
-    navItem.hidesSearchBarWhenScrolling = NO;
-    // Expanding the palette grows the feed's top inset, which leaves the
-    // existing offset reading as "scrolled by a bar's height" — enough for
-    // UIKit to collapse the bar straight back again. Re-park at the new top on
-    // the next turn so the reveal sticks.
-    __weak UIScrollView *weakTable = table;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIScrollView *sv = weakTable;
-        if (!sv || sv.isDragging || sv.isTracking || sv.isDecelerating) return;
-        CGFloat top = -sv.adjustedContentInset.top;
-        if (sv.contentOffset.y > top && sv.contentOffset.y < top + 120.0) {
-            sv.contentOffset = CGPointMake(sv.contentOffset.x, top);
-        }
-    });
-    // Restoring the scroll-away policy re-enables collapse tracking, which can
-    // shrink the palette by a bar's height in one frame. Landing that mid-pull
-    // moves the top inset — and the hosted spinner with it — out from under the
-    // gesture, so hold the reveal open and try again rather than applying blind.
-    NSBScheduleScrollAwayRestore(vc, table, 0);
+    state.revealInFlight = YES;
+    state.revealAttemptedAtTop = YES;
+    // A delayed policy restore kept the bar non-collapsible through the next
+    // drag; a delayed offset correction exposed the collapsed frame on cancel.
+    // Flush UIKit's expanded inset before re-anchoring, then re-enable collapse
+    // while the table is still at that expanded top. No timer owns the policy.
+    [UIView performWithoutAnimation:^{
+        navItem.hidesSearchBarWhenScrolling = NO;
+        UIView *navigationView = vc.navigationController.view;
+        [navigationView setNeedsLayout];
+        [navigationView layoutIfNeeded];
+        [table setContentOffset:CGPointMake(table.contentOffset.x, -table.adjustedContentInset.top) animated:NO];
+        navItem.hidesSearchBarWhenScrolling = YES;
+        [navigationView layoutIfNeeded];
+    }];
+    state.revealInFlight = NO;
+}
+
+void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
+    if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchFeedVC(vc)) return;
+    UIScrollView *table = NSBTableForVC(vc);
+    if (!NSBHasSettledFeedGeometry(vc, table)) return;
+    // completeTransition: restores the item stack before UIKit's next layout
+    // collapses the returned search. Flush that layout and repair in the same
+    // transaction, while the presentation still has the pre-cancel geometry.
+    [UIView performWithoutAnimation:^{
+        UIView *navigationView = vc.navigationController.view;
+        [navigationView setNeedsLayout];
+        [navigationView layoutIfNeeded];
+        NSBEnsureBarRevealedAtTop(vc, table);
+    }];
 }
 
 // The reveal above only ever ran from the controller's layout pass, and a
@@ -976,44 +1040,94 @@ static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table)
 // does not trigger one, so the bar stayed collapsed at the top until the user
 // pulled it down by hand. The feed's own geometry setters DO run on those
 // paths, so ask from there as well, coalesced to one check per runloop turn.
-static BOOL sNSBRevealCheckPending = NO;
 static void NSBScheduleRevealCheck(UIScrollView *table) {
-    if (sNSBRevealCheckPending || !table || sNSBRevealInFlight) return;
+    if (!table) return;
     if (objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
+    UIViewController *vc = NSBFeedVCForView(table);
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    if (!state.visible || state.revealCheckPending || state.revealInFlight) return;
+    // One repair per arrival at the top, not one per layout pass if UIKit
+    // declines the reveal. New scrolling permits another recovery at its end.
+    if (table.isDragging || table.isTracking ||
+        fabs(table.contentOffset.y + table.adjustedContentInset.top) > 2.0) {
+        state.revealAttemptedAtTop = NO;
+    }
     if (table.isDragging || table.isTracking) return; // a live drag reveals on its own
+    NSUInteger generation = state.generation;
     // A refresh in flight holds the feed above its rest and owns the band the
     // palette would expand into, so the reveal has to wait it out — but it must
     // still happen afterwards, or a pull-to-refresh leaves the bar collapsed
     // (the very thing 63765ad fixed). Come back and look again.
     if ([table respondsToSelector:@selector(refreshControl)] &&
         [(UITableView *)table refreshControl].isRefreshing) {
-        if (!sNSBRevealAfterRefreshPending) {
-            sNSBRevealAfterRefreshPending = YES;
-            NSBRecheckRevealAfterRefresh(table, 0);
+        if (!state.revealAfterRefreshPending) {
+            state.revealAfterRefreshPending = YES;
+            NSBRecheckRevealAfterRefresh(vc, table, generation, 0);
         }
         return;
     }
-    sNSBRevealCheckPending = YES;
+    state.revealCheckPending = YES;
+    __weak UIViewController *weakVC = vc;
     __weak UIScrollView *weakTable = table;
     dispatch_async(dispatch_get_main_queue(), ^{
-        sNSBRevealCheckPending = NO;
+        UIViewController *strongVC = weakVC;
+        ApolloNativeSearchRestingState *currentState = NSBRestingStateForVC(strongVC);
+        if (!currentState || currentState.generation != generation) return;
+        currentState.revealCheckPending = NO;
         UIScrollView *sv = weakTable;
         if (!sv || sv.isDecelerating || sv.isDragging || sv.isTracking) return;
-        UIViewController *vc = NSBFeedVCForView(sv);
-        if (vc) NSBEnsureBarRevealedAtTop(vc, sv);
+        NSBApplyScrollAwayPolicy(strongVC, sv);
+        NSBEnsureBarRevealedAtTop(strongVC, sv);
     });
 }
 
 %hook _TtC6Apollo21ASTableViewController
 
 - (void)viewWillAppear:(BOOL)animated {
+    if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
     NSBAttachNativeSearch((UIViewController *)self);
     NSBHideApolloToolbar((UIViewController *)self);
+    UINavigationItem *navItem = [(UIViewController *)self navigationItem];
+
+    // Re-appearance of a feed that was resting at its top when it left: the
+    // forward swipe re-pushing Home from the subreddit list, a pop back to
+    // it, a tab return. The scroll-away policy has been on since the first
+    // appearance, and with no large title UIKit lays a scroll-away bar out
+    // COLLAPSED for the transition, so the feed slid in bar-less and the
+    // top-rest reveal (NSBEnsureBarRevealedAtTop) only expanded the palette
+    // once it had landed — the whole feed shoving down a bar's height a beat
+    // late (measured on the forward swipe from Subreddits to Home; a fresh
+    // feed never did this because it attaches with the policy off). Give the
+    // re-appearance the first appearance's treatment: policy off for the
+    // transition so the bar is on screen from the first frame, put back by
+    // the policy application once viewDidAppear has released the hold
+    // (NSBApplyScrollAwayPolicy stands down for it, and nothing applies the
+    // policy before the appearance is recorded anyway). Never while a search
+    // is active (its palette is UIKit's to run) or inside a dismiss window
+    // (which pins the policy on its own schedule).
+    // The note is one-shot: written by viewWillDisappear for the very next
+    // appearance and consumed here whether or not the hold engages. Apollo's
+    // media viewer returns to the feed through viewWillAppear without having
+    // sent viewWillDisappear when it opened, so a note left over from the last
+    // navigation trip would otherwise engage the hold on a feed the user has
+    // since scrolled: UIKit lays the pinned bar out over the scrolled feed for
+    // the dismissal and the policy application collapses it straight back —
+    // the bar that flashed on closing an image after a subreddit-list round trip.
+    ApolloNativeSearchRestingState *reappearState = NSBRestingStateForVC((UIViewController *)self);
+    BOOL leftAtTop = reappearState.leftAtTop;
+    reappearState.leftAtTop = NO;
+    UISearchController *reappearSC = navItem.searchController;
+    if (reappearSC && !reappearSC.active && navItem.hidesSearchBarWhenScrolling &&
+        leftAtTop && !sNSBDismissWindow) {
+        navItem.hidesSearchBarWhenScrolling = NO;
+        reappearState.reappearanceHold = YES;
+        ApolloLog(@"[NativeSearch] re-appearance at top rest: holding the bar revealed through the transition");
+    }
+
     // Returning to a live search (e.g. back from an opened result): keep the
     // native bar's text in step with Apollo's field so the query stays visible.
-    UINavigationItem *navItem = [(UIViewController *)self navigationItem];
     UISearchBar *bar = navItem.searchController.searchBar;
     UITextField *field = (UITextField *)ApolloNSBObjectIvar(self, "searchTextField");
     if ([field isKindOfClass:[UITextField class]] && field.text.length > 0) {
@@ -1040,13 +1154,16 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     // search controller is attached late this is the only thing that tells that
     // pass the first appearance is behind us.
     objc_setAssociatedObject(self, kNSBAppearedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloNativeSearchRestingState *appearedState = NSBRestingStateForVC((UIViewController *)self);
+    appearedState.visible = YES;
+    // The transition is over: release the re-appearance hold (viewWillAppear)
+    // so the policy application scheduled below puts scroll-away back on.
+    appearedState.reappearanceHold = NO;
     UINavigationItem *navItem = [(UIViewController *)self navigationItem];
     if (!navItem.searchController) return;
-    // Scroll-away policy. Flipped here, after the first layout, so the bar is
-    // never parked off-screen on arrival (#975's lesson).
-    if (!navItem.hidesSearchBarWhenScrolling) {
-        navItem.hidesSearchBarWhenScrolling = YES;
-    }
+    // Cancellation sends didAppear from inside completeTransition:, before
+    // UIKit finishes restoring the palette. Read its geometry next turn.
+    NSBScheduleRevealCheck(NSBTableForVC((UIViewController *)self));
     // Safety net for the return-to-live-query path: if Apollo's search-active
     // layout hid the nav bar before the guard armed, put it back.
     UINavigationBar *nav = [(UIViewController *)self navigationController].navigationBar;
@@ -1057,9 +1174,28 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
+    if (ApolloNativeFeedSearchEnabled()) NSBInvalidateRestingSearch((UIViewController *)self);
     %orig;
     if (!ApolloNativeFeedSearchEnabled() || !NSBIsNativeSearchFeedVC(self)) return;
     sNSBTransitioning = YES;
+    // Remember whether the feed is leaving from its top rest; a re-appearance
+    // uses it to lay the bar out revealed for the transition (viewWillAppear).
+    // Measured live here, before the deactivation below can move the palette:
+    // once the view is off-screen its safe area — and so the adjusted inset
+    // the rest is measured against — is no longer trustworthy.
+    ApolloNativeSearchRestingState *leavingState = NSBRestingStateForVC((UIViewController *)self);
+    UIScrollView *leavingTable = NSBTableForVC((UIViewController *)self);
+    leavingState.leftAtTop = leavingTable &&
+        leavingTable.contentOffset.y <= -leavingTable.adjustedContentInset.top + 2.0;
+    if (leavingState.reappearanceHold) {
+        // Still held here means viewDidAppear never ran (a cancelled
+        // interactive pop or forward swipe into this feed): put the scroll-away
+        // policy back so the next re-appearance can take the hold again
+        // instead of the next transition running with the policy stuck off.
+        leavingState.reappearanceHold = NO;
+        [(UIViewController *)self navigationItem].hidesSearchBarWhenScrolling = YES;
+        ApolloLog(@"[NativeSearch] transition into the feed cancelled with the hold still set: scroll-away policy restored");
+    }
     // Leaving the feed (e.g. opening a result) with the search UI presented:
     // deactivate it cleanly. Keeping it active across a push leaves UIKit's
     // presentation half-restored after the pop (missing nav bar, collapsed
@@ -1076,25 +1212,65 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     // lazily here too (idempotent — bails once a searchController exists).
     NSBAttachNativeSearch((UIViewController *)self);
     NSBHideApolloToolbar((UIViewController *)self);
-    // Apply the scroll-away policy here as well as in viewDidAppear. The
-    // controller is attached lazily on some paths (the toolbar ivars can still
-    // be nil at willAppear), so viewDidAppear can run before there is anything
-    // to configure and leave the bar pinned. It then still collapses — UIKit
-    // owns the inset now, so the palette compresses with the scroll either way
-    // — but every path that puts it back is gated on the scroll-away policy
-    // being on, so the bar would stay collapsed until pulled down by hand.
-    UINavigationItem *policyItem = [(UIViewController *)self navigationItem];
-    if (policyItem.searchController && !policyItem.hidesSearchBarWhenScrolling &&
-        objc_getAssociatedObject(self, kNSBAppearedKey) != nil &&
-        !sNSBRevealInFlight && !sNSBDismissWindow) {
-        policyItem.hidesSearchBarWhenScrolling = YES;
-    }
-
+    // Late attachment can happen after didAppear; schedule the policy update
+    // here too, without driving another layout from this callback.
     UIScrollView *table = NSBTableForVC((UIViewController *)self);
     if (table && table == sNSBSessionTable) {
         NSBSetHeaderHidden(table, NSBIsSurfaced(table));
     }
-    NSBEnsureBarRevealedAtTop((UIViewController *)self, table);
+    // Recovery drives layout itself; never re-enter it from a layout callback.
+    NSBScheduleRevealCheck(table);
+}
+
+%end
+
+// MARK: - Posts tab re-selection
+//
+// Apollo's native top check ignores the inset UIKit adds for native search.
+// Use adjustedContentInset for both the check and scroll destination,
+// preserving Apollo's one-level back navigation when already at the top.
+// A followed user's profile opened directly from the subreddit list needs the
+// same behavior in both appearances: Apollo only handles PostsViewController
+// and RedditListViewController here, so [RedditList, Profile] does nothing.
+// Deeper profile stacks keep Apollo's native return-to-feed behavior.
+%hook _TtC6Apollo13SceneDelegate
+
+- (BOOL)tabBarController:(UITabBarController *)tabBarController
+ shouldSelectViewController:(UIViewController *)viewController {
+    if (tabBarController.selectedIndex == 0 &&
+        viewController == tabBarController.selectedViewController &&
+        [viewController isKindOfClass:objc_getClass("_TtC6Apollo26ApolloNavigationController")]) {
+        UINavigationController *nav = (UINavigationController *)viewController;
+        UIViewController *feed = nav.topViewController;
+        BOOL managedPostsFeed = ApolloNativeFeedSearchEnabled() &&
+            [feed isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")];
+        BOOL profileFromSubredditList = nav.viewControllers.count == 2 &&
+            [nav.viewControllers.firstObject isKindOfClass:objc_getClass("_TtC6Apollo24RedditListViewController")] &&
+            [feed isKindOfClass:objc_getClass("_TtC6Apollo21ProfileViewController")];
+        if (managedPostsFeed || profileFromSubredditList) {
+            UIScrollView *table = NSBTableForVC(feed);
+            if (table && (profileFromSubredditList || objc_getAssociatedObject(table, kNSBFeedTableKey) != nil)) {
+                CGFloat topInset = table.adjustedContentInset.top;
+                BOOL atTop = round(table.contentOffset.y) == -round(topInset);
+                if (NSBTraceEnabled()) {
+                    ApolloLog(@"[NSBTrace] Posts re-tap (%@) -> %@ (y=%.1f inTop=%.1f adjTop=%.1f)",
+                              NSStringFromClass(feed.class), atTop ? @"pop" : @"scroll", table.contentOffset.y,
+                              table.contentInset.top, topInset);
+                }
+                if (atTop) {
+                    [nav popViewControllerAnimated:YES];
+                } else {
+                    // Use Apollo's table-node entry point, as its native handler
+                    // does, with the same full inset used by the predicate.
+                    id tableNode = ApolloNSBObjectIvar(feed, "tableNode");
+                    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(tableNode,
+                        @selector(setContentOffset:animated:), CGPointMake(0.0, -topInset), YES);
+                }
+                return NO;
+            }
+        }
+    }
+    return %orig(tabBarController, viewController);
 }
 
 %end

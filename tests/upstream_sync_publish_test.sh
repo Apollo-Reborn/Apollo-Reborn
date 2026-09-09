@@ -50,6 +50,8 @@ run_publish() {
     GITHUB_REPOSITORY="Thetromboneman1/Apollo-Reborn" \
     GITHUB_REPOSITORY_OWNER="Thetromboneman1" \
     UPSTREAM_REPOSITORY="Apollo-Reborn/Apollo-Reborn" \
+    CONFLICTED="${CONFLICTED:-false}" \
+    CONFLICT_FILES="${CONFLICT_FILES:-}" \
     "$ROOT/scripts/publish-upstream-sync-review.sh"
 }
 
@@ -78,5 +80,15 @@ grep -F '<head=Thetromboneman1/upstream-sync-0123456789ab>' "$FAKE_LOG" >/dev/nu
 grep -F '<base=main>' "$FAKE_LOG" >/dev/null
 expected_body="<body=Merges \`Apollo-Reborn/Apollo-Reborn@0123456789abcdef\` through the downstream package validation contract.>"
 grep -F "$expected_body" "$FAKE_LOG" >/dev/null
+
+: > "$FAKE_LOG"
+CONFLICTED=true \
+CONFLICT_FILES='src/Tweak.xm,src/settings/CustomAPIViewController.m' \
+FAKE_EXISTING='' \
+run_publish >"$TEST_ROOT/conflict-create.out"
+grep -F 'Created upstream review pull request' "$TEST_ROOT/conflict-create.out" >/dev/null
+grep -F '<draft=true>' "$FAKE_LOG" >/dev/null
+grep -F '<title=chore: resolve Apollo-Reborn/Apollo-Reborn sync conflicts>' "$FAKE_LOG" >/dev/null
+grep -F '<body=Reviews `Apollo-Reborn/Apollo-Reborn@0123456789abcdef` against downstream customizations. Automatic merge conflicts: `src/Tweak.xm,src/settings/CustomAPIViewController.m`. Resolve locally, preserve both contracts, and run the downstream validation before marking this ready.>' "$FAKE_LOG" >/dev/null
 
 printf 'upstream sync publication tests passed\n'

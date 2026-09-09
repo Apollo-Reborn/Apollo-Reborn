@@ -225,14 +225,15 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
         // in General → Other. Keeping the snapshot entry would return a result
         // that can no longer be found or flashed after navigation.
         if ([row[0] isEqualToString:@"Always Offer Translate"]) continue;
-        // Reborn hides these three native General → Other rows and relocates
-        // them onto its own screens (Open in App / Profiles) against the same
+        // Reborn hides these native General → Other rows and relocates them
+        // onto its own screens (Open in App / Interface) against the same
         // native keys — see ApolloSettingsNativeInjections.xm. The moved rows
         // are indexed from the live Reborn screen crawl above, so the snapshot
         // entries would navigate to a row that no longer exists.
         if ([row[0] isEqualToString:@"Open Links in"]) continue;
         if ([row[0] isEqualToString:@"Open Videos in YouTube App"]) continue;
         if ([row[0] isEqualToString:@"Hide Username on Tab Bar"]) continue;
+        if ([row[0] isEqualToString:@"Hide Bars on Scroll"]) continue;
         // Reborn owns the prominent Feature Requests entry (Apollo Reborn →
         // About → Fider board), already indexed from the live Reborn crawl.
         // The native About row now just opens a new-vs-archived chooser, so a
@@ -250,13 +251,20 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
 
     // Runtime-injected leaf rows do not exist in the generated native crawl.
     // Disclosure injections are already represented by router entries above;
-    // Color Flairs is the one injected switch with no dedicated screen/route.
+    // the switches appended to Apollo's Appearance sections (Color Flairs,
+    // Bold Post Titles) have no dedicated screen/route, so index them here.
     ApolloSettingsSearchEntry *colorFlairs = [[ApolloSettingsSearchEntry alloc] init];
     colorFlairs.title = @"Color Flairs";
     colorFlairs.breadcrumb = @"Appearance → Flair";
     colorFlairs.nativePath = @[ @"Appearance" ];
     colorFlairs.rowTitle = @"Color Flairs";
     [entries addObject:colorFlairs];
+    ApolloSettingsSearchEntry *boldPostTitles = [[ApolloSettingsSearchEntry alloc] init];
+    boldPostTitles.title = @"Bold Post Titles";
+    boldPostTitles.breadcrumb = @"Appearance → Posts";
+    boldPostTitles.nativePath = @[ @"Appearance" ];
+    boldPostTitles.rowTitle = @"Bold Post Titles";
+    [entries addObject:boldPostTitles];
 
     // Resolve a leading icon for every result so the list is visually uniform:
     //   own row icon (captured above) → the parent screen/section's icon (by

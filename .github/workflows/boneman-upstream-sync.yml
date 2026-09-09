@@ -44,34 +44,56 @@ jobs:
           UPSTREAM_URL: https://github.com/${{ env.UPSTREAM_REPOSITORY }}.git
         run: |
           set -euo pipefail
+          set_output() {
+            printf '%s=%s\n' "$1" "$2" >> "$GITHUB_OUTPUT"
+          }
           git remote add upstream "$UPSTREAM_URL"
           git fetch --prune upstream main
           upstream_sha=$(git rev-parse upstream/main)
-          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          downstream_sha=$(git rev-parse HEAD)
+          set_output sha "$upstream_sha"
           if git merge-base --is-ancestor "$upstream_sha" HEAD; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            set_output changed false
             exit 0
           fi
           branch="Thetromboneman1/upstream-sync-${upstream_sha:0:12}"
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             git fetch origin "$branch"
             git switch --force-create "$branch" FETCH_HEAD
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "branch=$branch" >> "$GITHUB_OUTPUT"
+            set_output changed true
+            set_output branch "$branch"
+            if git merge-base --is-ancestor "$downstream_sha" HEAD; then
+              set_output conflicted false
+            else
+              set_output conflicted true
+            fi
             exit 0
           fi
           git switch -c "$branch"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git merge --no-edit upstream/main; then
-            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+            conflict_files=$(git diff --name-only --diff-filter=U | paste -sd ',' -)
+            {
+              echo "### Upstream merge needs reviewed conflict resolution"
+              echo
+              echo "Conflicts: \`${conflict_files//,/\`, \`}\`"
+              echo
+              echo "A draft PR will preserve the exact upstream head for manual resolution."
+            } >> "$GITHUB_STEP_SUMMARY"
             git merge --abort
-            exit 1
+            git switch --force-create "$branch" upstream/main
+            set_output changed true
+            set_output branch "$branch"
+            set_output conflicted true
+            set_output conflict_files "$conflict_files"
+            exit 0
           fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          set_output changed true
+          set_output branch "$branch"
+          set_output conflicted false
       - name: Refresh generated documentation
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         run: |
           set -euo pipefail
           python3 scripts/documentation_health.py --write
@@ -81,13 +103,13 @@ jobs:
             git commit -m "docs: refresh generated repository state"
           fi
       - name: Install build dependencies
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         run: brew install ldid dpkg make
       - name: Add GNU Make to PATH
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Check out Theos
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: theos/theos
@@ -95,10 +117,10 @@ jobs:
           path: theos
           submodules: recursive
       - name: Select Xcode 26.0.1
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
       - name: Validate preserved downstream behavior
-        if: steps.upstream.outputs.changed == 'true'
+        if: steps.upstream.outputs.changed == 'true' && steps.upstream.outputs.conflicted != 'true'
         env:
           THEOS: ${{ github.workspace }}/theos
         run: scripts/validate-downstream.sh --build
@@ -108,4 +130,6 @@ jobs:
           GH_TOKEN: ${{ secrets.BONEMAN_UPSTREAM_SYNC_TOKEN }}
           BRANCH: ${{ steps.upstream.outputs.branch }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          CONFLICTED: ${{ steps.upstream.outputs.conflicted }}
+          CONFLICT_FILES: ${{ steps.upstream.outputs.conflict_files }}
         run: scripts/publish-upstream-sync-review.sh
