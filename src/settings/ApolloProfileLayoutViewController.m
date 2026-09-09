@@ -45,7 +45,8 @@ static NSString *ApolloProfilePreviewColorCacheComponent(UIColor *color) {
 static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     CGSize size = CGSizeMake(320.0, 120.0);
     UIColor *page = [ApolloImmersiveResolvedPageColor(
-        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor)
+        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor,
+        traits)
         resolvedColorWithTraitCollection:traits];
     UIColor *accent = [(ApolloThemeAccentColor() ?: UIColor.systemBlueColor)
         resolvedColorWithTraitCollection:traits];
@@ -182,7 +183,8 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.backgroundColor = ApolloImmersiveResolvedPageColor(
-        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor);
+        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor,
+        self.traitCollection);
     UIColor *primary = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
     UIColor *secondary = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
         ?: UIColor.secondaryLabelColor;
@@ -309,7 +311,8 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     if (width <= 0.0 || height <= 0.0) return;
 
     UIColor *pageColor = ApolloImmersiveResolvedPageColor(
-        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor);
+        ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor,
+        self.traitCollection);
 
     // Render at the card's actual width; centering preserves the fractional
     // inset when the host rounds the preferred height up to a whole point.
