@@ -287,6 +287,9 @@ typedef NS_ENUM(NSInteger, ApolloFTCrestState) {
     if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previous]) {
         [self applyMonogramColors];
         [self refreshBadgeColors];
+        // A crest face carries light + dark renders; pick ours explicitly.
+        UIImageAsset *asset = self.iconView.image.imageAsset;
+        if (asset) self.iconView.image = [asset imageWithTraitCollection:self.traitCollection];
     }
 }
 
@@ -563,6 +566,27 @@ static ApolloFloatingTabsController *sFTController = nil;
     self.rootViewController = rootVC;
     window.hidden = NO;
     ApolloLog(@"[FloatingTabs] Overlay window created (scene=%@)", scene ? @"yes" : @"no");
+    for (UIWindow *candidate in ApolloAllWindows()) {
+        if ([self syncOverlayAppearanceWithWindow:candidate]) break;
+    }
+}
+
+// The overlay is its own UIWindow, so it follows the SYSTEM appearance while
+// Apollo's window may be forced dark or light (Theme Manager › Light/Dark Mode
+// set to manual, or a schedule). Everything on a bubble resolves against the
+// bubble's traits — accent monogram, badge, the crest disc — so the overlay
+// mirrors Apollo's window override, here at creation and from the
+// setOverrideUserInterfaceStyle: hook below whenever Apollo changes it.
+// Returns NO when `candidate` isn't Apollo's app window.
+- (BOOL)syncOverlayAppearanceWithWindow:(UIWindow *)candidate {
+    if (!self.window || candidate == self.window) return NO;
+    if (!candidate.rootViewController || candidate.windowLevel != UIWindowLevelNormal) return NO;
+    UIUserInterfaceStyle style = candidate.overrideUserInterfaceStyle;
+    if (self.window.overrideUserInterfaceStyle != style) {
+        self.window.overrideUserInterfaceStyle = style;
+        ApolloLog(@"[FloatingTabs] Overlay appearance mirrors app window override=%ld", (long)style);
+    }
+    return YES;
 }
 
 - (void)tearDownWindowIfEmpty {
@@ -867,10 +891,10 @@ static CGRect ApolloFTAspectFitRect(CGSize imageSize, CGRect box) {
                       fitted.width, fitted.height);
 }
 
-// Half-and-half crest face: home crest on the left, away on the right, on a
-// light disc with a hairline divider. Rendered once per pair at bubble size
-// and cached; the bubble's own circular clip trims the edges.
-static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
+// One half-and-half render: home crest on the left, away on the right, on a
+// disc with a hairline divider. Light appearance = near-white disc; dark =
+// charcoal, so the face sits with the rest of a dark theme instead of glowing.
+static UIImage *ApolloFTRenderCrestPair(UIImage *home, UIImage *away, BOOL dark) {
     const CGFloat size = kFTBubbleSize;
     const CGFloat crest = 26.0;
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
@@ -878,15 +902,28 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)
                                                                                format:format];
     return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [[UIColor colorWithWhite:0.96 alpha:1.0] setFill];
+        [[UIColor colorWithWhite:(dark ? 0.17 : 0.96) alpha:1.0] setFill];
         [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, size, size)] fill];
         CGRect leftBox = CGRectMake(size / 4.0 - crest / 2.0, (size - crest) / 2.0, crest, crest);
         CGRect rightBox = CGRectMake(size * 3.0 / 4.0 - crest / 2.0, (size - crest) / 2.0, crest, crest);
         [home drawInRect:ApolloFTAspectFitRect(home.size, leftBox)];
         [away drawInRect:ApolloFTAspectFitRect(away.size, rightBox)];
-        [[UIColor colorWithWhite:0.80 alpha:1.0] setFill];
+        [[UIColor colorWithWhite:(dark ? 0.36 : 0.80) alpha:1.0] setFill];
         UIRectFill(CGRectMake(size / 2.0 - 0.5, 9.0, 1.0, size - 18.0));
     }];
+}
+
+// The crest face as a dynamic image: both appearances rendered once per pair
+// and registered in a UIImageAsset, so UIImageView swaps them on a trait
+// change (system dark mode, or Apollo flipping its window style for a dark
+// theme) exactly like the monogram and badge colours already follow it.
+static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
+    UIImageAsset *asset = [UIImageAsset new];
+    [asset registerImage:ApolloFTRenderCrestPair(home, away, NO)
+     withTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
+    [asset registerImage:ApolloFTRenderCrestPair(home, away, YES)
+     withTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark]];
+    return [asset imageWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
 }
 
 - (UIImage *)crestFaceForTab:(ApolloFloatingTab *)tab {
@@ -2336,6 +2373,28 @@ static void ApolloFTMenuPerform(id actionController) {
     else if (link) ApolloFTKeepOrToggleForLink(link);
 }
 
+// Apollo forces its window's style for manual/scheduled Light/Dark Mode; the
+// overlay window must follow or its bubbles resolve to the system appearance.
+// Cheap and rare: a real style change, or the theme runtime's one-turn flip.
+%hook UIWindow
+- (void)setOverrideUserInterfaceStyle:(UIUserInterfaceStyle)style {
+    %orig;
+    ApolloFloatingTabsController *controller = [ApolloFloatingTabsController sharedIfExists];
+    if (!controller.window || self == controller.window) return;
+    // Deferred one runloop turn on purpose: ApolloThemeRuntime's repaint flips
+    // EVERY window's override (ours included) and restores each from a
+    // snapshot on the next turn. Mirroring synchronously inside that loop
+    // would be captured as the overlay's snapshot and restored as if it were
+    // real, leaving the overlay dark on a light app. After the turn, the app
+    // window holds its true value again and the mirror reads that.
+    __weak UIWindow *weakWindow = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = weakWindow;
+        if (window) [[ApolloFloatingTabsController sharedIfExists] syncOverlayAppearanceWithWindow:window];
+    });
+}
+%end
+
 %hook _TtC6Apollo22CommentsViewController
 
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
@@ -2463,8 +2522,15 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
     }
 
     if ([command isEqualToString:@"state"]) {
-        ApolloLog(@"[FloatingTabs][debug] state: %lu tab(s), magnet=%d",
-                  (unsigned long)controller.tabs.count, sFloatingPostTabsMagnet ? 1 : 0);
+        UIWindow *appWindow = nil;
+        for (UIWindow *w in ApolloAllWindows()) {
+            if (w != controller.window && w.rootViewController) { appWindow = w; break; }
+        }
+        ApolloLog(@"[FloatingTabs][debug] state: %lu tab(s), magnet=%d overlayStyle=%ld appWindowOverride=%ld appWindowStyle=%ld",
+                  (unsigned long)controller.tabs.count, sFloatingPostTabsMagnet ? 1 : 0,
+                  (long)controller.window.traitCollection.userInterfaceStyle,
+                  (long)appWindow.overrideUserInterfaceStyle,
+                  (long)appWindow.traitCollection.userInterfaceStyle);
         NSInteger i = 0;
         for (ApolloFloatingTab *tab in controller.tabs) {
             ApolloFloatingBubbleView *bubble = [controller bubbleForTab:tab];
@@ -2474,7 +2540,8 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
                       tab.commentsVC != nil, tab.snapshot != nil,
                       bubble.center.x, bubble.center.y,
                       bubble.iconView.hidden ? @"monogram"
-                          : ([controller crestFaceForTab:tab] && bubble.iconView.image == [controller crestFaceForTab:tab]
+                          : ([controller crestFaceForTab:tab]
+                             && bubble.iconView.image.imageAsset == [controller crestFaceForTab:tab].imageAsset
                              ? @"crests" : @"image"),
                       bubble.badgeContainer.hidden ? @"-"
                           : (bubble.badgeLabel.hidden ? @"image" : bubble.badgeLabel.text));
