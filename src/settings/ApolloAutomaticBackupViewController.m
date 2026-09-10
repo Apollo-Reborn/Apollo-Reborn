@@ -65,13 +65,11 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
                 ? @"Every Day" : [NSString stringWithFormat:@"Every %ld Days", (long)manager.intervalDays];
         } onSelect:^{ [weakSelf chooseInterval]; }];
     interval.enabled = canConfigure;
-    interval.visible = automaticVisible;
     interval.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 1; };
 
     ApolloSettingsRow *last = [ApolloSettingsRow valueRowWithID:@"automatic.last"
         title:@"Last Backup" detail:^NSString * { return ApolloBackupDateDescription(manager.lastBackupDate); }
         onSelect:nil];
-    last.visible = automaticVisible;
 
     ApolloSettingsRow *next = [ApolloSettingsRow valueRowWithID:@"automatic.next"
         title:@"Next Backup" detail:^NSString * {
@@ -80,7 +78,6 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             if (retry) return [@"Retry: " stringByAppendingString:ApolloBackupDateDescription(retry)];
             return ApolloBackupDateDescription(manager.nextBackupDate);
         } onSelect:nil];
-    next.visible = automaticVisible;
 
     ApolloSettingsRow *error = [ApolloSettingsRow customRowWithID:@"automatic.error"
         cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
@@ -104,14 +101,21 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             return [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
+    ApolloSettingsSection *schedule = [ApolloSettingsSection sectionWithTitle:@"Backup Schedule"
+        footer:@"Automatic backups are stored inside Apollo. The latest 10 automatic backups are kept; manual backups remain until you delete them."
+        rows:@[interval]];
+    schedule.visible = automaticVisible;
+
+    ApolloSettingsSection *activity = [ApolloSettingsSection sectionWithTitle:@"Backup Activity"
+        footer:nil rows:@[last, next, error]];
+    activity.visible = automaticVisible;
+
     return @[
         [ApolloSettingsSection sectionWithTitle:nil
             footer:@"Backups include settings, API keys, and login credentials. Keep them private."
             rows:@[enabled, backupNow]],
-        [ApolloSettingsSection sectionWithTitle:@"Backup Schedule"
-            footer:@"Automatic backups are stored inside Apollo. The latest 10 automatic backups are kept; manual backups remain until you delete them."
-            rows:@[interval]],
-        [ApolloSettingsSection sectionWithTitle:@"Backup Activity" footer:nil rows:@[last, next, error]],
+        schedule,
+        activity,
         [ApolloSettingsSection sectionWithTitle:@"Backups"
             footer:@"Manual backups are kept locally and immediately open Files so you can save another copy in iCloud Drive or elsewhere. Export any backup again from Manage Backups."
             rows:@[manage]],
