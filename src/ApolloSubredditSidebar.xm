@@ -940,6 +940,26 @@ static char kApolloSBCoverKey;        // strong UIView: opaque anti-flash cover 
 static char kApolloSBCollapseHeaderKey; // BOOL on the header node
 static char kApolloSBWidgetTitlesKey;   // NSSet<NSString*> (normalized) on the sidebar markdown node, for bio dedup
 static char kApolloSBMarkdownBlocksKey; // NSMutableArray<@[node, attrText]> on a markdown node — blocks that rendered before titles were ready
+static char kApolloSBScopeKey;          // @YES on a sidebar VC counted into sApolloSBLiveSidebarVCs
+
+// Non-zero while a subreddit sidebar screen exists. The bio-dedup hook below sits
+// on ASTextNode.setAttributedText:, which every comment and post body in the app
+// walks, and only a live sidebar can ever produce a match — so off a sidebar the
+// hook is one atomic load. Without this it retained a copy of every markdown body
+// over 150 characters, app-wide, for a de-duplication that could never run.
+static int32_t sApolloSBLiveSidebarVCs = 0;
+
+// A subreddit bio is a handful of markdown blocks. The cap is there for the case
+// where a markdown node is rebound repeatedly while its widget fetch is still in
+// flight, so the stash cannot grow without bound.
+static const NSUInteger kApolloSBMaxStashedBlocks = 32;
+
+static Class ApolloSBMarkdownNodeClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ cls = objc_getClass("_TtC6Apollo12MarkdownNode"); });
+    return cls;
+}
 
 // Apollo's original spec (collapsed stats header + description/bio markdown) is
 // spliced into the section stack at this order — just under our stats (order 0),
@@ -1299,6 +1319,12 @@ static void ApolloSBTryBuild(UIViewController *vc, NSDictionary *root, NSString 
 %hook _TtC6Apollo30SubredditSidebarViewController
 
 - (void)viewDidLoad {
+    // Opened before %orig: Apollo renders the bio inside its own viewDidLoad, and
+    // the dedup hook has to be live by then.
+    if (![objc_getAssociatedObject(self, &kApolloSBScopeKey) boolValue]) {
+        objc_setAssociatedObject(self, &kApolloSBScopeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __atomic_fetch_add(&sApolloSBLiveSidebarVCs, 1, __ATOMIC_RELEASE);
+    }
     %orig;
     if ([objc_getAssociatedObject(self, &kApolloSBInstalledKey) boolValue]) return;
     objc_setAssociatedObject(self, &kApolloSBInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1341,6 +1367,13 @@ static void ApolloSBTryBuild(UIViewController *vc, NSDictionary *root, NSString 
     ApolloSBFetchWidgets(subredditName, ^(NSDictionary *root) {
         ApolloSBTryBuild(weakSelf, root, subredditName, tapTargets, 0);
     });
+}
+
+- (void)dealloc {
+    if ([objc_getAssociatedObject(self, &kApolloSBScopeKey) boolValue]) {
+        __atomic_fetch_sub(&sApolloSBLiveSidebarVCs, 1, __ATOMIC_RELEASE);
+    }
+    %orig;
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1422,7 +1455,11 @@ static NSAttributedString *ApolloSBTrimDuplicateSections(NSAttributedString *att
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    Class mdc = objc_getClass("_TtC6Apollo12MarkdownNode");
+    if (__atomic_load_n(&sApolloSBLiveSidebarVCs, __ATOMIC_ACQUIRE) == 0) {
+        %orig;
+        return;
+    }
+    Class mdc = ApolloSBMarkdownNodeClass();
     if (mdc && [(id)self respondsToSelector:@selector(delegate)]) {
         id del = ((id (*)(id, SEL))objc_msgSend)((id)self, @selector(delegate));
         if ([del isKindOfClass:mdc]) {
@@ -1437,7 +1474,7 @@ static NSAttributedString *ApolloSBTrimDuplicateSections(NSAttributedString *att
             if (attributedText.length > 150) {
                 NSMutableArray *blocks = objc_getAssociatedObject(del, &kApolloSBMarkdownBlocksKey);
                 if (!blocks) { blocks = [NSMutableArray array]; objc_setAssociatedObject(del, &kApolloSBMarkdownBlocksKey, blocks, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
-                [blocks addObject:@[(id)self, attributedText]];
+                if (blocks.count < kApolloSBMaxStashedBlocks) [blocks addObject:@[(id)self, attributedText]];
             }
         }
     }
