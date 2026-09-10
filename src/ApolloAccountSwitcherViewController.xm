@@ -107,45 +107,14 @@ static void ApolloSwitcherApplyAvatarToCell(UITableViewCell *cell, NSString *use
 @end
 @implementation ApolloSwitcherAccountRow @end
 
-// Broaden UIKit's narrow reorder target and reload only after its drag finishes.
-@interface ApolloSwitcherAccountCell : UITableViewCell
-@property (nonatomic, copy) void (^reorderDragDidEnd)(void);
-@property (nonatomic) BOOL observedReorderDrag;
-@end
+// Keep UIKit's edit/delete presentation, but suppress its private reorder
+// interaction. The controller supplies one passive handle and owns the drag.
+@interface ApolloSwitcherAccountCell : UITableViewCell @end
 
 @implementation ApolloSwitcherAccountCell
 
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hitView = [super hitTest:point withEvent:event];
-    if (!self.isEditing || !self.showsReorderControl ||
-        [hitView isKindOfClass:[UIControl class]]) return hitView;
-
-    // Forward the trailing 52-point band to whatever UIKit exposes at the
-    // center of its reorder handle, without naming or moving private views.
-    BOOL rightToLeft = self.effectiveUserInterfaceLayoutDirection ==
-        UIUserInterfaceLayoutDirectionRightToLeft;
-    CGRect band = self.bounds;
-    band.size.width = MIN(52.0, CGRectGetWidth(band));
-    if (!rightToLeft) {
-        band.origin.x = CGRectGetMaxX(self.bounds) - CGRectGetWidth(band);
-    }
-    if (!CGRectContainsPoint(band, point)) return hitView;
-
-    CGPoint handlePoint = CGPointMake(rightToLeft ? 20.0 : CGRectGetWidth(self.bounds) - 20.0,
-                                      CGRectGetMidY(self.bounds));
-    UIView *reorderControl = [super hitTest:handlePoint withEvent:event];
-    while (reorderControl && reorderControl != self &&
-           ![reorderControl isKindOfClass:[UIControl class]]) {
-        reorderControl = reorderControl.superview;
-    }
-    return [reorderControl isKindOfClass:[UIControl class]] ? reorderControl : hitView;
-}
-
-- (void)dragStateDidChange:(UITableViewCellDragState)dragState {
-    [super dragStateDidChange:dragState];
-    BOOL ended = self.observedReorderDrag && dragState == UITableViewCellDragStateNone;
-    self.observedReorderDrag = dragState != UITableViewCellDragStateNone;
-    if (ended && self.reorderDragDidEnd) self.reorderDragDidEnd();
+- (void)setShowsReorderControl:(BOOL)showsReorderControl {
+    [super setShowsReorderControl:NO];
 }
 
 @end
@@ -357,9 +326,26 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
 // already-valid instance, covering its table view. All switch/add/delete
 // actions are driven on that same live `liveManager` instance via its
 // existing ObjC-visible selectors, never on anything we constructed.
-@interface ApolloAccountSwitcherViewController ()
+@interface ApolloAccountSwitcherViewController () <UIGestureRecognizerDelegate>
 @property (nonatomic, weak, nullable) UIViewController *liveManager;
 @property (nonatomic, strong) NSArray<ApolloSwitcherAccountRow *> *rows;
+@property (nonatomic, strong) UILongPressGestureRecognizer *accountReorderGesture;
+@property (nonatomic, strong, nullable) UIView *accountReorderWrapper;
+@property (nonatomic, strong, nullable) UIView *accountReorderBackground;
+@property (nonatomic, strong, nullable) UIView *accountReorderSnapshot;
+@property (nonatomic, weak, nullable) UITableViewCell *accountReorderCell;
+@property (nonatomic, strong, nullable) NSArray<ApolloSwitcherAccountRow *> *rowsBeforeAccountReorder;
+@property (nonatomic) NSInteger accountReorderOriginalRow;
+@property (nonatomic) NSInteger accountReorderCurrentRow;
+@property (nonatomic) CGFloat accountReorderTouchOffsetY;
+@property (nonatomic) CGRect accountReorderCardFrame;
+@property (nonatomic) CGFloat accountReorderCornerRadius;
+@property (nonatomic) CGPoint accountReorderLatestPoint;
+@property (nonatomic) BOOL accountReorderActive;
+@property (nonatomic) BOOL accountReorderTransitioning;
+@property (nonatomic) BOOL accountReorderFinishPending;
+@property (nonatomic) BOOL accountReorderFinishCancelled;
+@property (nonatomic, strong, nullable) UISelectionFeedbackGenerator *accountReorderFeedback;
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
 @end
 
@@ -376,6 +362,11 @@ static id _Nullable ApolloGetObjectIvar(id object, const char *name) {
 // The overlay calls Apollo's native move handler. This result lets it commit
 // its cached row order only after the guarded live move succeeds.
 static const void *kApolloAccountReorderSucceededKey = &kApolloAccountReorderSucceededKey;
+// Apollo's native row mover can synchronously emit the same account-change
+// callback used for a real account switch. Reordering preserves the active
+// account identity, so allowing that callback reloads the feed/subreddit
+// behind the popup for no state change.
+static BOOL sApolloAccountReorderMutationInProgress = NO;
 
 typedef struct {
     __unsafe_unretained id manager;
@@ -612,14 +603,19 @@ static BOOL ApolloAccountReorderReleaseGuard(
 // A normal return means that native eventual persistence was accepted.
 static BOOL ApolloAccountReorderSchedulePersist(
     const ApolloAccountReorderContext *context) {
+    BOOL previousMutationState = sApolloAccountReorderMutationInProgress;
+    sApolloAccountReorderMutationInProgress = YES;
+    BOOL scheduled = NO;
     @try {
         ((void (*)(id, SEL))objc_msgSend)(
             context->manager, NSSelectorFromString(@"persistInformationToDisk"));
-        return YES;
+        scheduled = YES;
     } @catch (NSException *exception) {
         ApolloLog(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
-        return NO;
+    } @finally {
+        sApolloAccountReorderMutationInProgress = previousMutationState;
     }
+    return scheduled;
 }
 
 @implementation ApolloAccountSwitcherViewController
@@ -636,22 +632,37 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Accounts";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(doneTapped:)];
     // editButtonItem toggles UITableViewController's own -setEditing:animated:,
     // which (default implementation) puts self.tableView into edit mode —
     // showing the red remove control on every row canEditRowAtIndexPath:
     // allows, as a tap-based alternative to swipe-to-delete.
-    self.navigationItem.leftBarButtonItem = self.editButtonItem;
+    self.navigationItem.rightBarButtonItem = self.editButtonItem;
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(presentAddAccountChooser)];
+    self.navigationItem.leftBarButtonItem.accessibilityLabel = @"Add Account";
+    // Suppress the inset-grouped table's large automatic spacer before its
+    // first section; the navigation bar already supplies the needed gap.
+    self.tableView.tableHeaderView = [[UIView alloc]
+        initWithFrame:CGRectMake(0.0, 0.0, 1.0, CGFLOAT_MIN)];
     // AccountRow is NOT registered via registerClass: it needs the .subtitle
     // style (for the key-status detail line), which registerClass's recycling
     // pool can't express — see the manual dequeue-or-alloc in cellForRowAtIndexPath:.
-    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"AddRow"];
     // Use exact geometry. iOS 26's estimate cache can otherwise overlap rows
     // after reorder-driven autoscrolling; account heights are supplied below.
     self.tableView.estimatedRowHeight = 0.0;
     self.tableView.estimatedSectionHeaderHeight = 0.0;
     self.tableView.estimatedSectionFooterHeight = 0.0;
+    // Short account lists fit the popup exactly and should not rubber-band.
+    // viewDidLayoutSubviews enables scrolling only if the presentation has
+    // reached the screen-height cap and can no longer fit all of its content.
+    self.tableView.scrollEnabled = NO;
+    self.tableView.alwaysBounceVertical = NO;
+    self.accountReorderGesture = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:self action:@selector(handleAccountReorderGesture:)];
+    self.accountReorderGesture.minimumPressDuration = 0.16;
+    self.accountReorderGesture.cancelsTouchesInView = YES;
+    self.accountReorderGesture.delegate = self;
+    [self.tableView addGestureRecognizer:self.accountReorderGesture];
     [self reloadRows];
 }
 
@@ -666,16 +677,37 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [self.tableView reloadData];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (self.navigationController.topViewController != self) return;
+    CGFloat height = ceil(self.tableView.contentSize.height +
+        self.tableView.adjustedContentInset.top);
+    if (height > 0.0 && fabs(self.preferredContentSize.height - height) > 0.5) {
+        self.preferredContentSize = CGSizeMake(self.view.bounds.size.width, height);
+        [self.liveManager.presentationController.containerView setNeedsLayout];
+    }
+    CGFloat visibleTableHeight = CGRectGetHeight(self.tableView.bounds) -
+        self.tableView.adjustedContentInset.top - self.tableView.adjustedContentInset.bottom;
+    self.tableView.scrollEnabled =
+        self.tableView.contentSize.height > MAX(visibleTableHeight, 0.0) + 0.5;
+}
+
 #pragma mark - UITableViewDataSource
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? (NSInteger)self.rows.count : 1;
+    return (NSInteger)self.rows.count;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     return section == 0 ? @"Accounts" : nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return section == 0
+        ? ceil([UIFont preferredFontForTextStyle:UIFontTextStyleFootnote].lineHeight) + 12.0
+        : CGFLOAT_MIN;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
@@ -685,18 +717,10 @@ static BOOL ApolloAccountReorderSchedulePersist(
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return indexPath.section == 0 ? 62.0 : UITableViewAutomaticDimension;
+    return 62.0;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 1) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AddRow" forIndexPath:indexPath];
-        cell.textLabel.text = @"Add Account…";
-        cell.textLabel.textColor = ApolloThemeAccentColor() ?: self.view.tintColor;
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        return cell;
-    }
-
     ApolloSwitcherAccountCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AccountRow"];
     if (!cell) {
         cell = [[ApolloSwitcherAccountCell alloc] initWithStyle:UITableViewCellStyleSubtitle
@@ -704,19 +728,22 @@ static BOOL ApolloAccountReorderSchedulePersist(
     }
     cell.textLabel.textColor = [UIColor labelColor];
     cell.accessoryType = UITableViewCellAccessoryNone;
+    // Keep separators inside the outer edges of the avatar and ellipsis.
+    cell.separatorInset = UIEdgeInsetsMake(0.0, 22.0, 0.0, 22.0);
 
     ApolloSwitcherAccountRow *row = self.rows[indexPath.row];
-    cell.textLabel.text = [NSString stringWithFormat:@"u/%@", row.username];
+    cell.textLabel.text = row.username;
     cell.detailTextLabel.text = row.keyStatusText;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     ApolloSwitcherApplyAvatarToCell(cell, row.username);
     cell.accessoryView = [self accessoryViewForRow:row];
-    __weak UITableView *weakTableView = tableView;
-    cell.reorderDragDidEnd = ^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakTableView reloadData];
-        });
-    };
+    UIImageView *reorderHandle = [[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
+    reorderHandle.tintColor = [UIColor tertiaryLabelColor];
+    reorderHandle.contentMode = UIViewContentModeCenter;
+    reorderHandle.frame = CGRectMake(0.0, 0.0, 28.0, 28.0);
+    cell.editingAccessoryView = reorderHandle;
+    cell.showsReorderControl = NO;
     return cell;
 }
 
@@ -753,7 +780,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     NSString *username = objc_getAssociatedObject(sender, kApolloSwitcherEditButtonUsernameKey);
     if (username.length == 0) return;
     if (ApolloWebSessionFor(username) != nil) {
-        [self presentWebSessionActionsForUsername:username];
+        [self presentWebSessionActionsForUsername:username sourceView:sender];
     } else {
         [self presentCredentialEditorForUsername:username];
     }
@@ -764,19 +791,287 @@ static BOOL ApolloAccountReorderSchedulePersist(
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    return indexPath.section == 0 && self.liveManager != nil;
+    // The controller's custom gesture owns reordering. Returning NO here keeps
+    // UITableView from installing a second private three-line reorder control.
+    return NO;
 }
 
-// Keeps a drag from landing on (or past) the "Add Account…" row in section 1 —
-// reordering is only meaningful within the account list itself.
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer != self.accountReorderGesture || !self.tableView.isEditing) return NO;
+    CGPoint point = [gestureRecognizer locationInView:self.tableView];
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    UITableViewCell *cell = indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+    if (!cell || indexPath.section != 0 || self.liveManager == nil) return NO;
+    CGPoint cellPoint = [gestureRecognizer locationInView:cell];
+    BOOL rightToLeft = cell.effectiveUserInterfaceLayoutDirection ==
+        UIUserInterfaceLayoutDirectionRightToLeft;
+    return rightToLeft ? cellPoint.x <= 52.0
+                       : cellPoint.x >= CGRectGetWidth(cell.bounds) - 52.0;
+}
+
+- (void)updateAccountReorderSnapshotCorners {
+    UIView *wrapper = self.accountReorderWrapper;
+    UIView *background = self.accountReorderBackground;
+    UIView *snapshot = self.accountReorderSnapshot;
+    if (!wrapper || !background || !snapshot) return;
+    NSInteger row = self.accountReorderCurrentRow;
+    NSInteger last = (NSInteger)self.rows.count - 1;
+    UIRectCorner corners = 0;
+    if (row == 0) {
+        corners |= UIRectCornerTopLeft | UIRectCornerTopRight;
+    }
+    if (row == last) {
+        corners |= UIRectCornerBottomLeft | UIRectCornerBottomRight;
+    }
+
+    CGRect cardFrame = self.accountReorderCardFrame;
+    CGFloat radius = self.accountReorderCornerRadius;
+    UIBezierPath *cardPath = corners
+        ? [UIBezierPath bezierPathWithRoundedRect:cardFrame
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius, radius)]
+        : [UIBezierPath bezierPathWithRect:cardFrame];
+    CAShapeLayer *snapshotMask = [CAShapeLayer layer];
+    snapshotMask.frame = snapshot.bounds;
+    snapshotMask.path = cardPath.CGPath;
+
+    CGRect localBackgroundBounds = background.bounds;
+    UIBezierPath *backgroundPath = corners
+        ? [UIBezierPath bezierPathWithRoundedRect:localBackgroundBounds
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius, radius)]
+        : [UIBezierPath bezierPathWithRect:localBackgroundBounds];
+    CAShapeLayer *backgroundMask = [CAShapeLayer layer];
+    backgroundMask.frame = localBackgroundBounds;
+    backgroundMask.path = backgroundPath.CGPath;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    snapshot.layer.mask = snapshotMask;
+    background.layer.mask = backgroundMask;
+    wrapper.layer.shadowPath = cardPath.CGPath;
+    [CATransaction commit];
+}
+
+- (void)finishAccountReorderCancelled:(BOOL)cancelled {
+    if (!self.accountReorderActive) return;
+    if (self.accountReorderTransitioning) {
+        self.accountReorderFinishPending = YES;
+        self.accountReorderFinishCancelled = cancelled;
+        return;
+    }
+
+    NSInteger destination = self.accountReorderCurrentRow;
+    BOOL accepted = !cancelled &&
+        (destination == self.accountReorderOriginalRow ||
+         [self driveLiveMoveRowFromIndexPath:
+             [NSIndexPath indexPathForRow:self.accountReorderOriginalRow inSection:0]
+                                  toIndexPath:[NSIndexPath indexPathForRow:destination inSection:0]]);
+    if (!accepted) {
+        self.rows = self.rowsBeforeAccountReorder ?: self.rows;
+        [self.tableView reloadData];
+        destination = self.accountReorderOriginalRow;
+    }
+
+    NSIndexPath *destinationPath = [NSIndexPath indexPathForRow:destination inSection:0];
+    [self.tableView layoutIfNeeded];
+    CGRect tableFrame = [self.tableView rectForRowAtIndexPath:destinationPath];
+    CGRect destinationFrame = [self.tableView convertRect:tableFrame toView:self.view];
+    UIView *wrapper = self.accountReorderWrapper;
+    UITableViewCell *destinationCell = [self.tableView cellForRowAtIndexPath:destinationPath];
+    destinationCell.hidden = YES;
+    [UIView animateWithDuration:0.18
+                          delay:0.0
+                        options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        wrapper.transform = CGAffineTransformIdentity;
+        wrapper.frame = destinationFrame;
+    } completion:^(__unused BOOL finished) {
+        destinationCell.hidden = NO;
+        self.accountReorderCell.hidden = NO;
+        [wrapper removeFromSuperview];
+    }];
+
+    self.accountReorderWrapper = nil;
+    self.accountReorderBackground = nil;
+    self.accountReorderSnapshot = nil;
+    self.accountReorderCell = nil;
+    self.rowsBeforeAccountReorder = nil;
+    self.accountReorderFeedback = nil;
+    self.accountReorderActive = NO;
+    self.accountReorderFinishPending = NO;
+}
+
+- (void)evaluateAccountReorderDestination {
+    if (!self.accountReorderActive || self.accountReorderTransitioning) return;
+    UIView *wrapper = self.accountReorderWrapper;
+    CGRect dragFrame = [self.view convertRect:wrapper.frame toView:self.tableView];
+    NSInteger current = self.accountReorderCurrentRow;
+    NSInteger destination = current;
+    NSInteger last = (NSInteger)self.rows.count - 1;
+
+    // Resolve the furthest crossed row in one pass. The previous version
+    // queued one table animation per row, so a quick two-row movement visibly
+    // lagged behind the floating cell while waiting for the first completion.
+    for (NSInteger row = current + 1; row <= last; row++) {
+        CGRect candidate = [self.tableView rectForRowAtIndexPath:
+            [NSIndexPath indexPathForRow:row inSection:0]];
+        CGFloat boundary = CGRectGetMinY(candidate) + CGRectGetHeight(candidate) * 0.30;
+        if (CGRectGetMaxY(dragFrame) < boundary) break;
+        destination = row;
+    }
+    if (destination == current) {
+        for (NSInteger row = current - 1; row >= 0; row--) {
+            CGRect candidate = [self.tableView rectForRowAtIndexPath:
+                [NSIndexPath indexPathForRow:row inSection:0]];
+            CGFloat boundary = CGRectGetMaxY(candidate) - CGRectGetHeight(candidate) * 0.30;
+            if (CGRectGetMinY(dragFrame) > boundary) break;
+            destination = row;
+        }
+    }
+    if (destination == current) return;
+
+    NSMutableArray<ApolloSwitcherAccountRow *> *rows = [self.rows mutableCopy];
+    ApolloSwitcherAccountRow *moved = rows[current];
+    [rows removeObjectAtIndex:current];
+    [rows insertObject:moved atIndex:destination];
+    self.rows = rows;
+    self.accountReorderCurrentRow = destination;
+    [self updateAccountReorderSnapshotCorners];
+    self.accountReorderTransitioning = YES;
+
+    NSIndexPath *from = [NSIndexPath indexPathForRow:current inSection:0];
+    NSIndexPath *to = [NSIndexPath indexPathForRow:destination inSection:0];
+    [UIView animateWithDuration:0.35
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction |
+                                UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+        [self.tableView performBatchUpdates:^{
+            [self.tableView moveRowAtIndexPath:from toIndexPath:to];
+        } completion:nil];
+    } completion:^(__unused BOOL finished) {
+        self.accountReorderTransitioning = NO;
+        [self.accountReorderFeedback selectionChanged];
+        [self.accountReorderFeedback prepare];
+        if (self.accountReorderFinishPending) {
+            [self finishAccountReorderCancelled:self.accountReorderFinishCancelled];
+        } else {
+            [self evaluateAccountReorderDestination];
+        }
+    }];
+}
+
+- (void)handleAccountReorderGesture:(UILongPressGestureRecognizer *)gestureRecognizer {
+    CGPoint tablePoint = [gestureRecognizer locationInView:self.tableView];
+    switch (gestureRecognizer.state) {
+        case UIGestureRecognizerStateBegan: {
+            NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:tablePoint];
+            UITableViewCell *cell = indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+            if (!cell) return;
+            UIView *snapshot = [cell snapshotViewAfterScreenUpdates:NO];
+            if (!snapshot) return;
+
+            CGRect frame = [cell convertRect:cell.bounds toView:self.view];
+            UIView *wrapper = [[UIView alloc] initWithFrame:frame];
+            wrapper.backgroundColor = UIColor.clearColor;
+            wrapper.layer.shadowColor = UIColor.blackColor.CGColor;
+            wrapper.layer.shadowOpacity = 0.18;
+            wrapper.layer.shadowRadius = 8.0;
+            wrapper.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+            UIView *cellBackground = cell.backgroundView;
+            CGRect cardFrame = cellBackground
+                ? [cellBackground convertRect:cellBackground.bounds toView:cell]
+                : cell.bounds;
+            if (CGRectIsEmpty(cardFrame) || !CGRectContainsRect(cell.bounds, cardFrame)) {
+                cardFrame = cell.bounds;
+            }
+            CGFloat cornerRadius = cellBackground.layer.cornerRadius;
+            if (cornerRadius <= 0.0) {
+                NSIndexPath *edgePath = [NSIndexPath indexPathForRow:0 inSection:0];
+                UITableViewCell *edgeCell = [self.tableView cellForRowAtIndexPath:edgePath];
+                cornerRadius = edgeCell.backgroundView.layer.cornerRadius;
+            }
+            if (cornerRadius <= 0.0) cornerRadius = 20.0;
+
+            // A snapshot preserves the source row's transparent rounded
+            // pixels. Fill beneath it so a top/bottom source can become a
+            // square middle row, then mask both layers to the destination's
+            // actual inset-grouped card geometry.
+            // Capture a tiny blank patch from the row's rendered card and
+            // stretch it beneath the snapshot. On device, Apollo can render
+            // the card through private UIKit layers whose reported
+            // backgroundColor differs from the pixels on screen; sampling the
+            // rendered surface keeps this temporary morph fill exact in every
+            // stock/custom theme.
+            CGRect sampleRect = CGRectMake(CGRectGetMaxX(cardFrame) - 8.0,
+                                           CGRectGetMidY(cardFrame) - 1.0,
+                                           2.0, 2.0);
+            UIView *background = [cell resizableSnapshotViewFromRect:sampleRect
+                                                   afterScreenUpdates:NO
+                                                        withCapInsets:UIEdgeInsetsZero];
+            if (!background) {
+                background = [[UIView alloc] initWithFrame:cardFrame];
+                background.backgroundColor = ApolloThemeCardBackgroundColor()
+                    ?: cellBackground.backgroundColor
+                    ?: UIColor.secondarySystemGroupedBackgroundColor;
+            }
+            background.frame = cardFrame;
+            [wrapper addSubview:background];
+            snapshot.frame = wrapper.bounds;
+            snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [wrapper addSubview:snapshot];
+            [self.view addSubview:wrapper];
+
+            CGPoint viewPoint = [gestureRecognizer locationInView:self.view];
+            self.accountReorderWrapper = wrapper;
+            self.accountReorderBackground = background;
+            self.accountReorderSnapshot = snapshot;
+            self.accountReorderCell = cell;
+            self.rowsBeforeAccountReorder = self.rows;
+            self.accountReorderOriginalRow = indexPath.row;
+            self.accountReorderCurrentRow = indexPath.row;
+            self.accountReorderTouchOffsetY = CGRectGetMidY(frame) - viewPoint.y;
+            self.accountReorderCardFrame = cardFrame;
+            self.accountReorderCornerRadius = cornerRadius;
+            self.accountReorderLatestPoint = viewPoint;
+            self.accountReorderActive = YES;
+            self.accountReorderFeedback = [UISelectionFeedbackGenerator new];
+            [self.accountReorderFeedback prepare];
+            cell.hidden = YES;
+            [self updateAccountReorderSnapshotCorners];
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            if (!self.accountReorderActive) return;
+            CGPoint viewPoint = [gestureRecognizer locationInView:self.view];
+            self.accountReorderLatestPoint = viewPoint;
+            CGPoint center = self.accountReorderWrapper.center;
+            center.y = viewPoint.y + self.accountReorderTouchOffsetY;
+            self.accountReorderWrapper.center = center;
+            [self evaluateAccountReorderDestination];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+            [self finishAccountReorderCancelled:NO];
+            break;
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            [self finishAccountReorderCancelled:YES];
+            break;
+        default:
+            break;
+    }
+}
+
+// Reordering is meaningful only within the account list itself.
 - (NSIndexPath *)tableView:(UITableView *)tableView
    targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath
                         toProposedIndexPath:(NSIndexPath *)proposedIndexPath {
-    if (proposedIndexPath.section != 0) {
-        NSInteger lastRow = MAX((NSInteger)self.rows.count - 1, 0);
-        return [NSIndexPath indexPathForRow:lastRow inSection:0];
-    }
-    return proposedIndexPath;
+    NSInteger lastRow = MAX((NSInteger)self.rows.count - 1, 0);
+    NSInteger row = MIN(MAX(proposedIndexPath.row, 0), lastRow);
+    return [NSIndexPath indexPathForRow:row inSection:0];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -819,11 +1114,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-
-    if (indexPath.section == 1) {
-        [self presentAddAccountChooser];
-        return;
-    }
 
     ApolloSwitcherAccountRow *row = self.rows[indexPath.row];
     if (row.isActive) return;
@@ -945,8 +1235,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 #pragma mark - Add Account: choose sign-in method
 
 // Auth modes are mutually exclusive per account (see ApolloWebSessionStore.h),
-// so adding an account means picking ONE of the two up front, rather than the
-// old single-path "+" flow that only ever started Apollo's own OAuth add-account.
+// so adding an account means picking one of the two up front.
 - (void)presentAddAccountChooser {
     ApolloWebSessionPresentSignInChooser(self, ^{
         [self driveLiveAddAccount];
@@ -968,33 +1257,36 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-// Tapping a web-session row's edit button: there's no API key to edit, so
-// offer re-sign-in (the same flow as adding an additional account — clears the
-// cookie jar first, since whatever's there belongs to THIS account and the
-// user is explicitly choosing to replace it) or switching the account over to
-// API-key sign-in (removes the web session; see ApolloPresentSwitchToAPIKeyFlow).
-- (void)presentWebSessionActionsForUsername:(NSString *)username {
+// A web-session row has no API key to edit, so retain the original action
+// sheet offering re-sign-in or conversion to API-key sign-in.
+- (void)presentWebSessionActionsForUsername:(NSString *)username sourceView:(UIView *)sourceView {
     UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:[NSString stringWithFormat:@"u/%@", username]
+        alertControllerWithTitle:username
                           message:@"Signed in without an API key (web session)."
                    preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Re-Sign In"
                                               style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a) {
-        ApolloWebSessionLoginViewController *vc = [ApolloWebSessionLoginViewController loginControllerForAdditionalAccount];
+                                            handler:^(__unused UIAlertAction *action) {
+        ApolloWebSessionLoginViewController *vc =
+            [ApolloWebSessionLoginViewController loginControllerForAdditionalAccount];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
         [self presentViewController:nav animated:YES completion:nil];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Use API Key Instead…"
                                               style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a) {
+                                            handler:^(__unused UIAlertAction *action) {
         ApolloPresentSwitchToAPIKeyFlow(self, username, ^(BOOL switched) {
             if (switched) [self reloadRows];
         });
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.view;
-    sheet.popoverPresentationController.sourceRect = self.view.bounds;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    // The arrow points right toward the ellipsis, placing the popover on the
+    // icon's left instead of above it.
+    sheet.popoverPresentationController.permittedArrowDirections = UIPopoverArrowDirectionRight;
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
@@ -1003,7 +1295,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)presentCredentialEditorForUsername:(NSString *)username {
     ApolloAccountCredentialEntry *existing = ApolloAccountCredentialsFor(username) ?: [ApolloAccountCredentialEntry new];
     ApolloAccountCredentialEditorViewController *editor = [ApolloAccountCredentialEditorViewController new];
-    editor.title = [NSString stringWithFormat:@"u/%@", username];
+    editor.title = username;
     editor.entry = existing;
     editor.onSave = ^(NSString *clientId, NSString *secret, NSString *redirectURI) {
         ApolloAccountCredentialsSet(username, clientId, secret, redirectURI);
@@ -1077,6 +1369,35 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     });
 }
 
+// Fit the popup to the table's actual content and keep it vertically centered.
+// It can grow beyond Apollo's original fixed frame until it reaches the safe
+// area; viewDidLayoutSubviews then enables scrolling for any remaining content.
+%hook _TtC6Apollo36AccountManagerPresentationController
+
+- (CGRect)frameOfPresentedViewInContainerView {
+    CGRect frame = %orig;
+    UIViewController *host = ((UIPresentationController *)self).presentedViewController;
+    for (UIViewController *child in host.childViewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        UIViewController *top = ((UINavigationController *)child).topViewController;
+        if (![top isKindOfClass:ApolloAccountSwitcherViewController.class]) continue;
+        CGFloat height = top.preferredContentSize.height;
+        UIView *container = ((UIPresentationController *)self).containerView;
+        if (height > 0.0 && container) {
+            UIEdgeInsets safeInsets = container.safeAreaInsets;
+            CGFloat availableHeight = CGRectGetHeight(container.bounds) -
+                safeInsets.top - safeInsets.bottom - 32.0;
+            CGFloat targetHeight = MIN(height, MAX(availableHeight, 0.0));
+            frame.origin.y = safeInsets.top +
+                (availableHeight - targetHeight) / 2.0 + 16.0;
+            frame.size.height = targetHeight;
+        }
+    }
+    return frame;
+}
+
+%end
+
 %hook _TtC6Apollo28AccountManagerViewController
 
 - (void)viewDidLoad {
@@ -1129,14 +1450,19 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     ApolloAccountReorderMoveBlock nativeMove = ^BOOL(NSInteger from, NSInteger to) {
         NSIndexPath *fromPath = [NSIndexPath indexPathForRow:from inSection:0];
         NSIndexPath *toPath = [NSIndexPath indexPathForRow:to inSection:0];
+        BOOL previousMutationState = sApolloAccountReorderMutationInProgress;
+        sApolloAccountReorderMutationInProgress = YES;
+        BOOL moved = NO;
         @try {
             %orig(tableView, fromPath, toPath);
-            return YES;
+            moved = YES;
         } @catch (NSException *exception) {
             ApolloLog(@"[AccountSwitcher] Native reorder %ld -> %ld failed: %@",
                       (long)from, (long)to, exception);
-            return NO;
+        } @finally {
+            sApolloAccountReorderMutationInProgress = previousMutationState;
         }
+        return moved;
     };
 
     UIBackgroundTaskIdentifier guard = UIBackgroundTaskInvalid == 0
@@ -1148,6 +1474,13 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
         return;
     }
 
+    // Move the index first via direct ivar storage (which has no observers).
+    // The native call then moves the array synchronously, so the next time
+    // Apollo resolves currentAccount the same retained client is already at
+    // this index. Without this ordering, moving the logged-in row briefly
+    // exposes whichever client occupied its old index and refreshes the
+    // subreddit behind the popup.
+    ApolloAccountReorderWriteIndex(&context, context.movedIndex);
     BOOL nativeReturned = nativeMove(source, destination);
     uintptr_t observedOrder[64] = {0};
     BOOL readOrder = ApolloAccountReorderReadOrder(&context, observedOrder);
@@ -1217,6 +1550,22 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     ApolloLogDebug(@"[AccountSwitcher] Reordered row %ld -> %ld; active index %ld -> %ld",
                    (long)source, (long)destination,
                    (long)context.currentIndex, (long)context.movedIndex);
+}
+
+%end
+
+// A subreddit's posts controller treats Apollo's account-change callback as a
+// real identity switch and reloads its listing. The native account mover can
+// send this callback while merely changing row order; suppress only that
+// synchronous reorder-time delivery.
+%hook _TtC6Apollo19PostsViewController
+
+- (void)redditAccountChangedWithNotification:(id)notification {
+    if (sApolloAccountReorderMutationInProgress) {
+        ApolloLogDebug(@"[AccountSwitcher] Suppressed redundant subreddit refresh during reorder");
+        return;
+    }
+    %orig(notification);
 }
 
 %end
