@@ -1,5 +1,6 @@
-// Interval-based settings archives. Scheduling and UI-facing state are main-thread
-// owned; archive compression and coordinated Files-provider I/O run off main.
+// Interval-based settings archives stored inside Apollo's local container.
+// Scheduling and UI-facing state are main-thread owned; compression and local
+// filesystem work run on a serial worker queue.
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -19,10 +20,6 @@ __END_DECLS
 @property (nonatomic, readonly) BOOL enabled;
 @property (nonatomic, readonly) NSInteger intervalDays;
 @property (nonatomic, readonly, getter=isBackingUp) BOOL backingUp;
-@property (nonatomic, readonly) BOOL usesSelectedFolder;
-@property (nonatomic, readonly) NSString *destinationName;
-@property (nonatomic, readonly) BOOL hasSavedFolder;
-@property (nonatomic, readonly, nullable) NSString *savedFolderName;
 @property (nonatomic, readonly, nullable) NSDate *lastBackupDate;
 @property (nonatomic, readonly, nullable) NSDate *nextBackupDate;
 // Future retry eligibility while an automatic failure is in backoff; otherwise nil.
@@ -30,18 +27,14 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
 
 - (void)setEnabled:(BOOL)enabled;
-- (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7
-// Resolves the actual backup directory for an in-app Files browser or restore picker.
-// This does not change the selected destination or its backup schedule.
-- (void)selectedFolderURLWithCompletion:(void (^)(NSURL *_Nullable folderURL, NSError *_Nullable error))completion;
-// Cancel outstanding folder-browser requests without interrupting backup jobs.
-- (void)cancelFolderResolution;
-// Pass the original exported directory URL from the Files Save callback.
-// The returned directory itself becomes the destination, including provider renames.
-// Completion, like every public completion below, is delivered on the main queue.
-- (void)selectFolderURL:(NSURL *)url completion:(void (^)(NSError *_Nullable error))completion;
+- (void)setIntervalDays:(NSInteger)days; // test: 0 = 1 minute; production: 1, 3, 7 days
 // Successful completion includes the actual archive filename saved by Files.
 - (void)backUpNowWithCompletion:(void (^)(NSString *_Nullable filename, NSError *_Nullable error))completion;
+
+// Local archives are returned newest first. Public completions are delivered on
+// the main queue and URLs never leave Apollo's backup directory.
+- (void)localBackupURLsWithCompletion:(void (^)(NSArray<NSURL *> *urls))completion;
+- (void)deleteLocalBackupURL:(NSURL *)url completion:(void (^)(NSError *_Nullable error))completion;
 
 @end
 

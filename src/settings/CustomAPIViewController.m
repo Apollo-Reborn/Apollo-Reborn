@@ -46,6 +46,7 @@
 #import "settings/ApolloBackupRestore.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloLocalBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -4274,25 +4275,28 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 - (void)restoreSettings {
     if (self.resolvingRestoreFolder || self.presentedViewController) return;
-
-    ApolloAutomaticBackup *manager = [ApolloAutomaticBackup sharedManager];
-    if (!manager.hasSavedFolder) {
-        [self presentRestorePickerAtDirectory:nil];
-        return;
-    }
-
-    self.resolvingRestoreFolder = YES;
     __weak typeof(self) weakSelf = self;
-    [manager selectedFolderURLWithCompletion:^(NSURL *folderURL, __unused NSError *error) {
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
-        self.resolvingRestoreFolder = NO;
-        if (!self.viewIfLoaded.window || self.presentedViewController ||
-            (self.navigationController && self.navigationController.topViewController != self)) return;
-        // An unavailable provider should not prevent restoring a backup from
-        // another location. A nil directory keeps the normal Files browser.
-        [self presentRestorePickerAtDirectory:folderURL];
-    }];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
+        message:@"Choose where the backup is stored."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloLocalBackupsViewController *controller =
+                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentRestorePickerAtDirectory:nil];
+            });
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *source = [self cellForRowID:@"data.restore"];
+    sheet.popoverPresentationController.sourceView = source ?: self.view;
+    sheet.popoverPresentationController.sourceRect = source ? source.bounds
+        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
