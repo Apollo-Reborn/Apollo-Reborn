@@ -111,6 +111,11 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 // Override: return the full model (including conditionally-visible rows).
 // Called once from viewDidLoad; call -rebuildForm to rebuild from scratch.
 - (NSArray<ApolloSettingsSection *> *)buildForm;
+// Shared plain disclosure-row builder for settings navigation rows.
+- (ApolloSettingsRow *)hubDisclosureRowWithID:(NSString *)rowID
+                                        title:(NSString *)title
+                                     subtitle:(nullable NSString * (^)(void))subtitle
+                                         push:(UIViewController * (^)(void))makeVC;
 
 // Recompute row visibility and animate the per-section insert/delete diff.
 - (void)visibilityDidChange;
