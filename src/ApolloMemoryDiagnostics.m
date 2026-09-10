@@ -3,6 +3,7 @@
 
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
+#import <malloc/malloc.h>
 #import <stdatomic.h>
 
 // MARK: - Footprint query
@@ -37,6 +38,11 @@ void ApolloMemoryRegisterPurgeHandler(NSString *name, void (^handler)(void)) {
     }
 }
 
+void ApolloMemoryRegisterPurgableCache(NSString *name, NSCache *cache) {
+    if (!cache) return;
+    ApolloMemoryRegisterPurgeHandler(name, ^{ [cache removeAllObjects]; });
+}
+
 void ApolloMemoryLogFootprint(NSString *context) {
     ApolloLog(@"[MemoryDiag] %@ | footprint=%.0fMB", context ?: @"-", ApolloMemoryFootprintMB());
 }
@@ -53,14 +59,30 @@ static double ApolloMemoryPeakFootprintMB(void) {
 static void ApolloMemoryRunPurgeHandlers(void) {
     NSArray<NSDictionary *> *handlers;
     @synchronized (sPurgeLock) { handlers = [sPurgeHandlers copy]; }
+    double start = ApolloMemoryFootprintMB();
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:handlers.count];
     for (NSDictionary *entry in handlers) {
-        double before = ApolloMemoryFootprintMB();
         void (^handler)(void) = entry[@"handler"];
         handler();
-        double after = ApolloMemoryFootprintMB();
-        ApolloLog(@"[MemoryDiag] purge '%@' | footprint %.0fMB -> %.0fMB",
-                  entry[@"name"], before, after);
+        [names addObject:entry[@"name"]];
     }
+    // Releasing the images only moves their pages to the allocator's free
+    // lists; phys_footprint — the number jetsam judges — keeps counting them
+    // until they go back to the kernel, which is the one thing the app cannot
+    // afford to wait for at this particular moment.
+    malloc_zone_pressure_relief(NULL, 0);
+    ApolloLog(@"[MemoryDiag] purged %lu cache(s): %@",
+              (unsigned long)handlers.count, [names componentsJoinedByString:@", "]);
+    // Most of the drop lands over the next second or so, as CoreGraphics and
+    // the autorelease pool let go of the backing stores, so a footprint read
+    // taken here shows almost none of it. The settled reading below is the
+    // whole process's response to the warning — Apollo's own caches included,
+    // since they observe the same notification — not this purge alone.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        ApolloLog(@"[MemoryDiag] post-warning footprint=%.1fMB (was %.1fMB at the warning)",
+                  ApolloMemoryFootprintMB(), start);
+    });
 }
 
 __attribute__((constructor))

@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloScrapeWebView.h"
 #import "ApolloOwnCommentFlair.h"
 #import "ApolloState.h"
@@ -53,7 +54,11 @@ static void ApolloUserFlairInitializeSharedState(void) {
     sApolloUserFlairCapturedOptionsLock = [NSObject new];
     sApolloUserFlairSpriteCacheLock = [NSObject new];
     sApolloUserFlairSheetCache = [NSCache new];
-    sApolloUserFlairSheetCache.countLimit = 8;
+    // A sheet is one arbitrarily-large PNG off the CDN, so a count limit on
+    // its own bounds nothing.
+    sApolloUserFlairSheetCache.countLimit = 6;
+    sApolloUserFlairSheetCache.totalCostLimit = 4 * 1024 * 1024;
+    ApolloMemoryRegisterPurgableCache(@"flair-sprite-sheets", sApolloUserFlairSheetCache);
     sApolloUserFlairSpriteFileCache = [NSMutableDictionary new];
     sApolloUserFlairSpriteImageByPath = [NSMutableDictionary new];
     sApolloUserFlairSpriteCacheOrder = [NSMutableArray new];
@@ -1070,7 +1075,14 @@ static void ApolloUserFlairFetchEmojis(NSString *subreddit, void (^completion)(N
 static NSCache<NSString *, UIImage *> *ApolloUserFlairEmojiImageCache(void) {
     static NSCache *cache = nil;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [NSCache new]; cache.countLimit = 800; });
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        // Emoji render at ~16pt, but the download can be any size, so the
+        // byte limit is what actually bounds this.
+        cache.countLimit = 400;
+        cache.totalCostLimit = 4 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"flair-emoji", cache);
+    });
     return cache;
 }
 
@@ -1082,7 +1094,7 @@ static void ApolloUserFlairLoadEmojiImage(NSString *urlStr, void (^completion)(U
     if (!url) { if (completion) completion(nil); return; }
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
         UIImage *image = data ? [UIImage imageWithData:data scale:UIScreen.mainScreen.scale] : nil;
-        if (image) [ApolloUserFlairEmojiImageCache() setObject:image forKey:urlStr];
+        if (image) [ApolloUserFlairEmojiImageCache() setObject:image forKey:urlStr cost:ApolloImageByteCost(image)];
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(image); });
     }] resume];
 }
@@ -2948,7 +2960,7 @@ static void ApolloUserFlairFetchSpriteData(UIViewController *controller, NSStrin
                     dispatch_group_enter(grp);
                     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *id_, NSURLResponse *ir, NSError *ie) {
                         UIImage *im = id_ ? [UIImage imageWithData:id_] : nil;
-                        if (im) [ApolloUserFlairSheetCache() setObject:im forKey:u];
+                        if (im) [ApolloUserFlairSheetCache() setObject:im forKey:u cost:ApolloImageByteCost(im)];
                         dispatch_group_leave(grp);
                     }] resume];
                 }

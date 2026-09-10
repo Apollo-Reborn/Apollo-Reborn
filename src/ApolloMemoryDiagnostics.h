@@ -19,9 +19,14 @@ double ApolloMemoryFootprintMB(void);
 // Register a named handler run on the main queue whenever UIKit posts
 // UIApplicationDidReceiveMemoryWarningNotification. Handlers should drop
 // re-derivable caches (decoded images, poster frames, players). The name is
-// used in the log line reporting per-handler effect. Safe to call from any
-// thread, including before the app finishes launching.
+// logged with the purge. Safe to call from any thread, including before the
+// app finishes launching.
 void ApolloMemoryRegisterPurgeHandler(NSString *name, void (^handler)(void));
+
+// Register an image cache to be emptied by the same warning. The registry
+// retains `cache` for the process lifetime, so this is for the singleton caches
+// modules build in a dispatch_once — never for a per-view-controller one.
+void ApolloMemoryRegisterPurgableCache(NSString *name, NSCache *cache);
 
 // Log the current footprint with a context tag (e.g. after a purge, at a
 // suspected growth point). Rate-limited only by the caller.

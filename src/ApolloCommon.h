@@ -103,6 +103,13 @@ UIImage *ApolloBundledPDFTemplateImage(NSString *baseName, CGSize maxSize);
 // trailing-debounce relayout schedulers (InlineImages, LinkPreviews).
 double ApolloPerfNowMs(void);
 
+// Decoded backing-store size of `image` in bytes — the number an image cache's
+// totalCostLimit has to be given for the limit to mean anything. A
+// totalCostLimit with cost-less insertions never evicts by bytes at all.
+// Prefers the CGImage's real row stride; falls back to points x scale^2 x 4 for
+// CIImage-backed images that have no bitmap yet. Saturates instead of wrapping.
+NSUInteger ApolloImageByteCost(UIImage *image);
+
 // The build variant string sent with the anonymous usage heartbeat, e.g.
 // "glass", "deb-rootless". The source of truth is stamped at package time (IPA
 // variants set Info.plist "ARBuildVariant"; .deb installs drop an "ARVariant.txt"

@@ -6,6 +6,7 @@
 #import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
@@ -344,7 +345,10 @@ static NSCache<NSString *, UIImage *> *RecentlyReadThumbnailCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        // Row thumbnails are ~60pt squares, so this holds the whole list.
+        cache.countLimit = 150;
+        cache.totalCostLimit = 5 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"recently-read-thumbs", cache);
     });
     return cache;
 }

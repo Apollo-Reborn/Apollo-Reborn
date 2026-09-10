@@ -5,6 +5,7 @@
 // metadata. Falls back to Apollo's native card when metadata is missing.
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloLinkPreviewFetcher.h"
@@ -877,19 +878,16 @@ static NSCache<NSString *, UIImage *> *ApolloLPFallbackImageCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [NSCache new];
-        cache.countLimit = 256;
-        cache.totalCostLimit = 40 * 1024 * 1024;
+        // Card thumbnails are drawn at card width, so a screenful is ~6 entries
+        // and this covers several screens of scrollback.
+        cache.countLimit = 128;
+        cache.totalCostLimit = 14 * 1024 * 1024;
         // Under real memory pressure, drop the whole bitmap cache — cards
         // re-fetch/re-decode on demand. Cost-limited NSCache contents are not
-        // reliably purged by the system while the app is frontmost, and 40MB
-        // of card bitmaps is exactly the wrong thing to be holding when
-        // jetsam is sizing up the process (#630 round-8/9).
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
-                                                          object:nil
-                                                           queue:nil
-                                                      usingBlock:^(__unused NSNotification *note) {
-            [cache removeAllObjects];
-        }];
+        // reliably purged by the system while the app is frontmost, and card
+        // bitmaps are exactly the wrong thing to be holding when jetsam is
+        // sizing up the process (#630 round-8/9).
+        ApolloMemoryRegisterPurgableCache(@"link-preview-images", cache);
     });
     return cache;
 }
@@ -996,7 +994,7 @@ static void ApolloLPRememberRenderedImageForURL(ASNetworkImageNode *imageNode, N
     }
 
     if (!ApolloLPImageNeedsDisplayResize(sourceImage)) {
-        NSUInteger cost = (NSUInteger)(sourceImage.size.width * sourceImage.size.height * sourceImage.scale * sourceImage.scale * 4.0);
+        NSUInteger cost = ApolloImageByteCost(sourceImage);
         [ApolloLPFallbackImageCache() setObject:sourceImage forKey:key cost:cost];
         ApolloLPMaybeKickFaceScanForNode(imageNode, imageURL, sourceImage);
         return;
@@ -1020,8 +1018,7 @@ static void ApolloLPRememberRenderedImageForURL(ASNetworkImageNode *imageNode, N
         }
     }
     if (readyScaledImage) {
-        NSUInteger cost = (NSUInteger)(readyScaledImage.size.width * readyScaledImage.size.height *
-                                       readyScaledImage.scale * readyScaledImage.scale * 4.0);
+        NSUInteger cost = ApolloImageByteCost(readyScaledImage);
         [ApolloLPFallbackImageCache() setObject:readyScaledImage forKey:key cost:cost];
         ApolloLPMaybeKickFaceScanForNode(imageNode, imageURL, readyScaledImage);
         return;
@@ -1039,7 +1036,7 @@ static void ApolloLPRememberRenderedImageForURL(ASNetworkImageNode *imageNode, N
                                      OBJC_ASSOCIATION_RETAIN);
         }
         if (scaled != sourceImage) {
-            NSUInteger cost = (NSUInteger)(scaled.size.width * scaled.size.height * scaled.scale * scaled.scale * 4.0);
+            NSUInteger cost = ApolloImageByteCost(scaled);
             [ApolloLPFallbackImageCache() setObject:scaled forKey:key cost:cost];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1355,7 +1352,7 @@ static void ApolloLPStartFallbackImageFetch(ASNetworkImageNode *imageNode, NSURL
             // This is a URLSession delegate-queue thread, never the
             // main/layout stack, so rasterizing inline here is safe.
             image = ApolloLPDisplaySizedImage(image);
-            NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4.0);
+            NSUInteger cost = ApolloImageByteCost(image);
             [ApolloLPFallbackImageCache() setObject:image forKey:key cost:cost];
             ApolloLPClearImageURLTransientFailure(imageURL);
         } else {
