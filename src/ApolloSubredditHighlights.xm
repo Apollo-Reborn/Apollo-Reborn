@@ -1695,7 +1695,8 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
         NSString *pid = ApolloHLItemPostID(card.item);
         BOOL read = pid.length && [readSet containsObject:pid];
         NSNumber *baseline = pid.length ? commentTotals[pid] : nil;
-        [card applyRead:read known:(readIDs != nil) commentBaseline:baseline now:now];
+        BOOL knowsReadState = !self.settingsPreview && readIDs != nil;
+        [card applyRead:read known:knowsReadState commentBaseline:baseline now:now];
         NSTimeInterval remaining = card.item.createdAt ? kApolloHLNewLifetime - [now timeIntervalSinceDate:card.item.createdAt] : 0;
         if (remaining > 0 && remaining <= kApolloHLNewLifetime) nextExpiry = MIN(nextExpiry, remaining);
     }
@@ -1891,39 +1892,49 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
 
     // Render static title/flair samples through the production card builder.
     // The Settings preview never fetches Reddit or opens posts.
-    NSArray<NSDictionary<NSString *, NSString *> *> *samples = @[
+    NSArray<NSDictionary<NSString *, id> *> *samples = @[
         @{
             @"title": @"Welcome to Apollo Reborn!",
             @"flair": @"Discussion",
+            @"comments": @314,
         },
         @{
             @"title": @"v3.0.0 - A new chapter: Apollo Reborn",
             @"flair": @"Release",
+            @"comments": @823,
+            @"new": @YES,
         },
         @{
             @"title": @"Help wanted: Apollo Reborn is looking for artists!",
             @"flair": @"Discussion",
+            @"comments": @612,
         },
         @{
             @"title": @"We have flairs! Let us know if you have contributed to Apollo for a special flair!",
             @"flair": @"Guide",
+            @"comments": @1219,
         },
         @{
             @"title": @"Thank you to all the developers that keep this going!",
             @"flair": @"Discussion",
+            @"comments": @69,
         },
         @{
             @"title": @"FULL DISPLAY SHOWS UP TO 6 COMMUNITY HIGHLIGHTS",
             @"flair": @"Sneek Peak",
+            @"comments": @420,
         },
     ];
     NSInteger count = mode == ApolloCommunityHighlightsModePartial ? 2 : (NSInteger)samples.count;
     NSMutableArray<ApolloHLItem *> *items = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
     for (NSInteger i = 0; i < count; i++) {
-        NSDictionary<NSString *, NSString *> *sample = samples[(NSUInteger)i];
+        NSDictionary<NSString *, id> *sample = samples[(NSUInteger)i];
         ApolloHLItem *item = [[ApolloHLItem alloc] init];
         item.title = sample[@"title"];
         item.flairText = sample[@"flair"];
+        item.numComments = [sample[@"comments"] longLongValue];
+        item.hasCommentCount = YES;
+        if ([sample[@"new"] boolValue]) item.createdAt = [NSDate date];
         [items addObject:item];
     }
 
@@ -1934,6 +1945,7 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
     // Native's production carousel remains opaque during ownership transitions.
     carousel.backgroundColor = UIColor.clearColor;
     carousel.settingsPreview = YES;
+    [carousel refreshReadState];
     carousel.userInteractionEnabled = YES;
     carousel.accessibilityElementsHidden = YES;
     return carousel;
