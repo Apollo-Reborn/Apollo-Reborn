@@ -334,10 +334,18 @@ static NSString *ApolloCachedLinkTranslationForKey(NSString *key) {
     return hit;
 }
 
+// Bumped by every full flush below. A disk hydrate that was already in flight
+// compares it before inserting anything, so a "forget everything" landing
+// mid-launch is not quietly undone by a snapshot read before it. Main-thread
+// only: the flush runs from a main-queue observer and the hydrate reads it on
+// main.
+static uint32_t sTranslationCacheGeneration = 0;
+
 // Full flush — caches AND mirrors. For "forget everything" flows (the
 // skip-language list changed). Clearing only the NSCaches would leave the
 // mirror fallbacks above serving the stale entries right back.
 static void ApolloClearAllTranslationCaches(void) {
+    sTranslationCacheGeneration++;
     [sTranslationCache removeAllObjects];
     [sCommentTranslationByFullName removeAllObjects];
     [sLinkTranslationByFullName removeAllObjects];
@@ -9857,6 +9865,26 @@ static NSString *ApolloCurrentTranslationTag(void) {
     return [NSString stringWithFormat:@"%@|%@", provider, language];
 }
 
+// Every touch of the cache file goes through one serial queue: the hydrate's
+// read at launch, and each background's write-or-delete. Two background
+// transitions close together used to be impossible to interleave because the
+// persist ran inline on main; now that it is asynchronous, a concurrent queue
+// would let one job unlink the file another had just written, or let an older
+// snapshot land after a newer one. Serial submission also means each job takes
+// its mirror snapshot after the previous job finished, so the last write always
+// reflects the newest state.
+static dispatch_queue_t ApolloTranslationDiskQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create_with_target(
+            "com.apolloreborn.translation-disk-cache",
+            DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL,
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
+
 static void ApolloPersistTranslationCachesToDisk(void) {
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
@@ -9873,6 +9901,16 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     }
     @synchronized (sLinkTranslationMirror) {
         linkSnapshot = [sLinkTranslationMirror copy];
+    }
+
+    // Nothing cached: drop the file instead of serializing an empty one. It has
+    // to go rather than just be skipped — a skip-language change flushes the
+    // mirrors but the on-disk tag only covers provider and target language, so
+    // leaving the old file would rehydrate exactly the entries the user asked
+    // to forget.
+    if (commentSnapshot.count == 0 && linkSnapshot.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtURL:url error:NULL];
+        return;
     }
 
     NSMutableArray *commentEntries = [NSMutableArray array];
@@ -9910,53 +9948,96 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     ApolloLog(@"[translation/persist] wrote %lu comment + %lu link entries", (unsigned long)commentEntries.count, (unsigned long)linkEntries.count);
 }
 
+static void ApolloPersistTranslationCachesInBackground(void) {
+    UIApplication *app = [UIApplication sharedApplication];
+    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+    void (^endTask)(void) = ^{
+        if (task == UIBackgroundTaskInvalid) return;
+        UIBackgroundTaskIdentifier finished = task;
+        task = UIBackgroundTaskInvalid;
+        [app endBackgroundTask:finished];
+    };
+    // Expiration handlers are delivered on the main thread, so ending from a
+    // main hop too keeps `task` single-threaded without a lock.
+    task = [app beginBackgroundTaskWithName:@"ApolloTranslationPersist" expirationHandler:endTask];
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        ApolloPersistTranslationCachesToDisk();
+        dispatch_async(dispatch_get_main_queue(), endTask);
+    });
+}
+
+// Filters one persisted section (comments or links) down to the entries that
+// are still valid for `tag` at `now`. Pure — runs on whatever queue calls it.
+static NSDictionary<NSString *, NSString *> *ApolloTranslationEntriesStillValid(id section, NSString *tag, NSDate *now) {
+    NSMutableDictionary<NSString *, NSString *> *valid = [NSMutableDictionary dictionary];
+    if (![section isKindOfClass:[NSArray class]]) return valid;
+    for (NSDictionary *entry in (NSArray *)section) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSString *key = entry[@"k"];
+        NSString *text = entry[@"v"];
+        NSDate *t = entry[@"t"];
+        NSString *entryTag = entry[@"tag"];
+        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
+        if (![entryTag isEqualToString:tag]) continue;
+        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
+        valid[key] = text;
+    }
+    return valid;
+}
+
+// The file holds up to 2048 comment + 256 link entries, so reading and parsing
+// it belongs off the launch thread; only the cache/mirror inserts hop back to
+// main, where every other reader of those caches lives. Nothing is restorable
+// while bulk translation is off, and the flag is already final here: Tweak.xm
+// links (and so its constructor runs) before this file.
 static void ApolloHydrateTranslationCachesFromDisk(void) {
+    if (!sEnableBulkTranslation) return;
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
-    NSData *data = [NSData dataWithContentsOfURL:url];
-    if (!data) return;
-
-    NSError *err = nil;
-    id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
-    if (![root isKindOfClass:[NSDictionary class]]) {
-        ApolloLog(@"[translation/hydrate] bad plist: %@", err);
-        return;
-    }
-    NSString *version = root[@"version"];
-    if (![version isEqualToString:kApolloTranslationDiskCacheVersion]) return;
-
     NSString *currentTag = ApolloCurrentTranslationTag();
-    NSDate *now = [NSDate date];
+    uint32_t generation = sTranslationCacheGeneration;
 
-    NSUInteger restored = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"comments"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sCommentTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetComment(key, text);
-        restored++;
-    }
-    NSUInteger restoredLinks = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"links"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sLinkTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetLink(key, text);
-        restoredLinks++;
-    }
-    ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)", (unsigned long)restored, (unsigned long)restoredLinks, currentTag);
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        if (!data) return;
+
+        NSError *err = nil;
+        id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
+        if (![root isKindOfClass:[NSDictionary class]]) {
+            ApolloLog(@"[translation/hydrate] bad plist: %@", err);
+            return;
+        }
+        if (![root[@"version"] isEqualToString:kApolloTranslationDiskCacheVersion]) return;
+
+        NSDate *now = [NSDate date];
+        NSDictionary<NSString *, NSString *> *comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
+        NSDictionary<NSString *, NSString *> *links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
+        if (comments.count == 0 && links.count == 0) return;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // This snapshot is only good if nothing invalidated it while the
+            // read was in flight, and it must never win over a translation the
+            // running app already produced for the same key.
+            if (generation != sTranslationCacheGeneration) return;
+            if (![currentTag isEqualToString:ApolloCurrentTranslationTag()]) return;
+
+            NSUInteger restoredComments = 0, restoredLinks = 0;
+            for (NSString *key in comments) {
+                if (ApolloCachedCommentTranslationForFullName(key).length > 0) continue;
+                [sCommentTranslationByFullName setObject:comments[key] forKey:key];
+                ApolloMirrorSetComment(key, comments[key]);
+                restoredComments++;
+            }
+            for (NSString *key in links) {
+                if (ApolloCachedLinkTranslationForKey(key).length > 0) continue;
+                [sLinkTranslationByFullName setObject:links[key] forKey:key];
+                ApolloMirrorSetLink(key, links[key]);
+                restoredLinks++;
+            }
+            ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)",
+                      (unsigned long)restoredComments, (unsigned long)restoredLinks, currentTag);
+        });
+    });
 }
 
 // Re-runs the cache-only translation reapply path for the currently-visible
@@ -10462,12 +10543,15 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
     // never comes before suspension: the snapshot silently slipped to the
     // following resume (visible in user logs as "[translation/persist]
     // wrote …" milliseconds after the foreground heal) and was lost
-    // entirely when the app was jetsam-killed while suspended.
+    // entirely when the app was jetsam-killed while suspended. The background
+    // task preserves that "finishes before suspension" guarantee now that the
+    // serialize + write themselves run on a utility queue instead of blocking
+    // the main thread through the whole transition.
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(__unused NSNotification *note) {
-        ApolloPersistTranslationCachesToDisk();
+        ApolloPersistTranslationCachesInBackground();
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
                                                       object:nil

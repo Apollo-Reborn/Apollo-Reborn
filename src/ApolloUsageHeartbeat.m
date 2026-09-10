@@ -68,6 +68,7 @@ static NSString *ApolloHeartbeatStatePath(void) {
     return path;
 }
 
+
 static NSMutableDictionary *ApolloHeartbeatReadState(void) {
     NSDictionary *stored = [NSDictionary dictionaryWithContentsOfFile:ApolloHeartbeatStatePath()];
     return stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
@@ -211,6 +212,14 @@ static void ApolloHeartbeatKeychainWriteOptOut(BOOL optedOut) {
         ApolloLog(@"[heartbeat] keychain opt-out write failed (OSStatus %d)", (int)st);
 }
 
+static int sHeartbeatDisabledCache = -1;  // -1 unknown, 0 enabled, 1 disabled
+
+// The UTC day this process has already accounted for: a beat that succeeded, or
+// one the state file says already went out today. Until the day rolls over the
+// beat can answer from memory instead of reading the state file and the
+// Keychain on every single foreground.
+static NSString *sHeartbeatDaySatisfied = nil;
+
 // One-time migration for opt-outs made by older builds, which stored the flag
 // only in NSUserDefaults + the container plist — neither survives a reinstall.
 // Back a pre-existing opt-out into the Keychain so it becomes durable too;
@@ -222,7 +231,10 @@ static void ApolloHeartbeatMigrateOptOutToKeychain(void) {
         if (ApolloHeartbeatKeychainReadOptOut()) return; // already durable
         BOOL ud     = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDisableUsageHeartbeat];
         BOOL legacy = [ApolloHeartbeatReadState()[kStateDisabledKey] boolValue];
-        if (ud || legacy) ApolloHeartbeatKeychainWriteOptOut(YES);
+        if (ud || legacy) {
+            ApolloHeartbeatKeychainWriteOptOut(YES);
+            sHeartbeatDisabledCache = 1;
+        }
     });
 }
 
@@ -235,14 +247,19 @@ static void ApolloHeartbeatMigrateOptOutToKeychain(void) {
 // plist; that copy is now redundant with the Keychain — see the migration above
 // — and is no longer read or written, which also removes a read-modify-write
 // race with the beat's completion handler.)
+// The Keychain half of that OR costs a securityd round trip, and every
+// foreground asked for it again. Nothing but the two writers below can change
+// the answer within a process, so cache it and let them invalidate.
 BOOL ApolloUsageHeartbeatIsDisabled(void) {
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDisableUsageHeartbeat]) return YES;
-    return ApolloHeartbeatKeychainReadOptOut();
+    if (sHeartbeatDisabledCache < 0) sHeartbeatDisabledCache = ApolloHeartbeatKeychainReadOptOut() ? 1 : 0;
+    return sHeartbeatDisabledCache == 1;
 }
 
 void ApolloSetUsageHeartbeatDisabled(BOOL disabled) {
     [[NSUserDefaults standardUserDefaults] setBool:disabled forKey:UDKeyDisableUsageHeartbeat];
     ApolloHeartbeatKeychainWriteOptOut(disabled);
+    sHeartbeatDisabledCache = disabled ? 1 : 0;
 }
 
 void ApolloSendUsageHeartbeatIfNeeded(void) {
@@ -252,15 +269,26 @@ void ApolloSendUsageHeartbeatIfNeeded(void) {
     return;
 #endif
 
+    // Cheapest question first: this process already handled today, so there is
+    // nothing to read from disk or the Keychain.
+    NSString *today = ApolloUTCKey(@"yyyy-MM-dd");
+    if ([sHeartbeatDaySatisfied isEqualToString:today]) {
+        return;
+    }
+
     ApolloHeartbeatMigrateOptOutToKeychain();
-    if (ApolloUsageHeartbeatIsDisabled()) return;
+    if (ApolloUsageHeartbeatIsDisabled()) {
+        return;
+    }
 
     NSMutableDictionary *state = ApolloHeartbeatReadState();
 
     // Once per day. Losing this only costs an extra best-effort send, so it's
     // fine that it shares the file with the token.
-    NSString *today = ApolloUTCKey(@"yyyy-MM-dd");
-    if ([state[kStateLastDayKey] isEqualToString:today]) return;
+    if ([state[kStateLastDayKey] isEqualToString:today]) {
+        sHeartbeatDaySatisfied = [today copy];
+        return;
+    }
 
     NSString *month = ApolloUTCKey(@"yyyy-MM");
     BOOL rotated = NO;
@@ -303,6 +331,9 @@ void ApolloSendUsageHeartbeatIfNeeded(void) {
                 NSMutableDictionary *latest = ApolloHeartbeatReadState();
                 latest[kStateLastDayKey] = today;
                 ApolloHeartbeatWriteState(latest);
+                // Written from the session queue; the day marker is only ever
+                // read on main, so set it there.
+                dispatch_async(dispatch_get_main_queue(), ^{ sHeartbeatDaySatisfied = [today copy]; });
             } else {
                 ApolloLog(@"[heartbeat] send failed (code %ld): %@", (long)code, error.localizedDescription);
             }

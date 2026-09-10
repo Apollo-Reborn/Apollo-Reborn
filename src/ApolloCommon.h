@@ -279,4 +279,17 @@ NSString *ApolloDebugPoisonAccountAccessibility(void);
 // marked objects — otherwise tweak UI can be mistaken for the post body.
 void ApolloMarkTweakUITextNode(id node);
 BOOL ApolloTextNodeIsTweakUI(id node);
+
+// fishhook consolidation. Every rebind_symbols() call walks all ~2k images
+// loaded on iOS 26, so the modules below hand their bindings to the single call
+// in Tweak.xm's %ctor instead of each rebinding from its own constructor. The
+// direction has to be a pull: constructors run in link order and Tweak.xm links
+// first, so a registry those modules pushed into would always be flushed before
+// they filled it. Each function writes its bindings at `out` and returns how
+// many it wrote; ApolloRebornMaxAppendedRebindings bounds the caller's array.
+struct rebinding;
+enum { ApolloRebornMaxAppendedRebindings = 5 };
+size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out);
+size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out);
+size_t ApolloRecentlyReadAppendRebindings(struct rebinding *out);
 __END_DECLS

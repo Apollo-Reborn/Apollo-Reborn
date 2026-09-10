@@ -4231,15 +4231,17 @@ static void ApolloMediaComposerLogPhotoAuthStateOnce(void) {
 
 %end
 
+size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out) {
+    out[0] = (struct rebinding){"UIImageJPEGRepresentation", (void *)hooked_UIImageJPEGRepresentation, (void **)&orig_UIImageJPEGRepresentation};
+    out[1] = (struct rebinding){"UIImagePNGRepresentation", (void *)hooked_UIImagePNGRepresentation, (void **)&orig_UIImagePNGRepresentation};
+    return 2;
+}
+
 %ctor {
     dlopen("/System/Library/Frameworks/Photos.framework/Photos", RTLD_LAZY);
     dlopen("/System/Library/Frameworks/PhotosUI.framework/PhotosUI", RTLD_LAZY);
     // Temp-file cleanup uses deferred background deletion; no serial ordering
     // guarantee is required before the bridge monitor starts.
     ApolloMediaComposerInstallComposeTableHooks();
-    rebind_symbols((struct rebinding[2]) {
-        {"UIImageJPEGRepresentation", (void *)hooked_UIImageJPEGRepresentation, (void **)&orig_UIImageJPEGRepresentation},
-        {"UIImagePNGRepresentation", (void *)hooked_UIImagePNGRepresentation, (void **)&orig_UIImagePNGRepresentation},
-    }, 2);
     %init;
 }
