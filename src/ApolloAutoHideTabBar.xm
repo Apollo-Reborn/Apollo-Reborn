@@ -252,6 +252,18 @@ static void ApolloApplyMinimizeBehavior(UITabBarController *tbc,
     ApolloApplyMinimizeBehaviorInternal(tbc, behavior, NO);
 }
 
+static void ApolloHoldCompletedTwoGestureReveal(UITabBarController *tbc) {
+    ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, NO);
+    if (!state.twoGestureRevealActive || state.revealAnimator ||
+        sClassicTabBarScrollBehavior || !ApolloTabBarManualNativeMorphEnabled()) return;
+
+    // Left/Right need .never to consume the next gesture, but changing that
+    // policy also makes UIKit expand the bar immediately. Only install the
+    // hold once our reveal has reached its expanded endpoint; doing it when
+    // the display link starts snaps open, then back to the collapsed frame.
+    ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+}
+
 // Walk only the parentViewController chain so modally-presented nav controllers
 // (share sheets, document pickers, etc.) are skipped — mirroring their hidden
 // state onto the main tab bar would spuriously hide it.
@@ -634,7 +646,12 @@ static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
         return;
     }
 
-    if (fraction >= 1.0) [self invalidate];
+    if (fraction >= 1.0) {
+        UITabBarController *controller = self.controller;
+        BOOL completedReveal = self.targetProgress == 0.0;
+        [self invalidate];
+        if (completedReveal) ApolloHoldCompletedTwoGestureReveal(controller);
+    }
 }
 
 @end
@@ -958,7 +975,9 @@ static ApolloTabBarRevealResult ApolloStartTwoGestureReveal(UITabBarController *
     state.twoGestureRevealGestureToken = gestureToken;
 
     if (!customPresentationMode) {
-        ApolloApplyMinimizeBehavior(tbc, ApolloTabBarMinimizeBehaviorNever);
+        // Animated reveals install the hold on completion. Immediate reveals
+        // (Reduce Motion) and the unsupported-provider path have no animator.
+        ApolloHoldCompletedTwoGestureReveal(tbc);
     }
 
     if (result == ApolloTabBarRevealResultUnsupported) {
@@ -1641,7 +1660,8 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
             ApolloTabBarMinimizeBehavior behavior =
                 ApolloDesiredTabBarMinimizeBehavior(effectiveValue);
             // Repeated Apollo configuration must not break Two-Gesture's
-            // intentional .never hold before its consumed re-arm gesture.
+            // reveal or its subsequent .never hold before the consumed
+            // re-arm gesture.
             if (!effectiveValue || customPresentationMode || !ApolloTwoGestureRevealIsActive(tbc)) {
                 ApolloApplyMinimizeBehavior(tbc, behavior);
             }
