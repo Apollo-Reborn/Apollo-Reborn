@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloExecutableSDK.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import <QuartzCore/QuartzCore.h>
@@ -533,58 +534,60 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(NSURLRequest *request,
                                                                 completion:completion];
 }
 
-// Get the SDK version from the main binary's LC_BUILD_VERSION load command
-// Returns 0 if not found, otherwise packed version (major << 16 | minor << 8 | patch)
-static uint32_t GetLinkedSDKVersion(void) {
-    // Find the main executable by filetype instead of assuming image index 0.
-    // In the simulator the injected tweak dylib can occupy index 0, which made
-    // IsLiquidGlass() read the dylib's own SDK (always current) instead of
-    // Apollo's — masking every legacy (non-glass) code path during sim testing.
-    const struct mach_header_64 *header = NULL;
-    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-        const struct mach_header *h = _dyld_get_image_header(i);
-        if (h && h->filetype == MH_EXECUTE) {
-            header = (const struct mach_header_64 *)h;
-            break;
-        }
+// Identify Apollo by a native class, independently of launch host or image
+// order. LiveContainer normally retains its own MH_EXECUTE and loads Apollo
+// as MH_DYLIB; the sim may put the injected tweak at image index zero. Neither
+// image describes which chrome Apollo's selected IPA variant requested.
+static const char *ApolloNativeExecutableImageName(void) {
+    const char *classNames[] = {
+        "_TtC6Apollo11AppDelegate",
+        "_TtC6Apollo13SceneDelegate",
+        "_TtC6Apollo19PostsViewController",
+    };
+    for (size_t i = 0; i < sizeof(classNames) / sizeof(classNames[0]); i++) {
+        Class cls = objc_lookUpClass(classNames[i]);
+        const char *name = cls ? class_getImageName(cls) : NULL;
+        if (name && name[0]) return name;
     }
-    if (!header) header = (const struct mach_header_64 *)_dyld_get_image_header(0);
-    if (!header) return 0;
+    return NULL;
+}
 
-    uintptr_t cursor = (uintptr_t)header + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-        struct load_command *cmd = (struct load_command *)cursor;
-        if (cmd->cmd == LC_BUILD_VERSION) {
-            struct build_version_command *buildCmd = (struct build_version_command *)cmd;
-            return buildCmd->sdk;
-        }
-        cursor += cmd->cmdsize;
+// Read the guest image's actual load command. LiveContainer's optional SDK
+// spoofing hooks dyld's program-SDK APIs, not this header; the glass patch's
+// intentional SDK bump therefore still works in both hosted and normal apps.
+static uint32_t GetLinkedSDKVersion(void) {
+    const char *executableName = ApolloNativeExecutableImageName();
+    if (!executableName) return 0;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *imageName = _dyld_get_image_name(i);
+        if (!imageName || strcmp(imageName, executableName) != 0) continue;
+        const struct mach_header *header = _dyld_get_image_header(i);
+        if (!header || header->magic != MH_MAGIC_64 ||
+            header->sizeofcmds > ApolloMaximumMachOLoadCommandBytes) return 0;
+        // dyld has already validated/mapped this loaded image. The reader
+        // additionally bounds every command within its declared header area.
+        size_t length = sizeof(struct mach_header_64) + header->sizeofcmds;
+        return ApolloSDKVersionFromMachO(header, length);
     }
     return 0;
 }
 
-// Check if Liquid Glass is active by checking if the app binary was linked against iOS 26+ SDK
+// Both the selected Apollo variant and the running OS must support glass.
 BOOL IsLiquidGlass(void) {
     static BOOL checked = NO;
     static BOOL available = NO;
 
     if (!checked) {
         checked = YES;
-        // BOOL isiOS26Runtime = (objc_getClass("_UITabButton") != nil);
-        // if (!isiOS26Runtime) {
-        //     ApolloLog(@"[IsLiquidGlass] iOS 26+ runtime not detected");
-        //     available = NO;
-        //     return available;
-        // }
-
-        // iOS 26 SDK version = 19.0 = 0x00130000 (major 19 in high 16 bits)
-        // SDK version format: major << 16 | minor << 8 | patch
+        BOOL glassRuntime = NO;
+        if (@available(iOS 26.0, *)) {
+            glassRuntime = objc_lookUpClass("UIGlassEffect") != Nil;
+        }
         uint32_t sdkVersion = GetLinkedSDKVersion();
-        uint32_t sdkMajor = (sdkVersion >> 16) & 0xFFFF;
-        available = (sdkMajor >= 19);
+        available = ApolloSDKEnablesLiquidGlass(sdkVersion, glassRuntime);
 
-        ApolloLog(@"[IsLiquidGlass] SDK version: 0x%08X (major: %u), linked for iOS 26+: %@",
-                  sdkVersion, sdkMajor, available ? @"YES" : @"NO");
+        ApolloLog(@"[IsLiquidGlass] Apollo SDK: 0x%08X, glass runtime: %@, enabled: %@",
+                  sdkVersion, glassRuntime ? @"YES" : @"NO", available ? @"YES" : @"NO");
     }
 
     return available;

@@ -1,6 +1,12 @@
 #import "ApolloNotificationBackend.h"
 #import "ApolloBarkNotifications.h"
+#if defined(APOLLO_NOTIFICATION_BACKEND_TESTING)
+// The request/configuration code is Foundation-only. Host tests provide the
+// account/Bark dependencies and do not emit request URLs or credentials.
+#define ApolloLog(...) do {} while (0)
+#else
 #import "ApolloCommon.h"
+#endif
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "ApolloAccountCredentials.h"
@@ -23,17 +29,17 @@ static NSSet<NSString *> *ApolloLegacyBackendHosts(void) {
     return hosts;
 }
 
-// Cached config. NSURL/NSString are immutable so reads on the URLSession queue
-// are safe; writes happen via the defaults-did-change observer below.
-static NSURL *sCachedBaseURL = nil;
-static NSString *sCachedRegistrationToken = nil;
-static BOOL sCacheValid = NO;
+// Do not cache these objects in mutable globals. Defaults changes can be posted
+// from any thread while URLSession workers rewrite requests. The old cache's
+// unsynchronized load/store/release let invalidation free a backend URL while
+// Foundation bridged it into NSURLComponents (crash #980). NSUserDefaults owns
+// synchronization; each caller now owns its values for the duration of use.
+static NSURL *ApolloParseBackendBaseURL(id raw) {
+    if (![raw isKindOfClass:[NSString class]]) return nil;
+    NSString *value = [raw copy];
+    if (value.length == 0) return nil;
 
-static NSURL *ApolloParseBackendBaseURLFromDefaults(void) {
-    NSString *raw = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyNotificationBackendURL];
-    if (![raw isKindOfClass:[NSString class]] || raw.length == 0) return nil;
-
-    NSString *trimmed = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     while ([trimmed hasSuffix:@"/"]) {
         trimmed = [trimmed substringToIndex:trimmed.length - 1];
     }
@@ -47,49 +53,23 @@ static NSURL *ApolloParseBackendBaseURLFromDefaults(void) {
     return url;
 }
 
-static NSString *ApolloParseRegistrationTokenFromDefaults(void) {
-    NSString *raw = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyNotificationBackendRegistrationToken];
+static NSString *ApolloParseRegistrationToken(id raw) {
     if (![raw isKindOfClass:[NSString class]]) return nil;
-    NSString *trimmed = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *value = [raw copy];
+    NSString *trimmed = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     return trimmed.length > 0 ? trimmed : nil;
 }
 
-static void ApolloInvalidateBackendCache(void) {
-    sCacheValid = NO;
-    sCachedBaseURL = nil;
-    sCachedRegistrationToken = nil;
-}
-
-static void ApolloEnsureBackendCacheValid(void) {
-    if (sCacheValid) return;
-    sCachedBaseURL = ApolloParseBackendBaseURLFromDefaults();
-    sCachedRegistrationToken = ApolloParseRegistrationTokenFromDefaults();
-    sCacheValid = YES;
-}
-
-__attribute__((constructor))
-static void ApolloNotificationBackendInit(void) {
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull __unused note) {
-        ApolloInvalidateBackendCache();
-    }];
-}
-
 BOOL ApolloIsNotificationBackendConfigured(void) {
-    ApolloEnsureBackendCacheValid();
-    return sCachedBaseURL != nil;
+    return ApolloNotificationBackendBaseURL() != nil;
 }
 
 NSURL *ApolloNotificationBackendBaseURL(void) {
-    ApolloEnsureBackendCacheValid();
-    return sCachedBaseURL;
+    return ApolloParseBackendBaseURL([[NSUserDefaults standardUserDefaults] objectForKey:UDKeyNotificationBackendURL]);
 }
 
 NSString *ApolloNotificationBackendRegistrationToken(void) {
-    ApolloEnsureBackendCacheValid();
-    return sCachedRegistrationToken;
+    return ApolloParseRegistrationToken([[NSUserDefaults standardUserDefaults] objectForKey:UDKeyNotificationBackendRegistrationToken]);
 }
 
 // MARK: - Path classification
@@ -265,8 +245,12 @@ NSURLRequest *ApolloRewriteRequestForNotificationBackend(NSURLRequest *request) 
     if (host.length == 0) return nil;
     if (![ApolloLegacyBackendHosts() containsObject:host]) return nil;
 
-    NSURL *base = ApolloNotificationBackendBaseURL();
+    // Capture URL and token from one defaults snapshot. A configuration update
+    // during rewriting must not swap in another backend's registration token.
+    NSDictionary *configuration = [[NSUserDefaults standardUserDefaults] dictionaryRepresentation];
+    NSURL *base = ApolloParseBackendBaseURL(configuration[UDKeyNotificationBackendURL]);
     if (!base) return nil;
+    NSString *registrationToken = ApolloParseRegistrationToken(configuration[UDKeyNotificationBackendRegistrationToken]);
 
     NSURLComponents *components = [NSURLComponents componentsWithURL:requestURL resolvingAgainstBaseURL:NO];
     if (!components) return nil;
@@ -291,8 +275,8 @@ NSURLRequest *ApolloRewriteRequestForNotificationBackend(NSURLRequest *request) 
 
     // Header gate: only POSTs hit the gated handlers, but be defensive.
     if ([method isEqualToString:@"POST"] && ApolloPathRequiresRegistrationToken(path)) {
-        if (sCachedRegistrationToken.length > 0) {
-            [mutable setValue:sCachedRegistrationToken forHTTPHeaderField:@"X-Registration-Token"];
+        if (registrationToken.length > 0) {
+            [mutable setValue:registrationToken forHTTPHeaderField:@"X-Registration-Token"];
         }
     }
 
