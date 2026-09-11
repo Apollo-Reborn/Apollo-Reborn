@@ -2164,8 +2164,8 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
     // setAttributedText: write below, so the global setter hook sees the
     // marker and the swap-to-translated logic can trigger if Apollo later
     // overwrites the node (e.g. on vote/score-flair refresh).
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [comment.body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, comment.body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloCommentOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
@@ -2813,10 +2813,10 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
     // no marker — but STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(body)) {
         if (!ApolloTranslatedTextDiffersFromSource(body, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         objc_setAssociatedObject(headerCellNode, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (link) objc_setAssociatedObject(headerCellNode, kApolloAppliedHeaderLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2830,8 +2830,8 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
     NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
 
     // Same vote-resilience marker pattern as comment cells.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
     // EXACT no-op gate (see comment apply): the vote-time headerReapply
@@ -2913,10 +2913,10 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
     // STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
         if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         return;
     }
@@ -2946,8 +2946,8 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
     }
 
     NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
     // EXACT no-op gate (see comment apply): skip the write + relayout when the
@@ -5319,9 +5319,9 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
                         objc_setAssociatedObject(heldNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     }
                 } @catch (__unused NSException *e) {}
-                objc_setAssociatedObject(heldNode, kApolloOwnedNodeOriginalBodyKey, [trimmed copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject(heldNode, kApolloOwnedNodeOriginalBodyKey, trimmed, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 objc_setAssociatedObject(heldNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                objc_setAssociatedObject(heldNode, kApolloTitlePinnedSourceKey, [trimmed copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject(heldNode, kApolloTitlePinnedSourceKey, trimmed, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 ApolloTapModeRegisterTouchedNode(heldNode);
                 objc_setAssociatedObject(headerCellNode, kApolloHeaderTranslatedTextNodeKey, heldNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 if (link) objc_setAssociatedObject(headerCellNode, kApolloAppliedHeaderLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -5414,9 +5414,9 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
                     objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 }
             } @catch (__unused NSException *e) {}
-            objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
             objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
             ApolloTapModeRegisterTouchedNode(textNode);
             ApolloUpdatePostInfoMarkerForNode(textNode, targetLanguage, YES, textNode);
         }
@@ -6353,7 +6353,7 @@ static void ApolloToggleTranslationForTitleNode(id textNode) {
             // AUTO pin (@2) so turning the mode off later releases it; a
             // normal-mode revert is an explicit user choice (manual @YES).
             objc_setAssociatedObject(node, kApolloTitlePinnedOriginalKey, sTapToTranslate ? @2 : (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(node, kApolloTitlePinnedSourceKey, [nodeSource copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(node, kApolloTitlePinnedSourceKey, nodeSource, OBJC_ASSOCIATION_COPY_NONATOMIC);
             objc_setAssociatedObject(node, kApolloTranslationOwnedTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(node, kApolloCommentOwnedTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             NSAttributedString *original = objc_getAssociatedObject(node, kApolloOriginalAttributedTextKey);
@@ -6761,7 +6761,7 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     label.font = markerFont;
     label.attributedText = content;
     label.hidden = NO;
-    objc_setAssociatedObject(label, kApolloPostInfoMarkerCodeKey, [sourceCode copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(label, kApolloPostInfoMarkerCodeKey, sourceCode, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(label, kApolloPostInfoMarkerSizeKey, @(markerFont.pointSize), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloReserveMarkerSlotInCompactRow(label, postInfoNode, YES);
 }
@@ -8107,8 +8107,8 @@ static BOOL ApolloPreemptUnownedCommentTextNode(id textNode, NSAttributedString 
     // Adopt ownership so subsequent overwrites flow through the normal owned
     // swap. Store the RENDERED incoming string as the original-body marker —
     // that is what Apollo hands rebuilt nodes, so future matches are exact.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [incomingText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translated copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, incomingText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translated, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloCommentOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!objc_getAssociatedObject(textNode, kApolloOriginalAttributedTextKey)) {
         objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [incoming copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -8214,8 +8214,8 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     NSAttributedString *swap = ApolloRebuildTranslatedAttrPreservingAttrs(incoming, translated);
     if (!swap) return NO;
     // Adopt ownership so the normal prepareSwap path handles future updates.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translated copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translated, OBJC_ASSOCIATION_COPY_NONATOMIC);
     // Register in the global owned-nodes set so toggle-off's
     // ApolloRestoreAllOwnedTextNodes walk will restore us even when the
     // header is scrolled offscreen and the visible-cells walk skips us.
@@ -8791,10 +8791,10 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // marker — but STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
         if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         UIViewController *tapVC = ApolloEnclosingViewControllerForNode(titleNode);
         BOOL tapIsHeaderTitle = ApolloClassLooksLikeCommentsViewController([tapVC class]);
@@ -8842,8 +8842,8 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // Vote-resilience / cell-reuse markers (same scheme as comment cells +
     // post bodies). The title-owned marker tells the global swap hook to
     // bypass the per-thread translated-mode gate. Cache stays CLEAN (marker-free).
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloTitleOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
@@ -9085,9 +9085,9 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
                 objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         } @catch (__unused NSException *e) {}
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [titleText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, titleText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [titleText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, titleText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         UIViewController *heldVC = ApolloEnclosingViewControllerForNode(titleNode);
         BOOL heldIsHeaderTitle = ApolloClassLooksLikeCommentsViewController([heldVC class]);

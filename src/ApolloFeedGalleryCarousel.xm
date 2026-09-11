@@ -590,7 +590,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
         [self.imageViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         [self.imageViews removeAllObjects];
         [self.loadedURLs removeAllObjects];
-        self.items = [items copy];
+        self.items = items;
         self.currentIndex = 0;
         self.needsPageGeometry = YES;
 

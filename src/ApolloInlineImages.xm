@@ -1309,7 +1309,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
     ApolloAlbumDownloadRecord *record = [ApolloAlbumDownloadRecord new];
     record.destinationURL = destination;
-    record.completion = [completion copy];
+    record.completion = completion;
     [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
     if (![[NSFileManager defaultManager] createFileAtPath:destination.path contents:nil attributes:nil]) {
         record.failure = [self errorWithCode:8 description:@"Could not create the album image file"];
@@ -5449,7 +5449,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         // the returned layout spec the layout transition removes it itself.
         NSMutableDictionary *imageCache = objc_getAssociatedObject(self, &kApolloImageNodesByURLKey);
         if (imageCache.count > 0) {
-            NSArray *cachedURLs = [imageCache.allKeys copy];
+            NSArray *cachedURLs = imageCache.allKeys;
             for (NSString *cachedURL in cachedURLs) {
                 if (![referencedURLs containsObject:cachedURL]) {
                     ASNetworkImageNode *staleNode = imageCache[cachedURL];
