@@ -19,6 +19,13 @@
 // irrelevant; slots are computed lazily, per controller, the first time any of
 // them is asked about.
 //
+// This owner also adds tableView:willSelectRowAtIndexPath: to ActionController
+// (Apollo doesn't implement it) and handles every injected row's tap THERE,
+// returning nil so UIKit never sends didSelectRowAtIndexPath: for an injected
+// row. That keeps injected indices away from any didSelect implementation that
+// sits outside ours — Translomatic's does, and it crashed on "Keep in Floating
+// Tab" (#1071). Don't add a didSelect-only tap path for an injected row.
+//
 // Additive only: this owns injecting/replacing rows, not hiding native ones.
 // A feature that needs to remove a native row (e.g. ApolloTranslation.xm's
 // bulk-translate row removal) mutates Apollo's raw Swift `actions` buffer
