@@ -284,6 +284,10 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
+// default OFF via registerDefaults. See ApolloLiquidGlass.xm.
+static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

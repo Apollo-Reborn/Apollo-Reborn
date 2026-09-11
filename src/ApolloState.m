@@ -67,6 +67,7 @@ NSString *const ApolloTabBarScrollBehaviorChangedNotification = @"ApolloTabBarSc
 BOOL sClassicTabBarScrollBehavior = NO;
 ApolloTabBarHideStyle sTabBarHideStyle = ApolloTabBarHideStyleLeft;
 BOOL sIPadTabBarBottom = NO;   // opt-in (default OFF via registerDefaults, UDKeyIPadTabBarBottom); iPad-gated in the module
+BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults, UDKeyTabBarSwipeNavigation); Liquid Glass only, see ApolloLiquidGlass.xm
 BOOL sKeepSearchBarInPlace = NO;
 BOOL sIconRowMagnifier = YES;   // effective default ON via registerDefaults (UDKeyIconRowMagnifier)
 BOOL sInfoRowTapUpvote = YES;      // effective default ON via registerDefaults (UDKeyInfoRowTapUpvote)
