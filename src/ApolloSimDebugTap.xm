@@ -52,7 +52,24 @@ void ApolloSubredditIndexDebugDescribeTables(void); // ApolloSubredditIndexPolis
 - (UIEvent *)_touchesEvent;
 @end
 
-static NSString *const kApolloSimTapFile = @"/tmp/apollofix-tap.txt";
+// The command file and the Darwin notification that announces it are
+// machine-global, and several simulators driven by parallel sessions are the
+// norm on a dev box — a tap meant for one app landed in every listening app.
+// Each launch can therefore name its own pair via the environment
+// (SIMCTL_CHILD_APOLLOFIX_TAP_FILE / SIMCTL_CHILD_APOLLOFIX_TAP_NOTIFY on the
+// simctl launch line); the historical defaults remain for single-session use.
+static NSString *const kApolloSimDefaultTapFile = @"/tmp/apollofix-tap.txt";
+static NSString *const kApolloSimDefaultTapNotify = @"apollofix.debugtap";
+
+static NSString *ApolloSimTapFile(void) {
+    NSString *env = NSProcessInfo.processInfo.environment[@"APOLLOFIX_TAP_FILE"];
+    return env.length ? env : kApolloSimDefaultTapFile;
+}
+
+static NSString *ApolloSimTapNotify(void) {
+    NSString *env = NSProcessInfo.processInfo.environment[@"APOLLOFIX_TAP_NOTIFY"];
+    return env.length ? env : kApolloSimDefaultTapNotify;
+}
 
 static void ApolloSimDebugSendTouch(UITouch *touch) {
     UIApplication *app = UIApplication.sharedApplication;
@@ -636,7 +653,7 @@ static void ApolloSimInstallLowPowerModeOverride(void) {
 static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *observer,
                                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSString *contents = [NSString stringWithContentsOfFile:kApolloSimTapFile
+        NSString *contents = [NSString stringWithContentsOfFile:ApolloSimTapFile()
                                                        encoding:NSUTF8StringEncoding error:nil];
         if ([contents hasPrefix:@"insetbottom "]) {
             ApolloSimDebugForceBottomInset([[contents substringFromIndex:12] doubleValue]);
@@ -715,6 +732,20 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugNavChurn(mode);
             return;
         }
+        // "openurl <url>" command: route a reddit / apollo:// URL through
+        // Apollo's own scheme handling from INSIDE the process. `simctl openurl`
+        // goes through SpringBoard, which on iOS 26 fronts an "Open in Apollo?"
+        // confirmation that no in-process bridge can tap — this skips it.
+        if ([contents hasPrefix:@"openurl "]) {
+            NSString *raw = [[contents substringFromIndex:8]
+                             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = [NSURL URLWithString:raw];
+            NSURL *apolloURL = [url.scheme.lowercaseString isEqualToString:@"apollo"]
+                ? url : ApolloURLByConvertingResolvedURLToApolloScheme(url);
+            BOOL routed = apolloURL && ApolloRouteResolvedURLViaApolloScheme(apolloURL);
+            ApolloLog(@"[SimDebugTap] openurl %@ -> %@", raw, routed ? @"routed" : @"NOT routed");
+            return;
+        }
         // "devvitjs <js>" command: evaluate JS in the live interactive-post
         // widget's web view and log the result (DOM inspection without a web
         // inspector). See ApolloDevvitDebugEvaluateJS in ApolloDevvitPosts.xm.
@@ -752,6 +783,45 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 ApolloLog(@"[SimDebugTap] chatresolve subject=%@ partner=%@ ts=%.0f -> %@",
                           subject, partner ?: @"(nil)", timestamp, chatPath ?: @"(nil: legacy thread)");
             });
+            return;
+        }
+        // "devvitload <url>": load another URL in the first on-window widget.
+        if ([contents hasPrefix:@"devvitload "]) {
+            extern void ApolloDevvitDebugLoadURL(NSString *urlString);
+            ApolloDevvitDebugLoadURL([[contents substringFromIndex:11]
+                                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
+            return;
+        }
+        // "devvitstats": live/parked/detached widget population + prewarm state.
+        if ([contents hasPrefix:@"devvitstats"]) {
+            extern void ApolloDevvitDebugStats(void);
+            ApolloDevvitDebugStats();
+            return;
+        }
+        // "devvittoggle posts|feed on|off": flip a Devvit setting like its switch.
+        if ([contents hasPrefix:@"devvittoggle "]) {
+            extern void ApolloDevvitDebugToggle(NSString *which, BOOL on);
+            NSArray *parts = [[contents substringFromIndex:13] componentsSeparatedByString:@" "];
+            if (parts.count >= 2) ApolloDevvitDebugToggle(parts[0], [parts[1] isEqualToString:@"on"]);
+            return;
+        }
+        // "memwarn": simulate a memory warning in-process.
+        if ([contents hasPrefix:@"memwarn"]) {
+            SEL sel = NSSelectorFromString(@"_performMemoryWarning");
+            UIApplication *app = UIApplication.sharedApplication;
+            if ([app respondsToSelector:sel]) {
+                ((void (*)(id, SEL))objc_msgSend)(app, sel);
+                ApolloLog(@"[SimDebugTap] memory warning simulated");
+            } else {
+                ApolloLog(@"[SimDebugTap] memory warning: _performMemoryWarning unavailable");
+            }
+            return;
+        }
+        // "devvitlayout": dump widget-vs-host geometry, force a host layout
+        // pass, dump again.
+        if ([contents hasPrefix:@"devvitlayout"]) {
+            extern void ApolloDevvitDebugLayout(void);
+            ApolloDevvitDebugLayout();
             return;
         }
         // "devvitsweep": run the interactive-post stale-width sweep now, with
@@ -824,6 +894,32 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             }];
             return;
         }
+        // "safari <url>" command: present Apollo's own in-app browser
+        // (ApolloSafariViewController, the SFSafariViewController subclass
+        // behind "In-App Safari") for a URL from the topmost view controller,
+        // exactly as a link tap would. Needs no Reddit session, so the
+        // loading-state appearance (issue #1008) can be exercised headlessly.
+        if ([contents hasPrefix:@"safari "]) {
+            NSString *urlString = [[contents substringFromIndex:7] stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+            if (!url) { ApolloLog(@"[SimDebugTap] malformed safari url: %@", urlString); return; }
+            UIViewController *top = nil;
+            for (UIWindow *window in ApolloAllWindows()) {
+                if (window.hidden || !window.rootViewController) continue;
+                top = window.rootViewController;
+                if (window.isKeyWindow) break;
+            }
+            while (top.presentedViewController) top = top.presentedViewController;
+            Class safariClass = objc_getClass("_TtC6Apollo26ApolloSafariViewController");
+            if (!top || !safariClass) { ApolloLog(@"[SimDebugTap] safari: no presenter/class"); return; }
+            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
+            UIViewController *safariVC = msgSend([safariClass alloc], @selector(initWithURL:), url);
+            ApolloLog(@"[SimDebugTap] safari: presenting %@ for %@ from %@",
+                      NSStringFromClass(safariVC.class), urlString, NSStringFromClass(top.class));
+            [top presentViewController:safariVC animated:YES completion:nil];
+            return;
+        }
         // "translate <google|libre|auto> <text>" command: run text through the
         // real translation provider pipeline and log the result. Needs no
         // Reddit session — isolates provider/network failures (issue #995).
@@ -894,9 +990,9 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
     %init(ApolloSimNavChurn);
     ApolloSimInstallLowPowerModeOverride();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-        ApolloSimDebugTapNotification, CFSTR("apollofix.debugtap"), NULL,
+        ApolloSimDebugTapNotification, (__bridge CFStringRef)ApolloSimTapNotify(), NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
-    ApolloLog(@"[SimDebugTap] listening for apollofix.debugtap");
+    ApolloLog(@"[SimDebugTap] listening for %@ (commands from %@)", ApolloSimTapNotify(), ApolloSimTapFile());
     ApolloLog(@"[CommentInsights][parser] self-tests %@",
               ApolloCommentVoteInsightsRunParserSelfTests() ? @"passed" : @"FAILED");
     NSString *charsetFailure = nil;

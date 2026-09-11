@@ -17,7 +17,9 @@
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloWebJSON.h"           // ApolloWebJSONBearerIsSynthetic() — widget setup code
 #import "ApolloPerAccountFavorites.h"
+#import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
 #import "ApolloTabBarHideStyle.h"
 #import "ApolloTagFilters.h"
@@ -1540,7 +1542,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:^{ [weakSelf copyWidgetSetupCode]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Extras"
-                                            footer:@"Copy a code to set up the Apollo home-screen widget."
+                                            footer:@"Copy a code to set up Apollo's home-screen widgets. Include your account for Home and multireddit feeds."
                                               rows:@[ widgetSetupCode ]];
 }
 
@@ -2295,6 +2297,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (NSString *)profileLayoutSummaryText {
+    if (!sShowDetailedProfiles) return @"Native (Apollo)";
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     [parts addObject:sProfileHeaderImmersive ? @"Immersive" : @"Compact"];
     switch (sProfileAvatarStyle) {
@@ -2330,11 +2333,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
-    // Pushes the dedicated Subreddit Layout screen — the single customize
-    // screen for everything subreddit-page-related: Density (New, Classic, or
-    // Apollo's native header), the Apollo Reborn header show switches, and
-    // Community Highlights (also a subreddit-page feature, not a
-    // subreddit-list one).
     ApolloSettingsRow *subredditLayout =
         [self hubDisclosureRowWithID:@"sub.layout"
                                 title:@"Subreddit Layout"
@@ -2516,20 +2514,33 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                      title:@"Per-Account Favorites"
                                       isOn:^BOOL { return sPerAccountFavoritesEnabled; }
                                   onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
+    ApolloSettingsRow *sortFavoritesAlphabetically =
+        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
+                                     title:@"Sort Favorites Alphabetically"
+                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
+                                  onToggle:^(UISwitch *sender) {
+                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
+                                      [sender setOn:sSortFavoritesAlphabetically animated:YES];
+                                  }];
+    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Keeps an independent Favorites list for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores Apollo's shared list."
-                                              rows:@[ perAccountFavorites ]];
+                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list."
+                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically ]];
 }
 
 - (NSString *)subredditLayoutSummaryText {
-    if (!sShowSubredditHeaders) return @"Native (Apollo)";
+    if (!sShowSubredditHeaders) return @"Native";
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sSubredditHeaderImmersive ? @"New (Immersive)" : @"Classic (Compact)"];
+    [parts addObject:sSubredditHeaderImmersive ? @"Immersive" : @"Compact"];
     NSMutableArray<NSString *> *hidden = [NSMutableArray array];
     if (!sSubredditShowBanner) [hidden addObject:@"Banner"];
     if (!sSubredditShowJoinButton) [hidden addObject:@"Join Button"];
+    if (!sSubredditShowUserFlairButton) [hidden addObject:@"User Flair Button"];
+    if (!sSubredditShowSidebarButton) [hidden addObject:@"Sidebar Button"];
     if (!sSubredditShowDisplayName) [hidden addObject:@"Subreddit Name"];
+    if (!sSubredditShowSubtitle) [hidden addObject:@"Subtitle"];
+    if (!sSubredditShowDescription) [hidden addObject:@"Description"];
     if (hidden.count > 0) {
         [parts addObject:[NSString stringWithFormat:@"%@ off", [hidden componentsJoinedByString:@", "]]];
     }
@@ -3355,6 +3366,42 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     }
 }
 
+// The signed-in account's OAuth refresh token plus the client id it was issued
+// under, for the "with account" widget setup code. Nil when nobody is signed
+// in, when the active account is a web-session (keyless) one — those carry a
+// synthetic bearer and no refresh token — or when the credential is missing.
+static NSDictionary *ApolloWidgetAccountCredentials(void) {
+    id client = ApolloActiveAccountClient();
+    if (!client) return nil;
+    NSString *username = ApolloActiveAccountUsername();
+    if (username.length > 0 && ApolloWebSessionFor(username) != nil) return nil;
+
+    id refreshToken = nil, accessToken = nil, credentialClientId = nil;
+    @try {
+        id credential = [client valueForKey:@"authorizationCredential"];
+        id token = [credential valueForKey:@"accessToken"];
+        refreshToken = [token valueForKey:@"refreshToken"];
+        accessToken = [token valueForKey:@"accessToken"];
+        credentialClientId = [credential valueForKey:@"clientIdentifier"];
+    } @catch (__unused NSException *e) {
+        return nil;
+    }
+    if (![refreshToken isKindOfClass:[NSString class]] || [refreshToken length] == 0) return nil;
+    if ([accessToken isKindOfClass:[NSString class]] && ApolloWebJSONBearerIsSynthetic(accessToken)) return nil;
+
+    // Reddit binds a refresh token to the client id that issued it, and the
+    // credential's own id is what RedditKit presents on every refresh — so
+    // that's the id the widget must present too. Fall back to the effective
+    // (per-account, then global) key only when the credential carries none.
+    NSString *clientId = ([credentialClientId isKindOfClass:[NSString class]] && [credentialClientId length] > 0)
+        ? credentialClientId : (ApolloEffectiveRedditClientId() ?: sRedditClientId);
+    if (clientId.length == 0) return nil;
+
+    NSMutableDictionary *account = [@{ @"clientID": clientId, @"refreshToken": refreshToken } mutableCopy];
+    if (username.length > 0) account[@"username"] = username;
+    return account;
+}
+
 - (void)copyWidgetSetupCode {
     NSString *clientID = sRedditClientId ?: @"";
     if (clientID.length == 0) {
@@ -3363,11 +3410,58 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         return;
     }
 
-    // base64( JSON { v, clientID, userAgent } ) — decoded by the widget's
-    // SetupCode parser. userAgent is included so the widget's Reddit requests
-    // carry the same identity as the configured (spoofed) app.
-    NSMutableDictionary *payload = [@{ @"v": @1, @"clientID": clientID } mutableCopy];
+    // With a signed-in API-key account the code can carry its login, which is
+    // what the widgets need for Home and private multireddits — but that's the
+    // user's choice, so ask. Keyless/no account: the plain code, as before.
+    NSDictionary *account = ApolloWidgetAccountCredentials();
+    if (!account) {
+        [self copyWidgetSetupCodeWithAccount:nil];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Widget Setup Code"
+                         message:@"Include your account so widgets can show Home and your private multireddits."
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy with Account" style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf copyWidgetSetupCodeWithAccount:account];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy without Account" style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf copyWidgetSetupCodeWithAccount:nil];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *cell = [self cellForRowID:@"api.widgetSetupCode"];
+    sheet.popoverPresentationController.sourceView = cell ?: self.view;
+    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)copyWidgetSetupCodeWithAccount:(NSDictionary *)account {
+    // base64( JSON { v, clientID, userAgent[, clientSecret][, refreshToken,
+    // username] } ) — decoded by the widget's SetupCode parser. userAgent is
+    // included so the widget's Reddit requests carry the same identity as the
+    // configured (spoofed) app. clientSecret only exists for "web app" keys,
+    // whose token endpoint refuses the empty password installed apps use.
+    // With an account the code is v2 and carries the OAuth refresh token —
+    // that is what lets the widget read Home and private multireddits. Reddit
+    // does not rotate refresh tokens on use, so the widget minting its own
+    // access tokens never invalidates the app's session. `issued` (unix
+    // seconds) lets the widgets treat the most recently copied code as the
+    // one that wins everywhere — so copying "without account" and pasting it
+    // into any widget is how account access is removed again.
+    NSString *clientID = account[@"clientID"] ?: (sRedditClientId ?: @"");
+    NSMutableDictionary *payload = [@{ @"v": account ? @2 : @1,
+                                       @"clientID": clientID,
+                                       @"issued": @((long long)[NSDate date].timeIntervalSince1970) } mutableCopy];
     if (sUserAgent.length > 0) payload[@"userAgent"] = sUserAgent;
+    NSString *secret = ApolloSecretForClientId(clientID);
+    if (secret.length > 0) payload[@"clientSecret"] = secret;
+    if (account) {
+        payload[@"refreshToken"] = account[@"refreshToken"];
+        if ([account[@"username"] length] > 0) payload[@"username"] = account[@"username"];
+    }
 
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
     if (!json) {
@@ -3382,8 +3476,11 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     };
     [[UIPasteboard generalPasteboard] setItems:@[item] options:options];
 
+    NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget";
     [self showAlertWithTitle:@"Copied"
-                     message:@"Setup code copied. On your Home Screen, add the Apollo “Showerthoughts” widget, long-press it → Edit Widget, and paste this code into Setup Code."];
+                     message:account
+                         ? [NSString stringWithFormat:@"Setup code copied. %@. It includes your account login, so don't share it.", how]
+                         : [NSString stringWithFormat:@"Setup code copied. %@ and removes any account you added before.", how]];
 }
 
 - (void)testNotificationBackendConnection {
@@ -3980,7 +4077,10 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (void)perAccountFavoritesSwitchToggled:(UISwitch *)sender {
     ApolloPerAccountFavoritesSetResult result =
         ApolloPerAccountFavoritesSetEnabled(sender.isOn);
-    if (result == ApolloPerAccountFavoritesSetResultApplied) return;
+    if (result == ApolloPerAccountFavoritesSetResultApplied) {
+        [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+        return;
+    }
 
     [sender setOn:sPerAccountFavoritesEnabled animated:YES];
     if (result == ApolloPerAccountFavoritesSetResultUnsupportedStore) {
@@ -4393,6 +4493,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 @implementation ApolloSubredditsSettingsViewController
 - (NSString *)apollo_screenTitle { return @"Subreddits"; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // The quick account switcher leaves this controller on screen, so it does
+    // not get another viewWillAppear. Also refresh when a loading account's
+    // identity resolves and the sorting control becomes available again.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_favoritesSortingStateDidChange:)
+                                                 name:ApolloFavoritesSortingStateDidChangeNotification
+                                               object:nil];
+}
+- (void)apollo_favoritesSortingStateDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self reloadRowWithID:@"sub.perAccountFavorites"];
+    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+}
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildSubredditsMainSection],
               [self buildSubredditsFavoritesSection],
@@ -4403,6 +4518,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // Refresh the Subreddit Sections summary after returning from that screen
     // (the order / Following toggle may have just changed).
     [self reloadRowWithID:@"sub.sections"];
+    // Account changes can select a different alphabetical-sorting preference.
+    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
 }
 @end
 
