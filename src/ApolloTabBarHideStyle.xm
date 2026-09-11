@@ -6,7 +6,7 @@
 #import "ApolloTabBarHideStyle.h"
 #import "UserDefaultConstants.h"
 
-// MARK: - Tab Bar Hide Style (Left / Right / Fade / Down / Off)
+// MARK: - Tab Bar Hide Style (Left / Right / Fade / Down)
 //
 // On iOS 26 (Liquid Glass), Apollo's native "Hide Bars on Scroll" toggle is
 // rerouted by ApolloAutoHideTabBar.xm into UITabBarController's native
@@ -32,15 +32,11 @@
 //     effects directly; the hidden Eureka row's cached value is never displayed.
 
 static NSString *const kApolloHideBarsChangedNote = @"com.christianselig.HideBarsOnSwipeChanged";
-static const NSInteger ApolloTabBarHideMenuModeOff = ApolloTabBarHideStyleDown + 1;
-
 BOOL ApolloTabBarHideBarsEnabled(void) {
     return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll];
 }
 
-// Off maps to Apollo's native toggle; the styles use the legacy persisted key.
 NSInteger ApolloTabBarHideStyleCurrentOptionIndex(void) {
-    if (!ApolloTabBarHideBarsEnabled()) return ApolloTabBarHideMenuModeOff;
     return MIN(ApolloTabBarHideStyleDown,
                MAX(ApolloTabBarHideStyleLeft, sTabBarHideStyle));
 }
@@ -49,7 +45,7 @@ NSArray<NSString *> *ApolloTabBarHideStyleOptionTitles(void) {
     static NSArray<NSString *> *titles;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        titles = @[@"Left", @"Right", @"Fade", @"Down", @"Off"];
+        titles = @[@"Left", @"Right", @"Fade", @"Down"];
     });
     return titles;
 }
@@ -57,7 +53,7 @@ NSArray<NSString *> *ApolloTabBarHideStyleOptionTitles(void) {
 NSString *ApolloTabBarHideStyleCurrentTitle(void) {
     NSArray<NSString *> *titles = ApolloTabBarHideStyleOptionTitles();
     NSInteger index = ApolloTabBarHideStyleCurrentOptionIndex();
-    return (index >= 0 && index < (NSInteger)titles.count) ? titles[index] : @"Off";
+    return (index >= 0 && index < (NSInteger)titles.count) ? titles[index] : @"Left";
 }
 
 // MARK: Runtime pill mirroring
@@ -186,14 +182,9 @@ void ApolloTabBarHideBarsSetEnabled(BOOL enabled) {
 }
 
 void ApolloTabBarHideStyleApplyOptionIndex(NSInteger optionIndex) {
-    NSInteger mode = MIN(ApolloTabBarHideMenuModeOff,
+    NSInteger mode = MIN(ApolloTabBarHideStyleDown,
                          MAX(ApolloTabBarHideStyleLeft, optionIndex));
-    if (mode == ApolloTabBarHideMenuModeOff) {
-        TabBarHideStyleSetNativeHideBars(NO);
-    } else {
-        TabBarHideStyleSet((ApolloTabBarHideStyle)mode);
-        TabBarHideStyleSetNativeHideBars(YES);
-    }
+    TabBarHideStyleSet((ApolloTabBarHideStyle)mode);
     TabBarHideStyleReconcileRuntime();
 }
 

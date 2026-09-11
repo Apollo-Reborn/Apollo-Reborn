@@ -177,6 +177,9 @@ extern ApolloTabBarHideStyle sTabBarHideStyle;
 #ifdef __cplusplus
 extern "C" {
 #endif
+// Opt-in top navigation bar movement, following the bottom tab bar's scroll
+// behavior while Hide Bars on Scroll is enabled. Default NO.
+extern BOOL sHideTopBarOnScroll;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
@@ -231,7 +234,7 @@ extern BOOL sPerPostCommentSort;
 // iOS 26+ Liquid Glass. iOS 26 defaults to Soft; iOS 27 betas default to Hard,
 // which some users find jarring. Only the top (header) edge is governed — the
 // tab-bar/bottom edge always keeps the system's own treatment. See
-// ApolloScrollEdgeEffect.xm (Soft/Hard enforcement) and
+// ApolloScrollEdgeEffect.xm (Soft/Hard/Hidden enforcement) and
 // ApolloProgressiveBlur.xm (Blur's tweak-drawn variable blur).
 typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     // Retired user-facing System Default value. Load-time migration resolves
@@ -239,9 +242,8 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleAutomatic = 0,
     ApolloScrollEdgeEffectStyleSoft      = 1,
     ApolloScrollEdgeEffectStyleHard      = 2,
-    // 3 was Hidden, retired: visually indistinguishable from Soft, so stored 3s
-    // migrate to Soft at load (Tweak.xm). Never reuse 3 for a new mode — the
-    // migration could not tell an old Hidden user from a new-mode user.
+    // Preserve the original Hidden value for existing preferences/backups.
+    ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
 extern NSInteger sScrollEdgeEffectStyle;
@@ -274,7 +276,13 @@ void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
+#ifdef __cplusplus
+}
+#endif
 // Whether the nav title for this view controller should size its JumpBar to
 // its actual content (with truncation if still too wide) instead of Apollo's
 // fixed native width (ApolloSubredditHeaders.xm's subreddit feeds).
