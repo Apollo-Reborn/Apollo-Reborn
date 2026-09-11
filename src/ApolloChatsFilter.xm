@@ -883,9 +883,8 @@ static NSHashTable *sInboxModePanWired;
     [self.chatController didMoveToParentViewController:self];
 
     if (self.standalone) {
-        // A hub on its own is its own host: the bar menu's actions look the
-        // hub up on the host they were built for.
-        objc_setAssociatedObject(self, &kInboxAllChatHubKey, self, OBJC_ASSOCIATION_ASSIGN);
+        // A hub on its own is its own host: the bar menu's actions resolve it
+        // from the host they were built for (ApolloInboxChatBarActions.hub).
         ApolloModernChatControllerSetHostedByStandaloneHub(self.chatController, YES);
         self.navigationItem.rightBarButtonItems = ApolloInboxChatRightBarItems(self);
         NSString *destination = self.standaloneDestinationPath;
@@ -1007,6 +1006,11 @@ static NSHashTable *sInboxModePanWired;
 
 - (ApolloInboxChatHubViewController *)hub {
     UIViewController *host = self.host;
+    // A stand-alone hub is its own host; the Inbox (All) screen keeps its hub
+    // in the association.
+    if ([host isKindOfClass:[ApolloInboxChatHubViewController class]]) {
+        return (ApolloInboxChatHubViewController *)host;
+    }
     return host ? objc_getAssociatedObject(host, &kInboxAllChatHubKey) : nil;
 }
 
@@ -2881,6 +2885,22 @@ static void ApolloInboxOpenChatPath(UIViewController *host, NSString *chatPath) 
                    requests ? @"pending request list" : @"room");
 }
 
+// Whether `indexPath` is still in range and still hosts `node` — the row a
+// tap started on, checked again when an asynchronous resolution delivers.
+static BOOL ApolloInboxRowStillHoldsNode(id tableNode, NSIndexPath *indexPath, id node) {
+    if (!tableNode || !indexPath || !node) return NO;
+    if (![tableNode respondsToSelector:@selector(numberOfSections)] ||
+        ![tableNode respondsToSelector:@selector(numberOfRowsInSection:)] ||
+        ![tableNode respondsToSelector:@selector(nodeForRowAtIndexPath:)]) return NO;
+    NSInteger sections = ((NSInteger (*)(id, SEL))objc_msgSend)(tableNode, @selector(numberOfSections));
+    if (indexPath.section < 0 || indexPath.section >= sections) return NO;
+    NSInteger rows = ((NSInteger (*)(id, SEL, NSInteger))objc_msgSend)(tableNode, @selector(numberOfRowsInSection:),
+                                                                        indexPath.section);
+    if (indexPath.row < 0 || indexPath.row >= rows) return NO;
+    id current = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, @selector(nodeForRowAtIndexPath:), indexPath);
+    return current == node;
+}
+
 static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIndexPath *indexPath) {
     if (sInboxChatMirrorBypass || !ApolloModernChatShouldOpen()) return NO;
     if (![tableNode respondsToSelector:@selector(nodeForRowAtIndexPath:)]) return NO;
@@ -2912,15 +2932,25 @@ static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIn
     __weak UIViewController *weakHost = host;
     ApolloChatRoomDirectoryResolve(subject, partner, timestamp, ^(NSString *chatPath) {
         id table = weakTable;
+        id tappedNode = weakNode;
         UIViewController *strongHost = weakHost;
         if ([table respondsToSelector:@selector(deselectRowAtIndexPath:animated:)]) {
             ((void (*)(id, SEL, id, BOOL))objc_msgSend)(table, @selector(deselectRowAtIndexPath:animated:),
                                                        indexPath, YES);
         }
         if (!strongHost || !strongHost.viewIfLoaded.window) return;   // the list went away meanwhile
+        // The resolution can take a few seconds on a cold directory, and the
+        // list may have re-diffed meanwhile (a refresh, a row leaving Unread).
+        // The index path is only acted on while it still holds the tapped
+        // row; the resolved room and the read mark key on the objects.
+        BOOL rowUnchanged = tappedNode != nil && ApolloInboxRowStillHoldsNode(table, indexPath, tappedNode);
         if (!chatPath) {
             id adapter = weakAdapter;
             if (!adapter || !table) return;
+            if (!rowUnchanged) {
+                ChatsFilterLog(@"no modern Chat room matched the tapped mirror, and its row moved meanwhile; dropping the tap");
+                return;
+            }
             ChatsFilterLog(@"no modern Chat room matched the tapped mirror; opening Apollo's legacy thread");
             sInboxChatMirrorBypass = YES;
             ((void (*)(id, SEL, id, id))objc_msgSend)(adapter, @selector(tableNode:didSelectRowAtIndexPath:),
@@ -2928,7 +2958,7 @@ static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIn
             sInboxChatMirrorBypass = NO;
             return;
         }
-        ApolloInboxMarkMessageRead(message, weakNode, table, indexPath);
+        ApolloInboxMarkMessageRead(message, tappedNode, table, rowUnchanged ? indexPath : nil);
         ApolloInboxOpenChatPath(strongHost, chatPath);
     });
     return YES;
