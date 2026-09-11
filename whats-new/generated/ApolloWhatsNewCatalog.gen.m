@@ -46,6 +46,7 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.7.0", "ellipsis.circle.fill", "Tidier Glass Navigation", "Actions collapse into one pill so titles stay centered, with brighter, easier-to-read moderator controls." },
     { "3.7.0", "magnifyingglass.circle.fill", "Native Glass Search", "The feed search bar is now the real Liquid Glass pill: it activates in place and tucks away as you scroll." },
     { "3.7.0", "text.bubble.fill", "Smarter Highlights", "Unread dots, New badges, and +N counts show which Community Highlights you haven't read or that picked up comments." },
+    { "3.7.0", "apps.iphone", "Widgets for Any Feed", "Point the Feed and Post widgets at Home, Popular, All, several subreddits, or a multireddit." },
     { "3.7.0", "checkmark.shield.fill", "Stability & Fixes", "Fixes for freezes, GIF memory crashes, launch crashes, duplicate saved items, and translation going quiet." },
 };
 

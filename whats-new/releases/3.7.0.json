@@ -9,6 +9,7 @@
     { "icon": "ellipsis.circle.fill", "title": "Tidier Glass Navigation", "subtitle": "Actions collapse into one pill so titles stay centered, with brighter, easier-to-read moderator controls." },
     { "icon": "magnifyingglass.circle.fill", "title": "Native Glass Search", "subtitle": "The feed search bar is now the real Liquid Glass pill: it activates in place and tucks away as you scroll." },
     { "icon": "text.bubble.fill", "title": "Smarter Highlights", "subtitle": "Unread dots, New badges, and +N counts show which Community Highlights you haven't read or that picked up comments." },
+    { "icon": "apps.iphone", "title": "Widgets for Any Feed", "subtitle": "Point the Feed and Post widgets at Home, Popular, All, several subreddits, or a multireddit." },
     { "icon": "checkmark.shield.fill", "title": "Stability & Fixes", "subtitle": "Fixes for freezes, GIF memory crashes, launch crashes, duplicate saved items, and translation going quiet." }
   ]
 }
