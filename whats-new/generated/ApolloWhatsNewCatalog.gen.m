@@ -17,6 +17,7 @@ static const ApolloWhatsNewReleaseEntry kWhatsNewReleases[] = {
     { "3.5.0", "What's New in Apollo Reborn" },
     { "3.5.1", "What's New in Apollo Reborn" },
     { "3.6.0", "What's New in Apollo Reborn" },
+    { "3.7.0", "What's New in Apollo Reborn" },
 };
 
 static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
@@ -39,6 +40,14 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.6.0", "paintbrush.fill", "Redesigned Icon Picker", "Browse icon packs as cards, discover a new Daily Spotlight, and pin any icon to Light or Dark artwork." },
     { "3.6.0", "photo.on.rectangle.angled", "Goodbye Wallpapers", "Apollo's farewell wallpapers are back for iPhone, iPad, and Mac, ready to save straight to Photos." },
     { "3.6.0", "checkmark.shield.fill", "Stability & Fixes", "Crash fixes, no more hijacked video ads, smoother scrolling, and better link, tweet, and sports-clip previews." },
+    { "3.7.0", "bubble.left.and.bubble.right.fill", "Floating Post Tabs", "Keep up to five posts open as draggable bubbles and jump back to exactly where you left off." },
+    { "3.7.0", "list.bullet.rectangle", "Feed Shortcuts & Sections", "Restyle the feed shortcuts, give followed users their own section, reorder sections, and keep favorites per account." },
+    { "3.7.0", "dock.rectangle", "Tab Bar Hide Styles", "Hide the tab bar with Left, Right, Fade, or Down, and bring back Apollo's classic one-gesture scroll behavior." },
+    { "3.7.0", "ellipsis.circle.fill", "Tidier Glass Navigation", "Actions collapse into one pill so titles stay centered, with brighter, easier-to-read moderator controls." },
+    { "3.7.0", "magnifyingglass.circle.fill", "Native Glass Search", "The feed search bar is now the real Liquid Glass pill: it activates in place and tucks away as you scroll." },
+    { "3.7.0", "text.bubble.fill", "Smarter Highlights", "Unread dots, New badges, and +N counts show which Community Highlights you haven't read or that picked up comments." },
+    { "3.7.0", "apps.iphone", "Widgets for Any Feed", "Point the Feed and Post widgets at Home, Popular, All, several subreddits, or a multireddit." },
+    { "3.7.0", "checkmark.shield.fill", "Stability & Fixes", "Fixes for freezes, GIF memory crashes, launch crashes, duplicate saved items, and translation going quiet." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }

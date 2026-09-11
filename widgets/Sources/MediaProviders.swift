@@ -1,11 +1,28 @@
 import WidgetKit
 import Foundation
 
-// MARK: Subreddit config helpers
+// MARK: Source config helpers
 
-func resolvedSubreddit(_ raw: String?, default def: String) -> String {
-    let s = RedditPost.normalizeSubreddit(raw ?? "")
-    return s.isEmpty ? def : s
+/// The Feed/Post "Source" picker + the "Subreddit or Multireddit" text →
+/// `FeedSource`. Unset (existing widgets) and Custom read the text; an empty
+/// text falls back to the widget's default. `ownMultis` is the account's
+/// cached multireddit names (see `OwnMultis`), so a bare name can be one of
+/// them.
+func widgetSource(pick: RebornFeedSource, text: String?, default def: FeedSource,
+                  ownMultis: Set<String>) -> FeedSource {
+    switch pick {
+    case .home: return .home
+    case .popular: return .popular
+    case .all: return .all
+    default: return FeedSource.parse(text, default: def, ownMultis: ownMultis)
+    }
+}
+
+/// Text-only resolution for the widgets without a Source picker (Photo,
+/// Headline, Calendar) — the text still accepts home/popular/all, r/a+b,
+/// multireddit links and names.
+func widgetSource(text: String?, default def: FeedSource, ownMultis: Set<String>) -> FeedSource {
+    FeedSource.parse(text, default: def, ownMultis: ownMultis)
 }
 
 func widgetSort(_ sort: RebornSort, default def: WidgetSort) -> WidgetSort {
@@ -78,30 +95,38 @@ struct SinglePostProvider: IntentTimelineProvider {
                                    caption: caption))
             return
         }
-        let sub = resolvedSubreddit(configuration.subreddit, default: "popular")
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
         let sort = widgetSort(configuration.sort, default: .hot)
-        let post = PostCache.load("single.\(sub)\(sortSuffix(sort))").first ?? WidgetSample.post
+        let post = PostCache.load("single.\(source.cacheKey(account: account))\(sortSuffix(sort))").first ?? WidgetSample.post
         completion(WidgetEntry(date: Date(), state: .posts([RenderPost(post: post, imageData: nil)]),
                                caption: caption))
     }
 
+    private static func source(_ configuration: Intent, ownMultis: Set<String>) -> FeedSource {
+        widgetSource(pick: configuration.feedSource, text: configuration.subreddit,
+                     default: .popular, ownMultis: ownMultis)
+    }
+
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let sub = resolvedSubreddit(configuration.subreddit, default: "popular")
+        let account = widgetAccountKey(configuration.setupCode)
         let sort = widgetSort(configuration.sort, default: .hot)
         let caption = captionLevel(configuration.caption)
-        // Per-sort cache buckets so a fetch failure never falls back to a
-        // different sort's cached posts.
-        let key = "single.\(sub)\(sortSuffix(sort))"
         // Lock-screen (accessory) widgets are text-only — skip image downloads
         // so the timeline builds fast and never risks the tight accessory
         // reload budget (a slow build shows the redacted placeholder skeleton).
         let accessory = isAccessoryFamily(context.family)
-        rwLog.log("getTimeline Post r/\(sub, privacy: .public) family=\(familyName(context.family), privacy: .public) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
-        runPostTimeline(
-            code: configuration.setupCode, cacheKey: key,
-            fetch: { try await $0.topPosts(subreddit: sub, sort: sort, limit: 50) },
-            assemble: { posts in
+        rwLog.log("getTimeline Post family=\(familyName(context.family), privacy: .public) pick=\(configuration.feedSource.rawValue) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        runSourceTimeline(
+            code: configuration.setupCode,
+            resolve: { Self.source(configuration, ownMultis: $0) },
+            // Per-sort (and, for personal sources, per-account) cache buckets
+            // so a fetch failure never falls back to another sort's or another
+            // account's cached posts.
+            cacheKey: { "single.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
+            sort: sort, limit: 50,
+            assemble: { posts, _, key in
                 if accessory {
                     return stamped(assembleText(posts, key: key), caption: caption)
                 }
@@ -119,13 +144,19 @@ struct FeedProvider: IntentTimelineProvider {
 
     func placeholder(in context: Context) -> WidgetEntry { .sample(WidgetSample.feed, sourceLabel: "Popular") }
 
+    private static func source(_ configuration: Intent, ownMultis: Set<String>) -> FeedSource {
+        widgetSource(pick: configuration.feedSource, text: configuration.subreddit,
+                     default: .popular, ownMultis: ownMultis)
+    }
+
     func getSnapshot(for configuration: Intent, in context: Context,
                      completion: @escaping (WidgetEntry) -> Void) {
-        let sub = resolvedSubreddit(configuration.subreddit, default: "popular")
-        let label = feedSourceLabel(sub)
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
+        let label = source.label
         if context.isPreview { completion(.sample(WidgetSample.feed, sourceLabel: label)); return }
         let sort = widgetSort(configuration.sort, default: .hot)
-        let cached = PostCache.load("feed.\(sub)\(sortSuffix(sort))")
+        let cached = PostCache.load("feed.\(source.cacheKey(account: account))\(sortSuffix(sort))")
         if !cached.isEmpty {
             completion(WidgetEntry(date: Date(),
                                    state: .posts(cached.map { RenderPost(post: $0, imageData: nil) }),
@@ -135,21 +166,23 @@ struct FeedProvider: IntentTimelineProvider {
 
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let sub = resolvedSubreddit(configuration.subreddit, default: "popular")
+        let account = widgetAccountKey(configuration.setupCode)
         let sort = widgetSort(configuration.sort, default: .hot)
-        let label = feedSourceLabel(sub)
         let compact = configuration.compact?.boolValue ?? false
-        let key = "feed.\(sub)\(sortSuffix(sort))"
-        rwLog.log("Feed r/\(sub, privacy: .public) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
-        runPostTimeline(
-            code: configuration.setupCode, cacheKey: key,
-            fetch: { try await $0.topPosts(subreddit: sub, sort: sort, limit: 12) },
-            assemble: { posts in
+        let username = widgetUsername(configuration.setupCode)
+        rwLog.log("Feed pick=\(configuration.feedSource.rawValue) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        runSourceTimeline(
+            code: configuration.setupCode,
+            resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "feed.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
+            sort: sort, limit: 12,
+            assemble: { posts, used, key in
                 // Compact rows hide thumbnails, so only download them otherwise.
                 let renders = compact
                     ? posts.prefix(8).map { RenderPost(post: $0, imageData: nil) }
                     : await downloadImages(Array(posts.prefix(8)), keyPath: { $0.thumbnailURL }, maxPixel: 160)
-                return stamped(stamped(listTimeline(renders, key: key), sourceLabel: label), compact: compact)
+                return stamped(stamped(listTimeline(renders, key: key), source: used, username: username),
+                               compact: compact)
             },
             completion: completion)
     }
@@ -172,25 +205,32 @@ struct PhotoProvider: IntentTimelineProvider {
                                    caption: caption))
             return
         }
-        let sub = resolvedSubreddit(configuration.subreddit, default: "EarthPorn")
+        let account = widgetAccountKey(configuration.setupCode)
+        let source = Self.source(configuration, ownMultis: OwnMultis.names(for: account))
         let sort = widgetSort(configuration.sort, default: .top)
-        let post = PostCache.load("photo.\(sub)\(sortSuffix(sort))").first ?? WidgetSample.feed[4]
+        let post = PostCache.load("photo.\(source.cacheKey(account: account))\(sortSuffix(sort))").first ?? WidgetSample.feed[4]
         completion(WidgetEntry(date: Date(), state: .posts([RenderPost(post: post, imageData: nil)]),
                                caption: caption))
     }
 
+    private static func source(_ configuration: Intent, ownMultis: Set<String>) -> FeedSource {
+        widgetSource(text: configuration.subreddit, default: .subreddits(["EarthPorn"]), ownMultis: ownMultis)
+    }
+
     func getTimeline(for configuration: Intent, in context: Context,
                      completion: @escaping (Timeline<WidgetEntry>) -> Void) {
-        let sub = resolvedSubreddit(configuration.subreddit, default: "EarthPorn")
+        let account = widgetAccountKey(configuration.setupCode)
         // Photos default to Top (best images) when no sort is chosen.
         let sort = widgetSort(configuration.sort, default: .top)
         let caption = captionLevel(configuration.caption)
-        let key = "photo.\(sub)\(sortSuffix(sort))"
-        rwLog.log("Photo r/\(sub, privacy: .public) sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
-        runPostTimeline(
-            code: configuration.setupCode, cacheKey: key,
-            fetch: { try await $0.topPosts(subreddit: sub, sort: sort, limit: 25).filter { $0.isImagePost } },
-            assemble: { stamped(await assembleWithImages($0, key: key, maxPixel: 800), caption: caption) },
+        rwLog.log("Photo sortRaw=\(configuration.sort.rawValue) → \(sort.path, privacy: .public)")
+        runSourceTimeline(
+            code: configuration.setupCode,
+            resolve: { Self.source(configuration, ownMultis: $0) },
+            cacheKey: { "photo.\($0.cacheKey(account: account))\(sortSuffix(sort))" },
+            sort: sort, limit: 25,
+            filter: { $0.filter { $0.isImagePost } },
+            assemble: { posts, _, key in stamped(await assembleWithImages(posts, key: key, maxPixel: 800), caption: caption) },
             completion: completion)
     }
 }
