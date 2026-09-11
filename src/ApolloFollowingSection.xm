@@ -52,6 +52,10 @@
 //    unfavorite delete we recompute the favorites row from the tapped name the
 //    same way ApolloSubredditIndexPolish's off-by-one correction does, so the
 //    two modules converge on the same answer regardless of hook order.
+//    Multireddit expansion instead defers its row batch and rebuilds the list
+//    once the handler closes its point window. Apollo's name-based expansion
+//    state can affect more models than that batch accounts for; see
+//    ApolloMultiredditExpansion.h for the reproduced invalid-row-count case.
 //
 // Everything else Apollo does to this table is reloadData (unsubscribe commits,
 // model refreshes), which is remap-safe: our mapping is invalidated in a
@@ -80,6 +84,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloMultiredditExpansion.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -1002,19 +1007,26 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 - (void)multiredditExpandButtonTapped:(id)sender {
     UITableView *tableView = ApolloFollowingTableViewOf((UIViewController *)self);
     ApolloFollowingMap *map = tableView ? ApolloFollowingActiveMapForTable(tableView) : nil;
-    if (!map) {
-        %orig;
-        return;
-    }
-    sApolloFollowingWindowDepth++;
-    sApolloFollowingWindowTable = tableView;
-    %orig;
-    if (sApolloFollowingWindowDepth > 0) sApolloFollowingWindowDepth--;
-    if (sApolloFollowingWindowDepth == 0) {
-        sApolloFollowingWindowTable = nil;
-        sApolloFollowingWindowTappedName = nil;
-        sApolloFollowingWindowFavorites = nil;
-    }
+    // Native expansion can change more rows than its animation describes.
+    // This also applies to the normal layout, where no Following map exists.
+    ApolloPerformMultiredditExpansion(tableView, ^{
+        if (!map) {
+            %orig;
+            return;
+        }
+        sApolloFollowingWindowDepth++;
+        sApolloFollowingWindowTable = tableView;
+        @try {
+            %orig;
+        } @finally {
+            if (sApolloFollowingWindowDepth > 0) sApolloFollowingWindowDepth--;
+            if (sApolloFollowingWindowDepth == 0) {
+                sApolloFollowingWindowTable = nil;
+                sApolloFollowingWindowTappedName = nil;
+                sApolloFollowingWindowFavorites = nil;
+            }
+        }
+    });
 }
 
 %end
@@ -1028,10 +1040,21 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 %hook UITableView
 
 - (void)reloadData {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     if (ApolloFollowingTableIsList((UITableView *)self)) {
         // Invalidate BEFORE %orig so the re-query sees a fresh mapping.
         ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
     }
+    %orig;
+}
+
+- (void)beginUpdates {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
+    %orig;
+}
+
+- (void)endUpdates {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     %orig;
 }
 
@@ -1096,6 +1119,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 // the same answer ApolloSubredditIndexPolish's off-by-one correction produces,
 // so the two hooks converge in either install order.
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     // No caller gate here (unlike the lookup hooks above): row mutations on
     // this table only ever ORIGINATE in Apollo's model-space code — UIKit
     // never self-registers them and the tweak's other modules only rewrite
@@ -1145,6 +1169,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 }
 
 - (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     if (!ApolloFollowingTableIsList((UITableView *)self)) {
         %orig;
         return;
@@ -1173,6 +1198,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 }
 
 - (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     // Only Apollo's own reloads carry model-space paths. The tweak's other
     // modules pass visible ones (ApolloSubredditIndexPolish's delayed star
     // refresh reloads the rows it found via indexPathForCell:), so gate the
