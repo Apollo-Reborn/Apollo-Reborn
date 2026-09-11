@@ -62,8 +62,10 @@
 // - UIKit only disables user interaction on the transitioning views for NON-interruptible
 //   animators. Left interactive, the finger that started the edge pan still delivers its
 //   delayed touch to the post cell under it, which lit up the cell's highlight for two
-//   frames at the start of every swipe. Both views are made non-interactive for the
-//   transition and restored on completion, matching what UIKit did before.
+//   frames at the start of every swipe. Only the outgoing view is made non-interactive
+//   and restored on completion. The incoming page must accept a new scroll immediately:
+//   a touch that begins while it is disabled is lost for the whole drag, even if the final
+//   few frames of the transition finish and restore interaction a moment later.
 // - The bar now genuinely cross-fades, so the incoming title control exists at partial alpha
 //   for the whole drag. ApolloLiquidGlass installs its title capsule on any title control
 //   that appears, which put a translucent capsule at the incoming title's (differently
@@ -194,12 +196,11 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         [container insertSubview:dim belowSubview:shadow];
     }
 
-    // UIKit does this itself for non-interruptible animators; without it the touch that
-    // began the edge pan keeps feeding the cell under the finger (delayed highlight flash).
+    // Suppress the original swipe's delayed cell highlight on the outgoing page only.
+    // The incoming page owns new touches: disabling it until animation completion drops
+    // an immediate follow-up scroll for its entire drag, making the list feel frozen.
     BOOL fromWasInteractive = fromView.userInteractionEnabled;
-    BOOL toWasInteractive = toView.userInteractionEnabled;
     fromView.userInteractionEnabled = NO;
-    toView.userInteractionEnabled = NO;
     UINavigationBar *navigationBar = toVC.navigationController.navigationBar
         ?: fromVC.navigationController.navigationBar;
 
@@ -245,7 +246,6 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
             fromView.frame = fromRest;
         }
         fromView.userInteractionEnabled = fromWasInteractive;
-        toView.userInteractionEnabled = toWasInteractive;
         ApolloLog(@"[InterruptibleNav] %s animator for ctx %p finished (cancelled=%d)",
                   push ? "push" : "pop", (void *)ctx, cancelled);
         // No cache bookkeeping here: this may synchronously start the next transition (a push or
