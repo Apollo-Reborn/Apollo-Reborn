@@ -2000,6 +2000,14 @@ NSArray *ApolloUserFlairBuildPiecesForText(NSString *flairText, NSString *subred
     return ApolloUserFlairPiecesFromFlairText(flairText, subreddit.lowercaseString);
 }
 
+NSArray<NSDictionary<NSString *, NSString *> *> *ApolloUserFlairCachedEmojisForSubreddit(NSString *subreddit) {
+    NSString *key = subreddit.lowercaseString;
+    if (key.length == 0) return nil;
+    @synchronized (sApolloUserFlairEmojiCacheLock) {
+        return [ApolloUserFlairEmojiListCache()[key] copy];
+    }
+}
+
 void ApolloUserFlairEnsureEmojisForSubreddit(NSString *subreddit, void (^completion)(void)) {
     if (!completion) return;
     if (subreddit.length == 0) { completion(); return; }

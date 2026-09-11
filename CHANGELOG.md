@@ -4,15 +4,68 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.7.0] - 2026-09-11
+
 ### Features
 
-- Add **Bold Post Titles** (Appearance → Posts) — feed post titles in Semibold for large and compact posts, every theme and theme font, Liquid Glass or legacy chrome; flips live without a relaunch (#226, #1033: @icpryde)
+- Add **Floating Post Tabs** (Posts & Feeds → Floating Tabs, off by default) — keep up to five posts open as draggable bubbles from any post or feed ⋯ menu, and tap one to land exactly where you left off (#984, #1061: @icpryde)
+  - Bubbles snap to the screen edges, tuck away when dragged past them, stack magnetically, and hold-to-preview the post; drop one on the ✕ to close it
+  - Match threads wear the two teams' crests on their bubble, and two text posts from the same subreddit get a big letter each so they don't look like twins
+- Add a **Feed Shortcuts** screen (Features → Subreddits) with Classic, Circle, Tinted, Soft Tile, and Solid Tile icon styles, Rows, Grid, Side-by-Side, and Icon Dock layouts, a live preview, and visibility toggles for Popular, All, and Moderator Posts (#988: @IllIIllIllIllII)
+- Add a **Subreddit Sections** screen (Features → Subreddits) — give followed users their own FOLLOWING section with **Separate Followed Users**, drag Favorites, Multireddits, Moderator, and Following into any order, and watch a pinned live preview follow every change (#997, #1020: @icpryde)
+  - Subreddit List Enhancements, Modern Subreddit Dividers, and Hide Multireddit Descriptions move here, and the A–Z index stays visible and themed with Enhancements off
+- Add **Per-Account Favorites** and **Sort Favorites Alphabetically** (Subreddits → Favorites), so each account can keep its own subreddit favorites and keep them in A–Z order (#1017, #1042: @IllIIllIllIllII)
+- Add Fade, Down, and Off styles to **Hide Bars on Scroll** for the Liquid Glass tab bar alongside Left and Right, plus a **Scroll Behavior** picker that restores Apollo's Classic one-gesture hide next to the Two-Gesture default (#972: @IllIIllIllIllII)
+  - Interface settings regroup into Tab Bar and Display & Navigation, and Profile Layout opens straight from the Apollo Reborn hub
+- Rework **Liquid Glass navigation** around a collapsible action pill — the ⋯ button expands into translate, moderator, sort, and more actions, so titles stay centered and stop resizing between screens (#1035, #1047: @IllIIllIllIllII)
+  - Navigation buttons match the back button and title, moderator controls turn a brighter green with readable menu text, the pill collapses while subreddit search is open, and a cancelled swipe-back no longer jumps the page
+  - Replaces the Center Title Between Buttons setting with automatic placement; standard builds keep their expanded actions
+- Replace the Liquid Glass **feed search bar** with the native glass pill — it activates in place, compresses as you scroll, and reveals on a pull at the top, fixing the feed sliding under the field and the bar floating detached after cancel (#1002, #1026: @icpryde)
+  - Results and the query survive opening a post, the quick-switcher's autocomplete highlight stays legible on near-white accents, and the bar is in place from the first frame when a feed re-appears at its top
+  - Tapping the Posts tab scrolls to the top and a second tap returns to the subreddit list, including from followed-user profiles (#1021, #1040: @IllIIllIllIllII)
+  - The Keep Search Bar Visible setting is retired; in-place activation is simply how glass search works now
+- Add **Bold Post Titles** (Appearance → Posts) — feed post titles in Semibold for large and compact posts, every theme and theme font, Liquid Glass or legacy chrome; flips live without a relaunch (#1033: @icpryde)
+- Show read state on **Community Highlights** — unread dots, a New badge for posts under 24 hours old, a theme-colored +N count for comments added since your last visit, and dimmed titles once a highlight is read (#1041: @IllIIllIllIllII)
+- Add a live **Profile Layout** preview for Immersive, Compact, and a restored Native layout that updates as you change avatar and visibility options, with optional pinning (#1034: @IllIIllIllIllII)
+  - Also fixes copying your username on Immersive and Compact layouts and removes duplicated usernames on profiles
+- Add pinned live previews to **Subreddit Layout** too — a header preview for the Immersive, Compact, and Native **Header Style**, a Community Highlights preview for Full, Partial, and Off, and separate User Flair, Sidebar, Subtitle, and Description toggles that update open subreddits without reopening them (#1019: @IllIIllIllIllII)
+- Add **Microsoft Translator** as a bring-your-own-key translation provider, retry Google through a second endpoint when its free one rate-limits you, and show a Translation Limit Reached notice instead of silently giving up (#998: @icpryde)
+  - Moves off the shut-down default LibreTranslate instance and names dead or redirected instances instead of failing quietly
+- Add a **Source** picker to the Feed and Post **widgets** — Home, Popular, All, or a subreddit — and let every widget's subreddit field take several subreddits at once, a pasted link, or a multireddit (#1051: @icpryde)
+  - Copy Widget Setup Code now offers a with-account code, which is what unlocks Home and your private multireddits
+- Add pinned live previews to the **Inline Media** and **Rich Link Previews** settings screens that follow every control as you scroll, with tap to pin or unpin, and let the size and Apollo AI sliders select a stop from a tap (#1022, #1023, #1025: @icpryde)
+- Add **Forget Forward Swipe After Scrolling** (Posts & Feeds, off by default) so a forward swipe stops reopening a post you backed out of many posts ago; **Swipe Past Gallery to Navigate** now defaults to off (#996: @icpryde)
+- Improve **Find in Comments** — the selected match stays in view while rows load in, a comma-separated query matches any of its terms, and the docked bar follows the theme (#992, #1036: @icpryde)
+  - On Liquid Glass it is now the same native search bar the feed uses: it activates in place, the match count sits inside the field, and the More pill turns into up and down chevrons while a search is live
+- Add nine never-released **Ultra** icons — Safari, Space Paws, Grumpy Space Paws, and sequels to Explorer of Smiles, Gorilla Gus, The Little Prince, Under the Tree, and Wish Maker — move SPCA into Ultra, and list the EverythingApplePro Icons Drop Test icon in Sekrit (#969, #971, #989: @IllIIllIllIllII)
 
 ### Fixes
 
-- Stop **Autoplay Inline GIFs** treating Low Power Mode as Tap to Play — Always and WiFi Only now keep GIFs animating in Low Power Mode, and Tap to Play or Never remain the battery-saving choices (#634, #1004: @icpryde)
-- Give **Show/Hide Deleted Comments** in the comments ⋯ menu custom icons that match Apollo's own artwork instead of the SF Symbol eye (#962: @AcornElf, @icpryde)
-- Restore Apollo's original icon weight across the ⋯ menus — the Liquid Glass menu was downscaling every icon to 18pt, and rows added by the tweak (Gallery View, View Hidden/Deleted Content, Show/Hide Deleted Comments) rendered smaller than Apollo's own rows on the legacy sheet (#985: @AcornElf, @icpryde)
+- Fix Apollo **freezing** on a loading spinner or a loaded comments screen when navigating between subreddits or opening posts on iOS 26 and later (#1024: @IllIIllIllIllII)
+- Fix **Gallery View** getting killed for memory on animated GIFs — GIFs now stream instead of holding every frame in RAM, and oversized stills are downsampled (#1001: @icpryde)
+- Fix a launch crash when the trending-subreddits table can't be written (LiveContainer and other read-only setups), and a crash opening a feed on older iOS versions that lack ActivityKit, WeatherKit, or VisionKit (#968: @icpryde)
+- Fix **Live Interactive Posts** — post-match threads render as normal text posts instead of an endless spinner, finished match threads no longer leave a hole in feed cards, the external-link confirmation works, and rotation relays out (#991, #1046: @icpryde)
+  - Opening a live post from the feed hands its already-loaded widget to the thread instead of reloading it, widgets stay warm between feed and thread, and Apollo AI no longer tries to summarize the hidden fallback text under one
+- Fix the in-app **Safari** browser flashing a white page while a link loads in dark mode; it stays black until content paints (#1052: @icpryde)
+- Fix **Liquid Glass** top fades vanishing during tab switches, and make swipe-back track the nav bar so the title and search bar no longer snap to the previous screen the moment a swipe starts (#1018: @icpryde)
+- Fix **Account Switcher** reordering quietly switching the signed-in account, plus drag handles that scrolled the page and rows that overlapped (#1011: @IllIIllIllIllII)
+- Fix duplicate items in **Saved** after a pull-to-refresh (#1005: @Thetromboneman1)
+- Fix the **subreddit list**'s section headers overlapping rows and labels sliding into place during the launch animation (#979: @icpryde)
+- Fix a subreddit's header and Community Highlights going missing after swiping forward back into it (#1037: @IllIIllIllIllII)
+- Fix the **translate globe** missing from search results under Liquid Glass (#1012: @icpryde)
+- Keep **custom theme separators** themed — the comments action bar lines no longer revert to gray once the thread loads, and separators no longer reset after returning from the background (#990: @icpryde)
+- Fix the **composer quick-bar** icons staying Apollo blue next to a themed GIF chip (#966, #987: @icpryde)
+- Fix **Share > Copy Link** ignoring the Share Link Host setting (#970: @icpryde)
+- Fix **Swipe Past Gallery to Navigate** missing real flicks on device (#974: @icpryde)
+- Stop **Autoplay Inline GIFs** treating Low Power Mode as Tap to Play — Always and WiFi Only now keep GIFs animating in Low Power Mode, and Tap to Play or Never remain the battery-saving choices (#1016: @icpryde)
+- Give **Show/Hide Deleted Comments** in the comments ⋯ menu custom icons that match Apollo's own artwork, and restore Apollo's original icon weight across the ⋯ menus, which the Liquid Glass menu had been downscaling (#985: @AcornElf, @icpryde)
+- Fix the **Theme Manager** row in Appearance reverting to "Themes" after the Post Size sheet, and match its weight to the rows around it (#1032: @icpryde)
+- Fix the oversized paragraph gaps in posts written with Reddit's fancy-pants editor, left behind when a zero-width space is stripped (#1050: @icpryde)
+- Make the **Settings** search bar scroll away with the list again while staying visible on arrival, keep pull-to-search, and pad the first settings group (#975: @icpryde)
+- Make the Inbox swipes track your finger, and swipe back inside a **Chat** conversation one level to the chat list instead of leaving the Inbox (#965: @icpryde)
+- Show each **Chat** conversation once on the Inbox's Notifications side and open it in modern Chat instead of Apollo's legacy thread when Use Modern Reddit Chat is on, with the Inbox badge no longer counting an unread chat twice (#1038: @icpryde)
+- Make the inline feed search bar usable on **Apple Vision Pro** (#978: @rebelancap)
+- Center the subreddit list's A–Z index labels and keep the favorite star's touch area clear of the index (#981: @IllIIllIllIllII)
 
 ## [v3.6.0] - 2026-08-18
 
@@ -802,6 +855,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.7.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.6.0...v1.15.11_3.7.0
 [v3.6.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.5.1...v1.15.11_3.6.0
 [v3.5.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.5.0...v1.15.11_3.5.1
 [v3.5.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.4.2...v1.15.11_3.5.0
