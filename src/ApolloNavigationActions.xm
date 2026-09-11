@@ -894,6 +894,10 @@ void ApolloNavigationActionsRefresh(UINavigationBar *bar) {
     });
 }
 
+void ApolloNavigationActionsCollapse(UINavigationItem *item) {
+    [ApolloActionsOwner(item, NO) setExpanded:NO animated:NO];
+}
+
 CGRect ApolloNavigationActionsCollapsedFrame(UINavigationBar *bar) {
     ApolloNavigationActionsOwner *owner = ApolloActionsOwner(bar.topItem, NO);
     for (ApolloNavigationActionsStrip *strip in owner.strips) {

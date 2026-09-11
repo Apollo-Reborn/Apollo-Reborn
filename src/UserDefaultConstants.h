@@ -237,7 +237,20 @@ static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
+// Show direct actions beside Join in Apollo Reborn's subreddit header.
+// Both default to NO; User Flair is also hidden when the subreddit disallows it.
+static NSString *const UDKeySubredditShowUserFlairButton = @"SubredditShowUserFlairButton";
+static NSString *const UDKeySubredditShowSidebarButton = @"SubredditShowSidebarButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
+// Whether the Reborn header shows the community title + member-count line.
+// Before metadata it falls back to r/name; redundant titles leave only the count.
+// Defaults to YES; surfaced as "Subtitle".
+static NSString *const UDKeySubredditShowSubtitle = @"SubredditShowSubtitle";
+// Whether the Reborn subreddit header shows the community's about text.
+// Defaults to YES alongside the other header bands.
+static NSString *const UDKeySubredditShowDescription = @"SubredditShowDescription";
+// Keep the Subreddit Layout settings preview visible while scrolling. Default YES.
+static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPreviewPinned";
 // Backing values for the single Community Highlights picker. Keeping the old
 // keys maps existing settings naturally: both YES = Full, master only = Partial,
 // master NO = Off.
@@ -519,6 +532,10 @@ static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOve
 // Debug-only override (seconds, >= 5) for how long the modern Chat surface
 // must be hidden/inactive before returning to it auto-refreshes the list.
 static NSString *const UDKeyChatStaleRefreshOverride = @"ChatStaleRefreshOverride";
+// Embedded Inbox Chat > Messages room filter: "direct" (default), "group", "all".
+static NSString *const UDKeyChatMessagesFilter = @"ChatMessagesFilter";
+// Embedded Inbox Chat > Messages: show unread rooms only (Reddit's "Unread" switch).
+static NSString *const UDKeyChatMessagesUnreadOnly = @"ChatMessagesUnreadOnly";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent

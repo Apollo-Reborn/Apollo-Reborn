@@ -13,11 +13,20 @@ static CGFloat const ApolloImmersiveBackdropBlurSigma = 28.0;
 // melts into the blurred backdrop instead of ending in a hard seam.
 static CGFloat const ApolloImmersiveSharpFeatherHeight = 44.0;
 
-UIColor *ApolloImmersiveResolvedPageColor(UIColor *fallback) {
-    UIColor *themeBackground = ApolloThemeRuntimeIsActive()
-        ? ApolloThemeRuntimeColor(ApolloThemeTokenBackground)
-        : nil;
-    return themeBackground ?: fallback ?: UIColor.systemBackgroundColor;
+static BOOL ApolloImmersiveColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
+    if (!color) return NO;
+    UIColor *resolved = [color resolvedColorWithTraitCollection:
+        traits ?: UIScreen.mainScreen.traitCollection];
+    return resolved && CGColorGetAlpha(resolved.CGColor) > 0.01;
+}
+
+UIColor *ApolloImmersiveResolvedPageColor(UIColor *fallback, UITraitCollection *traits) {
+    // Prefer Apollo's page background for stock and custom themes. Ignore transparent
+    // candidates so layout switches cannot expose a stale Posts surface.
+    UIColor *themeBackground = ApolloThemePageBackgroundColor();
+    if (ApolloImmersiveColorProvidesSurface(themeBackground, traits)) return themeBackground;
+    if (ApolloImmersiveColorProvidesSurface(fallback, traits)) return fallback;
+    return UIColor.systemGroupedBackgroundColor;
 }
 
 UIVisualEffect *ApolloImmersiveGlassEffect(UIColor *tintColor, CGFloat tintAlpha, BOOL interactive) {
