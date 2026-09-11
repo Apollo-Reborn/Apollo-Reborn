@@ -129,9 +129,11 @@ void ApolloNormalizeNativeHideUsernameForIconOnlyTabBar(void);
 // large avatar/snoovatar, display name, bio, and the Social Links band (Buy Me a
 // Coffee, Instagram, X, …). When OFF, profiles revert to Apollo's compact stock
 // layout — the detailed header is not installed and any existing one is torn down.
-// Independent of sShowUserAvatars (inline avatars). The Social Links band lives
-// inside this header, so it is gated on this same flag. Default ON via
-// registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.{h,m}.
+// Profile Layout exposes three densities with the same two-boolean encoding as
+// Subreddit Layout: Immersive = master + immersive, Compact = master + flat,
+// Native = !master. Independent of sShowUserAvatars (inline avatars). The Social
+// Links band lives inside this header, so it is gated on this same flag. Default
+// ON via registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.
 extern BOOL sShowDetailedProfiles;
 extern BOOL sBadgeBookEnabled;
 extern BOOL sProfileHeaderImmersive;
@@ -141,20 +143,21 @@ extern BOOL sProfileShowSocialLinks;
 extern BOOL sProfileShowActions;
 extern NSInteger sProfileAvatarStyle; // 0 Full snoovatar, 1 Circle, 2 Square
 extern BOOL sShowSubredditHeaders;
-// Subreddit Layout density has three user-visible states:
-// New = sShowSubredditHeaders + sSubredditHeaderImmersive,
-// Classic = sShowSubredditHeaders + !sSubredditHeaderImmersive,
-// Native = !sShowSubredditHeaders (Apollo's current/pre-3.5 header).
+// Header Style maps onto the existing boolean preferences:
+// Immersive = sShowSubredditHeaders && sSubredditHeaderImmersive
+// Compact   = sShowSubredditHeaders && !sSubredditHeaderImmersive
+// Native    = !sShowSubredditHeaders
 extern BOOL sSubredditHeaderImmersive;
-// Per-section show switches on the subreddit header (banner / Join button /
-// display name) — same "turn off the bands you don't need" pattern as the
-// profile header's per-section switches.
 extern BOOL sSubredditShowBanner;
 extern BOOL sSubredditShowJoinButton;
-// Whether the community's big bold title (e.g. "Reddit Science") shows above
-// the r/name line. Direct on/off choice rather than the old auto-hide-if-
-// similar-to-r/name heuristic, so behavior is predictable across subreddits.
+extern BOOL sSubredditShowUserFlairButton;
+extern BOOL sSubredditShowSidebarButton;
+// Whether the short subreddit name (e.g. "science") appears as the bold title.
 extern BOOL sSubredditShowDisplayName;
+// Whether the community title + member-count subtitle appears below it. Before
+// metadata arrives it falls back to r/name; a redundant title leaves only the count.
+extern BOOL sSubredditShowSubtitle;
+extern BOOL sSubredditShowDescription;
 // Backing booleans for the single Community Highlights mode picker:
 //   Off     = both NO
 //   Partial = sCommunityHighlights YES, sCommunityHighlightsWeb NO
@@ -308,6 +311,8 @@ extern NSInteger sSubredditFeedLayout;
 // Opt-in per-account FavoriteSubreddits projection. Defaults OFF; see
 // ApolloPerAccountFavorites.{h,m}.
 extern BOOL sPerAccountFavoritesEnabled;
+// Effective sorting preference for the materialized favorites scope.
+extern BOOL sSortFavoritesAlphabetically;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;

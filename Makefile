@@ -76,11 +76,13 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloLiquidGlassIconIDs.m \
     $(SRC_DIR)/ApolloBarkNotifications.m \
     $(SRC_DIR)/ApolloChatUnreadPoller.m \
+    $(SRC_DIR)/ApolloChatRoomDirectory.m \
     $(SRC_DIR)/ApolloUserProfileCache.m \
     $(SRC_DIR)/ApolloSubredditInfoCache.m \
     $(SRC_DIR)/ApolloSubredditCustomBannerCache.m \
     $(SRC_DIR)/ApolloSubredditCustomIconCache.m \
     $(SRC_DIR)/ApolloSubredditDefaultAssets.c \
+    $(SRC_DIR)/ApolloSubredditLayout.m \
     $(SRC_DIR)/ApolloImmersiveHeaderBackground.m \
     $(SRC_DIR)/ApolloIdentityHeaderLayout.m \
     $(SRC_DIR)/ApolloUserAvatars.xm \
@@ -116,6 +118,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDeletedCommentsMenu.xm \
     $(SRC_DIR)/ApolloState.m \
     $(SRC_DIR)/ApolloShareLinks.xm \
+    $(SRC_DIR)/ApolloSafariDarkLoading.xm \
     $(SRC_DIR)/ApolloMedia.xm \
     $(SRC_DIR)/ApolloFeedGalleryCarousel.xm \
     $(SRC_DIR)/ApolloSwipeUpComments.xm \
@@ -124,6 +127,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
     $(SRC_DIR)/ApolloInboxCommentScroll.xm \
     $(SRC_DIR)/ApolloFindInComments.xm \
+    $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
     $(SRC_DIR)/ApolloStatsRowTouch.xm \
     $(SRC_DIR)/ApolloCommentVoteFlicker.xm \
     $(SRC_DIR)/ApolloLiveCommentsFollow.xm \
@@ -182,6 +186,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloVideoHoldSpeed.xm \
     $(SRC_DIR)/ApolloPictureInPicture.xm \
     $(SRC_DIR)/ApolloFloatingTabs.xm \
+    $(SRC_DIR)/ApolloFloatingTabsCrests.m \
     $(SRC_DIR)/ApolloMediaPreviewErrorFix.xm \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
@@ -245,15 +250,18 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloManualSignInViewController.m \
     $(SRC_DIR)/ApolloAccountCredentials.m \
     $(SRC_DIR)/ApolloPerAccountFavorites.m \
+    $(SRC_DIR)/ApolloFavoritesSorting.m \
     $(SRC_DIR)/ApolloAccountSwitcherViewController.xm \
     $(SRC_DIR)/ApolloSignInSplash.xm \
     $(SRC_DIR)/ApolloHideSubscribePrompt.xm \
     $(SRC_DIR)/settings/CustomAPIViewController.m \
+    $(SRC_DIR)/settings/ApolloSubredditLayoutPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutViewController.m \
     $(SRC_DIR)/settings/ApolloSubredditSectionsViewController.m \
     $(SRC_DIR)/settings/ApolloAISettingsViewController.m \
     $(SRC_DIR)/settings/ApolloDeletedCommentsSettingsViewController.m \
     $(SRC_DIR)/settings/ApolloProfileLayoutViewController.m \
+    $(SRC_DIR)/settings/ApolloLayoutPreviewCard.m \
     $(SRC_DIR)/settings/ApolloLinkPreviewSettingsViewController.m \
     $(SRC_DIR)/settings/InlineMediaSettingsViewController.m \
     $(SRC_DIR)/settings/InfoRowSettingsViewController.m \
@@ -336,7 +344,8 @@ ApolloReborn_LIBRARIES += c++
 ApolloReborn_BUNDLE_RESOURCE_DIRS = resources
 ApolloReborn_BUNDLE_RESOURCES = \
     assets/bark-icons/low-battery.png \
-    assets/bark-icons/palette.png
+    assets/bark-icons/palette.png \
+    widgets/Sources/Assets.xcassets/ApolloAvatar.imageset/apollo-avatar@3x.png
 
 # Temporary theme-RE instrumentation (theme builder spike). Opt-in only:
 #   APOLLO_THEME_RE=1 scripts/run-in-sim.sh

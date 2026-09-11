@@ -63,6 +63,11 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 // account's bucket back through Apollo's native FavoriteSubreddits key so every
 // stock reader/mutator continues to work unchanged.
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
+// Alphabetize shared favorites and disable manual reordering. Default NO.
+static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Per-account sorting preferences, keyed by the per-account favorites identity
+// (u:name / anonymous). Missing entries default OFF; shared preference is above.
+static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
 // Versioned envelope: { "version": 1, "buckets": { "u:name": [subreddits],
 // "anonymous": [subreddits] } }. Missing bucket and explicit empty bucket are
 // intentionally distinct; accounts created after the first migration start empty.
@@ -231,13 +236,29 @@ static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
+// UI-only preference: keep the Profile Layout preview visible while scrolling.
+// Default NO; independent of the subreddit preview and actual profile layout.
+static NSString *const UDKeyProfileLayoutPreviewPinned = @"ProfileLayoutPreviewPinned";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // New (Immersive, with the melt/ambient backdrop) vs Classic (same content,
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
+// Show direct actions beside Join in Apollo Reborn's subreddit header.
+// Both default to NO; User Flair is also hidden when the subreddit disallows it.
+static NSString *const UDKeySubredditShowUserFlairButton = @"SubredditShowUserFlairButton";
+static NSString *const UDKeySubredditShowSidebarButton = @"SubredditShowSidebarButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
+// Whether the Reborn header shows the community title + member-count line.
+// Before metadata it falls back to r/name; redundant titles leave only the count.
+// Defaults to YES; surfaced as "Subtitle".
+static NSString *const UDKeySubredditShowSubtitle = @"SubredditShowSubtitle";
+// Whether the Reborn subreddit header shows the community's about text.
+// Defaults to YES alongside the other header bands.
+static NSString *const UDKeySubredditShowDescription = @"SubredditShowDescription";
+// Keep the Subreddit Layout settings preview visible while scrolling. Default YES.
+static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPreviewPinned";
 // Backing values for the single Community Highlights picker. Keeping the old
 // keys maps existing settings naturally: both YES = Full, master only = Partial,
 // master NO = Off.
@@ -519,6 +540,10 @@ static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOve
 // Debug-only override (seconds, >= 5) for how long the modern Chat surface
 // must be hidden/inactive before returning to it auto-refreshes the list.
 static NSString *const UDKeyChatStaleRefreshOverride = @"ChatStaleRefreshOverride";
+// Embedded Inbox Chat > Messages room filter: "direct" (default), "group", "all".
+static NSString *const UDKeyChatMessagesFilter = @"ChatMessagesFilter";
+// Embedded Inbox Chat > Messages: show unread rooms only (Reddit's "Unread" switch).
+static NSString *const UDKeyChatMessagesUnreadOnly = @"ChatMessagesUnreadOnly";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent
