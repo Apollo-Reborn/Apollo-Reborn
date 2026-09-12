@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Keep Liquid Glass builds from crashing when AsyncDisplayKit cannot create a node's bitmap, seen when tapping the Posts tab to return to the top of a long Popular feed; the node is left blank instead (#1097: @icpryde)
+
 ## [v3.7.0] - 2026-09-11
 
 ### Features
