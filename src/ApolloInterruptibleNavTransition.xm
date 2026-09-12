@@ -58,12 +58,14 @@
 // and because the context reference is weak, a context that has been freed reads as nil, so a
 // new context recycled at the same address can never be handed a finished animator.
 //
-// TWO THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
+// THREE THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
 // - UIKit only disables user interaction on the transitioning views for NON-interruptible
 //   animators. Left interactive, the finger that started the edge pan still delivers its
 //   delayed touch to the post cell under it, which lit up the cell's highlight for two
-//   frames at the start of every swipe. Both views are made non-interactive for the
-//   transition and restored on completion, matching what UIKit did before.
+//   frames at the start of every swipe. Only the outgoing view is made non-interactive
+//   and restored on completion. The incoming page must accept a new scroll immediately:
+//   a touch that begins while it is disabled is lost for the whole drag, even if the final
+//   few frames of the transition finish and restore interaction a moment later.
 // - The bar now genuinely cross-fades, so the incoming title control exists at partial alpha
 //   for the whole drag. ApolloLiquidGlass installs its title capsule on any title control
 //   that appears, which put a translucent capsule at the incoming title's (differently
@@ -71,6 +73,12 @@
 //   code consults ApolloNavTransitionInFlight() and skips new installs/recentres while an
 //   INTERACTIVE transition runs; the completion below asks it to refresh the settled bar,
 //   where the winning title's capsule fades in. Timed push/pop is left exactly as before.
+// - UIPercentDrivenInteractiveTransition uses completionCurve to settle a legacy animator,
+//   but an interruptible animator uses timingCurve instead. With no timingCurve it resumes
+//   our linear drag animation, losing Apollo's quick release even at the same duration.
+//   Bridge the native driver's completionCurve when it is handed to UIKit, using the same
+//   UICubicTimingParameters conversion as UIKit's legacy path. UIKit still owns remaining
+//   distance, completionSpeed, reversal and completion; dragging stays linear.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -188,12 +196,11 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         [container insertSubview:dim belowSubview:shadow];
     }
 
-    // UIKit does this itself for non-interruptible animators; without it the touch that
-    // began the edge pan keeps feeding the cell under the finger (delayed highlight flash).
+    // Suppress the original swipe's delayed cell highlight on the outgoing page only.
+    // The incoming page owns new touches: disabling it until animation completion drops
+    // an immediate follow-up scroll for its entire drag, making the list feel frozen.
     BOOL fromWasInteractive = fromView.userInteractionEnabled;
-    BOOL toWasInteractive = toView.userInteractionEnabled;
     fromView.userInteractionEnabled = NO;
-    toView.userInteractionEnabled = NO;
     UINavigationBar *navigationBar = toVC.navigationController.navigationBar
         ?: fromVC.navigationController.navigationBar;
 
@@ -239,7 +246,6 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
             fromView.frame = fromRest;
         }
         fromView.userInteractionEnabled = fromWasInteractive;
-        toView.userInteractionEnabled = toWasInteractive;
         ApolloLog(@"[InterruptibleNav] %s animator for ctx %p finished (cancelled=%d)",
                   push ? "push" : "pop", (void *)ctx, cancelled);
         // No cache bookkeeping here: this may synchronously start the next transition (a push or
@@ -278,6 +284,30 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 }
 
 %group ApolloInterruptibleNav
+
+%hook _TtC6Apollo26ApolloNavigationController
+
+- (id<UIViewControllerInteractiveTransitioning>)navigationController:(UINavigationController *)navigationController
+                       interactionControllerForAnimationController:(id<UIViewControllerAnimatedTransitioning>)animationController {
+    id<UIViewControllerInteractiveTransitioning> interactionController = %orig;
+    // Scope the bridge to the Apollo animator replaced below. Preserve a timing provider
+    // supplied by the app, and leave non-percent-driven interaction controllers alone.
+    Class animatorClass = objc_getClass("_TtC6Apollo24ApolloNavigationAnimator");
+    if ([(id)animationController isKindOfClass:animatorClass] &&
+        [(id)interactionController isKindOfClass:UIPercentDrivenInteractiveTransition.class]) {
+        UIPercentDrivenInteractiveTransition *driver = (id)interactionController;
+        if (!driver.timingCurve) {
+            // Read the native value rather than hardcoding an easing curve: UIKit's
+            // default includes system timing behavior beyond the public curve enum.
+            driver.timingCurve = [[UICubicTimingParameters alloc] initWithAnimationCurve:driver.completionCurve];
+            ApolloLog(@"[InterruptibleNav] preserving native gesture completion curve (%ld)",
+                      (long)driver.completionCurve);
+        }
+    }
+    return interactionController;
+}
+
+%end
 
 %hook _TtC6Apollo24ApolloNavigationAnimator
 
