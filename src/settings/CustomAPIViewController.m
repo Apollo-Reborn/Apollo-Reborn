@@ -17,7 +17,6 @@
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
-#import "ApolloWebJSON.h"           // ApolloWebJSONBearerIsSynthetic() — widget setup code
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
@@ -64,6 +63,63 @@
 // mirror the video player's own speed menu minus 1.0× (holding at normal speed
 // would be a no-op). ApolloSanitizedHoldSpeed() guards the stored value to this set.
 static const float kVideoHoldSpeeds[] = { 0.25f, 0.5f, 0.75f, 1.25f, 1.5f, 2.0f };
+static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailable);
+
+// Compact native pull-down used by Liquid Glass settings. The current value
+// stays visible in the row and the paired chevrons communicate that it opens
+// a menu rather than navigating to another screen.
+static UIButton *ApolloSettingsMenuButton(NSString *menuTitle,
+                                          NSString *currentTitle,
+                                          NSArray<NSString *> *titles,
+                                          NSInteger currentIndex,
+                                          void (^apply)(NSInteger index)) {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *symbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold];
+    UIImage *chevrons = [UIImage systemImageNamed:@"chevron.up.chevron.down"
+                                withConfiguration:symbolConfiguration];
+    UIColor *foreground = UIColor.secondaryLabelColor;
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
+        configuration.title = currentTitle;
+        configuration.image = chevrons;
+        configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+        configuration.imagePadding = 3.0;
+        configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+        configuration.baseForegroundColor = foreground;
+        configuration.titleTextAttributesTransformer =
+            ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *attributes) {
+                NSMutableDictionary *compact = [attributes mutableCopy];
+                compact[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+                compact[NSForegroundColorAttributeName] = foreground;
+                return compact;
+            };
+        button.configuration = configuration;
+    } else {
+        [button setTitle:currentTitle forState:UIControlStateNormal];
+        [button setImage:chevrons forState:UIControlStateNormal];
+        [button setTitleColor:foreground forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        button.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
+    }
+    button.tintColor = foreground;
+    NSMutableArray<UIAction *> *actions = [NSMutableArray arrayWithCapacity:titles.count];
+    [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger index, __unused BOOL *stop) {
+        UIAction *action = [UIAction actionWithTitle:title image:nil identifier:nil
+                                             handler:^(__unused UIAction *selected) {
+            if (apply) apply((NSInteger)index);
+        }];
+        action.state = ((NSInteger)index == currentIndex)
+            ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }];
+    button.menu = [UIMenu menuWithTitle:menuTitle image:nil identifier:nil
+                                options:UIMenuOptionsSingleSelection children:actions];
+    button.showsMenuAsPrimaryAction = YES;
+    button.accessibilityLabel = currentTitle;
+    [button sizeToFit];
+    return button;
+}
 
 // "0.25×" / "0.5×" / … / "2×", using the U+00D7 multiplication sign Apollo uses.
 static NSString *ApolloVideoHoldSpeedTitle(float speed) {
@@ -838,9 +894,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"linkPreviews.settings"];
     [self reloadRowWithID:@"polls.settings"];
     [self reloadRowWithID:@"sub.feedShortcuts"];
-    // Refresh the tab-bar presentation and its dependent gesture row after
+    // Refresh the tab-bar presentation and its dependent rows after
     // returning to Interface or after preferences are restored elsewhere.
+    [self visibilityDidChange];
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
+    [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
@@ -1542,7 +1600,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:^{ [weakSelf copyWidgetSetupCode]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Extras"
-                                            footer:@"Copy a code to set up Apollo's home-screen widgets. Include your account for Home and multireddit feeds."
+                                            footer:@"Copy a code to set up the Apollo home-screen widget."
                                               rows:@[ widgetSetupCode ]];
 }
 
@@ -1764,65 +1822,75 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf hideUsernameTabSwitchToggled:sender]; }];
     hideUsernameTab.visible = ^BOOL { return !sHideTabBarTitles; };
 
-    ApolloSettingsRow *hideBarsOnScroll;
-    if (ApolloSupportsNativeTabBarScrollBehavior()) {
-        hideBarsOnScroll =
-            [ApolloSettingsRow valueRowWithID:@"interface.hideBarsOnScroll"
-                                        title:@"Hide Bars on Scroll"
-                                       detail:^NSString * { return ApolloTabBarHideStyleCurrentTitle(); }
-                                     onSelect:^{
-                ApolloSettingsPresentPicker(weakSelf,
-                    [weakSelf cellForRowID:@"interface.hideBarsOnScroll"],
-                    @"Hide Bars on Scroll",
-                    ApolloTabBarHideStyleOptionTitles(),
-                    ApolloTabBarHideStyleCurrentOptionIndex(),
-                    ^(NSInteger pickedIndex) {
-                        ApolloTabBarHideStyleApplyOptionIndex(pickedIndex);
-                        [weakSelf reloadRowWithID:@"interface.hideBarsOnScroll"];
-                        [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
-                    });
-            }];
-        hideBarsOnScroll.configure = ^(UITableViewCell *cell) {
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        };
-    } else {
-        // Before Liquid Glass, retain the original on/off control rather than
-        // offering presentation styles the system cannot display.
-        hideBarsOnScroll =
-            [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
-                                         title:@"Hide Bars on Scroll"
-                                          isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
-                                      onToggle:^(UISwitch *sender) {
-                ApolloTabBarHideBarsSetEnabled(sender.isOn);
-                [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
-            }];
-    }
+    ApolloSettingsRow *hideBarsOnScroll =
+        [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
+                                     title:@"Hide Bars on Scroll"
+                                      isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
+                                  onToggle:^(UISwitch *sender) {
+            ApolloTabBarHideBarsSetEnabled(sender.isOn);
+            [weakSelf visibilityDidChange];
+        }];
+
+    ApolloSettingsRow *hideStyle =
+        [ApolloSettingsRow customRowWithID:@"interface.hideStyle"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloHideStyleMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloHideStyleMenu"];
+            cell.textLabel.text = @"Hide Style";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Hide Style", ApolloTabBarHideStyleCurrentTitle(),
+                ApolloTabBarHideStyleOptionTitles(), ApolloTabBarHideStyleCurrentOptionIndex(),
+                ^(NSInteger index) {
+                    ApolloTabBarHideStyleApplyOptionIndex(index);
+                    [weakSelf reloadRowWithID:@"interface.hideStyle"];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
+    hideStyle.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+    };
+
+    // Keep the remembered choice while Hide Bars is off; only its row hides.
+    ApolloSettingsRow *hideTopBarToo =
+        [ApolloSettingsRow switchRowWithID:@"interface.hideTopBarToo"
+                                     title:@"Hide Header on Scroll"
+                                      isOn:^BOOL { return sHideTopBarOnScroll; }
+                                  onToggle:^(UISwitch *sender) {
+            if (sHideTopBarOnScroll == sender.isOn) return;
+            sHideTopBarOnScroll = sender.isOn;
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyHideTopBarOnScroll];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
+        }];
+    hideTopBarToo.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+    };
 
     // Both behavior choices include idle re-expansion. A single picker keeps
     // the gesture models mutually exclusive and explicit.
     ApolloSettingsRow *tabBarScrollBehavior =
-        [ApolloSettingsRow valueRowWithID:@"interface.tabBarScrollBehavior"
-                                    title:@"Scroll Behavior"
-                                   detail:^NSString * { return sClassicTabBarScrollBehavior ? @"Classic" : @"Two-Gesture"; }
-                                 onSelect:^{
-            ApolloSettingsPresentPicker(weakSelf,
-                [weakSelf cellForRowID:@"interface.tabBarScrollBehavior"],
-                @"Scroll Behavior",
-                @[ @"Two-Gesture", @"Classic" ],
-                sClassicTabBarScrollBehavior ? 1 : 0,
-                ^(NSInteger pickedIndex) {
-                    [weakSelf setTabBarScrollBehaviorClassic:(pickedIndex == 1)];
+        [ApolloSettingsRow customRowWithID:@"interface.tabBarScrollBehavior"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloScrollBehaviorMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloScrollBehaviorMenu"];
+            cell.textLabel.text = @"Scroll Behavior";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Scroll Behavior",
+                sClassicTabBarScrollBehavior ? @"Classic" : @"Two-Gesture",
+                @[ @"Two-Gesture", @"Classic" ], sClassicTabBarScrollBehavior ? 1 : 0,
+                ^(NSInteger index) {
+                    [weakSelf setTabBarScrollBehaviorClassic:(index == 1)];
+                    [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
                 });
-        }];
-    tabBarScrollBehavior.configure = ^(UITableViewCell *cell) {
-        cell.accessoryType = [weakSelf apollo_nativeHideBarsOnScrollEnabled]
-            ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
+    tabBarScrollBehavior.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
-    tabBarScrollBehavior.enabled = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() &&
-               [weakSelf apollo_nativeHideBarsOnScrollEnabled];
-    };
-    tabBarScrollBehavior.visible = ^BOOL { return ApolloSupportsNativeTabBarScrollBehavior(); };
 
     // Temporary iPad stopgap (#387): only show it where the option can work.
     ApolloSettingsRow *iPadTabBarBottom =
@@ -1840,7 +1908,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
-                                                      hideBarsOnScroll, tabBarScrollBehavior,
+                                                      hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom ]];
 }
 
@@ -1860,13 +1928,32 @@ typedef NS_ENUM(NSInteger, Tag) {
     // Glass only — hidden otherwise rather than shown-disabled, since the row
     // has nothing to preview/explain on a non-Glass device.
     ApolloSettingsRow *scrollEdgeEffect =
-        [ApolloSettingsRow valueRowWithID:@"gen.scrollEdgeEffect"
-                                    title:@"Header Style"
-                                   detail:^NSString * { return [weakSelf scrollEdgeEffectStyleText]; }
-                                 onSelect:^{
-            [weakSelf presentScrollEdgeEffectStyleSheetFromSourceView:[weakSelf cellForRowID:@"gen.scrollEdgeEffect"]];
-        }];
-    scrollEdgeEffect.configure = ^(UITableViewCell *cell) { cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; };
+        [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloHeaderStyleMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloHeaderStyleMenu"];
+            BOOL blurAvailable = ApolloProgressiveBlurAvailable();
+            NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithObjects:@"Soft", @"Hard", nil];
+            if (blurAvailable) [titles addObject:@"Blur"];
+            [titles addObject:@"Hidden"];
+            NSInteger currentIndex = 0;
+            NSInteger currentStyle = ApolloResolvedScrollEdgeEffectStyle();
+            for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
+                if (ApolloHeaderStylePickerValue(index, blurAvailable) == currentStyle) {
+                    currentIndex = index;
+                    break;
+                }
+            }
+            cell.textLabel.text = @"Header Style";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Header Style", [weakSelf scrollEdgeEffectStyleText],
+                titles, currentIndex, ^(NSInteger index) {
+                    [weakSelf setScrollEdgeEffectStyle:ApolloHeaderStylePickerValue(index, blurAvailable)];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
@@ -3368,42 +3455,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     }
 }
 
-// The signed-in account's OAuth refresh token plus the client id it was issued
-// under, for the "with account" widget setup code. Nil when nobody is signed
-// in, when the active account is a web-session (keyless) one — those carry a
-// synthetic bearer and no refresh token — or when the credential is missing.
-static NSDictionary *ApolloWidgetAccountCredentials(void) {
-    id client = ApolloActiveAccountClient();
-    if (!client) return nil;
-    NSString *username = ApolloActiveAccountUsername();
-    if (username.length > 0 && ApolloWebSessionFor(username) != nil) return nil;
-
-    id refreshToken = nil, accessToken = nil, credentialClientId = nil;
-    @try {
-        id credential = [client valueForKey:@"authorizationCredential"];
-        id token = [credential valueForKey:@"accessToken"];
-        refreshToken = [token valueForKey:@"refreshToken"];
-        accessToken = [token valueForKey:@"accessToken"];
-        credentialClientId = [credential valueForKey:@"clientIdentifier"];
-    } @catch (__unused NSException *e) {
-        return nil;
-    }
-    if (![refreshToken isKindOfClass:[NSString class]] || [refreshToken length] == 0) return nil;
-    if ([accessToken isKindOfClass:[NSString class]] && ApolloWebJSONBearerIsSynthetic(accessToken)) return nil;
-
-    // Reddit binds a refresh token to the client id that issued it, and the
-    // credential's own id is what RedditKit presents on every refresh — so
-    // that's the id the widget must present too. Fall back to the effective
-    // (per-account, then global) key only when the credential carries none.
-    NSString *clientId = ([credentialClientId isKindOfClass:[NSString class]] && [credentialClientId length] > 0)
-        ? credentialClientId : (ApolloEffectiveRedditClientId() ?: sRedditClientId);
-    if (clientId.length == 0) return nil;
-
-    NSMutableDictionary *account = [@{ @"clientID": clientId, @"refreshToken": refreshToken } mutableCopy];
-    if (username.length > 0) account[@"username"] = username;
-    return account;
-}
-
 - (void)copyWidgetSetupCode {
     NSString *clientID = sRedditClientId ?: @"";
     if (clientID.length == 0) {
@@ -3412,58 +3463,11 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
         return;
     }
 
-    // With a signed-in API-key account the code can carry its login, which is
-    // what the widgets need for Home and private multireddits — but that's the
-    // user's choice, so ask. Keyless/no account: the plain code, as before.
-    NSDictionary *account = ApolloWidgetAccountCredentials();
-    if (!account) {
-        [self copyWidgetSetupCodeWithAccount:nil];
-        return;
-    }
-    __weak typeof(self) weakSelf = self;
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:@"Widget Setup Code"
-                         message:@"Include your account so widgets can show Home and your private multireddits."
-                  preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy with Account" style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf copyWidgetSetupCodeWithAccount:account];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy without Account" style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf copyWidgetSetupCodeWithAccount:nil];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    UITableViewCell *cell = [self cellForRowID:@"api.widgetSetupCode"];
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)copyWidgetSetupCodeWithAccount:(NSDictionary *)account {
-    // base64( JSON { v, clientID, userAgent[, clientSecret][, refreshToken,
-    // username] } ) — decoded by the widget's SetupCode parser. userAgent is
-    // included so the widget's Reddit requests carry the same identity as the
-    // configured (spoofed) app. clientSecret only exists for "web app" keys,
-    // whose token endpoint refuses the empty password installed apps use.
-    // With an account the code is v2 and carries the OAuth refresh token —
-    // that is what lets the widget read Home and private multireddits. Reddit
-    // does not rotate refresh tokens on use, so the widget minting its own
-    // access tokens never invalidates the app's session. `issued` (unix
-    // seconds) lets the widgets treat the most recently copied code as the
-    // one that wins everywhere — so copying "without account" and pasting it
-    // into any widget is how account access is removed again.
-    NSString *clientID = account[@"clientID"] ?: (sRedditClientId ?: @"");
-    NSMutableDictionary *payload = [@{ @"v": account ? @2 : @1,
-                                       @"clientID": clientID,
-                                       @"issued": @((long long)[NSDate date].timeIntervalSince1970) } mutableCopy];
+    // base64( JSON { v, clientID, userAgent } ) — decoded by the widget's
+    // SetupCode parser. userAgent is included so the widget's Reddit requests
+    // carry the same identity as the configured (spoofed) app.
+    NSMutableDictionary *payload = [@{ @"v": @1, @"clientID": clientID } mutableCopy];
     if (sUserAgent.length > 0) payload[@"userAgent"] = sUserAgent;
-    NSString *secret = ApolloSecretForClientId(clientID);
-    if (secret.length > 0) payload[@"clientSecret"] = secret;
-    if (account) {
-        payload[@"refreshToken"] = account[@"refreshToken"];
-        if ([account[@"username"] length] > 0) payload[@"username"] = account[@"username"];
-    }
 
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
     if (!json) {
@@ -3478,11 +3482,8 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     };
     [[UIPasteboard generalPasteboard] setItems:@[item] options:options];
 
-    NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget";
     [self showAlertWithTitle:@"Copied"
-                     message:account
-                         ? [NSString stringWithFormat:@"Setup code copied. %@. It includes your account login, so don't share it.", how]
-                         : [NSString stringWithFormat:@"Setup code copied. %@ and removes any account you added before.", how]];
+                     message:@"Setup code copied. On your Home Screen, add the Apollo “Showerthoughts” widget, long-press it → Edit Widget, and paste this code into Setup Code."];
 }
 
 - (void)testNotificationBackendConnection {
