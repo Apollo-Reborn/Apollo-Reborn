@@ -177,9 +177,6 @@ extern ApolloTabBarHideStyle sTabBarHideStyle;
 #ifdef __cplusplus
 extern "C" {
 #endif
-// Opt-in top navigation bar movement, following the bottom tab bar's scroll
-// behavior while Hide Bars on Scroll is enabled. Default NO.
-extern BOOL sHideTopBarOnScroll;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
@@ -276,13 +273,7 @@ void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
-#ifdef __cplusplus
-extern "C" {
-#endif
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
-#ifdef __cplusplus
-}
-#endif
 // Whether the nav title for this view controller should size its JumpBar to
 // its actual content (with truncation if still too wide) instead of Apollo's
 // fixed native width (ApolloSubredditHeaders.xm's subreddit feeds).
