@@ -499,13 +499,6 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Gallery can inherit an opaque navigation-bar appearance when Header
-    // Style is Hidden. UIKit would then place this controller's root view
-    // below the bar, leaving a solid strip behind when the top bar is moved
-    // offscreen. Keep the grid under navigation chrome just like Apollo's
-    // native feeds so scrolled tiles fill the space the bar vacates.
-    self.edgesForExtendedLayout = UIRectEdgeAll;
-    self.extendedLayoutIncludesOpaqueBars = YES;
     self.title = @"Gallery";
     self.view.backgroundColor = self.gridBackgroundColor ?: UIColor.systemBackgroundColor;
 
@@ -575,52 +568,6 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     [self apollo_beginInitialLoad];
 }
 
-- (void)apollo_updateImmersiveTopInset {
-    if (!self.collectionView) return;
-
-    // Gallery is immersive: its tiles provide the pixels sampled by Soft,
-    // Hard, and Blur, while Hidden exposes those tiles directly. UIKit's
-    // automatic top inset otherwise leaves the controller background under
-    // the navigation controls, making every Header Style look like a solid
-    // Hard bar. Cancel only the automatic TOP contribution; retain UIKit's
-    // bottom adjustment so the final tiles remain reachable above the tab bar.
-    UIEdgeInsets contentInset = self.collectionView.contentInset;
-    CGFloat automaticTop = self.collectionView.adjustedContentInset.top - contentInset.top;
-    CGFloat desiredCompensation = -automaticTop;
-    if (fabs(contentInset.top - desiredCompensation) < 0.5) return;
-    CGFloat visibleContentY = self.collectionView.contentOffset.y +
-        self.collectionView.adjustedContentInset.top;
-    contentInset.top = desiredCompensation;
-    self.collectionView.contentInset = contentInset;
-    self.collectionView.scrollIndicatorInsets = contentInset;
-    CGPoint offset = self.collectionView.contentOffset;
-    offset.y = visibleContentY - self.collectionView.adjustedContentInset.top;
-    self.collectionView.contentOffset = offset;
-}
-
-- (void)apollo_applyImmersiveNavigationAppearance {
-    // Once the grid leaves its scroll edge, UINavigationBar normally swaps to
-    // an opaque standard appearance. That layer sits above the configured top
-    // edge effect and made a revealed Hidden header look solid. Gallery always
-    // supplies content beneath the controls, so keep both navigation states
-    // transparent and let Header Style remain the sole owner of the material.
-    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-    [appearance configureWithTransparentBackground];
-    self.navigationItem.standardAppearance = appearance;
-    self.navigationItem.scrollEdgeAppearance = appearance;
-    self.navigationItem.compactAppearance = appearance;
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    [self apollo_applyImmersiveNavigationAppearance];
-}
-
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    [self apollo_updateImmersiveTopInset];
-}
-
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -634,7 +581,6 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 // a landscape grid back upright as it pops.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self apollo_updateImmersiveTopInset];
     if (@available(iOS 16.0, *)) {
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }

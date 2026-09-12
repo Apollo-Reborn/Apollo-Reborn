@@ -267,9 +267,6 @@ static NSString *const UDKeyClassicTabBarScrollBehavior = @"ClassicTabBarScrollB
 // Apollo's native preference, mirrored in Reborn's Interface > Tab Bar screen
 // and consumed by the Liquid Glass compatibility layer as its source of truth.
 static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
-// Liquid Glass only. Also hides/reveals the top navigation bar with the bottom
-// tab bar while Hide Bars on Scroll is enabled. Default NO; remembered when off.
-static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
 // bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
