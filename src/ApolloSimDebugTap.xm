@@ -18,6 +18,8 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloCommentVoteInsights.h"
+#import <AVFoundation/AVFoundation.h>
+#import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloFloatingTabs.h"
 #import "ApolloLinkPreviewFetcher.h"
@@ -69,6 +71,84 @@ static NSString *ApolloSimTapFile(void) {
 static NSString *ApolloSimTapNotify(void) {
     NSString *env = NSProcessInfo.processInfo.environment[@"APOLLOFIX_TAP_NOTIFY"];
     return env.length ? env : kApolloSimDefaultTapNotify;
+}
+
+// "mediastate": dump the presented fullscreen viewer's player + the audio
+// session, for the rotation-mute diagnosis (issue #1072).
+static id ApolloSimDebugIvar(id obj, const char *name) {
+    if (!obj) return nil;
+    Ivar ivar = class_getInstanceVariable([obj class], name);
+    return ivar ? object_getIvar(obj, ivar) : nil;
+}
+
+static void ApolloSimDebugDumpMediaState(void) {
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    UIWindowScene *scene = ApolloAllWindows().firstObject.windowScene;
+    ApolloLog(@"[SimDebugTap] mediastate: session=%@ orientation=%ld",
+              session.category, (long)scene.interfaceOrientation);
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *vc = window.rootViewController;
+        while (vc) {
+            NSString *name = NSStringFromClass([vc class]);
+            ApolloLog(@"[SimDebugTap] mediastate: presented chain -> %@ bounds=%@", name,
+                      NSStringFromCGRect(vc.view.bounds));
+            if ([name containsString:@"MediaPageViewController"]) {
+                NSArray *pages = [vc respondsToSelector:@selector(viewControllers)]
+                    ? [(UIPageViewController *)vc viewControllers] : @[];
+                for (UIViewController *page in pages) {
+                    AVPlayer *player = ApolloSimDebugIvar(page, "player");
+                    NSString *source = @"player";
+                    if (!player) {
+                        id container = ApolloSimDebugIvar(page, "playerLayerContainerView");
+                        id layer = ApolloSimDebugIvar(container, "playerLayer");
+                        if ([layer isKindOfClass:[AVPlayerLayer class]]) {
+                            player = [(AVPlayerLayer *)layer player];
+                            source = @"playerLayerContainerView";
+                        }
+                    }
+                    ApolloLog(@"[SimDebugTap] mediastate: page=%@ player=%p (%@) muted=%d rate=%.2f bounds=%@",
+                              NSStringFromClass([page class]), player, source,
+                              player ? (int)[player isMuted] : -1, player ? [player rate] : 0.0f,
+                              NSStringFromCGRect(page.view.bounds));
+                }
+            }
+            vc = vc.presentedViewController;
+        }
+        // The feed table under the viewer: offset/insets, visible rows and
+        // each visible cell's video player, so a rotation-driven visibility
+        // change can be correlated with the fullscreen player above it.
+        UIViewController *root = window.rootViewController;
+        UIViewController *content = root;
+        if ([content isKindOfClass:[UITabBarController class]]) content = [(UITabBarController *)content selectedViewController];
+        if ([content isKindOfClass:[UINavigationController class]]) content = [(UINavigationController *)content topViewController];
+        UITableView *table = nil;
+        if ([content.view isKindOfClass:[UITableView class]]) table = (UITableView *)content.view;
+        for (UIView *sub in content.view.subviews) {
+            if ([sub isKindOfClass:[UITableView class]]) { table = (UITableView *)sub; break; }
+        }
+        if (!table) continue;
+        ApolloLog(@"[SimDebugTap] mediastate: feed %@ table bounds=%@ offset=%@ insets=%@ window=%p",
+                  NSStringFromClass([content class]), NSStringFromCGRect(table.bounds),
+                  NSStringFromCGPoint(table.contentOffset),
+                  NSStringFromUIEdgeInsets(table.adjustedContentInset), table.window);
+        for (UITableViewCell *cell in table.visibleCells) {
+            NSIndexPath *ip = [table indexPathForCell:cell];
+            id node = [cell respondsToSelector:@selector(node)] ? [(id)cell node] : nil;
+            id rich = ApolloSimDebugIvar(node, "richMediaNode");
+            id videoNode = ApolloSimDebugIvar(rich, "videoNode");
+            SEL layerSel = NSSelectorFromString(@"playerLayer");
+            id layer = [videoNode respondsToSelector:layerSel]
+                ? ((id (*)(id, SEL))objc_msgSend)(videoNode, layerSel) : nil;
+            AVPlayer *player = [layer isKindOfClass:[AVPlayerLayer class]] ? [(AVPlayerLayer *)layer player] : nil;
+            SEL playerSel = NSSelectorFromString(@"player");
+            if (!player && [videoNode respondsToSelector:playerSel]) {
+                player = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
+            }
+            ApolloLog(@"[SimDebugTap] mediastate:   row %ld frame=%@ node=%@ videoNode=%p player=%p muted=%d rate=%.2f",
+                      (long)ip.row, NSStringFromCGRect(cell.frame), NSStringFromClass([node class]),
+                      videoNode, player, player ? (int)[player isMuted] : -1, player ? [player rate] : 0.0f);
+        }
+    }
 }
 
 static void ApolloSimDebugSendTouch(UITouch *touch) {
@@ -829,6 +909,10 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         if ([contents hasPrefix:@"devvitsweep"]) {
             extern void ApolloDevvitDebugSweep(void);
             ApolloDevvitDebugSweep();
+            return;
+        }
+        if ([contents hasPrefix:@"mediastate"]) {
+            ApolloSimDebugDumpMediaState();
             return;
         }
         // "rotate <landscape|portrait>" command: rotate the scene from inside
