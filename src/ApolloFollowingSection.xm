@@ -52,6 +52,10 @@
 //    unfavorite delete we recompute the favorites row from the tapped name the
 //    same way ApolloSubredditIndexPolish's off-by-one correction does, so the
 //    two modules converge on the same answer regardless of hook order.
+//    Multireddit expansion instead defers its row batch and rebuilds the list
+//    once the handler closes its point window. Apollo's name-based expansion
+//    state can affect more models than that batch accounts for; see
+//    ApolloMultiredditExpansion.h for the reproduced invalid-row-count case.
 //
 // Everything else Apollo does to this table is reloadData (unsubscribe commits,
 // model refreshes), which is remap-safe: our mapping is invalidated in a
@@ -80,6 +84,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloMultiredditExpansion.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -799,12 +804,18 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
-    if (!map.active) { %orig; return; }
+    if (!map.active) {
+        %orig;
+        return;
+    }
     NSIndexPath *nativePath = ApolloFollowingNativePathForVisible(map, indexPath);
     ApolloLog(@"[FollowingSection] didSelect visible %ld/%ld -> native %ld/%ld",
               (long)indexPath.section, (long)indexPath.row,
               (long)(nativePath ? nativePath.section : -1), (long)(nativePath ? nativePath.row : -1));
-    if (!nativePath) { %orig; return; }
+    if (!nativePath) {
+        %orig;
+        return;
+    }
     %orig(tableView, nativePath);
 }
 
@@ -850,9 +861,15 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(NSInteger)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
-    if (!map.active) { %orig; return; }
+    if (!map.active) {
+        %orig;
+        return;
+    }
     NSIndexPath *nativePath = ApolloFollowingNativePathForVisible(map, indexPath);
-    if (!nativePath) { %orig; return; }
+    if (!nativePath) {
+        %orig;
+        return;
+    }
     // Apollo's commit paths end in reloadData (never row animations), so the
     // translated native path is all that's needed here.
     %orig(tableView, editingStyle, nativePath);
@@ -860,17 +877,29 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 
 - (void)tableView:(UITableView *)tableView willBeginEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
-    if (!map.active) { %orig; return; }
+    if (!map.active) {
+        %orig;
+        return;
+    }
     NSIndexPath *nativePath = ApolloFollowingNativePathForVisible(map, indexPath);
-    if (!nativePath) { %orig; return; }
+    if (!nativePath) {
+        %orig;
+        return;
+    }
     %orig(tableView, nativePath);
 }
 
 - (void)tableView:(UITableView *)tableView didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
-    if (!map.active || !indexPath) { %orig; return; }
+    if (!map.active || !indexPath) {
+        %orig;
+        return;
+    }
     NSIndexPath *nativePath = ApolloFollowingNativePathForVisible(map, indexPath);
-    if (!nativePath) { %orig; return; }
+    if (!nativePath) {
+        %orig;
+        return;
+    }
     %orig(tableView, nativePath);
 }
 
@@ -945,7 +974,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     }
     NSIndexPath *nativeFrom = ApolloFollowingNativePathForVisible(map, fromIndexPath);
     NSIndexPath *nativeTo = ApolloFollowingNativePathForVisible(map, toIndexPath);
-    if (!nativeFrom || !nativeTo) { %orig; return; }
+    if (!nativeFrom || !nativeTo) {
+        %orig;
+        return;
+    }
     %orig(tableView, nativeFrom, nativeTo);
 }
 
@@ -954,7 +986,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 - (void)favoriteSubredditButtonTapped:(id)sender {
     UITableView *tableView = ApolloFollowingTableViewOf((UIViewController *)self);
     ApolloFollowingMap *map = tableView ? ApolloFollowingActiveMapForTable(tableView) : nil;
-    if (!map) { %orig; return; }
+    if (!map) {
+        %orig;
+        return;
+    }
     sApolloFollowingWindowDepth++;
     sApolloFollowingWindowTable = tableView;
     sApolloFollowingWindowTappedName = nil;
@@ -972,16 +1007,26 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 - (void)multiredditExpandButtonTapped:(id)sender {
     UITableView *tableView = ApolloFollowingTableViewOf((UIViewController *)self);
     ApolloFollowingMap *map = tableView ? ApolloFollowingActiveMapForTable(tableView) : nil;
-    if (!map) { %orig; return; }
-    sApolloFollowingWindowDepth++;
-    sApolloFollowingWindowTable = tableView;
-    %orig;
-    if (sApolloFollowingWindowDepth > 0) sApolloFollowingWindowDepth--;
-    if (sApolloFollowingWindowDepth == 0) {
-        sApolloFollowingWindowTable = nil;
-        sApolloFollowingWindowTappedName = nil;
-        sApolloFollowingWindowFavorites = nil;
-    }
+    // Native expansion can change more rows than its animation describes.
+    // This also applies to the normal layout, where no Following map exists.
+    ApolloPerformMultiredditExpansion(tableView, ^{
+        if (!map) {
+            %orig;
+            return;
+        }
+        sApolloFollowingWindowDepth++;
+        sApolloFollowingWindowTable = tableView;
+        @try {
+            %orig;
+        } @finally {
+            if (sApolloFollowingWindowDepth > 0) sApolloFollowingWindowDepth--;
+            if (sApolloFollowingWindowDepth == 0) {
+                sApolloFollowingWindowTable = nil;
+                sApolloFollowingWindowTappedName = nil;
+                sApolloFollowingWindowFavorites = nil;
+            }
+        }
+    });
 }
 
 %end
@@ -995,10 +1040,21 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 %hook UITableView
 
 - (void)reloadData {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     if (ApolloFollowingTableIsList((UITableView *)self)) {
         // Invalidate BEFORE %orig so the re-query sees a fresh mapping.
         ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
     }
+    %orig;
+}
+
+- (void)beginUpdates {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
+    %orig;
+}
+
+- (void)endUpdates {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     %orig;
 }
 
@@ -1063,6 +1119,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 // the same answer ApolloSubredditIndexPolish's off-by-one correction produces,
 // so the two hooks converge in either install order.
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     // No caller gate here (unlike the lookup hooks above): row mutations on
     // this table only ever ORIGINATE in Apollo's model-space code — UIKit
     // never self-registers them and the tweak's other modules only rewrite
@@ -1072,7 +1129,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     // ApolloSubredditIndexPolish's outer deleteRows hook).
     BOOL windowActive = sApolloFollowingWindowDepth > 0 && (UITableView *)self == sApolloFollowingWindowTable;
     ApolloFollowingMap *map = ApolloFollowingPresentedMapForTable((UITableView *)self);
-    if (!map) { %orig; return; }
+    if (!map) {
+        %orig;
+        return;
+    }
     NSMutableArray<NSIndexPath *> *translated = [NSMutableArray arrayWithCapacity:indexPaths.count];
     for (NSIndexPath *nativePath in indexPaths) {
         NSIndexPath *effectiveNative = nativePath;
@@ -1109,14 +1169,21 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 }
 
 - (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
-    if (!ApolloFollowingTableIsList((UITableView *)self)) { %orig; return; }
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
+    if (!ApolloFollowingTableIsList((UITableView *)self)) {
+        %orig;
+        return;
+    }
     // Inserts speak the POST-update layout: rebuild from the current model
     // first (Apollo mutates its model before registering the animation), so a
     // newly added u/ profile resolves straight into the FOLLOWING section and
     // collation rows get the compressed row index of the fresh layout.
     ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
     ApolloFollowingMap *map = ApolloFollowingActiveMapForTable((UITableView *)self);
-    if (!map) { %orig; return; }
+    if (!map) {
+        %orig;
+        return;
+    }
     NSMutableArray<NSIndexPath *> *translated = [NSMutableArray arrayWithCapacity:indexPaths.count];
     for (NSIndexPath *nativePath in indexPaths) {
         NSIndexPath *visible = ApolloFollowingVisiblePathForNative(map, nativePath);
@@ -1131,6 +1198,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 }
 
 - (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     // Only Apollo's own reloads carry model-space paths. The tweak's other
     // modules pass visible ones (ApolloSubredditIndexPolish's delayed star
     // refresh reloads the rows it found via indexPathForCell:), so gate the
@@ -1140,9 +1208,15 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     // only descends into ApolloSwipeUpComments' pass-through. The point
     // windows remain the fallback for Apollo's synchronous star/expand reloads.
     BOOL windowActive = sApolloFollowingWindowDepth > 0 && (UITableView *)self == sApolloFollowingWindowTable;
-    if (!windowActive && !ApolloFollowingCallerIsApolloBinary(__builtin_return_address(0))) { %orig; return; }
+    if (!windowActive && !ApolloFollowingCallerIsApolloBinary(__builtin_return_address(0))) {
+        %orig;
+        return;
+    }
     ApolloFollowingMap *map = ApolloFollowingPresentedMapForTable((UITableView *)self);
-    if (!map) { %orig; return; }
+    if (!map) {
+        %orig;
+        return;
+    }
     NSMutableArray<NSIndexPath *> *translated = [NSMutableArray arrayWithCapacity:indexPaths.count];
     for (NSIndexPath *nativePath in indexPaths) {
         NSIndexPath *visible = ApolloFollowingVisiblePathForNative(map, nativePath);

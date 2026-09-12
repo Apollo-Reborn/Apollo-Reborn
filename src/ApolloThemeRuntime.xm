@@ -2058,11 +2058,13 @@ void ApolloThemeRuntimeInvalidate(void) {
 %hook UIButton
 
 - (CGSize)intrinsicContentSize {
-    return ApolloNavigationTitleFittingSize(self, %orig);
+    CGSize nativeSize = %orig;
+    return ApolloNavigationTitleFittingSize(self, nativeSize);
 }
 
 - (CGSize)sizeThatFits:(CGSize)size {
-    return ApolloNavigationTitleFittingSize(self, %orig(size));
+    CGSize nativeSize = %orig(size);
+    return ApolloNavigationTitleFittingSize(self, nativeSize);
 }
 
 - (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {

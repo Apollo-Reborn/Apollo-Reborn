@@ -467,7 +467,9 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
             CGFloat before = self.contentOffset.y;
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
-            [UIView performWithoutAnimation:^{ %orig; }];
+            [UIView performWithoutAnimation:^{
+                %orig;
+            }];
             [CATransaction commit];
             sSuppressedPasses++;
             // One line per launch is enough to tell a fixed launch from an
@@ -496,7 +498,10 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 }
 
 - (void)setContentOffset:(CGPoint)offset {
-    if (!sWindowOpen || self != sTrackedTable) { %orig; return; }
+    if (!sWindowOpen || self != sTrackedTable) {
+        %orig;
+        return;
+    }
     CGPoint before = self.contentOffset;
     %orig;
     if (fabs(before.y - offset.y) < 0.5) return;
@@ -507,7 +512,10 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 }
 
 - (void)setContentInset:(UIEdgeInsets)inset {
-    if (!sWindowOpen || self != sTrackedTable) { %orig; return; }
+    if (!sWindowOpen || self != sTrackedTable) {
+        %orig;
+        return;
+    }
     UIEdgeInsets before = self.contentInset;
     %orig;
     if (UIEdgeInsetsEqualToEdgeInsets(before, inset)) return;
@@ -521,7 +529,10 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 // Apollo parks several of its tables through -setBounds: rather than
 // -setContentOffset:, so the offset move can bypass the setter above.
 - (void)setBounds:(CGRect)bounds {
-    if (!sWindowOpen || self != sTrackedTable) { %orig; return; }
+    if (!sWindowOpen || self != sTrackedTable) {
+        %orig;
+        return;
+    }
     CGRect before = self.bounds;
     %orig;
     if (fabs(before.origin.y - bounds.origin.y) < 0.5) return;
@@ -532,7 +543,10 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 }
 
 - (void)safeAreaInsetsDidChange {
-    if (!sWindowOpen || self != sTrackedTable) { %orig; return; }
+    if (!sWindowOpen || self != sTrackedTable) {
+        %orig;
+        return;
+    }
     UIEdgeInsets before = self.safeAreaInsets;
     %orig;
     ApolloSLDLog(@"+%.0fms safeAreaInsetsDidChange %@ -> %@ anim(%@) via %@",
@@ -541,7 +555,10 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 }
 
 - (void)reloadData {
-    if (!sWindowOpen || self != sTrackedTable) { %orig; return; }
+    if (!sWindowOpen || self != sTrackedTable) {
+        %orig;
+        return;
+    }
     CGFloat before = self.contentSize.height;
     %orig;
     ApolloSLDLog(@"+%.0fms reloadData contentHeight %.0f -> %.0f anim(%@) via %@",
@@ -557,11 +574,16 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 %hook UITableViewHeaderFooterView
 
 - (void)layoutSubviews {
-    if (!ApolloSLDShouldSuppressHeaderLayout((UIView *)self)) { %orig; return; }
+    if (!ApolloSLDShouldSuppressHeaderLayout((UIView *)self)) {
+        %orig;
+        return;
+    }
     ApolloSLDNoteHeaderSuppressed((UIView *)self);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    [UIView performWithoutAnimation:^{ %orig; }];
+    [UIView performWithoutAnimation:^{
+        %orig;
+    }];
     [CATransaction commit];
 }
 
@@ -570,11 +592,16 @@ static void ApolloSLDNoteHeaderSuppressed(UIView *header) {
 %hook _TtC6Apollo31RecreatedTableSectionHeaderView
 
 - (void)layoutSubviews {
-    if (!ApolloSLDShouldSuppressHeaderLayout((UIView *)self)) { %orig; return; }
+    if (!ApolloSLDShouldSuppressHeaderLayout((UIView *)self)) {
+        %orig;
+        return;
+    }
     ApolloSLDNoteHeaderSuppressed((UIView *)self);
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    [UIView performWithoutAnimation:^{ %orig; }];
+    [UIView performWithoutAnimation:^{
+        %orig;
+    }];
     [CATransaction commit];
 }
 
