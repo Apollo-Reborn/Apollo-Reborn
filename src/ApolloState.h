@@ -246,6 +246,8 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
+extern BOOL sCollapseNavigationActions;
+extern BOOL sCenterTitleBetweenButtons;
 extern NSInteger sScrollEdgeEffectStyle;
 // Resolves the retired Automatic value defensively if it is observed before
 // load-time migration, and resolves Blur to the OS-equivalent Soft/Hard style
