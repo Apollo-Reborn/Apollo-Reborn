@@ -1347,6 +1347,76 @@ static void NSBViewWillDisappear(UIViewController *vc) {
 
 %end
 
+// MARK: - Comment jump lookup (#1092 / #1093)
+//
+// Apollo 1.15.11's current-comment helper (0x10070ec10) probes its table at
+// (0, bounds.origin.y + contentInset.top + 1). Both the tap handler
+// (0x100726594) and long-press handler (0x10070f1b0) call it synchronously.
+// Native search moves the chrome into adjustedContentInset, so that probe
+// lands ABOVE the visible parent and repeatedly selects the same destination.
+// Correct only that probe, keeping Apollo's tree traversal and animation.
+// Never alter the table's actual insets or offset to influence the lookup.
+// Thread-local, save/restored scope prevents unrelated tables, nested actions,
+// and Texture background work from inheriting the correction.
+static __thread void *sNSBCommentJumpTable;
+
+static void *NSBCommentJumpTableForController(UIViewController *vc) {
+    if (!NSThread.isMainThread || !ApolloNativeFeedSearchEnabled() ||
+        !NSBIsNativeSearchCommentsVC(vc)) return NULL;
+    UIScrollView *table = NSBTableForVC(vc);
+    if (!table || objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return NULL;
+    return (__bridge void *)table;
+}
+
+// MARK: - Comment jump handlers
+%hook _TtC6Apollo22CommentsViewController
+
+- (void)commentJumpButtonTappedWithSender:(id)sender {
+    void *previous = sNSBCommentJumpTable;
+    sNSBCommentJumpTable = NSBCommentJumpTableForController((UIViewController *)self);
+    @try {
+        %orig(sender);
+    } @finally {
+        sNSBCommentJumpTable = previous;
+    }
+}
+
+- (void)commentJumpButtonLongPressedWithSender:(id)sender {
+    void *previous = sNSBCommentJumpTable;
+    sNSBCommentJumpTable = NSBCommentJumpTableForController((UIViewController *)self);
+    @try {
+        %orig(sender);
+    } @finally {
+        sNSBCommentJumpTable = previous;
+    }
+}
+
+%end
+
+// MARK: - Comment jump probe
+%hook ASTableView
+
+- (NSIndexPath *)indexPathForRowAtPoint:(CGPoint)point {
+    if (sNSBCommentJumpTable == (__bridge void *)self) {
+        UIScrollView *table = (UIScrollView *)self;
+        CGFloat nativeY = table.bounds.origin.y + table.contentInset.top + 1.0;
+        if (point.x == 0.0 && fabs(point.y - nativeY) < 0.01) {
+            CGFloat correctedY = table.bounds.origin.y + table.adjustedContentInset.top + 1.0;
+            // Consume the probe before entering UIKit/Texture: any reentrant
+            // geometry lookup must see the real point it was passed.
+            sNSBCommentJumpTable = NULL;
+            if (NSBTraceEnabled()) {
+                ApolloLog(@"[NativeSearch] comment jump probe %.1f -> %.1f", point.y, correctedY);
+            }
+            point.y = correctedY;
+        }
+    }
+    return %orig(point);
+}
+
+%end
+// MARK: - End comment jump lookup
+
 // CommentsViewController does not implement viewWillDisappear: itself and
 // other modules hook it on the subclass. With the runtime's own dispatch a
 // subclass hook of an inherited method captures the superclass IMP at install
