@@ -456,9 +456,9 @@ static NSString *const kApolloBoundedDataErrorDomain = @"ApolloBoundedData";
     ApolloBoundedDataRecord *record = [ApolloBoundedDataRecord new];
     record.maximumBytes = maximumBytes;
     record.data = [NSMutableData data];
-    record.responseValidator = [responseValidator copy];
+    record.responseValidator = responseValidator;
     record.completionQueue = completionQueue ?: dispatch_get_main_queue();
-    record.completion = [completion copy];
+    record.completion = completion;
     @synchronized (self) { self.records[@(task.taskIdentifier)] = record; }
     [task resume];
     return task;

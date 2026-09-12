@@ -108,13 +108,13 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
         NSMutableSet<NSString *> *keys = [self.storedKeys mutableCopy] ?: [NSMutableSet set];
         if (present) [keys addObject:key];
         else [keys removeObject:key];
-        self.storedKeys = [keys copy];
+        self.storedKeys = keys;
     }
 }
 
 - (void)replaceStoredKeys:(NSSet<NSString *> *)keys {
     @synchronized (self.storedKeysLock) {
-        self.storedKeys = [keys copy] ?: [NSSet set];
+        self.storedKeys = keys ?: [NSSet set];
     }
 }
 

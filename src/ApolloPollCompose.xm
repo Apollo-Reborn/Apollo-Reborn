@@ -229,7 +229,15 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
     BOOL textAllowed = submissionType != 2;
     // Custom SF Symbols (…badge.plus) ship in ApolloPollSymbols.bundle; each
     // falls back to a stock SF Symbol if the bundle can't be loaded.
-    struct { NSString *title; NSString *customSymbol; NSString *fallback; BOOL available; } entries[] = {
+    // These fields only borrow string literals, whose lifetime covers every menu
+    // use. The table needs no ARC ownership; makeAction accepts ordinary strong
+    // parameters when constructing the actions and their escaping handlers.
+    const struct {
+        __unsafe_unretained NSString *title;
+        __unsafe_unretained NSString *customSymbol;
+        __unsafe_unretained NSString *fallback;
+        BOOL available;
+    } entries[] = {
         { @"Photo", @"custom.photo.badge.plus",                         @"photo",          linkAllowed && allowImages },
         { @"Link",  @"custom.link.badge.plus",                          @"link",           linkAllowed },
         { @"Text",  @"custom.text.page.badge.plus",                     @"text.alignleft", textAllowed },
