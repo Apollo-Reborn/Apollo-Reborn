@@ -22,6 +22,12 @@
 // captured opportunistically off whatever row happened to build first. Same
 // technique as ApolloSettingsGeneralTable.xm's factory(vc, donor).
 //
+// TAP DISPATCH: an injected row's tap is handled in
+// tableView:willSelectRowAtIndexPath: (added to ActionController at %ctor) and
+// answered with nil, so UIKit never sends tableView:didSelectRowAtIndexPath:
+// for it — see ApolloActionMenuWillSelectRow for why (#1071: a third-party
+// tweak's didSelect hook wrapping ours crashed on our row's index).
+//
 // GEOMETRY: legacy rows are always appended after the last native row (Apollo's
 // own cellForRow dequeues with the index path it's handed; UIKit asserts if a
 // native row's index shifts) and the presented sheet's frame grows by
@@ -491,6 +497,105 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
 
 #pragma mark - Legacy path: the single table/geometry owner
 
+#pragma mark - Injected-row tap dispatch
+
+// The spec behind `indexPath`, or nil when the row is native or was appended
+// by someone else (a third-party tweak stacking its own row after ours).
+static ApolloActionMenuSpec *ApolloActionMenuSpecAtIndexPath(id controller, NSIndexPath *indexPath) {
+    if (!indexPath || indexPath.section != 0) return nil;
+    ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(controller, nil);
+    NSInteger nativeCount = state.nativeRowCount;
+    if (state.specs.count == 0 || nativeCount < 0 || indexPath.row < nativeCount) return nil;
+    NSInteger slotIndex = indexPath.row - nativeCount;
+    if (slotIndex < 0 || (NSUInteger)slotIndex >= state.specs.count) return nil;
+    return state.specs[(NSUInteger)slotIndex];
+}
+
+// Run an injected row's tap: dismiss-then-perform (the default), or perform in
+// place for a spec whose perform forwards into a native row's own
+// self-dismissing flow (PublicSticky).
+static void ApolloActionMenuPerformSpec(id controller, UITableView *tableView,
+                                        ApolloActionMenuSpec *spec, NSIndexPath *indexPath) {
+    // Keep the tap feedback native rows get. On the didSelect path UIKit has
+    // selected the row and this deselect fades it out under the dismissal; on
+    // the willSelect path the row is never selected (UIKit already dropped the
+    // touch-down highlight before asking willSelect, and nil stops it there),
+    // so re-arm the cell's own highlight and fade that instead — cell-level
+    // state only, nothing re-entrant on the table's selection bookkeeping.
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    if (cell && !cell.isSelected) {
+        [cell setHighlighted:YES animated:NO];
+        [cell setHighlighted:NO animated:YES];
+    }
+
+    __strong id strongSelf = controller;
+    void (^perform)(id) = spec.perform;
+    if (spec.legacyDismissesSheet) {
+        [(UIViewController *)controller dismissViewControllerAnimated:YES completion:^{
+            if (perform) perform(strongSelf);
+        }];
+    } else if (perform) {
+        perform(strongSelf);
+    }
+}
+
+// tableView:willSelectRowAtIndexPath: on ActionController — where an injected
+// row's tap is handled. Returning nil makes UIKit skip both the selection and
+// the tableView:didSelectRowAtIndexPath: send for that row
+// (-[UITableView _selectRowAtIndexPath:…notifyDelegate:] consults willSelect
+// first and bails on nil), so the tap never reaches ANY didSelect
+// implementation: not Apollo's, and not one another tweak installed on top of
+// ours.
+//
+// Why (#1071): Translomatic hooks this class's didSelectRowAtIndexPath: too.
+// Loading after the IPA-embedded tweak, its replacement wraps ours — UIKit
+// calls it first — and it doesn't expect rows past Apollo's own action list:
+// the crash report shows it null-dereferencing inside its own code, called
+// straight from UIKit's row selection, on our "Keep in Floating Tab" row.
+// Whoever ends up outermost on didSelect, an injected row now never gets there.
+//
+// Apollo's ActionController doesn't implement willSelect (1.15.11 headers), so
+// this is ADDED at %ctor rather than hooked; should some build or tweak have
+// implemented it first, that implementation is wrapped and still consulted for
+// every non-injected row.
+typedef NSIndexPath *(*ApolloActionMenuWillSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
+static ApolloActionMenuWillSelectIMP sApolloActionMenuOrigWillSelect = NULL;
+
+static NSIndexPath *ApolloActionMenuWillSelectRow(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
+    ApolloActionMenuSpec *spec = ApolloActionMenuSpecAtIndexPath(self, indexPath);
+    if (!spec) {
+        if (sApolloActionMenuOrigWillSelect) return sApolloActionMenuOrigWillSelect(self, _cmd, tableView, indexPath);
+        return indexPath;
+    }
+    ApolloLog(@"[ActionMenu] Injected row %ld ('%@') tapped — handled at willSelect, not delivered to didSelectRowAtIndexPath:",
+              (long)indexPath.row, spec.identifier);
+    ApolloActionMenuPerformSpec(self, tableView, spec, indexPath);
+    return nil;
+}
+
+static void ApolloActionMenuInstallWillSelect(void) {
+    Class cls = objc_getClass("_TtC6Apollo16ActionController");
+    if (!cls) {
+        ApolloLog(@"[ActionMenu] ActionController class missing — willSelect dispatch not installed");
+        return;
+    }
+    SEL sel = @selector(tableView:willSelectRowAtIndexPath:);
+    Method existing = class_getInstanceMethod(cls, sel);
+    if (!existing) {
+        BOOL added = class_addMethod(cls, sel, (IMP)ApolloActionMenuWillSelectRow, "@@:@@");
+        ApolloLog(@"[ActionMenu] willSelectRowAtIndexPath: %@ on ActionController", added ? @"added" : @"NOT added");
+        return;
+    }
+    // Already implemented (own or inherited): keep it reachable for native rows.
+    if (class_addMethod(cls, sel, (IMP)ApolloActionMenuWillSelectRow, method_getTypeEncoding(existing))) {
+        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_getImplementation(existing); // inherited
+    } else {
+        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_setImplementation(existing, (IMP)ApolloActionMenuWillSelectRow); // own
+    }
+    ApolloLog(@"[ActionMenu] willSelectRowAtIndexPath: wrapped an existing implementation on ActionController");
+}
+
 %hook _TtC6Apollo16ActionController
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -561,37 +666,23 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(self, nil);
-    NSInteger nativeCount = state.nativeRowCount;
-
-    if (state.specs.count == 0 || indexPath.section != 0 || nativeCount < 0 || indexPath.row < nativeCount) {
-        %orig;
-        return;
-    }
-
-    NSInteger slotIndex = indexPath.row - nativeCount;
-    if (slotIndex < 0 || (NSUInteger)slotIndex >= state.specs.count) {
+    ApolloActionMenuSpec *spec = ApolloActionMenuSpecAtIndexPath(self, indexPath);
+    if (!spec) {
         // Keep the Logos directive on its own line. Logos 2.4.1 consumes the
         // remainder of a line containing %orig, which previously dropped the
         // return and closing brace from generated Objective-C++.
         %orig;
         return;
     }
-
-    ApolloActionMenuSpec *spec = state.specs[(NSUInteger)slotIndex];
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-
-    __strong id strongSelf = self;
-    void (^perform)(id) = spec.perform;
-    if (spec.legacyDismissesSheet) {
-        [(UIViewController *)self dismissViewControllerAnimated:YES completion:^{
-            if (perform) perform(strongSelf);
-        }];
-    } else if (perform) {
-        perform(strongSelf);
-    }
+    // Normally unreachable: ApolloActionMenuWillSelectRow returns nil for
+    // injected rows, so UIKit never sends didSelect for them. Kept as the
+    // fallback for any selection path that skips willSelect, so a tap still
+    // does something rather than falling into Apollo's native handler with an
+    // out-of-range row.
+    ApolloLog(@"[ActionMenu] Injected row %ld ('%@') reached didSelect (willSelect bypassed) — performing here",
+              (long)indexPath.row, spec.identifier);
+    ApolloActionMenuPerformSpec(self, tableView, spec, indexPath);
 }
-
 %end
 
 %hook _TtC6Apollo38ActionControllerPresentationController
@@ -617,5 +708,6 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
 
 %ctor {
     %init;
+    ApolloActionMenuInstallWillSelect();
     ApolloLog(@"[ActionMenu] Action-menu registry hooks installed");
 }

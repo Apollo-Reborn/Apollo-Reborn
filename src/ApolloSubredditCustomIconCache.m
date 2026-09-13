@@ -107,13 +107,13 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
         NSMutableSet<NSString *> *keys = [self.storedKeys mutableCopy] ?: [NSMutableSet set];
         if (present) [keys addObject:key];
         else [keys removeObject:key];
-        self.storedKeys = [keys copy];
+        self.storedKeys = keys;
     }
 }
 
 - (void)replaceStoredKeys:(NSSet<NSString *> *)keys {
     @synchronized (self.storedKeysLock) {
-        self.storedKeys = [keys copy] ?: [NSSet set];
+        self.storedKeys = keys ?: [NSSet set];
     }
 }
 

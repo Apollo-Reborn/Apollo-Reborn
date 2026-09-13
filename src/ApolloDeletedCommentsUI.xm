@@ -574,17 +574,17 @@ static NSString *ApolloDeletedCommentsResolvedRecoveredBodyForComment(RDKComment
     NSDictionary *archived = ApolloDeletedCommentsCachedArchivedComment(fullName);
     NSString *archivedBody = ApolloDeletedCommentsRecoverableArchivedBody(archived);
     if (archivedBody.length > 0) {
-        objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [archivedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, archivedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, ApolloDeletedCommentsPlainBodyHTML(archivedBody), OBJC_ASSOCIATION_COPY_NONATOMIC);
         return archivedBody;
     }
 
     NSString *currentBody = comment.body;
     if (ApolloDeletedCommentsBodyIsDisplayableRecoveredText(currentBody)) {
-        objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [currentBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, currentBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
         NSString *bodyHTML = ApolloDeletedCommentsCommentStringValue(comment, @selector(bodyHTML));
         if (bodyHTML.length > 0) {
-            objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, [bodyHTML copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, bodyHTML, OBJC_ASSOCIATION_COPY_NONATOMIC);
         }
         return currentBody;
     }
@@ -639,12 +639,12 @@ static void ApolloDeletedCommentsRememberOriginalModelBodyIfNeeded(RDKComment *c
     NSString *body = comment.body;
     if (body.length == 0 || ApolloDeletedCommentsStringIsReasonLabel(body) || ApolloDeletedCommentsTextLooksLikeDeletedPlaceholderNode(body)) return;
     if (!objc_getAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey)) {
-        objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
 
     NSString *bodyHTML = ApolloDeletedCommentsCommentStringValue(comment, @selector(bodyHTML));
     if (bodyHTML.length > 0 && !objc_getAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyHTMLKey)) {
-        objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyHTMLKey, [bodyHTML copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyHTMLKey, bodyHTML, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
 }
 
@@ -710,7 +710,7 @@ static void ApolloDeletedCommentsSynchronizeCommentModelDisplayState(id cellNode
         NSString *resolvedBody = ApolloDeletedCommentsResolvedRecoveredBodyForComment(comment);
         if (ApolloDeletedCommentsBodyIsDisplayableRecoveredText(resolvedBody) &&
             !objc_getAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey)) {
-            objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey, [resolvedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(comment, kApolloDeletedCommentsOriginalBodyKey, resolvedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
         }
         if (ApolloDeletedCommentsShouldKeepModelBodyHidden(comment)) {
             NSString *label = ApolloDeletedCommentsReasonLabelForCommentAndBody(comment, resolvedBody ?: comment.body);
@@ -2941,7 +2941,7 @@ static void __attribute__((unused)) ApolloDeletedCommentsRevealHiddenBodyForCell
             NSString *archivedBody = ApolloDeletedCommentsRecoverableArchivedBody(archived);
             if (ApolloDeletedCommentsApplyRecoveredArchivedCommentToObject((id)comment, archived, reason)) {
                 if (archivedBody.length > 0) {
-                    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [archivedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, archivedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
                     objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, ApolloDeletedCommentsPlainBodyHTML(archivedBody), OBJC_ASSOCIATION_COPY_NONATOMIC);
                 }
                 restored = YES;
@@ -3764,7 +3764,7 @@ static BOOL ApolloDeletedCommentsApplyRecoveredArchiveToModel(RDKComment *commen
 
     // Keep the full archive copy associated even when tap-to-reveal deliberately
     // leaves the public model body as a one-line reason label.
-    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [archivedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, archivedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject((id)comment,
                              kApolloDeletedCommentsOriginalBodyHTMLKey,
                              ApolloDeletedCommentsPlainBodyHTML(archivedBody),
@@ -3866,7 +3866,7 @@ static void ApolloDeletedCommentsApplyRecoveredArchiveToVisibleCell(id cellNode,
         sApolloDeletedCommentsInternalUncollapse = NO;
     }
 
-    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [archivedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, archivedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, ApolloDeletedCommentsPlainBodyHTML(archivedBody), OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cellNode, kApolloDeletedCommentsHiddenTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -4704,7 +4704,7 @@ static void ApolloDeletedCommentsRevealCommentInsteadOfCollapsing(RDKComment *co
             NSString *reason = placeholderReason ?: recoveredReason;
             NSString *archivedBody = ApolloDeletedCommentsRecoverableArchivedBody(archived);
             if (ApolloDeletedCommentsApplyRecoveredArchivedCommentToObject((id)comment, archived, reason) && archivedBody.length > 0) {
-                objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, [archivedBody copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyKey, archivedBody, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 objc_setAssociatedObject((id)comment, kApolloDeletedCommentsOriginalBodyHTMLKey, ApolloDeletedCommentsPlainBodyHTML(archivedBody), OBJC_ASSOCIATION_COPY_NONATOMIC);
             }
         }

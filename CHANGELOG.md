@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.7.1] - 2026-09-13
+
+### Features
+
+- Add **Hide Header on Scroll** (Interface → Tab Bar) so the Liquid Glass navigation bar follows the tab bar as it hides and reappears, in both Two-Gesture and Classic scroll modes (#1079: @IllIIllIllIllII)
+  - Hide Bars on Scroll, Hide Style, Hide Header on Scroll, and Scroll Behavior are separate controls now, and Hide Style, Scroll Behavior, and Header Style pick from native glass menus that show the current choice in the row
+  - Gallery View honors the selected Header Style while scrolling and after the bars come back, instead of leaving an opaque strip under the navigation controls
+
+### Fixes
+
+- Fix **swipe navigation** feeling sluggish since 3.7.0 — pages settle with Apollo's original easing again after you lift your finger, on back, forward, and cancelled swipes (#1073: @IllIIllIllIllII)
+- Fix the **comment jump button** stalling on the first parent comment since 3.7.0 — consecutive taps advance again without scrolling past the current comment first, and long-press to jump back uses the corrected position (#1094: @IllIIllIllIllII)
+- Fix posts opened from **Community Highlights**, deep links, Recently Read, Floating Post Tabs, and other `apollo://` routes ignoring the subreddit's suggested sort and your Remember Post Sort and Remember Subreddit Sort choices — they now open on the same comment sort a feed tap would (#1102: @icpryde)
+- Fix several **crashes**: opening 3.7.0 on TrollStore and other ElleKit installs, a profile page still loading when you switch accounts or refresh, expanding or collapsing a multireddit in the subreddit list, and the notification fetcher reading settings that had just been replaced (#1089: @IllIIllIllIllII)
+  - Classic (non-glass) builds running under LiveContainer no longer mistake themselves for Liquid Glass builds, the suspected cause of crashes opening search, settings, posts, and subreddits there
+- Keep **Liquid Glass** builds from crashing when a feed element's bitmap can't be created, seen when tapping the Posts tab to return to the top of a long Popular feed; the element is left blank instead (#1099: @icpryde)
+- Fix **Keep in Floating Tab** and the other Apollo Reborn rows in the legacy ⋯ sheet crashing the app when a third-party menu tweak such as Translomatic is installed (#1076: @icpryde)
+- Fix **videos going quiet** after rotating the phone with the fullscreen viewer open, and stop a second video under the viewer from starting its own audio (#1080: @icpryde)
+- Fix **Add to Multireddit** reporting "Error adding to multireddit" even though the subreddit was added, and the multireddit's subtitle lagging until the next refresh (#1081: @icpryde)
+- Keep the Liquid Glass action pill **expanded by default** again — collapsing it into the ⋯ is now the opt-in **Collapse Navigation Actions** switch (Interface → Display & Navigation), and **Center Title Between Buttons** is back for the expanded layout (#1105: @IllIIllIllIllII)
+  - Titles stay centered unless the expanded actions need the room, the pill no longer flashes when the subreddit picker opens or closes, and a startup recursion on the always-expanded path is fixed
+- Restore **Hidden** as a **Header Style** option on Liquid Glass — it removes the top scroll-edge effect without adding a blur, and existing Hidden preferences and backups work again (#1074: @IllIIllIllIllII)
+- Fix the Liquid Glass tab bar popping open and snapping back on iOS 27 when a **Two-Gesture** reveal starts with the Left or Right hide style (#1078: @IllIIllIllIllII)
+- Show the **+N new-comment count** on Community Highlights again after a refresh (#1098: @IllIIllIllIllII)
+
 ## [v3.7.0] - 2026-09-11
 
 ### Features
@@ -855,6 +880,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.7.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.0...v1.15.11_3.7.1
 [v3.7.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.6.0...v1.15.11_3.7.0
 [v3.6.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.5.1...v1.15.11_3.6.0
 [v3.5.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.5.0...v1.15.11_3.5.1

@@ -243,7 +243,7 @@ BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
     // -willEndForConfiguration:. The animator completion intentionally reads
     // this property at dismissal END, so even a late handler stored after
     // dismissal begins still cannot fall through the teardown window.
-    presenter.afterDismissalAction = [action copy];
+    presenter.afterDismissalAction = action;
     return YES;
 }
 

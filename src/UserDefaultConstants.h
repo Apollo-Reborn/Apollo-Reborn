@@ -267,6 +267,9 @@ static NSString *const UDKeyClassicTabBarScrollBehavior = @"ClassicTabBarScrollB
 // Apollo's native preference, mirrored in Reborn's Interface > Tab Bar screen
 // and consumed by the Liquid Glass compatibility layer as its source of truth.
 static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
+// Liquid Glass only. Also hides/reveals the top navigation bar with the bottom
+// tab bar while Hide Bars on Scroll is enabled. Default NO; remembered when off.
+static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
 // bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
@@ -340,9 +343,13 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// Navigation actions collapse and between-buttons title centering are opt-in (default off).
+static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
+
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).
 // 0 = retired System Default (migrates to 1 on iOS 26 or 2 on iOS 27),
-// 1 = Soft, 2 = Hard, 3 = retired Hidden, 4 = Blur.
+// 1 = Soft, 2 = Hard, 3 = Hidden, 4 = Blur.
 static NSString *const UDKeyScrollEdgeEffectStyle = @"ScrollEdgeEffectStyle";
 // Render image URLs (i.redd.it, preview.redd.it, i.imgur.com, generic .png/.jpg/.jpeg/.webp)
 // inline within post selftext and comments instead of leaving them as plain text links.

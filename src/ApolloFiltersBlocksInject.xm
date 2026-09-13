@@ -290,7 +290,8 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
             %orig(tableView, [NSIndexPath indexPathForRow:apolloRow inSection:indexPath.section]);
             return;
         }
-        %orig; return;
+        %orig;
+        return;
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
@@ -356,7 +357,8 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
             dispatch_async(dispatch_get_main_queue(), ^{ [ws apollo_pfRefreshBlockedToggleCount:wt]; });
             return;
         }
-        %orig; return;
+        %orig;
+        return;
     }
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     if (indexPath.section >= native + 2) return; // Tag Filters rows are static
