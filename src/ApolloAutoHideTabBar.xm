@@ -1,3 +1,4 @@
+#import "ApolloAutoHideTabBar.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
@@ -1304,6 +1305,54 @@ static void ApolloShowTabBar(UITabBarController *tbc, BOOL animated) {
                    dispatch_get_main_queue(), ^{
         ApolloListVerifyBottomInsetForVisibleLists(@"legacyTabBarShown");
     });
+}
+
+static char kApolloScrollToTopRevealGeneration;
+
+void ApolloTabBarCancelScrollToTopReveal(UITabBarController *controller) {
+    if (!controller) return;
+    NSUInteger generation = [objc_getAssociatedObject(controller, &kApolloScrollToTopRevealGeneration) unsignedIntegerValue];
+    objc_setAssociatedObject(controller, &kApolloScrollToTopRevealGeneration,
+        @(generation + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloAttemptScrollToTopReveal(UITabBarController *controller,
+                                           NSUInteger generation, NSUInteger attempt) {
+    if (!controller.view.window || UIApplication.sharedApplication.applicationState != UIApplicationStateActive ||
+        [objc_getAssociatedObject(controller, &kApolloScrollToTopRevealGeneration) unsignedIntegerValue] != generation) return;
+    if (!ApolloSupportsNativeTabBarScrollBehavior()) {
+        ApolloShowTabBar(controller, !UIAccessibilityIsReduceMotionEnabled());
+        return;
+    }
+    if (!ApolloTabBarControllerWantsNativeMinimize(controller)) return;
+    ApolloTabBarRevealResult result;
+    if (!sClassicTabBarScrollBehavior) {
+        result = ApolloStartTwoGestureReveal(controller, @"status-bar reached top", 0);
+    } else if (ApolloTabBarCustomPresentationEnabled()) {
+        ApolloSetTabBarPresentationHidden(controller, NO, YES, @"status-bar reached top");
+        return;
+    } else {
+        result = ApolloStartAnimatedTabBarReveal(controller, @"status-bar reached top");
+    }
+    // UIKit can still be settling its previous morph when the jump finishes.
+    // Retry only that transient state, bounded and tied to this return action.
+    if (result != ApolloTabBarRevealResultTransient || attempt >= ApolloIdleRevealMaxTransientRetries) return;
+    __weak UITabBarController *weakController = controller;
+    __weak UIViewController *selected = controller.selectedViewController;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(ApolloIdleRevealTransientRetrySeconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UITabBarController *live = weakController;
+        if (!live || live.selectedViewController != selected) return;
+        ApolloAttemptScrollToTopReveal(live, generation, attempt + 1);
+    });
+}
+
+void ApolloTabBarRevealAfterScrollToTop(UITabBarController *controller) {
+    if (!controller) return;
+    ApolloCancelIdleRevealTimer(controller);
+    ApolloTabBarCancelScrollToTopReveal(controller);
+    NSUInteger generation = [objc_getAssociatedObject(controller, &kApolloScrollToTopRevealGeneration) unsignedIntegerValue];
+    ApolloAttemptScrollToTopReveal(controller, generation, 0);
 }
 
 static void ApolloHideTabBar(UITabBarController *tbc, BOOL animated) {
