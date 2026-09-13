@@ -72,6 +72,12 @@ static BOOL ApolloTopBarScrollEnabled(void) {
         [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll];
 }
 
+BOOL ApolloSubredditListIsEditing(UINavigationController *controller) {
+    UIViewController *top = controller.topViewController;
+    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
+    return listClass && [top isKindOfClass:listClass] && top.isEditing;
+}
+
 static void ApolloTopBarRestoreHeaderPart(ApolloTopBarHeaderPart *part) {
     [part.view.layer removeAnimationForKey:ApolloTopBarScrollAnimationKey];
     part.view.userInteractionEnabled = part.originalInteractionEnabled;
@@ -304,6 +310,12 @@ static char kApolloTopBarScrollToTopActiveKey;
 static void ApolloTopBarSetNavigationHidden(UINavigationController *controller, BOOL hidden,
     BOOL animated, NSString *reason) {
     if (!controller) return;
+    // Done must remain visible and interactive throughout editing, including
+    // reorder/index jumps that never produce a reverse scroll gesture.
+    if (ApolloSubredditListIsEditing(controller)) {
+        ApolloTopBarRestoreNavigationController(controller);
+        return;
+    }
     // Bottom-bar callbacks may still report their old hidden progress during
     // a programmatic jump. The return action owns header visibility until
     // the user resumes scrolling; do not let those callbacks hide it again.
@@ -387,7 +399,7 @@ void ApolloTopBarRevalidateNavigationController(UINavigationController *controll
     ApolloTopBarScrollState *state = ApolloTopBarState(controller);
     if (!state) return;
     UINavigationBar *bar = controller.navigationBar;
-    if (!ApolloTopBarScrollEnabled() || state.bar != bar || controller.navigationBarHidden ||
+    if (ApolloSubredditListIsEditing(controller) || !ApolloTopBarScrollEnabled() || state.bar != bar || controller.navigationBarHidden ||
         !bar.window || bar.hidden || bar.alpha < 0.01) {
         ApolloTopBarRestoreNavigationController(controller);
         return;
