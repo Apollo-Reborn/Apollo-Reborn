@@ -49,3 +49,16 @@ body:
       placeholder: "iOS 26.5.1"
     validations:
       required: true
+
+  - type: dropdown
+    id: livecontainer
+    attributes:
+      label: Are you running Apollo Reborn through LiveContainer? (if applicable)
+      description: LiveContainer is an app that runs other apps inside itself instead of installing them normally. Answer **Yes** if you launch Apollo Reborn from inside LiveContainer, **No** if Apollo Reborn is installed as its own app.
+      options:
+        - "No, LiveContainer isn't installed on this device"
+        - "No, LiveContainer is installed, but Apollo Reborn is its own separate app"
+        - "Yes, Apollo Reborn runs inside LiveContainer"
+        - "Not sure"
+    validations:
+      required: false
