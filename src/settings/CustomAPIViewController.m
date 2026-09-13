@@ -20,6 +20,7 @@
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
+#import "ApolloScrollToTop.h"
 #import "ApolloTabBarHideStyle.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
@@ -1956,6 +1957,15 @@ typedef NS_ENUM(NSInteger, Tag) {
         } onSelect:nil];
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
+    ApolloSettingsRow *scrollReturnButton = [ApolloSettingsRow switchRowWithID:@"interface.scrollReturnButton"
+        title:@"Return Button"
+        isOn:^BOOL { return sScrollReturnButton; }
+        onToggle:^(UISwitch *sender) {
+            sScrollReturnButton = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyScrollReturnButton];
+            ApolloScrollReturnButtonSettingChanged();
+        }];
+
     ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
         title:@"Collapse Navigation Actions"
         isOn:^BOOL { return sCollapseNavigationActions; }
@@ -1978,8 +1988,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ userAvatars, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

@@ -4,11 +4,35 @@
 #import "ApolloCommon.h"
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
+#import "ApolloScrollToTop.h"
+#import "ApolloState.h"
 
 // Apollo's status-bar proxy calls ASTableViewController rather than scrolling
 // the table directly. The original callback only saves an offset and returns
 // NO, relying on a second scroll-to-top participant to move the real table.
 // Own both operations here, and use adjustedContentInset for modern UIKit.
+//
+// What Apollo does on its own (Hopper, -[ASTableViewController
+// scrollViewShouldScrollToTop:] -> sub_1002c5554): post
+// com.christianselig.StatusBarTapped, whose ApolloNavigationController observer
+// parks the visible table at -safeAreaInsets.top; then compare
+// round(contentOffset.y) with -round(contentInset.top). Away from the top it
+// stores the offset in contentOffsetBeforeStatusBarJump; at the top with an
+// offset stored it scrolls back there 250 ms later; it returns NO either way.
+// That is the stock "tap again to return", and it works while Apollo owns the
+// inset (contentInsetAdjustmentBehavior = .never, contentInset.top written
+// from the safe area in viewDidLayoutSubviews). The native search bar
+// (ApolloSearchNativeBar.xm) runs its feed and comment-thread tables with
+// Automatic and relativizes those writes, so contentInset.top is 0 there and
+// Apollo's at-top test never passes: a tap at the top was filed as "away from
+// the top" and overwrote the stored offset, which is why the return stopped
+// working under Liquid Glass. This module owns the whole sequence instead:
+// the notification is not posted (Apollo's observer would fight the jump) and
+// both the top and the return are measured against adjustedContentInset.
+//
+// The saved position and the second status-bar tap are always on. The Return
+// Button setting (sScrollReturnButton) only governs the visible affordance:
+// the arrow beside Back and the navigation-bar tap.
 static char kApolloScrollReturn;
 static char kApolloScrollReturnGeometryContext;
 
@@ -63,6 +87,7 @@ static NSString *ApolloReturnItemID(id node) {
 @property (nonatomic, strong) UITapGestureRecognizer *navigationTap;
 - (void)clear;
 - (void)clearAnimated:(BOOL)animated;
+- (void)retireButtonAnimated:(BOOL)animated;
 - (void)returnToPosition;
 @end
 
@@ -84,6 +109,12 @@ static NSString *ApolloReturnItemID(id node) {
     self.savedNode = nil;
     self.savedItemID = nil;
     ApolloTopBarSetScrollToTopActive(self.owner.navigationController, NO);
+    [self retireButtonAnimated:animated];
+}
+// The arrow and its exit animation, apart from the saved position: turning the
+// Return Button setting off removes the arrow now but keeps the position, so
+// the second status-bar tap still returns.
+- (void)retireButtonAnimated:(BOOL)animated {
     [self.retiringButton.layer removeAllAnimations];
     [self.retiringButton removeFromSuperview];
     self.retiringButton = nil;
@@ -358,6 +389,8 @@ static NSString *ApolloReturnItemID(id node) {
     if (tap.state == UIGestureRecognizerStateEnded) [self returnToPosition];
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    // The navigation-bar tap is part of the Return Button affordance.
+    if (!sScrollReturnButton) return NO;
     if (!self.hasPosition || self.owner.navigationController.topViewController != self.owner) return NO;
     for (UIView *view = touch.view; view; view = view.superview) {
         if ([view isKindOfClass:UIControl.class]) return NO;
@@ -370,6 +403,7 @@ static NSString *ApolloReturnItemID(id node) {
     return YES;
 }
 - (void)showButton {
+    if (!sScrollReturnButton || self.returnItem) return;
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.frame = CGRectMake(0, 0, 44, 44);
     button.translatesAutoresizingMaskIntoConstraints = NO;
@@ -475,12 +509,28 @@ static UIScrollView *ApolloScrollReturnTable(id owner) {
     return [view isKindOfClass:UIScrollView.class] ? view : nil;
 }
 
+// Every live state, weakly, so the Return Button setting turning off can drop
+// the arrow from screens that are not in front right now (a feed behind the
+// settings stack keeps its saved position and its button until this runs).
+static NSHashTable<ApolloScrollReturn *> *sApolloScrollReturnStates;
+
+void ApolloScrollReturnButtonSettingChanged(void) {
+    if (!NSThread.isMainThread || sScrollReturnButton) return;
+    for (ApolloScrollReturn *state in sApolloScrollReturnStates.allObjects) {
+        [state retireButtonAnimated:YES];
+    }
+    ApolloLog(@"[ScrollReturn] Return Button off: retired %lu live button(s)",
+              (unsigned long)sApolloScrollReturnStates.count);
+}
+
 static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
     ApolloScrollReturn *state = objc_getAssociatedObject(owner, &kApolloScrollReturn);
     if (!state) {
         state = [ApolloScrollReturn new];
         state.owner = owner;
         objc_setAssociatedObject(owner, &kApolloScrollReturn, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!sApolloScrollReturnStates) sApolloScrollReturnStates = [NSHashTable weakObjectsHashTable];
+        [sApolloScrollReturnStates addObject:state];
     }
     UIScrollView *scroll = ApolloScrollReturnTable(owner);
     if (state.scrollView != scroll) {

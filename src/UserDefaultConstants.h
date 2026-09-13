@@ -341,6 +341,10 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
 // Navigation actions collapse and between-buttons title centering are opt-in (default off).
 static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+// Show the return button (and the navigation-bar tap) after a status bar tap
+// scrolls a feed or comment thread to the top. Default YES; the second
+// status bar tap returns to the saved position regardless.
+static NSString *const UDKeyScrollReturnButton = @"ScrollReturnButton";
 static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
 
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).

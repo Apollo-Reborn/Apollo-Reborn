@@ -76,6 +76,7 @@ BOOL sInfoRowPopupMode = YES;      // info details + comment insights → popup;
 BOOL sInfoRowOverlayMode = NO;     // info details + comment insights → overlay; default OFF (UDKeyInfoRowOverlayMode)
 BOOL sInfoRowTapTranslation = YES; // effective default ON via registerDefaults (UDKeyInfoRowTapTranslation)
 BOOL sCollapseNavigationActions = NO;
+BOOL sScrollReturnButton = YES;
 BOOL sCenterTitleBetweenButtons = NO;
 NSInteger sScrollEdgeEffectStyle = ApolloScrollEdgeEffectStyleAutomatic;
 BOOL sModernSubredditDividers = YES;

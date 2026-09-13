@@ -3795,6 +3795,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyInfoRowPopupMode: @YES,
                                     UDKeyInfoRowOverlayMode: @NO,
                                     UDKeyCollapseNavigationActions: @NO,
+                                    UDKeyScrollReturnButton: @YES,
                                     UDKeyCenterTitleBetweenButtons: @NO,
                                     UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyLiveCommentsFollow: @YES,
@@ -4085,6 +4086,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         ApolloLog(@"[PerPostSort] exclusivity: normalized stale both-on at launch (native Remember Subreddit Sort -> OFF)");
     }
     sCollapseNavigationActions = [standardDefaults boolForKey:UDKeyCollapseNavigationActions];
+    sScrollReturnButton = [standardDefaults boolForKey:UDKeyScrollReturnButton];
     sCenterTitleBetweenButtons = [standardDefaults boolForKey:UDKeyCenterTitleBetweenButtons];
     sScrollEdgeEffectStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyScrollEdgeEffectStyle];
     NSInteger systemHeaderStyle = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 27
