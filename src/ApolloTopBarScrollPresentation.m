@@ -299,9 +299,15 @@ void ApolloTopBarRestoreNavigationController(UINavigationController *controller)
         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+static char kApolloTopBarScrollToTopActiveKey;
+
 static void ApolloTopBarSetNavigationHidden(UINavigationController *controller, BOOL hidden,
     BOOL animated, NSString *reason) {
     if (!controller) return;
+    // Bottom-bar callbacks may still report their old hidden progress during
+    // a programmatic jump. The return action owns header visibility until
+    // the user resumes scrolling; do not let those callbacks hide it again.
+    if ([objc_getAssociatedObject(controller, &kApolloTopBarScrollToTopActiveKey) boolValue]) hidden = NO;
     UINavigationBar *bar = controller.navigationBar;
     ApolloTopBarScrollState *state = ApolloTopBarState(controller);
     if (state && state.bar != bar) {
@@ -351,6 +357,13 @@ static void ApolloTopBarSetNavigationHidden(UINavigationController *controller, 
     ApolloTopBarAnimate(state, from, state.hiddenOffset, animated);
     ApolloLog(@"[AutoHideTopBar] %@ offset=%.1f headerEffects=%lu reason=%@",
         hidden ? @"hidden" : @"revealed", state.hiddenOffset, (unsigned long)state.headerParts.count, reason);
+}
+
+void ApolloTopBarSetScrollToTopActive(UINavigationController *controller, BOOL active) {
+    if (!controller) return;
+    objc_setAssociatedObject(controller, &kApolloTopBarScrollToTopActiveKey,
+        active ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (active) ApolloTopBarSetNavigationHidden(controller, NO, YES, @"status-bar scroll to top");
 }
 
 static UINavigationController *ApolloTopBarNavigationController(UIViewController *controller) {
