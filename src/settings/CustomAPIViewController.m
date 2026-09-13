@@ -1956,9 +1956,30 @@ typedef NS_ENUM(NSInteger, Tag) {
         } onSelect:nil];
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
+    ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
+        title:@"Collapse Navigation Actions"
+        isOn:^BOOL { return sCollapseNavigationActions; }
+        onToggle:^(UISwitch *sender) {
+            sCollapseNavigationActions = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
+            [weakSelf visibilityDidChange];
+            ApolloNavigationTitlesRefresh();
+        }];
+    collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
+
+    ApolloSettingsRow *centerBetween = [ApolloSettingsRow switchRowWithID:@"interface.CenterTitleBetweenButtons"
+        title:@"Center Title Between Buttons"
+        isOn:^BOOL { return sCenterTitleBetweenButtons; }
+        onToggle:^(UISwitch *sender) {
+            sCenterTitleBetweenButtons = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
+            ApolloNavigationTitlesRefresh();
+        }];
+    centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
+
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Tap the top-right ellipsis to reveal navigation actions; scrolling collapses them. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, scrollEdgeEffect ]];
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ userAvatars, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

@@ -339,6 +339,10 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// Navigation actions collapse and between-buttons title centering are opt-in (default off).
+static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
+
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).
 // 0 = retired System Default (migrates to 1 on iOS 26 or 2 on iOS 27),
 // 1 = Soft, 2 = Hard, 3 = Hidden, 4 = Blur.
