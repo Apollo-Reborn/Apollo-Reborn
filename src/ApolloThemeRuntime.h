@@ -56,6 +56,10 @@ UIColor *ApolloThemePageBackgroundColor(void);
 // Mode aware). nil only if neither can be determined — callers supply their
 // own last-resort (typically UIColor.separatorColor).
 UIColor *ApolloThemeSeparatorColor(void);
+UIColor *ApolloThemeSubredditListBackgroundColor(void);
+UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void);
+UIColor *ApolloThemeSubredditListTextColor(void);
+UIColor *ApolloThemeSubredditListSecondaryTextColor(void);
 
 // Correct a RESOLVED color that was derived from a theme token under the wrong
 // appearance (ambient resolution vs the themed window — see issue #810):

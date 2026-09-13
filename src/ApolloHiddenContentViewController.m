@@ -1,54 +1,31 @@
 #import "ApolloHiddenContentViewController.h"
+#import "ApolloHiddenContentMedia.h"
 #import "ApolloCommon.h"
+#import "ApolloSaveAllMedia.h"
+#import "ApolloSaveAllMediaItems.h"
 #import <objc/runtime.h>
+#import "ApolloThemeRuntime.h"
+#import "ApolloUserProfileCache.h"
+#import "UserDefaultConstants.h"
+
+// Apollo's media loader uses this determinate clockwise ring.
+@interface DACircularProgressView : UIView
+@property (nonatomic, strong) UIColor *trackTintColor;
+@property (nonatomic, strong) UIColor *progressTintColor;
+@property (nonatomic) CGFloat thicknessRatio;
+@property (nonatomic) NSInteger indeterminate;
+@property (nonatomic) NSInteger clockwiseProgress;
+@property (nonatomic) CGFloat progress;
+- (void)setProgress:(CGFloat)progress animated:(BOOL)animated;
+@end
 
 #pragma mark - Pill badge
-
-// Plain UILabel cell accessory (not the Texture chip-image approach in
-// ApolloDeletedCommentsUI.xm -- this is a plain UIKit table, no text node).
-@interface ApolloHiddenContentPillLabel : UILabel
-@end
-
-@implementation ApolloHiddenContentPillLabel
-
-- (instancetype)initWithText:(NSString *)text backgroundColor:(UIColor *)backgroundColor textColor:(UIColor *)textColor {
-    self = [super initWithFrame:CGRectZero];
-    if (self) {
-        self.text = text;
-        self.font = [UIFont boldSystemFontOfSize:11.0];
-        self.textColor = textColor;
-        self.backgroundColor = backgroundColor;
-        self.textAlignment = NSTextAlignmentCenter;
-        self.layer.cornerRadius = 8.0;
-        self.layer.masksToBounds = YES;
-        [self sizeToFit];
-        CGRect frame = self.frame;
-        frame.size.width += 14.0;
-        frame.size.height = 16.0;
-        self.frame = frame;
-    }
-    return self;
-}
-
-- (void)drawTextInRect:(CGRect)rect {
-    [super drawTextInRect:UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(0, 7, 0, 7))];
-}
-
-@end
 
 static UIColor *ApolloHiddenContentPillBackgroundColor(ApolloHiddenContentReason reason) {
     switch (reason) {
         case ApolloHiddenContentReasonDeleted: return [UIColor colorWithRed:1.0 green:0.66 blue:0.64 alpha:1.0];  // salmon, matches deleted-comments chip
         case ApolloHiddenContentReasonRemoved: return [UIColor colorWithRed:1.0 green:0.71 blue:0.42 alpha:1.0];  // orange, between hidden and deleted
         case ApolloHiddenContentReasonHidden: default: return [UIColor colorWithRed:1.0 green:0.84 blue:0.55 alpha:1.0]; // amber
-    }
-}
-
-static UIColor *ApolloHiddenContentPillTextColor(ApolloHiddenContentReason reason) {
-    switch (reason) {
-        case ApolloHiddenContentReasonDeleted: return [UIColor colorWithRed:0.42 green:0.06 blue:0.06 alpha:1.0];
-        case ApolloHiddenContentReasonRemoved: return [UIColor colorWithRed:0.42 green:0.18 blue:0.02 alpha:1.0];
-        case ApolloHiddenContentReasonHidden: default: return [UIColor colorWithRed:0.42 green:0.24 blue:0.02 alpha:1.0];
     }
 }
 
@@ -60,46 +37,441 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     }
 }
 
-#pragma mark - Cell
+#pragma mark - Overview entry
 
-@interface ApolloHiddenContentCell : UITableViewCell
+// Profile overview entries use a compact identity line, the complete archived
+// body, and a separate parent-post preview. Do not truncate recovered text to
+// the two lines of a settings-style cell.
+@interface ApolloHiddenContextLabel : UILabel
+@property (nonatomic) UIEdgeInsets textInsets;
+@end
+@implementation ApolloHiddenContextLabel
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) self.textInsets = UIEdgeInsetsMake(10, 12, 10, 12);
+    return self;
+}
+- (CGRect)textRectForBounds:(CGRect)bounds limitedToNumberOfLines:(NSInteger)lines {
+    CGRect text = [super textRectForBounds:UIEdgeInsetsInsetRect(bounds, self.textInsets) limitedToNumberOfLines:lines];
+    return UIEdgeInsetsInsetRect(text, UIEdgeInsetsMake(-self.textInsets.top, -self.textInsets.left, -self.textInsets.bottom, -self.textInsets.right));
+}
+- (void)drawTextInRect:(CGRect)rect {
+    [super drawTextInRect:UIEdgeInsetsInsetRect(rect, self.textInsets)];
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    [UIView animateWithDuration:0.08 animations:^{ self.alpha = 0.62; }];
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    [UIView animateWithDuration:0.18 animations:^{ self.alpha = 1.0; }];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    [UIView animateWithDuration:0.18 animations:^{ self.alpha = 1.0; }];
+}
+@end
+
+@interface ApolloHiddenContentCell : UITableViewCell <UIContextMenuInteractionDelegate, UIScrollViewDelegate>
+@property (nonatomic, strong) UILabel *authorLabel;
+@property (nonatomic, strong) UILabel *voteKindLabel;
+@property (nonatomic, strong) UILabel *dateLabel;
+@property (nonatomic, strong) UILabel *bodyLabel;
+@property (nonatomic, strong) UILabel *contextLabel;
+@property (nonatomic, strong) UILabel *reasonLabel;
+@property (nonatomic, strong) UILabel *reasonAttributionLabel;
+@property (nonatomic, strong) UIImageView *avatarView;
+@property (nonatomic, strong) UIView *mediaContainerView;
+@property (nonatomic, strong) UIScrollView *mediaScrollView;
+@property (nonatomic, strong) UIStackView *mediaPagesStack;
+@property (nonatomic, copy) NSArray<UIImageView *> *mediaImageViews;
+@property (nonatomic, copy) NSArray<NSURL *> *mediaURLs;
+@property (nonatomic, strong) NSMutableIndexSet *loadedMediaIndexes;
+@property (nonatomic, strong) UILabel *mediaLabel;
+@property (nonatomic, strong) UIStackView *headerStack;
+@property (nonatomic, strong) UIView *headerMiddleSpacer;
+@property (nonatomic, strong) UIView *statusLeadingSpacer;
+@property (nonatomic, copy) dispatch_block_t mediaTapped;
+@property (nonatomic, copy) dispatch_block_t mediaSaveImageRequested;
+@property (nonatomic, copy) dispatch_block_t mediaSaveAllRequested;
+@property (nonatomic) NSUInteger mediaCount;
+@property (nonatomic) NSUInteger currentMediaIndex;
+@property (nonatomic, strong) NSLayoutConstraint *previewHeight;
+@property (nonatomic, strong) UIStackView *contentStack;
+@property (nonatomic, strong) UIView *overviewSeparatorView;
+@property (nonatomic, copy) NSString *representedName;
 @end
 
 @implementation ApolloHiddenContentCell
-
-- (void)configureWithItem:(ApolloHiddenContentItem *)item {
-    // UIListContentConfiguration rather than the deprecated
-    // textLabel/detailTextLabel pair -- it's iOS 14+, same as the device floor.
-    UIListContentConfiguration *content = [self defaultContentConfiguration];
-    NSString *preview = item.title.length > 0 ? item.title : item.body;
-    content.text = preview.length > 0 ? preview : @"(no text)";
-    content.textProperties.numberOfLines = 2;
-    content.secondaryTextProperties.numberOfLines = 1;
-    content.secondaryTextProperties.font = [UIFont systemFontOfSize:12.0];
-    content.secondaryTextProperties.color = [UIColor secondaryLabelColor];
-
-    // kind (Post/Comment) omitted -- redundant with the screen's own segmented control.
-    NSMutableArray<NSString *> *subtitleParts = [NSMutableArray array];
-    if (item.subreddit.length > 0) [subtitleParts addObject:[@"r/" stringByAppendingString:item.subreddit]];
-    if (item.createdDate) {
-        static NSDateFormatter *formatter;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            formatter = [NSDateFormatter new];
-            formatter.dateStyle = NSDateFormatterMediumStyle;
-            formatter.timeStyle = NSDateFormatterNoStyle;
-        });
-        [subtitleParts addObject:[formatter stringFromDate:item.createdDate]];
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier {
+    if ((self = [super initWithStyle:style reuseIdentifier:identifier])) {
+        self.authorLabel = [UILabel new];
+        self.authorLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        self.authorLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        self.authorLabel.numberOfLines = 1;
+        [self.authorLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        self.voteKindLabel = [UILabel new];
+        self.voteKindLabel.font = self.authorLabel.font;
+        self.voteKindLabel.textColor = UIColor.secondaryLabelColor;
+        [self.voteKindLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        self.dateLabel = [UILabel new];
+        self.dateLabel.font = self.authorLabel.font;
+        [self.dateLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        self.avatarView = [UIImageView new];
+        self.avatarView.contentMode = UIViewContentModeScaleAspectFill;
+        self.avatarView.clipsToBounds = YES;
+        self.avatarView.layer.cornerRadius = 9.0;
+        ApolloHiddenContextLabel *flair = [ApolloHiddenContextLabel new];
+        flair.textInsets = UIEdgeInsetsMake(1, 5, 1, 5);
+        flair.layer.cornerRadius = 4;
+        flair.clipsToBounds = YES;
+        self.reasonLabel = flair;
+        // Match Apollo's compact flair typography.
+        self.reasonLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleSubheadline] scaledFontForFont:[UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular]];
+        [self.reasonLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        self.reasonAttributionLabel = [UILabel new];
+        self.reasonAttributionLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
+            scaledFontForFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular]];
+        self.reasonAttributionLabel.textColor = UIColor.secondaryLabelColor;
+        [self.reasonAttributionLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        self.headerMiddleSpacer = [UIView new];
+        self.statusLeadingSpacer = [UIView new];
+        self.statusLeadingSpacer.hidden = YES;
+        [self.authorLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [self.voteKindLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [self.reasonAttributionLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [self.reasonLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [self.dateLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        UIStackView *identity = [[UIStackView alloc] initWithArrangedSubviews:@[self.avatarView, self.authorLabel, self.voteKindLabel]];
+        identity.axis = UILayoutConstraintAxisHorizontal;
+        identity.alignment = UIStackViewAlignmentCenter;
+        identity.spacing = 6;
+        UIStackView *status = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusLeadingSpacer, self.reasonAttributionLabel, self.reasonLabel, self.dateLabel]];
+        status.axis = UILayoutConstraintAxisHorizontal;
+        status.alignment = UIStackViewAlignmentCenter;
+        status.spacing = 6;
+        self.headerStack = [[UIStackView alloc] initWithArrangedSubviews:@[identity, self.headerMiddleSpacer, status]];
+        self.headerStack.axis = UILayoutConstraintAxisHorizontal;
+        self.headerStack.alignment = UIStackViewAlignmentCenter;
+        self.headerStack.spacing = 6;
+        NSLayoutConstraint *avatarWidth = [self.avatarView.widthAnchor constraintEqualToConstant:18];
+        avatarWidth.priority = UILayoutPriorityRequired;
+        avatarWidth.active = YES;
+        [self.avatarView.heightAnchor constraintEqualToConstant:18].active = YES;
+        self.bodyLabel = [UILabel new];
+        self.bodyLabel.numberOfLines = 0;
+        self.bodyLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        self.contextLabel = [ApolloHiddenContextLabel new];
+        self.contextLabel.numberOfLines = 0;
+        self.contextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        self.contextLabel.layer.cornerRadius = 4;
+        self.contextLabel.clipsToBounds = YES;
+        self.contextLabel.userInteractionEnabled = YES;
+        self.mediaContainerView = [UIView new];
+        self.mediaContainerView.clipsToBounds = YES;
+        [self.mediaContainerView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_openMedia)]];
+        [self.mediaContainerView addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
+        self.mediaScrollView = [UIScrollView new];
+        self.mediaScrollView.delegate = self;
+        self.mediaScrollView.pagingEnabled = YES;
+        self.mediaScrollView.showsHorizontalScrollIndicator = NO;
+        self.mediaScrollView.directionalLockEnabled = YES;
+        self.mediaScrollView.alwaysBounceHorizontal = YES;
+        self.mediaScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.mediaPagesStack = [UIStackView new];
+        self.mediaPagesStack.axis = UILayoutConstraintAxisHorizontal;
+        self.mediaPagesStack.spacing = 0;
+        self.mediaPagesStack.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.mediaContainerView addSubview:self.mediaScrollView];
+        [self.mediaScrollView addSubview:self.mediaPagesStack];
+        self.mediaLabel = [ApolloHiddenContextLabel new];
+        ((ApolloHiddenContextLabel *)self.mediaLabel).textInsets = UIEdgeInsetsMake(3, 6, 3, 6);
+        self.mediaLabel.font = self.authorLabel.font;
+        self.mediaLabel.textColor = UIColor.whiteColor;
+        self.mediaLabel.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.7];
+        self.mediaLabel.layer.cornerRadius = 4;
+        self.mediaLabel.clipsToBounds = YES;
+        self.mediaLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.mediaContainerView addSubview:self.mediaLabel];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.mediaScrollView.leadingAnchor constraintEqualToAnchor:self.mediaContainerView.leadingAnchor],
+            [self.mediaScrollView.trailingAnchor constraintEqualToAnchor:self.mediaContainerView.trailingAnchor],
+            [self.mediaScrollView.topAnchor constraintEqualToAnchor:self.mediaContainerView.topAnchor],
+            [self.mediaScrollView.bottomAnchor constraintEqualToAnchor:self.mediaContainerView.bottomAnchor],
+            [self.mediaPagesStack.leadingAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.leadingAnchor],
+            [self.mediaPagesStack.trailingAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.trailingAnchor],
+            [self.mediaPagesStack.topAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.topAnchor],
+            [self.mediaPagesStack.bottomAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.bottomAnchor],
+            [self.mediaPagesStack.heightAnchor constraintEqualToAnchor:self.mediaScrollView.frameLayoutGuide.heightAnchor],
+            [self.mediaLabel.bottomAnchor constraintEqualToAnchor:self.mediaContainerView.bottomAnchor constant:-8],
+            [self.mediaLabel.trailingAnchor constraintEqualToAnchor:self.mediaContainerView.trailingAnchor constant:-8],
+        ]];
+        self.previewHeight = [self.mediaContainerView.heightAnchor constraintEqualToConstant:180];
+        self.previewHeight.priority = UILayoutPriorityRequired - 1;
+        self.previewHeight.active = YES;
+        self.contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[self.headerStack, self.bodyLabel, self.mediaContainerView, self.contextLabel]];
+        self.contentStack.axis = UILayoutConstraintAxisVertical;
+        self.contentStack.spacing = 8;
+        self.contentStack.translatesAutoresizingMaskIntoConstraints = NO;
+        // Apollo's profile Overview separates entries with a short section
+        // gutter rather than UITableView's one-pixel rule.
+        self.overviewSeparatorView = [UIView new];
+        self.overviewSeparatorView.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:self.contentStack];
+        [self.contentView addSubview:self.overviewSeparatorView];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.contentStack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:12],
+            [self.contentStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-12],
+            [self.contentStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
+            [self.contentStack.bottomAnchor constraintEqualToAnchor:self.overviewSeparatorView.topAnchor constant:-12],
+            [self.overviewSeparatorView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [self.overviewSeparatorView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [self.overviewSeparatorView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+            [self.overviewSeparatorView.heightAnchor constraintEqualToConstant:8.0],
+        ]];
+        for (UILabel *label in @[self.authorLabel, self.voteKindLabel, self.bodyLabel, self.contextLabel, self.reasonAttributionLabel, self.reasonLabel, self.dateLabel]) {
+            label.adjustsFontForContentSizeCategory = YES;
+        }
+        [self apollo_updateHeaderLayout];
     }
-    if (item.removalDetail.length > 0) [subtitleParts addObject:item.removalDetail];
-    content.secondaryText = [subtitleParts componentsJoinedByString:@" · "];
-    self.contentConfiguration = content;
-
-    self.accessoryView = [[ApolloHiddenContentPillLabel alloc] initWithText:ApolloHiddenContentPillLabelText(item.reason)
-                                                              backgroundColor:ApolloHiddenContentPillBackgroundColor(item.reason)
-                                                                    textColor:ApolloHiddenContentPillTextColor(item.reason)];
+    return self;
 }
-
+- (void)apollo_applyOverviewTheme {
+    self.backgroundColor = ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor;
+    self.contentView.backgroundColor = self.backgroundColor;
+    UIColor *contextColor = ApolloThemeSubredditListHeaderBackgroundColor() ?: UIColor.secondarySystemBackgroundColor;
+    self.overviewSeparatorView.backgroundColor = contextColor;
+    self.contextLabel.backgroundColor = contextColor;
+    self.bodyLabel.textColor = ApolloThemeSubredditListTextColor() ?: UIColor.labelColor;
+    self.authorLabel.textColor = self.bodyLabel.textColor;
+    self.dateLabel.textColor = UIColor.secondaryLabelColor;
+}
+- (void)apollo_updateHeaderLayout {
+    BOOL accessibility = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
+    self.headerStack.axis = accessibility ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+    self.headerStack.alignment = accessibility ? UIStackViewAlignmentFill : UIStackViewAlignmentCenter;
+    self.headerStack.spacing = accessibility ? 4 : 6;
+    self.headerMiddleSpacer.hidden = accessibility;
+    self.statusLeadingSpacer.hidden = !accessibility;
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self apollo_applyOverviewTheme];
+    if (![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        [self apollo_updateHeaderLayout];
+    }
+}
+- (void)apollo_openMedia { if (self.mediaTapped) self.mediaTapped(); }
+- (void)apollo_updateCurrentMediaIndex {
+    CGFloat width = CGRectGetWidth(self.mediaScrollView.bounds);
+    if (width <= 0 || self.mediaURLs.count == 0) return;
+    NSUInteger index = MIN(self.mediaURLs.count - 1, (NSUInteger)MAX(0, lround(self.mediaScrollView.contentOffset.x / width)));
+    self.currentMediaIndex = index;
+    if (self.mediaURLs.count > 1) {
+        self.mediaLabel.text = [NSString stringWithFormat:@"%lu / %lu", (unsigned long)index + 1, (unsigned long)self.mediaURLs.count];
+        self.mediaLabel.hidden = NO;
+    }
+    [self apollo_loadMediaAroundIndex:index];
+}
+- (void)apollo_loadMediaAroundIndex:(NSUInteger)centerIndex {
+    if (self.mediaURLs.count == 0) return;
+    NSUInteger first = centerIndex > 0 ? centerIndex - 1 : 0;
+    NSUInteger last = MIN(self.mediaURLs.count - 1, centerIndex + 1);
+    NSString *representedName = self.representedName;
+    for (NSUInteger index = first; index <= last; index++) {
+        if ([self.loadedMediaIndexes containsIndex:index]) continue;
+        [self.loadedMediaIndexes addIndex:index];
+        NSURL *url = self.mediaURLs[index];
+        __weak typeof(self) weakSelf = self;
+        [ApolloUserProfileCache.sharedCache requestImageForURL:url completion:^(UIImage *image) {
+            typeof(self) owner = weakSelf;
+            if (!owner || ![owner.representedName isEqualToString:representedName] || index >= owner.mediaURLs.count || ![owner.mediaURLs[index] isEqual:url]) return;
+            if (image) {
+                [UIView transitionWithView:owner.mediaImageViews[index]
+                                  duration:0.18
+                                   options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowAnimatedContent
+                                animations:^{ owner.mediaImageViews[index].image = image; }
+                                completion:nil];
+            } else {
+                owner.mediaImageViews[index].image = nil;
+            }
+            if (owner.mediaURLs.count == 1) {
+                owner.mediaLabel.hidden = image != nil;
+                if (!image) owner.mediaLabel.text = @"Image no longer available";
+            }
+        }];
+    }
+}
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    [self apollo_updateCurrentMediaIndex];
+}
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction
+                        configurationForMenuAtLocation:(CGPoint)location {
+    if (!self.mediaSaveImageRequested) return nil;
+    __weak typeof(self) weakSelf = self;
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+        UIAction *saveImage = [UIAction actionWithTitle:@"Save Image"
+                                             image:[UIImage systemImageNamed:@"square.and.arrow.down"]
+                                        identifier:nil
+                                           handler:^(__kindof UIAction *action) {
+            if (weakSelf.mediaSaveImageRequested) weakSelf.mediaSaveImageRequested();
+        }];
+        if (weakSelf.mediaCount <= 1 || !weakSelf.mediaSaveAllRequested) {
+            return [UIMenu menuWithTitle:@"" children:@[saveImage]];
+        }
+        UIAction *saveAll = [UIAction actionWithTitle:@"Save All Media"
+                                                image:[UIImage systemImageNamed:@"square.and.arrow.down.on.square"]
+                                           identifier:nil
+                                              handler:^(__kindof UIAction *action) {
+            if (weakSelf.mediaSaveAllRequested) weakSelf.mediaSaveAllRequested();
+        }];
+        return [UIMenu menuWithTitle:@"" children:@[saveImage, saveAll]];
+    }];
+}
+- (void)configureWithItem:(ApolloHiddenContentItem *)item username:(NSString *)username {
+    self.representedName = item.fullName;
+    [self apollo_applyOverviewTheme];
+    NSString *author = item.author.length && ![item.author isEqualToString:@"[deleted]"] ? item.author : username;
+    NSString *kindLabel = item.kind == ApolloHiddenContentKindComment ? @"Comment" : @"Post";
+    NSInteger score = item.score.integerValue;
+    NSString *voteText = score < 0
+        ? [NSString stringWithFormat:@"↓%lu", (unsigned long)labs((long)score)]
+        : [NSString stringWithFormat:@"↑%ld", (long)score];
+    self.authorLabel.text = author;
+    self.authorLabel.accessibilityLabel = author;
+    NSString *voteKindText = item.score
+        ? [NSString stringWithFormat:@"%@ · %@", voteText, kindLabel]
+        : kindLabel;
+    NSMutableAttributedString *attributedVoteKind = [[NSMutableAttributedString alloc] initWithString:voteKindText attributes:@{
+        NSFontAttributeName: self.voteKindLabel.font,
+        NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+    }];
+    NSRange kindRange = [voteKindText rangeOfString:kindLabel options:NSBackwardsSearch];
+    if (kindRange.location != NSNotFound) {
+        UIFont *kindFont = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
+            scaledFontForFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular]];
+        [attributedVoteKind addAttribute:NSFontAttributeName value:kindFont range:kindRange];
+    }
+    self.voteKindLabel.attributedText = attributedVoteKind;
+    NSString *reasonAttribution = item.removalDetail.length
+        ? item.removalDetail
+        : (item.reason == ApolloHiddenContentReasonDeleted ? @"Author" : nil);
+    self.reasonAttributionLabel.text = reasonAttribution.length
+        ? [NSString stringWithFormat:@"%@ ·", reasonAttribution]
+        : nil;
+    self.reasonAttributionLabel.hidden = reasonAttribution.length == 0;
+    self.reasonLabel.text = ApolloHiddenContentPillLabelText(item.reason);
+    self.reasonLabel.backgroundColor = ApolloHiddenContentPillBackgroundColor(item.reason);
+    self.reasonLabel.textColor = UIColor.blackColor;
+    NSTimeInterval age = MAX(0, -item.createdDate.timeIntervalSinceNow);
+    NSInteger amount = (NSInteger)age;
+    NSString *unit = @"s";
+    if (age >= 365 * 86400) { amount = (NSInteger)(age / (365 * 86400)); unit = @"y"; }
+    else if (age >= 86400) { amount = (NSInteger)(age / 86400); unit = @"d"; }
+    else if (age >= 3600) { amount = (NSInteger)(age / 3600); unit = @"h"; }
+    else if (age >= 60) { amount = (NSInteger)(age / 60); unit = @"m"; }
+    self.dateLabel.text = item.createdDate ? [NSString stringWithFormat:@"%ld%@", (long)amount, unit] : @"";
+    BOOL isImagePost = item.kind == ApolloHiddenContentKindPost && (item.mediaURLs.count > 0 || item.previewURL != nil);
+    if (isImagePost) {
+        // Apollo presents an image post as media plus its post-preview card;
+        // don't make the post title look like a comment body above the image.
+        self.bodyLabel.text = item.body;
+        self.bodyLabel.hidden = item.body.length == 0;
+    } else {
+        self.bodyLabel.text = item.kind == ApolloHiddenContentKindPost && item.title.length
+            ? [NSString stringWithFormat:@"%@%@", item.title, item.body.length ? [@"\n\n" stringByAppendingString:item.body] : @""]
+            : (item.body.length ? item.body : @"No text in the archive");
+        self.bodyLabel.hidden = NO;
+    }
+    NSString *contextTitle = item.kind == ApolloHiddenContentKindComment
+        ? item.parentPostTitle
+        : (isImagePost ? item.title : nil);
+    // Keep the parent title and subreddit as separate paragraphs, like the
+    // native overview preview, with a small gap and quieter subreddit text.
+    NSString *subreddit = item.subreddit ?: @"";
+    if ([subreddit hasPrefix:@"r/"]) subreddit = [subreddit substringFromIndex:2];
+    NSString *context = [NSString stringWithFormat:@"%@%@%@", contextTitle ?: @"",
+        contextTitle.length && subreddit.length ? @"\n" : @"", subreddit];
+    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+    paragraph.paragraphSpacing = 8;
+    NSMutableAttributedString *preview = [[NSMutableAttributedString alloc] initWithString:context attributes:@{
+        NSFontAttributeName: self.contextLabel.font,
+        NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+    }];
+    if (contextTitle.length && subreddit.length) {
+        [preview addAttribute:NSParagraphStyleAttributeName value:paragraph range:NSMakeRange(0, contextTitle.length + 1)];
+    }
+    if (subreddit.length) {
+        [preview addAttribute:NSForegroundColorAttributeName value:UIColor.secondaryLabelColor
+                        range:NSMakeRange(context.length - subreddit.length, subreddit.length)];
+    }
+    self.contextLabel.attributedText = preview;
+    self.contextLabel.hidden = context.length == 0;
+    self.contextLabel.alpha = 1.0;
+    self.avatarView.layer.cornerRadius = 9.0;
+    self.avatarView.hidden = ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
+    self.avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
+    self.avatarView.tintColor = ApolloThemeAccentColor() ?: self.tintColor;
+    for (UIView *page in self.mediaPagesStack.arrangedSubviews) {
+        [self.mediaPagesStack removeArrangedSubview:page];
+        [page removeFromSuperview];
+    }
+    NSArray<NSURL *> *mediaURLs = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
+    self.mediaURLs = mediaURLs;
+    self.mediaCount = mediaURLs.count;
+    self.currentMediaIndex = 0;
+    self.loadedMediaIndexes = [NSMutableIndexSet indexSet];
+    NSMutableArray<UIImageView *> *imageViews = [NSMutableArray arrayWithCapacity:mediaURLs.count];
+    for (NSUInteger index = 0; index < mediaURLs.count; index++) {
+        UIImageView *imageView = [UIImageView new];
+        imageView.contentMode = UIViewContentModeScaleAspectFit;
+        imageView.clipsToBounds = YES;
+        imageView.isAccessibilityElement = YES;
+        imageView.accessibilityTraits = UIAccessibilityTraitButton;
+        imageView.accessibilityLabel = mediaURLs.count > 1
+            ? [NSString stringWithFormat:@"Image %lu of %lu", (unsigned long)index + 1, (unsigned long)mediaURLs.count]
+            : @"Open image";
+        [self.mediaPagesStack addArrangedSubview:imageView];
+        [imageView.widthAnchor constraintEqualToAnchor:self.mediaScrollView.frameLayoutGuide.widthAnchor].active = YES;
+        [imageViews addObject:imageView];
+    }
+    self.mediaImageViews = imageViews;
+    [self.mediaScrollView setContentOffset:CGPointZero animated:NO];
+    CGFloat availableWidth = CGRectGetWidth(self.contentView.bounds) - 24;
+    if (availableWidth <= 0) availableWidth = CGRectGetWidth(UIScreen.mainScreen.bounds) - 24;
+    CGFloat ratio = item.previewAspectRatio;
+    // Match the visual weight of media in Apollo's regular feed. The previous
+    // 320-point ceiling made portrait images look like small previews; keep
+    // the archived aspect ratio and cap only exceptionally tall media to a
+    // screen-aware feed height. Unknown dimensions get a square feed frame.
+    CGFloat maximumFeedHeight = MIN(availableWidth * 1.5, CGRectGetHeight(UIScreen.mainScreen.bounds) * 0.72);
+    self.previewHeight.constant = ratio >= 0.1 && ratio <= 10.0
+        ? MAX(120, MIN(maximumFeedHeight, availableWidth / ratio))
+        : MIN(availableWidth, maximumFeedHeight);
+    self.mediaLabel.text = mediaURLs.count > 1 ? [NSString stringWithFormat:@"1 / %lu", (unsigned long)mediaURLs.count] : @"Loading image…";
+    self.mediaLabel.hidden = NO;
+    self.mediaContainerView.hidden = mediaURLs.count == 0;
+    self.mediaScrollView.scrollEnabled = mediaURLs.count > 1;
+    NSString *name = item.fullName;
+    __weak typeof(self) weakSelf = self;
+    ApolloUserProfileCache *cache = ApolloUserProfileCache.sharedCache;
+    if (!self.avatarView.hidden) [cache requestInfoForUsername:author completion:^(ApolloUserProfileInfo *info) {
+        NSURL *url = info.iconURL;
+        if (!url) return;
+        [cache requestImageForURL:url completion:^(UIImage *image) {
+            if ([weakSelf.representedName isEqualToString:name] && image) weakSelf.avatarView.image = image;
+        }];
+    }];
+    [self apollo_loadMediaAroundIndex:0];
+}
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    self.representedName = nil;
+    self.mediaTapped = nil;
+    self.mediaSaveImageRequested = nil;
+    self.mediaSaveAllRequested = nil;
+    self.mediaURLs = @[];
+    self.mediaImageViews = @[];
+}
 @end
 
 #pragma mark - Deleted/removed-item detail
@@ -109,6 +481,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
 // shows the already-fetched archived title/body directly instead.
 @interface ApolloHiddenContentDetailViewController : UIViewController
 @property (nonatomic, strong) ApolloHiddenContentItem *item;
+@property (nonatomic, strong) UIControl *subredditControl;
 @end
 
 @implementation ApolloHiddenContentDetailViewController
@@ -119,7 +492,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     self.title = self.item.reason == ApolloHiddenContentReasonRemoved
         ? (isPost ? @"Removed Post" : @"Removed Comment")
         : (isPost ? @"Deleted Post" : @"Deleted Comment");
-    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
     UIBarButtonItem *shareItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                                                                                  target:self action:@selector(apollo_share)];
     UIBarButtonItem *arcticShiftItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"safari"]
@@ -128,18 +501,61 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     arcticShiftItem.accessibilityLabel = @"Open in Arctic Shift";
     self.navigationItem.rightBarButtonItems = @[shareItem, arcticShiftItem];
 
-    UITextView *textView = [[UITextView alloc] initWithFrame:self.view.bounds];
-    textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    UITextView *textView = [UITextView new];
+    textView.translatesAutoresizingMaskIntoConstraints = NO;
     textView.editable = NO;
     textView.font = [UIFont systemFontOfSize:16.0];
+    textView.backgroundColor = self.view.backgroundColor;
+    textView.textColor = UIColor.labelColor;
     textView.textContainerInset = UIEdgeInsetsMake(16.0, 16.0, 16.0, 16.0);
     textView.text = [self apollo_archivedText];
     [self.view addSubview:textView];
+
+    NSString *subreddit = self.item.subreddit ?: @"";
+    if ([subreddit hasPrefix:@"r/"]) subreddit = [subreddit substringFromIndex:2];
+    if (subreddit.length > 0) {
+        self.subredditControl = [UIControl new];
+        self.subredditControl.translatesAutoresizingMaskIntoConstraints = NO;
+        self.subredditControl.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemBackgroundColor;
+        self.subredditControl.layer.cornerRadius = 8;
+        self.subredditControl.isAccessibilityElement = YES;
+        self.subredditControl.accessibilityTraits = UIAccessibilityTraitButton;
+        self.subredditControl.accessibilityLabel = [NSString stringWithFormat:@"Open %@ subreddit", subreddit];
+        [self.subredditControl addTarget:self action:@selector(apollo_openSubreddit) forControlEvents:UIControlEventTouchUpInside];
+        UILabel *subredditLabel = [UILabel new];
+        subredditLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subredditLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        subredditLabel.textColor = UIColor.labelColor;
+        subredditLabel.text = subreddit;
+        UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        chevron.translatesAutoresizingMaskIntoConstraints = NO;
+        chevron.tintColor = UIColor.tertiaryLabelColor;
+        [self.subredditControl addSubview:subredditLabel];
+        [self.subredditControl addSubview:chevron];
+        [self.view addSubview:self.subredditControl];
+        [NSLayoutConstraint activateConstraints:@[
+            [self.subredditControl.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+            [self.subredditControl.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+            [self.subredditControl.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+            [self.subredditControl.heightAnchor constraintEqualToConstant:48],
+            [subredditLabel.leadingAnchor constraintEqualToAnchor:self.subredditControl.leadingAnchor constant:14],
+            [subredditLabel.centerYAnchor constraintEqualToAnchor:self.subredditControl.centerYAnchor],
+            [chevron.trailingAnchor constraintEqualToAnchor:self.subredditControl.trailingAnchor constant:-14],
+            [chevron.centerYAnchor constraintEqualToAnchor:self.subredditControl.centerYAnchor],
+            [textView.topAnchor constraintEqualToAnchor:self.subredditControl.bottomAnchor constant:8],
+        ]];
+    } else {
+        [textView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor].active = YES;
+    }
+    [NSLayoutConstraint activateConstraints:@[
+        [textView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [textView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [textView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
 }
 
 - (NSString *)apollo_archivedText {
     NSMutableString *text = [NSMutableString string];
-    if (self.item.subreddit.length > 0) [text appendFormat:@"r/%@\n\n", self.item.subreddit];
     if (self.item.title.length > 0) [text appendFormat:@"%@\n\n", self.item.title];
     if (self.item.removalDetail.length > 0) {
         NSString *verb = self.item.reason == ApolloHiddenContentReasonDeleted ? @"Deleted by" : @"Removed by";
@@ -149,8 +565,27 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     return text;
 }
 
+- (void)apollo_openSubreddit {
+    NSString *subreddit = self.item.subreddit ?: @"";
+    if ([subreddit hasPrefix:@"r/"]) subreddit = [subreddit substringFromIndex:2];
+    if (subreddit.length == 0) return;
+    NSURLComponents *components = [NSURLComponents new];
+    components.scheme = @"https";
+    components.host = @"www.reddit.com";
+    components.path = [@"/r/" stringByAppendingString:subreddit];
+    NSURL *url = components.URL;
+    if (!url) return;
+    if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    }
+}
+
 - (void)apollo_share {
-    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[self apollo_archivedText]]
+    NSString *subreddit = self.item.subreddit ?: @"";
+    if ([subreddit hasPrefix:@"r/"]) subreddit = [subreddit substringFromIndex:2];
+    NSString *sharePrefix = subreddit.length ? [NSString stringWithFormat:@"r/%@\n\n", subreddit] : @"";
+    NSString *shareText = [sharePrefix stringByAppendingString:[self apollo_archivedText]];
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[shareText]
                                                                              applicationActivities:nil];
     // iPad presents this as a popover, which crashes without an anchor.
     activity.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
@@ -174,66 +609,52 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
 
 #pragma mark - View controller
 
-// Associated-object flag lives on the presenting profile screen, not this
-// sheet -- the sheet is dismissed and deallocated. See the header doc on
-// ApolloHiddenContentConsumePendingResume.
-static void const *kApolloHiddenContentPendingResumeKey = &kApolloHiddenContentPendingResumeKey;
-
-BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewController) {
-    if (!profileViewController) return NO;
-    NSNumber *pending = objc_getAssociatedObject(profileViewController, kApolloHiddenContentPendingResumeKey);
-    if (!pending.boolValue) return NO;
-    objc_setAssociatedObject(profileViewController, kApolloHiddenContentPendingResumeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return YES;
+static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewController *presenter) {
+    NSError *error = nil;
+    NSArray<ApolloSaveAllMediaItem *> *media = ApolloSaveAllMediaItemsFromURLs(urls, &error);
+    if (media.count) {
+        ApolloSaveAllMedia(media, presenter);
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Unable to Save Media"
+                                                                   message:error.localizedDescription ?: @"This archived media is unavailable."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 @interface ApolloHiddenContentViewController ()
 @property (nonatomic, copy) NSString *username;
-@property (nonatomic, assign) ApolloHiddenContentKind kind;
+@property (nonatomic) BOOL loading;
 @property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *items;
-@property (nonatomic, strong) UISegmentedControl *kindControl;
+
 @property (nonatomic, strong) UIView *statusContainerView;
-@property (nonatomic, strong) UIActivityIndicatorView *spinner;
+@property (nonatomic, strong) DACircularProgressView *progressRing;
+@property (nonatomic, strong) UILabel *progressLabel;
 @property (nonatomic, strong) UILabel *emptyStateLabel;
-// The profile screen this sheet was presented from -- see didSelectRow.
-@property (nonatomic, weak) UIViewController *presentingProfileViewController;
 @end
 
 @implementation ApolloHiddenContentViewController
 
 + (void)presentForUsername:(NSString *)username fromViewController:(UIViewController *)presenter {
     if (username.length == 0 || !presenter) return;
-    ApolloHiddenContentViewController *sheet = [[ApolloHiddenContentViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    sheet.username = username;
-    sheet.presentingProfileViewController = presenter;
-
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:sheet];
-    if (@available(iOS 15.0, *)) {
-        UISheetPresentationController *sc = nav.sheetPresentationController;
-        if (sc) {
-            sc.detents = @[[UISheetPresentationControllerDetent mediumDetent], [UISheetPresentationControllerDetent largeDetent]];
-            sc.prefersGrabberVisible = YES;
-        }
+    ApolloHiddenContentViewController *list = [[ApolloHiddenContentViewController alloc] initWithStyle:UITableViewStylePlain];
+    list.username = username;
+    if (presenter.navigationController) {
+        [presenter.navigationController pushViewController:list animated:YES];
     }
-    nav.modalPresentationStyle = UIModalPresentationPageSheet;
-    [presenter presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Hidden & Deleted";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                                                                             target:self action:@selector(apollo_close)];
     [self.tableView registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 64.0;
-
-    self.kind = ApolloHiddenContentKindPost;
-    self.kindControl = [[UISegmentedControl alloc] initWithItems:@[@"Posts", @"Comments"]];
-    self.kindControl.selectedSegmentIndex = 0;
-    [self.kindControl addTarget:self action:@selector(apollo_kindChanged) forControlEvents:UIControlEventValueChanged];
-    self.kindControl.frame = CGRectMake(0, 0, 220, 32);
-    self.navigationItem.titleView = self.kindControl;
+    self.tableView.alwaysBounceVertical = YES;
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.tableView.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
+    self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
 
     UIRefreshControl *refreshControl = [UIRefreshControl new];
     [refreshControl addTarget:self action:@selector(apollo_refreshTriggered) forControlEvents:UIControlEventValueChanged];
@@ -245,23 +666,35 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
     self.statusContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundView = self.statusContainerView;
 
-    self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    self.spinner.hidesWhenStopped = YES;
-    self.spinner.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin
-        | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-    self.spinner.center = CGPointMake(CGRectGetMidX(self.statusContainerView.bounds), CGRectGetMidY(self.statusContainerView.bounds));
-    [self.statusContainerView addSubview:self.spinner];
-    [self.spinner startAnimating];
+    self.progressRing = [[NSClassFromString(@"DACircularProgressView") alloc] init];
+    // Keep archive loading neutral and readable against the active system
+    // appearance: black in light mode, white in dark mode.
+    self.progressRing.trackTintColor = [UIColor.labelColor colorWithAlphaComponent:0.16];
+    self.progressRing.progressTintColor = UIColor.labelColor;
+    self.progressRing.thicknessRatio = 0.08;
+    self.progressRing.clockwiseProgress = 1;
+    self.progressRing.indeterminate = 0;
+    self.progressRing.translatesAutoresizingMaskIntoConstraints = NO;
+    self.progressRing.isAccessibilityElement = YES;
+    self.progressRing.accessibilityLabel = @"Archive loading progress";
+    self.progressLabel = [UILabel new];
+    self.progressLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.progressLabel.textColor = UIColor.secondaryLabelColor;
+    self.progressLabel.textAlignment = NSTextAlignmentCenter;
+    self.progressLabel.numberOfLines = 0;
+    self.progressLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.statusContainerView addSubview:self.progressRing];
+    [self.statusContainerView addSubview:self.progressLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.progressRing.centerXAnchor constraintEqualToAnchor:self.statusContainerView.centerXAnchor],
+        [self.progressRing.centerYAnchor constraintEqualToAnchor:self.statusContainerView.centerYAnchor constant:-12],
+        [self.progressRing.widthAnchor constraintEqualToConstant:56],
+        [self.progressRing.heightAnchor constraintEqualToConstant:56],
+        [self.progressLabel.topAnchor constraintEqualToAnchor:self.progressRing.bottomAnchor constant:12],
+        [self.progressLabel.leadingAnchor constraintEqualToAnchor:self.statusContainerView.leadingAnchor constant:20],
+        [self.progressLabel.trailingAnchor constraintEqualToAnchor:self.statusContainerView.trailingAnchor constant:-20],
+    ]];
 
-    [self apollo_fetchForceRefresh:NO];
-}
-
-- (void)apollo_kindChanged {
-    self.kind = self.kindControl.selectedSegmentIndex == 0 ? ApolloHiddenContentKindPost : ApolloHiddenContentKindComment;
-    self.items = @[];
-    [self.tableView reloadData];
-    [self.emptyStateLabel removeFromSuperview];
-    [self.spinner startAnimating];
     [self apollo_fetchForceRefresh:NO];
 }
 
@@ -269,37 +702,71 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
     [self apollo_fetchForceRefresh:YES];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Reconfigure cached rows when returning after changing avatar preferences.
+    [self.tableView reloadData];
+}
+
 - (void)apollo_fetchForceRefresh:(BOOL)forceRefresh {
+    if (self.loading) return;
+    self.loading = YES;
+    self.progressRing.progress = 0;
+    self.progressRing.hidden = self.items.count > 0;
+    self.progressLabel.hidden = self.items.count > 0;
     [self.emptyStateLabel removeFromSuperview];
-    ApolloHiddenContentKind requestedKind = self.kind;
     __weak __typeof(self) weakSelf = self;
-    ApolloHiddenContentFetch(self.username, requestedKind, forceRefresh, ^(NSArray<ApolloHiddenContentItem *> *items, NSString *errorMessage) {
-        __typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        // The user may have flipped the segmented control again while this
-        // request was in flight -- don't clobber a newer selection's UI state.
-        if (strongSelf.kind != requestedKind) return;
-        [strongSelf.spinner stopAnimating];
-        [strongSelf.tableView.refreshControl endRefreshing];
-        if (errorMessage) {
-            [strongSelf apollo_showError:errorMessage];
+    // Fetch sequentially: the shared archive service rate-limits concurrent
+    // posts/comments requests. Commit one complete snapshot, preserving the
+    // previous results if either request fails.
+    ApolloHiddenContentFetchWithProgress(self.username, ApolloHiddenContentKindPost, forceRefresh, ^(double fraction, NSString *stage) {
+        [weakSelf apollo_updateProgress:fraction * 0.5 stage:[@"Posts: " stringByAppendingString:stage]];
+    }, ^(NSArray *posts, NSString *postError) {
+        __typeof(self) owner = weakSelf;
+        if (!owner) return;
+        if (postError) {
+            [owner apollo_finishWithItems:nil error:postError];
             return;
         }
-        strongSelf.items = items ?: @[];
-        [strongSelf.tableView reloadData];
-        if (strongSelf.items.count == 0) {
-            [strongSelf apollo_showEmptyState];
-        }
+        ApolloHiddenContentFetchWithProgress(owner.username, ApolloHiddenContentKindComment, forceRefresh, ^(double fraction, NSString *stage) {
+            [weakSelf apollo_updateProgress:0.5 + fraction * 0.5 stage:[@"Comments: " stringByAppendingString:stage]];
+        }, ^(NSArray *comments, NSString *commentError) {
+            NSMutableArray *combined = [NSMutableArray arrayWithArray:posts ?: @[]];
+            [combined addObjectsFromArray:comments ?: @[]];
+            [combined sortUsingComparator:^NSComparisonResult(ApolloHiddenContentItem *a, ApolloHiddenContentItem *b) {
+                NSComparisonResult result = [(b.createdDate ?: NSDate.distantPast) compare:(a.createdDate ?: NSDate.distantPast)];
+                return result == NSOrderedSame ? [a.fullName compare:b.fullName] : result;
+            }];
+            [weakSelf apollo_finishWithItems:combined error:commentError];
+        });
     });
 }
 
-- (void)apollo_close {
-    [self dismissViewControllerAnimated:YES completion:nil];
+- (void)apollo_updateProgress:(double)fraction stage:(NSString *)stage {
+    // Updates arrive only when network work completes; never advance a timer
+    // toward an invented completion percentage while a request is stalled.
+    double progress = MAX(self.progressRing.progress, MIN(1, fraction));
+    [self.progressRing setProgress:progress animated:YES];
+    self.progressRing.accessibilityValue = [NSString stringWithFormat:@"%.0f%%", progress * 100];
+    self.progressLabel.text = stage;
 }
 
-// Alert only -- deliberately does NOT dismiss the sheet, so a transient
-// pull-to-refresh or segment-flip failure doesn't discard an already-loaded
-// list. With nothing loaded, the status label below offers the retry path.
+- (void)apollo_finishWithItems:(NSArray *)items error:(NSString *)error {
+    self.loading = NO;
+    [self.progressRing setProgress:error ? self.progressRing.progress : 1 animated:NO];
+    self.progressRing.hidden = YES;
+    self.progressLabel.hidden = YES;
+    [self.tableView.refreshControl endRefreshing];
+    if (error) {
+        [self apollo_showError:error];
+        return;
+    }
+    self.items = items ?: @[];
+    [self.tableView reloadData];
+    if (self.items.count == 0) [self apollo_showEmptyState];
+}
+
+// Preserve loaded results on refresh failure; an empty list offers retry.
 - (void)apollo_showError:(NSString *)message {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Couldn't Fetch Hidden Content"
                                                                      message:message
@@ -329,8 +796,7 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
 }
 
 - (void)apollo_showEmptyState {
-    NSString *kindName = self.kind == ApolloHiddenContentKindPost ? @"posts" : @"comments";
-    [self apollo_showStatusText:[NSString stringWithFormat:@"No hidden or deleted %@ found in the archive for this account.", kindName]];
+    [self apollo_showStatusText:@"No hidden or deleted posts or comments found in the archive for this account."];
 }
 
 #pragma mark - UITableViewDataSource
@@ -341,7 +807,28 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloHiddenContentCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell" forIndexPath:indexPath];
-    [cell configureWithItem:self.items[indexPath.row]];
+    ApolloHiddenContentItem *item = self.items[indexPath.row];
+    [cell configureWithItem:item username:self.username];
+    __weak typeof(self) weakSelf = self;
+    __weak ApolloHiddenContentCell *weakCell = cell;
+    cell.mediaTapped = ^{
+        NSArray *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
+        NSUInteger index = MIN(weakCell.currentMediaIndex, urls.count ? urls.count - 1 : 0);
+        if (!ApolloHiddenContentPresentMedia(urls, index, weakSelf)) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Media unavailable" message:@"This archived image cannot be opened in this Apollo build." preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        }
+    };
+    cell.mediaSaveImageRequested = ^{
+        NSArray<NSURL *> *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
+        NSUInteger index = MIN(weakCell.currentMediaIndex, urls.count ? urls.count - 1 : 0);
+        ApolloHiddenContentSaveMedia(urls.count ? @[urls[index]] : @[], weakSelf);
+    };
+    cell.mediaSaveAllRequested = ^{
+        NSArray<NSURL *> *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
+        ApolloHiddenContentSaveMedia(urls, weakSelf);
+    };
     return cell;
 }
 
@@ -360,10 +847,7 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
         return;
     }
 
-    // Route through the apollo:// scheme so it opens natively instead of
-    // Safari. This screen is itself a modal sheet, so it dismisses first --
-    // pushing while the sheet is still up would land the destination inside
-    // the sheet's own nav stack instead of the app's normal one.
+    // Open intact items through Apollo's native URL router.
     if (item.permalink.length == 0) return;
     // NSURLComponents.path percent-encodes on assignment; +URLWithString: does
     // not, and silently returns nil for a permalink with unencoded non-ASCII
@@ -375,24 +859,12 @@ BOOL ApolloHiddenContentConsumePendingResume(UIViewController *profileViewContro
     NSURL *url = urlComponents.URL;
     if (!url) return;
 
-    // Arm the pending flag *inside* the dismiss completion, not before calling
-    // dismiss: dismissing this sheet reveals the profile (firing its own
-    // -viewDidAppear:) before this completion block runs. Arming earlier means
-    // that reveal immediately consumes the flag and re-presents the sheet
-    // before the live post below is even pushed, so the post opens invisibly
-    // behind it. Arming here means the flag is only seen the *next* time the
-    // profile appears -- when the user backs out of the live post.
-    __weak UIViewController *weakProfileVC = self.presentingProfileViewController;
-    UINavigationController *presentingNav = self.navigationController;
-    [presentingNav dismissViewControllerAnimated:YES completion:^{
-        UIViewController *profileVC = weakProfileVC;
-        if (profileVC) {
-            objc_setAssociatedObject(profileVC, kApolloHiddenContentPendingResumeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
-            [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-        }
-    }];
+    // This list stays on the navigation stack, retaining its results and
+    // scroll position when the user comes back from the live destination.
+    if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    }
+
 }
 
 @end
