@@ -41,9 +41,10 @@
 //   kicks the first fetch, which uses a non-nil currentSort AS-IS — so writing the ivar
 //   before %orig in viewDidLoad both overrides the init-time chain and feeds the first
 //   fetch AND the sort-button icon setup. On URL-scheme/inbox opens (init(linkID:...))
-//   the `link` ivar is nil until the first fetch returns; those opens keep native
-//   behavior (no id to look up yet), while recording still works because the user can
-//   only change sort after the load populates `link`.
+//   the `link` ivar is nil until the first fetch returns, so this write cannot look the
+//   post up; ApolloURLOpenCommentSort.xm covers those opens (it evaluates the same chain,
+//   per-post memory first, once the first response carries the link). Recording works
+//   either way because the user can only change sort after the load populates `link`.
 // - Every user sort pick funnels through sortBarButtonItemTappedWithSender: -> option
 //   closure -> currentSort ivar write -> reload via -[RDKClient
 //   linkAndCommentsForLinkWithIdentifier:commentSort:pagination:completion:] (bare post
@@ -71,6 +72,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloPerPostCommentSort.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsGeneralTable.h"
 
@@ -285,6 +287,17 @@ static void PPCSDisarm(void) {
 }
 
 %end
+
+// MARK: - exports (ApolloPerPostCommentSort.h)
+//
+// Thin wrappers so ApolloURLOpenCommentSort.xm can reuse the ivar-layout knowledge above
+// without a second copy of it.
+
+BOOL ApolloCommentsVCReadCurrentSort(id vc, int64_t *outRaw) { return PPCSReadCurrentSort(vc, outRaw); }
+BOOL ApolloCommentsVCWriteCurrentSort(id vc, int64_t raw) { return PPCSWriteCurrentSort(vc, raw); }
+id ApolloCommentsVCLink(id vc) { return PPCSObjectIvar(vc, "link"); }
+NSString *ApolloCommentSortName(int64_t raw) { return PPCSSortName(raw); }
+int64_t ApolloPerPostCommentSortSavedSort(NSString *postID) { return postID.length ? PPCSSavedSortForPost(postID) : 0; }
 
 // MARK: - Settings row (registered with ApolloSettingsGeneralTable)
 //
