@@ -1434,6 +1434,88 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 
 %end
 
+// MARK: - Status bar tap: second tap returns to where you were
+//
+// Apollo implements the return itself, in -[ASTableViewController
+// scrollViewShouldScrollToTop:] (Hopper: the thunk calls sub_1002c5554). It
+// posts com.christianselig.StatusBarTapped — ApolloNavigationController's
+// observer does the actual scroll to the top — then compares
+// round(contentOffset.y) with -round(contentInset.top). Away from the top it
+// stores the offset in contentOffsetBeforeStatusBarJump; at the top with an
+// offset stored it scrolls back there 250 ms later (tableNode
+// setContentOffset:animated:YES). It returns NO either way, so UIKit itself
+// never scrolls.
+//
+// The tables this module manages run Automatic (NSBAttachNativeSearch), and
+// Apollo's inset writes are relativized on the way in: contentInset.top no
+// longer carries the chrome, adjustedContentInset.top does. Apollo's at-top
+// test therefore never passes on those tables — a tap at the top is filed as
+// "away from the top" and overwrites the stored offset with the top itself,
+// so the second tap goes nowhere (feeds and comment threads alike). Take the
+// bookkeeping over for exactly those tables, measured against the adjusted
+// inset, and post the same notification so the scroll to the top stays
+// Apollo's. Any table whose two insets still agree keeps Apollo's own path.
+static NSString *const kNSBStatusBarTappedNotification = @"com.christianselig.StatusBarTapped";
+static const char kNSBStatusBarReturnOffsetKey = 0; // NSValue(CGPoint) on the controller
+static const int64_t kNSBStatusBarReturnDelayMs = 250; // Apollo's own delay before the return
+
+static BOOL NSBStatusBarTapHandled(UIViewController *vc) {
+    if (!ApolloNativeFeedSearchEnabled() || !NSThread.isMainThread) return NO;
+    UIScrollView *table = NSBTableForVC(vc);
+    if (!table || objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return NO;
+    CGFloat adjustedTop = table.adjustedContentInset.top;
+    // Apollo's own comparison is only wrong while UIKit adds inset above
+    // Apollo's; a table at rest with the two in agreement stays on its path.
+    if (fabs(adjustedTop - table.contentInset.top) <= 0.5) return NO;
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:kNSBStatusBarTappedNotification object:nil];
+
+    CGPoint offset = table.contentOffset;
+    BOOL atTop = offset.y <= -adjustedTop + 1.0;
+    if (!atTop) {
+        objc_setAssociatedObject(vc, &kNSBStatusBarReturnOffsetKey, [NSValue valueWithCGPoint:offset],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[NativeSearch] status bar tap: saved y=%.1f (adjTop=%.1f inTop=%.1f) on %s",
+                  offset.y, adjustedTop, table.contentInset.top, object_getClassName(vc));
+        return YES;
+    }
+
+    NSValue *saved = objc_getAssociatedObject(vc, &kNSBStatusBarReturnOffsetKey);
+    if (!saved) {
+        ApolloLog(@"[NativeSearch] status bar tap: at top, nothing to return to (y=%.1f adjTop=%.1f)",
+                  offset.y, adjustedTop);
+        return YES;
+    }
+    CGPoint target = saved.CGPointValue;
+    ApolloLog(@"[NativeSearch] status bar tap: at top, returning to y=%.1f in %lld ms",
+              target.y, (long long)kNSBStatusBarReturnDelayMs);
+    __weak UIViewController *weakVC = vc;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kNSBStatusBarReturnDelayMs * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *strongVC = weakVC;
+        UIScrollView *t = strongVC ? NSBTableForVC(strongVC) : nil;
+        // Gone (popped, torn down) or the user took over in the meantime.
+        if (!t || !t.window || t.isDragging || t.isTracking || t.isDecelerating) {
+            ApolloLog(@"[NativeSearch] status bar return skipped (table %s)", t ? "busy" : "gone");
+            return;
+        }
+        // The list can have reloaded shorter since the offset was stored.
+        CGFloat maxY = MAX(-t.adjustedContentInset.top,
+                           t.contentSize.height - t.bounds.size.height + t.adjustedContentInset.bottom);
+        [t setContentOffset:CGPointMake(target.x, MIN(target.y, maxY)) animated:YES];
+    });
+    return YES;
+}
+
+%hook _TtC6Apollo21ASTableViewController
+
+- (BOOL)scrollViewShouldScrollToTop:(UIScrollView *)scrollView {
+    if (NSBStatusBarTapHandled((UIViewController *)self)) return NO; // Apollo's own answer
+    return %orig(scrollView);
+}
+
+%end
+
 // MARK: - Posts tab re-selection
 //
 // Apollo's native top check ignores the inset UIKit adds for native search.
