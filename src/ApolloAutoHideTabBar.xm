@@ -137,6 +137,8 @@ static ApolloTabBarRuntimeState *ApolloRuntimeState(UITabBarController *tbc,
 @interface ApolloTabBarScrollRuntimeState : NSObject
 @property (nonatomic, assign) NSUInteger gestureToken;
 @property (nonatomic, assign) CGFloat upwardRevealDistance;
+@property (nonatomic, assign) CGFloat lastIntentPanTranslationY;
+@property (nonatomic, assign) BOOL hasIntentPanTranslation;
 @property (nonatomic, assign) NSInteger presentationDirection;
 @property (nonatomic, assign) CGFloat presentationDirectionalDistance;
 @property (nonatomic, assign) BOOL presentationDirectionTriggered;
@@ -1909,6 +1911,8 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
     }
     if (pan.state == UIGestureRecognizerStateBegan || gestureEnded) {
         ApolloResetPresentationScrollIntent(scrollState);
+        scrollState.lastIntentPanTranslationY = [pan translationInView:self.window].y;
+        scrollState.hasIntentPanTranslation = !gestureEnded;
     }
     if (sClassicTabBarScrollBehavior) return;
 
@@ -1950,6 +1954,29 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
     CGFloat clampedNewOffsetY = MIN(maximumOffsetY,
         MAX(minimumOffsetY, contentOffset.y));
     CGFloat deltaY = clampedNewOffsetY - clampedOldOffsetY;
+    if (userDriven && mainList) {
+        // A changing search palette adjusts the safe area and re-parks the
+        // table while isDragging is still YES. Those offset writes are not
+        // new finger movement. Treating them as intent made Hide Header on
+        // Scroll alternate hidden/revealed every frame during a quick reversal
+        // at the top of comments, repeatedly pulling the content back up.
+        // Consume each pan translation once, BEFORE changing bar presentation,
+        // so synchronous inset corrections cannot reuse the same movement.
+        // Use window coordinates: the table's own geometry is changing here.
+        ApolloTabBarScrollRuntimeState *intentState = ApolloScrollRuntimeState(self, YES);
+        UIPanGestureRecognizer *pan = self.panGestureRecognizer;
+        BOOL livePan = pan.state == UIGestureRecognizerStateBegan ||
+                       pan.state == UIGestureRecognizerStateChanged;
+        CGFloat translationY = [pan translationInView:self.window].y;
+        CGFloat panDeltaY = intentState.hasIntentPanTranslation && livePan
+            ? intentState.lastIntentPanTranslationY - translationY : 0.0;
+        intentState.lastIntentPanTranslationY = translationY;
+        intentState.hasIntentPanTranslation = livePan;
+        // Retain the rubber-band exclusion, but bound the intent distance to
+        // actual gesture travel and reject geometry moving against the finger.
+        deltaY = deltaY * panDeltaY > 0.0
+            ? copysign(MIN(fabs(deltaY), fabs(panDeltaY)), panDeltaY) : 0.0;
+    }
     UITabBarController *tbc = nil;
     BOOL shouldScheduleIdleReveal = NO;
 

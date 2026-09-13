@@ -912,6 +912,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     UIScrollView *table = NSBTableForVC(vc);
     if (table) {
         objc_setAssociatedObject(table, kNSBFeedTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [table.panGestureRecognizer addTarget:table action:NSSelectorFromString(@"apollo_nativeSearchPanBegan:")];
         if (@available(iOS 15.0, *)) {
             [vc setContentScrollView:table forEdge:NSDirectionalRectEdgeTop];
         }
@@ -1519,6 +1520,21 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 // bounds.origin IS contentOffset and Texture re-parks through setBounds: too —
 // both setters carry the pin or it doesn't hold (#534's key lesson).
 %hook ASTableView
+
+%new
+- (void)apollo_nativeSearchPanBegan:(UIPanGestureRecognizer *)pan {
+    if (pan.state != UIGestureRecognizerStateBegan || !ApolloNativeFeedSearchEnabled()) return;
+    UIScrollView *table = (UIScrollView *)self;
+    if (@available(iOS 17.4, *)) {
+        if (table.isScrollAnimating) {
+            // UIKit's search-palette settling animation can outlive the old
+            // drag and keep re-parking the table during the next one. Cancel
+            // that animation when the new gesture takes ownership.
+            [table setContentOffset:table.contentOffset animated:NO];
+            ApolloLog(@"[NativeSearch] interrupted settling animation on new drag (remaining=%d)", table.isScrollAnimating);
+        }
+    }
+}
 
 - (void)setContentInset:(UIEdgeInsets)inset {
     if (ApolloNativeFeedSearchEnabled() &&
