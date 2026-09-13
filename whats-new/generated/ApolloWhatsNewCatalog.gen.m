@@ -18,6 +18,7 @@ static const ApolloWhatsNewReleaseEntry kWhatsNewReleases[] = {
     { "3.5.1", "What's New in Apollo Reborn" },
     { "3.6.0", "What's New in Apollo Reborn" },
     { "3.7.0", "What's New in Apollo Reborn" },
+    { "3.7.1", "What's New in Apollo Reborn" },
 };
 
 static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
@@ -48,6 +49,12 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.7.0", "text.bubble.fill", "Smarter Highlights", "Unread dots, New badges, and +N counts show which Community Highlights you haven't read or that picked up comments." },
     { "3.7.0", "apps.iphone", "Widgets for Any Feed", "Point the Feed and Post widgets at Home, Popular, All, several subreddits, or a multireddit." },
     { "3.7.0", "checkmark.shield.fill", "Stability & Fixes", "Fixes for freezes, GIF memory crashes, launch crashes, duplicate saved items, and translation going quiet." },
+    { "3.7.1", "arrow.left.and.right.circle.fill", "Snappier Swipes", "Swipe navigation settles with Apollo's original easing again after you lift your finger." },
+    { "3.7.1", "arrow.down.circle.fill", "Comments Fixes", "The jump button advances on every tap again, and posts opened from highlights or links respect the subreddit's suggested sort." },
+    { "3.7.1", "checkmark.shield.fill", "Crash Fixes", "Fixes for launch crashes on TrollStore, profile switching, multireddit expansion, LiveContainer, and a Liquid Glass display crash." },
+    { "3.7.1", "ellipsis.circle.fill", "Pill Stays Expanded", "The Liquid Glass action pill stays expanded again; turn on Collapse Navigation Actions if you preferred the collapsing one." },
+    { "3.7.1", "menubar.rectangle", "Hide Header on Scroll", "Let the navigation bar follow the tab bar as it hides, and pick Hidden as a Header Style again." },
+    { "3.7.1", "speaker.wave.2.fill", "Media & Menu Fixes", "Videos stay audible after rotating, adding to a multireddit no longer reports an error, and the \342\213\257 sheet gets along with other tweaks." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }
