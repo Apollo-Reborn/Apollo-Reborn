@@ -12,6 +12,9 @@ NSString *sTrendingSubredditsSource = nil;
 NSString *sTrendingSubredditsLimit = nil;
 
 BOOL sBlockAnnouncements = NO;
+BOOL sAutomaticBackupsEnabled = NO;
+NSInteger sAutomaticBackupIntervalDays = 3;
+NSInteger sAutomaticBackupDestination = 0;
 BOOL sShowDeletedComments = NO;
 BOOL sTapToRevealDeletedComments = NO;
 BOOL sPassiveDeletedComments = NO;

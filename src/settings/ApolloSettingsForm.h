@@ -104,6 +104,10 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 @property (nonatomic, copy, nullable) NSString *footer;
 @property (nonatomic, copy, readonly) NSArray<ApolloSettingsRow *> *rows;
 
+// Conditional visibility for an entire section. Section insertion/deletion uses
+// UITableView's native fade animation. nil == always visible.
+@property (nonatomic, copy, nullable) BOOL (^visible)(void);
+
 @end
 
 @interface ApolloSettingsFormViewController : ApolloSettingsTableViewController

@@ -45,6 +45,9 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloLocalBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -410,6 +413,10 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
+@end
+
+@interface CustomAPIViewController ()
+@property (nonatomic) BOOL resolvingRestoreFolder;
 @end
 
 @implementation CustomAPIViewController
@@ -1202,7 +1209,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *backup =
         [ApolloSettingsRow buttonRowWithID:@"data.backup"
                                      title:@"Backup Settings"
-                                    action:^{ [weakSelf backupSettings]; }];
+                                    action:^{
+            ApolloAutomaticBackupViewController *controller = [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    backup.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -4385,11 +4398,38 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)restoreSettings {
+    if (self.resolvingRestoreFolder || self.presentedViewController) return;
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
+        message:@"Choose where the backup is stored."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloLocalBackupsViewController *controller =
+                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentRestorePickerAtDirectory:nil];
+            });
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *source = [self cellForRowID:@"data.restore"];
+    sheet.popoverPresentationController.sourceView = source ?: self.view;
+    sheet.popoverPresentationController.sourceRect = source ? source.bounds
+        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
     UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;
+    documentPicker.directoryURL = folderURL;
     [self presentViewController:documentPicker animated:YES completion:nil];
 }
 

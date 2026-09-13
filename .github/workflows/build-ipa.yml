@@ -31,7 +31,7 @@ on:
         description: 'Liquid Glass: full iOS 26 UI redesign + icon pack'
         required: false
         type: boolean
-        default: false
+        default: true
       liquid_glass_icons:
         description: 'Liquid Glass: icon pack only (keeps classic UI). Mutually exclusive with above option.'
         required: false

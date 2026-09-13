@@ -96,6 +96,7 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 @interface ApolloSettingsSection ()
 @property (nonatomic, copy, readwrite) NSString *title;
 @property (nonatomic, copy, readwrite) NSArray<ApolloSettingsRow *> *rows;
+@property (nonatomic, readonly) BOOL isVisible;
 @end
 
 @implementation ApolloSettingsSection
@@ -107,6 +108,10 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
     section.footer = footer;
     section.rows = rows;
     return section;
+}
+
+- (BOOL)isVisible {
+    return self.visible ? self.visible() : YES;
 }
 
 @end
@@ -167,6 +172,7 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     // The visibility snapshot the dataSource serves. Rebuilt only in
     // -rebuildForm and -visibilityDidChange, never during enumeration — the
     // table's counts and our answers must agree for the whole layout pass.
+    NSArray<ApolloSettingsSection *> *_visibleSections;
     NSArray<NSArray<ApolloSettingsRow *> *> *_visibleRows;
     // A footer-height re-check is already queued for the next runloop turn
     // (see -tableView:willDisplayFooterView:forSection:).
@@ -189,7 +195,8 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
 
 - (void)rebuildForm {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
     [self.tableView reloadData];
 }
 
@@ -205,9 +212,17 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     }
 }
 
-- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRows {
-    NSMutableArray *all = [NSMutableArray arrayWithCapacity:_sections.count];
+- (NSArray<ApolloSettingsSection *> *)computeVisibleSections {
+    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:_sections.count];
     for (ApolloSettingsSection *section in _sections) {
+        if (section.isVisible) [visible addObject:section];
+    }
+    return visible;
+}
+
+- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRowsForSections:(NSArray<ApolloSettingsSection *> *)sections {
+    NSMutableArray *all = [NSMutableArray arrayWithCapacity:sections.count];
+    for (ApolloSettingsSection *section in sections) {
         NSMutableArray *visible = [NSMutableArray arrayWithCapacity:section.rows.count];
         for (ApolloSettingsRow *row in section.rows) {
             if (row.isVisible) [visible addObject:row];
@@ -231,32 +246,60 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 }
 
 - (void)visibilityDidChange {
-    if (!_visibleRows) return;
-    NSArray<NSArray<ApolloSettingsRow *> *> *old = _visibleRows;
-    NSArray<NSArray<ApolloSettingsRow *> *> *new_ = [self computeVisibleRows];
+    if (!_visibleSections || !_visibleRows) return;
+    NSArray<ApolloSettingsSection *> *oldSections = _visibleSections;
+    NSArray<NSArray<ApolloSettingsRow *> *> *oldRowsBySection = _visibleRows;
+    NSArray<ApolloSettingsSection *> *newSections = [self computeVisibleSections];
+    NSArray<NSArray<ApolloSettingsRow *> *> *newRowsBySection =
+        [self computeVisibleRowsForSections:newSections];
 
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *deletes = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *inserts = [NSMutableDictionary dictionary];
-    for (NSUInteger s = 0; s < new_.count; s++) {
-        NSArray<ApolloSettingsRow *> *oldRows = s < old.count ? old[s] : @[];
-        NSArray<ApolloSettingsRow *> *newRows = new_[s];
+    NSMutableIndexSet *deletedSections = [NSMutableIndexSet indexSet];
+    NSMutableIndexSet *insertedSections = [NSMutableIndexSet indexSet];
+    for (NSUInteger s = 0; s < oldSections.count; s++) {
+        if (![newSections containsObject:oldSections[s]]) [deletedSections addIndex:s];
+    }
+    for (NSUInteger s = 0; s < newSections.count; s++) {
+        if (![oldSections containsObject:newSections[s]]) [insertedSections addIndex:s];
+    }
+
+    // Row deletions use the section's old index while insertions use its new
+    // index, matching UITableView's batch-update coordinate spaces when a
+    // conditional section elsewhere is inserted or removed at the same time.
+    for (NSUInteger newSectionIndex = 0; newSectionIndex < newSections.count; newSectionIndex++) {
+        ApolloSettingsSection *section = newSections[newSectionIndex];
+        NSUInteger oldSectionIndex = [oldSections indexOfObjectIdenticalTo:section];
+        if (oldSectionIndex == NSNotFound) continue;
+        NSArray<ApolloSettingsRow *> *oldRows = oldRowsBySection[oldSectionIndex];
+        NSArray<ApolloSettingsRow *> *newRows = newRowsBySection[newSectionIndex];
         for (NSUInteger r = 0; r < oldRows.count; r++) {
             if (![newRows containsObject:oldRows[r]]) {
                 ApolloSFAddPath(deletes, oldRows[r].showHideAnimation,
-                                [NSIndexPath indexPathForRow:(NSInteger)r inSection:(NSInteger)s]);
+                                [NSIndexPath indexPathForRow:(NSInteger)r
+                                                 inSection:(NSInteger)oldSectionIndex]);
             }
         }
         for (NSUInteger r = 0; r < newRows.count; r++) {
             if (![oldRows containsObject:newRows[r]]) {
                 ApolloSFAddPath(inserts, newRows[r].showHideAnimation,
-                                [NSIndexPath indexPathForRow:(NSInteger)r inSection:(NSInteger)s]);
+                                [NSIndexPath indexPathForRow:(NSInteger)r
+                                                 inSection:(NSInteger)newSectionIndex]);
             }
         }
     }
 
-    _visibleRows = new_;
-    if (deletes.count == 0 && inserts.count == 0) return;
+    _visibleSections = newSections;
+    _visibleRows = newRowsBySection;
+    if (deletes.count == 0 && inserts.count == 0 &&
+        deletedSections.count == 0 && insertedSections.count == 0) return;
     [self.tableView beginUpdates];
+    if (deletedSections.count > 0) {
+        [self.tableView deleteSections:deletedSections withRowAnimation:UITableViewRowAnimationFade];
+    }
+    if (insertedSections.count > 0) {
+        [self.tableView insertSections:insertedSections withRowAnimation:UITableViewRowAnimationFade];
+    }
     for (NSNumber *animation in deletes) {
         [self.tableView deleteRowsAtIndexPaths:deletes[animation]
                               withRowAnimation:(UITableViewRowAnimation)animation.integerValue];
@@ -281,11 +324,15 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
-    for (NSUInteger s = 0; s < _sections.count; s++) {
-        for (ApolloSettingsRow *row in _sections[s].rows) {
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
+    for (ApolloSettingsSection *section in _sections) {
+        for (ApolloSettingsRow *row in section.rows) {
             if ([row.rowID isEqualToString:rowID]) {
-                [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:s] withRowAnimation:animation];
+                NSUInteger visibleIndex = [_visibleSections indexOfObjectIdenticalTo:section];
+                if (visibleIndex == NSNotFound) break;
+                [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:visibleIndex]
+                              withRowAnimation:animation];
                 return;
             }
         }
@@ -356,13 +403,13 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if ((NSUInteger)section >= _sections.count) return nil;
-    return _sections[(NSUInteger)section].title;
+    if ((NSUInteger)section >= _visibleSections.count) return nil;
+    return _visibleSections[(NSUInteger)section].title;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if ((NSUInteger)section >= _sections.count) return nil;
-    ApolloSettingsSection *model = _sections[(NSUInteger)section];
+    if ((NSUInteger)section >= _visibleSections.count) return nil;
+    ApolloSettingsSection *model = _visibleSections[(NSUInteger)section];
     return model.footer;
 }
 
@@ -564,10 +611,11 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    // iPad popover anchoring; fall back to the presenter's view center.
-    UIView *anchor = sourceView ?: presenter.view;
+    // Anchor to the screen, not a reusable cell: row reloads can recycle the
+    // source cell for a different row while the picker is still open.
+    UIView *anchor = presenter.view;
     sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds
+    sheet.popoverPresentationController.sourceRect = sourceView ? [sourceView convertRect:sourceView.bounds toView:anchor]
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
     [presenter presentViewController:sheet animated:YES completion:nil];
 }

@@ -33,6 +33,9 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sAutomaticBackupsEnabled;
+extern NSInteger sAutomaticBackupIntervalDays;
+extern NSInteger sAutomaticBackupDestination; // 0 = local, 1 = selected Files folder
 extern BOOL sShowDeletedComments;
 extern BOOL sTapToRevealDeletedComments;
 extern BOOL sPassiveDeletedComments;

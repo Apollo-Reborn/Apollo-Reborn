@@ -15,17 +15,23 @@ NSString *ApolloMainPreferencesPath(void);
 // Contains: theme settings, keyword filters, some account state
 NSString *ApolloGroupPreferencesPath(void);
 
-// Build a settings backup zip in NSTemporaryDirectory(): flushes defaults, copies the
-// main + group preference plists, patches in the in-memory ReadPostIDs, writes the
-// logged-in usernames to accounts.txt, captures Apollo's Valet keychain items to
-// keychain.plist, and zips it all up. Returns the zip file URL on success, or nil with
-// *error set (its localizedDescription is a user-presentable message for the
-// "Backup Failed" alert).
+// Build a uniquely named settings backup zip in NSTemporaryDirectory(). Captures
+// immutable live main + group persistent defaults (including in-memory ReadPostIDs
+// and favorites), writes usernames to accounts.txt and Valet credentials to
+// keychain.plist, and zips them using protected temporary files. May be called on
+// a worker queue: only the preference snapshot marshals synchronously to main;
+// filesystem/keychain/compression work stays on the calling queue. The caller must
+// not synchronously wait for that worker from main. Returns the ZIP URL on success
+// (caller owns cleanup), or nil with a user-presentable *error on failure.
 NSURL *ApolloBackupRestoreCreateBackupZip(NSError **error);
 
-// Restore settings from a backup zip: unzips, validates the plists, wipes and replays
-// the main defaults domain (skipping analytics keys), re-syncs the tweak's in-memory
-// globals, replays the group suite, and replays the captured keychain items. Returns
+// Restore settings from a backup zip: validates flat archive entries, bounds and
+// verifies inflated byte counts/CRCs, then checks all present plist schemas and
+// Apollo-owned keychain identities before changing anything.
+// Missing optional group/keychain files remain compatible with legacy backups.
+// Credential replay is checked and rolls back earlier writes if any item fails;
+// only after it succeeds are the main/group defaults and runtime values restored.
+// Automatic backups resume after a fully rolled-back failure. Returns
 // YES on success; on failure returns NO with *outErrorTitle / *outErrorMessage set
 // for the failure alert (e.g. "Restore Failed" / "Invalid Backup").
 BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitle, NSString **outErrorMessage);
