@@ -10,8 +10,8 @@ extern "C" {
 BOOL ApolloIsNotificationBackendConfigured(void);
 
 // Parsed base URL of the user's self-hosted backend, or nil. Trailing slash is
-// trimmed when saved by the settings UI. Cached and invalidated on
-// NSUserDefaultsDidChangeNotification.
+// trimmed when saved by the settings UI. Each call reads current defaults;
+// the returned value stays valid across later settings changes.
 NSURL *ApolloNotificationBackendBaseURL(void);
 
 // The trimmed X-Registration-Token value, or nil when unset. For requests the

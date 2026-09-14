@@ -212,11 +212,13 @@ static void ApplyAccentImageView(id cell) {
     ColorListCell((UITableViewCell *)self);
 }
 - (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
-    %orig; ApplyAccentImageView(self);
+    %orig;
+    ApplyAccentImageView(self);
     if (ApolloThemeRuntimeIsActive()) [(UITableViewCell *)self setNeedsLayout];
 }
 - (void)setSelected:(BOOL)selected animated:(BOOL)animated {
-    %orig; ApplyAccentImageView(self);
+    %orig;
+    ApplyAccentImageView(self);
     if (ApolloThemeRuntimeIsActive()) [(UITableViewCell *)self setNeedsLayout];
 }
 %end

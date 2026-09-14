@@ -12,8 +12,9 @@
 // rendered where content scrolls under the nav/tab bars. iOS 26 defaults to a
 // soft gradient blur; iOS 27 betas default to a hard cutoff with a dividing
 // line, which some users find jarring. The "Header Style" setting lets users
-// choose the TOP (header) edge treatment explicitly: Soft, Hard, or Blur (a
-// tweak-drawn progressive blur — see ApolloProgressiveBlur.xm).
+// choose the TOP (header) edge treatment explicitly: Soft, Hard, Blur (a
+// tweak-drawn progressive blur — see ApolloProgressiveBlur.xm), or Hidden
+// (no native edge effect and no replacement blur).
 //
 // Only the top edge is ever touched. Earlier builds applied the chosen style
 // to all four edges, which painted a hard band behind the tab bar in Hard
@@ -57,6 +58,10 @@ NSInteger ApolloResolvedScrollEdgeEffectStyle(void) {
         sSystemDefaultsHard = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 27;
     });
     return sSystemDefaultsHard ? ApolloScrollEdgeEffectStyleHard : ApolloScrollEdgeEffectStyleSoft;
+}
+
+static BOOL ApolloHeaderStyleHidesNativeEffect(NSInteger mode) {
+    return mode == ApolloScrollEdgeEffectStyleBlur || mode == ApolloScrollEdgeEffectStyleHidden;
 }
 
 static id ApolloScrollEdgeEffectStyleObjectForMode(NSInteger mode) {
@@ -111,9 +116,9 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
     SEL setHiddenSelector = NSSelectorFromString(@"setHidden:");
     BOOL hasSetHidden = [effect respondsToSelector:setHiddenSelector];
     if (hasSetHidden) {
-        if (mode == ApolloScrollEdgeEffectStyleBlur) {
+        if (ApolloHeaderStyleHidesNativeEffect(mode)) {
             // Blur replaces the system header effect with the tweak-drawn
-            // progressive blur, so the native effect must go away. Remember
+            // progressive blur; Hidden removes it without a replacement. Remember
             // only the visibility changes made BY THIS FEATURE: stamp an
             // effect solely when this call actually flips it visible→hidden.
             // An effect that is already hidden either belongs to UIKit/Apollo
@@ -133,12 +138,12 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
         }
     }
 
-    // Blur leaves the (hidden) native effect's style alone; every other mode
-    // pushes its style object — Automatic pushes automaticStyle, which is also
+    // Blur and Hidden leave the hidden native effect's style alone; other modes
+    // push their style object — Automatic pushes automaticStyle, which is also
     // what restores system behavior after switching away from Soft/Hard.
     BOOL hasSetStyle = NO;
     id style = nil;
-    if (mode != ApolloScrollEdgeEffectStyleBlur) {
+    if (!ApolloHeaderStyleHidesNativeEffect(mode)) {
         SEL setStyleSelector = NSSelectorFromString(@"setStyle:");
         style = ApolloScrollEdgeEffectStyleObjectForMode(mode);
         hasSetStyle = (style != nil) && [effect respondsToSelector:setStyleSelector];
@@ -242,7 +247,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 
 - (void)setHidden:(BOOL)hidden {
     if (IsLiquidGlass() &&
-        ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleBlur &&
+        ApolloHeaderStyleHidesNativeEffect(ApolloResolvedScrollEdgeEffectStyle()) &&
         objc_getAssociatedObject(self, &kApolloScrollEdgeEffectIsTopKey)) {
         if (!hidden) {
             // The caller wanted it visible and we are overriding — exactly the
@@ -253,7 +258,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
         // hide WE created — the apply pass's own setHidden:YES routes through
         // this very hook, and clearing the stamp here erased the restore
         // record the moment it was written, leaving effects stuck hidden
-        // after switching away from Blur (the repro'd "Hard renders nothing").
+        // after switching away from Blur/Hidden.
         // hidden == YES with no stamp is UIKit/Apollo's own intent: leave it
         // unstamped so restore never un-hides an edge they keep disabled. If
         // UIKit genuinely wants an edge hidden while our stamp exists, it will

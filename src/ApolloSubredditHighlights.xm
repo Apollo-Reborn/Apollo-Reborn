@@ -2895,9 +2895,11 @@ static void ApolloHLRefreshSub(NSString *subreddit, BOOL alwaysWeb) {
             if (![ApolloHLItemsPresentationSig(freshREST) isEqualToString:ApolloHLItemsPresentationSig(ApolloHLCache()[key])]) {
                 ApolloHLApplyItems(key, freshREST);
             }
-        } else if (!alwaysWeb && ApolloHLCache()[key].count) {
+        } else if (ApolloHLCache()[key].count) {
             // Refresh totals for all Full-mode cards without reloading Reddit's
-            // web page just for new comments. Enrichment owns its private copy.
+            // web page just for new comments. Do this on explicit refresh too:
+            // a challenged/failed web scrape must not strand the old totals.
+            // Enrichment owns its private copy.
             NSArray *items = ApolloHLCache()[key];
             NSString *requestedIDs = ApolloHLItemsContentSig(items);
             ApolloHLEnrichViaInfo(key, refreshGeneration, items, freshREST, ^(NSArray<ApolloHLItem *> *updated) {

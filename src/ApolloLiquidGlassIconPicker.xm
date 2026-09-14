@@ -608,13 +608,13 @@ static LGIconRow *LGBuildRows(const LGIconRowEntry *entries, NSInteger entryCoun
     NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(entryCount * 3)];
     NSInteger count = 0;
     for (NSInteger i = 0; i < entryCount; i++) {
-        NSString *iconID = [@(entries[i].iconID) copy];
+        NSString *iconID = @(entries[i].iconID);
         if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
             ApolloLog(@"[LGIconPicker] omitting icon not in Info.plist: %@", iconID);
             continue;
         }
-        NSString *dn = [@(entries[i].displayName) copy];
-        NSString *ds = [@(entries[i].designer) copy];
+        NSString *dn = @(entries[i].displayName);
+        NSString *ds = @(entries[i].designer);
         [storage addObject:iconID]; [storage addObject:dn]; [storage addObject:ds];
         rows[count++] = (LGIconRow){ iconID, dn, ds };
     }
@@ -823,9 +823,9 @@ static void LGInitRuntimeGroups(void) {
         NSMutableArray *storage = [NSMutableArray array];
         for (NSInteger gi = 0; gi < cap; gi++) {
             const LGIconGroupDef *def = &kLGIconGroups[gi];
-            NSString *groupID     = [@(def->groupID) copy];
-            NSString *title       = [@(def->title) copy];
-            NSString *description = [@(def->description) copy];
+            NSString *groupID     = @(def->groupID);
+            NSString *title       = @(def->title);
+            NSString *description = @(def->description);
             [storage addObjectsFromArray:@[groupID, title, description]];
             NSArray<NSString *> *rowStorage = nil;
             NSInteger count = 0;

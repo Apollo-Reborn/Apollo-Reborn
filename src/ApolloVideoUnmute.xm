@@ -124,6 +124,14 @@ static __weak id sFeedAudibleVideoNode = nil;
 // unmute a video that's already off-screen.
 static NSUInteger sFeedUnmuteRetryGeneration = 0;
 
+// The fullscreen pager (MediaPageViewController) currently on screen. Set in
+// viewWillAppear: — which UIKit also re-sends when an interactive dismissal is
+// cancelled — and cleared in viewDidDisappear:, so it is nil exactly when no
+// fullscreen viewer is up. Fullscreen owns its player's audio: only its own
+// mute button and its dismissal may change that player's mute state or the
+// audio session while it is presented (see PlayerIsPresentedFullscreen).
+static __weak id sPresentedMediaPageVC = nil;
+
 // =============================================================================
 // MARK: - Helpers
 // =============================================================================
@@ -394,6 +402,26 @@ static AVPlayer *GetPlayerFromMediaPageVC(id mediaPageVC) {
     return nil;
 }
 
+// The player the presented fullscreen viewer is showing right now — nil for an
+// image page or when no viewer is up. Read live rather than cached: the pager
+// can be swiped from a video page to an image page and back.
+static AVPlayer *PresentedFullscreenPlayer(void) {
+    id pageVC = sPresentedMediaPageVC;
+    return pageVC ? GetPlayerFromMediaPageVC(pageVC) : nil;
+}
+
+// Rotating the phone while the fullscreen viewer is up re-lays the feed or
+// comments table out underneath it (the viewer keeps its presenter in the
+// hierarchy), and the shorter landscape viewport hands the cells fresh
+// visibility events — including "invisible" for a cell that no longer fits.
+// For a shareable v.redd.it video that cell holds the SAME AVPlayer the
+// viewer is playing, so an inline-driven mute or protection change lands on
+// the fullscreen video (issue #1072). Every inline visibility path below
+// checks this before touching a player.
+static BOOL PlayerIsPresentedFullscreen(AVPlayer *player) {
+    return player != nil && player == PresentedFullscreenPlayer();
+}
+
 // Update the MuteUnmuteVideoButtonNode's visual state to match actual mute state.
 // Sets the `isMuted` ivar (Swift Bool) and updates the `icon` ASImageNode's image.
 //
@@ -660,6 +688,16 @@ static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if (!player) return NO;
     if (ApolloPiP_IsOwnedPlayer(player)) return NO;
 
+    // A fullscreen viewer is up: the feed is not the surface being watched.
+    // Its ticks still arrive underneath the viewer (rotation re-lays the feed
+    // out), and acting on them lands on the fullscreen video — re-arming
+    // protection on the shared player makes our AVPlayer.setMuted: hook veto
+    // the user's fullscreen mute, and unmuting a cell Apollo's midpoint
+    // autoplay started under the viewer plays a second audio track beneath
+    // it. Report the tick as handled so no retry chain is scheduled either;
+    // the next tick after dismissal applies the policy as usual.
+    if (sPresentedMediaPageVC != nil) return YES;
+
     // Steady state: already the audible one. Cheapest possible early-out, and
     // the reason this is safe to call from every visibility tick.
     if (player == sAutoUnmutedPlayer && ![player isMuted]) return YES;
@@ -702,19 +740,29 @@ static void ScheduleFeedUnmuteRetry(id richMediaNode, NSUInteger attemptsRemaini
 static void ReleaseFeedAudioIfOwnedBy(id richMediaNode) {
     if (!richMediaNode || !ObjectsMatch(richMediaNode, sFeedAudibleRichMediaNode)) return;
 
-    ApolloLog(@"[VideoUnmute] Feed audible cell left the screen - releasing protection");
-
     id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
     AVPlayer *player = videoNode ? GetPlayerFromVideoNode(videoNode) : nil;
+
+    // Rotation under the fullscreen viewer recycled the cell (see
+    // PlayerIsPresentedFullscreen): the viewer is still playing this player,
+    // so it stays audible — the viewer's own dismissal mutes it and sets the
+    // icon. The cell itself is off-screen now, so it is forgotten as usual and
+    // the post-dismiss re-apply cannot reach for an invisible video.
+    BOOL presentedFullscreen = PlayerIsPresentedFullscreen(player);
+    ApolloLog(@"[VideoUnmute] Feed audible cell left the screen - releasing protection%@",
+              presentedFullscreen ? @" (player stays unmuted: the fullscreen viewer is showing it)" : @"");
+
     if (player && player == sAutoUnmutedPlayer) sAutoUnmutedPlayer = nil;
-    if (player) [player setMuted:YES];
-    if (videoNode) {
-        SEL setMutedSel = NSSelectorFromString(@"setMuted:");
-        if ([videoNode respondsToSelector:setMutedSel]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
+    if (!presentedFullscreen) {
+        if (player) [player setMuted:YES];
+        if (videoNode) {
+            SEL setMutedSel = NSSelectorFromString(@"setMuted:");
+            if ([videoNode respondsToSelector:setMutedSel]) {
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
+            }
         }
+        SyncMuteButtonIcon(richMediaNode, YES);
     }
-    SyncMuteButtonIcon(richMediaNode, YES);
 
     sFeedAudibleRichMediaNode = nil;
     sFeedAudibleVideoNode = nil;
@@ -774,18 +822,25 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
             ApolloLog(@"[VideoUnmute] %@ cell invisible during back navigation — keeping protection", contextLabel);
             return;
         }
-        ApolloLog(@"[VideoUnmute] %@ cell invisible — clearing protection and refs", contextLabel);
+        id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
+        AVPlayer *player = videoNode ? GetPlayerFromVideoNode(videoNode) : nil;
+
+        // Rotation under the fullscreen viewer (see PlayerIsPresentedFullscreen):
+        // the header cell fell off the shorter viewport, but the viewer is still
+        // playing this player, so it stays unmuted — the viewer's own dismissal
+        // mutes it. Refs are still dropped: the header is off-screen, and the
+        // post-dismiss re-unmute must not sound an invisible video.
+        BOOL presentedFullscreen = PlayerIsPresentedFullscreen(player);
+        ApolloLog(@"[VideoUnmute] %@ cell invisible — clearing protection and refs%@", contextLabel,
+                  presentedFullscreen ? @" (player stays unmuted: the fullscreen viewer is showing it)" : @"");
 
         sAutoUnmutedPlayer = nil;  // Clear first so our setMuted: hook doesn't block
 
-        id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
-        if (videoNode) {
+        if (videoNode && !presentedFullscreen) {
             SEL setMutedSel = NSSelectorFromString(@"setMuted:");
             if ([videoNode respondsToSelector:setMutedSel]) {
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
             }
-
-            AVPlayer *player = GetPlayerFromVideoNode(videoNode);
             if (player) [player setMuted:YES];
         }
 
@@ -826,7 +881,7 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
 
             SyncMuteButtonIcon(rmNode, [retryPlayer isMuted]);
 
-            if (sUnmuteCommentsVideos == 2
+            if (sUnmuteCommentsVideos == 2 && sPresentedMediaPageVC == nil
                 && !objc_getAssociatedObject(strongOwner, kAutoUnmuteAppliedKey)) {
                 objc_setAssociatedObject(strongOwner, kAutoUnmuteAppliedKey, @YES,
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -842,6 +897,9 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
 
     if (sUnmuteCommentsVideos != 2) return;
     if (unmuteApplied) return;
+    // Never (re-)arm protection from a tick underneath the fullscreen viewer
+    // (the header holds the very player it is showing).
+    if (sPresentedMediaPageVC != nil) return;
 
     objc_setAssociatedObject(visibilityOwner, kAutoUnmuteAppliedKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1130,23 +1188,21 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
 // ---------------------------------------------------------------------------
 %hook MediaPageViewController
 
-// - (void)viewWillAppear:(BOOL)animated {
-//     %orig;
-//     if (sAutoUnmutedPlayer) {
-//         // Only suspend protection if the fullscreen viewer is showing the SAME
-//         // video we're protecting. Opening an image viewer (no player) or a
-//         // different video should not disrupt the comments header's audio.
-//         AVPlayer *fullscreenPlayer = GetPlayerFromMediaPageVC(self);
-//         if (fullscreenPlayer && fullscreenPlayer == sAutoUnmutedPlayer) {
-//             ApolloLog(@"[VideoUnmute] MediaPageVC appearing with protected player — suspending protection for fullscreen");
-//             sAutoUnmutedPlayer = nil;
-//         } else {
-//             ApolloLog(@"[VideoUnmute] MediaPageVC appearing (image or different video) — keeping protection");
-//         }
-//     }
-// }
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    // Fullscreen is (about to be) up: inline visibility paths must leave its
+    // player alone from here until viewDidDisappear:. UIKit re-sends this when
+    // an interactive dismissal is cancelled, which is why viewWillDisappear:
+    // does not clear it.
+    sPresentedMediaPageVC = self;
+}
 
 - (void)viewDidDisappear:(BOOL)animated {
+    // Gone for good (a cancelled interactive dismissal never gets here): the
+    // inline paths may act on this player again, starting with the feed
+    // re-apply scheduled below.
+    if (sPresentedMediaPageVC == self) sPresentedMediaPageVC = nil;
+
     // Only process re-unmute for video content. Image viewers have no player
     // and should not trigger any mute/unmute logic.
     AVPlayer *fullscreenPlayer = GetPlayerFromMediaPageVC(self);
@@ -1307,6 +1363,76 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
         ApolloLog(@"[VideoUnmute] animateTransition: different player — keeping protection");
     }
 }
+
+%end
+
+// ---------------------------------------------------------------------------
+// TouchHintVideoNode.didExitVisibleState: inline exits under the fullscreen
+// viewer. This is Apollo's inline exit handler (sub_10058cb30): for an UNMUTED
+// inline player it flips the cell's mute icon and runs the mute dance
+// (sub_1003414cc — pause-all, Ambient + setActive:NO at T+50ms, setMuted:YES
+// + unpause-all at T+100ms). Rotation under the viewer fires it for the cells
+// the shorter viewport dropped. Apollo itself skips the dance for a shareable
+// node whose layer the viewer has adopted, but any other unmuted inline
+// player (non-shareable hosts keep their own AVPlayer) still downgrades the
+// ONE audio session to Ambient — which silences the fullscreen video even
+// though its player reads muted == NO. While a fullscreen video is up, keep
+// inline exits away from the session: run the ASDK part (super), mute the
+// exiting player quietly the way Apollo would have, and leave the dance to
+// the viewer's own dismissal.
+// ---------------------------------------------------------------------------
+%group FullscreenExitGuard
+
+// The class the hook below is installed on, captured at %init time so the
+// super dispatch inside it never depends on the instance's runtime class.
+static Class sTouchHintVideoNodeClass = nil;
+
+%hook TouchHintVideoNode
+
+- (void)didExitVisibleState {
+    AVPlayer *fullscreenPlayer = PresentedFullscreenPlayer();
+    if (!fullscreenPlayer) {
+        %orig;
+        return;
+    }
+
+    // Apollo's override is [super didExitVisibleState] + the exit handler;
+    // keep the ASDK half so node bookkeeping is untouched. Dispatch from the
+    // hooked class, not object_getClass(self): for a KVO / isa-swizzled
+    // subclass "super" would otherwise resolve back to this very method.
+    struct objc_super superInfo;
+    superInfo.receiver = self;
+    superInfo.super_class = class_getSuperclass(sTouchHintVideoNodeClass ?: object_getClass(self));
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&superInfo, @selector(didExitVisibleState));
+
+    AVPlayer *player = GetPlayerFromVideoNode(self);
+    // The viewer's own player (shared layer) is the video being watched; a
+    // tweak-protected player is released by ReleaseFeedAudioIfOwnedBy / the
+    // comments handler on this same event. Neither is ours to mute here.
+    if (!player || player == fullscreenPlayer || player == sAutoUnmutedPlayer
+        || [player isMuted] || ApolloPiP_IsOwnedPlayer(player)) {
+        ApolloLog(@"[VideoUnmute] Inline video exited under the fullscreen viewer — skipping its mute dance");
+        return;
+    }
+
+    ApolloLog(@"[VideoUnmute] Inline video exited under the fullscreen viewer — muting it without the session dance");
+    [player setMuted:YES];
+    SEL setMutedSel = NSSelectorFromString(@"setMuted:");
+    if ([self respondsToSelector:setMutedSel]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(self, setMutedSel, YES);
+    }
+    // The node's ASVideoNodeDelegate is its RichMediaNode, which owns the
+    // mute button whose icon the skipped handler would have flipped.
+    static Class sRichMediaNodeClass = nil;
+    if (!sRichMediaNodeClass) sRichMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+    id delegate = [self respondsToSelector:@selector(delegate)]
+        ? ((id (*)(id, SEL))objc_msgSend)(self, @selector(delegate)) : nil;
+    if (sRichMediaNodeClass && [delegate isKindOfClass:sRichMediaNodeClass]) {
+        SyncMuteButtonIcon(delegate, YES);
+    }
+}
+
+%end
 
 %end
 
@@ -2066,6 +2192,15 @@ static void ReclaimSearchResultsPlayerLayers(UIViewController *searchVC, NSStrin
         ApolloLog(@"[VideoUnmute] ctor: feed unmute installed (mode=%ld)", (long)sUnmuteFeedVideos);
     } else {
         ApolloLog(@"[VideoUnmute] ctor: LargePostCellNode missing - feed unmute unavailable");
+    }
+
+    Class touchHintVideoNodeClass = objc_getClass("_TtC6Apollo18TouchHintVideoNode");
+    if (touchHintVideoNodeClass) {
+        sTouchHintVideoNodeClass = touchHintVideoNodeClass;
+        %init(FullscreenExitGuard, TouchHintVideoNode = touchHintVideoNodeClass);
+        ApolloLog(@"[VideoUnmute] ctor: fullscreen exit guard installed");
+    } else {
+        ApolloLog(@"[VideoUnmute] ctor: TouchHintVideoNode missing - fullscreen exit guard unavailable");
     }
 
     Class searchResultsVCClass = PostsSearchResultsViewControllerClass();
