@@ -49,6 +49,19 @@
 //     NSUserDefaults). Restored tabs have no live VC or snapshot ("cold"):
 //     tapping routes the permalink through Apollo's URL handler; snapshots
 //     rebuild the next time the post is left while tabbed.
+//   - A cold tab adopts the comments screen it opens (viewDidAppear of a
+//     CommentsViewController for a tabbed post whose tab has no live screen,
+//     or whose retained screen is off-screen), so from the first reopen on it
+//     behaves like a comments-screen keep: the next tap pops/pushes that same
+//     instance, sort and scroll position included. Without this every tap of
+//     a feed-kept or relaunch-restored tab re-routed the URL and the thread
+//     came back on the default sort (user report: "when I reopen a tab using
+//     the floating bubble, it resets the sorting").
+//   - Each tab remembers the comment sort its screen was last on (captured
+//     when the screen leaves view and at persist time, saved with the tab).
+//     A cold open publishes it for ApolloURLOpenCommentSort.xm, which opens
+//     the thread on that sort — Live Update included, so a live thread comes
+//     back live after a relaunch — instead of Apollo's default-sort chain.
 //   - Retained VCs are the feature's soul, so a memory warning drops only the
 //     preview snapshots, never the VCs.
 //   - The overlay is a passthrough UIWindow (level Normal+50, PiP's proven
@@ -64,6 +77,8 @@
 #import <objc/message.h>
 
 #import "ApolloFloatingTabs.h"
+#import "ApolloPerPostCommentSort.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloUserFlair.h"
 #import "ApolloFloatingTabsCrests.h"
 #import "ApolloActionMenu.h"
@@ -117,6 +132,19 @@ static NSString *const kFTSaveYFrac = @"yFrac";
 static NSString *const kFTSaveTucked = @"tucked";
 static NSString *const kFTSaveStackID = @"stackID";
 static NSString *const kFTSaveStackOrder = @"stackOrder";
+static NSString *const kFTSaveSort = @"sort";           // RDKCommentSortingMethod raw (1-8) the screen was last on; absent = never captured
+
+// RDKCommentSortingMethod raws (ApolloURLOpenCommentSort.xm has the full table):
+// 1 Top ... 7 Random, 8 Live Update. Anything else is "no memory".
+static BOOL ApolloFTIsRealCommentSort(int64_t raw) { return raw >= 1 && raw <= 8; }
+
+// How long a cold reopen's remembered sort stays published for the
+// CommentsViewController the URL router is about to create. The route is
+// synchronous and viewDidLoad follows within the same runloop turn or the
+// next; the window only has to outlive a slow presentation, never a second
+// open of the same post by other means (those use init(link:) and never read
+// it — see ApolloURLOpenCommentSort.xm).
+static const NSTimeInterval kFTPendingSortWindow = 15.0;
 
 // =============================================================================
 // MARK: - Haptics
@@ -146,6 +174,7 @@ typedef NS_ENUM(NSInteger, ApolloFTCrestState) {
 @property (nonatomic, copy) NSString *thumbnailURL;   // post thumbnail (bubble face when present; empty for text/NSFW/spoiler posts)
 @property (nonatomic, strong) UIViewController *commentsVC; // the LIVE screen; nil for cold tabs
 @property (nonatomic, strong) UIImage *snapshot;      // last-seen preview; nil for cold tabs / after memory warning
+@property (nonatomic, assign) int64_t rememberedSort;  // comment sort the screen was last on (RDKCommentSortingMethod raw, 0 = unknown)
 // Match-thread crest face, derived from title + subreddit (never persisted;
 // re-resolved after a relaunch). See ApolloFloatingTabsCrests.h.
 @property (nonatomic, assign) NSInteger crestState;          // ApolloFTCrestState
@@ -162,6 +191,77 @@ typedef NS_ENUM(NSInteger, ApolloFTCrestState) {
 
 @implementation ApolloFloatingTab
 @end
+
+// Post identity of a live CommentsViewController, before or after its first
+// fetch: the `link` ivar once Apollo holds the RDKLink (feed opens, or a URL
+// open that has loaded), else the `linkID` Swift String ivar the URL router
+// seeds — the bare post id loadComments fetches with. Definitions of the two
+// link helpers live with the menu plumbing further down.
+static id ApolloFTIvarObject(id object, const char *name);
+static BOOL ApolloFTLinkInfoForLink(id link, NSString **outLinkKey, NSString **outPermalink,
+                                    NSString **outTitle, NSString **outSubreddit);
+
+static NSString *ApolloFTLinkKeyForVC(id vc) {
+    NSString *linkKey = nil;
+    if (ApolloFTLinkInfoForLink(ApolloFTIvarObject(vc, "link"), &linkKey, NULL, NULL, NULL)) return linkKey;
+    NSString *postID = ApolloReadSwiftStringIvar(vc, "linkID");
+    if ([postID hasPrefix:@"t3_"]) postID = [postID substringFromIndex:3];
+    if (postID.length == 0) return nil;
+    return [[@"t3_" stringByAppendingString:postID] lowercaseString];
+}
+
+// =============================================================================
+// MARK: - Remembered sort hand-off for cold reopens
+// =============================================================================
+// A cold open goes through Apollo's URL router, which builds a link-less
+// CommentsViewController that ApolloURLOpenCommentSort.xm steers onto the right
+// comment sort. The tab's remembered sort is published here, keyed by post id,
+// for the few seconds that open takes; that module reads it (top of its chain)
+// in the new screen's viewDidLoad and again in the first fetch's completion.
+// That completion lands AFTER the screen has appeared and been adopted by the
+// tab, so adoption must not clear it: it is cleared when the tab closes, when
+// another cold open replaces it, or by the window expiring. Main thread only,
+// like everything else in this file.
+
+static NSString *sApolloFTPendingSortPostID = nil;   // bare post id, lowercased
+static int64_t sApolloFTPendingSortRaw = 0;
+static CFAbsoluteTime sApolloFTPendingSortAt = 0;
+
+static NSString *ApolloFTBarePostID(NSString *identifier) {
+    return [identifier hasPrefix:@"t3_"] ? [identifier substringFromIndex:3] : identifier;
+}
+
+static void ApolloFTClearPendingSort(void) {
+    sApolloFTPendingSortPostID = nil;
+    sApolloFTPendingSortRaw = 0;
+    sApolloFTPendingSortAt = 0;
+}
+
+static void ApolloFTPublishPendingSortForTab(ApolloFloatingTab *tab) {
+    ApolloFTClearPendingSort();
+    if (!ApolloFTIsRealCommentSort(tab.rememberedSort) || tab.linkKey.length == 0) return;
+    sApolloFTPendingSortPostID = [ApolloFTBarePostID(tab.linkKey) copy];
+    sApolloFTPendingSortRaw = tab.rememberedSort;
+    sApolloFTPendingSortAt = CFAbsoluteTimeGetCurrent();
+    ApolloLog(@"[FloatingTabs] Cold open of %@ asks for its remembered sort %@",
+              tab.linkKey, ApolloCommentSortName(tab.rememberedSort));
+}
+
+static void ApolloFTClearPendingSortForLinkKey(NSString *linkKey) {
+    if (sApolloFTPendingSortPostID && [sApolloFTPendingSortPostID isEqualToString:ApolloFTBarePostID(linkKey)]) {
+        ApolloFTClearPendingSort();
+    }
+}
+
+int64_t ApolloFloatingTabsPendingCommentSortForPost(NSString *postID) {
+    if (!sApolloFTPendingSortPostID || postID.length == 0) return 0;
+    if (CFAbsoluteTimeGetCurrent() - sApolloFTPendingSortAt > kFTPendingSortWindow) {
+        ApolloFTClearPendingSort();
+        return 0;
+    }
+    NSString *bare = ApolloFTBarePostID(postID).lowercaseString;
+    return [sApolloFTPendingSortPostID isEqualToString:bare] ? sApolloFTPendingSortRaw : 0;
+}
 
 // =============================================================================
 // MARK: - Bubble view
@@ -467,6 +567,10 @@ typedef NS_ENUM(NSInteger, ApolloFTCrestState) {
 - (void)closeTabs:(NSArray<ApolloFloatingTab *> *)tabsToClose animated:(BOOL)animated;
 - (void)closeAll;
 - (void)refreshSnapshotForViewController:(UIViewController *)vc;
+- (void)rememberSortForViewController:(UIViewController *)vc;
+- (BOOL)refreshRememberedSortForTab:(ApolloFloatingTab *)tab;
+- (void)adoptViewControllerIfTabbed:(UIViewController *)vc;
+- (void)persist;
 - (void)restoreSavedTabsIfNeeded;
 - (void)dropSnapshots;
 - (void)fanOutAllStacks;
@@ -717,6 +821,7 @@ static ApolloFloatingTabsController *sFTController = nil;
     if (tabsToClose.count == 0) return;
     for (ApolloFloatingTab *tab in tabsToClose) {
         ApolloFloatingBubbleView *bubble = [self bubbleForTab:tab];
+        ApolloFTClearPendingSortForLinkKey(tab.linkKey);
         [self.tabs removeObject:tab];
         [self.bubbles removeObjectForKey:tab];
         if (!bubble) continue;
@@ -781,6 +886,61 @@ static ApolloFloatingTabsController *sFTController = nil;
             return;
         }
     }
+}
+
+// =============================================================================
+// MARK: Remembered sort + screen adoption
+// =============================================================================
+
+// The comment sort a tab's live screen is on, folded into the tab whenever the
+// screen leaves view (and at persist time) so a cold reopen — after a relaunch
+// or a memory-pressure drop — puts the thread back on it.
+- (void)rememberSortForViewController:(UIViewController *)vc {
+    if (!vc) return;
+    for (ApolloFloatingTab *tab in self.tabs) {
+        if (tab.commentsVC != vc) continue;
+        if ([self refreshRememberedSortForTab:tab]) [self persist];
+        return;
+    }
+}
+
+// YES when the tab's memory changed. A screen whose sort cannot be read (still
+// loading, unknown layout) leaves the last memory alone.
+- (BOOL)refreshRememberedSortForTab:(ApolloFloatingTab *)tab {
+    if (!tab.commentsVC) return NO;
+    int64_t raw = 0;
+    if (!ApolloCommentsVCReadCurrentSort(tab.commentsVC, &raw) || !ApolloFTIsRealCommentSort(raw)) return NO;
+    if (raw == tab.rememberedSort) return NO;
+    tab.rememberedSort = raw;
+    ApolloLog(@"[FloatingTabs] Tab %@ now remembers sort %@", tab.linkKey, ApolloCommentSortName(raw));
+    return YES;
+}
+
+// A comments screen for a tabbed post just came on screen inside a navigation
+// stack. Cold tabs (feed keeps, relaunch restores, memory-pressure drops) have
+// no screen yet: this one becomes theirs, so the next bubble tap pops/pushes
+// it back instead of re-routing the URL — sort, scroll position and collapsed
+// comments all survive from here on. A tab whose retained screen is off-screen
+// (popped but kept alive) moves to the new screen too: the post was reopened
+// by other means and this is now "where you left it". A tab whose screen is
+// still showing somewhere keeps it. The media-owned glass comments pane shares
+// the class but is not "the post's screen" (see ApolloSwipeUpComments), and
+// previews / detached instances have no navigation controller.
+- (void)adoptViewControllerIfTabbed:(UIViewController *)vc {
+    if (!vc || !vc.navigationController) return;
+    if (ApolloSwipeCommentsIsPaneCommentsController(vc)) return;
+    NSString *linkKey = ApolloFTLinkKeyForVC(vc);
+    if (!linkKey) return;
+    ApolloFloatingTab *tab = [self tabForLinkKey:linkKey];
+    if (!tab || tab.commentsVC == vc) return;
+    UIViewController *previous = tab.commentsVC;
+    if (previous && previous.viewLoaded && previous.view.window) return;
+    tab.commentsVC = vc;
+    if (previous) tab.snapshot = nil;   // pictured the old screen; rebuilt when this one leaves view
+    // The sort is not captured here: the screen's first fetch may still be in flight and
+    // ApolloURLOpenCommentSort.xm can move it when that lands. It is read when the screen
+    // leaves view and at persist time, both of which come after.
+    ApolloLog(@"[FloatingTabs] Tab %@ adopted its %s comments screen", linkKey, previous ? "reopened" : "first");
 }
 
 // =============================================================================
@@ -1764,8 +1924,10 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
             return;
         }
         NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://reddit.com%@", tab.permalink]];
+        ApolloFTPublishPendingSortForTab(tab);
         ApolloLog(@"[FloatingTabs] Opening cold tab %@ via URL router", tab.linkKey);
         if (url && ApolloRouteResolvedURLViaApolloScheme(url)) return;
+        ApolloFTClearPendingSort();
         ApolloLog(@"[FloatingTabs] URL route failed for %@", tab.linkKey);
         [self bounceBubbleForTab:tab];
         return;
@@ -1826,7 +1988,8 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
                 ApolloLog(@"[FloatingTabs] No active nav to push tab %@; falling back to URL route", tab.linkKey);
                 NSURL *url = tab.permalink.length > 0
                     ? [NSURL URLWithString:[NSString stringWithFormat:@"https://reddit.com%@", tab.permalink]] : nil;
-                if (url) ApolloRouteResolvedURLViaApolloScheme(url);
+                ApolloFTPublishPendingSortForTab(tab);
+                if (!url || !ApolloRouteResolvedURLViaApolloScheme(url)) ApolloFTClearPendingSort();
                 clearInFlight();
                 return;
             }
@@ -2055,6 +2218,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
 
 - (void)persist {
     NSMutableArray<NSDictionary *> *saved = [NSMutableArray array];
+    for (ApolloFloatingTab *tab in self.tabs) [self refreshRememberedSortForTab:tab];
     for (ApolloFloatingTab *tab in self.tabs) {
         if (tab.permalink.length == 0) continue; // nothing to reopen cold — skip
         NSMutableDictionary *dict = [NSMutableDictionary dictionary];
@@ -2070,6 +2234,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
             dict[kFTSaveStackID] = tab.stackID;
             dict[kFTSaveStackOrder] = @(tab.stackOrder);
         }
+        if (ApolloFTIsRealCommentSort(tab.rememberedSort)) dict[kFTSaveSort] = @(tab.rememberedSort);
         [saved addObject:dict];
     }
     [[NSUserDefaults standardUserDefaults] setObject:saved forKey:UDKeyFloatingPostTabsSaved];
@@ -2107,6 +2272,9 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
             tab.stackOrder = [dict[kFTSaveStackOrder] respondsToSelector:@selector(integerValue)]
                 ? [dict[kFTSaveStackOrder] integerValue] : 0;
         }
+        int64_t savedSort = [dict[kFTSaveSort] respondsToSelector:@selector(longLongValue)]
+            ? [dict[kFTSaveSort] longLongValue] : 0;
+        tab.rememberedSort = ApolloFTIsRealCommentSort(savedSort) ? savedSort : 0;
         [self.tabs addObject:tab];
         [self installBubbleForTab:tab];
         [self resolveIconForTab:tab];
@@ -2407,12 +2575,23 @@ static void ApolloFTMenuPerform(id actionController) {
     %orig;
 }
 
-// Keep the preview snapshot equal to "the post as you last saw it": refresh it
-// whenever a tabbed post's screen goes off-screen (pop, push-over, tab switch).
+// A comments screen coming on screen may be the one a cold tab (or a tab whose
+// retained screen is off-screen) should hold from now on.
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (!sFloatingPostTabs) return;
+    [[ApolloFloatingTabsController sharedIfExists] adoptViewControllerIfTabbed:(UIViewController *)self];
+}
+
+// Keep the preview snapshot equal to "the post as you last saw it" and the
+// remembered sort equal to the one it is on: refresh both whenever a tabbed
+// post's screen goes off-screen (pop, push-over, tab switch).
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
     ApolloFloatingTabsController *controller = [ApolloFloatingTabsController sharedIfExists];
-    if (controller) [controller refreshSnapshotForViewController:(UIViewController *)self];
+    if (!controller) return;
+    [controller refreshSnapshotForViewController:(UIViewController *)self];
+    [controller rememberSortForViewController:(UIViewController *)self];
 }
 
 %end
@@ -2467,6 +2646,24 @@ static void ApolloFTArmFromPostCellNode(id node) {
 // =============================================================================
 
 #if APOLLO_SIM_BUILD
+#include <dlfcn.h>
+
+// Apollo keeps its Live Update NSTimer in the weak Swift ivar `liveSortTimer`
+// (scheduled by the comments-fetch completion while currentSort == Live,
+// invalidated by the next sort pick). Read through the Swift runtime's weak
+// loader so the state dump can show whether a tab's screen is still polling.
+static NSTimer *ApolloFTDebugLiveTimer(id vc) {
+    if (!vc) return nil;
+    Ivar ivar = class_getInstanceVariable(object_getClass(vc), "liveSortTimer");
+    if (!ivar) return nil;
+    static void *(*weakLoadStrong)(void *) = NULL;
+    if (!weakLoadStrong) weakLoadStrong = (void *(*)(void *))dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
+    if (!weakLoadStrong) return nil;
+    void *ref = (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar);
+    id timer = (__bridge_transfer id)weakLoadStrong(ref);   // +1 from the loader, balanced by ARC
+    return [timer isKindOfClass:[NSTimer class]] ? (NSTimer *)timer : nil;
+}
+
 // Headless drivers for the sim: create/tap/drag-release/close tabs and dump
 // state without HID. Wired into the "floattab ..." command in
 // ApolloSimDebugTap.xm. The release command runs the REAL end-of-drag pipeline
@@ -2534,10 +2731,17 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
         NSInteger i = 0;
         for (ApolloFloatingTab *tab in controller.tabs) {
             ApolloFloatingBubbleView *bubble = [controller bubbleForTab:tab];
-            ApolloLog(@"[FloatingTabs][debug]   [%ld] %@ r/%@ side=%ld yFrac=%.3f tucked=%d stack=%@/%ld vc=%d snap=%d center=(%.0f,%.0f) face=%@ badge=%@",
+            int64_t liveSort = 0;
+            BOOL liveSortSet = tab.commentsVC && ApolloCommentsVCReadCurrentSort(tab.commentsVC, &liveSort);
+            NSTimer *liveTimer = ApolloFTDebugLiveTimer(tab.commentsVC);
+            ApolloLog(@"[FloatingTabs][debug]   [%ld] %@ r/%@ side=%ld yFrac=%.3f tucked=%d stack=%@/%ld vc=%d onscreen=%d sort=%@ remembered=%@ live=%@ snap=%d center=(%.0f,%.0f) face=%@ badge=%@",
                       (long)i, tab.linkKey, tab.subreddit, (long)tab.side, tab.yFrac, tab.tucked,
                       tab.stackID ?: @"-", (long)tab.stackOrder,
-                      tab.commentsVC != nil, tab.snapshot != nil,
+                      tab.commentsVC != nil, tab.commentsVC.viewLoaded && tab.commentsVC.view.window != nil,
+                      liveSortSet ? ApolloCommentSortName(liveSort) : @"-",
+                      tab.rememberedSort ? ApolloCommentSortName(tab.rememberedSort) : @"-",
+                      liveTimer ? [NSString stringWithFormat:@"%.0fs%s", liveTimer.timeInterval, liveTimer.valid ? "" : "(invalid)"] : @"-",
+                      tab.snapshot != nil,
                       bubble.center.x, bubble.center.y,
                       bubble.iconView.hidden ? @"monogram"
                           : ([controller crestFaceForTab:tab]
@@ -2636,6 +2840,15 @@ void ApolloFloatingTabsDebugCommand(NSString *payload) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         [[ApolloFloatingTabsController shared] restoreSavedTabsIfNeeded];
+    }];
+
+    // A sort picked on a tabbed screen that is still on view is only folded in
+    // at persist time; do that before a suspend (and a possible kill) loses it.
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillResignActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        [[ApolloFloatingTabsController sharedIfExists] persist];
     }];
 
     ApolloLog(@"[FloatingTabs] Module loaded; menu spec registered");
