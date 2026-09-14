@@ -439,11 +439,37 @@ static NSString *ApolloMultiEditNormalizedPath(id path) {
         : (NSString *)path;
 }
 
+// api/multi/user/<user>/m/<name>/r/<subreddit> is Reddit's subreddit-
+// membership endpoint. RedditKit PUTs it from
+// -addSubredditWithName:toMultiredditWithName:completion: (the "Add to
+// multireddit" action) and DELETEs it from -removeSubredditWithName:…. Reddit
+// answers the PUT with {"name": "<subreddit>"} — no LabeledMulti envelope —
+// and RedditKit's completion never parses that body (it forwards only the
+// error), so treating it as a model response rejected every successful add
+// and Apollo showed "Error adding to multireddit." (issue #982).
+static BOOL ApolloMultiEditIsSubredditMembershipPath(NSString *normalizedPath) {
+    // Every RDKClient task passes through here; only api/multi paths pay for
+    // the split.
+    if (![normalizedPath hasPrefix:@"api/multi/"]) return NO;
+    NSMutableArray<NSString *> *components = [NSMutableArray array];
+    for (NSString *component in [normalizedPath componentsSeparatedByString:@"/"]) {
+        // Reddit's multireddit paths carry a trailing slash, so a path built
+        // by string concatenation can contain "//" — ignore empty segments.
+        if (component.length > 0) [components addObject:component];
+    }
+    return components.count == 8
+        && [components[0] isEqualToString:@"api"]
+        && [components[1] isEqualToString:@"multi"]
+        && [components[2] isEqualToString:@"user"]
+        && [components[4] isEqualToString:@"m"]
+        && [components[6] isEqualToString:@"r"];
+}
+
 // Every direct RDKObjectBuilder use in RedditKit's multireddit methods was
 // traced in Apollo 1.15.11. Collection reads return an array of LabeledMulti
 // envelopes. Individual reads and create/update/description writes return a
-// single envelope. DELETE and api/multi/copy use non-model completion shapes,
-// so deliberately leave those untouched.
+// single envelope. DELETE, api/multi/copy and the subreddit-membership PUT
+// use non-model completion shapes, so deliberately leave those untouched.
 static ApolloMultiEditResponseShape ApolloMultiEditResponseShapeForRequest(id method, id path) {
     NSString *normalizedMethod = [method isKindOfClass:[NSString class]]
         ? [(NSString *)method uppercaseString] : nil;
@@ -452,7 +478,8 @@ static ApolloMultiEditResponseShape ApolloMultiEditResponseShapeForRequest(id me
         return ApolloMultiEditResponseShapeNone;
     }
     if ([normalizedMethod isEqualToString:@"DELETE"] ||
-        [normalizedPath isEqualToString:@"api/multi/copy"]) {
+        [normalizedPath isEqualToString:@"api/multi/copy"] ||
+        ApolloMultiEditIsSubredditMembershipPath(normalizedPath)) {
         return ApolloMultiEditResponseShapeNone;
     }
     if ([normalizedMethod isEqualToString:@"GET"] &&

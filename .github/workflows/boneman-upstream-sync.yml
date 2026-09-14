@@ -59,12 +59,16 @@ jobs:
           branch="Thetromboneman1/upstream-sync-${upstream_sha:0:12}"
           if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
             git fetch origin "$branch"
-            git switch --force-create "$branch" FETCH_HEAD
+            branch_sha=$(git rev-parse FETCH_HEAD)
             set_output changed true
             set_output branch "$branch"
-            if git merge-base --is-ancestor "$downstream_sha" HEAD; then
+            if git merge-base --is-ancestor "$downstream_sha" "$branch_sha"; then
+              git switch --force-create "$branch" "$branch_sha"
               set_output conflicted false
             else
+              # Keep downstream-only validation/publication helpers in the
+              # worktree while preserving the existing review branch exactly.
+              git branch --force "$branch" "$branch_sha"
               set_output conflicted true
             fi
             exit 0
@@ -82,7 +86,11 @@ jobs:
               echo "A draft PR will preserve the exact upstream head for manual resolution."
             } >> "$GITHUB_STEP_SUMMARY"
             git merge --abort
-            git switch --force-create "$branch" upstream/main
+            # The conflict-review branch must remain the exact upstream head,
+            # but upstream does not contain our publication helper. Keep the
+            # runner on the downstream commit and move only the branch ref.
+            git switch --detach "$downstream_sha"
+            git branch --force "$branch" "$upstream_sha"
             set_output changed true
             set_output branch "$branch"
             set_output conflicted true

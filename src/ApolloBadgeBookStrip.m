@@ -181,7 +181,7 @@ static CGFloat const kBBIconGap     = 6.0;
         ApolloBadgeItem *item = [catalog trophyMatchingIconURL:nil title:title];
         if (item) [items addObject:item];
     }
-    self.settingsPreviewItems = [items copy];
+    self.settingsPreviewItems = items;
 }
 
 - (void)apollo_rebuildIcons {

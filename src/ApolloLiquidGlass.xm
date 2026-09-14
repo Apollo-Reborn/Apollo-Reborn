@@ -1824,6 +1824,19 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     ApolloNavigationTitleGeometry geometry = ApolloNavigationTitleCenteredGeometry(
         bar.bounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
 
+    CGRect actions = ApolloNavigationActionsExpandedFrame(bar);
+    // The preference centers between actual controls, never an empty edge.
+    // Settings screens with only Back keep their title at the bar midpoint.
+    BOOL centerBetweenButtons = sCenterTitleBetweenButtons && !sCollapseNavigationActions &&
+        !searching && !CGRectIsNull(actions) && !CGRectIsEmpty(actions) &&
+        leftLimit > CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left + 0.5;
+    if (centerBetweenButtons) {
+        rightLimit = MIN(rightLimit, CGRectGetMinX(actions));
+        geometry.center = (leftLimit + rightLimit) / 2.0;
+        geometry.maximumContentWidth = MAX(0, rightLimit - leftLimit -
+            2 * (capsulePadding + kEdgePadding));
+    }
+
     // Fit the original title through one constraint, preserving native text
     // truncation. Priority 999 yields to required transition constraints.
     // This deferred pass never writes from layoutSubviews, and expanding the
@@ -1857,7 +1870,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     }
     CGFloat targetCenter = geometry.center;
     CGRect expandedActions = ApolloNavigationActionsExpandedFrame(bar);
-    if (ApolloNavigationTitlePresentationOwnsControl(titleControl) &&
+    if (!centerBetweenButtons && ApolloNavigationTitlePresentationOwnsControl(titleControl) &&
         !CGRectIsNull(expandedActions) && !CGRectIsEmpty(expandedActions) &&
         CGRectGetMaxX(expandedActions) > geometry.center &&
         CGRectGetMaxY(expandedActions) > CGRectGetMinY(titleBand) &&
