@@ -16,6 +16,8 @@
 // stock switcher without removing any of this file.
 static NSString *const UDKeyUseCustomAccountSwitcher = @"UseCustomAccountSwitcher";
 
+static char kApolloNativeAccountTableChangedKey;
+
 static NSString *const kApolloGroupSuite = @"group.com.christianselig.apollo";
 
 #pragma mark - Reading Apollo's account list (read-only; see ApolloWebJSONIdentity.xm
@@ -40,11 +42,14 @@ static id ApolloSwitcherUnarchive(NSData *data) {
 #pragma mark - Avatars (mirrors the standalone pattern in ApolloModeratorAvatars.xm —
 // ApolloUserProfileCache + a plain UIImage render, no ASDK dependency)
 
-static const CGFloat kApolloSwitcherAvatarDiameter = 32.0;
+static const CGFloat kApolloSwitcherAvatarDiameter = 44.0;
 static const void *kApolloSwitcherAvatarUsernameKey = &kApolloSwitcherAvatarUsernameKey;
 static const void *kApolloSwitcherEditButtonUsernameKey = &kApolloSwitcherEditButtonUsernameKey;
+static const void *kApolloSwitcherFastEllipsisMenuKey = &kApolloSwitcherFastEllipsisMenuKey;
 
-// Oval-clipped, aspect-fill render at `diameter`. Nil source -> neutral placeholder.
+// Profile Layout's avatar style also governs user pictures in this switcher.
+// Full and Circle are circular here because the account row has no full-body
+// snoovatar metadata; Square uses the same rounded-square ratio as profiles.
 static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diameter) {
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
@@ -53,7 +58,10 @@ static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diamet
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         CGRect rect = CGRectMake(0.0, 0.0, diameter, diameter);
-        [[UIBezierPath bezierPathWithOvalInRect:rect] addClip];
+        UIBezierPath *clip = sProfileAvatarStyle == 2
+            ? [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:diameter * 0.24]
+            : [UIBezierPath bezierPathWithOvalInRect:rect];
+        [clip addClip];
         if (sourceImage) {
             CGFloat aspect = sourceImage.size.width > 0 ? sourceImage.size.height / sourceImage.size.width : 1.0;
             CGFloat w = diameter, h = diameter;
@@ -327,6 +335,8 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
 // actions are driven on that same live `liveManager` instance via its
 // existing ObjC-visible selectors, never on anything we constructed.
 @interface ApolloAccountSwitcherViewController () <UIGestureRecognizerDelegate>
+@property (nonatomic, strong) NSMutableSet<NSString *> *pendingAccountRemovals;
+@property (nonatomic) BOOL accountRemovalRefreshScheduled;
 @property (nonatomic, weak, nullable) UIViewController *liveManager;
 @property (nonatomic, strong) NSArray<ApolloSwitcherAccountRow *> *rows;
 @property (nonatomic, strong) UILongPressGestureRecognizer *accountReorderGesture;
@@ -620,6 +630,28 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 @implementation ApolloAccountSwitcherViewController
 
+- (void)applyApolloThemeColors {
+    UIColor *pageColor = ApolloThemePageBackgroundColor()
+        ?: [UIColor systemGroupedBackgroundColor];
+    self.view.backgroundColor = pageColor;
+    self.tableView.backgroundColor = pageColor;
+    self.navigationController.view.backgroundColor = pageColor;
+    self.tableView.separatorColor = ApolloThemeSeparatorColor()
+        ?: [UIColor separatorColor];
+
+    // Keep the iOS 26 glass controls, but remove the navigation bar's own
+    // material wash. The table's Apollo page color then continues uniformly
+    // behind the add/title/edit buttons instead of gaining a blue cast.
+    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+    [appearance configureWithTransparentBackground];
+    appearance.backgroundColor = [UIColor clearColor];
+    appearance.backgroundEffect = nil;
+    appearance.shadowColor = [UIColor clearColor];
+    self.navigationController.navigationBar.standardAppearance = appearance;
+    self.navigationController.navigationBar.scrollEdgeAppearance = appearance;
+    self.navigationController.navigationBar.compactAppearance = appearance;
+}
+
 + (BOOL)isAvailable {
     return [[NSUserDefaults standardUserDefaults] objectForKey:UDKeyUseCustomAccountSwitcher] == nil
         || [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseCustomAccountSwitcher];
@@ -632,10 +664,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Accounts";
-    // editButtonItem toggles UITableViewController's own -setEditing:animated:,
-    // which (default implementation) puts self.tableView into edit mode —
-    // showing the red remove control on every row canEditRowAtIndexPath:
-    // allows, as a tap-based alternative to swipe-to-delete.
+    [self applyApolloThemeColors];
     self.navigationItem.rightBarButtonItem = self.editButtonItem;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(presentAddAccountChooser)];
@@ -663,7 +692,17 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.accountReorderGesture.cancelsTouchesInView = YES;
     self.accountReorderGesture.delegate = self;
     [self.tableView addGestureRecognizer:self.accountReorderGesture];
+    self.pendingAccountRemovals = [NSMutableSet set];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(accountStoreDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
     [self reloadRows];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Apollo can change its stock or custom theme while this controller is
+    // retained, so refresh the dynamic palette each time the panel appears.
+    [self applyApolloThemeColors];
 }
 
 - (void)doneTapped:(id)sender {
@@ -675,6 +714,76 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)reloadRows {
     self.rows = ApolloSwitcherLoadAccountRows();
     [self.tableView reloadData];
+}
+
+- (void)accountStoreDidChange:(NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.pendingAccountRemovals.count != 1 || self.accountRemovalRefreshScheduled) return;
+        Class cls = NSClassFromString(@"Apollo.AccountManager");
+        id manager = [cls respondsToSelector:@selector(shared)]
+            ? ((id (*)(id, SEL))objc_msgSend)(cls, @selector(shared)) : nil;
+        SEL countSelector = NSSelectorFromString(@"totalAccountsObjC");
+        if (![manager respondsToSelector:countSelector]) return;
+        NSInteger count = ((NSInteger (*)(id, SEL))objc_msgSend)(manager, countSelector);
+        if (count != (NSInteger)self.rows.count - 1) return;
+        NSString *username = self.pendingAccountRemovals.anyObject;
+        NSUInteger index = [self.rows indexOfObjectPassingTest:^BOOL(ApolloSwitcherAccountRow *row, NSUInteger idx, BOOL *stop) {
+            return [row.username isEqualToString:username];
+        }];
+        if (index == NSNotFound) return;
+        self.accountRemovalRefreshScheduled = YES;
+        [self.pendingAccountRemovals removeAllObjects];
+        ApolloAccountCredentialsRemove(username);
+        ApolloWebSessionRemove(username);
+        NSMutableArray *updated = [self.rows mutableCopy];
+        [updated removeObjectAtIndex:index];
+        NSString *activeName = nil;
+        @try { activeName = [ApolloActiveAccountClient() valueForKeyPath:@"currentUser.username"]; }
+        @catch (__unused NSException *exception) {}
+        for (ApolloSwitcherAccountRow *row in updated) row.isActive = [row.username isEqualToString:activeName];
+        NSIndexPath *removedPath = [NSIndexPath indexPathForRow:index inSection:0];
+        UITableViewCell *removedCell = [self.tableView cellForRowAtIndexPath:removedPath];
+        self.tableView.userInteractionEnabled = NO;
+        // A native delete update creates its own outgoing-cell presentation,
+        // which can move behind another row even with RowAnimationNone. Own
+        // the fade and survivor movement, and do the data reload atomically.
+        NSMutableDictionary<NSString *, NSValue *> *oldFrames = [NSMutableDictionary dictionary];
+        for (NSUInteger i = 0; i < self.rows.count; i++) {
+            oldFrames[self.rows[i].username] = [NSValue valueWithCGRect:
+                [self.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:i inSection:0]]];
+        }
+        CGRect oldFooter = [self.tableView rectForFooterInSection:0];
+        [UIView animateWithDuration:0.15 animations:^{
+            removedCell.alpha = 0.0;
+            removedCell.contentView.alpha = 0.0;
+        } completion:^(__unused BOOL faded) {
+            [UIView performWithoutAnimation:^{
+                self.rows = updated;
+                [self.tableView reloadData];
+                [self.tableView layoutIfNeeded];
+                for (UITableViewCell *cell in self.tableView.visibleCells) {
+                    cell.alpha = 1.0;
+                    cell.contentView.alpha = 1.0;
+                    NSIndexPath *path = [self.tableView indexPathForCell:cell];
+                    if (path.section != 0 || path.row >= (NSInteger)self.rows.count) continue;
+                    CGRect oldFrame = [oldFrames[self.rows[path.row].username] CGRectValue];
+                    CGRect newFrame = [self.tableView rectForRowAtIndexPath:path];
+                    cell.transform = CGAffineTransformMakeTranslation(0, oldFrame.origin.y - newFrame.origin.y);
+                }
+                UIView *footer = [self.tableView footerViewForSection:0];
+                footer.transform = CGAffineTransformMakeTranslation(0,
+                    oldFooter.origin.y - [self.tableView rectForFooterInSection:0].origin.y);
+            }];
+            [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+                for (UITableViewCell *cell in self.tableView.visibleCells) cell.transform = CGAffineTransformIdentity;
+                [self.tableView footerViewForSection:0].transform = CGAffineTransformIdentity;
+            } completion:^(__unused BOOL finished) {
+                self.tableView.userInteractionEnabled = YES;
+                self.accountRemovalRefreshScheduled = NO;
+                [self.view setNeedsLayout];
+            }];
+        }];
+    });
 }
 
 - (void)viewDidLayoutSubviews {
@@ -701,7 +810,9 @@ static BOOL ApolloAccountReorderSchedulePersist(
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 0 ? @"Accounts" : nil;
+    // Keep the original section-header height as breathing room beneath the
+    // navigation bar, but do not repeat the screen title inside the panel.
+    return nil;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
@@ -717,7 +828,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 62.0;
+    return 68.0;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -726,6 +837,13 @@ static BOOL ApolloAccountReorderSchedulePersist(
         cell = [[ApolloSwitcherAccountCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                 reuseIdentifier:@"AccountRow"];
     }
+    cell.backgroundColor = ApolloThemeCardBackgroundColor()
+        ?: [UIColor secondarySystemGroupedBackgroundColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    UIView *selectedBackground = cell.selectedBackgroundView ?: [UIView new];
+    selectedBackground.backgroundColor = ApolloThemeRuntimeColor(ApolloThemeTokenSelection)
+        ?: [UIColor systemFillColor];
+    cell.selectedBackgroundView = selectedBackground;
     cell.textLabel.textColor = [UIColor labelColor];
     cell.accessoryType = UITableViewCellAccessoryNone;
     // Keep separators inside the outer edges of the avatar and ellipsis.
@@ -802,6 +920,15 @@ static BOOL ApolloAccountReorderSchedulePersist(
     NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
     UITableViewCell *cell = indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
     if (!cell || indexPath.section != 0 || self.liveManager == nil) return NO;
+    // Remove slides into the handle's hit region. Never interpret a held
+    // confirmation tap as a reorder, including another row's open action.
+    for (UITableViewCell *visible in self.tableView.visibleCells) {
+        if (visible.showingDeleteConfirmation) return NO;
+    }
+    UIView *hit = [cell hitTest:[gestureRecognizer locationInView:cell] withEvent:nil];
+    for (UIView *view = hit; view && view != cell; view = view.superview) {
+        if ([view isKindOfClass:UIControl.class]) return NO;
+    }
     CGPoint cellPoint = [gestureRecognizer locationInView:cell];
     BOOL rightToLeft = cell.effectiveUserInterfaceLayoutDirection ==
         UIUserInterfaceLayoutDirectionRightToLeft;
@@ -938,6 +1065,8 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.rows = rows;
     self.accountReorderCurrentRow = destination;
     [self updateAccountReorderSnapshotCorners];
+    [self.accountReorderFeedback selectionChanged];
+    [self.accountReorderFeedback prepare];
     self.accountReorderTransitioning = YES;
 
     NSIndexPath *from = [NSIndexPath indexPathForRow:current inSection:0];
@@ -953,8 +1082,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
         } completion:nil];
     } completion:^(__unused BOOL finished) {
         self.accountReorderTransitioning = NO;
-        [self.accountReorderFeedback selectionChanged];
-        [self.accountReorderFeedback prepare];
         if (self.accountReorderFinishPending) {
             [self finishAccountReorderCancelled:self.accountReorderFinishCancelled];
         } else {
@@ -1080,13 +1207,19 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete || indexPath.section != 0) return;
+    if (indexPath.row >= (NSInteger)self.rows.count) return;
     ApolloSwitcherAccountRow *row = self.rows[indexPath.row];
+    [self.pendingAccountRemovals removeAllObjects];
+    [self.pendingAccountRemovals addObject:row.username];
+    UITableView *nativeTable = ApolloGetObjectIvar(self.liveManager, "tableView");
+    __weak typeof(self) weakSelf = self;
+    objc_setAssociatedObject(nativeTable, &kApolloNativeAccountTableChangedKey, ^{
+        [weakSelf accountStoreDidChange:nil];
+    }, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [self driveLiveCommitEditingStyle:UITableViewCellEditingStyleDelete atRow:indexPath.row];
-    // Harmless no-op for whichever store doesn't have this username (auth modes
-    // are mutually exclusive per account), so both are always safe to call.
-    ApolloAccountCredentialsRemove(row.username);
-    ApolloWebSessionRemove(row.username);
-    [self reloadRows];
+    // Native removal persists asynchronously. Do not reload the old archive or
+    // delete credentials before its confirmation/commit has actually completed.
+    [self accountStoreDidChange:nil];
 }
 
 // UIKit has already performed the visual move by the time this is called. Drive
@@ -1146,6 +1279,8 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [inv setArgument:&tv atIndex:2];
     [inv setArgument:&path atIndex:3];
     id previousAccount = ApolloActiveAccountClient();
+    UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+    [feedback prepare];
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
@@ -1154,8 +1289,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     }
     id selectedAccount = ApolloActiveAccountClient();
     if (selectedAccount && selectedAccount != previousAccount) {
-        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
-        [feedback impactOccurred];
+        [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
     }
 }
 
@@ -1282,6 +1416,8 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
+    objc_setAssociatedObject(sheet, kApolloSwitcherFastEllipsisMenuKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sheet.popoverPresentationController.sourceView = sourceView;
     sheet.popoverPresentationController.sourceRect = sourceView.bounds;
     // The arrow points right toward the ellipsis, placing the popover on the
@@ -1310,6 +1446,98 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 @end
 
+// UIKit owns the ellipsis action sheet and its positioning. Speed up only its
+// rendered transition; ordinary alerts elsewhere in Apollo retain their
+// standard animation timing.
+// UIKit's glass press response lives on the platter, above UIButton. Keep
+// the bridging interaction that owns the native morph; remove only flex.
+static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINavigationBar *bar) {
+    if (!root) return nil;
+    if ([root isKindOfClass:UINavigationController.class] &&
+        ((UINavigationController *)root).navigationBar == bar) {
+        return ((UINavigationController *)root).topViewController;
+    }
+    UIViewController *found = ApolloEditControllerForBar(root.presentedViewController, bar);
+    if (found) return found;
+    for (UIViewController *child in root.childViewControllers) {
+        found = ApolloEditControllerForBar(child, bar);
+        if (found) return found;
+    }
+    return nil;
+}
+
+%hook UINavigationBar
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = %orig(point, event);
+    UINavigationBar *bar = (UINavigationBar *)self;
+    UIViewController *controller = ApolloEditControllerForBar(bar.window.rootViewController, bar);
+    BOOL scoped = [controller isKindOfClass:ApolloAccountSwitcherViewController.class] ||
+        [NSStringFromClass(controller.class) isEqualToString:@"Apollo.RedditListViewController"];
+    if (!scoped || !hit) return hit;
+    UIView *content = nil;
+    @try { content = [controller.navigationItem.rightBarButtonItem valueForKey:@"view"]; }
+    @catch (__unused NSException *exception) { return hit; }
+    if (![content isKindOfClass:UIView.class] || ![content isDescendantOfView:bar] ||
+        !CGRectContainsPoint([content convertRect:content.bounds toView:bar], point)) return hit;
+    for (UIView *view = content; view && view != bar; view = view.superview) {
+        for (id<UIInteraction> interaction in [view.interactions copy]) {
+            if ([NSStringFromClass([(id)interaction class]) hasSuffix:@"UIPlatformGlassFlexInteraction"]) {
+                [view removeInteraction:interaction];
+                ApolloLog(@"[AccountSwitcher] Disabled Edit/Done glass flex on %@", NSStringFromClass(controller.class));
+            }
+        }
+    }
+    return hit;
+}
+%end
+
+// The native account manager updates this hidden table after its live model
+// changes. Forward that completion to the overlay, without waiting for disk.
+%hook UITableView
+- (void)reloadData {
+    %orig;
+    void (^changed)(void) = objc_getAssociatedObject(self, &kApolloNativeAccountTableChangedKey);
+    if (changed) changed();
+}
+- (void)deleteRowsAtIndexPaths:(NSArray *)paths withRowAnimation:(UITableViewRowAnimation)animation {
+    %orig(paths, animation);
+    void (^changed)(void) = objc_getAssociatedObject(self, &kApolloNativeAccountTableChangedKey);
+    if (changed) changed();
+}
+%end
+
+%hook UIAlertController
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if ([objc_getAssociatedObject(self, kApolloSwitcherFastEllipsisMenuKey) boolValue]) {
+        self.view.layer.speed = 3.5;
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if ([objc_getAssociatedObject(self, kApolloSwitcherFastEllipsisMenuKey) boolValue]) {
+        self.view.layer.speed = 1.0;
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    %orig;
+    if ([objc_getAssociatedObject(self, kApolloSwitcherFastEllipsisMenuKey) boolValue]) {
+        self.view.layer.speed = 3.5;
+    }
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if ([objc_getAssociatedObject(self, kApolloSwitcherFastEllipsisMenuKey) boolValue]) {
+        self.view.layer.speed = 1.0;
+    }
+}
+
+%end
+
 #pragma mark - Installing the overlay on the real, live instance
 
 // Run once per real AccountManagerViewController instance, right after its
@@ -1319,6 +1547,9 @@ static BOOL ApolloAccountReorderSchedulePersist(
 // `host`'s own view; hides the real table view underneath so taps land only
 // on our overlay. Never touches how `host` itself was constructed.
 static const void *kApolloSwitcherInstalledKey = &kApolloSwitcherInstalledKey;
+static const void *kApolloAccountSwitcherPanelPanKey = &kApolloAccountSwitcherPanelPanKey;
+static const void *kApolloAccountSwitcherPanelDraggingKey = &kApolloAccountSwitcherPanelDraggingKey;
+static const void *kApolloAccountSwitcherPanelRestingFrameKey = &kApolloAccountSwitcherPanelRestingFrameKey;
 
 static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
     if (![ApolloAccountSwitcherViewController isAvailable]) return;
@@ -1334,10 +1565,10 @@ static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
         [host addChildViewController:overlayNav];
         overlayNav.view.frame = host.view.bounds;
         overlayNav.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        overlayNav.view.backgroundColor = [UIColor systemBackgroundColor];
+        overlayNav.view.backgroundColor = ApolloThemePageBackgroundColor()
+            ?: [UIColor systemGroupedBackgroundColor];
         [host.view addSubview:overlayNav.view];
         [overlayNav didMoveToParentViewController:host];
-
         id realTableView = ApolloGetObjectIvar(host, "tableView");
         if ([realTableView isKindOfClass:[UIView class]]) {
             ((UIView *)realTableView).hidden = YES;
@@ -1369,13 +1600,72 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     });
 }
 
-// Fit the popup to the table's actual content and keep it vertically centered.
-// It can grow beyond Apollo's original fixed frame until it reaches the safe
-// area; viewDidLayoutSubviews then enables scrolling for any remaining content.
+@interface ApolloAccountSwitcherSlideAnimator : NSObject <UIViewControllerAnimatedTransitioning>
+@property (nonatomic) BOOL presenting;
+@end
+
+@implementation ApolloAccountSwitcherSlideAnimator
+
+- (NSTimeInterval)transitionDuration:(id<UIViewControllerContextTransitioning>)transitionContext {
+    // Matches Apollo's native bottom popup used by the Theme Gallery.
+    return 0.30;
+}
+
+- (void)animateTransition:(id<UIViewControllerContextTransitioning>)transitionContext {
+    UIViewController *fromController =
+        [transitionContext viewControllerForKey:UITransitionContextFromViewControllerKey];
+    UIViewController *toController =
+        [transitionContext viewControllerForKey:UITransitionContextToViewControllerKey];
+    UIView *container = transitionContext.containerView;
+    NSTimeInterval duration = [self transitionDuration:transitionContext];
+
+    if (self.presenting) {
+        UIView *presentedView = toController.view;
+        CGRect finalFrame = [transitionContext finalFrameForViewController:toController];
+        presentedView.frame = finalFrame;
+        presentedView.transform = CGAffineTransformMakeTranslation(
+            0.0, CGRectGetHeight(container.bounds) - CGRectGetMinY(finalFrame));
+        [container addSubview:presentedView];
+        [UIView animateWithDuration:duration
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseOut |
+                                    UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
+            presentedView.transform = CGAffineTransformIdentity;
+        } completion:^(BOOL finished) {
+            BOOL completed = !transitionContext.transitionWasCancelled;
+            if (!completed) [presentedView removeFromSuperview];
+            [transitionContext completeTransition:completed];
+        }];
+    } else {
+        UIView *presentedView = fromController.view;
+        CGFloat distance = CGRectGetHeight(container.bounds) - CGRectGetMinY(presentedView.frame);
+        [UIView animateWithDuration:duration
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseIn | UIViewAnimationOptionBeginFromCurrentState
+                         animations:^{
+            presentedView.transform = CGAffineTransformMakeTranslation(0.0, distance);
+        } completion:^(BOOL finished) {
+            BOOL completed = !transitionContext.transitionWasCancelled;
+            if (!completed) presentedView.transform = CGAffineTransformIdentity;
+            [transitionContext completeTransition:completed];
+        }];
+    }
+}
+
+@end
+
+// Keep Apollo's dimming and tap-outside behavior, but turn its centered card
+// into a bottom-attached panel. The panel reaches both horizontal edges and
+// the bottom edge; only its top corners remain rounded.
 %hook _TtC6Apollo36AccountManagerPresentationController
 
 - (CGRect)frameOfPresentedViewInContainerView {
     CGRect frame = %orig;
+    if ([objc_getAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey) boolValue]) {
+        UIView *presentedView = ((UIPresentationController *)self).presentedView;
+        if (presentedView) return presentedView.frame;
+    }
     UIViewController *host = ((UIPresentationController *)self).presentedViewController;
     for (UIViewController *child in host.childViewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
@@ -1383,22 +1673,136 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
         if (![top isKindOfClass:ApolloAccountSwitcherViewController.class]) continue;
         CGFloat height = top.preferredContentSize.height;
         UIView *container = ((UIPresentationController *)self).containerView;
-        if (height > 0.0 && container) {
+        if (container) {
             UIEdgeInsets safeInsets = container.safeAreaInsets;
-            CGFloat availableHeight = CGRectGetHeight(container.bounds) -
-                safeInsets.top - safeInsets.bottom - 32.0;
-            CGFloat targetHeight = MIN(height, MAX(availableHeight, 0.0));
-            frame.origin.y = safeInsets.top +
-                (availableHeight - targetHeight) / 2.0 + 16.0;
+            CGFloat containerHeight = CGRectGetHeight(container.bounds);
+            CGFloat availableHeight = containerHeight - safeInsets.top;
+            CGFloat contentHeight = height > 0.0 ? height + safeInsets.bottom : 0.0;
+            CGFloat targetHeight = MIN(MAX(contentHeight, containerHeight * 0.5),
+                                       MAX(availableHeight, 0.0));
+            frame.origin.x = CGRectGetMinX(container.bounds);
+            frame.origin.y = CGRectGetMaxY(container.bounds) - targetHeight;
+            frame.size.width = CGRectGetWidth(container.bounds);
             frame.size.height = targetHeight;
         }
     }
     return frame;
 }
 
+- (void)containerViewWillLayoutSubviews {
+    %orig;
+    UIView *presentedView = ((UIPresentationController *)self).presentedView;
+    presentedView.layer.cornerRadius = 30.0;
+    presentedView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    presentedView.layer.masksToBounds = YES;
+
+    if (!objc_getAssociatedObject(self, kApolloAccountSwitcherPanelPanKey)) {
+        UIViewController *host = ((UIPresentationController *)self).presentedViewController;
+        UINavigationBar *navigationBar = nil;
+        for (UIViewController *child in host.childViewControllers) {
+            if ([child isKindOfClass:UINavigationController.class]) {
+                navigationBar = ((UINavigationController *)child).navigationBar;
+                break;
+            }
+        }
+        if (navigationBar) {
+            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+                initWithTarget:self action:@selector(apollo_handleAccountSwitcherPanelPan:)];
+            pan.cancelsTouchesInView = NO;
+            [navigationBar addGestureRecognizer:pan];
+            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelPanKey, pan,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+%new
+- (void)apollo_handleAccountSwitcherPanelPan:(UIPanGestureRecognizer *)pan {
+    UIView *presentedView = ((UIPresentationController *)self).presentedView;
+    UIView *container = ((UIPresentationController *)self).containerView;
+    if (!presentedView || !container) return;
+
+    if (pan.state == UIGestureRecognizerStateBegan) {
+        objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey,
+                                 [NSValue valueWithCGRect:presentedView.frame],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (pan.state == UIGestureRecognizerStateChanged) {
+        NSValue *storedFrame = objc_getAssociatedObject(
+            self, kApolloAccountSwitcherPanelRestingFrameKey);
+        CGRect restingFrame = storedFrame ? storedFrame.CGRectValue : presentedView.frame;
+        CGFloat translation = [pan translationInView:container].y;
+        CGFloat restingBottom = CGRectGetMaxY(restingFrame);
+        CGFloat minimumTop = container.safeAreaInsets.top;
+        CGFloat maximumTop = restingBottom - 220.0;
+        if (translation < 0.0) {
+            // UIKit-style rubber banding: movement starts one-to-one, then
+            // progressively loses distance as it approaches the upper limit.
+            CGFloat available = MAX(CGRectGetMinY(restingFrame) - minimumTop, 1.0);
+            CGFloat magnitude = -translation;
+            translation = -(available * magnitude * 0.55) /
+                (available + magnitude * 0.55);
+        }
+        CGFloat newTop = MAX(minimumTop,
+                             MIN(CGRectGetMinY(restingFrame) + translation, maximumTop));
+        CGRect draggedFrame = restingFrame;
+        draggedFrame.origin.y = newTop;
+        draggedFrame.size.height = restingBottom - newTop;
+        [UIView performWithoutAnimation:^{
+            presentedView.transform = CGAffineTransformIdentity;
+            presentedView.frame = draggedFrame;
+            [presentedView layoutIfNeeded];
+        }];
+    } else if (pan.state == UIGestureRecognizerStateEnded ||
+               pan.state == UIGestureRecognizerStateCancelled ||
+               pan.state == UIGestureRecognizerStateFailed) {
+        NSValue *storedFrame = objc_getAssociatedObject(
+            self, kApolloAccountSwitcherPanelRestingFrameKey);
+        CGRect restingFrame = storedFrame ? storedFrame.CGRectValue : presentedView.frame;
+        [UIView animateWithDuration:0.28
+                              delay:0.0
+             usingSpringWithDamping:0.86
+              initialSpringVelocity:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            presentedView.transform = CGAffineTransformIdentity;
+            presentedView.frame = restingFrame;
+            [presentedView layoutIfNeeded];
+        } completion:^(__unused BOOL finished) {
+            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, @NO,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [container setNeedsLayout];
+        }];
+    }
+}
+
 %end
 
 %hook _TtC6Apollo28AccountManagerViewController
+
+- (id)animationControllerForPresentedController:(UIViewController *)presented
+                           presentingController:(UIViewController *)presenting
+                               sourceController:(UIViewController *)source {
+    if ([ApolloAccountSwitcherViewController isAvailable]) {
+        ApolloAccountSwitcherSlideAnimator *animator = [ApolloAccountSwitcherSlideAnimator new];
+        animator.presenting = YES;
+        return animator;
+    }
+    return %orig(presented, presenting, source);
+}
+
+- (id)animationControllerForDismissedController:(UIViewController *)dismissed {
+    if ([ApolloAccountSwitcherViewController isAvailable]) {
+        ApolloAccountSwitcherSlideAnimator *animator = [ApolloAccountSwitcherSlideAnimator new];
+        animator.presenting = NO;
+        return animator;
+    }
+    return %orig(dismissed);
+}
 
 - (void)viewDidLoad {
     %orig;

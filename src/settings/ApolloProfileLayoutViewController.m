@@ -539,6 +539,13 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     [[NSUserDefaults standardUserDefaults] setInteger:style forKey:UDKeyProfileAvatarStyle];
     [self reloadRowWithID:@"avatar"];
     [self apollo_applyWithProfileStructureChange:NO];
+    // Re-render the other user-avatar surfaces that share this setting.
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
+                      object:@"ApolloProfileAvatarStyleChanged"];
+    [[NSNotificationCenter defaultCenter]
+        postNotificationName:@"ApolloProfileTabAvatarIconChangedNotification"
+                      object:nil];
 }
 
 - (void)presentAvatarPicker {
