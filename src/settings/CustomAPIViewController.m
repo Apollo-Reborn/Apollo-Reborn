@@ -3384,7 +3384,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Data"]) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup .zip contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
+            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup file contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Default API Keys"]) {
         text = [[NSMutableAttributedString alloc]
@@ -4462,7 +4462,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 - (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
-    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
+    // The custom extension carries the Files icon; old ZIP backups remain importable.
+    // Resolve by extension too, so a tweak-only installation without the IPA's
+    // exported declaration can still select a dynamically identified backup.
+    UTType *backupType = [UTType typeWithFilenameExtension:@"apollobackup"];
+    NSArray<UTType *> *types = backupType ? @[backupType, UTTypeZIP] : @[UTTypeZIP];
+    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;

@@ -316,7 +316,7 @@ static NSString *ApolloBackupReserveZipPath(NSFileManager *fileManager, NSError 
     NSString *timestamp = [dateFormatter stringFromDate:[NSDate date]];
     for (NSUInteger attempt = 0; attempt < 3; attempt++) {
         NSString *suffix = attempt == 0 ? @"" : [@"_" stringByAppendingString:NSUUID.UUID.UUIDString];
-        NSString *filename = [NSString stringWithFormat:@"Apollo_Backup_%@%@.zip", timestamp, suffix];
+        NSString *filename = [NSString stringWithFormat:@"Apollo_Backup_%@%@.apollobackup", timestamp, suffix];
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:filename];
         int descriptor = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL, 0600);
         if (descriptor < 0) {
