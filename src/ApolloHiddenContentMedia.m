@@ -100,14 +100,14 @@ BOOL ApolloHiddenContentPresentMedia(NSArray<NSURL *> *urls, NSUInteger initialI
         delegate.nativeDelegate = ((UIPageViewController *)page).delegate;
         delegate.count = urls.count;
         delegate.counter = [UILabel new];
-        delegate.counter.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        delegate.counter.textColor = UIColor.whiteColor;
+        delegate.counter.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        delegate.counter.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
         delegate.counter.text = [NSString stringWithFormat:@"%lu / %lu", (unsigned long)initialIndex + 1, (unsigned long)urls.count];
         delegate.counter.translatesAutoresizingMaskIntoConstraints = NO;
         [page.view addSubview:delegate.counter];
         [NSLayoutConstraint activateConstraints:@[
-            [delegate.counter.centerXAnchor constraintEqualToAnchor:page.view.centerXAnchor],
-            [delegate.counter.topAnchor constraintEqualToAnchor:page.view.safeAreaLayoutGuide.topAnchor constant:16],
+            [delegate.counter.trailingAnchor constraintEqualToAnchor:page.view.safeAreaLayoutGuide.trailingAnchor constant:-28],
+            [delegate.counter.topAnchor constraintEqualToAnchor:page.view.topAnchor constant:16],
         ]];
         objc_setAssociatedObject(page, &kApolloHiddenMediaDelegate, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ((UIPageViewController *)page).delegate = delegate;

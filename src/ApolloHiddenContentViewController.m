@@ -4,9 +4,61 @@
 #import "ApolloSaveAllMedia.h"
 #import "ApolloSaveAllMediaItems.h"
 #import <objc/runtime.h>
+#import <Vision/Vision.h>
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
+
+// Some image hosts return a successful image response containing their removal
+// notice. Recognize only the known tombstone wording, never the post's status:
+// deleted posts can still have perfectly valid images. OCR runs off the UI thread.
+static void ApolloHiddenImageIsTombstone(UIImage *image, void (^completion)(BOOL)) {
+    if (!image) { completion(YES); return; }
+    static char resultKey;
+    NSNumber *cached = objc_getAssociatedObject(image, &resultKey);
+    if (cached) { completion(cached.boolValue); return; }
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ queue = dispatch_queue_create("app.apolloreborn.hidden-image-check", DISPATCH_QUEUE_SERIAL); });
+    dispatch_async(queue, ^{
+        BOOL tombstone = NO;
+        // The host tombstone is monochrome on black. Skip OCR for ordinary
+        // photographs; sample a tiny bitmap to keep scrolling inexpensive.
+        uint8_t pixels[32 * 32 * 4] = {0};
+        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(pixels, 32, 32, 8, 32 * 4, space, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+        CGColorSpaceRelease(space);
+        NSUInteger dark = 0, monochrome = 0;
+        if (context && image.CGImage) {
+            CGContextDrawImage(context, CGRectMake(0, 0, 32, 32), image.CGImage);
+            for (NSUInteger i = 0; i < 32 * 32; i++) {
+                int r = pixels[i * 4], g = pixels[i * 4 + 1], b = pixels[i * 4 + 2];
+                if (MAX(r, MAX(g, b)) < 60) dark++;
+                if (MAX(r, MAX(g, b)) - MIN(r, MIN(g, b)) < 15) monochrome++;
+            }
+        }
+        if (context) CGContextRelease(context);
+        if (image.CGImage && dark > 512 && monochrome > 970) {
+            VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
+            request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+            request.recognitionLanguages = @[@"en-US"];
+            request.usesLanguageCorrection = NO;
+            VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image.CGImage options:@{}];
+            if ([handler performRequests:@[request] error:nil]) {
+                NSMutableArray *lines = [NSMutableArray array];
+                for (VNRecognizedTextObservation *observation in request.results) {
+                    NSString *line = [observation topCandidates:1].firstObject.string;
+                    if (line) [lines addObject:line.lowercaseString];
+                }
+                NSString *text = [lines componentsJoinedByString:@" "];
+                tombstone = [text containsString:@"looking for"] &&
+                    [text containsString:@"image"] && [text containsString:@"probably deleted"];
+            }
+        }
+        objc_setAssociatedObject(image, &resultKey, @(tombstone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(tombstone); });
+    });
+}
 
 // Apollo's media loader uses this determinate clockwise ring.
 @interface DACircularProgressView : UIView
@@ -20,6 +72,16 @@
 @end
 
 #pragma mark - Pill badge
+
+static NSString *ApolloHiddenScoreMagnitude(NSInteger score) {
+    // Avoid labs(NSIntegerMin), which overflows signed integers.
+    double magnitude = fabs((double)score);
+    if (magnitude < 1000) return [NSString stringWithFormat:@"%.0f", magnitude];
+    double divisor = magnitude >= 1000000 ? 1000000.0 : 1000.0;
+    NSString *number = [NSString stringWithFormat:@"%.1f", magnitude / divisor];
+    if ([number hasSuffix:@".0"]) number = [number substringToIndex:number.length - 2];
+    return [number stringByAppendingString:divisor == 1000000.0 ? @"M" : @"K"];
+}
 
 static UIColor *ApolloHiddenContentPillBackgroundColor(ApolloHiddenContentReason reason) {
     switch (reason) {
@@ -107,6 +169,11 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
 @property (nonatomic, copy) NSArray<NSURL *> *mediaURLs;
 @property (nonatomic, strong) NSMutableIndexSet *loadedMediaIndexes;
 @property (nonatomic, strong) UILabel *mediaLabel;
+@property (nonatomic, strong) NSMutableIndexSet *unavailableMediaIndexes;
+@property (nonatomic) CGFloat mediaAspectRatio;
+@property (nonatomic) BOOL compactMedia;
+@property (nonatomic) NSUInteger mediaGeneration;
+
 @property (nonatomic, strong) UIStackView *headerStack;
 @property (nonatomic, strong) UIView *headerMiddleSpacer;
 @property (nonatomic, strong) UIView *statusLeadingSpacer;
@@ -204,11 +271,11 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
         [self.mediaContainerView addSubview:self.mediaScrollView];
         [self.mediaScrollView addSubview:self.mediaPagesStack];
         self.mediaLabel = [ApolloHiddenContextLabel new];
-        ((ApolloHiddenContextLabel *)self.mediaLabel).textInsets = UIEdgeInsetsMake(3, 6, 3, 6);
-        self.mediaLabel.font = self.authorLabel.font;
+        ((ApolloHiddenContextLabel *)self.mediaLabel).textInsets = UIEdgeInsetsMake(5, 13, 5, 13);
+        self.mediaLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
         self.mediaLabel.textColor = UIColor.whiteColor;
         self.mediaLabel.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.7];
-        self.mediaLabel.layer.cornerRadius = 4;
+        self.mediaLabel.layer.cornerRadius = 12;
         self.mediaLabel.clipsToBounds = YES;
         self.mediaLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [self.mediaContainerView addSubview:self.mediaLabel];
@@ -222,8 +289,8 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
             [self.mediaPagesStack.topAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.topAnchor],
             [self.mediaPagesStack.bottomAnchor constraintEqualToAnchor:self.mediaScrollView.contentLayoutGuide.bottomAnchor],
             [self.mediaPagesStack.heightAnchor constraintEqualToAnchor:self.mediaScrollView.frameLayoutGuide.heightAnchor],
-            [self.mediaLabel.bottomAnchor constraintEqualToAnchor:self.mediaContainerView.bottomAnchor constant:-8],
-            [self.mediaLabel.trailingAnchor constraintEqualToAnchor:self.mediaContainerView.trailingAnchor constant:-8],
+            [self.mediaLabel.topAnchor constraintEqualToAnchor:self.mediaContainerView.topAnchor constant:10],
+            [self.mediaLabel.trailingAnchor constraintEqualToAnchor:self.mediaContainerView.trailingAnchor constant:-10],
         ]];
         self.previewHeight = [self.mediaContainerView.heightAnchor constraintEqualToConstant:180];
         self.previewHeight.priority = UILayoutPriorityRequired - 1;
@@ -267,6 +334,16 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     self.dateLabel.textColor = metadataColor;
     self.voteKindLabel.textColor = metadataColor;
     self.reasonAttributionLabel.textColor = metadataColor;
+    UIColor *noticeColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+    for (UIImageView *page in self.mediaImageViews) {
+        for (UIStackView *notice in page.subviews) {
+            if (![notice isKindOfClass:UIStackView.class]) continue;
+            for (UIView *part in notice.arrangedSubviews) {
+                part.tintColor = noticeColor;
+                if ([part isKindOfClass:UILabel.class]) ((UILabel *)part).textColor = noticeColor;
+            }
+        }
+    }
     if (self.voteKindLabel.attributedText.length) {
         NSMutableAttributedString *text = [self.voteKindLabel.attributedText mutableCopy];
         [text addAttribute:NSForegroundColorAttributeName value:metadataColor range:NSMakeRange(0, text.length)];
@@ -288,16 +365,70 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
         [self apollo_updateHeaderLayout];
     }
 }
-- (void)apollo_openMedia { if (self.mediaTapped) self.mediaTapped(); }
+- (void)apollo_openMedia {
+    if (![self.unavailableMediaIndexes containsIndex:self.currentMediaIndex] && self.mediaTapped) self.mediaTapped();
+}
+- (void)apollo_updateMediaHeight {
+    BOOL compact = [self.unavailableMediaIndexes containsIndex:self.currentMediaIndex];
+    if (compact == self.compactMedia) return;
+    self.compactMedia = compact;
+    self.previewHeight.active = NO;
+    self.previewHeight = compact
+        ? [self.mediaContainerView.heightAnchor constraintEqualToConstant:100]
+        : [self.mediaContainerView.heightAnchor constraintEqualToAnchor:self.mediaContainerView.widthAnchor multiplier:1.0 / self.mediaAspectRatio];
+    self.previewHeight.priority = UILayoutPriorityRequired - 1;
+    self.previewHeight.active = YES;
+    // Recalculate the self-sizing row when an asynchronous image resolves.
+    UIView *parent = self.superview;
+    while (parent && ![parent isKindOfClass:UITableView.class]) parent = parent.superview;
+    if (parent) [(UITableView *)parent performBatchUpdates:nil completion:nil];
+}
+- (void)apollo_showUnavailableAtIndex:(NSUInteger)index {
+    [self.unavailableMediaIndexes addIndex:index];
+    UIImageView *page = self.mediaImageViews[index];
+    page.image = nil;
+    page.accessibilityTraits = UIAccessibilityTraitStaticText;
+    page.accessibilityLabel = @"Image unavailable. The original image is no longer available.";
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"photo.badge.exclamationmark"]];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    UILabel *title = [UILabel new];
+    title.text = @"Image unavailable";
+    title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    UILabel *detail = [UILabel new];
+    detail.text = @"The original image is no longer available.";
+    detail.font = [UIFont systemFontOfSize:13];
+    detail.numberOfLines = 0;
+    detail.textAlignment = NSTextAlignmentCenter;
+    UIColor *color = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+    icon.tintColor = color;
+    title.textColor = color;
+    detail.textColor = color;
+    UIStackView *notice = [[UIStackView alloc] initWithArrangedSubviews:@[icon, title, detail]];
+    notice.axis = UILayoutConstraintAxisVertical;
+    notice.alignment = UIStackViewAlignmentCenter;
+    notice.spacing = 3;
+    [notice setCustomSpacing:6 afterView:icon];
+    notice.translatesAutoresizingMaskIntoConstraints = NO;
+    [page addSubview:notice];
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.heightAnchor constraintEqualToConstant:24],
+        [icon.widthAnchor constraintEqualToConstant:24],
+        [notice.centerYAnchor constraintEqualToAnchor:page.centerYAnchor],
+        [notice.leadingAnchor constraintEqualToAnchor:page.leadingAnchor constant:8],
+        [notice.trailingAnchor constraintEqualToAnchor:page.trailingAnchor constant:-8],
+    ]];
+    [self apollo_updateMediaHeight];
+}
 - (void)apollo_updateCurrentMediaIndex {
     CGFloat width = CGRectGetWidth(self.mediaScrollView.bounds);
     if (width <= 0 || self.mediaURLs.count == 0) return;
     NSUInteger index = MIN(self.mediaURLs.count - 1, (NSUInteger)MAX(0, lround(self.mediaScrollView.contentOffset.x / width)));
     self.currentMediaIndex = index;
     if (self.mediaURLs.count > 1) {
-        self.mediaLabel.text = [NSString stringWithFormat:@"%lu / %lu", (unsigned long)index + 1, (unsigned long)self.mediaURLs.count];
+        self.mediaLabel.text = [NSString stringWithFormat:@"%lu/%lu", (unsigned long)index + 1, (unsigned long)self.mediaURLs.count];
         self.mediaLabel.hidden = NO;
     }
+    [self apollo_updateMediaHeight];
     [self apollo_loadMediaAroundIndex:index];
 }
 - (void)apollo_loadMediaAroundIndex:(NSUInteger)centerIndex {
@@ -305,6 +436,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     NSUInteger first = centerIndex > 0 ? centerIndex - 1 : 0;
     NSUInteger last = MIN(self.mediaURLs.count - 1, centerIndex + 1);
     NSString *representedName = self.representedName;
+    NSUInteger generation = self.mediaGeneration;
     for (NSUInteger index = first; index <= last; index++) {
         if ([self.loadedMediaIndexes containsIndex:index]) continue;
         [self.loadedMediaIndexes addIndex:index];
@@ -312,20 +444,19 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
         __weak typeof(self) weakSelf = self;
         [ApolloUserProfileCache.sharedCache requestImageForURL:url completion:^(UIImage *image) {
             typeof(self) owner = weakSelf;
-            if (!owner || ![owner.representedName isEqualToString:representedName] || index >= owner.mediaURLs.count || ![owner.mediaURLs[index] isEqual:url]) return;
-            if (image) {
-                [UIView transitionWithView:owner.mediaImageViews[index]
-                                  duration:0.18
-                                   options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowAnimatedContent
-                                animations:^{ owner.mediaImageViews[index].image = image; }
-                                completion:nil];
-            } else {
-                owner.mediaImageViews[index].image = nil;
-            }
-            if (owner.mediaURLs.count == 1) {
-                owner.mediaLabel.hidden = image != nil;
-                if (!image) owner.mediaLabel.text = @"Image no longer available";
-            }
+            if (!owner || owner.mediaGeneration != generation || ![owner.representedName isEqualToString:representedName] || index >= owner.mediaURLs.count || ![owner.mediaURLs[index] isEqual:url]) return;
+            ApolloHiddenImageIsTombstone(image, ^(BOOL unavailable) {
+                typeof(self) cell = weakSelf;
+                if (!cell || cell.mediaGeneration != generation || ![cell.representedName isEqualToString:representedName] || index >= cell.mediaURLs.count || ![cell.mediaURLs[index] isEqual:url]) return;
+                if (unavailable) {
+                    [cell apollo_showUnavailableAtIndex:index];
+                } else {
+                    [UIView transitionWithView:cell.mediaImageViews[index] duration:0.18
+                        options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowAnimatedContent
+                        animations:^{ cell.mediaImageViews[index].image = image; } completion:nil];
+                }
+                if (cell.mediaURLs.count == 1) cell.mediaLabel.hidden = YES;
+            });
         }];
     }
 }
@@ -334,7 +465,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
 }
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction
                         configurationForMenuAtLocation:(CGPoint)location {
-    if (!self.mediaSaveImageRequested) return nil;
+    if (!self.mediaSaveImageRequested || [self.unavailableMediaIndexes containsIndex:self.currentMediaIndex]) return nil;
     __weak typeof(self) weakSelf = self;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
         UIAction *saveImage = [UIAction actionWithTitle:@"Save Image"
@@ -356,14 +487,15 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     }];
 }
 - (void)configureWithItem:(ApolloHiddenContentItem *)item username:(NSString *)username {
+    self.mediaGeneration++;
     self.representedName = item.fullName;
     [self apollo_applyOverviewTheme];
     NSString *author = item.author.length && ![item.author isEqualToString:@"[deleted]"] ? item.author : username;
     NSString *kindLabel = item.kind == ApolloHiddenContentKindComment ? @"Comment" : @"Post";
     NSInteger score = item.score.integerValue;
     NSString *voteText = score < 0
-        ? [NSString stringWithFormat:@"↓ %lu", (unsigned long)labs((long)score)]
-        : [NSString stringWithFormat:@"↑ %ld", (long)score];
+        ? [NSString stringWithFormat:@"↓ %@", ApolloHiddenScoreMagnitude(score)]
+        : [NSString stringWithFormat:@"↑ %@", ApolloHiddenScoreMagnitude(score)];
     self.authorLabel.text = author;
     self.authorLabel.accessibilityLabel = author;
     NSString *voteKindText = item.score
@@ -451,6 +583,8 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     self.mediaCount = mediaURLs.count;
     self.currentMediaIndex = 0;
     self.loadedMediaIndexes = [NSMutableIndexSet indexSet];
+    self.unavailableMediaIndexes = [NSMutableIndexSet indexSet];
+    self.compactMedia = NO;
     NSMutableArray<UIImageView *> *imageViews = [NSMutableArray arrayWithCapacity:mediaURLs.count];
     for (NSUInteger index = 0; index < mediaURLs.count; index++) {
         UIImageView *imageView = [UIImageView new];
@@ -473,12 +607,13 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     // Do not cap portrait height: fit the full image to the feed width.
     CGFloat ratio = item.previewAspectRatio;
     if (!isfinite(ratio) || ratio < 0.1 || ratio > 10.0) ratio = 1.0;
+    self.mediaAspectRatio = ratio;
     self.previewHeight.active = NO;
     self.previewHeight = [self.mediaContainerView.heightAnchor
         constraintEqualToAnchor:self.mediaContainerView.widthAnchor multiplier:1.0 / ratio];
     self.previewHeight.priority = UILayoutPriorityRequired - 1;
     self.previewHeight.active = YES;
-    self.mediaLabel.text = mediaURLs.count > 1 ? [NSString stringWithFormat:@"1 / %lu", (unsigned long)mediaURLs.count] : @"Loading image…";
+    self.mediaLabel.text = mediaURLs.count > 1 ? [NSString stringWithFormat:@"1/%lu", (unsigned long)mediaURLs.count] : @"Loading image…";
     self.mediaLabel.hidden = NO;
     self.mediaContainerView.hidden = mediaURLs.count == 0;
     self.mediaScrollView.scrollEnabled = mediaURLs.count > 1;
