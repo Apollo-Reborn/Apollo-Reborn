@@ -781,12 +781,25 @@ static NSString *const kApolloAMItemRowPrefix = @"item.";
     cell.itemID = item.itemID;
     cell.textLabel.text = item.title;
     cell.imageView.image = [item icon];
+    cell.grip.hidden = self.editingAllMenus;
+    cell.toggle.on = !hidden;
+    [self styleItemCell:cell forItem:item hidden:hidden];
+    return cell;
+}
+
+// The look that follows the hidden state: dimmed icon and title, the All
+// overview's per-menu subtitle, accessibility. Kept apart from the cell's
+// creation so a switch flip can restyle the cell IN PLACE — reloading the row
+// there swapped the cell out under the switch mid-animation, cutting the
+// knob's own transition short and briefly drawing two switches (the "odd
+// toggle" in the 2026-09-14 device recording). Never sets the switch: it is
+// either freshly configured by the caller or animating under the user's thumb.
+- (void)styleItemCell:(ApolloAMItemCell *)cell forItem:(ApolloActionMenuItem *)item hidden:(BOOL)hidden {
     // A row Apollo only offers sometimes says so — unless this user's menu
     // offered it last time (a moderator's Moderator row, say).
     NSArray<NSString *> *seen = ApolloActionMenuLastPresentedItemIDs(self.context);
     BOOL offered = seen ? [seen containsObject:item.itemID] : item.usuallyShown;
     cell.detailTextLabel.text = offered ? nil : @"Shown when available";
-    cell.grip.hidden = self.editingAllMenus;
     if (self.editingAllMenus) {
         NSArray *contexts = [self contextsForItem:item.itemID];
         NSUInteger hiddenCount = 0;
@@ -797,7 +810,6 @@ static NSString *const kApolloAMItemRowPrefix = @"item.";
             (hiddenCount == contexts.count ? @"Hidden in All Supported Menus" : @"Shown in Some Menus");
     }
     cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-    cell.toggle.on = !hidden;
     cell.toggle.accessibilityLabel = [NSString stringWithFormat:@"Show %@", item.title];
     // Reuse pool: set BOTH states explicitly. A hidden row's label is disabled
     // (the theme pass leaves disabled labels alone, so the dim survives it);
@@ -810,7 +822,6 @@ static NSString *const kApolloAMItemRowPrefix = @"item.";
     if (!hidden) [self apollo_applyPrimaryTextColorToCell:cell];
     cell.textLabel.alpha = 1.0;
     cell.accessibilityLabel = hidden ? [NSString stringWithFormat:@"%@, hidden", item.title] : item.title;
-    return cell;
 }
 
 #pragma mark - Actions
@@ -862,7 +873,18 @@ static NSString *const kApolloAMItemRowPrefix = @"item.";
     for (NSString *context in [self contextsForItem:itemID]) {
         ApolloActionMenuSetItemHidden(context, itemID, hide);
     }
-    [self reloadRowWithID:[self itemRowIDForItemID:itemID]];
+    // Restyle the tapped cell in place (see styleItemCell:). No row reload
+    // here: the switch is still animating under the user's thumb, and a
+    // reload replaces the cell — and the switch — beneath it.
+    ApolloActionMenuItem *item = nil;
+    for (ApolloActionMenuItem *candidate in [self editableItems]) {
+        if ([candidate.itemID isEqualToString:itemID]) { item = candidate; break; }
+    }
+    BOOL nowHidden = [self itemIsHidden:itemID];
+    if (item) [self styleItemCell:cell forItem:item hidden:nowHidden];
+    // Only if the model refused the change (it never does for a listed item)
+    // does the switch need putting back; otherwise it keeps its own motion.
+    if (cell.toggle.on == nowHidden) [cell.toggle setOn:!nowHidden animated:YES];
     [self visibilityDidChange]; // the reset row
     [self animatePreviewStateChange];
 }

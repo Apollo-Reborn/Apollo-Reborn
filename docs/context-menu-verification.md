@@ -68,6 +68,12 @@ UIKit icon renderer was stubbed for the host build.
   2026-09-14 (KSCrash report, `_Bug_Detected_In_Client_Of_UITableView_Invalid_
   Number_Of_Rows_In_Section`) and fixed; the switch path was never affected
   (`reloadRowWithID:` does not re-snapshot).
+- A switch flip restyles the tapped cell IN PLACE (`styleItemCell:forItem:
+  hidden:`) and never reloads the row: `reloadRowWithID:` replaced the cell
+  under the switch while its knob was mid-transition, which cut the iOS 26
+  morph short and briefly composited two switches (device recording,
+  2026-09-14 23:07). After the change the glass sim's recording shows the
+  full knob-to-track morph on both flips (60 fps frame crops).
 - Glass specs with a custom `buildElement` (Gallery View's combined section,
   the profile Hidden & Deleted row, Sticky as Subreddit) place their own
   element. `ApolloActionMenuInjectMenuElements` now diffs the children before
