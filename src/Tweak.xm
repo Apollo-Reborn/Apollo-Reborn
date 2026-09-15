@@ -3790,6 +3790,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
+                                    UDKeyIPadPaneLayout: @NO,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
                                     UDKeyInfoRowTapComments: @YES,
@@ -4067,6 +4068,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
+    // Read once here: ApolloPaneInstall.xm builds the split controllers during
+    // scene connect, which happens after %ctor and never again for the process.
+    sIPadPaneLayout = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
@@ -4482,7 +4486,16 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
             UITabBarController *tabBarController = (UITabBarController *)mainWindow.rootViewController;
             // Navigate to Settings tab
             tabBarController.selectedViewController = [tabBarController.viewControllers lastObject];
-            UINavigationController *settingsNavController = (UINavigationController *) tabBarController.selectedViewController;
+            // The selected child is the navigation controller in the stock
+            // layout, but a UISplitViewController under the iPad pane layout —
+            // unwrap rather than casting, or this push hits the split
+            // controller and throws.
+            UINavigationController *settingsNavController =
+                ApolloNavigationControllerForTabChild(tabBarController.selectedViewController);
+            if (!settingsNavController) {
+                ApolloLog(@"[Tweak] no navigation controller for the settings tab; skipping Custom API redirect");
+                return;
+            }
 
             // Push Custom API directly
             CustomAPIViewController *vc = [[CustomAPIViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];

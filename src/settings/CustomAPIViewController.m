@@ -59,6 +59,7 @@
 #import "settings/TranslationSettingsViewController.h"
 #import "PictureInPictureViewController.h"
 #import "TagFiltersViewController.h"
+#import "ipad/ApolloPaneLayout.h"
 
 // The six speeds the "Hold for Video Speed" picker offers, in display order. They
 // mirror the video player's own speed menu minus 1.0× (holding at normal speed
@@ -141,6 +142,17 @@ static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
 
 static NSString *const kApolloRebornSubredditName = @"ApolloReborn";
 static char kAboutSubredditIconTaskKey;
+
+static NSString *ApolloIPadPaneLayoutSettingDetail(void) {
+    BOOL desired = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyIPadPaneLayout];
+    BOOL active = ApolloPaneLayoutActive();
+    if (desired != active) {
+        return desired
+            ? @"Will turn on after Apollo quits and reopens. The current single-column layout remains active until then."
+            : @"Will turn off after Apollo quits and reopens. The current multi-column layout remains active until then.";
+    }
+    return @"Experimental on iPadOS 18 or newer. Puts your tabs in a sidebar and opens comments beside the post list instead of on top of it. Apollo restarts to apply changes.";
+}
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
 @property (nonatomic, copy) NSArray<NSNumber *> *visibleIndexes;
@@ -1904,8 +1916,10 @@ typedef NS_ENUM(NSInteger, Tag) {
                                      title:@"Move Tab Bar to Bottom"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf iPadTabBarBottomSwitchToggled:sender]; }];
+    // Meaningless once the pane layout hides the floating pill entirely.
     iPadTabBarBottom.visible = ^BOOL {
-        return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass();
+        return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass() &&
+               !ApolloPaneLayoutActive();
     };
 
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
@@ -1929,6 +1943,27 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
+
+    // Experimental multi-column iPad layout. Hidden outright on iPhone rather
+    // than shown-disabled: it is a whole-app restructure with nothing to
+    // preview or explain on a device that will never run it.
+    // Installation happens at scene connect, so the handler confirms and
+    // restarts instead of pretending the change is live.
+    ApolloSettingsRow *iPadPaneLayout =
+        [ApolloSettingsRow customRowWithID:@"gen.iPadPaneLayout"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [weakSelf switchCellWithIdentifier:@"Cell_Gen_IPadPaneLayout"
+                                                                 label:@"Multi-Column Layout (Experimental)"
+                                                                detail:ApolloIPadPaneLayoutSettingDetail()
+                                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout]
+                                                               enabled:YES
+                                                                action:@selector(iPadPaneLayoutSwitchToggled:)];
+            return cell ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    iPadPaneLayout.visible = ^BOOL {
+        return ApolloPaneLayoutSupported();
+    };
 
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
@@ -1993,8 +2028,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Multi-Column Layout is an experimental, restart-applied option on supported iPad and expanded iOS 27 windows. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ userAvatars, scrollReturnButton, collapseActions, centerBetween, iPadPaneLayout, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -4187,6 +4222,37 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     sIPadTabBarBottom = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sIPadTabBarBottom forKey:UDKeyIPadTabBarBottom];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloIPadTabBarBottomChangedNotification object:nil];
+}
+
+// The split controllers are built during scene connect, which already happened
+// for this process, so there is no live path — quit & reopen is the honest
+// option. The default is written FIRST so the choice survives either way: quit
+// now, or next time the user relaunches for any reason. `sIPadPaneLayout` is
+// deliberately NOT updated here — it must keep describing the layout this
+// process actually installed, or every module that gates on it starts lying.
+- (void)iPadPaneLayoutSwitchToggled:(UISwitch *)sender {
+    BOOL on = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:UDKeyIPadPaneLayout];
+    // Dependent rows describe the hierarchy that is active in THIS process,
+    // while this switch and its pending subtitle describe the saved choice.
+    [self visibilityDidChange];
+    [self reloadRowWithID:@"gen.iPadPaneLayout"];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Restart to Apply"
+                         message:on
+            ? @"The multi-column layout is set up when Apollo launches, so it needs to quit and reopen to take effect."
+            : @"Apollo needs to quit and reopen to return to the single-column layout."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit Apollo"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        exit(0);
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {

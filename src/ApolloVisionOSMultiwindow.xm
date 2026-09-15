@@ -289,10 +289,15 @@ static NSURL *ApolloActiveDeepLink(void) {
 // handler gates its webpageURL branch on.
 static void ApolloDeliverURLToScene(UIWindowScene *scene, NSURL *url) {
     id<UISceneDelegate> delegate = scene.delegate;
-    if (![delegate respondsToSelector:@selector(scene:continueUserActivity:)]) return;
+    if (![delegate respondsToSelector:@selector(scene:continueUserActivity:)]) {
+        ApolloLog(@"[VisionOSMultiwindow] new scene's delegate (%@) has no continueUserActivity:; "
+                  @"window opens without the target", NSStringFromClass([delegate class]));
+        return;
+    }
     NSUserActivity *activity =
         [[NSUserActivity alloc] initWithActivityType:NSUserActivityTypeBrowsingWeb];
     activity.webpageURL = url;
+    ApolloLog(@"[VisionOSMultiwindow] handing %@ to the new scene", url.absoluteString);
     [delegate scene:scene continueUserActivity:activity];
 }
 
@@ -300,7 +305,11 @@ static void ApolloDeliverURLToScene(UIWindowScene *scene, NSURL *url) {
 // deliver once its UI is up. A scene-activation notification observer proved
 // unreliable; polling connectedScenes cannot miss.
 static void ApolloAwaitNewScene(NSHashTable<UIScene *> *existing, NSURL *url, int attemptsLeft) {
-    if (attemptsLeft <= 0) return;
+    if (attemptsLeft <= 0) {
+        ApolloLog(@"[VisionOSMultiwindow] no new scene appeared within 8s; %@ not delivered",
+                  url.absoluteString);
+        return;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -510,6 +519,9 @@ static void ApolloStartWindowButton(void) {
     }];
 }
 
+// visionOS ONLY. This was briefly extended to iPad as an answer to "a fourth
+// tiled column will not fit, so use separate windows instead" — reverted at the
+// user's request. iPad is a strict no-op again, exactly as before.
 %ctor {
     if (!ApolloIsRunningOnVisionOS()) return;
 
