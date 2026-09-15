@@ -901,6 +901,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
     [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
+    [self reloadRowWithID:@"interface.avatarShape"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
     [self reloadRowWithID:@"feat.profileLayout"];
@@ -1922,6 +1923,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf userAvatarsSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *avatarShape =
+        [ApolloSettingsRow valueRowWithID:@"interface.avatarShape"
+                                    title:@"Profile Picture Shape"
+                                   detail:^NSString * { return [weakSelf profilePictureShapeText]; }
+                                 onSelect:^{
+            [weakSelf presentProfilePictureShapePickerFromSourceView:
+                [weakSelf cellForRowID:@"interface.avatarShape"]];
+        }];
+    avatarShape.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
+
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
 
@@ -1989,7 +2002,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2434,6 +2447,34 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
     }
     return [parts componentsJoinedByString:@" · "];
+}
+
+- (NSString *)profilePictureShapeText {
+    switch (sProfileAvatarStyle) {
+        case 1:  return @"Circle";
+        case 2:  return @"Square";
+        default: return @"Full";
+    }
+}
+
+- (void)presentProfilePictureShapePickerFromSourceView:(UIView *)sourceView {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, sourceView, @"Profile Picture Shape",
+                                @[@"Full", @"Circle", @"Square"],
+                                sProfileAvatarStyle, ^(NSInteger pickedIndex) {
+        if (pickedIndex < 0 || pickedIndex > 2) return;
+        sProfileAvatarStyle = pickedIndex;
+        [[NSUserDefaults standardUserDefaults] setInteger:pickedIndex
+                                                   forKey:UDKeyProfileAvatarStyle];
+        [weakSelf reloadRowWithID:@"interface.avatarShape"];
+        [weakSelf reloadRowWithID:@"feat.profileLayout"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
+                          object:@"ApolloProfileAvatarStyleChanged"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloProfileTabAvatarIconChangedNotification"
+                          object:nil];
+    });
 }
 
 // Subreddits group screen (ApolloSubredditsSettingsViewController), two
