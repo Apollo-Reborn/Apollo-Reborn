@@ -18,12 +18,17 @@
 //
 // Full design + RE notes: docs/ipad-pane-layout-plan.md
 
+#import "ApolloPaneChrome.h"
+#import "ApolloPaneContent.h"
+#import "ApolloPaneTransitionObserver.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
 #import "ApolloPaneForwardHistory.h"
 #import "ApolloPaneLayout.h"
+#import "ApolloPaneDiagnostics.h"
+#import "ApolloPaneGeometry.h"
 #import "ApolloPaneRouting.h"
 #import "ApolloPaneSplitViewController.h"
 #import "../ApolloCommon.h"
@@ -170,24 +175,16 @@ static void ApolloPaneObservePrimaryPopSettlement(
         NSUInteger token);
 
 static void ApolloPanePollPrimaryPopSettlement(
-        ApolloPaneSplitViewController *pane,
-        UINavigationController *navigationController,
-        NSArray<UIViewController *> *beforeStack,
-        NSUInteger token,
-        NSUInteger observations) {
-    if (!pane || !navigationController || token == 0) return;
-    if (navigationController.transitionCoordinator) {
-        NSTimeInterval delay = observations < 120 ? 0.05 : 0.25;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            ApolloPanePollPrimaryPopSettlement(pane, navigationController, beforeStack,
-                                                token, observations + 1);
-        });
-        return;
-    }
-    [pane apollo_primaryNavigationPopDidSettle:token
-                                   beforeStack:beforeStack
-                                      cancelled:NO];
+        ApolloPaneSplitViewController *pane, UINavigationController *navigationController,
+        NSArray<UIViewController *> *beforeStack, NSUInteger token, NSUInteger observations) {
+    (void)observations;
+    if (!pane || !navigationController || !token) return;
+    __weak UINavigationController *weakNavigation = navigationController;
+    [ApolloPaneTransitionObserver observeOwner:pane key:@"primaryPop" timeout:6.0
+        ready:^BOOL(__unused id owner) { return weakNavigation.transitionCoordinator == nil; }
+        completion:^(ApolloPaneSplitViewController *owner, BOOL timedOut) {
+            [owner apollo_primaryNavigationPopDidSettle:token beforeStack:beforeStack cancelled:timedOut];
+        }];
 }
 
 static void ApolloPaneObservePrimaryPopSettlement(
@@ -196,8 +193,9 @@ static void ApolloPaneObservePrimaryPopSettlement(
         NSArray<UIViewController *> *beforeStack,
         NSUInteger token) {
     if (!pane || !navigationController || beforeStack.count == 0 || token == 0) return;
+    __weak ApolloPaneSplitViewController *weakPane = pane;
     void (^settle)(BOOL) = ^(BOOL cancelled) {
-        [pane apollo_primaryNavigationPopDidSettle:token
+        [weakPane apollo_primaryNavigationPopDidSettle:token
                                        beforeStack:beforeStack
                                           cancelled:cancelled];
     };
@@ -270,6 +268,7 @@ static BOOL ApolloPaneReplaceDetailRoot(ApolloPaneSplitViewController *pane,
         [pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary];
     if (!destination || !viewController) return NO;
 
+    ApolloPaneTraceBegin(pane, @"selectionToDisplayFrame");
     viewController.extendedLayoutIncludesOpaqueBars = YES;
     NSArray<UIViewController *> *oldDestinationStack = destination.viewControllers;
     __block BOOL replacementSucceeded = NO;
@@ -295,7 +294,13 @@ static BOOL ApolloPaneReplaceDetailRoot(ApolloPaneSplitViewController *pane,
             sPaneRouterReentrant = NO;
         }
     }];
-    if (!replacementSucceeded) return NO;
+    if (!replacementSucceeded) { ApolloPaneTraceEnd(pane, @"selectionToDisplayFrame"); return NO; }
+    if (ApolloPaneTraceEnabled()) {
+        ApolloPaneFrameScheduler *firstFrame = [[ApolloPaneFrameScheduler alloc] initWithOwner:pane update:^(id owner) {
+            ApolloPaneTraceEnd(owner, @"selectionToDisplayFrame");
+        }];
+        [firstFrame request];
+    }
 
     // Readable-width settings/forms must have their final safe-area insets
     // before the first detail frame is committed. The ordinary pane geometry
@@ -339,36 +344,16 @@ static void ApolloPaneSchedulePostsScopeReconciliation(UIViewController *posts,
     });
 }
 
-static void ApolloPaneCollectLivePanes(UIViewController *controller,
-                                       NSHashTable<ApolloPaneSplitViewController *> *panes) {
-    if (!controller || [panes containsObject:(id)controller]) return;
-    if ([controller isKindOfClass:[ApolloPaneSplitViewController class]]) {
-        [panes addObject:(ApolloPaneSplitViewController *)controller];
-    }
-    for (UIViewController *child in controller.childViewControllers) {
-        ApolloPaneCollectLivePanes(child, panes);
-    }
-    ApolloPaneCollectLivePanes(controller.presentedViewController, panes);
-}
-
 static NSArray<ApolloPaneSplitViewController *> *ApolloPaneAllLivePanes(void) {
-    NSHashTable<ApolloPaneSplitViewController *> *panes = [NSHashTable weakObjectsHashTable];
-    for (UIWindow *window in ApolloAllWindows()) {
-        ApolloPaneCollectLivePanes(window.rootViewController, panes);
-    }
-    return panes.allObjects;
+    return (id)ApolloPaneRegisteredSplits();
 }
 
 static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavigationItem *item) {
-    for (ApolloPaneSplitViewController *pane in ApolloPaneAllLivePanes()) {
-        UINavigationController *primary =
-            [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary];
-        for (UIViewController *controller in primary.viewControllers) {
-            if (controller.navigationItem == item) return pane;
-        }
-    }
-    return nil;
+    return (id)ApolloPanePrimarySplitForNavigationItem(item);
 }
+
+extern "C" void *ApolloSwiftListAdapterSectionController(const void *storage, const void *indexPath);
+static char kApolloPaneConfiguredPostSection;
 
 %group ApolloPaneRouterGroup
 
@@ -425,6 +410,33 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
 %end
 
 %hook ApolloPaneListAdapter
+
+- (id)tableNode:(id)tableNode nodeBlockForRowAtIndexPath:(NSIndexPath *)indexPath {
+    id block = %orig;
+    if (!block || !NSThread.isMainThread || !ApolloPaneLayoutActive()) return block;
+    UIViewController *controller = ApolloPaneLoadSwiftWeak(self, "viewController");
+    block = ApolloPanePrepareNodeFactory(block, controller);
+    ApolloPaneSplitViewController *pane = ApolloPaneForPrimaryController(controller);
+    if (!pane) return block;
+    const void *storage = ApolloPaneSwiftIvarStorage(self, "indexPathToSectionControllerMapping");
+    void *value = ApolloSwiftListAdapterSectionController(storage, (__bridge const void *)indexPath);
+    id section = value ? CFBridgingRelease(value) : nil;
+    Class postSection = objc_getClass("_TtC6Apollo21PostSectionController");
+    if (!postSection || [section class] != postSection ||
+        objc_getAssociatedObject(section, &kApolloPaneConfiguredPostSection)) return block;
+    Ivar compact = class_getInstanceVariable(postSection, "isCompact");
+    Ivar next = class_getInstanceVariable(postSection, "isInModQueue");
+    // Verified in Apollo 1.15.11 sub_10056248c: ldrb from this ivar
+    // chooses the complete native compact/large initializer. Set it once,
+    // before returning the node block to Texture's worker queues. Never
+    // replace the block, bypass action delegates, or mutate NSUserDefaults.
+    if (!compact || !next || ivar_getOffset(next) != ivar_getOffset(compact) + 1) return block;
+    uint8_t *slot = (uint8_t *)(__bridge void *)section + ivar_getOffset(compact);
+    *slot = ApolloPanePrefersCompactFeed(controller) ? 1 : 0;
+    objc_setAssociatedObject(section, &kApolloPaneConfiguredPostSection, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return block;
+}
+
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     UIViewController *source = ApolloPaneLoadSwiftWeak((id)self, "viewController") ?:
@@ -565,12 +577,13 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
         return;
     }
 
-    // During collapse UIKit appends this pane's exact secondary navigation
-    // controller to the surviving primary stack as structural bridge state.
+    // During collapse UIKit appends the secondary column (sometimes wrapped in
+    // its own navigation controller) to the surviving primary stack. Recognize
+    // our exact host identity through that public containment, not a UIKit class
+    // name or a blanket navigation-controller exemption.
     // It is not an app destination and must pass through untouched; treating it
     // as a Settings detail route recursively installs the nav inside itself.
-    if (viewController ==
-        [pane apollo_navigationControllerForColumn:ApolloPaneColumnSecondary]) {
+    if ([pane apollo_isColumnBridgeController:viewController]) {
         %orig;
         return;
     }
@@ -612,6 +625,9 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
     BOOL fromListColumn =
         (navigationController == [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary]);
     UIViewController *sourceViewController = navigationController.topViewController;
+    if (fromListColumn && [pane apollo_isColumnBridgeController:sourceViewController]) {
+        sourceViewController = pane.apollo_primaryContextViewController;
+    }
     id routeMasterSelectionIntent = sPaneRouterReplayedMasterSelectionIntent;
     if (!routeMasterSelectionIntent &&
         sPaneRouterPendingMasterSelectionSource == sourceViewController) {
@@ -626,7 +642,7 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
     BOOL explicitlyClassified = NO;
     ApolloPaneColumn sourceColumn = fromListColumn
         ? ApolloPaneColumnPrimary : ApolloPaneColumnSecondary;
-    ApolloPaneColumn column = ApolloPaneResolveLogicalColumn(navigationController.topViewController,
+    ApolloPaneColumn column = ApolloPaneResolveLogicalColumn(sourceViewController,
                                                               viewController,
                                                               sourceColumn,
                                                               &explicitlyClassified);
@@ -713,6 +729,16 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
 
         UIViewController *beforeTop = navigationController.topViewController;
         NSUInteger beforeDepth = navigationController.viewControllers.count;
+        if (fromListColumn && !sourceBelongsToDetail && column == ApolloPaneColumnSecondary &&
+            !pane.apollo_detailIsEmpty) {
+            // A collapsed host still has a real secondary stack. A new primary
+            // selection replaces that branch just as it does while expanded;
+            // pushing above UIKit's wrapper would leave two competing detail
+            // branches and expose the older one again on expansion.
+            ApolloPaneReplaceDetailRoot(pane, viewController, sourceViewController,
+                                       routeMasterSelectionIntent);
+            return;
+        }
         %orig;
         BOOL pushSucceeded = navigationController.topViewController == viewController &&
             (beforeTop != viewController || navigationController.viewControllers.count != beforeDepth);
@@ -1103,6 +1129,8 @@ static ApolloPaneSplitViewController *ApolloPaneForPrimaryNavigationItem(UINavig
           ApolloPaneInboxListViewController=inboxListClass,
           ApolloPaneListAdapter=listAdapterClass,
           ApolloPaneTableNode=tableNodeClass);
+
+    ApolloPaneRouterSetReady();
 
     NSArray<NSString *> *accountNotifications = @[
         @"com.christianselig.RedditCurrentAccountChanged",

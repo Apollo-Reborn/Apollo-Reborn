@@ -2211,7 +2211,8 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 // behind it.
 - (void)apollo_openCurrentPost {
     NSURL *postURL = [self apollo_currentItem].postURL;
-    if (!postURL) return;
+    UIWindowScene *originatingScene = self.viewIfLoaded.window.windowScene;
+    if (!postURL || !originatingScene) return;
     if (!self.isDismissing) {
         self.isDismissing = YES;
         [self apollo_notifyWillDismiss];
@@ -2220,9 +2221,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
         // Apollo's URL handler only acts on apollo:// URLs — handing it the raw
         // https reddit.com link is silently ignored. The scheme conversion is
         // what every other in-app route in the tweak goes through.
-        if (ApolloRouteResolvedURLViaApolloScheme(postURL)) return;
-        if (!ApolloRouteURLThroughApp(postURL)) {
-            ApolloLog(@"[Gallery] couldn't route %@ through the app", postURL.absoluteString);
+        NSURL *nativeURL = ApolloURLByConvertingResolvedURLToApolloScheme(postURL) ?: postURL;
+        if (!ApolloRouteURLThroughAppInScene(nativeURL, originatingScene)) {
+            ApolloLog(@"[Gallery] native post route unavailable");
         }
     }];
 }

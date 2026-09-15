@@ -1,3 +1,4 @@
+#import "ipad/ApolloPaneChrome.h"
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -1270,7 +1271,8 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         CGFloat targetAlpha = profileTitleLabel ? profileTitleLabel.alpha : 1.0;
         self.glassView.alpha = targetAlpha;
         [hostView insertSubview:self.glassView atIndex:0];
-        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle;
+        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle &&
+            !UIAccessibilityIsReduceMotionEnabled();
         self.fadeNextInstall = NO;
         if (fadeInstall) {
             UIVisualEffectView *installed = self.glassView;
@@ -1414,6 +1416,12 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
         return;
     }
     UIView *jumpBar = ApolloFindJumpBar(self.titleControl);
+    if (!jumpBar && ApolloPaneUsesUnifiedChrome(self.titleControl)) {
+        [self.glassView removeFromSuperview];
+        self.glassView = nil;
+        self.observationValid = NO;
+        return;
+    }
     UIView *hostView = jumpBar ?: self.titleControl;
 
     if (ApolloNavigationTitleContainsNativeSearchSurface(self.titleControl)) {
@@ -1506,12 +1514,16 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
 
 - (void)scheduleTargetRefreshIfNeeded {
     UIView *titleControl = self.titleControl;
-    if (!titleControl) return;
+    if (!titleControl || self.refreshScheduled) return;
     if (ApolloNavigationTitlePresentationSuppressesControl(titleControl)) {
         if (self.fittedWidthConstraint || self.glassView) [self scheduleTargetRefresh];
         return;
     }
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
+    if (!jumpBar && ApolloPaneUsesUnifiedChrome(titleControl)) {
+        if (self.glassView) [self scheduleTargetRefresh];
+        return;
+    }
     BOOL unchanged = self.observationValid &&
         (!self.glassView || (self.glassHostView && self.glassView.superview == self.glassHostView)) &&
         self.preservesNativeSearchLayout == ApolloNavigationTitleContainsNativeSearchSurface(titleControl) &&

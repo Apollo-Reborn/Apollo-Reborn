@@ -63,6 +63,15 @@ BOOL ApolloPaneLayoutActive(void);
 // or partial install is what makes the whole feature fail safe: every consumer
 // falls back to stock behavior rather than half-applying.
 void ApolloPaneLayoutSetActive(BOOL active);
+void ApolloPaneRouterSetReady(void);
+void ApolloPaneEntryPointsSetReady(void);
+BOOL ApolloPaneBootstrapReady(void);
+void ApolloPaneRegisterScene(UIWindowScene *scene, UITabBarController *tabs);
+void ApolloPaneDisconnectScene(UIWindowScene *scene);
+NSArray<UISplitViewController *> *ApolloPaneRegisteredSplits(void);
+NSArray<UISplitViewController *> *ApolloPaneSplitsForScene(UIWindowScene *scene);
+void ApolloPaneRegisterNavigationItems(UINavigationController *navigationController);
+UISplitViewController *_Nullable ApolloPanePrimarySplitForNavigationItem(UINavigationItem *item);
 
 // MARK: - Hierarchy
 

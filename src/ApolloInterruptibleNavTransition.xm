@@ -83,6 +83,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ipad/ApolloPaneLayout.h"
 #import "ApolloSearchNativeBar.h"
 
 // Apollo's animator object -> the most recently built UIViewPropertyAnimator.
@@ -135,7 +136,7 @@ static UIView *ApolloNavMakeShadowView(CGRect frame, UITraitCollection *traits) 
     layer.shadowOpacity = 0.3f;
     layer.shadowPath = [UIBezierPath bezierPathWithRect:shadow.bounds].CGPath;
     layer.shouldRasterize = YES;
-    layer.rasterizationScale = UIScreen.mainScreen.scale;
+    layer.rasterizationScale = MAX(1.0, traits.displayScale);
     return shadow;
 }
 
@@ -166,7 +167,11 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
             fromItem.hidesSearchBarWhenScrolling = NO;
         }];
     }
-    CGFloat width = CGRectGetWidth(container.bounds);
+    BOOL paneTransition = ApolloPaneSplitControllerFor(fromVC) || ApolloPaneSplitControllerFor(toVC);
+    BOOL reduceMotion = paneTransition && UIAccessibilityIsReduceMotionEnabled();
+    CGFloat fromAlpha = fromView.alpha, toAlpha = toView.alpha;
+    CGFloat direction = paneTransition && container.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft ? -1.0 : 1.0;
+    CGFloat width = CGRectGetWidth(container.bounds) * direction;
     CGFloat parallax = width / kApolloNavParallaxDivisor;
 
     CGRect fromRest = (CGRect){CGPointZero, fromView.bounds.size};
@@ -196,6 +201,14 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         [container insertSubview:dim belowSubview:shadow];
     }
 
+    if (reduceMotion) {
+        fromView.frame = fromRest;
+        toView.frame = toRest;
+        toView.alpha = push ? 0.0 : toAlpha;
+        shadow.hidden = YES;
+        dim.hidden = YES;
+    }
+
     // Suppress the original swipe's delayed cell highlight on the outgoing page only.
     // The incoming page owns new touches: disabling it until animation completion drops
     // an immediate follow-up scroll for its entire drag, making the list feel frozen.
@@ -211,9 +224,9 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     // can sit at partial alpha indefinitely and then reverse, which is where a capsule on the
     // incoming title reads as a stray bubble. A timed push/pop cross-fades capsule and title
     // together in half a second, exactly as it always did.
-    NSTimeInterval duration = interactive ? kApolloNavInteractiveDuration : kApolloNavNonInteractiveDuration;
+    NSTimeInterval duration = reduceMotion ? 0.16 : (interactive ? kApolloNavInteractiveDuration : kApolloNavNonInteractiveDuration);
     UIViewPropertyAnimator *animator;
-    if (interactive) {
+    if (interactive || reduceMotion) {
         animator = [[UIViewPropertyAnimator alloc] initWithDuration:duration
                                                               curve:UIViewAnimationCurveLinear
                                                          animations:nil];
@@ -224,7 +237,10 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     }
 
     [animator addAnimations:^{
-        if (push) {
+        if (reduceMotion) {
+            if (push) toView.alpha = toAlpha;
+            else fromView.alpha = 0.0;
+        } else if (push) {
             toView.frame = toRest;
             shadow.frame = toRest;
             fromView.frame = CGRectOffset(fromRest, -parallax, 0.0);
@@ -245,6 +261,8 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
             // Reversal already put the views back; make the rest frames exact.
             fromView.frame = fromRest;
         }
+        fromView.alpha = fromAlpha;
+        toView.alpha = toAlpha;
         fromView.userInteractionEnabled = fromWasInteractive;
         ApolloLog(@"[InterruptibleNav] %s animator for ctx %p finished (cancelled=%d)",
                   push ? "push" : "pop", (void *)ctx, cancelled);
@@ -346,7 +364,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 %end
 
 %ctor {
-    if (!IsLiquidGlass()) return;
+    if (!IsLiquidGlass() && !ApolloPaneLayoutEnabled()) return;
     Class animatorClass = objc_getClass("_TtC6Apollo24ApolloNavigationAnimator");
     if (!animatorClass || !class_getInstanceVariable(animatorClass, "isPresenting")) {
         ApolloLog(@"[InterruptibleNav] ApolloNavigationAnimator not found or changed shape; inactive");

@@ -3,11 +3,32 @@
 #import "ApolloPaneSplitViewController.h"
 #import "ApolloPaneForwardHistory.h"
 #import "ApolloPaneRouting.h"
+#import "ApolloPaneGeometry.h"
+#import "ApolloPaneDiagnostics.h"
+#import "ApolloPaneChrome.h"
+#import "ApolloPaneFocus.h"
+#import "ApolloPaneSidebar.h"
+#import "ApolloPaneTransitionObserver.h"
+#import "ApolloPaneGeometryPolicy.h"
+#import "ApolloPaneColumnHostViewController.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <string.h>
 #import "../ApolloCommon.h"        // ApolloLog
 #import "../ApolloThemeRuntime.h"  // ApolloThemeAccentColor
+
+extern void ApolloSwiftAssignInteractiveTransition(void *storage, const void *object);
+static BOOL ApolloPaneSetNativeInteractiveTransition(UINavigationController *nav,
+                                                      UIPercentDrivenInteractiveTransition *transition) {
+    Class native = objc_getClass("_TtC6Apollo26ApolloNavigationController");
+    if (nav.class != native) return NO;
+    Ivar slot = class_getInstanceVariable(native, "interactionController");
+    Ivar previous = class_getInstanceVariable(native, "poppedViewControllers");
+    if (!slot || !previous || ivar_getOffset(slot) - ivar_getOffset(previous) != sizeof(void *)) return NO;
+    ApolloSwiftAssignInteractiveTransition((uint8_t *)(__bridge void *)nav + ivar_getOffset(slot),
+                                           (__bridge const void *)transition);
+    return YES;
+}
 
 extern void *ApolloSwiftListAdapterIndexPathForModelIdentifier(
     const void *mappingStorage, const void *tokenObject);
@@ -58,61 +79,18 @@ static BOOL ApolloPaneStackStartsWithIdentityStack(NSArray<UIViewController *> *
 
 static BOOL ApolloPaneControllerIsAttached(UIViewController *controller);
 
-// `isCollapsed` answers whether UIKit merged columns into one navigation
-// topology; it does not answer whether an expanded primary is currently
-// visible. A constrained regular-width split can resolve to SecondaryOnly or
-// OneOverSecondary while remaining uncollapsed. Prefer iOS 26's direct query,
-// with the documented resolved display-mode mapping as the older-OS fallback.
-static BOOL ApolloPaneSplitShowsPrimary(UISplitViewController *split) {
-    if (!split) return NO;
-    if (@available(iOS 26.0, *)) {
-        return [split isShowingColumn:UISplitViewControllerColumnPrimary];
-    }
-    if (split.isCollapsed) {
-        UIViewController *primary = [split viewControllerForColumn:UISplitViewControllerColumnPrimary];
-        return ApolloPaneControllerIsAttached(primary);
-    }
-    switch (split.displayMode) {
-        case UISplitViewControllerDisplayModeOneBesideSecondary:
-        case UISplitViewControllerDisplayModeOneOverSecondary:
-            return YES;
-        case UISplitViewControllerDisplayModeSecondaryOnly:
-        default:
-            return NO;
-    }
-}
-
-static BOOL ApolloPaneSplitShowsTiledPrimary(UISplitViewController *split) {
-    if (!split || split.isCollapsed || !ApolloPaneSplitShowsPrimary(split)) return NO;
-    // For a double-column split this is the sole resolved mode in which both
-    // columns are side-by-side and interactive. OneOverSecondary is visible,
-    // but it is an overlay—not a divider that should receive our grabber or
-    // drive detail-column geometry.
-    return split.displayMode == UISplitViewControllerDisplayModeOneBesideSecondary &&
-        split.splitBehavior == UISplitViewControllerSplitBehaviorTile &&
-        split.transitionCoordinator == nil;
-}
-
-// Semantic scope for the one Apollo screen that reuses a controller while
-// changing feeds. `currentSubreddit` and `currentMultireddit` are asynchronous
-// and can retain stale values after reuse, so they cannot safely participate in
-// identity. The PostsType tag is synchronous and the displayed Jump Bar title
-// is the exact user-visible payload that changes for dropdown, typed, and
-// random navigation. Never log the returned value: it stays process-local.
+// The native semantic feed value owns identity. A localized/title/count change
+// cannot invalidate a selected thread. Keep strings process-local and unlogged.
+extern void *ApolloSwiftPanePostsScope(const void *storage);
 static NSString *ApolloPanePrimaryContextScope(UIViewController *controller) {
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
-    if (!postsClass || ![controller isKindOfClass:postsClass]) return nil;
-    Ivar postsTypeIvar = class_getInstanceVariable([controller class], "currentPostsType");
-    if (!postsTypeIvar) return nil;
-    uint8_t tag = 0;
-    const uint8_t *bytes = (const uint8_t *)(__bridge const void *)controller;
-    memcpy(&tag, bytes + ivar_getOffset(postsTypeIvar) + 0x20, sizeof(tag));
-
-    NSString *title = controller.navigationItem.title ?: controller.title;
-    NSString *normalizedTitle = [[title stringByTrimmingCharactersInSet:
-        NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
-    if (normalizedTitle.length == 0) return nil;
-    return [NSString stringWithFormat:@"type=%u|title=%@", tag, normalizedTitle];
+    Class posts = objc_getClass("_TtC6Apollo19PostsViewController");
+    if (controller.class != posts) return nil;
+    Ivar current = class_getInstanceVariable(posts, "currentPostsType");
+    Ivar following = class_getInstanceVariable(posts, "links");
+    if (!current || !following || ivar_getOffset(following) - ivar_getOffset(current) != 40) return nil;
+    const void *storage = (const uint8_t *)(__bridge const void *)controller + ivar_getOffset(current);
+    void *scope = ApolloSwiftPanePostsScope(storage);
+    return scope ? CFBridgingRelease(scope) : nil;
 }
 
 #pragma mark - Detail placeholder
@@ -147,7 +125,7 @@ static NSString *ApolloPanePrimaryContextScope(UIViewController *controller) {
 - (instancetype)initWithNibName:(NSString *)nib bundle:(NSBundle *)bundle {
     self = [super initWithNibName:nib bundle:bundle];
     if (self) {
-        _message = @"No Post Selected";
+        _message = @"Select a post";
         _symbolName = @"text.bubble";
     }
     return self;
@@ -167,13 +145,22 @@ static NSString *ApolloPanePrimaryContextScope(UIViewController *controller) {
     [_iconView.heightAnchor constraintEqualToConstant:44.0].active = YES;
 
     _label = [[UILabel alloc] init];
-    _label.text = _message ?: @"No Post Selected";
+    _label.text = _message ?: @"Select a post";
     _label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     _label.adjustsFontForContentSizeCategory = YES;
     _label.textAlignment = NSTextAlignmentCenter;
+    _label.numberOfLines = 0;
 
     [stack addArrangedSubview:_iconView];
     [stack addArrangedSubview:_label];
+    UILabel *hint = [UILabel new];
+    hint.text = @"Choose an item in the list to open it here.";
+    hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    hint.adjustsFontForContentSizeCategory = YES;
+    hint.numberOfLines = 0;
+    hint.textAlignment = NSTextAlignmentCenter;
+    hint.textColor = UIColor.secondaryLabelColor;
+    [stack addArrangedSubview:hint];
     [self.view addSubview:stack];
 
     // Center on the safe area, not on the view. Under iOS 26 the split
@@ -311,541 +298,6 @@ static BOOL ApolloPaneGestureIsTransitioning(UIGestureRecognizer *gesture) {
         gesture.state == UIGestureRecognizerStateChanged;
 }
 
-#pragma mark - Column host
-
-// Insets a column's navigation controller to the part of the column the sidebar
-// is not covering.
-//
-// WHY THIS EXISTS. On iPadOS 26 a split view controller lays the secondary
-// column out at the FULL window width and floats the sidebar over it as a glass
-// panel — verified from a live hierarchy dump on an iPad Pro 13":
-//
-//   secondary  _UISplitViewControllerAdaptiveColumnView  (0, 0, 1032, 1312)
-//   primary    _UISplitViewControllerAdaptiveColumnView  (10, 86, 413, 1216)
-//
-// UIKit expects content to respect the resulting left safe-area inset. Apollo's
-// screens are Texture (AsyncDisplayKit) table nodes, and ASTableView measures
-// its nodes against its own bounds, not its adjusted content inset — so every
-// comment measured 1032pt wide, got pushed right by the inset, and ran off the
-// right edge of the screen.
-//
-// Rather than fight ASTableView's measurement, give the navigation controller a
-// view that is genuinely only as wide as the visible column. Leading/trailing
-// pin to the safe area (the uncovered region); top/bottom pin to the view so
-// the navigation bar still extends under the status bar as Apollo expects.
-@interface ApolloPaneColumnHostViewController : UIViewController
-- (instancetype)initWithNavigationController:(UINavigationController *)navigationController;
-@property (nonatomic, strong, readonly) UINavigationController *hostedNavigationController;
-- (void)apollo_scheduleListColumnGeometryRefresh;
-- (void)apollo_prepareReadableWidthForTopController;
-#if APOLLO_SIM_BUILD
-- (NSString *)apollo_simLayoutPassStateReset:(BOOL)reset;
-#endif
-@end
-
-@implementation ApolloPaneColumnHostViewController {
-    NSLayoutConstraint *_topConstraint;
-    NSLayoutConstraint *_bottomConstraint;
-    BOOL _geometryRefreshScheduled;
-    BOOL _geometryRefreshWaitingForTransition;
-    BOOL _hasResolvedGeometry;
-    CGFloat _lastResolvedTop;
-    CGFloat _lastResolvedBottom;
-    __weak UIViewController *_readableWidthViewController;
-    CGFloat _readableWidthBaseLeft;
-    CGFloat _readableWidthBaseRight;
-    CGFloat _readableWidthAppliedInset;
-#if APOLLO_SIM_BUILD
-    NSUInteger _simLayoutPassCount;
-    NSUInteger _simGeometryRefreshCount;
-    NSUInteger _simGeometryWriteCount;
-#endif
-}
-
-- (instancetype)initWithNavigationController:(UINavigationController *)navigationController {
-    self = [super initWithNibName:nil bundle:nil];
-    if (self) {
-        _hostedNavigationController = navigationController;
-
-        // The same tab-bar reservation the pane itself has to opt out of (see
-        // the pane's configure method), one level further down.
-        //
-        // UISplitViewController wraps this host in a navigation controller of
-        // its own, and THAT controller applies the identical
-        // -[UITabBarController _frameForViewController:] rule to its child: it
-        // subtracts the opaque tab bar's height unless the child extends under
-        // it. The pane opting in did not help, because this host is a separate
-        // controller that never inherited the flag.
-        //
-        // Measured: the host's view came out (0,0,1376,968) inside a 1032pt
-        // wrapper, so the detail column ended at 968 while the list column ended
-        // at 1022 — the comment list stopping 54pt above the bottom of the
-        // screen with a band of background under it.
-        self.edgesForExtendedLayout = UIRectEdgeAll;
-        self.extendedLayoutIncludesOpaqueBars = YES;
-
-        [[NSNotificationCenter defaultCenter]
-            addObserver:self
-               selector:@selector(apollo_contentSizeCategoryDidChange:)
-                   name:UIContentSizeCategoryDidChangeNotification
-                 object:nil];
-    }
-    return self;
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self apollo_restoreReadableWidthInsets];
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-
-    // CLEAR, deliberately — this view must never paint.
-    //
-    // It is laid out at the FULL window width (iPadOS 26 gives the secondary
-    // column the whole window and floats the other columns over it), while the
-    // navigation controller inside it is inset to the visible column. Giving it
-    // a background therefore does not tint "the detail column", it tints the
-    // entire window: behind the floating sidebar, in the gap between columns,
-    // and above the list column.
-    //
-    // That is exactly what went wrong. It painted ApolloThemePageBackgroundColor(),
-    // which is black under a pure-black theme and so looked correct — until a
-    // themed palette made it #0B1F28 and the whole app turned teal behind
-    // Apollo's own black screens. Only the controllers actually occupying a
-    // column may paint; this one is scaffolding.
-    self.view.backgroundColor = UIColor.clearColor;
-
-    UINavigationController *nav = self.hostedNavigationController;
-    if (!nav) return;
-
-    [self addChildViewController:nav];
-    nav.view.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:nav.view];
-    // ALL FOUR edges pin to the safe area, vertically as well as horizontally.
-    //
-    // Leading/trailing is the Texture fix (see the class comment). Top/bottom
-    // used to pin to the view so the nav bar could extend under the status bar
-    // "as Apollo expects" — that was wrong, and it is what made the app read as
-    // three separate windows rather than one.
-    //
-    // Measured on an iPad Pro 13" landscape, the three navigation bars were:
-    //
-    //   sidebar   (10, 32, 270, 54)
-    //   list      (280, 32, 480, 54)
-    //   detail    (760, 86, 616, 54)   ← 54pt lower than both its neighbours
-    //
-    // UIKit positions the sidebar and the list column inside already-inset
-    // column views, so their bars start at the column's own top. The secondary
-    // column view spans the full window (0,0,1376,1032), so pinning the nav
-    // controller to its top told that controller it began at the very top of the
-    // screen and it applied the whole status-bar inset a second time. Pinning to
-    // the safe area gives it the same origin UIKit gave the other two, and the
-    // three bars line up.
-    // Leading/trailing follow the safe area — that is the Texture fix, and it is
-    // the only thing the safe area gets to decide here.
-    //
-    // Top/bottom are driven manually against the LIST column's real frame (see
-    // apollo_matchListColumnGeometry). The safe area is the wrong input for
-    // them: it produced a detail column running 32→1012 against the list
-    // column's 32→1022, and it cannot express the 10pt the navigation bar
-    // inserts above itself.
-    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
-    _topConstraint = [nav.view.topAnchor constraintEqualToAnchor:self.view.topAnchor
-                                                        constant:self.view.safeAreaInsets.top];
-    _bottomConstraint = [self.view.bottomAnchor constraintEqualToAnchor:nav.view.bottomAnchor
-                                                              constant:self.view.safeAreaInsets.bottom];
-    [NSLayoutConstraint activateConstraints:@[
-        [nav.view.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
-        [nav.view.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
-        _topConstraint,
-        _bottomConstraint,
-    ]];
-    [nav didMoveToParentViewController:self];
-}
-
-// UISplitViewController wraps any column view controller that is not already a
-// navigation controller in one of its own. This host is a plain UIViewController,
-// so the detail column ends up with TWO navigation bars stacked:
-//
-//   UIKit's wrapper bar   (0, 32, 1376, 54)   full width, empty, invisible
-//   Apollo's real bar     (760, 96, 616, 54)  pushed below it
-//
-// The wrapper bar is never seen, but it still reports itself through the safe
-// area — 86pt of top inset — which is what pushed Apollo's bar 54pt below the
-// sidebar's and the list column's bars and made the three columns read as three
-// separate windows. Its full-width background band was painting across the whole
-// app too.
-//
-// Hiding it costs nothing: the wrapper has no items, no title and no back
-// button, because everything the user interacts with lives on the real
-// navigation controller inside this host.
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    if (self.navigationController && !self.navigationController.navigationBarHidden) {
-        [self.navigationController setNavigationBarHidden:YES animated:NO];
-    }
-    [self apollo_scheduleListColumnGeometryRefresh];
-}
-
-// Lines the detail column up with the list column exactly, top and bottom.
-//
-// WHY NOT THE SAFE AREA. Both navigation controllers report a top safe-area
-// inset of ZERO, and yet:
-//
-//   list    view {0,0,480,990}     bar at y=0    (column starts at 32 → bar at 32)
-//   detail  view {760,32,616,980}  bar at y=10   (→ bar at 42)
-//
-// The 10pt is not an inset we can cancel — it is where Apollo's navigation
-// controller puts its own bar. UIKit's split view positions the list column's
-// navigation controller itself and gets y=0; the same class, parented into this
-// host, lays its bar at y=10. So the fix is not to argue with the bar but to
-// offset the view by exactly the gap the bar leaves, measured each layout.
-//
-// The bottom is the same idea from the other side: the safe area put the detail
-// column's bottom at 1012 against the list column's 1022, which is the band of
-// empty background under the comment list. Matching the list column's maxY
-// removes it, and matching is more robust than any constant since it tracks
-// whatever inset the platform applies to that column.
-//
-// Constraint writes must not originate from viewDidLayoutSubviews: even a
-// value-checked write there can invalidate the same layout transaction during
-// rotation or continuous window resize. Safe-area and transition callbacks
-// coalesce into one post-layout sample instead.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    [self apollo_scheduleListColumnGeometryRefresh];
-
-    ApolloPaneSplitViewController *pane =
-        [self.splitViewController isKindOfClass:[ApolloPaneSplitViewController class]]
-            ? (ApolloPaneSplitViewController *)self.splitViewController : nil;
-    [pane apollo_resolvedDisplayStateMayHaveChanged];
-}
-
-- (void)viewWillTransitionToSize:(CGSize)size
-       withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-    __weak ApolloPaneColumnHostViewController *weakSelf = self;
-    [coordinator animateAlongsideTransition:nil
-        completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-            [weakSelf apollo_scheduleListColumnGeometryRefresh];
-        }];
-}
-
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    [self apollo_scheduleListColumnGeometryRefresh];
-}
-
-- (void)apollo_contentSizeCategoryDidChange:(NSNotification *)notification {
-    (void)notification;
-    [self apollo_scheduleListColumnGeometryRefresh];
-}
-
-- (UITableView *)apollo_tableInView:(UIView *)view depth:(NSUInteger)depth {
-    if (!view || depth > 10) return nil;
-    if ([view isKindOfClass:[UITableView class]]) return (UITableView *)view;
-    for (UIView *subview in view.subviews) {
-        UITableView *table = [self apollo_tableInView:subview depth:depth + 1];
-        if (table) return table;
-    }
-    return nil;
-}
-
-- (id)apollo_firstCommentsHeaderNode:(UIViewController *)controller {
-    if (!controller.isViewLoaded) return nil;
-    UITableView *table = [self apollo_tableInView:controller.view depth:0];
-    SEL backingNodeSelector = NSSelectorFromString(@"asyncdisplaykit_node");
-    id tableNode = table && [table respondsToSelector:backingNodeSelector]
-        ? ((id (*)(id, SEL))objc_msgSend)(table, backingNodeSelector) : nil;
-    SEL rowNodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
-    if (!tableNode || ![tableNode respondsToSelector:rowNodeSelector]) return nil;
-    @try {
-        return ((id (*)(id, SEL, id))objc_msgSend)(
-            tableNode, rowNodeSelector, [NSIndexPath indexPathForRow:0 inSection:0]);
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
-
-// Only screens whose primary purpose is reading prose opt into the cap. A
-// blanket secondary-column constraint would also narrow media viewers, web
-// content, profiles, feeds, and every future destination that inherits detail
-// ownership from a thread.
-- (BOOL)apollo_topControllerWantsReadableWidth:(UIViewController *)controller {
-    if (!controller) return NO;
-
-    ApolloPaneSplitViewController *pane =
-        [self.splitViewController isKindOfClass:[ApolloPaneSplitViewController class]]
-            ? (ApolloPaneSplitViewController *)self.splitViewController : nil;
-    UIViewController *primaryRoot =
-        [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary]
-            .viewControllers.firstObject;
-    if ([NSStringFromClass(primaryRoot.class) hasSuffix:@"SettingsViewController"]) {
-        // Settings destinations are predominantly forms and table screens.
-        // Limit the policy to that concrete surface so a future gallery, web
-        // view, or other intentionally full-width child of Settings does not
-        // inherit prose geometry merely because of its tab.
-        return controller.isViewLoaded &&
-            [self apollo_tableInView:controller.view depth:0] != nil;
-    }
-
-    Class commentsClass = objc_getClass("_TtC6Apollo22CommentsViewController");
-    if (!commentsClass || ![controller isKindOfClass:commentsClass]) return NO;
-
-    // A media post's header shares the Comments ASTableView with the prose
-    // rows. Insetting that table would visibly letterbox the image/video too,
-    // so media threads remain full width. Self posts are the text-heavy case
-    // where constraining the whole table is both useful and internally
-    // consistent. Apollo's Swift Optional `link` storage is not reliably
-    // readable through the ObjC runtime, so prefer it when available and then
-    // identify the already-realized first Texture row: CommentsHeaderCellNode
-    // is prose, RichMediaHeaderCellNode is media. Fail open when neither signal
-    // is available rather than guessing that an unknown header is safe to
-    // narrow.
-    Ivar linkIvar = class_getInstanceVariable(controller.class, "link");
-    id link = nil;
-    @try {
-        const char *linkType = linkIvar ? ivar_getTypeEncoding(linkIvar) : NULL;
-        if (linkType && linkType[0] == '@') {
-            link = object_getIvar(controller, linkIvar);
-        }
-    } @catch (__unused NSException *exception) {}
-    SEL isSelfPostSelector = NSSelectorFromString(@"isSelfPost");
-    BOOL isSelfPost = link && [link respondsToSelector:isSelfPostSelector] &&
-        ((BOOL (*)(id, SEL))objc_msgSend)(link, isSelfPostSelector);
-    id headerNode = nil;
-    if (!link) {
-        headerNode = [self apollo_firstCommentsHeaderNode:controller];
-        NSString *headerClass = NSStringFromClass([headerNode class]);
-        if ([headerClass containsString:@"RichMediaHeaderCellNode"]) return NO;
-        if ([headerClass containsString:@"CommentsHeaderCellNode"]) isSelfPost = YES;
-    }
-#if APOLLO_SIM_BUILD
-    ApolloLog(@"[PaneReadableTest] classified comments link=%@ header=%@ selfPost=%d",
-              NSStringFromClass([link class]), NSStringFromClass([headerNode class]), isSelfPost);
-#endif
-    return isSelfPost;
-}
-
-- (void)apollo_restoreReadableWidthInsets {
-    UIViewController *controller = _readableWidthViewController;
-    if (controller) {
-        UIEdgeInsets additional = controller.additionalSafeAreaInsets;
-        additional.left = _readableWidthBaseLeft;
-        additional.right = _readableWidthBaseRight;
-        controller.additionalSafeAreaInsets = additional;
-    }
-    _readableWidthViewController = nil;
-    _readableWidthBaseLeft = 0.0;
-    _readableWidthBaseRight = 0.0;
-    _readableWidthAppliedInset = 0.0;
-}
-
-- (void)apollo_applyReadableWidthIfNeeded {
-    UIViewController *top = self.hostedNavigationController.topViewController;
-    BOOL wantsReadableWidth = _readableWidthViewController == top ||
-        [self apollo_topControllerWantsReadableWidth:top];
-    if (_readableWidthViewController != top || !wantsReadableWidth) {
-        [self apollo_restoreReadableWidthInsets];
-    }
-    if (!wantsReadableWidth || !top.isViewLoaded) return;
-
-    if (_readableWidthViewController != top) {
-        _readableWidthViewController = top;
-        _readableWidthBaseLeft = top.additionalSafeAreaInsets.left;
-        _readableWidthBaseRight = top.additionalSafeAreaInsets.right;
-    }
-
-    CGFloat width = CGRectGetWidth(top.view.bounds);
-    // A controller installed into a visible navigation stack has not always
-    // received its first bounds assignment yet. The navigation controller is
-    // already constrained to the real detail column, so its width is the exact
-    // pre-display fallback we need. Waiting for top.view.bounds to become
-    // nonzero would allow one unconstrained frame to reach the screen.
-    if (width <= 0.0 && self.hostedNavigationController.isViewLoaded) {
-        width = CGRectGetWidth(self.hostedNavigationController.view.bounds);
-    }
-    if (width <= 0.0) return;
-
-    // 680pt is close to UIKit's familiar readable measure while still leaving
-    // room for nested comment indentation. At accessibility text sizes the cap
-    // relaxes to 760pt so larger glyphs do not turn every sentence into a tall,
-    // narrow column. The nav bar and table/background remain full width; only
-    // safe-area-following cell content is inset.
-    UIContentSizeCategory category = top.traitCollection.preferredContentSizeCategory;
-    CGFloat maximumWidth = UIContentSizeCategoryIsAccessibilityCategory(category) ? 760.0 : 680.0;
-    UIEdgeInsets current = top.additionalSafeAreaInsets;
-    CGFloat systemLeft = MAX(0.0, top.view.safeAreaInsets.left - current.left);
-    CGFloat systemRight = MAX(0.0, top.view.safeAreaInsets.right - current.right);
-    CGFloat naturalWidth = MAX(0.0, width - systemLeft - systemRight -
-                               _readableWidthBaseLeft - _readableWidthBaseRight);
-    CGFloat inset = MAX(0.0, floor((naturalWidth - maximumWidth) / 2.0));
-    if (fabs(_readableWidthAppliedInset - inset) <= 0.5 &&
-        fabs(current.left - (_readableWidthBaseLeft + inset)) <= 0.5 &&
-        fabs(current.right - (_readableWidthBaseRight + inset)) <= 0.5) return;
-
-    _readableWidthAppliedInset = inset;
-    current.left = _readableWidthBaseLeft + inset;
-    current.right = _readableWidthBaseRight + inset;
-    top.additionalSafeAreaInsets = current;
-    ApolloLog(@"[PaneReadable] %@ width=%.0f max=%.0f inset=%.0f accessibility=%d",
-              NSStringFromClass(top.class), naturalWidth, maximumWidth, inset,
-              UIContentSizeCategoryIsAccessibilityCategory(category));
-}
-
-- (void)apollo_prepareReadableWidthForTopController {
-    UIViewController *top = self.hostedNavigationController.topViewController;
-    if (!top) {
-        [self apollo_restoreReadableWidthInsets];
-        return;
-    }
-
-    // This destination is about to become visible, so loading it here does not
-    // defeat the pane's lazy offscreen-tab policy. It does let us classify its
-    // table surface and install additionalSafeAreaInsets before Core Animation
-    // commits the navigation transaction's first frame.
-    [top loadViewIfNeeded];
-#if APOLLO_SIM_BUILD
-    ApolloLog(@"[PaneReadablePrepare] %@ topWidth=%.0f navWidth=%.0f table=%d window=%d",
-              NSStringFromClass(top.class), CGRectGetWidth(top.view.bounds),
-              CGRectGetWidth(self.hostedNavigationController.viewIfLoaded.bounds),
-              [self apollo_tableInView:top.view depth:0] != nil,
-              top.view.window != nil);
-#endif
-    [self apollo_applyReadableWidthIfNeeded];
-}
-
-#if APOLLO_SIM_BUILD
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    _simLayoutPassCount++;
-}
-#endif
-
-- (void)apollo_scheduleListColumnGeometryRefresh {
-    if (!self.isViewLoaded || _geometryRefreshScheduled) return;
-
-    id<UIViewControllerTransitionCoordinator> coordinator =
-        self.splitViewController.transitionCoordinator;
-    if (coordinator) {
-        if (_geometryRefreshWaitingForTransition) return;
-        _geometryRefreshWaitingForTransition = YES;
-        __weak ApolloPaneColumnHostViewController *weakSelf = self;
-        [coordinator animateAlongsideTransition:nil
-            completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-                ApolloPaneColumnHostViewController *strongSelf = weakSelf;
-                if (!strongSelf) return;
-                strongSelf->_geometryRefreshWaitingForTransition = NO;
-                [strongSelf apollo_scheduleListColumnGeometryRefresh];
-            }];
-        return;
-    }
-
-    _geometryRefreshScheduled = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self->_geometryRefreshScheduled = NO;
-        [self apollo_matchListColumnGeometry];
-    });
-}
-
-- (void)apollo_matchListColumnGeometry {
-    UINavigationController *nav = self.hostedNavigationController;
-    if (!nav.isViewLoaded || !_topConstraint || !_bottomConstraint) return;
-#if APOLLO_SIM_BUILD
-    _simGeometryRefreshCount++;
-#endif
-
-    CGFloat height = self.view.bounds.size.height;
-    if (height <= 0.0) return;
-
-    [self apollo_applyReadableWidthIfNeeded];
-
-    // Fall back to the safe area whenever the list column cannot be measured —
-    // collapsed, mid-transition, or not yet loaded.
-    CGFloat top = self.view.safeAreaInsets.top;
-    CGFloat bottom = self.view.safeAreaInsets.bottom;
-
-    UISplitViewController *split = self.splitViewController;
-    UIViewController *list = [split isKindOfClass:[UISplitViewController class]]
-        ? [split viewControllerForColumn:UISplitViewControllerColumnPrimary]
-        : nil;
-    if (list.isViewLoaded && list.view.superview && ApolloPaneSplitShowsTiledPrimary(split)) {
-        CGRect listFrame = [list.view.superview convertRect:list.view.frame toView:self.view];
-        CGRect splitBoundsInHost = [split.view convertRect:split.view.bounds toView:self.view];
-        if (!CGRectIsEmpty(listFrame) && CGRectIntersectsRect(listFrame, splitBoundsInHost)) {
-            bottom = height - CGRectGetMaxY(listFrame);
-
-            // Align the two NAVIGATION BARS, not the two view origins.
-            //
-            // The list column's bar is not always flush with the top of its
-            // column, and how far in it sits depends on the mode: with the
-            // sidebar showing, column and bar both start at y=32; with the
-            // sidebar collapsed to the floating tab bar, the column starts at
-            // y=86 and its bar at y=140, 54pt inside. Matching view origins got
-            // the sidebar case right and then put our bar 54pt ABOVE the list's
-            // in the tab bar case. So take the list bar's real position as the
-            // target and back out our own bar's offset within its view.
-            UINavigationBar *listBar = [list isKindOfClass:[UINavigationController class]]
-                ? ((UINavigationController *)list).navigationBar : nil;
-            CGFloat targetBarY = CGRectGetMinY(listFrame);
-            if (listBar && !listBar.isHidden && listBar.superview) {
-                targetBarY = CGRectGetMinY([listBar.superview convertRect:listBar.frame toView:self.view]);
-            }
-            top = targetBarY - nav.navigationBar.frame.origin.y;
-        }
-    }
-
-    BOOL changed = !_hasResolvedGeometry ||
-        fabs(_lastResolvedTop - top) > 0.5 ||
-        fabs(_lastResolvedBottom - bottom) > 0.5;
-    if (!changed) return;
-
-    _hasResolvedGeometry = YES;
-    _lastResolvedTop = top;
-    _lastResolvedBottom = bottom;
-    BOOL wroteConstraint = NO;
-    if (fabs(_topConstraint.constant - top) > 0.5) {
-        _topConstraint.constant = top;
-        wroteConstraint = YES;
-    }
-    if (fabs(_bottomConstraint.constant - bottom) > 0.5) {
-        _bottomConstraint.constant = bottom;
-        wroteConstraint = YES;
-    }
-#if APOLLO_SIM_BUILD
-    if (wroteConstraint) _simGeometryWriteCount++;
-#else
-    (void)wroteConstraint;
-#endif
-}
-
-#if APOLLO_SIM_BUILD
-- (NSString *)apollo_simLayoutPassStateReset:(BOOL)reset {
-    NSString *state = [NSString stringWithFormat:
-        @"hostPasses=%lu hostRefreshes=%lu hostWrites=%lu top=%.1f bottom=%.1f",
-        (unsigned long)_simLayoutPassCount,
-        (unsigned long)_simGeometryRefreshCount,
-        (unsigned long)_simGeometryWriteCount,
-        _topConstraint.constant, _bottomConstraint.constant];
-    if (reset) {
-        _simLayoutPassCount = 0;
-        _simGeometryRefreshCount = 0;
-        _simGeometryWriteCount = 0;
-    }
-    return state;
-}
-#endif
-
-// The hosted navigation controller owns the chrome; forwarding these keeps the
-// host transparent to UIKit rather than having it answer for an empty view.
-- (UIViewController *)childViewControllerForStatusBarStyle { return self.hostedNavigationController; }
-- (UIViewController *)childViewControllerForStatusBarHidden { return self.hostedNavigationController; }
-- (UIViewController *)childViewControllerForHomeIndicatorAutoHidden { return self.hostedNavigationController; }
-
-@end
-
 #pragma mark - Pane split controller
 
 @interface ApolloPaneMasterSelectionIntent : NSObject
@@ -969,8 +421,7 @@ static char kApolloPaneScenePreferredWidthKey;
 @interface ApolloPaneSplitViewController () <UISplitViewControllerDelegate, UIGestureRecognizerDelegate> {
     BOOL _apollo_loggedResolvedLayout;
     ApolloPaneDividerControl *_apollo_grabber;
-    BOOL _apollo_geometryRefreshScheduled;
-    BOOL _apollo_geometryRefreshWaitingForTransition;
+    ApolloPaneGeometryScheduler *_apollo_geometryScheduler;
     BOOL _apollo_hasGrabberGeometry;
     BOOL _apollo_lastGrabberHidden;
     CGRect _apollo_lastGrabberFrame;
@@ -1052,12 +503,12 @@ static char kApolloPaneScenePreferredWidthKey;
     NSUInteger _apollo_crossColumnIntentSequence;
     NSUInteger _apollo_pendingCrossColumnSequence;
     BOOL _apollo_crossColumnDrainScheduled;
-    BOOL _apollo_transitionFallbackScheduled;
     BOOL _apollo_compactPrimaryRestoreInProgress;
     BOOL _apollo_executingCrossColumnNavigation;
     BOOL _apollo_topologyMutationInProgress;
     NSUInteger _apollo_topologyMutationGeneration;
     BOOL _apollo_compactBackInProgress;
+    UIPercentDrivenInteractiveTransition *_apollo_rootInteractiveTransition;
     __weak id<UIViewControllerTransitionCoordinator> _apollo_observedTransitionCoordinator;
     UIBarButtonItem *_apollo_showPrimaryItem;
     __weak UINavigationItem *_apollo_showPrimaryOwner;
@@ -1075,6 +526,9 @@ static char kApolloPaneScenePreferredWidthKey;
     // this value. Only the pane-owned divider, keyboard commands, or its
     // accessibility-adjustable actions publish a new intentional preference.
     CGFloat _apollo_dividerPanStartWidth;
+    CGFloat _apollo_dividerPanStartPreference;
+    CGFloat _apollo_pendingDividerWidth;
+    ApolloPaneFrameScheduler *_apollo_dividerFrameScheduler;
     CGFloat _apollo_lastAppliedPreferredPrimaryWidth;
 
     // Pane-owned master selection. The opaque intent retains only copied
@@ -1211,10 +665,23 @@ static char kApolloPaneScenePreferredWidthKey;
 
 @end
 
+static CGFloat ApolloPaneUsableWidth(UISplitViewController *pane) {
+    UIView *view = pane.viewIfLoaded;
+    CGFloat width = CGRectGetWidth(view.bounds);
+    if (@available(iOS 26.0, *)) {
+        UILayoutGuide *guide = pane.tabBarController.contentLayoutGuide;
+        if (guide.owningView.window && view.window) {
+            CGRect available = [guide.owningView convertRect:guide.layoutFrame toView:view];
+            CGRect intersection = CGRectIntersection(view.bounds, available);
+            if (!CGRectIsNull(intersection) && CGRectGetWidth(intersection) > 0.0)
+                return CGRectGetWidth(intersection);
+        }
+    }
+    return MAX(0.0, width - view.safeAreaInsets.left - view.safeAreaInsets.right);
+}
+
 static CGFloat ApolloPaneClampedPreferredPrimaryWidth(CGFloat width) {
-    if (!isfinite(width)) width = 0.0;
-    return MIN(kApolloPaneMaximumPrimaryWidth,
-               MAX(kApolloPaneMinimumPrimaryWidth, width));
+    return ApolloPanePreferredWidth(width);
 }
 
 static NSString *ApolloPaneWidthPersistenceSceneKey(UIWindowScene *scene) {
@@ -1238,12 +705,62 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     if (!sceneKey) return;
     NSMutableDictionary *widths = [[NSUserDefaults.standardUserDefaults
         dictionaryForKey:kApolloPanePrimaryWidthsDefaultsKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableSet *openSessions = [NSMutableSet set];
+    for (UISceneSession *session in UIApplication.sharedApplication.openSessions)
+        [openSessions addObject:session.persistentIdentifier];
+    for (NSString *key in widths.allKeys)
+        if (![openSessions containsObject:key]) [widths removeObjectForKey:key];
     widths[sceneKey] = @(ApolloPaneClampedPreferredPrimaryWidth(width));
     [NSUserDefaults.standardUserDefaults setObject:widths
                                             forKey:kApolloPanePrimaryWidthsDefaultsKey];
 }
 
 @implementation ApolloPaneSplitViewController
+
+- (void)apollo_sceneBecameInactive {
+    [_apollo_geometryScheduler cancel];
+    [_apollo_dividerFrameScheduler cancel];
+    [ApolloPaneTransitionObserver cancelOwner:self];
+    ApolloPaneTraceCancel(self);
+    [_apollo_rootInteractiveTransition cancelInteractiveTransition];
+    _apollo_observedTransitionCoordinator = nil;
+}
+- (void)apollo_sceneBecameActive {
+    if (_apollo_topologyMutationInProgress)
+        [self apollo_releaseOrphanedTopologyGateAfterCollapsePolicy:_apollo_topologyMutationGeneration nilObservations:0];
+    [self apollo_synchronizePreferredPrimaryWidth];
+    [self apollo_scheduleResolvedGeometryRefresh];
+    [self apollo_navigationTransitionDidSettle];
+}
+- (void)didReceiveMemoryWarning {
+    [super didReceiveMemoryWarning];
+    // The bounded observer owns temporary closures only. Live navigation and
+    // native media/drafts belong to Apollo and are deliberately not evicted.
+    if (!self.viewIfLoaded.window) [self apollo_sceneBecameInactive];
+}
+- (void)apollo_sceneDidDisconnect {
+    ApolloPaneRestoreFocusPolicy(self);
+    ApolloPaneTraceCancel(self);
+    [_apollo_geometryScheduler cancel];
+    [ApolloPaneTransitionObserver cancelOwner:self];
+    [_apollo_rootInteractiveTransition cancelInteractiveTransition];
+    _apollo_rootInteractiveTransition = nil;
+    ApolloPaneSetNativeInteractiveTransition(self.apollo_primaryNav, nil);
+    _apollo_pendingCrossColumnNavigation = nil;
+    _apollo_pendingCrossColumnSource = nil;
+    _apollo_pendingCrossColumnSemanticOwner = nil;
+    _apollo_pendingCrossColumnSourceScope = nil;
+    _apollo_pendingPrimaryPopToken = 0;
+    _apollo_pendingPrimaryPopExpectedRestoreStack = nil;
+    _apollo_compactPrimaryRestoreGeneration++;
+    _apollo_compactPrimaryRestoreInProgress = NO;
+    _apollo_topologyMutationGeneration++;
+    _apollo_topologyMutationInProgress = NO;
+    [_apollo_dividerFrameScheduler cancel];
+    _apollo_stagedMasterSelectionGeneration++;
+    _apollo_stagedMasterSelectionIntent = nil;
+    _apollo_observedTransitionCoordinator = nil;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -1255,6 +772,7 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     [self apollo_installNavigationGestureObservers];
     [self apollo_applyGroundTheme];
     [self apollo_installColumnGrabber];
+    ApolloPaneInstallFocus(self);
     [NSNotificationCenter.defaultCenter addObserver:self
                                            selector:@selector(apollo_activeThemeChanged:)
                                                name:@"com.christianselig.ApolloSpecificThemeChanged"
@@ -1517,6 +1035,11 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    ApolloPaneInstallLinkInteractions(self);
+    ApolloPaneSidebarFirstAppearance(self.tabBarController);
+    ApolloPaneRefreshFocus(self);
+    ApolloPaneInstallChromeForController(self.apollo_primaryNav.topViewController);
+    ApolloPaneInstallChromeForController(self.apollo_detailNav.topViewController);
     [self apollo_synchronizePreferredPrimaryWidth];
     [self apollo_refreshMasterSelection];
     [self apollo_scheduleResolvedGeometryRefresh];
@@ -1787,9 +1310,20 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
 
 - (void)apollo_scheduleCompactPrimaryRestoreReconciliation:(NSUInteger)generation
                                                observations:(NSUInteger)observations {
-    NSTimeInterval delay = observations < 120 ? 0.05 : 0.25;
+    if (observations >= 120) {
+        _apollo_compactPrimaryRestoreInProgress = NO;
+        _apollo_expectUIKitCompactPrimaryStackReplacement = NO;
+        _apollo_expectOneLateUIKitCompactPrimaryStackReplacement = NO;
+        ApolloLog(@"[PaneTransition] compact restoration timed out; preserving current stacks");
+        [self apollo_navigationTransitionDidSettle];
+        return;
+    }
+    __weak ApolloPaneSplitViewController *weakSelf = self;
+    NSTimeInterval delay = 0.05;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        ApolloPaneSplitViewController *self = weakSelf;
+        if (!self) return;
         if (self->_apollo_compactPrimaryRestoreGeneration != generation ||
             !self->_apollo_compactPrimaryRestoreInProgress) return;
         BOOL transitionStillActive = self->_apollo_pendingPrimaryPopToken != 0 ||
@@ -2015,14 +1549,14 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     // The empty state names what THIS tab puts in the detail column. "No Post
     // Selected" beside a settings index or a search field is just wrong, and it
     // was a large part of why those two tabs read as nonsense on iPad.
-    NSString *message = @"No Post Selected";
+    NSString *message = @"Select a post";
     NSString *symbol = @"text.bubble";
     NSString *rootClass = NSStringFromClass([rootNav.viewControllers.firstObject class]) ?: @"";
     if ([rootClass hasSuffix:@"SettingsViewController"]) {
-        message = @"No Setting Selected";
+        message = @"Choose a setting";
         symbol = @"gearshape";
     } else if ([rootClass hasSuffix:@"InboxListViewController"]) {
-        message = @"No Message Selected";
+        message = @"Choose a conversation";
         symbol = @"envelope";
     } else if ([rootClass hasSuffix:@"SearchViewController"]) {
         message = @"Search Reddit";
@@ -2030,7 +1564,7 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     } else if ([rootClass hasSuffix:@"ProfileViewController"]) {
         // The profile's detail column holds whatever row you picked — a post
         // list, trophies, friends — so it cannot promise a post.
-        message = @"Nothing Selected";
+        message = @"Explore your profile";
         symbol = @"person.crop.circle";
     }
 
@@ -2114,6 +1648,7 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     self.preferredPrimaryColumnWidthFraction = kApolloPaneDefaultPrimaryWidthFraction;
     self.minimumPrimaryColumnWidth = kApolloPaneMinimumPrimaryWidth;
     self.maximumPrimaryColumnWidth = kApolloPaneMaximumPrimaryWidth;
+    if (@available(iOS 26.0, *)) self.minimumSecondaryColumnWidth = 420.0;
 
     // Apollo installs its own screen-edge pans on every navigation controller
     // (left = interactive pop, right = "go forward", re-pushing from the per-nav
@@ -2526,7 +2061,9 @@ static NSArray<UIBarButtonItem *> *ApolloPaneBarItemsByRemovingIdentity(
     CGRect visibleBounds = self.view.bounds;
     BOOL listIntersects = CGRectIntersectsRect(listFrame, visibleBounds);
     BOOL detailIntersects = CGRectIntersectsRect(detailFrame, visibleBounds);
-    BOOL primaryOnLeadingEdge = self.primaryEdge == UISplitViewControllerPrimaryEdgeLeading;
+    BOOL primaryOnLeadingEdge = ApolloPanePrimaryIsPhysicallyLeft(
+        self.primaryEdge == UISplitViewControllerPrimaryEdgeLeading,
+        self.view.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft);
     CGFloat listBoundary = primaryOnLeadingEdge ? CGRectGetMaxX(listFrame) : CGRectGetMinX(listFrame);
     CGFloat detailBoundary = primaryOnLeadingEdge ? CGRectGetMinX(detailFrame) : CGRectGetMaxX(detailFrame);
     if (CGRectIsEmpty(listFrame) || CGRectIsEmpty(detailFrame) ||
@@ -2570,7 +2107,7 @@ apply:
 #pragma mark - Shared divider width
 
 - (void)apollo_applyScenePreferredPrimaryWidth:(CGFloat)width {
-    CGFloat clamped = ApolloPaneClampedPreferredPrimaryWidth(width);
+    CGFloat clamped = ApolloPaneResolvedWidth(width, ApolloPaneUsableWidth(self));
     if (fabs(_apollo_lastAppliedPreferredPrimaryWidth - clamped) <= 0.5 &&
         fabs(self.preferredPrimaryColumnWidth - clamped) <= 0.5) return;
     _apollo_lastAppliedPreferredPrimaryWidth = clamped;
@@ -2590,7 +2127,7 @@ apply:
     if (!sceneWidth) {
         sceneWidth = ApolloPanePersistedPrimaryWidth(scene);
         if (!sceneWidth) {
-            CGFloat availableWidth = CGRectGetWidth(self.viewIfLoaded.bounds);
+            CGFloat availableWidth = ApolloPaneUsableWidth(self);
             CGFloat defaultWidth = availableWidth > 0.0
                 ? availableWidth * kApolloPaneDefaultPrimaryWidthFraction : 420.0;
             sceneWidth = @(ApolloPaneClampedPreferredPrimaryWidth(defaultWidth));
@@ -2601,15 +2138,7 @@ apply:
                   sceneWidth.doubleValue, ApolloPanePersistedPrimaryWidth(scene) != nil);
     }
 
-    UITabBarController *tabs = self.tabBarController;
-    BOOL appliedSibling = NO;
-    for (UIViewController *child in tabs.viewControllers) {
-        if (![child isKindOfClass:[ApolloPaneSplitViewController class]]) continue;
-        [(ApolloPaneSplitViewController *)child
-            apollo_applyScenePreferredPrimaryWidth:sceneWidth.doubleValue];
-        appliedSibling = YES;
-    }
-    if (!appliedSibling) [self apollo_applyScenePreferredPrimaryWidth:sceneWidth.doubleValue];
+    [self apollo_applyScenePreferredPrimaryWidth:sceneWidth.doubleValue];
 }
 
 - (void)apollo_publishPreferredPrimaryWidth:(CGFloat)width persist:(BOOL)persist {
@@ -2621,14 +2150,7 @@ apply:
         if (persist) ApolloPanePersistPrimaryWidth(clamped, scene);
     }
 
-    UITabBarController *tabs = self.tabBarController;
-    BOOL appliedSibling = NO;
-    for (UIViewController *child in tabs.viewControllers) {
-        if (![child isKindOfClass:[ApolloPaneSplitViewController class]]) continue;
-        [(ApolloPaneSplitViewController *)child apollo_applyScenePreferredPrimaryWidth:clamped];
-        appliedSibling = YES;
-    }
-    if (!appliedSibling) [self apollo_applyScenePreferredPrimaryWidth:clamped];
+    [self apollo_applyScenePreferredPrimaryWidth:clamped];
     if (persist) {
         ApolloLog(@"[PaneWidth] tab %ld committed scene preference %.0f (resolved %.0f)",
                   (long)self.apollo_tabIndex, clamped, self.primaryColumnWidth);
@@ -2636,8 +2158,13 @@ apply:
 }
 
 - (void)apollo_dividerPanChanged:(UIPanGestureRecognizer *)gesture {
-    CGFloat direction = self.primaryEdge == UISplitViewControllerPrimaryEdgeLeading ? 1.0 : -1.0;
+    CGFloat direction = ApolloPanePrimaryIsPhysicallyLeft(
+        self.primaryEdge == UISplitViewControllerPrimaryEdgeLeading,
+        self.view.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) ? 1.0 : -1.0;
     if (gesture.state == UIGestureRecognizerStateBegan) {
+        ApolloPaneTraceBegin(self, @"divider");
+        NSNumber *saved = objc_getAssociatedObject(self.view.window.windowScene, &kApolloPaneScenePreferredWidthKey);
+        _apollo_dividerPanStartPreference = saved ? saved.doubleValue : self.preferredPrimaryColumnWidth;
         _apollo_dividerPanStartWidth = ApolloPaneClampedPreferredPrimaryWidth(
             self.primaryColumnWidth > 0.0 ? self.primaryColumnWidth
                                           : self.preferredPrimaryColumnWidth);
@@ -2648,31 +2175,47 @@ apply:
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan:
         case UIGestureRecognizerStateChanged:
-            [self apollo_publishPreferredPrimaryWidth:target persist:NO];
+            _apollo_pendingDividerWidth = target;
+            if (!_apollo_dividerFrameScheduler) {
+                _apollo_dividerFrameScheduler = [[ApolloPaneFrameScheduler alloc] initWithOwner:self
+                    update:^(ApolloPaneSplitViewController *pane) {
+                        [pane apollo_publishPreferredPrimaryWidth:pane->_apollo_pendingDividerWidth persist:NO];
+                    }];
+            }
+            [_apollo_dividerFrameScheduler request];
             break;
         case UIGestureRecognizerStateEnded:
+            [_apollo_dividerFrameScheduler cancel];
+            ApolloPaneTraceEnd(self, @"divider");
             [self apollo_publishPreferredPrimaryWidth:target persist:YES];
             break;
         case UIGestureRecognizerStateCancelled:
         case UIGestureRecognizerStateFailed:
-            [self apollo_publishPreferredPrimaryWidth:_apollo_dividerPanStartWidth persist:NO];
+            [_apollo_dividerFrameScheduler cancel];
+            ApolloPaneTraceEnd(self, @"divider");
+            [self apollo_publishPreferredPrimaryWidth:_apollo_dividerPanStartPreference persist:NO];
             break;
         default:
             break;
     }
 }
 
+- (void)apollo_resetPreferredPrimaryWidth {
+    CGFloat width = ApolloPaneUsableWidth(self) * kApolloPaneDefaultPrimaryWidthFraction;
+    [self apollo_publishPreferredPrimaryWidth:width persist:YES];
+}
+
 - (void)apollo_nudgePreferredPrimaryWidth:(CGFloat)delta {
     if (!ApolloPaneSplitShowsTiledPrimary(self)) return;
-    CGFloat current = _apollo_lastAppliedPreferredPrimaryWidth > 0.0
-        ? _apollo_lastAppliedPreferredPrimaryWidth : self.preferredPrimaryColumnWidth;
+    NSNumber *saved = objc_getAssociatedObject(self.viewIfLoaded.window.windowScene, &kApolloPaneScenePreferredWidthKey);
+    CGFloat current = saved ? saved.doubleValue : self.preferredPrimaryColumnWidth;
     [self apollo_publishPreferredPrimaryWidth:current + delta persist:YES];
     [_apollo_grabber refreshAccessibilityValue];
 }
 
 - (NSString *)apollo_primaryWidthAccessibilityValue {
-    CGFloat preferred = _apollo_lastAppliedPreferredPrimaryWidth > 0.0
-        ? _apollo_lastAppliedPreferredPrimaryWidth : self.preferredPrimaryColumnWidth;
+    NSNumber *saved = objc_getAssociatedObject(self.viewIfLoaded.window.windowScene, &kApolloPaneScenePreferredWidthKey);
+    CGFloat preferred = saved ? saved.doubleValue : self.preferredPrimaryColumnWidth;
     CGFloat resolved = self.primaryColumnWidth;
     if (preferred <= 0.0 || preferred == UISplitViewControllerAutomaticDimension) return @"Automatic";
     if (resolved > 0.0 && fabs(preferred - resolved) > 1.0) {
@@ -2685,15 +2228,40 @@ apply:
 - (NSArray<UIKeyCommand *> *)keyCommands {
     NSMutableArray<UIKeyCommand *> *commands = [[super keyCommands] mutableCopy] ?: [NSMutableArray array];
     UIKeyCommand *narrow = [UIKeyCommand keyCommandWithInput:UIKeyInputLeftArrow
-                                              modifierFlags:UIKeyModifierAlternate
+                                              modifierFlags:UIKeyModifierControl | UIKeyModifierAlternate
                                                      action:@selector(apollo_narrowPrimaryColumn:)];
     narrow.discoverabilityTitle = @"Narrow List Column";
     UIKeyCommand *widen = [UIKeyCommand keyCommandWithInput:UIKeyInputRightArrow
-                                             modifierFlags:UIKeyModifierAlternate
+                                             modifierFlags:UIKeyModifierControl | UIKeyModifierAlternate
                                                     action:@selector(apollo_widenPrimaryColumn:)];
     widen.discoverabilityTitle = @"Widen List Column";
     [commands addObjectsFromArray:@[ narrow, widen ]];
+    UIKeyCommand *list = [UIKeyCommand keyCommandWithInput:@"1" modifierFlags:UIKeyModifierCommand | UIKeyModifierAlternate action:@selector(apollo_focusList:)];
+    list.discoverabilityTitle = @"Focus list";
+    UIKeyCommand *detail = [UIKeyCommand keyCommandWithInput:@"2" modifierFlags:UIKeyModifierCommand | UIKeyModifierAlternate action:@selector(apollo_focusDetail:)];
+    detail.discoverabilityTitle = @"Focus detail";
+    [commands addObjectsFromArray:@[list, detail]];
+    UIViewController *focused = ApolloPaneFocusedController(self);
+    if (focused.navigationItem.searchController ||
+        [NSStringFromClass(focused.class) hasSuffix:@"CommentsViewController"]) {
+        UIKeyCommand *find = [UIKeyCommand keyCommandWithInput:@"f" modifierFlags:UIKeyModifierCommand action:@selector(apollo_findInFocusedPane:)];
+        find.discoverabilityTitle = @"Find in focused pane";
+        [commands addObject:find];
+    }
     return commands;
+}
+
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (void)apollo_focusList:(id)sender { ApolloPaneFocusColumn(self, NO, YES); }
+- (void)apollo_focusDetail:(id)sender { ApolloPaneFocusColumn(self, YES, YES); }
+- (void)apollo_findInFocusedPane:(id)sender {
+    UIViewController *controller = ApolloPaneFocusedController(self);
+    if (ApolloPanePresentCommentsFind(controller)) return;
+    UISearchController *search = controller.navigationItem.searchController;
+    if (search) {
+        search.active = YES;
+        [search.searchBar becomeFirstResponder];
+    }
 }
 
 - (void)apollo_narrowPrimaryColumn:(UIKeyCommand *)command {
@@ -2791,28 +2359,12 @@ apply:
 #endif
 
 - (void)apollo_scheduleResolvedGeometryRefresh {
-    if (!self.isViewLoaded || _apollo_geometryRefreshScheduled) return;
-
-    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
-    if (coordinator) {
-        if (_apollo_geometryRefreshWaitingForTransition) return;
-        _apollo_geometryRefreshWaitingForTransition = YES;
-        __weak ApolloPaneSplitViewController *weakSelf = self;
-        [coordinator animateAlongsideTransition:nil
-            completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-                ApolloPaneSplitViewController *strongSelf = weakSelf;
-                if (!strongSelf) return;
-                strongSelf->_apollo_geometryRefreshWaitingForTransition = NO;
-                [strongSelf apollo_scheduleResolvedGeometryRefresh];
-            }];
-        return;
+    if (!_apollo_geometryScheduler) {
+        _apollo_geometryScheduler = [[ApolloPaneGeometryScheduler alloc] initWithOwner:self update:^(id owner) {
+            [owner apollo_applyResolvedGeometry];
+        }];
     }
-
-    _apollo_geometryRefreshScheduled = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self->_apollo_geometryRefreshScheduled = NO;
-        [self apollo_applyResolvedGeometry];
-    });
+    [_apollo_geometryScheduler requestAfterCoordinator:self.transitionCoordinator];
 }
 
 - (void)apollo_applyResolvedGeometry {
@@ -2953,11 +2505,20 @@ apply:
         ApolloPaneColumnSecondary;
 }
 
+- (BOOL)apollo_isColumnBridgeController:(UIViewController *)controller {
+    if (!controller) return NO;
+    if (controller == self.apollo_detailHost || controller == self.apollo_detailNav) return YES;
+    if (![controller isKindOfClass:UINavigationController.class]) return NO;
+    NSArray *stack = ((UINavigationController *)controller).viewControllers;
+    return stack.count == 1 && stack.firstObject == self.apollo_detailHost;
+}
+
 - (NSArray<UIViewController *> *)apollo_logicalPrimaryControllers {
     NSArray<UIViewController *> *stack = self.apollo_primaryNav.viewControllers;
     NSUInteger detailStart = NSNotFound;
     for (NSUInteger index = 0; index < stack.count; index++) {
-        if ([self apollo_compactViewControllerBelongsToDetail:stack[index]]) {
+        if ([self apollo_isColumnBridgeController:stack[index]] ||
+            [self apollo_compactViewControllerBelongsToDetail:stack[index]]) {
             detailStart = index;
             break;
         }
@@ -3008,7 +2569,7 @@ apply:
 #if APOLLO_SIM_BUILD
     if (_apollo_simCrossColumnNavigationBlocked) return YES;
 #endif
-    return _apollo_executingCrossColumnNavigation || _apollo_topologyMutationInProgress ||
+    return _apollo_executingCrossColumnNavigation || _apollo_compactBackInProgress || _apollo_topologyMutationInProgress ||
         _apollo_compactPrimaryRestoreInProgress || _apollo_pendingPrimaryPopToken != 0 ||
         self.apollo_activeTransitionCoordinator ||
         [self apollo_navigationControllerIsTransitioning:self.apollo_primaryNav] ||
@@ -3079,19 +2640,17 @@ apply:
             });
         }];
     if (!accepted && _apollo_observedTransitionCoordinator == coordinator) {
-        _apollo_observedTransitionCoordinator = nil;
-        // Some UIKit coordinators reject late completion registration. Gesture
-        // terminal callbacks normally wake the queue, but a stock/programmatic
-        // coordinator may have no gesture at all. Resample at a bounded cadence
-        // until the coordinator detaches instead of stranding the latest intent.
-        if (!_apollo_transitionFallbackScheduled) {
-            _apollo_transitionFallbackScheduled = YES;
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                self->_apollo_transitionFallbackScheduled = NO;
-                [self apollo_navigationTransitionDidSettle];
-            });
-        }
+        // Bounded, weak fallback. A held interactive gesture has no deadline:
+        // after this watchdog expires its terminal event wakes the queue.
+        // Retain the observed coordinator identity to prevent repeated polling.
+        [ApolloPaneTransitionObserver observeOwner:self key:@"pendingNavigation" timeout:6.0
+            ready:^BOOL(ApolloPaneSplitViewController *pane) {
+                return ![pane apollo_navigationOrTopologyTransitionIsActive];
+            } completion:^(ApolloPaneSplitViewController *pane, BOOL timedOut) {
+                if (timedOut) return;
+                pane->_apollo_observedTransitionCoordinator = nil;
+                [pane apollo_navigationTransitionDidSettle];
+            }];
     }
 }
 
@@ -3158,9 +2717,11 @@ apply:
     if (!NSThread.isMainThread) {
         __weak ApolloPaneSplitViewController *weakSelf = self;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf apollo_deferCrossColumnNavigationIfNeeded:navigation
-                                            sourceViewController:sourceViewController
-                                                          reason:reason];
+            ApolloPaneSplitViewController *pane = weakSelf;
+            if (pane && ![pane apollo_deferCrossColumnNavigationIfNeeded:navigation
+                sourceViewController:sourceViewController reason:reason]) {
+                [pane apollo_performCrossColumnNavigationTransaction:navigation];
+            }
         });
         return YES;
     }
@@ -3193,6 +2754,17 @@ apply:
 }
 
 - (void)apollo_navigationTransitionDidSettle {
+    ApolloPaneRefreshFocus(self);
+    ApolloPaneRegisterNavigationItems(self.apollo_primaryNav);
+    ApolloPaneRegisterNavigationItems(self.apollo_detailNav);
+    ApolloPaneInstallChromeForController(self.apollo_primaryNav.topViewController);
+    ApolloPaneInstallChromeForController(self.apollo_detailNav.topViewController);
+    if (_apollo_compactDetailChromeActive) {
+        BOOL nested = self.apollo_detailNav.viewControllers.count > 1;
+        self.apollo_detailNav.interactivePopGestureRecognizer.enabled = nested && _apollo_detailPopGestureWasEnabled;
+        _apollo_detailApolloBackGesture.enabled = nested && _apollo_detailApolloBackGestureWasEnabled;
+    }
+
     _apollo_observedTransitionCoordinator = nil;
     [self apollo_scheduleShowPrimaryItemRefresh];
     [self apollo_scheduleCrossColumnNavigationDrain];
@@ -3327,6 +2899,36 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
     [self apollo_resolvedDisplayStateMayHaveChanged];
 }
 
+- (NSDictionary *)apollo_simStructuredSnapshot {
+    NSMutableArray *columns = [NSMutableArray array];
+    NSUInteger loaded = 0, visible = 0;
+    for (UINavigationController *nav in @[self.apollo_primaryNav, self.apollo_detailNav]) {
+        UIView *view = nav.viewIfLoaded;
+        UIView *bar = nav.isViewLoaded ? nav.navigationBar : nil;
+        UIView *search = nav.topViewController.navigationItem.searchController.searchBar;
+        CGRect frame = view.window ? [view convertRect:view.bounds toView:self.viewIfLoaded] : CGRectZero;
+        CGRect context = bar.window ? [bar convertRect:bar.bounds toView:self.viewIfLoaded] : CGRectZero;
+        CGRect searchFrame = search.window ? [search convertRect:search.bounds toView:self.viewIfLoaded] : CGRectZero;
+        for (UIViewController *controller in nav.viewControllers) {
+            loaded += controller.isViewLoaded;
+            visible += controller.viewIfLoaded.window != nil;
+        }
+        [columns addObject:@{@"depth": @(nav.viewControllers.count), @"frame": NSStringFromCGRect(frame),
+            @"navigationContainer": NSStringFromCGRect(context), @"search": NSStringFromCGRect(searchFrame),
+            @"barHidden": @(nav.navigationBarHidden)}];
+    }
+    return @{@"tab": @(self.apollo_tabIndex), @"collapsed": @(self.isCollapsed),
+        @"bounds": NSStringFromCGRect(self.viewIfLoaded.bounds), @"displayMode": @(self.displayMode),
+        @"tabContentGuide": NSStringFromCGRect(self.tabBarController.contentLayoutGuide.layoutFrame),
+        @"columns": columns, @"logicalPrimaryDepth": @(self.apollo_logicalPrimaryControllers.count),
+        @"emptyDetail": @(self.apollo_detailIsEmpty), @"loaded": @(loaded), @"visible": @(visible),
+        @"pendingNavigation": @(_apollo_pendingCrossColumnNavigation != nil),
+        @"watchdogs": @([ApolloPaneTransitionObserver activeCountForOwner:self] + [ApolloPaneTransitionObserver activeCountForOwner:self.apollo_primaryNav] + [ApolloPaneTransitionObserver activeCountForOwner:self.apollo_detailNav]),
+        @"layoutPasses": @(_apollo_simLayoutPassCount), @"geometryRefreshes": @(_apollo_simGeometryRefreshCount),
+        @"geometryWrites": @(_apollo_simGeometryWriteCount),
+        @"preferredWidth": [self apollo_primaryWidthAccessibilityValue]};
+}
+
 - (NSString *)apollo_simResolvedLayoutState {
     UIViewController *primary = [self viewControllerForColumn:UISplitViewControllerColumnPrimary];
     CGRect primaryFrame = CGRectZero;
@@ -3393,7 +2995,7 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
         (unsigned long)_apollo_simGeometryRefreshCount,
         (unsigned long)_apollo_simGeometryWriteCount,
         _apollo_grabber.hidden, NSStringFromCGRect(_apollo_grabber.frame), hostState,
-        !_apollo_geometryRefreshScheduled && !_apollo_geometryRefreshWaitingForTransition];
+        !_apollo_geometryScheduler.isPending];
     if (reset) {
         _apollo_simLayoutPassCount = 0;
         _apollo_simGeometryRefreshCount = 0;
@@ -3798,6 +3400,10 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
 }
 
 - (void)apollo_stopTrackingCompactPrimaryPopGesture {
+    // While our percent-driven return owns the native transition, its gesture
+    // must keep receiving samples and Apollo's competing recognizers must stay
+    // disabled. Restore their original states only after commit/cancellation.
+    if (_apollo_rootInteractiveTransition) return;
     UIGestureRecognizer *primaryPop = self.apollo_primaryNav.interactivePopGestureRecognizer;
     if (_apollo_trackingCompactPrimaryPopGesture) {
         [primaryPop removeTarget:self action:@selector(apollo_compactPrimaryPopGestureChanged:)];
@@ -3813,7 +3419,7 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
         _apollo_detailApolloBackGesture.enabled = _apollo_detailApolloBackGestureWasEnabled;
         _apollo_detailApolloBackGesture = nil;
     }
-    if (_apollo_compactBackEdgeGesture) {
+    if (_apollo_compactBackEdgeGesture && !_apollo_rootInteractiveTransition) {
         [_apollo_compactBackEdgeGesture.view removeGestureRecognizer:_apollo_compactBackEdgeGesture];
         _apollo_compactBackEdgeGesture.delegate = nil;
         _apollo_compactBackEdgeGesture = nil;
@@ -3898,12 +3504,13 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
     _apollo_primaryApolloBackGestureWasEnabled = _apollo_primaryApolloBackGesture.enabled;
     _apollo_detailApolloBackGestureWasEnabled = _apollo_detailApolloBackGesture.enabled;
     _apollo_primaryApolloBackGesture.enabled = NO;
-    _apollo_detailApolloBackGesture.enabled = NO;
+    _apollo_detailApolloBackGesture.enabled = detail.viewControllers.count > 1 &&
+        _apollo_detailApolloBackGestureWasEnabled;
+    detailPopGesture.enabled = detail.viewControllers.count > 1 && _apollo_detailPopGestureWasEnabled;
 
     UIPanGestureRecognizer *edge = [[UIPanGestureRecognizer alloc]
         initWithTarget:self action:@selector(apollo_compactBackEdgeGestureChanged:)];
-    UIUserInterfaceLayoutDirection direction = [UIView userInterfaceLayoutDirectionForSemanticContentAttribute:
-        detail.view.semanticContentAttribute];
+    UIUserInterfaceLayoutDirection direction = detail.view.effectiveUserInterfaceLayoutDirection;
     _apollo_compactBackUsesRightEdge = direction == UIUserInterfaceLayoutDirectionRightToLeft;
     edge.minimumNumberOfTouches = 1;
     edge.maximumNumberOfTouches = 1;
@@ -3960,7 +3567,12 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
     [detail setNavigationBarHidden:YES animated:NO];
     [primary setNavigationBarHidden:restorePrimaryHidden animated:NO];
 
+    __weak ApolloPaneSplitViewController *weakOwner = self;
     void (^complete)(void) = ^{
+        ApolloPaneSplitViewController *self = weakOwner;
+        if (!self) return;
+        self->_apollo_rootInteractiveTransition = nil;
+        ApolloPaneSetNativeInteractiveTransition(primary, nil);
         if (detail.viewControllers.firstObject != detailRoot) {
             self->_apollo_compactBackInProgress = NO;
             UIViewController *currentRoot = detail.viewControllers.firstObject;
@@ -4019,6 +3631,11 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
                   (long)self.apollo_tabIndex);
     };
     void (^restoreCancelled)(void) = ^{
+        ApolloPaneSplitViewController *self = weakOwner;
+        if (!self) return;
+        [self->_apollo_rootInteractiveTransition cancelInteractiveTransition];
+        self->_apollo_rootInteractiveTransition = nil;
+        ApolloPaneSetNativeInteractiveTransition(primary, nil);
         self->_apollo_compactBackInProgress = NO;
         if (!self.isCollapsed || self.apollo_detailIsEmpty) {
             [primary setNavigationBarHidden:restorePrimaryHidden animated:NO];
@@ -4072,25 +3689,15 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
         // and an accepted coordinator is not contractually required to call a
         // late completion. Poll to the terminal stack as an idempotent watchdog
         // rather than leaving compact chrome permanently half-torn-down.
-        __block dispatch_block_t pollBackSettlement = nil;
-        pollBackSettlement = ^{
-            if (backResolutionFinished) {
-                pollBackSettlement = nil;
-                return;
-            }
-            if ([self apollo_navigationControllerIsTransitioning:primary]) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                    (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(),
-                    pollBackSettlement);
-                return;
-            }
-            BOOL committed = primary.topViewController == anchor;
-            dispatch_block_t retainedPoll = pollBackSettlement;
-            pollBackSettlement = nil;
-            resolveBack(!committed);
-            (void)retainedPoll;
-        };
-        dispatch_async(dispatch_get_main_queue(), pollBackSettlement);
+        [ApolloPaneTransitionObserver observeOwner:self key:@"compactBack" timeout:6.0
+            ready:^BOOL(ApolloPaneSplitViewController *pane) {
+                return ![pane apollo_navigationControllerIsTransitioning:pane.apollo_primaryNav];
+            } completion:^(ApolloPaneSplitViewController *pane, BOOL timedOut) {
+                // A person may hold an interactive Back for longer than the
+                // watchdog. Never cancel or restore chrome under their finger.
+                if (timedOut && pane->_apollo_rootInteractiveTransition) return;
+                resolveBack(timedOut || primary.topViewController != anchor);
+            }];
     } else {
         complete();
     }
@@ -4102,6 +3709,10 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
 
 - (BOOL)accessibilityPerformEscape {
     if (!_apollo_compactDetailChromeActive) return [super accessibilityPerformEscape];
+    if (self.apollo_detailNav.viewControllers.count > 1) {
+        [self.apollo_detailNav popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
+        return YES;
+    }
     ApolloLog(@"[PaneSplit] tab %ld compact accessibility escape accepted",
               (long)self.apollo_tabIndex);
     [self apollo_finishCompactBackToPrimary];
@@ -4117,7 +3728,8 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
     }
     if (gestureRecognizer != _apollo_compactBackEdgeGesture) return YES;
     if (!_apollo_compactDetailChromeActive || !self.isCollapsed ||
-        self.apollo_detailNav.viewControllers.count != 1) return NO;
+        self.apollo_detailNav.viewControllers.count != 1 ||
+        [self apollo_navigationOrTopologyTransitionIsActive]) return NO;
     UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
     CGPoint location = [pan locationInView:pan.view];
     CGPoint translation = [pan translationInView:pan.view];
@@ -4135,26 +3747,37 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    // UIKit may keep its private separator recognizer beneath our 44pt control.
-    // Let both observe the same drag; our absolute preferred-width write is the
-    // authoritative result and this avoids disabling UIKit's own transition
-    // bookkeeping on releases where the separator still participates.
-    return gestureRecognizer.view == _apollo_grabber || other.view == _apollo_grabber;
+    // The divider/root Back owns its touch exclusively. UIKit's column
+    // bookkeeping remains intact without sharing scrolling or voting gestures.
+    return NO;
 }
 
 - (void)apollo_compactBackEdgeGestureChanged:(UIPanGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateEnded) return;
     CGFloat direction = _apollo_compactBackUsesRightEdge ? -1.0 : 1.0;
-    CGFloat distance = [gesture translationInView:gesture.view].x * direction;
-    CGFloat velocity = [gesture velocityInView:gesture.view].x * direction;
-    CGFloat threshold = MAX(72.0, gesture.view.bounds.size.width * 0.18);
-    if (distance >= threshold || velocity >= 500.0) {
-        ApolloLog(@"[PaneSplit] tab %ld compact edge Back accepted distance=%.0f velocity=%.0f",
-                  (long)self.apollo_tabIndex, distance, velocity);
-        [self apollo_finishCompactBackToPrimary];
-    } else {
-        ApolloLog(@"[PaneSplit] tab %ld compact edge Back cancelled distance=%.0f velocity=%.0f",
-                  (long)self.apollo_tabIndex, distance, velocity);
+    CGFloat width = MAX(1.0, CGRectGetWidth(gesture.view.bounds));
+    CGFloat progress = MIN(1.0, MAX(0.0, [gesture translationInView:gesture.view].x * direction / width));
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        if (!_apollo_compactPrimaryAnchor ||
+            ![self.apollo_primaryNav.viewControllers containsObject:_apollo_compactPrimaryAnchor]) return;
+        UIPercentDrivenInteractiveTransition *transition = [UIPercentDrivenInteractiveTransition new];
+        transition.completionCurve = UIViewAnimationCurveEaseOut;
+        if (!ApolloPaneSetNativeInteractiveTransition(self.apollo_primaryNav, transition)) return;
+        _apollo_rootInteractiveTransition = transition;
+        // Apollo's native animator and delegate consume its typed interaction
+        // slot. The existing transactional root Back owns commit/cancel; there
+        // is no second simulated animation or speculative stack mutation.
+        [self apollo_performCrossColumnNavigationTransaction:^{ [self apollo_finishCompactBackToPrimary]; }];
+    } else if (gesture.state == UIGestureRecognizerStateChanged) {
+        [_apollo_rootInteractiveTransition updateInteractiveTransition:progress];
+    } else if (gesture.state == UIGestureRecognizerStateEnded ||
+               gesture.state == UIGestureRecognizerStateCancelled ||
+               gesture.state == UIGestureRecognizerStateFailed) {
+        CGFloat velocity = [gesture velocityInView:gesture.view].x * direction;
+        BOOL commit = gesture.state == UIGestureRecognizerStateEnded &&
+            (progress >= 0.35 || (velocity >= 500.0 && progress >= 0.05));
+        if (commit) [_apollo_rootInteractiveTransition finishInteractiveTransition];
+        else [_apollo_rootInteractiveTransition cancelInteractiveTransition];
+        ApolloPaneSetNativeInteractiveTransition(self.apollo_primaryNav, nil);
     }
 }
 
@@ -4218,31 +3841,19 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
 
 - (void)apollo_releaseOrphanedTopologyGateAfterCollapsePolicy:(NSUInteger)generation
                                              nilObservations:(NSUInteger)nilObservations {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (!self->_apollo_topologyMutationInProgress ||
-            self->_apollo_topologyMutationGeneration != generation) return;
-        // A real collapse/expansion delegate callback clears this in @finally.
-        // If a split coordinator is still alive, wait for it rather than
-        // mistaking an ordinary child-navigation coordinator for topology.
-        if (self.transitionCoordinator) {
-            [self apollo_releaseOrphanedTopologyGateAfterCollapsePolicy:generation
-                                                        nilObservations:0];
-            return;
-        }
-        // UIKit can ask for policy just before attaching its coordinator. Two
-        // consecutive coordinator-free samples avoid releasing the gate in
-        // that hand-off gap, while still recovering an abandoned policy call.
-        if (nilObservations == 0) {
-            [self apollo_releaseOrphanedTopologyGateAfterCollapsePolicy:generation
-                                                        nilObservations:1];
-            return;
-        }
-        self->_apollo_topologyMutationInProgress = NO;
-        ApolloLog(@"[PaneTransition] tab %ld released abandoned topology gate collapsed=%d",
-                  (long)self.apollo_tabIndex, self.isCollapsed);
-        [self apollo_navigationTransitionDidSettle];
-    });
+    (void)nilObservations;
+    __block NSUInteger stableSamples = 0;
+    [ApolloPaneTransitionObserver observeOwner:self key:@"topologyPolicy" timeout:6.0
+        ready:^BOOL(ApolloPaneSplitViewController *pane) {
+            if (!pane->_apollo_topologyMutationInProgress || pane->_apollo_topologyMutationGeneration != generation) return YES;
+            if (pane.transitionCoordinator) { stableSamples = 0; return NO; }
+            return ++stableSamples >= 2;
+        } completion:^(ApolloPaneSplitViewController *pane, BOOL timedOut) {
+            if (pane->_apollo_topologyMutationGeneration != generation) return;
+            pane->_apollo_topologyMutationInProgress = NO;
+            ApolloLog(@"[PaneTransition] topology policy released timeout=%d", timedOut);
+            [pane apollo_navigationTransitionDidSettle];
+        }];
 }
 
 // Collapsing to compact (Slide Over, a narrow Stage Manager window, portrait on
