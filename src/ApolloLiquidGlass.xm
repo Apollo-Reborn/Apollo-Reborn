@@ -894,6 +894,12 @@ static void ApolloCollectNavigationTitleContent(UIView *root,
         if (subview == excluded || subview.hidden ||
             (!childIncludesTransparent && subview.alpha < 0.01)) continue;
 
+        // A segmented title is one content surface. Measuring its transient
+        // selection images/labels makes the capsule jump while it animates.
+        if ([subview isKindOfClass:UISegmentedControl.class]) {
+            [content addObject:subview];
+            continue;
+        }
         if ([subview isKindOfClass:UILabel.class] ||
             [subview isKindOfClass:UIImageView.class] ||
             [subview isKindOfClass:UITextField.class]) {
@@ -1139,6 +1145,12 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 }
 
 - (CGRect)glassFrameForHostView:(UIView *)hostView candidateViews:(NSArray<UIView *> *)candidateViews {
+    // Segmented titles already include their own padding. Use their stable
+    // bounds while sharing every title-glass visibility and lifecycle rule.
+    if (candidateViews.count == 1 && [candidateViews.firstObject isKindOfClass:UISegmentedControl.class]) {
+        UIView *control = candidateViews.firstObject;
+        return [control convertRect:control.bounds toView:hostView];
+    }
     const CGFloat kVerticalPadding = 8.0;
     CGRect frame;
 

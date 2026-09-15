@@ -339,6 +339,10 @@ static char kApolloHiddenRememberedMediaIndex;
 - (void)apollo_applyOverviewTheme {
     self.backgroundColor = ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor;
     self.contentView.backgroundColor = self.backgroundColor;
+    // The stable transition thumbnail lives behind this scroll view. Cover it
+    // with the row surface so aspect-fit letterboxing and page swipes cannot
+    // expose the opening image underneath a later album page.
+    self.mediaScrollView.backgroundColor = self.backgroundColor;
     UIColor *contextColor = ApolloThemeSubredditListHeaderBackgroundColor() ?: UIColor.secondarySystemBackgroundColor;
     self.overviewSeparatorView.backgroundColor = contextColor;
     self.contextLabel.backgroundColor = contextColor;
@@ -544,25 +548,18 @@ static char kApolloHiddenRememberedMediaIndex;
     self.representedName = item.fullName;
     [self apollo_applyOverviewTheme];
     NSString *author = item.author.length && ![item.author isEqualToString:@"[deleted]"] ? item.author : username;
-    NSString *kindLabel = item.kind == ApolloHiddenContentKindComment ? @"Comment" : @"Post";
     NSInteger score = item.score.integerValue;
     NSString *voteText = score < 0
         ? [NSString stringWithFormat:@"↓ %@", ApolloHiddenScoreMagnitude(score)]
         : [NSString stringWithFormat:@"↑ %@", ApolloHiddenScoreMagnitude(score)];
     self.authorLabel.text = author;
     self.authorLabel.accessibilityLabel = author;
-    NSString *voteKindText = item.score
-        ? [NSString stringWithFormat:@"%@ · %@", voteText, kindLabel]
-        : kindLabel;
+    NSString *voteKindText = item.score ? voteText : @"";
+    self.voteKindLabel.hidden = item.score == nil;
     NSMutableAttributedString *attributedVoteKind = [[NSMutableAttributedString alloc] initWithString:voteKindText attributes:@{
         NSFontAttributeName: self.voteKindLabel.font,
         NSForegroundColorAttributeName: self.dateLabel.textColor ?: UIColor.secondaryLabelColor,
     }];
-    NSRange kindRange = [voteKindText rangeOfString:kindLabel options:NSBackwardsSearch];
-    if (kindRange.location != NSNotFound) {
-        UIFont *kindFont = ApolloHiddenOverviewFont(NO);
-        [attributedVoteKind addAttribute:NSFontAttributeName value:kindFont range:kindRange];
-    }
     self.voteKindLabel.attributedText = attributedVoteKind;
     NSString *reasonAttribution = item.removalDetail.length
         ? item.removalDetail
@@ -848,6 +845,10 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic) BOOL loading;
 @property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *items;
+@property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *allItems;
+@property (nonatomic, strong) UISegmentedControl *contentTabs;
+@property (nonatomic) NSInteger selectedTab;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *tabOffsets;
 
 @property (nonatomic, strong) UIView *statusContainerView;
 @property (nonatomic, strong) DACircularProgressView *progressRing;
@@ -868,7 +869,20 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Hidden & Deleted";
+    self.title = nil;
+    self.tabOffsets = [NSMutableDictionary dictionary];
+    self.contentTabs = [[UISegmentedControl alloc] initWithItems:@[@"Posts", @"Comments"]];
+    self.contentTabs.selectedSegmentIndex = 0;
+    // UIKit owns the complete interactive-glass animation timeline.
+    self.contentTabs.accessibilityLabel = @"Hidden and deleted content";
+    [self.contentTabs setWidth:100 forSegmentAtIndex:0];
+    [self.contentTabs setWidth:100 forSegmentAtIndex:1];
+    [self.contentTabs.widthAnchor constraintEqualToConstant:200].active = YES;
+    [self.contentTabs addTarget:self action:@selector(apollo_contentTabChanged) forControlEvents:UIControlEventValueChanged];
+    // Use Apollo's shared navigation-title presentation and glass lifecycle.
+    // The shared owner handles Hard/Soft/Blur/Automatic, scrolling and pushes.
+    self.navigationItem.titleView = self.contentTabs;
+    [self apollo_applyTabTheme];
     [self.tableView registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 64.0;
@@ -919,12 +933,59 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [self apollo_fetchForceRefresh:NO];
 }
 
+- (void)apollo_applyTabTheme {
+    self.contentTabs.tintColor = ApolloThemeAccentColor() ?: self.viewIfLoaded.tintColor;
+    // A restrained resting highlight, while retaining UIKit's glass interaction.
+    self.contentTabs.selectedSegmentTintColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? [UIColor.whiteColor colorWithAlphaComponent:0.12]
+            : [UIColor.blackColor colorWithAlphaComponent:0.06];
+    }];
+    // Let UIKit own label contrast during the glass selector's transition.
+    // Forcing foreground colors fights its temporary vibrancy/legibility state.
+    NSDictionary *attributes = @{NSFontAttributeName:[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]};
+    for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateSelected),
+                             @(UIControlStateHighlighted), @(UIControlStateSelected | UIControlStateHighlighted)]) {
+        [self.contentTabs setTitleTextAttributes:attributes forState:state.unsignedIntegerValue];
+    }
+}
+
+- (void)apollo_applyContentFilter {
+    ApolloHiddenContentKind kind = self.selectedTab == 0 ? ApolloHiddenContentKindPost : ApolloHiddenContentKindComment;
+    NSMutableArray *visible = [NSMutableArray array];
+    for (ApolloHiddenContentItem *item in self.allItems) {
+        if (item.kind == kind) [visible addObject:item];
+    }
+    self.items = visible;
+    [self.emptyStateLabel removeFromSuperview];
+    [self.tableView reloadData];
+    if (!self.loading && self.items.count == 0) [self apollo_showEmptyState];
+}
+
+- (void)apollo_contentTabChanged {
+    self.tabOffsets[@(self.selectedTab)] = @(self.tableView.contentOffset.y);
+    self.selectedTab = self.contentTabs.selectedSegmentIndex;
+    [self apollo_applyContentFilter];
+    [self.tableView layoutIfNeeded];
+    CGFloat top = -self.tableView.adjustedContentInset.top;
+    CGFloat bottom = MAX(top, self.tableView.contentSize.height - self.tableView.bounds.size.height + self.tableView.adjustedContentInset.bottom);
+    NSNumber *saved = self.tabOffsets[@(self.selectedTab)];
+    CGFloat offset = saved ? saved.doubleValue : top;
+    [self.tableView setContentOffset:CGPointMake(0, MIN(bottom, MAX(top, offset))) animated:NO];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self apollo_applyTabTheme];
+}
+
 - (void)apollo_refreshTriggered {
     [self apollo_fetchForceRefresh:YES];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self apollo_applyTabTheme];
     // Reconfigure cached rows when returning after changing avatar preferences.
     [self.tableView reloadData];
 }
@@ -982,9 +1043,8 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         [self apollo_showError:error];
         return;
     }
-    self.items = items ?: @[];
-    [self.tableView reloadData];
-    if (self.items.count == 0) [self apollo_showEmptyState];
+    self.allItems = items ?: @[];
+    [self apollo_applyContentFilter];
 }
 
 // Preserve loaded results on refresh failure; an empty list offers retry.
@@ -1017,7 +1077,8 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 }
 
 - (void)apollo_showEmptyState {
-    [self apollo_showStatusText:@"No hidden or deleted posts or comments found in the archive for this account."];
+    NSString *kind = self.selectedTab == 0 ? @"posts" : @"comments";
+    [self apollo_showStatusText:[NSString stringWithFormat:@"No hidden or deleted %@ found in the archive for this account.", kind]];
 }
 
 #pragma mark - UITableViewDataSource
