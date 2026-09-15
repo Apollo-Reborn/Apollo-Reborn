@@ -148,20 +148,8 @@ every control into 54 points.
 
 ## 2. Architecture to build toward
 
-```mermaid
-flowchart TD
-    scene[Scene + native entry adapters] --> registry[Scene pane coordinator]
-    registry --> tab[Apollo tab controller: same identity and tab indices]
-    tab --> pane[Per-tab pane coordinator]
-    pane --> state[Navigation and topology state]
-    pane --> geometry[Resolved layout policy]
-    pane --> chrome[Chrome and search presentation]
-    pane --> selection[Semantic selection]
-    state --> primary[Real Apollo primary navigation]
-    state --> detail[Real Apollo detail navigation]
-    geometry --> host[Column host constraints]
-    chrome --> items[Native items and scoped feature adapters]
-```
+![Rendered system diagram](../docs/architecture/generated/mermaid-1cec3a188489.png)
+
 
 Suggested ownership boundaries; names may change if existing abstractions fit:
 
