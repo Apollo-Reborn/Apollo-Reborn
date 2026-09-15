@@ -1794,6 +1794,27 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
         NSValue *storedFrame = objc_getAssociatedObject(
             self, kApolloAccountSwitcherPanelRestingFrameKey);
         CGRect restingFrame = storedFrame ? storedFrame.CGRectValue : presentedView.frame;
+        // The shared navigation bar remains available on Accounts, Edit,
+        // and the pushed API editor. A deliberate downward pull or flick
+        // dismisses that entire presentation; cancelled/short drags rebound.
+        CGFloat distance = [pan translationInView:container].y;
+        CGFloat velocity = [pan velocityInView:container].y;
+        CGFloat dismissDistance = MIN(120.0, CGRectGetHeight(restingFrame) * 0.25);
+        BOOL shouldDismiss = pan.state == UIGestureRecognizerStateEnded &&
+            (distance >= dismissDistance || (distance > 20.0 && velocity > 700.0));
+        if (shouldDismiss) {
+            UIViewController *host = ((UIPresentationController *)self).presentedViewController;
+            [host.view endEditing:YES];
+            // Keep the dragging flag until dismissal completes so a layout
+            // pass cannot snap the panel back before its exit animation.
+            [host dismissViewControllerAnimated:YES completion:^{
+                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }];
+            return;
+        }
         [UIView animateWithDuration:0.28
                               delay:0.0
              usingSpringWithDamping:0.86
