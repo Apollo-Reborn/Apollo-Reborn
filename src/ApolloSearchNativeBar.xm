@@ -977,6 +977,15 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // does, when the transition into the feed was cancelled).
 @property (nonatomic) BOOL leftAtTop;
 @property (nonatomic) BOOL reappearanceHold;
+// The counterpart note: the list left resting at the collapsed rest with the
+// bar scrolled away (the user's doing). Consumed by the next viewWillAppear
+// into keepCollapsedOnAppear, which holds for that appearance: no hold, and
+// no appearance-driven reveal, so the screen comes back the way it was left.
+// Without it a round trip (swipe back to the subreddit list, forward again)
+// brought the bar back whenever the list had stopped exactly where the bar
+// hid, while a list scrolled a little further came back untouched.
+@property (nonatomic) BOOL leftCollapsedAtRest;
+@property (nonatomic) BOOL keepCollapsedOnAppear;
 // The palette's fully expanded height, learned from settled observations (60pt
 // on an iPhone). A refresh that ends on a full reload can leave the palette
 // parked PART way collapsed with the list resting flush under it — the same
@@ -1231,6 +1240,7 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
     if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     UIScrollView *table = NSBTableForVC(vc);
     if (!NSBHasSettledFeedGeometry(vc, table)) return;
+    if (NSBRestingStateForVC(vc).keepCollapsedOnAppear) return;   // left with the bar away: keep it
     // completeTransition: restores the item stack before UIKit's next layout
     // collapses the returned search. Flush that layout and repair in the same
     // transaction, while the presentation still has the pre-cancel geometry.
@@ -1305,10 +1315,22 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // once the view is off-screen its safe area — and so the adjusted inset
     // the rest is measured against — is no longer trustworthy. Feeds and the
     // comments screen alike.
+    // "At the top" is the REVEALED top: resting at the collapsed rest with the
+    // bar scrolled away is the user's arrangement and is noted separately so
+    // the re-appearance keeps it (leftCollapsedAtRest).
     ApolloNativeSearchRestingState *leavingState = NSBRestingStateForVC(vc);
     UIScrollView *leavingTable = NSBTableForVC(vc);
-    leavingState.leftAtTop = leavingTable &&
+    BOOL leavingAtRest = leavingTable &&
         leavingTable.contentOffset.y <= -leavingTable.adjustedContentInset.top + 2.0;
+    BOOL leavingRevealed = CGRectGetHeight([vc navigationItem].searchController.searchBar.bounds) > 1.0;
+    leavingState.leftAtTop = leavingAtRest && leavingRevealed;
+    leavingState.leftCollapsedAtRest = leavingAtRest && !leavingRevealed;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] leaving: y=%.1f adjTop=%.1f bar=%.1f -> leftAtTop=%d leftCollapsedAtRest=%d",
+                  leavingTable.contentOffset.y, leavingTable.adjustedContentInset.top,
+                  CGRectGetHeight([vc navigationItem].searchController.searchBar.bounds),
+                  (int)leavingState.leftAtTop, (int)leavingState.leftCollapsedAtRest);
+    }
     if (leavingState.reappearanceHold) {
         // Still held here means viewDidAppear never ran (a cancelled
         // interactive pop or forward swipe into this screen): put the scroll-away
@@ -1364,6 +1386,13 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     ApolloNativeSearchRestingState *reappearState = NSBRestingStateForVC((UIViewController *)self);
     BOOL leftAtTop = reappearState.leftAtTop;
     reappearState.leftAtTop = NO;
+    // One-shot as well: a list that left with the bar scrolled away comes back
+    // that way (viewDidAppear skips the appearance reveal for this appearance).
+    reappearState.keepCollapsedOnAppear = reappearState.leftCollapsedAtRest;
+    reappearState.leftCollapsedAtRest = NO;
+    if (reappearState.keepCollapsedOnAppear && NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] re-appearance: left at the collapsed rest, keeping the bar away");
+    }
     UISearchController *reappearSC = navItem.searchController;
     if (reappearSC && !reappearSC.active && navItem.hidesSearchBarWhenScrolling &&
         leftAtTop && !sNSBDismissWindow) {
@@ -1420,7 +1449,7 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // Cancellation sends didAppear from inside completeTransition:, before
     // UIKit finishes restoring the palette. Read its geometry next turn.
     UIScrollView *appearedTable = NSBTableForVC((UIViewController *)self);
-    NSBArmReveal(appearedTable, "appeared");
+    if (!appearedState.keepCollapsedOnAppear) NSBArmReveal(appearedTable, "appeared");
     NSBScheduleRevealCheck(appearedTable);
     // Safety net for the return-to-live-query path: if Apollo's search-active
     // layout hid the nav bar before the guard armed, put it back.
