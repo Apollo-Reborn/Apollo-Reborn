@@ -4,12 +4,15 @@
 
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloCommon.h"
+#import "ApolloMediaSecurity.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <Photos/Photos.h>
 
 static NSTimeInterval const kApolloGalleryExportManifestTimeout = 10.0;
 static NSUInteger const kApolloGalleryExportManifestMaximumBytes = 1024 * 1024;
+static unsigned long long const kApolloGalleryExportVideoMaximumBytes = 1024ULL * 1024ULL * 1024ULL;
+static unsigned long long const kApolloGalleryExportFreeSpaceReserveBytes = 512ULL * 1024ULL * 1024ULL;
 
 #pragma mark - DASH manifest
 
@@ -88,9 +91,8 @@ static NSString *ApolloGalleryExportManifestKind(NSDictionary<NSString *, NSStri
     if ([name isEqualToString:@"Representation"] && [scope[@"hasBase"] boolValue] &&
         ![scope[@"segmented"] boolValue]) {
         NSURL *URL = scope[@"base"];
-        NSString *scheme = URL.scheme.lowercaseString;
         NSString *extension = URL.pathExtension.lowercaseString;
-        BOOL usable = ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) &&
+        BOOL usable = ApolloMediaURLHasAllowedHTTPSHost(URL) &&
             ![extension isEqualToString:@"mpd"] && ![extension isEqualToString:@"m3u8"] &&
             URL.lastPathComponent.length > 0 && ![URL.path hasSuffix:@"/"];
         long long bandwidth = [scope[@"bandwidth"] longLongValue];
@@ -162,39 +164,21 @@ static void ApolloGalleryExportDownload(NSURL *url, NSString *extension,
         completion(nil);
         return;
     }
-    static NSURLSession *downloadSession;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        configuration.URLCache = nil;
-        configuration.timeoutIntervalForRequest = 60.0;
-        configuration.timeoutIntervalForResource = 300.0;
-        downloadSession = [NSURLSession sessionWithConfiguration:configuration];
-    });
-    NSURLSessionDownloadTask *task =
-        [downloadSession downloadTaskWithURL:url
-                                        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
-            ? ((NSHTTPURLResponse *)response).statusCode : 0;
+    NSURLRequest *request = [NSURLRequest requestWithURL:url
+                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                        timeoutInterval:60.0];
+    ApolloStartBoundedMediaDownload(request, kApolloGalleryExportVideoMaximumBytes,
+        kApolloGalleryExportFreeSpaceReserveBytes, extension, nil,
+        ^(NSURL *location, NSHTTPURLResponse *response, NSError *error) {
+        NSInteger status = response.statusCode;
         if (!location || error || (status > 0 && (status < 200 || status >= 300))) {
             ApolloLog(@"[GalleryExport] download failed (%ld) %@: %@",
                       (long)status, url.lastPathComponent, error.localizedDescription ?: @"");
             completion(nil);
             return;
         }
-        NSString *name = [[NSUUID UUID].UUIDString stringByAppendingPathExtension:extension];
-        NSURL *fileURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]
-                                    isDirectory:NO];
-        [[NSFileManager defaultManager] removeItemAtURL:fileURL error:NULL];
-        NSError *moveError = nil;
-        if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:fileURL error:&moveError]) {
-            ApolloLog(@"[GalleryExport] move failed: %@", moveError.localizedDescription);
-            completion(nil);
-            return;
-        }
-        completion(fileURL);
-    }];
-    [task resume];
+        completion(location);
+    });
 }
 
 static void ApolloGalleryExportRemove(NSURL *_Nullable fileURL) {
@@ -242,6 +226,14 @@ static void ApolloGalleryExportWriteToPhotos(NSURL *fileURL, NSArray<NSURL *> *s
 // no re-encode, no quality loss, and fast enough to feel like a plain save.
 static void ApolloGalleryExportMux(NSURL *videoFile, NSURL *audioFile, BOOL strict,
                                    void (^completion)(NSURL *_Nullable muxedFile)) {
+    unsigned long long maximumOutputBytes = 0;
+    if (!ApolloMediaMuxFilesFit(videoFile, audioFile,
+                                kApolloGalleryExportFreeSpaceReserveBytes,
+                                &maximumOutputBytes)) {
+        ApolloLog(@"[GalleryExport] mux refused: insufficient bounded scratch space");
+        completion(nil);
+        return;
+    }
     AVURLAsset *videoAsset = [AVURLAsset URLAssetWithURL:videoFile
         options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
     AVURLAsset *audioAsset = [AVURLAsset URLAssetWithURL:audioFile
@@ -306,11 +298,43 @@ static void ApolloGalleryExportMux(NSURL *videoFile, NSURL *audioFile, BOOL stri
     }
     session.outputURL = outputURL;
     session.outputFileType = AVFileTypeMPEG4;
+    NSObject *budgetLock = [NSObject new];
+    __block BOOL exportFinished = NO;
+    __block BOOL budgetBreached = NO;
+    __weak AVAssetExportSession *weakBudgetSession = session;
+    dispatch_queue_t budgetQueue = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    dispatch_source_t budgetTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, budgetQueue);
+    dispatch_source_set_timer(budgetTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              (uint64_t)(0.25 * NSEC_PER_SEC),
+                              (uint64_t)(0.05 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(budgetTimer, ^{
+        @synchronized (budgetLock) {
+            if (exportFinished) return;
+        }
+        if (!ApolloMediaOutputFileFits(outputURL, maximumOutputBytes,
+                                       kApolloGalleryExportFreeSpaceReserveBytes)) {
+            @synchronized (budgetLock) { budgetBreached = YES; }
+            [weakBudgetSession cancelExport];
+        }
+    });
     [session exportAsynchronouslyWithCompletionHandler:^{
-        if (session.status != AVAssetExportSessionStatusCompleted) {
+        BOOL breached = NO;
+        BOOL finalBudgetFits = ApolloMediaOutputFileFits(outputURL, maximumOutputBytes,
+                                                         kApolloGalleryExportFreeSpaceReserveBytes);
+        @synchronized (budgetLock) {
+            exportFinished = YES;
+            if (!finalBudgetFits) budgetBreached = YES;
+            breached = budgetBreached;
+        }
+        dispatch_source_cancel(budgetTimer);
+        if (breached || session.status != AVAssetExportSessionStatusCompleted) {
             ApolloLog(@"[GalleryExport] mux export %ld: %@",
                       (long)session.status, session.error.localizedDescription ?: @"");
             ApolloGalleryExportRemove(outputURL);
+            if (breached) {
+                completion(nil);
+                return;
+            }
             // Preserve the legacy fallback; a strict batch counts a failure.
             completion(strict ? nil : videoFile);
             return;
@@ -326,6 +350,7 @@ static void ApolloGalleryExportMux(NSURL *videoFile, NSURL *audioFile, BOOL stri
         }
         completion(outputURL);
     }];
+    dispatch_resume(budgetTimer);
     // Batch cancellation waits for the current video to finish. Bound a stuck
     // passthrough export too, so it cannot keep that batch locked indefinitely.
     __weak AVAssetExportSession *weakSession = session;
@@ -371,9 +396,12 @@ static void ApolloGallerySaveVideoToPhotosImpl(NSURL *progressiveURL, BOOL stric
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:manifestURL
                                                           cachePolicy:NSURLRequestUseProtocolCachePolicy
                                                       timeoutInterval:kApolloGalleryExportManifestTimeout];
-    NSURLSessionDataTask *manifestTask = ApolloStartBoundedDataRequest(request, kApolloGalleryExportManifestMaximumBytes, nil,
-        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-        ^(NSData *data, NSHTTPURLResponse *response, NSError *error) {
+    id<ApolloBoundedMediaTransfer> manifestTask = ApolloStartBoundedMediaDownload(
+        request, kApolloGalleryExportManifestMaximumBytes, 64ULL * 1024ULL * 1024ULL,
+        @"mpd", dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(NSURL *manifestFile, NSHTTPURLResponse *response, NSError *error) {
+        NSData *data = manifestFile ? [NSData dataWithContentsOfURL:manifestFile options:NSDataReadingMappedIfSafe error:nil] : nil;
+        ApolloGalleryExportRemove(manifestFile);
         NSInteger httpStatus = response.statusCode;
         NSURL *videoURL = nil, *audioURL = nil;
         BOOL audioDeclared = NO;
@@ -434,11 +462,9 @@ static void ApolloGallerySaveVideoToPhotosImpl(NSURL *progressiveURL, BOOL stric
     });
     // Request timeout is an idle timeout; a trickling server must not hold a
     // cancelled batch open indefinitely while staying below the byte limit.
-    __weak NSURLSessionDataTask *weakManifestTask = manifestTask;
+    __weak id<ApolloBoundedMediaTransfer> weakManifestTask = manifestTask;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSURLSessionDataTask *runningTask = weakManifestTask;
-        if (runningTask.state == NSURLSessionTaskStateRunning ||
-            runningTask.state == NSURLSessionTaskStateSuspended) [runningTask cancel];
+        [weakManifestTask cancel];
     });
 }
 

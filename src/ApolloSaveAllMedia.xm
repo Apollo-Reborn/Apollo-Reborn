@@ -1,6 +1,7 @@
 #import "ApolloSaveAllMedia.h"
 #import "ApolloCommon.h"
 #import "ApolloGalleryVideoExport.h"
+#import "ApolloMediaSecurity.h"
 #import "ApolloToast.h"
 #import "ApolloThemeRuntime.h"
 
@@ -9,6 +10,9 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+
+static unsigned long long const kApolloSaveAllImageMaximumBytes = 100ULL * 1024ULL * 1024ULL;
+static unsigned long long const kApolloSaveAllFreeSpaceReserveBytes = 256ULL * 1024ULL * 1024ULL;
 
 // Apollo's media-save completion presents its own Holla success banner. The
 // image argument is unused by the success path; this callback only reports a
@@ -204,8 +208,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 @property (nonatomic, copy) NSArray<ApolloSaveAllMediaItem *> *items;
 @property (nonatomic, weak) UIViewController *presenter;
 @property (nonatomic, strong) ApolloSaveAllMediaProgressController *progressController;
-@property (nonatomic, strong) NSURLSession *session;
-@property (nonatomic, strong) NSURLSessionDownloadTask *downloadTask;
+@property (nonatomic, strong) id<ApolloBoundedMediaTransfer> downloadTask;
 @property (nonatomic, strong) NSURL *directoryURL;
 @property (nonatomic) NSUInteger nextIndex;
 @property (nonatomic) NSUInteger savedCount;
@@ -291,12 +294,6 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
         return;
     }
 
-    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    configuration.URLCache = nil;
-    configuration.timeoutIntervalForRequest = 60.0;
-    configuration.timeoutIntervalForResource = 300.0;
-    self.session = [NSURLSession sessionWithConfiguration:configuration];
-
     ApolloLog(@"[SaveAllMedia] started count=%lu", (unsigned long)self.items.count);
     if (self.items.count == 1) {
         // Every single-item caller skips progress UI and its presentation
@@ -359,11 +356,15 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
 
 - (void)downloadImage:(ApolloSaveAllMediaItem *)item {
     NSURL *directoryURL = self.directoryURL;
-    self.downloadTask = [self.session downloadTaskWithURL:item.URL
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+    NSURLRequest *request = [NSURLRequest requestWithURL:item.URL
+                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                        timeoutInterval:60.0];
+    self.downloadTask = ApolloStartBoundedMediaDownload(request,
+        kApolloSaveAllImageMaximumBytes, kApolloSaveAllFreeSpaceReserveBytes, nil,
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        ^(NSURL *location, NSHTTPURLResponse *response, NSError *error) {
         @autoreleasepool {
-            NSInteger httpStatus = [response isKindOfClass:NSHTTPURLResponse.class]
-                ? ((NSHTTPURLResponse *)response).statusCode : 0;
+            NSInteger httpStatus = response.statusCode;
             NSURL *fileURL = nil;
             NSString *typeIdentifier = nil;
             // Never turn a server error page or a thumbnail re-encode into a
@@ -408,8 +409,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
                 }
             });
         }
-    }];
-    [self.downloadTask resume];
+    });
 }
 
 - (void)saveImageFile:(NSURL *)fileURL typeIdentifier:(NSString *)typeIdentifier {
@@ -446,8 +446,6 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
 - (void)finish {
     if (self.finished) return;
     self.finished = YES;
-    [self.session finishTasksAndInvalidate];
-    self.session = nil;
     ApolloSaveAllMediaRemoveFile(self.directoryURL);
     self.directoryURL = nil;
     if (sApolloSaveAllMediaJob == self) sApolloSaveAllMediaJob = nil;

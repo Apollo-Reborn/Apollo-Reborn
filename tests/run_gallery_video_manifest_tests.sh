@@ -27,7 +27,8 @@ Path(sys.argv[2]).write_text(source[start:end])
 PY_EXTRACT
 
 xcrun --sdk macosx clang++ -fobjc-arc -fblocks -Wall -Werror \
-    -framework Foundation -I "$test_build_dir" \
+    -framework Foundation -I "$test_build_dir" -I "$test_repo_root/src" \
     "$test_repo_root/tests/gallery_video_manifest_tests.mm" \
+    "$test_repo_root/src/ApolloMediaSecurity.m" \
     -o "$test_binary"
 "$test_binary"

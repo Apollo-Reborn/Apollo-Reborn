@@ -193,6 +193,11 @@ fi
 
 if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     [[ -f "$BASE_IPA" ]] || die "base IPA not found at $BASE_IPA (set BASE_IPA=...)"
+    if [[ "$RESIZABLE_APP" == 1 ]]; then
+        # A resizable run will feed this archive through multiple mutation
+        # helpers. Reject unsafe members before patch.sh performs any extraction.
+        python3 scripts/validate-resizable-ipa.py "$BASE_IPA"
+    fi
 
     # With --glass, prep from a Liquid-Glass-patched base produced by the canonical
     # patch.sh --liquid-glass (SDK bump to iOS 26 + duplicate-LC_RPATH fix + Assets.car
@@ -209,6 +214,11 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     fi
 
     log "Preparing simulator app shell from $SRC_IPA (one-time; re-run with --fresh-app to redo)"
+    if [[ "$RESIZABLE_APP" == 1 ]]; then
+        # Validate the generated or cached Glass IPA independently before this
+        # extraction; a stale cache is not trusted merely because the base passed.
+        python3 scripts/validate-resizable-ipa.py "$SRC_IPA"
+    fi
     rm -rf "$WORK_DIR/Payload"
     unzip -q "$SRC_IPA" 'Payload/*' -d "$WORK_DIR"
     [[ -d "$APP_DIR" ]] || die "extracted IPA has no Payload/Apollo.app"
@@ -423,12 +433,22 @@ if [[ "$INJECTED" == 1 ]]; then
     xcrun simctl launch "$DEV" "$BUNDLE_ID"
 else
     log "Launching $BUNDLE_ID with ApolloReborn.dylib injected"
-    # Keep concurrent simulator/device runs isolated from each other's fallback dylib.
-    DYLIB_INJECT="/tmp/ApolloRebornSim-${DEV}-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
-    cp "$DYLIB_DST" "$DYLIB_INJECT"
+    # The fallback is executable code. Keep it in a private random directory so
+    # another local process cannot pre-create a symlink and redirect cp/codesign.
+    DYLIB_INJECT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/apollo-sim-inject.XXXXXX")"
+    chmod 700 "$DYLIB_INJECT_DIR"
+    DYLIB_INJECT="$DYLIB_INJECT_DIR/ApolloReborn.dylib"
+    cleanup_fallback_dylib() {
+        rm -f "$DYLIB_INJECT"
+        rmdir "$DYLIB_INJECT_DIR" 2>/dev/null || true
+    }
+    trap cleanup_fallback_dylib EXIT
+    install -m 600 "$DYLIB_DST" "$DYLIB_INJECT"
     codesign -f -s - "$DYLIB_INJECT" >/dev/null 2>&1
     SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$DYLIB_INJECT" \
         xcrun simctl launch "$DEV" "$BUNDLE_ID"
+    cleanup_fallback_dylib
+    trap - EXIT
 fi
 
 # ----------------------------------------------------------------------------

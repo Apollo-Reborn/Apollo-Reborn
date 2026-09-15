@@ -33,6 +33,8 @@ BOOL ApolloSaveAllMediaURLIsCollection(NSURL *_Nullable URL);
 
 // Resolve native models first, otherwise fetch the complete Imgur/ImgChest
 // album. Completions always arrive on the main queue, including local results.
+// Saving later enforces a globally-routable destination on the initial request
+// and every redirect, plus per-transfer byte and free-space bounds.
 void ApolloSaveAllMediaResolveLink(id link, ApolloSaveAllMediaResolutionCompletion completion);
 void ApolloSaveAllMediaResolveURL(NSURL *URL, ApolloSaveAllMediaResolutionCompletion completion);
 

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "../src/ApolloMediaSecurity.h"
 
 // The runner extracts this Foundation-only section from the shipping .xm.
 // These fixtures exercise the production parser, with no copied implementation
@@ -39,8 +40,11 @@ int main(void) {
             @"<MPD><AdaptationSet contentType='video'><Representation><BaseURL>v.mp4</BaseURL></Representation></AdaptationSet><AdaptationSet contentType='audio'><SegmentTemplate media='a$Number$.m4s'/><Representation><BaseURL>audio.mp4</BaseURL></Representation></AdaptationSet></MPD>",
             YES, @"https://v.redd.it/asset/v.mp4", nil, YES);
         CheckManifest(@"scoped BaseURL",
-            @"<MPD><BaseURL>https://cdn.example/</BaseURL><Period><BaseURL>folder/</BaseURL><AdaptationSet contentType='video'><BaseURL>clips/</BaseURL><Representation><BaseURL>video.mp4</BaseURL><SegmentBase/></Representation></AdaptationSet></Period></MPD>",
-            YES, @"https://cdn.example/folder/clips/video.mp4", nil, NO);
+            @"<MPD><BaseURL>https://cdn.redditmedia.com/</BaseURL><Period><BaseURL>folder/</BaseURL><AdaptationSet contentType='video'><BaseURL>clips/</BaseURL><Representation><BaseURL>video.mp4</BaseURL><SegmentBase/></Representation></AdaptationSet></Period></MPD>",
+            YES, @"https://cdn.redditmedia.com/folder/clips/video.mp4", nil, NO);
+        CheckManifest(@"unknown absolute CDN fails closed",
+            @"<MPD><AdaptationSet contentType='video'><Representation><BaseURL>https://cdn.example/video.mp4</BaseURL></Representation></AdaptationSet></MPD>",
+            YES, nil, nil, NO);
         CheckManifest(@"namespace and CDATA",
             @"<d:MPD xmlns:d='urn:mpeg:dash:schema:mpd:2011'><d:AdaptationSet contentType='video'><d:Representation><d:BaseURL><![CDATA[video.mp4?x=1&y=2]]></d:BaseURL></d:Representation></d:AdaptationSet></d:MPD>",
             YES, @"https://v.redd.it/asset/video.mp4?x=1&y=2", nil, NO);

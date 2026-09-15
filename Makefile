@@ -103,6 +103,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGalleryImageLoader.m \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
+    $(SRC_DIR)/ApolloMediaSecurity.m \
     $(SRC_DIR)/ApolloGalleryVideoExport.xm \
     $(SRC_DIR)/ApolloSaveAllMediaItems.m \
     $(SRC_DIR)/ApolloSaveAllMedia.xm \

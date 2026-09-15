@@ -421,6 +421,8 @@ static BOOL FICInstallStringHook(Class stringClass) {
     return YES;
 }
 
+// MARK: - hooks: selection entry points
+
 // UIKit owns one find panel; Apollo still owns matching and decoration.
 // The hidden native field is only the input adapter, never a second responder.
 API_AVAILABLE(ios(16.0))
@@ -561,7 +563,7 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
 }
 %end
 
-// MARK: - hooks: selection entry points
+// MARK: - comments selection hooks
 //
 // Every path that (re)selects a match is one of these three ObjC methods
 // (verified in Hopper: the Swift search rebuild is reached only through the
