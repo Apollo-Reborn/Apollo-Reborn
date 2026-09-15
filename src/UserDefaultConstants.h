@@ -671,7 +671,7 @@ static NSString *const UDKeyForwardSwipeForgetAfterScrolling = @"ForwardSwipeFor
 // In the fullscreen viewer for post-backed images, galleries, GIFs, and video,
 // an upward vertical flick or comments-button tap opens a media-owned comments
 // pane. The normal downward flick still dismisses when the pane is closed.
-// Default YES. See ApolloSwipeUpComments.xm. No change notification: the flag
+// Default NO (opt-in). See ApolloSwipeUpComments.xm. No change notification: the flag
 // is read live at gesture/tap time, so a toggle applies immediately without
 // any cached state to invalidate (unlike the carousel above).
 static NSString *const UDKeySwipeUpForComments = @"SwipeUpForComments";

@@ -3732,7 +3732,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyFeedGalleryCarousel: @YES,
                                     UDKeyFeedGalleryEdgeSwipeNav: @YES,
                                     UDKeyForwardSwipeForgetAfterScrolling: @NO,
-                                    UDKeySwipeUpForComments: @YES,
+                                    UDKeySwipeUpForComments: @NO,
                                     UDKeySportsClipsInlineVideo: @YES,
                                     UDKeyDevvitInteractivePosts: @NO,
                                     UDKeyDevvitFeedWidgets: @YES,
