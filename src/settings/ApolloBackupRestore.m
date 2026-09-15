@@ -7,6 +7,7 @@
 #import "ApolloTranslation.h"
 #import "UserDefaultConstants.h"
 #import "SSZipArchive.h"
+#import <LocalAuthentication/LocalAuthentication.h>
 #import <Security/Security.h>
 #import <errno.h>
 #import <fcntl.h>
@@ -168,7 +169,9 @@ static NSArray<NSDictionary *> *ApolloBackupCaptureReplayOriginals(NSArray<NSDic
         NSMutableDictionary *read = [(__bridge NSDictionary *)query mutableCopy];
         CFRelease(query);
         read[(__bridge id)kSecReturnAttributes] = @YES;
-        read[(__bridge id)kSecUseAuthenticationUI] = (__bridge id)kSecUseAuthenticationUIFail;
+        LAContext *authenticationContext = [LAContext new];
+        authenticationContext.interactionNotAllowed = YES;
+        read[(__bridge id)kSecUseAuthenticationContext] = authenticationContext;
         CFTypeRef result = NULL;
         OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)read, &result);
         id found = CFBridgingRelease(result);

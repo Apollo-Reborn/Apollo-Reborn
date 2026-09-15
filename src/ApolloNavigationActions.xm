@@ -510,6 +510,15 @@ static void ApolloActionsUpdateScrollOwner(UIScrollView *scrollView) {
     ApolloActionsSetScrollOwner(scrollView.panGestureRecognizer, owner);
 }
 
+static BOOL ApolloActionsBarButtonItemIsHidden(UIBarButtonItem *item) {
+    if (@available(iOS 16.0, *)) return item.hidden;
+    return NO;
+}
+
+static void ApolloActionsSetBarButtonItemHidden(UIBarButtonItem *item, BOOL hidden) {
+    if (@available(iOS 16.0, *)) item.hidden = hidden;
+}
+
 static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     if (!IsLiquidGlass() || ![NSStringFromClass(box.controller.class) isEqual:@"Apollo.InboxViewController"]) return items;
@@ -525,7 +534,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
         if (candidate.customView || [candidate.title isEqualToString:@"Cancel"] ||
             [candidate.title isEqualToString:@"Done"] || [candidate.title isEqualToString:@"Edit"]) return native;
         ApolloNavigationActionsStandardItem *state = objc_getAssociatedObject(candidate, &kActionsStandardItemKey);
-        BOOL nativeHidden = state ? state.hidden : candidate.hidden;
+        BOOL nativeHidden = state ? state.hidden : ApolloActionsBarButtonItemIsHidden(candidate);
         if (!nativeHidden && (candidate.action || candidate.primaryAction || candidate.menu)) actionable++;
     }
     if (actionable < 2) return native;
@@ -570,7 +579,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 - (void)restoreStandardItems {
     sActionsModelWriteDepth++;
     for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
-        state.item.hidden = state.hidden;
+        ApolloActionsSetBarButtonItemHidden(state.item, state.hidden);
         objc_setAssociatedObject(state.item, &kActionsStandardItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [self.standardItems removeAllObjects];
@@ -729,7 +738,8 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
             objc_setAssociatedObject(more, &kActionsStandardMoreKey, moreState, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             for (NSUInteger i = 1; i < items.count; i++) {
                 ApolloNavigationActionsStandardItem *state = [ApolloNavigationActionsStandardItem new];
-                state.item = items[i]; state.owner = self; state.hidden = items[i].hidden;
+                state.item = items[i]; state.owner = self;
+                state.hidden = ApolloActionsBarButtonItemIsHidden(items[i]);
                 objc_setAssociatedObject(items[i], &kActionsStandardItemKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 [self.standardItems addObject:state];
             }
@@ -751,7 +761,9 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 }
 - (void)applyStandardExpanded:(BOOL)expanded {
     sActionsModelWriteDepth++;
-    for (ApolloNavigationActionsStandardItem *state in self.standardItems) state.item.hidden = state.hidden || !expanded;
+    for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
+        ApolloActionsSetBarButtonItemHidden(state.item, state.hidden || !expanded);
+    }
     UIBarButtonItem *more = self.moreItem;
     if (more) {
         if (expanded) {
@@ -981,7 +993,7 @@ CGRect ApolloNavigationActionsExpandedFrame(UINavigationBar *bar) {
     }
     if (owner.moreItem) {
         for (UIBarButtonItem *item in owner.item.rightBarButtonItems) {
-            if (item.hidden) continue;
+            if (ApolloActionsBarButtonItemIsHidden(item)) continue;
             UIView *view = ApolloNavigationActionsItemViewCandidates(item).lastObject;
             if (![view isDescendantOfView:bar]) continue;
             CGRect rect = [view convertRect:view.bounds toView:bar];

@@ -119,8 +119,10 @@ static UIButton *ApolloSettingsMenuButton(NSString *menuTitle,
             ? UIMenuElementStateOn : UIMenuElementStateOff;
         [actions addObject:action];
     }];
+    UIMenuOptions menuOptions = 0;
+    if (@available(iOS 15.0, *)) menuOptions = UIMenuOptionsSingleSelection;
     button.menu = [UIMenu menuWithTitle:menuTitle image:nil identifier:nil
-                                options:UIMenuOptionsSingleSelection children:actions];
+                                options:menuOptions children:actions];
     button.showsMenuAsPrimaryAction = YES;
     button.accessibilityLabel = currentTitle;
     [button sizeToFit];
