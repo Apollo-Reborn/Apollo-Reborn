@@ -408,7 +408,7 @@ static NSString *ApolloLPNormalizedRedditSubreddit(NSString *subreddit) {
     avatarView.backgroundColor = [UIColor tertiarySystemFillColor];
     avatarView.contentMode = UIViewContentModeScaleAspectFill;
     avatarView.clipsToBounds = YES;
-    avatarView.layer.cornerRadius = 32.0;
+    avatarView.layer.cornerRadius = sProfileAvatarStyle == 2 ? 64.0 * 0.24 : 32.0;
     avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
     avatarView.tintColor = [UIColor secondaryLabelColor];
 
@@ -3266,7 +3266,9 @@ static id ApolloLPBuildRedditUserCardSpec(ASDisplayNode *hostNode, NSURL *url, A
         ApolloLPScheduleImageFallbackIfNeeded(avatarNode, avatarURL, ApolloLPHost(url));
     }
     avatarNode.contentMode = UIViewContentModeScaleAspectFill;
-    avatarNode.cornerRadius = 22.0;
+    // Match the shared shape setting for tagged-user cards. Subreddit
+    // cards retain their own circular presentation.
+    avatarNode.cornerRadius = sProfileAvatarStyle == 2 ? 44.0 * 0.24 : 22.0;
     avatarNode.clipsToBounds = YES;
     ApolloLPApplyStyleSize([avatarNode style], CGSizeMake(44.0, 44.0));
 
