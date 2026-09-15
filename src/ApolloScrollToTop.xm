@@ -5,6 +5,7 @@
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloScrollToTop.h"
+#import "ApolloSearchNativeBar.h"
 #import "ApolloState.h"
 
 // Apollo's status-bar proxy calls ASTableViewController rather than scrolling
@@ -340,6 +341,9 @@ static NSString *ApolloReturnItemID(id node) {
     UIScrollView *scroll = self.scrollView;
     // Stop existing deceleration/scroll animation before installing our driver.
     [scroll setContentOffset:scroll.contentOffset animated:NO];
+    // This driver writes the offset frame by frame, so the native search bar
+    // cannot tell it from a finger; say so, and its bar comes up with the top.
+    ApolloNativeFeedSearchWillScrollToTop(scroll);
     self.observedScroll = scroll;
     [scroll addObserver:self forKeyPath:@"contentOffset" options:0 context:&kApolloScrollReturnGeometryContext];
     [scroll addObserver:self forKeyPath:@"contentSize" options:0 context:&kApolloScrollReturnGeometryContext];

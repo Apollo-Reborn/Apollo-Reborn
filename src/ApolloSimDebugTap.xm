@@ -266,7 +266,14 @@ static void ApolloSimDebugPerformHold(CGPoint point) {
 // steps/interval control the drag speed: the default 12 x 12 ms is a flick that
 // commits an interactive pop; a slow, short drag (e.g. 30 x 20 ms to x=45) ends
 // below UIKit's commit threshold and cancels it instead.
-static void ApolloSimDebugPerformSwipeTimed(CGPoint start, CGPoint end, int steps, NSTimeInterval interval) {
+// `settle` (seconds, default 0) keeps the finger DOWN and stationary at the end
+// point before lifting, so the pan recognizer's velocity has decayed to ~0 when
+// the touch ends: a drag that stops dead where it is, with no deceleration.
+// Without it the synthetic lift carries the last move's velocity and the list
+// keeps travelling (measured: a 60pt swipe scrolling 314pt), which cannot land
+// the search bar exactly at its collapsed rest the way a paused finger does.
+static void ApolloSimDebugPerformSwipeTimed(CGPoint start, CGPoint end, int steps, NSTimeInterval interval,
+                                            NSTimeInterval settle) {
     UIWindow *window = nil;
     for (UIWindow *candidate in ApolloAllWindows()) {
         if (candidate.isKeyWindow) { window = candidate; break; }
@@ -297,12 +304,27 @@ static void ApolloSimDebugPerformSwipeTimed(CGPoint start, CGPoint end, int step
             ApolloSimDebugSendTouch(touch);
         });
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((steps * interval + 0.02) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // A held finger still reports itself: stationary Moved events through the
+    // settle window are what let the recognizer's velocity integrator see
+    // time passing with no displacement.
+    if (settle > 0.0) {
+        int holds = MAX(1, (int)(settle / 0.03));
+        for (int h = 1; h <= holds; h++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)((steps * interval + h * 0.03) * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [touch _setLocationInWindow:end resetPrevious:NO];
+                [touch setPhase:UITouchPhaseMoved];
+                ApolloSimDebugSendTouch(touch);
+            });
+        }
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((steps * interval + settle + 0.02) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [touch _setLocationInWindow:end resetPrevious:NO];
         [touch setPhase:UITouchPhaseEnded];
         ApolloSimDebugSendTouch(touch);
-        ApolloLog(@"[SimDebugTap] swipe delivered (%.0f,%.0f)->(%.0f,%.0f) over %d x %.0f ms",
-                  start.x, start.y, end.x, end.y, steps, interval * 1000.0);
+        ApolloLog(@"[SimDebugTap] swipe delivered (%.0f,%.0f)->(%.0f,%.0f) over %d x %.0f ms, settle %.0f ms",
+                  start.x, start.y, end.x, end.y, steps, interval * 1000.0, settle * 1000.0);
     });
 }
 
@@ -1107,12 +1129,15 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         for (NSString *part in parts) if (part.length > 0) [numbers addObject:part];
         if (isSwipe) {
             if (numbers.count < 4) { ApolloLog(@"[SimDebugTap] malformed swipe: %@", contents); return; }
-            // Optional 5th/6th numbers: step count and per-step interval in seconds.
+            // Optional 5th/6th/7th numbers: step count, per-step interval in
+            // seconds, and a settle time (seconds) the finger holds still at
+            // the end point before lifting (0 = lift immediately, with momentum).
             int steps = numbers.count >= 5 ? MAX(1, numbers[4].intValue) : 12;
             NSTimeInterval interval = numbers.count >= 6 ? MAX(0.001, numbers[5].doubleValue) : 0.012;
+            NSTimeInterval settle = numbers.count >= 7 ? MAX(0.0, numbers[6].doubleValue) : 0.0;
             ApolloSimDebugPerformSwipeTimed(CGPointMake(numbers[0].doubleValue, numbers[1].doubleValue),
                                             CGPointMake(numbers[2].doubleValue, numbers[3].doubleValue),
-                                            steps, interval);
+                                            steps, interval, settle);
             return;
         }
         if (isHold) {
