@@ -210,6 +210,39 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     self.tableView.estimatedRowHeight = 64;
 }
 
+// The editor shares the switcher's navigation sheet, so use the same live
+// Apollo palette rather than UIKit's unrelated grouped-table defaults.
+- (void)applyCredentialEditorTheme {
+    UIColor *page = ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+    self.view.backgroundColor = page;
+    self.tableView.backgroundColor = page;
+    self.navigationController.view.backgroundColor = page;
+    self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+    self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
+    for (UITableViewCell *cell in self.tableView.visibleCells) {
+        cell.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
+    }
+    UIColor *text = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
+    _clientIdField.textColor = text;
+    _secretField.textColor = text;
+    _redirectField.textColor = text;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self applyCredentialEditorTheme];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (self.isViewLoaded) [self applyCredentialEditorTheme];
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell
+    forRowAtIndexPath:(NSIndexPath *)indexPath {
+    cell.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return self.onClear ? 2 : 1; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -224,6 +257,7 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
     UITextField *field = [[UITextField alloc] init];
     field.placeholder = placeholder;
     field.text = text;
+    field.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
     field.secureTextEntry = secure;
     field.autocorrectionType = UITextAutocorrectionTypeNo;
     field.autocapitalizationType = UITextAutocapitalizationTypeNone;
