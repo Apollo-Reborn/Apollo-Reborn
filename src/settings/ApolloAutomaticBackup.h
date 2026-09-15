@@ -27,7 +27,7 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
 
 - (void)setEnabled:(BOOL)enabled;
-- (void)setIntervalDays:(NSInteger)days; // test: 0 = 1 minute; production: 1, 3, 7 days
+- (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, or 7 days
 // Successful completion includes the actual archive filename saved by Files.
 - (void)backUpNowWithCompletion:(void (^)(NSString *_Nullable filename, NSError *_Nullable error))completion;
 
