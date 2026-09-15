@@ -143,9 +143,11 @@ static char kApolloFeedGalleryRememberedIndexKey;
 
 @interface ApolloFeedGalleryOwnerBox : NSObject
 @property (nonatomic, weak) id owner;
+@property (nonatomic, strong) id sourceLink;
 @end
 @implementation ApolloFeedGalleryOwnerBox
 @end
+static ApolloFeedGalleryOwnerBox *sApolloFeedGalleryOpeningCarousel;
 
 @interface ApolloFeedGalleryPendingSelection : NSObject
 @property (nonatomic) NSInteger index;
@@ -747,8 +749,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     // viewer. The link also remembers the selection across cell recreation.
     ApolloFeedGalleryOwnerBox *returnBox = [ApolloFeedGalleryOwnerBox new];
     returnBox.owner = self;
-    objc_setAssociatedObject(link, &kApolloFeedGalleryReturnCarouselKey,
-                             returnBox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    returnBox.sourceLink = link;
 
     UIImageView *pageView = self.imageViews[index];
     if (pageView.image && [senderNode respondsToSelector:@selector(setImage:)]) {
@@ -791,9 +792,16 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     }
     ApolloLog(@"[FeedGallery] opening native viewer requestedIndex=%ld nativeSender=%d",
               (long)index, (int)senderMapsNatively);
-    ((void (*)(id, SEL, id))objc_msgSend)(richMediaNode,
-                                         @selector(albumThumbnailButtonTappedWithSender:),
-                                         senderNode);
+    // The native initializer may copy the post. Bind the return route to
+    // the actual pager during synchronous presentation, not to link identity.
+    ApolloFeedGalleryOwnerBox *previousOpening = sApolloFeedGalleryOpeningCarousel;
+    sApolloFeedGalleryOpeningCarousel = returnBox;
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(richMediaNode,
+                                             @selector(albumThumbnailButtonTappedWithSender:), senderNode);
+    } @finally {
+        sApolloFeedGalleryOpeningCarousel = previousOpening;
+    }
 }
 
 - (void)apollo_cancelRequests {
@@ -1218,8 +1226,8 @@ static void ApolloFeedGallerySettingChanged(void) {
 // Only completed page transitions count; a cancelled swipe keeps the old page.
 static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     if (!sFeedGalleryCarousel) return;
-    RDKLink *link = ApolloFeedGalleryObjectIvar(pager, "link");
-    ApolloFeedGalleryOwnerBox *box = objc_getAssociatedObject(link, &kApolloFeedGalleryReturnCarouselKey);
+    ApolloFeedGalleryOwnerBox *box = objc_getAssociatedObject(pager, &kApolloFeedGalleryReturnCarouselKey);
+    RDKLink *link = box.sourceLink;
     if (!box) return;
     UIViewController *child = pager.viewControllers.firstObject;
     if (![NSStringFromClass(child.class) isEqualToString:@"_TtC6Apollo21MediaViewerController"]) return;
@@ -1245,7 +1253,7 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
    previousViewControllers:(NSArray *)previousViewControllers
        transitionCompleted:(BOOL)completed {
     %orig;
-    if (completed) ApolloFeedGalleryRememberViewerPage((UIPageViewController *)self);
+    if (completed) ApolloFeedGalleryRememberViewerPage(pageViewController);
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -1255,6 +1263,11 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
 }
 
 - (void)viewDidLoad {
+    if (sApolloFeedGalleryOpeningCarousel) {
+        objc_setAssociatedObject(self, &kApolloFeedGalleryReturnCarouselKey,
+                                 sApolloFeedGalleryOpeningCarousel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLogDebug(@"[FeedGallery] bound fullscreen return carousel");
+    }
     RDKLink *link = ApolloFeedGalleryObjectIvar(self, "link");
     ApolloFeedGalleryPendingSelection *selection = objc_getAssociatedObject(
         link, &kApolloFeedGalleryPendingViewerIndexKey);
