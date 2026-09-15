@@ -458,6 +458,10 @@ static char kApolloHiddenRememberedMediaIndex;
     self.pendingMediaSelectionRestore = NO;
     [self.mediaScrollView setContentOffset:CGPointMake(width * index, 0) animated:NO];
     [self apollo_updateCurrentMediaIndex];
+    // The viewer retains this stable source view for dismissal. Recompute its
+    // fitted rectangle for the selected image: albums can mix landscape and
+    // portrait images, so the opening image's rectangle is no longer valid.
+    [self apollo_transitionSourceForIndex:index];
 }
 - (void)apollo_updateCurrentMediaIndex {
     if (self.pendingMediaSelectionRestore) return;
@@ -497,6 +501,9 @@ static char kApolloHiddenRememberedMediaIndex;
                     [UIView transitionWithView:cell.mediaImageViews[index] duration:0.18
                         options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowAnimatedContent
                         animations:^{ cell.mediaImageViews[index].image = image; } completion:nil];
+                    // A distant page can finish loading after the selection
+                    // callback. Keep the same dismissal source current then too.
+                    if (cell.currentMediaIndex == index) [cell apollo_transitionSourceForIndex:index];
                 }
                 if (cell.mediaURLs.count == 1) cell.mediaLabel.hidden = YES;
             });
