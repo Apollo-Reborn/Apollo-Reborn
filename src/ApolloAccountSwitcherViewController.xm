@@ -1698,9 +1698,14 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     UIViewController *host = ((UIPresentationController *)self).presentedViewController;
     for (UIViewController *child in host.childViewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
-        UIViewController *top = ((UINavigationController *)child).topViewController;
-        if (![top isKindOfClass:ApolloAccountSwitcherViewController.class]) continue;
-        CGFloat height = top.preferredContentSize.height;
+        UINavigationController *navigation = (UINavigationController *)child;
+        // Pushing the credential editor must not restore Apollo's centered
+        // card frame on the next scroll/keyboard/layout pass. The switcher
+        // owns this whole navigation stack, not only its visible root page.
+        UIViewController *root = navigation.viewControllers.firstObject;
+        if (![root isKindOfClass:ApolloAccountSwitcherViewController.class]) continue;
+        CGFloat height = MAX(root.preferredContentSize.height,
+                             navigation.topViewController.preferredContentSize.height);
         UIView *container = ((UIPresentationController *)self).containerView;
         if (container) {
             UIEdgeInsets safeInsets = container.safeAreaInsets;
