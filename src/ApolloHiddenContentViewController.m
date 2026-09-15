@@ -163,6 +163,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
 @property (nonatomic, strong) UILabel *reasonAttributionLabel;
 @property (nonatomic, strong) UIImageView *avatarView;
 @property (nonatomic, strong) UIView *mediaContainerView;
+@property (nonatomic, strong) UIImageView *transitionSourceView;
 @property (nonatomic, strong) UIScrollView *mediaScrollView;
 @property (nonatomic, strong) UIStackView *mediaPagesStack;
 @property (nonatomic, copy) NSArray<UIImageView *> *mediaImageViews;
@@ -255,6 +256,15 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
         self.contextLabel.userInteractionEnabled = YES;
         self.mediaContainerView = [UIView new];
         self.mediaContainerView.clipsToBounds = YES;
+        // Apollo hides/unhides originView during zoom transitions. Never hand
+        // it an arranged subview: UIStackView would collapse that album page
+        // and move the dismissal rectangle horizontally. This stable source
+        // sits behind the carousel, just like the native feed's source node.
+        self.transitionSourceView = [UIImageView new];
+        self.transitionSourceView.contentMode = UIViewContentModeScaleAspectFit;
+        self.transitionSourceView.userInteractionEnabled = NO;
+        self.transitionSourceView.isAccessibilityElement = NO;
+        [self.mediaContainerView addSubview:self.transitionSourceView];
         [self.mediaContainerView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_openMedia)]];
         [self.mediaContainerView addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
         self.mediaScrollView = [UIScrollView new];
@@ -364,6 +374,23 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     if (![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
         [self apollo_updateHeaderLayout];
     }
+}
+- (UIImageView *)apollo_transitionSourceForIndex:(NSUInteger)index {
+    if (index >= self.mediaImageViews.count) return nil;
+    UIImageView *page = self.mediaImageViews[index];
+    UIImage *image = page.image;
+    if (!image || image.size.width <= 0 || image.size.height <= 0) return nil;
+    CGRect bounds = page.bounds;
+    CGFloat scale = MIN(CGRectGetWidth(bounds) / image.size.width,
+                        CGRectGetHeight(bounds) / image.size.height);
+    CGSize fitted = CGSizeMake(image.size.width * scale, image.size.height * scale);
+    CGRect rect = CGRectMake(CGRectGetMidX(bounds) - fitted.width / 2,
+                             CGRectGetMidY(bounds) - fitted.height / 2,
+                             fitted.width, fitted.height);
+    self.transitionSourceView.image = image;
+    self.transitionSourceView.frame = [page convertRect:rect toView:self.mediaContainerView];
+    self.transitionSourceView.hidden = NO;
+    return self.transitionSourceView;
 }
 - (void)apollo_openMedia {
     if (![self.unavailableMediaIndexes containsIndex:self.currentMediaIndex] && self.mediaTapped) self.mediaTapped();
@@ -487,6 +514,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     }];
 }
 - (void)configureWithItem:(ApolloHiddenContentItem *)item username:(NSString *)username {
+    self.transitionSourceView.image = nil;
     self.mediaGeneration++;
     self.representedName = item.fullName;
     [self apollo_applyOverviewTheme];
@@ -980,7 +1008,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     cell.mediaTapped = ^{
         NSArray *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
         NSUInteger index = MIN(weakCell.currentMediaIndex, urls.count ? urls.count - 1 : 0);
-        UIImageView *source = index < weakCell.mediaImageViews.count ? weakCell.mediaImageViews[index] : nil;
+        UIImageView *source = [weakCell apollo_transitionSourceForIndex:index];
         if (!ApolloHiddenContentPresentMedia(urls, index, source, weakSelf)) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Media unavailable" message:@"This archived image cannot be opened in this Apollo build." preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
