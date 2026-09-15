@@ -32,7 +32,7 @@ static NSError *ApolloAutomaticBackupError(NSString *message) {
 
 static NSInteger ApolloAutomaticBackupDays(NSInteger days) {
     switch (days) {
-        case 0: case 1: case 3: case 7: return days;
+        case 1: case 3: case 7: return days;
         default: return 3;
     }
 }
@@ -246,7 +246,7 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
     if (!self.enabled) return nil;
     NSDate *last = self.lastBackupDate;
     if (!last || last.timeIntervalSinceNow > 300) return [NSDate date];
-    return [last dateByAddingTimeInterval:self.intervalDays == 0 ? 60 : self.intervalDays * 24 * 60 * 60];
+    return [last dateByAddingTimeInterval:self.intervalDays * 24 * 60 * 60];
 }
 
 - (NSDate *)nextRetryDate {
