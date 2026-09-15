@@ -32,14 +32,18 @@ static NSInteger const kApolloGalleryLoadAheadRows = 3;
 
 static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
 
-// Grid autoplay ("Play GIFs and Videos in Gallery View"). Only tiles on screen
-// play, and only this many at once: every playing tile is a decoder session
-// and a four-column landscape grid shows sixteen. Lower index paths win, so
-// the tiles nearest the top of the screen are the ones that move.
-static NSInteger const kApolloGalleryMaxPlayingTiles = 8;
+// Grid autoplay ("Play Videos / GIFs in Gallery View"). Only tiles on screen
+// play, and only this many at once: every playing tile is a decoder session.
+// Twelve covers a portrait screen of GIF-shaped tiles (two columns, six rows
+// of 16:9) so a GIF subreddit moves edge to edge; a four-column landscape grid
+// can show sixteen, and there the lower index paths win, so the tiles nearest
+// the top of the screen are the ones that move.
+static NSInteger const kApolloGalleryMaxPlayingTiles = 12;
 // Of those, at most this many may be real .gif files animated through
 // FLAnimatedImage: unlike the hardware-decoded mp4/HLS tiles, every GIF frame
-// is decoded on the CPU at the file's full resolution.
+// is decoded on the CPU at the file's full resolution. Rare in practice —
+// Reddit supplies an mp4 rendition for nearly every GIF it hosts, and those
+// tiles play it instead (ApolloGalleryItem.gifMP4URL).
 static NSInteger const kApolloGalleryMaxAnimatedGIFTiles = 3;
 // Tiles are ~200pt wide, so an HLS stream is capped far below what the
 // fullscreen viewer pulls; bandwidth and decode work scale with the grid.
@@ -175,6 +179,9 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
     ((void (*)(id, SEL, id))objc_msgSend)(imageView, @selector(setAnimatedImage:), animatedImage);
 }
 
+// KVO context for the tile's AVPlayerItem status (see apollo_startPlayerWithURL:).
+static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatusContext;
+
 @interface ApolloGalleryTileCell : UICollectionViewCell
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, strong) UIVisualEffectView *blurView;
@@ -190,11 +197,17 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
 @property (nonatomic, strong, nullable) AVPlayerLayer *playerLayer;
 @property (nonatomic, strong, nullable) id playerEndObserver;
 @property (nonatomic, strong, nullable) id playerFailObserver;
+// The item whose `status` this cell observes (KVO must be removed from the
+// exact object it was added to, so it is remembered rather than re-derived).
+@property (nonatomic, strong, nullable) AVPlayerItem *observedPlayerItem;
 @property (nonatomic, strong, nullable) ApolloGalleryImageRequest *animationRequest;
 @property (nonatomic) BOOL animatingGIF;
 // YES for a GIF or video tile that has something to play and isn't behind an
 // NSFW/spoiler blur.
 @property (nonatomic, readonly) BOOL canAutoplay;
+// What the tile plays through AVPlayer: the post's own stream, else Reddit's
+// mp4 rendition of its GIF. nil for a real .gif with no mp4 (see below).
+@property (nonatomic, readonly, nullable) NSURL *tileStreamURL;
 // YES when playing means the FLAnimatedImage path (a real .gif with no mp4).
 @property (nonatomic, readonly) BOOL playsAnimatedGIF;
 // Playing, or still fetching what it will play; both count against the cap.
@@ -342,14 +355,20 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
     // Nothing plays behind an NSFW/spoiler blur: the reader hasn't asked to
     // see it, and it would burn a decoder on pixels nobody can make out.
     if (!item || item.shouldBlurThumbnail) return NO;
-    if (item.kind == ApolloGalleryMediaKindVideo) return item.videoURL != nil;
-    if (item.kind == ApolloGalleryMediaKindGIF) return item.videoURL != nil || self.playsAnimatedGIF;
-    return NO;
+    if (item.kind != ApolloGalleryMediaKindVideo && item.kind != ApolloGalleryMediaKindGIF) return NO;
+    return self.tileStreamURL != nil || self.playsAnimatedGIF;
+}
+
+- (NSURL *)tileStreamURL {
+    ApolloGalleryItem *item = self.item;
+    // A GIF's mp4 rendition is a grid-only stand-in: the viewer still opens
+    // the real .gif, so it is deliberately not the item's videoURL.
+    return item.videoURL ?: item.gifMP4URL;
 }
 
 - (BOOL)playsAnimatedGIF {
     ApolloGalleryItem *item = self.item;
-    return item.kind == ApolloGalleryMediaKindGIF && item.videoURL == nil && item.imageURL != nil &&
+    return item.kind == ApolloGalleryMediaKindGIF && self.tileStreamURL == nil && item.imageURL != nil &&
            [self.imageView respondsToSelector:@selector(setAnimatedImage:)];
 }
 
@@ -359,14 +378,14 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
 
 - (void)startPlayback {
     if (self.isPlaying || !self.canAutoplay) return;
-    ApolloGalleryItem *item = self.item;
     // Reddit's silent transcode is exactly right for a muted tile — even for a
     // hosted post (Redgifs, Streamable) whose audio-bearing original the
     // viewer resolves lazily; the grid never triggers that lookup.
-    if (item.videoURL) {
-        [self apollo_startPlayerWithURL:item.videoURL];
+    NSURL *stream = self.tileStreamURL;
+    if (stream) {
+        [self apollo_startPlayerWithURL:stream];
     } else {
-        [self apollo_startAnimationWithURL:item.imageURL];
+        [self apollo_startAnimationWithURL:self.item.imageURL];
     }
 }
 
@@ -381,6 +400,11 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
     if (self.playerFailObserver) {
         [center removeObserver:self.playerFailObserver];
         self.playerFailObserver = nil;
+    }
+    if (self.observedPlayerItem) {
+        [self.observedPlayerItem removeObserver:self forKeyPath:@"status"
+                                        context:kApolloGalleryTileItemStatusContext];
+        self.observedPlayerItem = nil;
     }
     [self.player pause];
     [self.playerLayer removeFromSuperlayer];
@@ -442,6 +466,12 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
         ApolloLog(@"[Gallery] tile stream failed to play; keeping the poster");
         [strongSelf stopPlayback];
     }];
+    // A stream that never loads (a dead rendition, or a device out of decoder
+    // sessions) only ever reaches AVPlayerItemStatusFailed — no notification —
+    // so watch the status too. Stopping frees the tile's slot under the cap
+    // instead of leaving a poster counted as playing for the whole visit.
+    [playerItem addObserver:self forKeyPath:@"status" options:0 context:kApolloGalleryTileItemStatusContext];
+    self.observedPlayerItem = playerItem;
 
     AVPlayerLayer *layer = [AVPlayerLayer playerLayerWithPlayer:player];
     layer.videoGravity = AVLayerVideoGravityResizeAspectFill;
@@ -453,6 +483,29 @@ static void ApolloGalleryTileSetAnimation(UIImageView *imageView, id animatedIma
     self.player = player;
     self.playerLayer = layer;
     [player play];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+    if (context != kApolloGalleryTileItemStatusContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    AVPlayerItem *playerItem = object;
+    if (playerItem.status != AVPlayerItemStatusFailed) return;
+    NSError *error = playerItem.error;
+    // KVO may arrive off the main thread; the teardown touches layers.
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        // Reused or stopped meanwhile: the failure belongs to an old item.
+        if (!strongSelf || strongSelf.observedPlayerItem != playerItem) return;
+        ApolloLog(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
+                  error.domain, (long)error.code);
+        [strongSelf stopPlayback];
+    });
 }
 
 - (void)apollo_startAnimationWithURL:(NSURL *)url {
@@ -1021,11 +1074,23 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 #pragma mark Tile autoplay
 
-// Whether tiles may move right now: the setting, Low Power Mode, the app in
-// the foreground, this grid being the visible screen (not under the fullscreen
-// viewer, not popped), and no memory warning during this visit.
+// Which switch governs a tile: "Play Videos in Gallery View" for anything the
+// feed badges with a duration, "Play GIFs in Gallery View" for anything it
+// badges GIF — however that GIF happens to be played (mp4 rendition or the
+// .gif itself). Stills have nothing to play.
+static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind) {
+    if (kind == ApolloGalleryMediaKindVideo) return sGalleryAutoplayVideos;
+    if (kind == ApolloGalleryMediaKindGIF) return sGalleryAutoplayGIFs;
+    return NO;
+}
+
+// Whether tiles may move right now: at least one of the two switches, Low
+// Power Mode, the app in the foreground, this grid being the visible screen
+// (not under the fullscreen viewer, not popped), and no memory warning during
+// this visit. Per-kind gating is ApolloGalleryTileAutoplayEnabledForKind.
 - (BOOL)apollo_tileAutoplayAllowed {
-    if (!sGalleryAutoplayMedia || self.tilePlaybackSuspendedForMemory) return NO;
+    if (!sGalleryAutoplayVideos && !sGalleryAutoplayGIFs) return NO;
+    if (self.tilePlaybackSuspendedForMemory) return NO;
     if ([NSProcessInfo processInfo].isLowPowerModeEnabled) return NO;
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return NO;
     if (self.presentedViewController) return NO;
@@ -1049,6 +1114,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
         if (![cell isKindOfClass:[ApolloGalleryTileCell class]]) continue;
         BOOL gif = cell.playsAnimatedGIF;
         BOOL wanted = allowed && cell.canAutoplay &&
+                      ApolloGalleryTileAutoplayEnabledForKind(cell.item.kind) &&
                       playing < kApolloGalleryMaxPlayingTiles &&
                       (!gif || animatedGIFs < kApolloGalleryMaxAnimatedGIFTiles);
         if (!wanted) {
@@ -1063,8 +1129,8 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     }
     if (playing != self.lastLoggedPlayingTileCount) {
         self.lastLoggedPlayingTileCount = playing;
-        ApolloLog(@"[Gallery] autoplay: %ld tile(s) playing (%ld gif) allowed=%d",
-                  (long)playing, (long)animatedGIFs, allowed);
+        ApolloLog(@"[Gallery] autoplay: %ld tile(s) playing (%ld .gif on cpu) allowed=%d videos=%d gifs=%d",
+                  (long)playing, (long)animatedGIFs, allowed, sGalleryAutoplayVideos, sGalleryAutoplayGIFs);
     }
 }
 

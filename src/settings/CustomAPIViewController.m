@@ -2265,15 +2265,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       isOn:^BOOL { return sSwipeUpForComments; }
                                   onToggle:^(UISwitch *sender) { [weakSelf swipeUpCommentsSwitchToggled:sender]; }];
 
-    ApolloSettingsRow *galleryAutoplay =
-        [ApolloSettingsRow switchRowWithID:@"media.galleryAutoplay"
-                                     title:@"Play GIFs and Videos in Gallery View"
-                                      isOn:^BOOL { return sGalleryAutoplayMedia; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplaySwitchToggled:sender]; }];
+    ApolloSettingsRow *galleryAutoplayVideos =
+        [ApolloSettingsRow switchRowWithID:@"media.galleryAutoplayVideos"
+                                     title:@"Play Videos in Gallery View"
+                                      isOn:^BOOL { return sGalleryAutoplayVideos; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayVideosSwitchToggled:sender]; }];
+
+    ApolloSettingsRow *galleryAutoplayGIFs =
+        [ApolloSettingsRow switchRowWithID:@"media.galleryAutoplayGIFs"
+                                     title:@"Play GIFs in Gallery View"
+                                      isOn:^BOOL { return sGalleryAutoplayGIFs; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay GIFs and Videos in Gallery View: GIF and video tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
-                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplay ]];
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
+                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
@@ -4295,11 +4301,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [self visibilityDidChange];
 }
 
-- (void)galleryAutoplaySwitchToggled:(UISwitch *)sender {
-    sGalleryAutoplayMedia = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayMedia forKey:UDKeyGalleryAutoplayMedia];
+- (void)galleryAutoplayVideosSwitchToggled:(UISwitch *)sender {
+    sGalleryAutoplayVideos = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayVideos forKey:UDKeyGalleryAutoplayVideos];
     // A gallery already sitting in the nav stack stops or starts its tiles
     // right away rather than on its next open.
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloGalleryAutoplayMediaChangedNotification object:nil];
+}
+
+- (void)galleryAutoplayGIFsSwitchToggled:(UISwitch *)sender {
+    sGalleryAutoplayGIFs = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayGIFs forKey:UDKeyGalleryAutoplayGIFs];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloGalleryAutoplayMediaChangedNotification object:nil];
 }
 
