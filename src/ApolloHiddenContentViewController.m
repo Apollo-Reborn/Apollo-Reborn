@@ -980,7 +980,8 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     cell.mediaTapped = ^{
         NSArray *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
         NSUInteger index = MIN(weakCell.currentMediaIndex, urls.count ? urls.count - 1 : 0);
-        if (!ApolloHiddenContentPresentMedia(urls, index, weakSelf)) {
+        UIImageView *source = index < weakCell.mediaImageViews.count ? weakCell.mediaImageViews[index] : nil;
+        if (!ApolloHiddenContentPresentMedia(urls, index, source, weakSelf)) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Media unavailable" message:@"This archived image cannot be opened in this Apollo build." preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             [weakSelf presentViewController:alert animated:YES completion:nil];
