@@ -187,7 +187,11 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
 @property (nonatomic, strong) UIStackView *contentStack;
 @property (nonatomic, strong) UIView *overviewSeparatorView;
 @property (nonatomic, copy) NSString *representedName;
+@property (nonatomic, strong) ApolloHiddenContentItem *mediaSelectionItem;
+@property (nonatomic) BOOL pendingMediaSelectionRestore;
 @end
+
+static char kApolloHiddenRememberedMediaIndex;
 
 @implementation ApolloHiddenContentCell
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier {
@@ -446,11 +450,23 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     ]];
     [self apollo_updateMediaHeight];
 }
+- (void)apollo_restoreMediaIndex:(NSUInteger)index {
+    if (index >= self.mediaURLs.count) return;
+    [self layoutIfNeeded];
+    CGFloat width = CGRectGetWidth(self.mediaScrollView.bounds);
+    if (width <= 0) return;
+    self.pendingMediaSelectionRestore = NO;
+    [self.mediaScrollView setContentOffset:CGPointMake(width * index, 0) animated:NO];
+    [self apollo_updateCurrentMediaIndex];
+}
 - (void)apollo_updateCurrentMediaIndex {
+    if (self.pendingMediaSelectionRestore) return;
     CGFloat width = CGRectGetWidth(self.mediaScrollView.bounds);
     if (width <= 0 || self.mediaURLs.count == 0) return;
     NSUInteger index = MIN(self.mediaURLs.count - 1, (NSUInteger)MAX(0, lround(self.mediaScrollView.contentOffset.x / width)));
     self.currentMediaIndex = index;
+    objc_setAssociatedObject(self.mediaSelectionItem, &kApolloHiddenRememberedMediaIndex,
+                             @(index), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (self.mediaURLs.count > 1) {
         self.mediaLabel.text = [NSString stringWithFormat:@"%lu/%lu", (unsigned long)index + 1, (unsigned long)self.mediaURLs.count];
         self.mediaLabel.hidden = NO;
@@ -514,6 +530,8 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     }];
 }
 - (void)configureWithItem:(ApolloHiddenContentItem *)item username:(NSString *)username {
+    self.pendingMediaSelectionRestore = YES;
+    self.mediaSelectionItem = nil;
     self.transitionSourceView.image = nil;
     self.mediaGeneration++;
     self.representedName = item.fullName;
@@ -609,6 +627,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     NSArray<NSURL *> *mediaURLs = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
     self.mediaURLs = mediaURLs;
     self.mediaCount = mediaURLs.count;
+    self.mediaSelectionItem = nil;
     self.currentMediaIndex = 0;
     self.loadedMediaIndexes = [NSMutableIndexSet indexSet];
     self.unavailableMediaIndexes = [NSMutableIndexSet indexSet];
@@ -629,6 +648,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
     }
     self.mediaImageViews = imageViews;
     [self.mediaScrollView setContentOffset:CGPointZero animated:NO];
+    self.mediaSelectionItem = item;
     // Derive media height from the final laid-out feed width, not a reused
     // cell's creation-time bounds. A fixed height computed during configure
     // could leave side gutters until navigation forced another layout pass.
@@ -1009,7 +1029,11 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         NSArray *urls = item.mediaURLs.count ? item.mediaURLs : (item.previewURL ? @[item.previewURL] : @[]);
         NSUInteger index = MIN(weakCell.currentMediaIndex, urls.count ? urls.count - 1 : 0);
         UIImageView *source = [weakCell apollo_transitionSourceForIndex:index];
-        if (!ApolloHiddenContentPresentMedia(urls, index, source, weakSelf)) {
+        if (!ApolloHiddenContentPresentMedia(urls, index, source, weakSelf, ^(NSUInteger viewedIndex) {
+            objc_setAssociatedObject(item, &kApolloHiddenRememberedMediaIndex, @(viewedIndex),
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            if (weakCell.mediaSelectionItem == item) [weakCell apollo_restoreMediaIndex:viewedIndex];
+        })) {
             UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Media unavailable" message:@"This archived image cannot be opened in this Apollo build." preferredStyle:UIAlertControllerStyleAlert];
             [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
             [weakSelf presentViewController:alert animated:YES completion:nil];
@@ -1025,6 +1049,12 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         ApolloHiddenContentSaveMedia(urls, weakSelf);
     };
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    ApolloHiddenContentCell *mediaCell = (ApolloHiddenContentCell *)cell;
+    NSNumber *remembered = objc_getAssociatedObject(mediaCell.mediaSelectionItem, &kApolloHiddenRememberedMediaIndex);
+    [mediaCell apollo_restoreMediaIndex:remembered.unsignedIntegerValue];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

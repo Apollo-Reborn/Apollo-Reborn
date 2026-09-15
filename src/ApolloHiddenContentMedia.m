@@ -13,6 +13,7 @@ extern void ApolloHiddenMediaAssignThumbnail(void *, NSInteger, const void *);
 @property (nonatomic, weak) id<UIPageViewControllerDelegate> nativeDelegate;
 @property (nonatomic, strong) UILabel *counter;
 @property (nonatomic) NSUInteger count;
+@property (nonatomic, copy) void (^selectionChanged)(NSUInteger);
 @end
 @implementation ApolloHiddenMediaPageDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
@@ -29,11 +30,12 @@ extern void ApolloHiddenMediaAssignThumbnail(void *, NSInteger, const void *);
     NSInteger value = *(NSInteger *)((uint8_t *)(__bridge void *)child + ivar_getOffset(index));
     if (value < 0 || (NSUInteger)value >= self.count) return;
     self.counter.text = [NSString stringWithFormat:@"%ld / %lu", (long)value + 1, (unsigned long)self.count];
+    if (self.selectionChanged) self.selectionChanged((NSUInteger)value);
 }
 @end
 static char kApolloHiddenMediaDelegate;
 
-BOOL ApolloHiddenContentPresentMedia(NSArray<NSURL *> *urls, NSUInteger initialIndex, UIImageView *sourceView, UIViewController *presenter) {
+BOOL ApolloHiddenContentPresentMedia(NSArray<NSURL *> *urls, NSUInteger initialIndex, UIImageView *sourceView, UIViewController *presenter, void (^selectionChanged)(NSUInteger)) {
     if (!urls.count || !presenter.viewIfLoaded.window || presenter.presentedViewController || !sourceView.window || !sourceView.image) return NO;
     initialIndex = MIN(initialIndex, urls.count - 1);
     Class pageClass = NSClassFromString(@"_TtC6Apollo23MediaPageViewController");
@@ -108,6 +110,7 @@ BOOL ApolloHiddenContentPresentMedia(NSArray<NSURL *> *urls, NSUInteger initialI
         ApolloHiddenMediaPageDelegate *delegate = [ApolloHiddenMediaPageDelegate new];
         delegate.nativeDelegate = ((UIPageViewController *)page).delegate;
         delegate.count = urls.count;
+        delegate.selectionChanged = selectionChanged;
         delegate.counter = [UILabel new];
         delegate.counter.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         delegate.counter.textColor = [UIColor colorWithWhite:0.6 alpha:1.0];
