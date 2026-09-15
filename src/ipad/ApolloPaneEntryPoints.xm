@@ -109,7 +109,10 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)setSelectedIndex:(NSUInteger)selectedIndex {
-    if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) {
+        %orig;
+        return;
+    }
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
     @try {
@@ -120,7 +123,10 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 }
 
 - (void)setSelectedViewController:(UIViewController *)selectedViewController {
-    if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) {
+        %orig;
+        return;
+    }
     UIViewController *actual = ApolloPaneActualChildForSyntheticChild(self, selectedViewController);
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
