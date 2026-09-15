@@ -47,9 +47,7 @@ static const void *kApolloSwitcherAvatarUsernameKey = &kApolloSwitcherAvatarUser
 static const void *kApolloSwitcherEditButtonUsernameKey = &kApolloSwitcherEditButtonUsernameKey;
 static const void *kApolloSwitcherFastEllipsisMenuKey = &kApolloSwitcherFastEllipsisMenuKey;
 
-// Profile Layout's avatar style also governs user pictures in this switcher.
-// Full and Circle are circular here because the account row has no full-body
-// snoovatar metadata; Square uses the same rounded-square ratio as profiles.
+// Oval-clipped, aspect-fill render at `diameter`. Nil source -> neutral placeholder.
 static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diameter) {
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
@@ -58,10 +56,7 @@ static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diamet
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         CGRect rect = CGRectMake(0.0, 0.0, diameter, diameter);
-        UIBezierPath *clip = sProfileAvatarStyle == 2
-            ? [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:diameter * 0.24]
-            : [UIBezierPath bezierPathWithOvalInRect:rect];
-        [clip addClip];
+        [[UIBezierPath bezierPathWithOvalInRect:rect] addClip];
         if (sourceImage) {
             CGFloat aspect = sourceImage.size.width > 0 ? sourceImage.size.height / sourceImage.size.width : 1.0;
             CGFloat w = diameter, h = diameter;

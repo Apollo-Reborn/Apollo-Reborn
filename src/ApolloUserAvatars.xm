@@ -2040,38 +2040,11 @@ static UIImage *ApolloCircularAvatarImage(UIImage *sourceImage, CGFloat diameter
     return ApolloClippedAvatarImage(sourceImage, diameter, NO);
 }
 
-static UIBezierPath *ApolloUserAvatarClipPath(CGRect rect, BOOL prefersPolygon) {
-    if (sProfileAvatarStyle == 2) {
-        return [UIBezierPath bezierPathWithRoundedRect:rect
-                                          cornerRadius:CGRectGetWidth(rect) * 0.24];
-    }
-    if (sProfileAvatarStyle == 1) {
-        return [UIBezierPath bezierPathWithOvalInRect:rect];
-    }
-    return prefersPolygon ? ApolloHexagonPath(rect)
-                          : [UIBezierPath bezierPathWithOvalInRect:rect];
-}
-
-static UIImage *ApolloStyledUserAvatarImage(UIImage *sourceImage,
-                                             CGFloat diameter,
-                                             BOOL prefersPolygon) {
-    CGSize size = CGSizeMake(diameter, diameter);
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = ApolloAvatarScreenScale();
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
-        initWithSize:size format:format];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        CGRect rect = CGRectMake(0.0, 0.0, diameter, diameter);
-        [ApolloUserAvatarClipPath(rect, prefersPolygon) addClip];
-        ApolloDrawAvatarSourceImage(sourceImage, rect);
-    }];
-}
-
 static UIImage *ApolloAvatarImageForInfo(ApolloUserProfileInfo *info, UIImage *sourceImage, UIImage *decoratorImage, CGFloat diameter) {
     BOOL hasFrame = ApolloAvatarHasFrame(info);
     BOOL polygon = info.hasSnoovatar || hasFrame;
     if (!hasFrame && !decoratorImage) {
-        return ApolloStyledUserAvatarImage(sourceImage, diameter, polygon);
+        return ApolloClippedAvatarImage(sourceImage, diameter, polygon);
     }
 
     CGSize size = CGSizeMake(diameter, diameter);
@@ -2080,18 +2053,13 @@ static UIImage *ApolloAvatarImageForInfo(ApolloUserProfileInfo *info, UIImage *s
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         CGRect rect = CGRectMake(0.0, 0.0, diameter, diameter);
-        UIBezierPath *clip = ApolloUserAvatarClipPath(rect, polygon);
+        UIBezierPath *clip = polygon ? ApolloHexagonPath(rect) : [UIBezierPath bezierPathWithOvalInRect:rect];
         CGContextSaveGState(context.CGContext);
         [clip addClip];
         ApolloDrawAvatarSourceImage(sourceImage, rect);
-        // Circle and Square are explicit shape choices, so the decorative
-        // frame is clipped with the photo. Full preserves Reddit's native
-        // frame silhouette and may draw beyond the avatar's own clip.
-        if (sProfileAvatarStyle != 0 && decoratorImage) {
-            [decoratorImage drawInRect:rect blendMode:kCGBlendModeNormal alpha:1.0];
-        }
         CGContextRestoreGState(context.CGContext);
-        if (sProfileAvatarStyle == 0 && decoratorImage) {
+
+        if (decoratorImage) {
             [decoratorImage drawInRect:rect blendMode:kCGBlendModeNormal alpha:1.0];
         }
     }];
@@ -2245,9 +2213,7 @@ static void ApolloRestoreAvatarForCell(id cell) {
 
 static NSString *ApolloAvatarTokenForInfo(ApolloUserProfileInfo *info, BOOL hasAvatarImage, BOOL hasDecoratorImage, CGFloat diameter) {
     NSString *urlToken = info.iconURL.absoluteString ?: @"placeholder";
-    NSString *shapeToken = sProfileAvatarStyle == 2 ? @"square" :
-        (sProfileAvatarStyle == 1 ? @"circle" :
-         ((info.hasSnoovatar || ApolloAvatarHasFrame(info)) ? @"polygon" : @"circle"));
+    NSString *shapeToken = (info.hasSnoovatar || ApolloAvatarHasFrame(info)) ? @"polygon" : @"circle";
     NSString *imageToken = hasAvatarImage ? @"loaded" : @"placeholder";
     NSString *frameToken = info.avatarFrameKind ?: @"none";
     NSString *decoratorURLToken = info.decoratorURL.absoluteString ?: @"none";
@@ -3808,9 +3774,7 @@ static void ApolloProfileRestoreTabAvatarItem(UITabBarItem *item) {
 }
 
 static UIImage *ApolloProfileTabAvatarImage(UIImage *sourceImage) {
-    UIImage *avatar = ApolloStyledUserAvatarImage(sourceImage,
-                                                   ApolloProfileTabAvatarDiameter,
-                                                   NO);
+    UIImage *avatar = ApolloCircularAvatarImage(sourceImage, ApolloProfileTabAvatarDiameter);
     avatar = [avatar imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
     objc_setAssociatedObject(avatar, kApolloProfileTabAvatarImageMarkerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return avatar;
@@ -5086,8 +5050,7 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
         ApolloProfileRefreshControllersForUsername(nil);
-        if ([note.object isEqual:ApolloProfileLayoutStructureChangedMarker] ||
-            [note.object isEqual:@"ApolloProfileAvatarStyleChanged"]) {
+        if ([note.object isEqual:ApolloProfileLayoutStructureChangedMarker]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSHashTable *visited = [[NSHashTable alloc]
                     initWithOptions:NSHashTableObjectPointerPersonality capacity:128];
