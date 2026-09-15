@@ -1230,7 +1230,10 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     RDKLink *link = box.sourceLink;
     if (!box) return;
     UIViewController *child = pager.viewControllers.firstObject;
-    if (![NSStringFromClass(child.class) isEqualToString:@"_TtC6Apollo21MediaViewerController"]) return;
+    // NSStringFromClass demangles Swift names ("Apollo.MediaViewerController"),
+    // so comparing it with the encoded runtime name rejects every native page.
+    Class viewerClass = NSClassFromString(@"_TtC6Apollo21MediaViewerController");
+    if (!viewerClass || ![child isKindOfClass:viewerClass]) return;
     Ivar ivar = class_getInstanceVariable(child.class, "index");
     if (!ivar) return;
     ptrdiff_t offset = ivar_getOffset(ivar);
