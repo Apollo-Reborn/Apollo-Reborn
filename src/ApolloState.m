@@ -22,6 +22,7 @@ BOOL sShowRecentlyReadThumbnails = YES;
 BOOL sFeedTextPostThumbnails = YES;
 BOOL sFeedGalleryCarousel = YES;
 BOOL sFeedGalleryEdgeSwipeNav = NO;
+BOOL sGalleryAutoplayMedia = YES;
 BOOL sForwardSwipeForgetAfterScrolling = NO; // scrolling the feed away expires the forward-swipe memory (opt-in)
 BOOL sSwipeUpForComments = NO;
 BOOL sDevvitInteractivePosts = NO;

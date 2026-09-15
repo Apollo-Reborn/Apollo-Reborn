@@ -3730,6 +3730,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyFeedTextPostThumbnails: @YES,
                                     UDKeyFeedGalleryCarousel: @YES,
                                     UDKeyFeedGalleryEdgeSwipeNav: @NO,
+                                    UDKeyGalleryAutoplayMedia: @YES,
                                     UDKeyForwardSwipeForgetAfterScrolling: @NO,
                                     UDKeySwipeUpForComments: @NO,
                                     UDKeySportsClipsInlineVideo: @YES,
@@ -3886,6 +3887,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sFeedTextPostThumbnails = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedTextPostThumbnails];
     sFeedGalleryCarousel = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedGalleryCarousel];
     sFeedGalleryEdgeSwipeNav = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedGalleryEdgeSwipeNav];
+    sGalleryAutoplayMedia = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyGalleryAutoplayMedia];
     sForwardSwipeForgetAfterScrolling = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyForwardSwipeForgetAfterScrolling];
     sSwipeUpForComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySwipeUpForComments];
     sDevvitInteractivePosts = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDevvitInteractivePosts];

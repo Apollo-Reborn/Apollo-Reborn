@@ -651,6 +651,11 @@ static NSString *const ApolloFeedGalleryCarouselChangedNotification = @"ApolloFe
 // is needed (same reasoning as UDKeySwipeUpForComments below). See
 // ApolloFeedGalleryCarousel.xm.
 static NSString *const UDKeyFeedGalleryEdgeSwipeNav = @"FeedGalleryEdgeSwipeNavigation";
+// Gallery View grid: GIF tiles animate and video tiles play, silently, while
+// they are on screen (tap a tile for the fullscreen viewer, which has sound).
+// Default YES. Low Power Mode pauses it. See ApolloGalleryViewController.m.
+static NSString *const UDKeyGalleryAutoplayMedia = @"GalleryAutoplayMedia";
+static NSString *const ApolloGalleryAutoplayMediaChangedNotification = @"ApolloGalleryAutoplayMediaChangedNotification";
 // Apollo's forward-swipe (right edge, plus the gallery edge-swipe hand-off)
 // re-opens the screen you last swiped back from, and that memory natively
 // survives unlimited feed scrolling. With this on, scrolling the feed a few
