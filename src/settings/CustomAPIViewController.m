@@ -57,6 +57,8 @@
 #import "settings/ApolloOpenInAppViewController.h"
 #import "settings/SavedCategoriesViewController.h"
 #import "settings/ApolloSubredditSectionsViewController.h"
+#import "ApolloActionMenuLayout.h"
+#import "settings/ApolloActionMenuSettingsViewController.h"
 #import "ApolloFollowingSection.h"
 #import "settings/TranslationSettingsViewController.h"
 #import "PictureInPictureViewController.h"
@@ -1914,6 +1916,32 @@ typedef NS_ENUM(NSInteger, Tag) {
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom, tabBarSwipeNavigation ]];
+}
+
+// Interface → Menus: the ••• menus' item order and visibility live on their own
+// screen (ApolloActionMenuSettingsViewController); the hub row summarises how
+// many menus differ from Apollo's default.
+- (NSString *)actionMenusSummaryText {
+    NSMutableArray<NSString *> *customized = [NSMutableArray array];
+    for (ApolloActionMenuContext context in ApolloActionMenuAllContexts()) {
+        if (ApolloActionMenuContextIsCustomized(context)) [customized addObject:ApolloActionMenuContextTitle(context)];
+    }
+    if (customized.count == 0) return @"Default";
+    return [NSString stringWithFormat:@"Customized: %@", [customized componentsJoinedByString:@", "]];
+}
+
+- (ApolloSettingsSection *)buildInterfaceMenusSection {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *actionMenus =
+        [self hubDisclosureRowWithID:@"interface.actionMenus"
+                               title:@"Action Menus"
+                            subtitle:^NSString * { return [weakSelf actionMenusSummaryText]; }
+                                push:^UIViewController * {
+            return [[ApolloActionMenuSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    return [ApolloSettingsSection sectionWithTitle:@"Menus"
+                                            footer:@"Reorder or hide the items in the ••• menus of feeds, posts and comments."
+                                              rows:@[ actionMenus ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -4968,7 +4996,13 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
-              [self buildInterfaceDisplayNavigationSection] ];
+              [self buildInterfaceDisplayNavigationSection],
+              [self buildInterfaceMenusSection] ];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Refresh the Action Menus summary after returning from that screen.
+    [self reloadRowWithID:@"interface.actionMenus"];
 }
 @end
 

@@ -221,7 +221,14 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     # (not LC_BUILD_VERSION), so the platform patcher below can't flip it to
     # Simulator; dyld_sim hard-fails resolving its rootless-path dependency and
     # SIGABRTs the whole app at launch. Strip both before patching.
-    rm -rf "$APP_DIR/Frameworks/ApolloImprovedCustomApi.dylib" "$APP_DIR/Frameworks/CydiaSubstrate.framework"
+    # Official 3.7.1 IPAs use ApolloReborn.dylib rather than the old name.
+    # These are weak loads; remove every bundled device-only tweak dependency
+    # so this run loads only the freshly built simulator dylib.
+    rm -rf "$APP_DIR/Frameworks/ApolloImprovedCustomApi.dylib" \
+           "$APP_DIR/Frameworks/ApolloReborn.dylib" \
+           "$APP_DIR/Frameworks/ApolloOpenInFix.dylib" \
+           "$APP_DIR/Frameworks/libFLEX.dylib" \
+           "$APP_DIR/Frameworks/CydiaSubstrate.framework"
 
     write_patcher
     # Patch every Mach-O in the bundle (main binary + appex + frameworks).
@@ -416,7 +423,8 @@ if [[ "$INJECTED" == 1 ]]; then
     xcrun simctl launch "$DEV" "$BUNDLE_ID"
 else
     log "Launching $BUNDLE_ID with ApolloReborn.dylib injected"
-    DYLIB_INJECT="/tmp/ApolloRebornSim-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
+    # Keep concurrent simulator/device runs isolated from each other's fallback dylib.
+    DYLIB_INJECT="/tmp/ApolloRebornSim-${DEV}-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
     cp "$DYLIB_DST" "$DYLIB_INJECT"
     codesign -f -s - "$DYLIB_INJECT" >/dev/null 2>&1
     SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$DYLIB_INJECT" \
