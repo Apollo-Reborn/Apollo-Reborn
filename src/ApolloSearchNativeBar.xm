@@ -633,6 +633,7 @@ static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
 
 static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc);
 static void NSBApolloDismissNow(UIViewController *vc);
+static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *why);
 
 
 static void NSBApolloDismiss(UIViewController *vc) {
@@ -772,6 +773,66 @@ static void NSBApolloDismissNow(UIViewController *vc) {
         }
         settle();
     });
+}
+
+// MARK: - The user takes over during the dismiss window
+//
+// Everything in the dismiss window assumes the feed is parked at its resting
+// top while Apollo's teardown re-parks around it: the search bar is held
+// expanded so the rest is a constant, the offset pins hold that rest, and the
+// settle timers snap any drift back to it. The user grabbing the feed ends
+// that premise — their scroll position is the truth from then on — so every
+// remaining piece of the window stands down at once:
+//
+// - the policy hold, or the bar stays pinned while rows scroll under it until
+//   the 1.40s timer flips it back and UIKit snaps it away in one frame.
+//   Measured on cancel + drag 1.5s later: 335pt of scrolling under a 60pt bar,
+//   then a 60 -> 0 snap at exactly the timer. That is the lingering bar this
+//   exists for;
+// - the settle timers, or a short drag that stops inside the window is yanked
+//   back to the top by the next one to fire;
+// - the offset pin, for the same reason the moment the drag ends.
+//
+// WHEN the policy is restored is the whole point. UIKit caches the nav bar's
+// collapsible height range as the interactive scroll begins
+// (-[UINavigationController _observeScrollViewWillBeginDragging:] ->
+// _setInteractiveScrollActive: -> _reloadCachedInteractiveScrollMeasurements),
+// and a range computed with the hold still up has no room to collapse into.
+// The scroll view posts _UIScrollViewWillBeginDraggingNotification just before
+// it walks those observers, so a release from that notification lands the
+// policy before the range is cached, and the bar compresses with the drag from
+// its very first frame — indistinguishable from a plain scroll. The geometry
+// setters carry the same release as a fallback for a drag that arrives without
+// the notification: a policy change resizes the bar, and
+// _navigationBarChangedSize: reloads the cached range mid-scroll, so the bar
+// still goes — as the snap the timer used to produce, only without the wait.
+//
+// A scroll-back still in flight when the finger lands ends here as well. Its
+// completion is what runs Apollo's dismiss, so it is finished (not dropped)
+// before the window it re-opens is retired; the tween's own step already
+// bails on a tracking touch, so this is normally a no-op by the time the pan
+// begins and only matters when both land inside one frame.
+static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *why) {
+    ApolloNativeFeedSession *session = NSBSessionForView(sv);
+    if (!sv || !session || sv != session.table) return;
+    if (!session.dismissWindow && !session.awaitingScroll) return;
+    if (session.typed) return; // a live query owns the geometry, not the window
+    UIViewController *vc = session.controller ?: NSBFeedVCForView(sv);
+    NSBFinishScrollBack(session);
+    session.dismissWindow = NO;
+    session.dismissScrolling = NO;
+    session.awaitingScroll = NO;
+    ++session.dismissGeneration; // retires the settle timers and policy restore
+    UINavigationItem *item = vc.navigationItem;
+    if (item.searchController && !item.hidesSearchBarWhenScrolling &&
+        objc_getAssociatedObject(vc, kNSBAppearedKey) != nil) {
+        item.hidesSearchBarWhenScrolling = YES;
+    }
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] dismiss window released on %s: y=%.1f adjTop=%.1f bar=%.1f",
+                  why, sv.contentOffset.y, sv.adjustedContentInset.top,
+                  CGRectGetHeight(item.searchController.searchBar.bounds));
+    }
 }
 
 // MARK: - Results surfacing (subreddit chrome)
@@ -1674,6 +1735,13 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
         ApolloLog(@"[NSBTrace] retarget offset -> %.1f (inTop=%.1f adjTop=%.1f)",
                   offset.y, sv.contentInset.top, sv.adjustedContentInset.top);
     }
+    // End the dismiss window as soon as a new drag takes ownership, including
+    // the fallback path where UIKit's will-begin-dragging notification did not
+    // arrive before the first geometry write.
+    if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
+        sv == session.table && sv.isDragging) {
+        NSBReleaseDismissWindowForUserScroll(sv, "drag (offset)");
+    }
     if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
         !session.dismissScrolling && !session.awaitingScroll &&
         sv == session.table && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
@@ -1739,6 +1807,10 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
         NSBTraceEnabled()) {
         ApolloLog(@"[NSBTrace] retarget bounds -> %.1f (inTop=%.1f adjTop=%.1f)",
                   bounds.origin.y, sv.contentInset.top, sv.adjustedContentInset.top);
+    }
+    if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
+        sv == session.table && sv.isDragging) {
+        NSBReleaseDismissWindowForUserScroll(sv, "drag (bounds)");
     }
     if (ApolloNativeFeedSearchEnabled() && session.dismissWindow &&
         !session.dismissScrolling && !session.awaitingScroll &&
@@ -1886,4 +1958,20 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 
 %ctor {
     %init;
+    // Release the dismiss window the instant a drag begins on the session's
+    // feed — before UINavigationController caches the bar's collapsible range
+    // for the interactive scroll (see NSBReleaseDismissWindowForUserScroll).
+    // One pointer compare per drag start app-wide; the name has been posted
+    // by -[UIScrollView _scrollViewWillBeginDragging] for many releases, and
+    // if it ever stops arriving the geometry-setter fallback still releases.
+    if (ApolloNativeFeedSearchEnabled()) {
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:@"_UIScrollViewWillBeginDraggingNotification"
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            UIScrollView *sv = note.object;
+            if (sv) NSBReleaseDismissWindowForUserScroll(sv, "will begin dragging");
+        }];
+    }
 }
