@@ -39,7 +39,7 @@ typedef NS_ENUM(NSInteger, ApolloPaneColumn) {
 //
 // Three distinct questions, deliberately not collapsed into one:
 //
-//   Supported  — could this device ever run the pane layout? (iPad, immutable)
+//   Supported  — could this OS/device run panes? (iPadOS 18+ / iOS 27 phone)
 //   Enabled    — did the user ask for it for THIS process? (read at %ctor)
 //   Active     — did installation actually succeed and is it live right now?
 //
@@ -49,7 +49,7 @@ typedef NS_ENUM(NSInteger, ApolloPaneColumn) {
 // the default would make every consumer disagree with reality for the rest of
 // the session.
 
-// iPad idiom. Cached — the idiom cannot change for the life of the process.
+// OS/device capability, cached. Never use this to decide the number of columns.
 BOOL ApolloPaneLayoutSupported(void);
 
 // Supported AND the user default was on when %ctor read it. This is the
@@ -76,7 +76,7 @@ UISplitViewController *_Nullable ApolloPanePrimarySplitForNavigationItem(UINavig
 // MARK: - Hierarchy
 
 // The pane split controller enclosing `viewController`, or nil when it is not
-// inside one (always nil on iPhone, and whenever the layout is off). Walks up
+// inside one (nil whenever the layout is off). Walks up
 // through parents, so it works from a deeply nested child.
 UISplitViewController *_Nullable ApolloPaneSplitControllerFor(UIViewController *_Nullable viewController);
 

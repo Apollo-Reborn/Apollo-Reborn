@@ -397,7 +397,7 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     // Had this required `tabs`, the alternative would have been rebuilding
     // Apollo's tab model by hand, which is a far larger and more fragile change.
     //
-    // ApolloPaneLayoutSupported() gates production installation to iPadOS 18+
+    // ApolloPaneLayoutSupported() gates installation to iPadOS 18+ / iOS 27 phones
     // so the experiment always gets this navigation model. Keep the fallback
     // for defensive safety if this function is ever invoked directly.
     if (@available(iOS 18.0, *)) {
@@ -511,12 +511,11 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
 %end
 
 %ctor {
-    // iPhone never loads any of this: the idiom check comes first, so the hook
-    // is not even installed on a device that can never run the pane layout.
+    // Install only on supported OS/device combinations and explicit opt-in.
     if (!ApolloPaneLayoutSupported()) return;
 
     if (!ApolloPaneLayoutEnabled()) {
-        ApolloLog(@"[PaneInstall] iPad detected, pane layout off (UDKeyIPadPaneLayout); hook not installed");
+        ApolloLog(@"[PaneInstall] supported device, pane layout off (UDKeyIPadPaneLayout); hook not installed");
         return;
     }
 

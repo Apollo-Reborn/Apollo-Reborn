@@ -38,6 +38,9 @@
 #     Contents/SharedFrameworks/. Xcode.app's bundle can't be patched (write-protected),
 #     so for now drive taps manually in Device Hub until idb_companion ships a fix.
 #
+# --resizable: opt the cached Apollo shell into iOS 27 continuous resizing.
+# Enable Multi-Column Layout in Settings separately; this flag never sets it.
+#
 # Env overrides:
 #   BASE_IPA (./apollo-base.ipa)  BUNDLE_ID (com.christianselig.Apollo)
 #   SIM_NAME (Apollo-Sim)  SIM_DEVICE_TYPE (iPhone 16 Pro)  SIM_RUNTIME (newest iOS)
@@ -60,6 +63,7 @@ APP_GROUP_SUITE="group.com.christianselig.apollo"   # tweak hardcodes this regar
 BACKUP_ZIP="${BACKUP_ZIP:-}"
 APPEARANCE="${APPEARANCE:-}"
 GLASS="${GLASS:-0}"
+RESIZABLE_APP=0
 
 DO_BUILD=1; FRESH_APP=0; DO_LOGS=0; DO_DRIVE=0
 while [[ $# -gt 0 ]]; do
@@ -70,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --drive)      DO_DRIVE=1 ;;
         --dark)       APPEARANCE=dark ;;
         --light)      APPEARANCE=light ;;
+        --resizable)  RESIZABLE_APP=1 ;;
         --glass)      GLASS=1 ;;
         --no-glass)   GLASS=0 ;;
         --backup)     BACKUP_ZIP="${2:-}"; shift ;;
@@ -79,6 +84,8 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+# SDK 27 also opts into modern chrome; use the canonical Glass preparation.
+if [[ "$RESIZABLE_APP" == 1 ]]; then GLASS=1; fi
 # Convention: if no backup was named, auto-load ./.sim/backup.zip when present, so
 # agents/devs can drop a settings backup there once and have it preloaded on every
 # run. (./.sim/ is gitignored; a backup zip carries live credentials — never commit
@@ -174,6 +181,9 @@ fi
 # >= 19.0 (iOS 26) means glass is on.
 if [[ -f "$APP_DIR/Apollo" ]]; then
     CACHED_SDK_MAJOR="$(vtool -show-build "$APP_DIR/Apollo" 2>/dev/null | awk '/sdk/{split($2,v,"."); print v[1]}')"
+    CACHED_RESIZABLE=0
+    [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 27 ]] && CACHED_RESIZABLE=1
+    if [[ "$CACHED_RESIZABLE" != "$RESIZABLE_APP" ]]; then FRESH_APP=1; fi
     CACHED_GLASS=0; [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 19 ]] && CACHED_GLASS=1
     if [[ "$CACHED_GLASS" != "$GLASS" ]]; then
         log "Requested glass=$GLASS differs from prepared glass=$CACHED_GLASS — re-preparing app"
@@ -258,6 +268,11 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
             [[ -e "$ext" ]] && codesign -f -s - "$ext" >/dev/null 2>&1
         done
     fi
+    codesign -f -s - "$APP_DIR" >/dev/null 2>&1
+fi
+
+if [[ "$RESIZABLE_APP" == 1 ]]; then
+    python3 scripts/prepare-resizable-app.py "$APP_DIR"
     codesign -f -s - "$APP_DIR" >/dev/null 2>&1
 fi
 
