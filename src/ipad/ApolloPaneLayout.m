@@ -16,6 +16,13 @@ BOOL ApolloPaneLayoutSupported(void) {
     static BOOL supported = NO;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        // The experiment's navigation model depends on UIKit's system tab
+        // sidebar. Earlier iPadOS releases can render the split columns, but
+        // retain Apollo's tab bar alongside them, which does not match the UI
+        // promised by the setting and has not received the same test coverage.
+        // Keep the production opt-in honest and conservative: iPadOS 18 is the
+        // first supported release, while Apollo's normal layout remains
+        // untouched everywhere else.
         if (@available(iOS 18.0, *)) {
             supported = (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
         }
@@ -83,4 +90,23 @@ BOOL ApolloPaneNavigationControllerIsRegisteredToSplit(
     UISplitViewController *splitViewController) {
     if (!navigationController || !splitViewController || !sPaneNavigationOwners) return NO;
     return [sPaneNavigationOwners objectForKey:navigationController] == splitViewController;
+}
+
+void ApolloPaneStageMasterTableSelectionIfNeeded(
+    UIViewController *sourceViewController,
+    UITableView *tableView,
+    NSIndexPath *indexPath) {
+    if (!ApolloPaneLayoutActive() || !sourceViewController || !tableView || !indexPath) return;
+    ApolloPaneSplitViewController *pane =
+        (ApolloPaneSplitViewController *)ApolloPaneSplitControllerFor(sourceViewController);
+    UINavigationController *primary =
+        [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary];
+    if (!pane || sourceViewController.navigationController != primary) return;
+
+    id intent = [pane apollo_masterSelectionIntentFromSource:sourceViewController
+                                                     surface:tableView
+                                                   indexPath:indexPath
+                                              itemIdentifier:nil
+                                               identityOwner:nil];
+    [pane apollo_stageMasterSelectionIntent:intent];
 }
