@@ -8,6 +8,7 @@
 #import "UserDefaultConstants.h"
 
 #import <WebKit/WebKit.h>
+#import <objc/runtime.h>
 
 // We never decide auth state from cookie names: Reddit sets reddit_session (and
 // token_v2) for anonymous web sessions too, and the cookie store can momentarily
@@ -944,15 +945,37 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
 
 #pragma mark - Shared sign-in chooser (reused by the empty-state splash and the account switcher)
 
+static const void *kApolloSignInChooserOutsideTapKey = &kApolloSignInChooserOutsideTapKey;
+
+@interface ApolloSignInChooserOutsideTapHandler : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) UIAlertController *chooser;
+@end
+
+@implementation ApolloSignInChooserOutsideTapHandler
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    UIView *chooserView = self.chooser.view;
+    return chooserView && ![touch.view isDescendantOfView:chooserView];
+}
+
+- (void)outsideTapped:(UITapGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer.state == UIGestureRecognizerStateEnded) {
+        [self.chooser dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
+@end
+
 void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyHandler)(void)) {
     if (!host || host.presentedViewController) {
         ApolloLog(@"[WebJSON] Ignoring duplicate sign-in chooser presentation");
         return;
     }
     apiKeyHandler = [apiKeyHandler copy];
-    // Use an alert instead of a transient action sheet. It cannot dismiss from
-    // an outside tap and has no default action: the auth mode changes only after
-    // the user explicitly chooses one of the two sign-in methods.
+    // Keep the centered alert layout and no default action. An explicit
+    // background recognizer below also lets the user dismiss it by tapping the
+    // dimmed area without choosing an authentication mode.
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Choose Sign-In Method"
                                                                      message:@"Use Apollo's configured API key, or sign in with API-Key-Free Mode. This choice will not change on its own."
                                                               preferredStyle:UIAlertControllerStyleAlert];
@@ -975,7 +998,18 @@ void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyH
         [host presentViewController:nav animated:YES completion:nil];
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [host presentViewController:sheet animated:YES completion:nil];
+    [host presentViewController:sheet animated:YES completion:^{
+        UIView *presentationSurface = sheet.view.superview;
+        if (!presentationSurface) return;
+        ApolloSignInChooserOutsideTapHandler *handler = [ApolloSignInChooserOutsideTapHandler new];
+        handler.chooser = sheet;
+        UITapGestureRecognizer *outsideTap = [[UITapGestureRecognizer alloc]
+            initWithTarget:handler action:@selector(outsideTapped:)];
+        outsideTap.delegate = handler;
+        [presentationSurface addGestureRecognizer:outsideTap];
+        objc_setAssociatedObject(sheet, kApolloSignInChooserOutsideTapKey, handler,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }];
 }
 
 #pragma mark - Per-account mode conversions
