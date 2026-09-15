@@ -138,6 +138,8 @@ static char kApolloFeedGalleryPendingViewerIndexKey;
 static char kApolloFeedGalleryItemsCacheKey;
 static char kApolloFeedGalleryApplyStateKey;
 static char kApolloFeedGalleryTrackedNodeKey;
+static char kApolloFeedGalleryReturnCarouselKey;
+static char kApolloFeedGalleryRememberedIndexKey;
 
 @interface ApolloFeedGalleryOwnerBox : NSObject
 @property (nonatomic, weak) id owner;
@@ -593,7 +595,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
         [self.imageViews removeAllObjects];
         [self.loadedURLs removeAllObjects];
         self.items = items;
-        self.currentIndex = 0;
+        NSNumber *remembered = objc_getAssociatedObject(ApolloFeedGalleryLink(albumNode),
+                                                       &kApolloFeedGalleryRememberedIndexKey);
+        self.currentIndex = MAX(0, MIN((NSInteger)items.count - 1, remembered.integerValue));
         self.needsPageGeometry = YES;
 
         for (NSUInteger index = 0; index < items.count; index++) {
@@ -739,6 +743,13 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
         return;
     }
 
+    // Keep a weak route back to the exact feed carousel that opened this
+    // viewer. The link also remembers the selection across cell recreation.
+    ApolloFeedGalleryOwnerBox *returnBox = [ApolloFeedGalleryOwnerBox new];
+    returnBox.owner = self;
+    objc_setAssociatedObject(link, &kApolloFeedGalleryReturnCarouselKey,
+                             returnBox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     UIImageView *pageView = self.imageViews[index];
     if (pageView.image && [senderNode respondsToSelector:@selector(setImage:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(senderNode, @selector(setImage:), pageView.image);
@@ -821,6 +832,21 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     return MAX(0, MIN((NSInteger)self.items.count - 1, index));
 }
 
+- (void)apollo_restoreViewedIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.items.count) return;
+    self.currentIndex = index;
+    self.pageControl.currentPage = index;
+    [self apollo_updateCount];
+    [self apollo_loadNearIndex:index];
+    CGFloat width = CGRectGetWidth(self.scrollView.bounds);
+    if (width > 0.0) {
+        [self.scrollView setContentOffset:CGPointMake(width * index, 0.0) animated:NO];
+    } else {
+        self.needsPageGeometry = YES;
+        [self setNeedsLayout];
+    }
+}
+
 - (void)apollo_pageControlChanged:(UIPageControl *)pageControl {
     NSInteger target = [self apollo_clampIndex:pageControl.currentPage];
     CGFloat width = CGRectGetWidth(self.scrollView.bounds);
@@ -853,6 +879,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     NSInteger index = [self apollo_clampIndex:(NSInteger)llround(scrollView.contentOffset.x / width)];
     if (index == self.currentIndex) return;
     self.currentIndex = index;
+    objc_setAssociatedObject(ApolloFeedGalleryLink(self.albumNode),
+                             &kApolloFeedGalleryRememberedIndexKey, @(index),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     self.pageControl.currentPage = index;
     [self apollo_updateCount];
     // A fast fling crosses many pages; starting +/-1 downloads for each one
@@ -1184,7 +1213,46 @@ static void ApolloFeedGallerySettingChanged(void) {
 
 %end
 
+// Read the visible child's stored Swift Int, not selectedThumbnailIndex:
+// that optional identifies the opening thumbnail and does not track paging.
+// Only completed page transitions count; a cancelled swipe keeps the old page.
+static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
+    if (!sFeedGalleryCarousel) return;
+    RDKLink *link = ApolloFeedGalleryObjectIvar(pager, "link");
+    ApolloFeedGalleryOwnerBox *box = objc_getAssociatedObject(link, &kApolloFeedGalleryReturnCarouselKey);
+    if (!box) return;
+    UIViewController *child = pager.viewControllers.firstObject;
+    if (![NSStringFromClass(child.class) isEqualToString:@"_TtC6Apollo21MediaViewerController"]) return;
+    Ivar ivar = class_getInstanceVariable(child.class, "index");
+    if (!ivar) return;
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    if (offset < 0 || (size_t)offset + sizeof(NSInteger) > class_getInstanceSize(child.class)) return;
+    NSInteger index = 0;
+    memcpy(&index, (const uint8_t *)(__bridge const void *)child + offset, sizeof(index));
+    if (index < 0) return;
+    ApolloFeedGalleryCarouselView *carousel = box.owner;
+    if (carousel && ApolloFeedGalleryLink(carousel.albumNode) != link) return;
+    if (carousel && index >= (NSInteger)carousel.items.count) return;
+    objc_setAssociatedObject(link, &kApolloFeedGalleryRememberedIndexKey, @(index), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [carousel apollo_restoreViewedIndex:index];
+    ApolloLogDebug(@"[FeedGallery] restored viewed album page=%ld", (long)index);
+}
+
 %hook _TtC6Apollo23MediaPageViewController
+
+- (void)pageViewController:(UIPageViewController *)pageViewController
+        didFinishAnimating:(BOOL)finished
+   previousViewControllers:(NSArray *)previousViewControllers
+       transitionCompleted:(BOOL)completed {
+    %orig;
+    if (completed) ApolloFeedGalleryRememberViewerPage((UIPageViewController *)self);
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    // Update before the feed becomes visible during the dismissal animation.
+    ApolloFeedGalleryRememberViewerPage((UIPageViewController *)self);
+    %orig;
+}
 
 - (void)viewDidLoad {
     RDKLink *link = ApolloFeedGalleryObjectIvar(self, "link");
