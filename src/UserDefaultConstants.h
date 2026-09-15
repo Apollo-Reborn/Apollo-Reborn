@@ -17,6 +17,14 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
+// days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
+// Folder permission, installation identity and last-run state live separately
+// in Application Support, so exporting/restoring settings cannot transfer them.
+static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled";
+static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
+// Legacy destination value retained for compatibility with older builds.
+static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on

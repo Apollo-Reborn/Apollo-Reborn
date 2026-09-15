@@ -24,6 +24,7 @@
 #import "ApolloTranslation.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloAutomaticBackup.h"
 #import "Version.h"
 #import "UserDefaultConstants.h"
 #import "ApolloPostFilterStore.h"
@@ -3705,6 +3706,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 
     NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES,
                                     UDKeyEnableFLEX: @NO,
+                                    UDKeyAutomaticBackupsEnabled: @NO,
+                                    UDKeyAutomaticBackupIntervalDays: @3,
+                                    UDKeyAutomaticBackupDestination: @0,
                                     UDKeyCrashCaptureEnabled: @YES,
                                     UDKeyTrendingSubredditsLimit: @"5",
                                     UDKeyShowRandNsfw: @NO,
@@ -3853,6 +3857,13 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
     [standardDefaults registerDefaults:defaultValues];
     ApolloApplyRecommendedSettingsMigration(standardDefaults);
+    sAutomaticBackupsEnabled = [standardDefaults boolForKey:UDKeyAutomaticBackupsEnabled];
+    sAutomaticBackupIntervalDays = [standardDefaults integerForKey:UDKeyAutomaticBackupIntervalDays];
+    if (![@[@1, @3, @7] containsObject:@(sAutomaticBackupIntervalDays)]) {
+        sAutomaticBackupIntervalDays = 3;
+        [standardDefaults setInteger:3 forKey:UDKeyAutomaticBackupIntervalDays];
+    }
+    sAutomaticBackupDestination = [standardDefaults integerForKey:UDKeyAutomaticBackupDestination] == 1 ? 1 : 0;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
 
@@ -4472,6 +4483,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     // synthesis has finished, so the first projection sees the final persisted
     // account array. The feature is dormant when its opt-in flag is off.
     ApolloPerAccountFavoritesStart();
+    [[ApolloAutomaticBackup sharedManager] start];
 
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();
