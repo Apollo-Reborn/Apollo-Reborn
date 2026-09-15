@@ -36,6 +36,142 @@ static NSString *const StreamableRegexPatternWithQueryString = @"^(?:(?:https?:)
 static const void *kApolloRouteIconRepairLoggedKey = &kApolloRouteIconRepairLoggedKey;
 static const void *kApolloRouteButtonStyleLoggedKey = &kApolloRouteButtonStyleLoggedKey;
 
+// The presentation layer owns the entire background fade. Its solid black
+// color hides the feed at rest, while view alpha supplies the smooth opening,
+// drag, dismissal, and cancelled-drag transitions.
+static UIView *ApolloMediaPresentationView(id owner, const char *name) {
+    Ivar ivar = class_getInstanceVariable([owner class], name);
+    id value = ivar ? object_getIvar(owner, ivar) : nil;
+    return [value isKindOfClass:UIView.class] ? value : nil;
+}
+
+// Only the viewer's plain UIView wrapper uses this subclass; no extra ivars
+// and no global UIView hook. Apollo paints it black when loading media
+// (0x10034a064) and again after a cancelled pan (0x10036053c). That opaque
+// fill covers the presenter's animated dimming layer and causes a brightness
+// jump when the opening animation hands over to the real viewer. Keep the
+// wrapper transparent for its lifetime so cancellation cannot bring it back.
+@interface ApolloMediaTransparentWrapperView : UIView
+@end
+
+@implementation ApolloMediaTransparentWrapperView
+- (void)setBackgroundColor:(UIColor *)color {
+    [super setBackgroundColor:UIColor.clearColor];
+}
+@end
+
+static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
+    UIView *wrapper = ApolloMediaPresentationView(viewer, "wrapperView");
+    if (object_getClass(wrapper) != UIView.class) return;
+    object_setClass(wrapper, ApolloMediaTransparentWrapperView.class);
+    wrapper.opaque = NO;
+    wrapper.backgroundColor = UIColor.clearColor;
+    ApolloLogDebug(@"[MediaBackdrop] transparent media wrapper installed");
+}
+
+%hook _TtC6Apollo33MediaViewerPresentationController
+
+- (void)presentationTransitionWillBegin {
+    UIView *dim = ApolloMediaPresentationView(self, "dimmingView");
+    dim.backgroundColor = UIColor.blackColor;
+    %orig;
+}
+
+- (void)dismissalTransitionWillBegin {
+    UIPresentationController *presentation = (UIPresentationController *)self;
+    UIViewController *page = presentation.presentedViewController;
+    // The native close-method enum is one byte (closeButton=0, flick=1,
+    // comments=2). Its comments path deliberately leaves this background to
+    // the navigation transition; do not change that separate handoff.
+    Ivar closeMethod = class_getInstanceVariable(page.class, "closeMethod");
+    if (closeMethod) {
+        uint8_t method = 0;
+        memcpy(&method, (const uint8_t *)(__bridge const void *)page +
+               ivar_getOffset(closeMethod), sizeof(method));
+        if (method == 2) {
+            %orig;
+            return;
+        }
+    }
+    UIView *dim = ApolloMediaPresentationView(self, "dimmingView");
+    UIView *snapshot = ApolloMediaPresentationView(self, "snapshotView");
+    CGFloat visibleAlpha = dim.layer.presentationLayer
+        ? ((CALayer *)dim.layer.presentationLayer).opacity : dim.alpha;
+    %orig;
+    if (!dim) return;
+
+    id<UIViewControllerTransitionCoordinator> coordinator =
+        presentation.presentedViewController.transitionCoordinator;
+    if (coordinator.isInteractive) {
+        // Let UIKit scrub/reverse this along with the interactive dismissal.
+        [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            dim.alpha = 0.0;
+            snapshot.alpha = 0.0;
+        } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            if (context.isCancelled) {
+                dim.alpha = 1.0;
+                snapshot.alpha = 1.0;
+            }
+        }];
+        return;
+    }
+
+    // Native dismissal leaves the rotation snapshot until completion.
+    // Finish both background layers from the visible drag state, before the
+    // image's longer settling animation ends. The presenter keeps the live
+    // feed attached (shouldRemovePresentersView == NO), so fading the snapshot
+    // reveals that feed instead of leaving a second brightness jump at teardown.
+    [dim.layer removeAnimationForKey:@"opacity"];
+    [UIView performWithoutAnimation:^{ dim.alpha = visibleAlpha; }];
+    [UIView animateWithDuration:0.18 delay:0.0
+                       options:UIViewAnimationOptionBeginFromCurrentState |
+                               UIViewAnimationOptionCurveEaseOut |
+                               UIViewAnimationOptionOverrideInheritedDuration
+                    animations:^{
+        dim.alpha = 0.0;
+        snapshot.alpha = 0.0;
+    } completion:nil];
+    ApolloLogDebug(@"[MediaBackdrop] finishing dismissal fade from %.3f snapshot=%d",
+                   visibleAlpha, snapshot != nil);
+}
+
+%end
+
+%hook _TtC6Apollo21MediaViewerController
+
+- (void)viewDidLoad {
+    %orig;
+    ApolloMediaPrepareTransparentWrapper((UIViewController *)self);
+}
+
+- (void)scrollViewPanned:(UIPanGestureRecognizer *)recognizer {
+    %orig;
+    if (recognizer.state != UIGestureRecognizerStateChanged) return;
+    // Apollo ignores this handler while its zoom view is double-tapped. Keep
+    // zoom/pan gestures from fading the backdrop when no dismissal is active.
+    UIView *scrollView = ApolloMediaPresentationView(self, "scrollView");
+    SEL doubleTapped = NSSelectorFromString(@"doubleTapped");
+    if (!scrollView || ([scrollView respondsToSelector:doubleTapped] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(scrollView, doubleTapped))) return;
+    UIViewController *page = ((UIViewController *)self).parentViewController;
+    UIPresentationController *presentation = page.presentationController;
+    if (![NSStringFromClass(presentation.class)
+            isEqualToString:@"_TtC6Apollo33MediaViewerPresentationController"]) return;
+    UIView *dim = ApolloMediaPresentationView(presentation, "dimmingView");
+    if (!dim || page.isBeingDismissed) return;
+
+    // Native tracking uses abs(translation.y) only (0x10035fa54), leaving
+    // sideways drags dark. Use distance in either axis, with the same travel
+    // distance in portrait and landscape. Preserve any faster native fade.
+    CGPoint translation = [recognizer translationInView:recognizer.view];
+    CGSize size = recognizer.view.bounds.size;
+    CGFloat travel = MAX(1.0, MIN(size.width, size.height) * 0.5);
+    CGFloat alpha = MAX(0.0, 1.0 - hypot(translation.x, translation.y) / travel);
+    dim.alpha = MIN(dim.alpha, alpha);
+}
+
+%end
+
 static BOOL ApolloMediaStringContains(NSString *haystack, NSString *needle) {
     return [haystack isKindOfClass:[NSString class]] && needle.length > 0 &&
         [haystack rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;

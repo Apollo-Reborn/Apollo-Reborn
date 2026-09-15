@@ -745,7 +745,15 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     }
     UIView *senderView = [senderNode respondsToSelector:@selector(view)]
         ? ((UIView *(*)(id, SEL))objc_msgSend)(senderNode, @selector(view)) : nil;
-    if (senderView.superview && pageView.window) {
+    if (senderView && pageView.window) {
+        // Texture can leave the replaced native thumbnail outside the view
+        // hierarchy. Apollo's animator requires originView.superview; without
+        // it, 0x100208b70 takes the fade-only path and inserts the viewer only
+        // at completion. Keep the native source attached behind the carousel
+        // so the normal image zoom can use its on-screen rectangle. Inserting
+        // underneath the scroll view also keeps the obsolete mosaic covered
+        // when Apollo unhides its source at the end of the transition.
+        if (!senderView.superview) [self insertSubview:senderView atIndex:0];
         senderView.frame = [senderView.superview convertRect:[self apollo_fittedImageRectForPage:pageView]
                                                     fromView:pageView];
     }
