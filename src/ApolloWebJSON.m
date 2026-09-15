@@ -2028,6 +2028,79 @@ id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id respon
     return newRoot;
 }
 
+#pragma mark - Listing response shape guard (#1135)
+
+// Not every RedditKit listing completion checks the class of the serialized
+// body before indexing it as a dictionary: -[RDKClient
+// moderatedSubredditsWithPagination:completion:]'s inner block (Hopper:
+// sub_100040084) does responseObject[@"data"][@"children"] the moment the
+// object is non-nil, while its subscribed-subreddits sibling (sub_10004048c)
+// does guard with isKindOfClass:NSDictionary and fails the completion instead.
+// RDKResponseSerializer parses every application/json body with
+// NSJSONReadingAllowFragments (Hopper: options 0x4). So a Reddit body whose
+// JSON root is an array, a string, a number, or a bare `null` arrives there as
+// NSArray / NSString / NSNumber / NSNull and dies on -objectForKeyedSubscript:
+// with NSInvalidArgumentException. Issue #1135 was exactly that: a launch crash
+// loop on the moderated-subreddits fetch right after a second keyless account
+// was added, while Reddit was rate-limiting the session (HTTP 429 in the same
+// log) — every relaunch fetched the listing, got a non-dictionary JSON body,
+// and crashed before the UI was up. A healthy session answers every listing
+// family Apollo reads with a dictionary root (verified live for
+// /subreddits/mine/moderator.json and /subreddits/mine/subscriber.json), so
+// anything else is a transport/edge anomaly: surface it as an ordinary request
+// error — the completion then runs its error path and the screen offers a
+// retry — instead of letting RedditKit crash.
+//
+// Scope: only paths whose valid root IS a dictionary. Comments and duplicates
+// listings are arrays by design, /prefs/friends is an array, and /api/*
+// endpoints have their own shapes (bools, arrays), so those stay untouched.
+
+// YES for a Reddit read path whose valid JSON root is a listing dictionary:
+// the front page and its sorts, /r/<sub> listings + about/search/wiki,
+// /user/<name> listings + about + /m/<multi>, /subreddits/*, /message/*, and
+// /search. NO for the array-rooted families and everything unclassified.
+static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
+    if (path.length == 0) return NO;
+    if (ApolloWebJSONClassifyReadPath(path) != ApolloWebJSONPathListing) return NO;
+    NSString *p = path;
+    if ([p hasSuffix:@".json"]) p = [p substringToIndex:p.length - 5];
+    while ([p hasSuffix:@"/"] && p.length > 1) p = [p substringToIndex:p.length - 1];
+    if (![p hasPrefix:@"/"]) return NO;
+    NSArray<NSString *> *seg = [[p substringFromIndex:1] componentsSeparatedByString:@"/"];
+    NSString *head = seg.count > 0 ? seg[0] : @"";
+    // Array-rooted families: /comments/<id>, /duplicates/<id>, /r/<sub>/comments/<id>,
+    // /r/<sub>/duplicates/<id>, and /prefs/friends (two UserLists in an array).
+    if ([head isEqualToString:@"comments"] || [head isEqualToString:@"duplicates"] || [head isEqualToString:@"prefs"]) return NO;
+    if ([head isEqualToString:@"r"] && seg.count >= 3 &&
+        ([seg[2] isEqualToString:@"comments"] || [seg[2] isEqualToString:@"duplicates"])) return NO;
+    return YES;
+}
+
+id ApolloWebJSONGuardListingResponseObject(NSURLResponse *response, id responseObject, NSError **error) {
+    // Hot path first: nil (serializer already failed) and the dictionary root
+    // every valid listing has cost one class check and nothing else.
+    if (responseObject == nil || [responseObject isKindOfClass:[NSDictionary class]]) return responseObject;
+    if (![response isKindOfClass:[NSHTTPURLResponse class]]) return responseObject;
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+    NSString *host = http.URL.host.lowercaseString ?: @"";
+    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return responseObject;
+    NSString *path = http.URL.path ?: @"";
+    if (!ApolloWebJSONPathExpectsListingDictionary(path)) return responseObject;
+
+    // Name the shape in the log so the next report says what Reddit actually
+    // sent; the snippet is Reddit's own (non-listing) body, kept short.
+    NSString *snippet = [[responseObject description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    if (snippet.length > 100) snippet = [[snippet substringToIndex:100] stringByAppendingString:@"..."];
+    ApolloLog(@"[WebJSON] %@%@ answered with a %@ root instead of a listing dictionary (HTTP %ld): %@ ; surfaced as an error so RedditKit doesn't crash indexing it",
+              host, path, NSStringFromClass([responseObject class]), (long)http.statusCode, snippet);
+    if (error) {
+        *error = [NSError errorWithDomain:@"ApolloReborn.WebJSON.Response"
+                                     code:http.statusCode
+                                 userInfo:@{ NSLocalizedDescriptionKey: @"Reddit sent an unexpected response. Pull to refresh to try again." }];
+    }
+    return nil;
+}
+
 #pragma mark - Invited-moderators stub (no cookie-compatible equivalent exists)
 
 // Unlike /api/v1/<sub>/moderators (which has the legacy /r/<sub>/about/
