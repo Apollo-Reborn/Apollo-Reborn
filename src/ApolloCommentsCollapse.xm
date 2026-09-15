@@ -30,6 +30,12 @@ static const void *kCommentsCollapseRootCoverViewKey = &kCommentsCollapseRootCov
 static const void *kCommentsCollapseToolbarCoverViewKey = &kCommentsCollapseToolbarCoverViewKey;
 static const void *kCommentsCollapseCoverGenerationKey = &kCommentsCollapseCoverGenerationKey;
 static const void *kCommentsCollapseTopPinKey = &kCommentsCollapseTopPinKey;
+// NSNumber: the offset the list rested at when the collapse began — the pin's
+// target. Pinning to the top rest itself moved a list that started up to
+// kCommentsCollapseTopThreshold past the rest (any of the top 60pt) back to
+// the rest as a comment collapsed: a jump of up to 60pt, reported against
+// #1138 as "still jumps when the post is slightly scrolled".
+static const void *kCommentsCollapseTopPinOffsetKey = &kCommentsCollapseTopPinOffsetKey;
 
 // Slightly longer than the collapse animation.
 static const NSTimeInterval kCommentsCollapseCoverDuration = 0.65;
@@ -205,21 +211,25 @@ static BOOL CommentsCoverSurfaceIsOpaque(UIViewController *viewController, UITab
 }
 
 // Texture's collapse transaction can leave the list scrolled a row or so past
-// its top rest, which slides the first surviving comment under the nav bar and
-// search field and briefly exposes a stale row there. Nothing recovers that on
-// its own until the animation settles, so while the collapse is running, hold
-// the list at the rest position it started from. Writing only when the offset
-// has actually drifted makes this converge in one pass instead of fighting the
-// scroll view.
+// where it rested, which slides the first surviving comment under the nav bar
+// and search field and briefly exposes a stale row there. Nothing recovers
+// that on its own until the animation settles, so while the collapse is
+// running, hold the list at the position it started from: the offset noted
+// when the pin was armed, floored at the top rest in case the chrome above the
+// list changed size meanwhile. The pin only ever moves the list back up to
+// that start, never further. Writing only when the offset has actually
+// drifted makes this converge in one pass instead of fighting the scroll view.
 static void EnforceCommentsCollapseTopPin(UIViewController *viewController, UITableView *tableView) {
     if (![objc_getAssociatedObject(viewController, kCommentsCollapseTopPinKey) boolValue]) return;
     if (!tableView || !tableView.window) return;
 
     CGFloat topOffset = GetCommentsTableTopOffset(tableView);
-    if (tableView.contentOffset.y <= topOffset + 0.5) return;
-    ApolloLog(@"[CommentsClip] Pin top during collapse offset=%.1f -> %.1f",
-              tableView.contentOffset.y, topOffset);
-    [tableView setContentOffset:CGPointMake(tableView.contentOffset.x, topOffset) animated:NO];
+    NSNumber *startOffset = objc_getAssociatedObject(viewController, kCommentsCollapseTopPinOffsetKey);
+    CGFloat target = startOffset ? MAX(topOffset, startOffset.doubleValue) : topOffset;
+    if (tableView.contentOffset.y <= target + 0.5) return;
+    ApolloLog(@"[CommentsClip] Pin during collapse offset=%.1f -> %.1f (rest %.1f)",
+              tableView.contentOffset.y, target, topOffset);
+    [tableView setContentOffset:CGPointMake(tableView.contentOffset.x, target) animated:NO];
 }
 
 // Keep the root and toolbar covers aligned with the current layout.
@@ -305,6 +315,8 @@ static void HideCommentsCollapseCover(UIViewController *viewController, NSUInteg
     EnforceCommentsCollapseTopPin(viewController, tableView);
     objc_setAssociatedObject(viewController, kCommentsCollapseTopPinKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(viewController, kCommentsCollapseTopPinOffsetKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIView *rootCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseRootCoverViewKey);
     UIView *toolbarCoverView = objc_getAssociatedObject(viewController, kCommentsCollapseToolbarCoverViewKey);
@@ -346,11 +358,16 @@ static void ShowCommentsCollapseCover(NSString *reason) {
     objc_setAssociatedObject(viewController, kCommentsCollapseCoverGenerationKey, @(generation),
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // A list that started at rest must still be at rest when the animation
-    // finishes, so hold it there for the whole collapse rather than correcting
-    // it once at the end. Deeper scroll positions are left alone.
+    // A list that started near its rest must still be where it started when
+    // the animation finishes, so hold it there for the whole collapse rather
+    // than correcting it once at the end. Deeper scroll positions are left
+    // alone. The start offset is the target: a list a few rows down is held a
+    // few rows down, not hauled up to the rest.
     if (wasAtTop) {
         objc_setAssociatedObject(viewController, kCommentsCollapseTopPinKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(viewController, kCommentsCollapseTopPinOffsetKey,
+                                 @(MAX(topOffset, tableView.contentOffset.y)),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
@@ -415,6 +432,8 @@ static void ShowCommentsCollapseCover(NSString *reason) {
         rootCoverView.hidden = YES;
         toolbarCoverView.hidden = YES;
         objc_setAssociatedObject(self, kCommentsCollapseTopPinKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, kCommentsCollapseTopPinOffsetKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         sVisibleCommentsViewController = nil;
     }
