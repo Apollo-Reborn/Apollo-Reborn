@@ -496,6 +496,8 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 
     _scrollView = [[ApolloFeedGalleryScrollView alloc] initWithFrame:self.bounds];
     _scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    // Only the page scroll view should participate in status-bar taps.
+    _scrollView.scrollsToTop = NO;
     _scrollView.pagingEnabled = YES;
     _scrollView.directionalLockEnabled = YES;
     _scrollView.showsHorizontalScrollIndicator = NO;
@@ -590,7 +592,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
         [self.imageViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         [self.imageViews removeAllObjects];
         [self.loadedURLs removeAllObjects];
-        self.items = [items copy];
+        self.items = items;
         self.currentIndex = 0;
         self.needsPageGeometry = YES;
 

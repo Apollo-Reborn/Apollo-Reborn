@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "version": "3.7.0",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "bubble.left.and.bubble.right.fill", "title": "Floating Post Tabs", "subtitle": "Keep up to five posts open as draggable bubbles and jump back to exactly where you left off." },
+    { "icon": "list.bullet.rectangle", "title": "Feed Shortcuts & Sections", "subtitle": "Restyle the feed shortcuts, give followed users their own section, reorder sections, and keep favorites per account." },
+    { "icon": "dock.rectangle", "title": "Tab Bar Hide Styles", "subtitle": "Hide the tab bar with Left, Right, Fade, or Down, and bring back Apollo's classic one-gesture scroll behavior." },
+    { "icon": "ellipsis.circle.fill", "title": "Tidier Glass Navigation", "subtitle": "Actions collapse into one pill so titles stay centered, with brighter, easier-to-read moderator controls." },
+    { "icon": "magnifyingglass.circle.fill", "title": "Native Glass Search", "subtitle": "The feed search bar is now the real Liquid Glass pill: it activates in place and tucks away as you scroll." },
+    { "icon": "text.bubble.fill", "title": "Smarter Highlights", "subtitle": "Unread dots, New badges, and +N counts show which Community Highlights you haven't read or that picked up comments." },
+    { "icon": "apps.iphone", "title": "Widgets for Any Feed", "subtitle": "Point the Feed and Post widgets at Home, Popular, All, several subreddits, or a multireddit." },
+    { "icon": "checkmark.shield.fill", "title": "Stability & Fixes", "subtitle": "Fixes for freezes, GIF memory crashes, launch crashes, duplicate saved items, and translation going quiet." }
+  ]
+}

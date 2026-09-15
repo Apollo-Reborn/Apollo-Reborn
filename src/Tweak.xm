@@ -3785,6 +3785,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyCommunityHighlightsWeb: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @YES,
                                     UDKeyClassicTabBarScrollBehavior: @NO,
+                                    UDKeyHideTopBarOnScroll: @NO,
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
@@ -3793,6 +3794,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyInfoRowTapComments: @YES,
                                     UDKeyInfoRowPopupMode: @YES,
                                     UDKeyInfoRowOverlayMode: @NO,
+                                    UDKeyCollapseNavigationActions: @NO,
+                                    UDKeyScrollReturnButton: @YES,
+                                    UDKeyCenterTitleBetweenButtons: @NO,
                                     UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyLiveCommentsFollow: @YES,
                                     UDKeyPerPostCommentSort: @NO,
@@ -4044,6 +4048,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sCommunityHighlights = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlights];
     sCommunityHighlightsWeb = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb];
     sClassicTabBarScrollBehavior = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyClassicTabBarScrollBehavior];
+    sHideTopBarOnScroll = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTopBarOnScroll];
     if (ApolloSupportsNativeTabBarScrollBehavior() &&
         ![standardDefaults boolForKey:UDKeyAutoHideTabBarShowOnIdle]) {
         // Idle re-expansion is now bundled into both selectable scroll modes.
@@ -4080,6 +4085,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyApolloRememberSubredditCommentsSort];
         ApolloLog(@"[PerPostSort] exclusivity: normalized stale both-on at launch (native Remember Subreddit Sort -> OFF)");
     }
+    sCollapseNavigationActions = [standardDefaults boolForKey:UDKeyCollapseNavigationActions];
+    sScrollReturnButton = [standardDefaults boolForKey:UDKeyScrollReturnButton];
+    sCenterTitleBetweenButtons = [standardDefaults boolForKey:UDKeyCenterTitleBetweenButtons];
     sScrollEdgeEffectStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyScrollEdgeEffectStyle];
     NSInteger systemHeaderStyle = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 27
         ? ApolloScrollEdgeEffectStyleHard
@@ -4090,13 +4098,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         // result once, then store the explicit Soft/Hard choice users now see.
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
-    } else if (sScrollEdgeEffectStyle == 3) {
-        // Retired Hidden mode: closest surviving intent (no hard cutoff line)
-        // is Soft. 3 stays reserved — see the enum note in ApolloState.h.
-        sScrollEdgeEffectStyle = ApolloScrollEdgeEffectStyleSoft;
-        [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     } else if (sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleSoft &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHard &&
+               sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHidden &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleBlur) {
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];

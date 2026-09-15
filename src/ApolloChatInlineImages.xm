@@ -566,7 +566,7 @@ static ApolloChatMediaWaiter *ApolloChatLoadMedia(NSURL *url,
 
     ApolloChatMediaWaiter *waiter = [ApolloChatMediaWaiter new];
     waiter.load = load;
-    waiter.completion = [completion copy];
+    waiter.completion = completion;
     [load.waiters addObject:waiter];
     while (ApolloChatQueuedMediaLoads().count > kApolloChatMaximumQueuedMediaLoads) {
         ApolloChatDropQueuedMediaLoad(ApolloChatQueuedMediaLoads().firstObject);

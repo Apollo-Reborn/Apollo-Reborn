@@ -2,6 +2,7 @@
 #import "ApolloNavigationActionsDiscovery.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -173,6 +174,7 @@ static void ApolloActionsApplyChromeToView(UIView *view, BOOL blueDone) {
 @property (nonatomic, strong) id resignObserver;
 @property (nonatomic) BOOL expanded;
 @property (nonatomic) BOOL preparing;
+@property (nonatomic) BOOL collapsePreference;
 @property (nonatomic) BOOL needsGeometryTransition;
 @property (nonatomic) BOOL geometryDeferred;
 @property (nonatomic) BOOL needsAnimationSettlement;
@@ -215,6 +217,45 @@ static NSUInteger ApolloActionsControlCount(UIView *root) {
     NSUInteger count = 0;
     for (UIView *child in root.subviews) count += ApolloActionsControlCount(child);
     return count;
+}
+
+static BOOL ApolloActionsIsPickerCancel(UIBarButtonItem *item) {
+    SEL cancel = NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:");
+    if (item.action == cancel) return YES;
+    UIView *view = item.customView;
+    if (![view isKindOfClass:UIButton.class]) return NO;
+    UIButton *button = (UIButton *)view;
+    for (id target in button.allTargets) {
+        if ([[button actionsForTarget:target forControlEvent:UIControlEventTouchUpInside]
+                containsObject:NSStringFromSelector(cancel)]) return YES;
+    }
+    return NO;
+}
+
+static BOOL ApolloActionsHasStrip(NSArray<UIBarButtonItem *> *items) {
+    for (UIBarButtonItem *item in items) {
+        if ([item.customView isKindOfClass:ApolloNavigationActionsStrip.class]) return YES;
+        UIView *content = item.customView;
+        if (ApolloActionsFindMore(content) && ApolloActionsControlCount(content) > 1) return YES;
+    }
+    return NO;
+}
+
+static BOOL ApolloActionsHasPickerCancel(NSArray<UIBarButtonItem *> *items) {
+    for (UIBarButtonItem *item in items) if (ApolloActionsIsPickerCancel(item)) return YES;
+    return NO;
+}
+
+static BOOL ApolloActionsReplacingPickerControl(UINavigationItem *item,
+                                                NSArray<UIBarButtonItem *> *incoming) {
+    if (!IsLiquidGlass()) return NO;
+    NSArray *outgoing = item.rightBarButtonItems;
+    // The picker replaces our glass-owning custom view with UIKit's Cancel
+    // item. UIKit's animated replacement snapshots/morphs both glass owners,
+    // briefly drawing two lenses. Commit only this structural swap without
+    // animation; normal pill expansion and page transitions retain animation.
+    return (ApolloActionsHasStrip(outgoing) && ApolloActionsHasPickerCancel(incoming)) ||
+           (ApolloActionsHasPickerCancel(outgoing) && ApolloActionsHasStrip(incoming));
 }
 
 static void ApolloActionsSetPrimaryAction(UIBarButtonItem *item, UIAction *action) {
@@ -508,6 +549,8 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 - (instancetype)init {
     self = [super init];
     if (!self) return nil;
+    _collapsePreference = sCollapseNavigationActions;
+    _expanded = !sCollapseNavigationActions;
     _standardItems = [NSMutableArray array];
     _pans = [NSHashTable weakObjectsHashTable];
     __weak typeof(self) weakSelf = self;
@@ -696,9 +739,15 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
             [self applyStandardExpanded:self.expanded];
         }
     }
+    // Keep preparation guarded while publishing size: UIKit synchronously
+    // re-enters the item setters, which otherwise retarget the same expansion.
+    if (self.collapsePreference != sCollapseNavigationActions) {
+        self.collapsePreference = sCollapseNavigationActions;
+        [self setExpanded:!sCollapseNavigationActions animated:NO];
+    } else if (!sCollapseNavigationActions && !self.expanded) [self setExpanded:YES animated:NO];
+    else if (retargetAnimation) [self setExpanded:self.expanded animated:YES];
     self.preparing = NO;
-    // Retarget mid-reveal source updates from the current presentation to avoid a snap.
-    if (retargetAnimation) [self setExpanded:self.expanded animated:YES];
+    if (self.expanded) [self watchScrollViews];
 }
 - (void)applyStandardExpanded:(BOOL)expanded {
     sActionsModelWriteDepth++;
@@ -720,6 +769,8 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     sActionsModelWriteDepth--;
 }
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated {
+    // All collapse entry points (scroll, back, resign-active) honor the preference.
+    if (!sCollapseNavigationActions) expanded = YES;
     if (self.expanded == expanded && !self.animator && !self.needsGeometryTransition &&
         !self.needsAnimationSettlement) return;
     if (!expanded) {
@@ -752,7 +803,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     [previous stopAnimation:NO];
     [previous finishAnimationAtPosition:UIViewAnimatingPositionCurrent];
     if (self.strips.count == 0 && !self.moreItem) {
-        self.expanded = NO;
+        self.expanded = !sCollapseNavigationActions;
         return;
     }
     UINavigationBar *bar = self.controller.navigationController.navigationBar;
@@ -975,25 +1026,43 @@ NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *bar) {
 %hook UINavigationItem
 - (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items {
     items = ApolloActionsInboxItems(self, items);
-    ApolloActionsPrepare(self, items);
-    %orig(items);
-    ApolloActionsPrepare(self, self.rightBarButtonItems);
+    BOOL pickerSwap = ApolloActionsReplacingPickerControl(self, items);
+    void (^apply)(void) = ^{
+        ApolloActionsPrepare(self, items);
+        %orig(items);
+        ApolloActionsPrepare(self, self.rightBarButtonItems);
+    };
+    if (pickerSwap) [UIView performWithoutAnimation:apply]; else apply();
 }
 - (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(BOOL)animated {
     items = ApolloActionsInboxItems(self, items);
-    ApolloActionsPrepare(self, items);
-    %orig(items, animated);
-    ApolloActionsPrepare(self, self.rightBarButtonItems);
+    BOOL pickerSwap = ApolloActionsReplacingPickerControl(self, items);
+    void (^apply)(void) = ^{
+        ApolloActionsPrepare(self, items);
+        %orig(items, pickerSwap ? NO : animated);
+        ApolloActionsPrepare(self, self.rightBarButtonItems);
+    };
+    if (pickerSwap) [UIView performWithoutAnimation:apply]; else apply();
 }
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item {
-    ApolloActionsPrepare(self, item ? @[item] : @[]);
-    %orig(item);
-    ApolloActionsPrepare(self, self.rightBarButtonItems);
+    NSArray *items = item ? @[item] : @[];
+    BOOL pickerSwap = ApolloActionsReplacingPickerControl(self, items);
+    void (^apply)(void) = ^{
+        ApolloActionsPrepare(self, items);
+        %orig(item);
+        ApolloActionsPrepare(self, self.rightBarButtonItems);
+    };
+    if (pickerSwap) [UIView performWithoutAnimation:apply]; else apply();
 }
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item animated:(BOOL)animated {
-    ApolloActionsPrepare(self, item ? @[item] : @[]);
-    %orig(item, animated);
-    ApolloActionsPrepare(self, self.rightBarButtonItems);
+    NSArray *items = item ? @[item] : @[];
+    BOOL pickerSwap = ApolloActionsReplacingPickerControl(self, items);
+    void (^apply)(void) = ^{
+        ApolloActionsPrepare(self, items);
+        %orig(item, pickerSwap ? NO : animated);
+        ApolloActionsPrepare(self, self.rightBarButtonItems);
+    };
+    if (pickerSwap) [UIView performWithoutAnimation:apply]; else apply();
 }
 %end
 

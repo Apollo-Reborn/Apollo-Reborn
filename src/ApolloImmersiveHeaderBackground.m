@@ -55,7 +55,7 @@ static NSObject *ApolloImmersiveWorkLock(void) {
 
 void ApolloImmersiveSetBannerCacheKey(UIImage *banner, NSString *cacheKey) {
     if (!banner || cacheKey.length == 0) return;
-    objc_setAssociatedObject(banner, kApolloImmersiveBannerCacheKey, [cacheKey copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(banner, kApolloImmersiveBannerCacheKey, cacheKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
 // A per-instance identity that (unlike the raw pointer) can never alias a
