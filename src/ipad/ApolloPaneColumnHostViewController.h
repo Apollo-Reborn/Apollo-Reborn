@@ -9,4 +9,3 @@
 - (NSString *)apollo_simLayoutPassStateReset:(BOOL)reset;
 #endif
 @end
-

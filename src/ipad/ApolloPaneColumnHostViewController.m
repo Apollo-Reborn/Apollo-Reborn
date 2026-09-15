@@ -440,4 +440,3 @@
 - (UIViewController *)childViewControllerForHomeIndicatorAutoHidden { return self.hostedNavigationController; }
 
 @end
-

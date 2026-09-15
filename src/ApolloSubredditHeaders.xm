@@ -1911,7 +1911,7 @@ void ApolloSubredditHeaderPreviewContentConfigure(UIView *contentView,
     header.userFlairAvailabilityKnown = YES;
     header.userCanSetFlair = YES;
     [header applyInfo:info fallbackSubredditName:fallbackSubredditName];
-    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon();
+    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header);
     header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner();
     [header apollo_applySubscriptionState:YES known:YES];
 }
