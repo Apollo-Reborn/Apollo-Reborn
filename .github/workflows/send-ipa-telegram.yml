@@ -1,16 +1,10 @@
 name: Send IPA to Telegram
 
 on:
-  workflow_run:
-    workflows:
-      - Build IPA
-    types:
-      - completed
-
   workflow_dispatch:
 
 env:
-  PAGES_URL: https://acornelf.github.io/Apollo-Reborn
+  PAGES_URL: https://${{ github.repository_owner }}.github.io/Apollo-Reborn
 
 permissions:
   actions: read
@@ -20,7 +14,9 @@ permissions:
 
 jobs:
   notify:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # This imported PR is opt-in on the downstream fork. Building an IPA must
+    # never publish releases, deploy Pages, or contact Telegram automatically.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     environment:
@@ -147,6 +143,9 @@ jobs:
             --repo "$REPOSITORY"
 
       - name: Keep only the five newest builds
+        # Retain the upstream implementation for review, but never delete
+        # releases from the downstream archive automatically.
+        if: ${{ false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
