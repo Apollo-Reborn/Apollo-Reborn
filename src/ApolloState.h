@@ -203,6 +203,9 @@ extern BOOL sIPadTabBarBottom;
 // (UDKeyIPadPaneLayout). Read once at %ctor — installation happens at scene
 // connect, so changing it needs a relaunch. See src/ipad/ApolloPaneLayout.h.
 extern BOOL sIPadPaneLayout;
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
+extern BOOL sTabBarSwipeNavigation;
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.

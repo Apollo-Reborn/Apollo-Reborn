@@ -1895,14 +1895,25 @@ typedef NS_ENUM(NSInteger, Tag) {
                !ApolloPaneLayoutActive();
     };
 
+    // See ApolloLiquidGlass.xm — either/or with drag-to-switch-tab.
+    ApolloSettingsRow *tabBarSwipeNavigation =
+        [ApolloSettingsRow switchRowWithID:@"gen.tabBarSwipeNavigation"
+                                     title:@"Swipe Tab Bar to Navigate"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation]; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
+    tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
+
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
         ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
+    if (IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
-                                                      iPadTabBarBottom ]];
+                                                      iPadTabBarBottom, tabBarSwipeNavigation ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -4176,6 +4187,22 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [alert addAction:[UIAlertAction actionWithTitle:@"Later"
                                               style:UIAlertActionStyleCancel
                                             handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// Takes effect on next relaunch — see ApolloLiquidGlass.xm.
+- (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
+    sTabBarSwipeNavigation = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sTabBarSwipeNavigation forKey:UDKeyTabBarSwipeNavigation];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Restart Required"
+                         message:@"Quit and reopen Apollo for this change to take effect."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit & Reopen"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 

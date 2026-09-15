@@ -3795,6 +3795,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeyIPadPaneLayout: @NO,
+                                    UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
                                     UDKeyInfoRowTapComments: @YES,
@@ -4082,6 +4083,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     // Read once here: ApolloPaneInstall.xm builds the split controllers during
     // scene connect, which happens after %ctor and never again for the process.
     sIPadPaneLayout = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadPaneLayout];
+    sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
