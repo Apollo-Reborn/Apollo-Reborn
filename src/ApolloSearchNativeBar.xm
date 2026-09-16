@@ -135,6 +135,7 @@ static BOOL    sNSBAwaitingScroll    = NO;
 static CGFloat sNSBDismissTargetTop = 0.0;
 
 static const void *kNSBBridgeKey     = &kNSBBridgeKey;      // VC -> bridge delegate object
+static const void *kNSBNativeBarKey  = &kNSBNativeBarKey;   // UISearchBar -> @YES for the bars this module attaches
 static const void *kNSBFeedTableKey  = &kNSBFeedTableKey;   // ASTableView -> @YES (native-managed table: a feed, or a comments screen)
 static const void *kNSBAppearedKey   = &kNSBAppearedKey;    // VC -> @YES once it has appeared at least once
 static CGFloat sNSBToolbarBand = 45.0; // Apollo's resting toolbar height (the band its inset reserves)
@@ -894,6 +895,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     if (accent) sc.searchBar.tintColor = accent;
     // Hard header style: keep the field clear of the band's edge.
     ApolloHeaderStyleRegisterSearchBar(sc.searchBar);
+    objc_setAssociatedObject(sc.searchBar, kNSBNativeBarKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (@available(iOS 16.0, *)) {
         // iPhone stacks by default; force it on iPad too so the bar keeps the
@@ -1967,6 +1969,157 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 }
 
 %end
+
+// MARK: - iOS 27: the cancel button's entrance, drawn by the module
+//
+// Activating a nav-bar-hosted search bar runs UIKit's search presentation
+// transition: the field shrinks and the cancel button slides in from the
+// trailing edge while fading up. On iOS 26 that is what shows. On iOS 27 the
+// button's layer animates exactly the same way (sampled every 33ms: opacity
+// 0 -> 1, x 386 -> 342) but nothing of it is composited until the transition
+// completes, so the X pops in fully formed once the field has settled — on
+// Home and in comments, in every header style, with UIKit's glass button and
+// with a plain filled one alike. Nothing the module does to that button
+// changes it (un-hiding it early, re-driving its alpha, swapping its
+// configuration were all tried), so on iOS 27 the entrance is drawn by a
+// stand-in instead: a button built from UIKit's own configuration, added to
+// the navigation bar above the search bar (outside the container whose
+// layout the transition freezes) at the parked slot when the transition is
+// prepared, moved to the final slot inside UIKit's animation block so it
+// keeps UIKit's timing and curve, and removed when the transition completes
+// or is cancelled — by then UIKit's button is on screen in the same place.
+// Only the bars this module attaches, only on iOS 27.
+@interface _UISearchBarVisualProviderIOS : NSObject
+- (UISearchBar *)searchBar;
+@end
+
+static const NSInteger kNSBSearchLayoutStateSearching = 3;   // _UISearchBarLayoutState searching
+static const void *kNSBCancelStandInKey = &kNSBCancelStandInKey;   // UISearchBar -> stand-in button
+
+static UINavigationBar *NSBNavigationBarHosting(UIView *view) {
+    UIView *v = view.superview;
+    while (v && ![v isKindOfClass:UINavigationBar.class]) v = v.superview;
+    return (UINavigationBar *)v;
+}
+
+static void NSBRemoveCancelStandIn(UISearchBar *bar, const char *why) {
+    UIButton *standIn = objc_getAssociatedObject(bar, kNSBCancelStandInKey);
+    if (!standIn) return;
+    objc_setAssociatedObject(bar, kNSBCancelStandInKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [standIn removeFromSuperview];
+    if (NSBTraceEnabled()) ApolloLog(@"[NSBTrace] cancel stand-in removed (%s)", why);
+}
+
+// The fill the search field actually shows: the theme runtime paints its own
+// opaque pill over UIKit's material (ApolloThemeRuntime.xm), and UIKit's
+// cancel button takes the field's material too, so a stand-in filled with that
+// pill colour hands over to UIKit's button without a visible change. Without
+// a pill (stock look) the nearest is a glass capsule.
+static UIColor *NSBSearchFieldFill(UISearchBar *bar) {
+    UIColor *fill = nil;
+    for (UIView *sub in bar.searchTextField.subviews) {
+        UIColor *color = sub.backgroundColor;
+        if ([sub isMemberOfClass:UIView.class] && color && CGColorGetAlpha(color.CGColor) > 0.5) fill = color;
+    }
+    return fill;
+}
+
+static UIButton *NSBMakeCancelStandIn(UIButton *original, UISearchBar *bar) {
+    // Same glyph as UIKit's button, label-coloured like it. Not UIKit's own
+    // material: its button carries the search field's dynamic background, and
+    // that material is exactly what the transition does not composite — a
+    // stand-in given the same material (via the private configuration call)
+    // vanished with it, while a plain view in the same place showed.
+    if (@available(iOS 26.0, *)) {
+        UIColor *fill = NSBSearchFieldFill(bar);
+        UIButtonConfiguration *configuration = fill ? [UIButtonConfiguration filledButtonConfiguration]
+                                                    : [UIButtonConfiguration glassButtonConfiguration];
+        if (fill) configuration.baseBackgroundColor = fill;
+        configuration.image = original.configuration.image ?: [original imageForState:UIControlStateNormal];
+        configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        configuration.baseForegroundColor = UIColor.labelColor;
+        configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+        UIButton *standIn = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+        standIn.userInteractionEnabled = NO;    // the real button underneath takes the tap
+        standIn.accessibilityElementsHidden = YES;
+        return standIn;
+    }
+    return nil;
+}
+
+%group NSBCancelStandIn
+%hook _UISearchBarVisualProviderIOS
+
+- (void)prepareForTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    if (!ApolloNativeFeedSearchEnabled()) return;
+    UISearchBar *bar = [self searchBar];
+    if (!bar || !objc_getAssociatedObject(bar, kNSBNativeBarKey)) return;
+    NSBRemoveCancelStandIn(bar, "new transition");
+    if (state != kNSBSearchLayoutStateSearching) return;
+    UIButton *button = MSHookIvar<UIButton *>(self, "_cancelButton");
+    UINavigationBar *navBar = NSBNavigationBarHosting(bar);
+    if (!button || !button.superview || !navBar) return;
+    UIButton *standIn = NSBMakeCancelStandIn(button, bar);
+    if (!standIn) return;
+    // The resting layout has just been applied: the button sits parked past
+    // the trailing edge, where the entrance starts.
+    standIn.frame = [button.superview convertRect:button.frame toView:navBar];
+    standIn.alpha = 0.0;
+    [navBar addSubview:standIn];
+    objc_setAssociatedObject(bar, kNSBCancelStandInKey, standIn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] cancel stand-in parked at %@", NSStringFromCGRect(standIn.frame));
+    }
+}
+
+- (void)animateTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    if (state != kNSBSearchLayoutStateSearching) return;
+    UISearchBar *bar = [self searchBar];
+    UIButton *standIn = bar ? objc_getAssociatedObject(bar, kNSBCancelStandInKey) : nil;
+    UIButton *button = standIn ? MSHookIvar<UIButton *>(self, "_cancelButton") : nil;
+    if (!standIn || !button.superview || !standIn.superview) return;
+    // Called inside the transition's animation block, after the searching
+    // layout has been applied: the button's model frame is its final slot.
+    standIn.frame = [button.superview convertRect:button.frame toView:standIn.superview];
+    standIn.alpha = 1.0;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] cancel stand-in animating to %@ (in animation block: %d)",
+                  NSStringFromCGRect(standIn.frame), (int)[UIView areAnimationsEnabled]);
+    }
+}
+
+- (void)completeTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    UISearchBar *bar = [self searchBar];
+    if (bar) NSBRemoveCancelStandIn(bar, "transition complete");
+}
+
+- (void)cancelTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    UISearchBar *bar = [self searchBar];
+    if (bar) NSBRemoveCancelStandIn(bar, "transition cancelled");
+}
+
+%end
+%end
+
+static __attribute__((constructor)) void NSBCancelStandInInstall(void) {
+    if (@available(iOS 27.0, *)) {
+        Class provider = objc_getClass("_UISearchBarVisualProviderIOS");
+        if (provider && class_getInstanceMethod(provider, @selector(prepareForTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(animateTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(completeTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(cancelTransitionToSearchLayoutState:)) &&
+            class_getInstanceVariable(provider, "_cancelButton")) {
+            %init(NSBCancelStandIn, _UISearchBarVisualProviderIOS = provider);
+            ApolloLog(@"[NativeSearch] cancel stand-in hooks installed (iOS 27)");
+        } else {
+            ApolloLog(@"[NativeSearch] cancel stand-in hooks NOT installed: provider/selectors/ivar missing");
+        }
+    }
+}
 
 // MARK: - A pull at the collapsed rest opens the bar
 //
