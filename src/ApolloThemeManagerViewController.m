@@ -430,8 +430,10 @@ enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, E
     // secondaryLabelColor.
     switch (token) {
         case ApolloThemeTokenBackground: {
-            UITableView *source = ApolloInheritedSettingsThemeSourceTableView(self);
-            return source.backgroundColor ?: fallback;
+            // A subreddit/post table can be clear over an immersive backdrop.
+            // Use the same opaque surface as other pushed settings screens so
+            // its content cannot show through this page during navigation.
+            return ApolloInheritedSettingsBackgroundColor(self);
         }
         case ApolloThemeTokenSecondaryBackground:
         case ApolloThemeTokenTertiaryBackground:

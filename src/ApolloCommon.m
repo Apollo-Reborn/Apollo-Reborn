@@ -760,14 +760,17 @@ static UIColor *ApolloVisibleBackgroundColorForTable(UITableView *tableView,
     return nil;
 }
 
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller) {
+    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
+    return (ApolloThemeSourceTableIsStale(source) ? nil
+        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
+        ?: ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+}
+
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller) {
     if (!controller) return;
 
-    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
-    BOOL stale = ApolloThemeSourceTableIsStale(source);
-    UIColor *backgroundColor = (stale ? nil
-        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
-        ?: ApolloThemePageBackgroundColor() ?: controller.tableView.backgroundColor;
+    UIColor *backgroundColor = ApolloInheritedSettingsBackgroundColor(controller);
     controller.view.backgroundColor = backgroundColor;
     controller.tableView.backgroundColor = backgroundColor;
     controller.tableView.separatorColor = ApolloThemeSeparatorColor()

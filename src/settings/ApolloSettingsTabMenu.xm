@@ -18,6 +18,46 @@ static void ApolloSettingsMenuHaptic(void) {
 // until the next tab touch (or an explicit shortcut), since Glass can deliver
 // its selection callback after the hold recognizer has already ended.
 static char kApolloSettingsHoldConsumedTouch;
+static char kApolloSettingsShortcutRoot;
+
+static UIScrollView *ApolloShortcutScrollView(UIView *view) {
+    if (view.hidden || view.alpha < 0.01) return nil;
+    if ([view isKindOfClass:UIScrollView.class] && ((UIScrollView *)view).scrollEnabled) {
+        return (UIScrollView *)view;
+    }
+    for (UIView *child in view.subviews) {
+        UIScrollView *scroll = ApolloShortcutScrollView(child);
+        if (scroll) return scroll;
+    }
+    return nil;
+}
+
+// Apollo's tab reselection only knows its own controllers. Limit our handling
+// to the shortcut portion of the stack, including pages opened inside it.
+static BOOL ApolloHandleShortcutTabReselection(UITabBarController *controller, UIViewController *selected) {
+    if (controller.selectedViewController != selected ||
+        ![selected isKindOfClass:UINavigationController.class]) return NO;
+    UINavigationController *nav = (UINavigationController *)selected;
+    BOOL inShortcut = NO;
+    for (UIViewController *screen in nav.viewControllers) {
+        if ([objc_getAssociatedObject(screen, &kApolloSettingsShortcutRoot) boolValue]) {
+            inShortcut = YES;
+            break;
+        }
+    }
+    if (!inShortcut) return NO;
+    if (nav.transitionCoordinator) return YES;
+    UIScrollView *scroll = ApolloShortcutScrollView(nav.topViewController.view);
+    CGFloat top = -scroll.adjustedContentInset.top;
+    if (scroll && scroll.contentOffset.y > top + 1.0) {
+        [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, top) animated:YES];
+        ApolloLog(@"[SettingsTabMenu] Reselected tab: scroll shortcut to top");
+    } else if (nav.viewControllers.count > 1) {
+        [nav popViewControllerAnimated:YES];
+        ApolloLog(@"[SettingsTabMenu] Reselected tab: return to previous page");
+    }
+    return YES;
+}
 static void ApolloClearConsumedSettingsTouch(UITabBarController *controller) {
     if (controller) objc_setAssociatedObject(controller, &kApolloSettingsHoldConsumedTouch, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -80,6 +120,7 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
             break;
         }
     }
+    objc_setAssociatedObject(destination, &kApolloSettingsShortcutRoot, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (nav.topViewController == destination) return;
     // Disabling the tab bar alone lets hit testing fall through to the page.
     // Consume touches at the window until the navigation transition finishes.
@@ -452,6 +493,7 @@ static char kApolloSettingsTabHold;
         ApolloLog(@"[SettingsTabMenu] Consumed hold release without selecting Settings");
         return NO;
     }
+    if (ApolloHandleShortcutTabReselection(controller, viewController)) return NO;
     return %orig(controller, viewController);
 }
 %end
