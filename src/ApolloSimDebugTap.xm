@@ -399,12 +399,15 @@ static void ApolloSimDebugDumpView(UIView *view, UIWindow *window, NSInteger dep
     }
 }
 
-// "sbprobe x y [seconds]" command: tap (x, y) and, for the next `seconds`
-// (default 1.2), sample every 33ms the first nav-bar UISearchBar's subtree —
+// "sbprobe x y [seconds [refreshAt]]" command: tap (x, y) and, for the next
+// `seconds` (default 1.2), sample every 33ms the first nav-bar UISearchBar's subtree —
 // model frame (bar coordinates), presentation-layer frame and opacity, hidden,
 // clipsToBounds and running animation keys of every button / text field /
 // container — to /tmp/apollofix-sbprobe.txt. Used to see what UIKit's cancel
-// button actually does during the search activation animation.
+// button actually does during the search activation animation. `refreshAt`
+// forces a navigation-title refresh that many seconds in, to land the title
+// recenter inside the trailing-item swap on purpose (see the title-width
+// reservation in ApolloLiquidGlass.xm).
 static UISearchBar *ApolloSimDebugFindSearchBar(UIView *view) {
     if ([view isKindOfClass:UISearchBar.class]) return (UISearchBar *)view;
     for (UIView *sub in view.subviews) {
@@ -447,7 +450,23 @@ static UIView *ApolloSimDebugProbeNavBar(UIView *bar) {
     return v;
 }
 
-static void ApolloSimDebugSearchBarProbe(CGPoint point, NSTimeInterval seconds) {
+static void ApolloSimDebugSearchBarProbe(CGPoint point, NSTimeInterval seconds, NSTimeInterval refreshAt) {
+    // Optional: force a navigation-title refresh `refreshAt` seconds after the tap, to
+    // land the title recenter inside the item swap on purpose (it only happens by chance
+    // otherwise) and watch what it does to the title control's width.
+    if (refreshAt > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(refreshAt * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            for (UIWindow *window in ApolloAllWindows()) {
+                if (window.hidden) continue;
+                UISearchBar *bar = ApolloSimDebugFindSearchBar(window);
+                UINavigationBar *navBar = (UINavigationBar *)ApolloSimDebugProbeNavBar(bar);
+                if (!navBar) continue;
+                ApolloNavigationTitleGlassRefreshNavigationBar(navBar);
+                ApolloLog(@"[SimDebugTap] forced title refresh at +%.2fs", refreshAt);
+                break;
+            }
+        });
+    }
     NSMutableString *out = [NSMutableString string];
     NSDate *start = [NSDate date];
     __block NSInteger samples = 0;
@@ -1038,7 +1057,8 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
             if (ps.count >= 2) {
                 ApolloSimDebugSearchBarProbe(CGPointMake(ps[0].doubleValue, ps[1].doubleValue),
-                                             ps.count >= 3 ? ps[2].doubleValue : 1.2);
+                                             ps.count >= 3 ? ps[2].doubleValue : 1.2,
+                                             ps.count >= 4 ? ps[3].doubleValue : 0.0);
             }
             return;
         }
