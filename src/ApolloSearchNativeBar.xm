@@ -993,6 +993,12 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // tells that state apart from a revealed one.
 @property (nonatomic) CGFloat paletteFullHeight;
 @property (nonatomic) CGFloat paletteFullWidth;   // the width that height was learned at (a rotation relearns)
+// The drag in progress began at the collapsed rest with the bar scrolled away
+// (set at pan begin, consumed when the drag ends): a release that is still
+// pulled down then opens the bar instead of snapping shut. pullRestOffset is
+// the offset the drag started from.
+@property (nonatomic) BOOL pullFromCollapsedRest;
+@property (nonatomic) CGFloat pullRestOffset;
 @end
 @implementation ApolloNativeSearchRestingState
 @end
@@ -1672,6 +1678,21 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
     UIScrollView *table = (UIScrollView *)self;
     // The finger is down: whatever the palette does from here is the user's.
     NSBDisarmReveal(table, "pan began");
+    // Note a drag that starts at the collapsed rest with the bar away, for the
+    // release retarget below (NSBPaletteSnap).
+    UIViewController *vc = NSBFeedVCForView((UIView *)self);
+    ApolloNativeSearchRestingState *state = vc ? NSBRestingStateForVC(vc) : nil;
+    if (state) {
+        UINavigationItem *navItem = vc.navigationItem;
+        UISearchController *sc = navItem.searchController;
+        BOOL atRest = fabs(table.contentOffset.y + table.adjustedContentInset.top) < 2.0;
+        BOOL barAway = CGRectGetHeight(sc.searchBar.bounds) <= 1.0;
+        state.pullFromCollapsedRest = sc && !sc.active && navItem.hidesSearchBarWhenScrolling && atRest && barAway;
+        state.pullRestOffset = table.contentOffset.y;
+        if (NSBTraceEnabled() && state.pullFromCollapsedRest) {
+            ApolloLog(@"[NSBTrace] drag began at the collapsed rest: y=%.1f", table.contentOffset.y);
+        }
+    }
     if (@available(iOS 17.4, *)) {
         if (table.isScrollAnimating) {
             // UIKit's search-palette settling animation can outlive the old
@@ -1946,6 +1967,60 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 }
 
 %end
+
+// MARK: - A pull at the collapsed rest opens the bar
+//
+// UIKit snaps a released palette to the nearer of its two rests (the midpoint
+// rule in -_scrollOffsetRetargettedToDetentOffsetIfNecessary:...), so a short
+// pull down at the collapsed rest peeks the top of the field and then snaps it
+// away again. That reads as a glitch, and before this branch the module hid it
+// by re-expanding the bar after the snap (peek, snap shut, snap open). Retarget
+// the release instead: a drag that began at the collapsed rest with the bar
+// away and is still pulled down when the finger lifts ends at the revealed
+// rest, so the peek continues into the open bar in one motion. Anything else
+// (a drag that started elsewhere, a pull that went back past the rest, a
+// release already headed for the revealed rest) is left to UIKit.
+%group NSBPaletteSnap
+%hook UINavigationController
+
+- (void)_observeScrollView:(UIScrollView *)scrollView willEndDraggingWithVelocity:(CGPoint)velocity
+      targetContentOffset:(CGPoint *)targetContentOffset unclampedOriginalTarget:(CGPoint)unclampedTarget {
+    %orig;
+    if (!targetContentOffset || !ApolloNativeFeedSearchEnabled() ||
+        objc_getAssociatedObject(scrollView, kNSBFeedTableKey) == nil) return;
+    UIViewController *vc = NSBFeedVCForView(scrollView);
+    ApolloNativeSearchRestingState *state = vc ? NSBRestingStateForVC(vc) : nil;
+    if (!state || !state.pullFromCollapsedRest) return;
+    state.pullFromCollapsedRest = NO;
+    CGFloat y = scrollView.contentOffset.y;
+    if (y >= state.pullRestOffset - 0.5) return;               // not pulled past the collapsed rest
+    SEL detentsSel = NSSelectorFromString(@"_scrollDetentOffsetsForScrollView:");
+    if (![self respondsToSelector:detentsSel]) return;
+    NSArray<NSNumber *> *detents = ((id (*)(id, SEL, id))objc_msgSend)(self, detentsSel, scrollView);
+    if (![detents isKindOfClass:NSArray.class] || detents.count < 2) return;
+    NSNumber *revealed = [detents valueForKeyPath:@"@min.self"];
+    if (!revealed || targetContentOffset->y <= revealed.doubleValue + 0.5) return;   // already opening
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] pull at the collapsed rest: y=%.1f target %.1f -> %.1f (detents %@)",
+                  y, targetContentOffset->y, revealed.doubleValue, detents);
+    }
+    targetContentOffset->y = revealed.doubleValue;
+}
+
+%end
+%end
+
+// Installed from its own constructor (the selector is private, so its
+// presence is checked first) rather than from the module's %ctor below.
+static __attribute__((constructor)) void NSBPaletteSnapInstall(void) {
+    if (class_getInstanceMethod(UINavigationController.class,
+            @selector(_observeScrollView:willEndDraggingWithVelocity:targetContentOffset:unclampedOriginalTarget:))) {
+        %init(NSBPaletteSnap);
+        ApolloLog(@"[NativeSearch] palette snap hook installed");
+    } else {
+        ApolloLog(@"[NativeSearch] palette snap hook NOT installed: selector missing");
+    }
+}
 
 %ctor {
     %init;
