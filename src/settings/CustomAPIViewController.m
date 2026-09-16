@@ -46,6 +46,7 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloBackupDocument.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloAutomaticBackupViewController.h"
 #import "settings/ApolloLocalBackupsViewController.h"
@@ -4561,42 +4562,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)confirmRestoreWithURL:(NSURL *)zipURL {
-    UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"Confirm Restore"
-        message:@"This will replace all existing settings and logged-in accounts with the backup. This cannot be undone."
-        preferredStyle:UIAlertControllerStyleAlert];
-
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
-    UIAlertAction *restoreAction = [UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-        [self restoreFromZipURL:zipURL];
-    }];
-
-    [confirmAlert addAction:cancelAction];
-    [confirmAlert addAction:restoreAction];
-    [self presentViewController:confirmAlert animated:YES completion:nil];
-}
-
-- (void)restoreFromZipURL:(NSURL *)zipURL {
-    NSString *errorTitle = nil;
-    NSString *errorMessage = nil;
-    if (!ApolloBackupRestoreRestoreFromZipURL(zipURL, &errorTitle, &errorMessage)) {
-        [self showAlertWithTitle:(errorTitle ?: @"Restore Failed") message:(errorMessage ?: @"Could not restore backup.")];
-        return;
-    }
-
-    [self showRestoreCompleteAlert];
-}
-
-- (void)showRestoreCompleteAlert {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Restore Complete"
-        message:@"Settings successfully restored. Apollo needs to restart to apply changes."
-        preferredStyle:UIAlertControllerStyleAlert];
-
-    UIAlertAction *quitAction = [UIAlertAction actionWithTitle:@"Close App" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }];
-
-    [alert addAction:quitAction];
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloBackupPresentRestoreConfirmation(self, zipURL, nil);
 }
 
 #pragma mark - Thanks To VC
