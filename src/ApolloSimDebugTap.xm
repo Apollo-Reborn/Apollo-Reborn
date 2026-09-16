@@ -29,6 +29,8 @@
 #import "ApolloWebTextDecoding.h"
 #import "ApolloState.h"
 #import "ApolloTextureDecls.h"
+#import "ApolloThemeStore.h"
+#import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
 #import "UIWindow+Apollo.h"
 
@@ -473,6 +475,117 @@ static void ApolloSimDebugSearchBarProbe(CGPoint point, NSTimeInterval seconds) 
     }
 }
 
+// "fieldprobe" command: log everything that decides whether the nav-bar
+// search field draws its glass pill — the field's dynamic-material flags,
+// its background views and layer tree, the bar's hosting flags and the
+// owning navigation item — so a before/after of a cancelled swipe-back can
+// be compared line by line.
+static void ApolloSimDebugProbeLayer(CALayer *layer, NSInteger depth, NSInteger maxDepth) {
+    CGFloat bgAlpha = layer.backgroundColor ? CGColorGetAlpha(layer.backgroundColor) : -1.0;
+    CALayer *pres = layer.presentationLayer;
+    id source = [layer respondsToSelector:sel_registerName("sourceLayer")]
+        ? ((id (*)(id, SEL))objc_msgSend)(layer, sel_registerName("sourceLayer")) : nil;
+    ApolloLog(@"[FieldProbe] %*slayer %@ frame=%@ hidden=%d opacity=%.2f pres=%.2f/%d corner=%.1f bgA=%.2f filters=%lu comp=%d mask=%d subs=%lu%@",
+              (int)depth * 2, "", NSStringFromClass(layer.class), NSStringFromCGRect(layer.frame),
+              (int)layer.hidden, layer.opacity, pres ? pres.opacity : -1.0, pres ? (int)pres.hidden : -1,
+              layer.cornerRadius, bgAlpha,
+              (unsigned long)layer.filters.count, layer.compositingFilter != nil, layer.mask != nil,
+              (unsigned long)layer.sublayers.count,
+              source ? [NSString stringWithFormat:@" source=%@ %@ hidden=%d", NSStringFromClass([source class]),
+                        [source isKindOfClass:CALayer.class] ? NSStringFromCGRect(((CALayer *)source).frame) : @"",
+                        [source isKindOfClass:CALayer.class] ? (int)((CALayer *)source).hidden : -1] : @"");
+    if (depth >= maxDepth) return;
+    for (CALayer *sub in layer.sublayers) ApolloSimDebugProbeLayer(sub, depth + 1, maxDepth);
+}
+
+static BOOL ApolloSimDebugProbeBool(id object, const char *selectorName) {
+    SEL selector = sel_registerName(selectorName);
+    if (![object respondsToSelector:selector]) return NO;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static long long ApolloSimDebugProbeInteger(id object, const char *selectorName) {
+    SEL selector = sel_registerName(selectorName);
+    if (![object respondsToSelector:selector]) return -99;
+    return ((long long (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static id ApolloSimDebugProbeObject(id object, const char *selectorName) {
+    SEL selector = sel_registerName(selectorName);
+    if (![object respondsToSelector:selector]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static void ApolloSimDebugFieldProbe(NSString *tag) {
+    UISearchBar *bar = nil;
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (window.hidden) continue;
+        bar = ApolloSimDebugFindSearchBar(window);
+        if (bar) break;
+    }
+    if (!bar) { ApolloLog(@"[FieldProbe] %@: no search bar in any window", tag); return; }
+    UITextField *field = bar.searchTextField;
+    NSMutableString *chain = [NSMutableString string];
+    for (UIView *v = field; v; v = v.superview) {
+        [chain appendFormat:@"%@%@", chain.length ? @" < " : @"", NSStringFromClass(v.class)];
+    }
+    ApolloLog(@"[FieldProbe] %@ chain: %@", tag, chain);
+    UINavigationBar *navBar = (UINavigationBar *)ApolloSimDebugProbeNavBar(bar);
+    UINavigationItem *item = navBar.topItem;
+    UISearchController *sc = ApolloSimDebugProbeObject(bar, "_searchController");
+    ApolloLog(@"[FieldProbe] %@ bar frame=%@ hidden=%d alpha=%.2f style=%ld translucent=%d bg=%@ inlineHosted=%d backdrop=%lld sc=%p active=%d item.sc=%d hidesWhenScrolling=%d placement=%ld",
+              tag, NSStringFromCGRect(bar.frame), (int)bar.hidden, bar.alpha, (long)bar.searchBarStyle, (int)bar.translucent,
+              bar.backgroundColor, (int)ApolloSimDebugProbeBool(bar, "_isHostedInlineByNavigationBar"),
+              ApolloSimDebugProbeInteger(bar, "_backdropStyle"), sc, (int)sc.active, (int)(item.searchController == sc),
+              (int)item.hidesSearchBarWhenScrolling,
+              (long)ApolloSimDebugProbeInteger(item, "preferredSearchBarPlacement"));
+    Ivar topIvar = class_getInstanceVariable(field.class, "_effectBackgroundTop");
+    Ivar bottomIvar = class_getInstanceVariable(field.class, "_effectBackgroundBottom");
+    Ivar styleIvar = class_getInstanceVariable(field.class, "_backdropStyle");
+    long long backdropStyle = -99;
+    if (styleIvar) backdropStyle = *(long long *)((uint8_t *)(__bridge void *)field + ivar_getOffset(styleIvar));
+    UIView *effectTop = topIvar ? object_getIvar(field, topIvar) : nil;
+    UIView *effectBottom = bottomIvar ? object_getIvar(field, bottomIvar) : nil;
+    ApolloLog(@"[FieldProbe] %@ field %@ frame=%@ hidden=%d alpha=%.2f border=%ld bg=%@ bgImage=%d wantsDynamic=%d shouldBeGlass=%d pocket=%@ backdropStyle=%lld effectTop=%@ effectBottom=%@ window=%d",
+              tag, NSStringFromClass(field.class), NSStringFromCGRect(field.frame), (int)field.hidden, field.alpha,
+              (long)field.borderStyle, field.backgroundColor, field.background != nil,
+              (int)ApolloSimDebugProbeBool(field, "_wantsDynamicBackgroundMaterial"),
+              (int)ApolloSimDebugProbeBool(field, "_backgroundMaterialShouldBeGlass"),
+              ApolloSimDebugProbeObject(field, "scrollPocketInteraction"), backdropStyle,
+              effectTop ? [NSString stringWithFormat:@"%@ sup=%@ h=%d a=%.2f", NSStringFromClass(effectTop.class), NSStringFromClass(effectTop.superview.class), (int)effectTop.hidden, effectTop.alpha] : @"nil",
+              effectBottom ? [NSString stringWithFormat:@"%@ sup=%@ h=%d a=%.2f", NSStringFromClass(effectBottom.class), NSStringFromClass(effectBottom.superview.class), (int)effectBottom.hidden, effectBottom.alpha] : @"nil",
+              field.window != nil);
+    for (UIView *sub in field.subviews) {
+        CGFloat bgAlpha = sub.backgroundColor ? CGColorGetAlpha(sub.backgroundColor.CGColor) : -1.0;
+        ApolloLog(@"[FieldProbe] %@   sub %@ frame=%@ hidden=%d alpha=%.2f bgA=%.2f", tag, NSStringFromClass(sub.class),
+                  NSStringFromCGRect(sub.frame), (int)sub.hidden, sub.alpha, bgAlpha);
+    }
+    // The glass pill is UIKit's "background material": when applied, the
+    // view renders through a _UIMultiLayer that hosts the material layers
+    // beside the content layer. Log both the material bookkeeping and the
+    // layer class so a lost pill can be told apart from a cleared material.
+    id material = ApolloSimDebugProbeObject(field, "_resolvedBackgroundMaterial");
+    ApolloLog(@"[FieldProbe] %@ suppressed: field=%d container=%d bar=%d navBar=%d alphaOverride(field)=%.2f",
+              tag, (int)ApolloSimDebugProbeBool(field, "_isBackgroundSuppressed"),
+              (int)ApolloSimDebugProbeBool(field.superview, "_isBackgroundSuppressed"),
+              (int)ApolloSimDebugProbeBool(bar, "_isBackgroundSuppressed"),
+              (int)ApolloSimDebugProbeBool(navBar, "_isBackgroundSuppressed"),
+              field.layer.presentationLayer ? field.layer.presentationLayer.opacity : -1.0);
+    ApolloLog(@"[FieldProbe] %@ field layer=%@ multiLayer=%d hasMaterial=%d material=%@ barLayer=%@ containerLayer=%@",
+              tag, NSStringFromClass(field.layer.class),
+              (int)ApolloSimDebugProbeBool(field, "__dbg_renderingModeIsMultiLayer"),
+              (int)ApolloSimDebugProbeBool(field, "_hasBackgroundMaterial"),
+              material ? [NSString stringWithFormat:@"%@ %@", NSStringFromClass([material class]), material] : @"nil",
+              NSStringFromClass(bar.layer.class), NSStringFromClass(field.superview.layer.class));
+    // The material lives in an intermediate _UIMultiLayer that UIKit wraps
+    // around the view's own layer inside the superview's layer; log from the
+    // superlayer down so the wrapper (or its absence) shows.
+    CALayer *superlayer = field.layer.superlayer;
+    ApolloLog(@"[FieldProbe] %@ field superlayer=%@ isSuperviewLayer=%d", tag,
+              NSStringFromClass(superlayer.class), (int)(superlayer == field.superview.layer));
+    ApolloSimDebugProbeLayer(superlayer ?: field.layer, 0, 7);
+}
+
 static void ApolloSimDebugDumpHierarchy(void) {
     NSMutableString *out = [NSMutableString string];
     for (UIWindow *window in ApolloAllWindows()) {
@@ -902,6 +1015,24 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugForceBottomInset([[contents substringFromIndex:12] doubleValue]);
             return;
         }
+        // "theme apollo|custom" command: switch to Apollo's stock theme (custom
+        // theme runtime off) so the stock search field material can be tested,
+        // or back to the last custom theme (the backup's), through the same
+        // store calls the theme picker makes.
+        if ([contents hasPrefix:@"theme "]) {
+            NSString *which = [[contents substringFromIndex:6] stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if ([which isEqualToString:@"apollo"]) {
+                [[ApolloThemeStore shared] selectApolloTheme];
+                ApolloThemeRuntimeReload();
+                ApolloLog(@"[SimDebugTap] theme -> apollo (custom runtime off)");
+            } else if ([which isEqualToString:@"custom"]) {
+                BOOL restored = [[ApolloThemeStore shared] restoreLastCustomSelection];
+                ApolloThemeRuntimeReload();
+                ApolloLog(@"[SimDebugTap] theme -> custom (restored=%d)", (int)restored);
+            }
+            return;
+        }
         if ([contents hasPrefix:@"sbprobe "]) {
             NSArray<NSString *> *ps = [[[contents substringFromIndex:8] stringByTrimmingCharactersInSet:
                 NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
@@ -909,6 +1040,11 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                 ApolloSimDebugSearchBarProbe(CGPointMake(ps[0].doubleValue, ps[1].doubleValue),
                                              ps.count >= 3 ? ps[2].doubleValue : 1.2);
             }
+            return;
+        }
+        if ([contents hasPrefix:@"fieldprobe"]) {
+            NSString *tag = [[contents substringFromIndex:10] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            ApolloSimDebugFieldProbe(tag.length ? tag : @"probe");
             return;
         }
         if ([contents hasPrefix:@"dump"]) {
@@ -1244,6 +1380,7 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         ApolloSimDebugPerformTap(CGPointMake(numbers[0].doubleValue, numbers[1].doubleValue));
     });
 }
+
 
 %ctor {
     %init(ApolloSimNavChurn);
