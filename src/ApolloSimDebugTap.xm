@@ -397,6 +397,82 @@ static void ApolloSimDebugDumpView(UIView *view, UIWindow *window, NSInteger dep
     }
 }
 
+// "sbprobe x y [seconds]" command: tap (x, y) and, for the next `seconds`
+// (default 1.2), sample every 33ms the first nav-bar UISearchBar's subtree —
+// model frame (bar coordinates), presentation-layer frame and opacity, hidden,
+// clipsToBounds and running animation keys of every button / text field /
+// container — to /tmp/apollofix-sbprobe.txt. Used to see what UIKit's cancel
+// button actually does during the search activation animation.
+static UISearchBar *ApolloSimDebugFindSearchBar(UIView *view) {
+    if ([view isKindOfClass:UISearchBar.class]) return (UISearchBar *)view;
+    for (UIView *sub in view.subviews) {
+        UISearchBar *found = ApolloSimDebugFindSearchBar(sub);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static NSString *ApolloSimDebugProbeLine(UIView *view, UIView *bar) {
+    CGRect model = bar ? [view.superview convertRect:view.frame toView:bar] : view.frame;
+    CALayer *pres = view.layer.presentationLayer;
+    CGRect pf = pres ? pres.frame : CGRectNull;
+    return [NSString stringWithFormat:@"%@ model=(%.1f,%.1f,%.1f,%.1f) pres=(%.1f,%.1f,%.1f,%.1f) a=%.2f/%.2f h=%d/%d%@ clip=%d/%d mask=%d anims=%@",
+        NSStringFromClass(view.class),
+        model.origin.x, model.origin.y, model.size.width, model.size.height,
+        pf.origin.x, pf.origin.y, pf.size.width, pf.size.height,
+        view.alpha, pres ? pres.opacity : -1.0, (int)view.hidden, pres ? (int)pres.hidden : -1, view.hidden ? @" HIDDEN" : @"",
+        (int)view.clipsToBounds, (int)view.layer.masksToBounds, view.layer.mask != nil,
+        [view.layer.animationKeys componentsJoinedByString:@","] ?: @""];
+}
+
+// Every view from the bar down to (and including) the cancel button's whole
+// subtree, plus the bar's ancestors up to the navigation bar: what clips,
+// what masks, what is transparent while the cancel button animates in.
+static void ApolloSimDebugProbeCollect(UIView *view, UIView *bar, NSMutableString *out, NSInteger depth) {
+    // The whole navigation bar subtree, every sample: what is on screen, what
+    // is a portal copy, what is hidden or transparent while the cancel button
+    // animates in. Text field internals and the tweak's own action strip are
+    // noise and skipped; SwiftUI platter internals are cut at depth 9.
+    [out appendFormat:@"  %*s%@\n", (int)depth * 2, "", ApolloSimDebugProbeLine(view, bar)];
+    if ([view isKindOfClass:UITextField.class] || depth >= 9) return;
+    if ([NSStringFromClass(view.class) isEqualToString:@"ApolloNavigationActionsStrip"]) return;
+    for (UIView *sub in view.subviews) ApolloSimDebugProbeCollect(sub, bar, out, depth + 1);
+}
+
+static UIView *ApolloSimDebugProbeNavBar(UIView *bar) {
+    UIView *v = bar;
+    while (v && ![v isKindOfClass:UINavigationBar.class]) v = v.superview;
+    return v;
+}
+
+static void ApolloSimDebugSearchBarProbe(CGPoint point, NSTimeInterval seconds) {
+    NSMutableString *out = [NSMutableString string];
+    NSDate *start = [NSDate date];
+    __block NSInteger samples = 0;
+    NSInteger total = (NSInteger)(seconds / 0.033);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ApolloSimDebugPerformTap(point);
+    });
+    for (NSInteger i = 0; i <= total; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.033 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UISearchBar *bar = nil;
+            for (UIWindow *window in ApolloAllWindows()) {
+                if (window.hidden) continue;
+                bar = ApolloSimDebugFindSearchBar(window);
+                if (bar) break;
+            }
+            [out appendFormat:@"--- t=%.3f bar=%@\n", -[start timeIntervalSinceNow], bar ? @"" : @"(none)"];
+            UIView *navBar = ApolloSimDebugProbeNavBar(bar);
+            if (navBar) ApolloSimDebugProbeCollect(navBar, bar, out, 0);
+            else if (bar) ApolloSimDebugProbeCollect(bar, bar, out, 0);
+            if (++samples > total) {
+                [out writeToFile:@"/tmp/apollofix-sbprobe.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                ApolloLog(@"[SimDebugTap] search bar probe written (%lu bytes)", (unsigned long)out.length);
+            }
+        });
+    }
+}
+
 static void ApolloSimDebugDumpHierarchy(void) {
     NSMutableString *out = [NSMutableString string];
     for (UIWindow *window in ApolloAllWindows()) {
@@ -824,6 +900,15 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         }
         if ([contents hasPrefix:@"insetbottom "]) {
             ApolloSimDebugForceBottomInset([[contents substringFromIndex:12] doubleValue]);
+            return;
+        }
+        if ([contents hasPrefix:@"sbprobe "]) {
+            NSArray<NSString *> *ps = [[[contents substringFromIndex:8] stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
+            if (ps.count >= 2) {
+                ApolloSimDebugSearchBarProbe(CGPointMake(ps[0].doubleValue, ps[1].doubleValue),
+                                             ps.count >= 3 ? ps[2].doubleValue : 1.2);
+            }
             return;
         }
         if ([contents hasPrefix:@"dump"]) {
