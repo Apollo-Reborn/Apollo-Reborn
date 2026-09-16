@@ -164,6 +164,9 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName,
                                      UIColor *_Nullable tileColor,
                                      UITraitCollection *_Nullable traits);
 
+// Shared branding for Theme Manager shortcuts.
+UIColor *ApolloThemeManagerIconColor(void);
+
 #ifdef __cplusplus
 }
 #endif

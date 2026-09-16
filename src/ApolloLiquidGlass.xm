@@ -441,6 +441,16 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
 %hook UITabBar
 
+- (void)tintColorDidChange {
+    %orig;
+    // A popup dims inherited tint independently of the press highlight. Keep
+    // the selected tab's accent when the Glass lens returns to it; the popup
+    // backdrop still dims the screen and normal pressed feedback is untouched.
+    if (IsLiquidGlass() && self.tintAdjustmentMode == UIViewTintAdjustmentModeDimmed) {
+        self.tintAdjustmentMode = UIViewTintAdjustmentModeNormal;
+    }
+}
+
 - (void)didMoveToWindow {
     %orig;
     ApolloApplyAdaptiveTabBarAppearance(self, @"didMoveToWindow");
