@@ -36,6 +36,9 @@ static const void *kCommentsCollapseTopPinKey = &kCommentsCollapseTopPinKey;
 // the rest as a comment collapsed: a jump of up to 60pt, reported against
 // #1138 as "still jumps when the post is slightly scrolled".
 static const void *kCommentsCollapseTopPinOffsetKey = &kCommentsCollapseTopPinOffsetKey;
+// UIView: the snapshot of the list's top band shown inside the root cover for
+// the length of a collapse (see ShowCommentsCollapseCover).
+static const void *kCommentsCollapseCoverSnapshotKey = &kCommentsCollapseCoverSnapshotKey;
 
 // Slightly longer than the collapse animation.
 static const NSTimeInterval kCommentsCollapseCoverDuration = 0.65;
@@ -204,6 +207,41 @@ static void StyleCommentsCollapseCover(UIView *cover, UIColor *coverColor, BOOL 
     }
 }
 
+// The root cover sits UNDER the navigation bar, so with the Soft, Blur or
+// Hidden header style — a translucent bar that shows the list through it — a
+// plain fill of the table colour read as an opaque band snapping in for the
+// length of every collapse (0.65s), as if Hard had been chosen; only under
+// Hard, whose band is opaque anyway, was it invisible. What the cover has to
+// hide is a stale row drawn into that band mid-collapse, so show what is there
+// already: a snapshot of the list's top band, taken as the collapse begins and
+// held for its duration. The list is pinned where it started for that long,
+// so the snapshot matches the live content except for the stale row it hides,
+// and the bar keeps showing the same pixels it showed before the tap. The fill
+// stays underneath as the fallback for a snapshot UIKit cannot take.
+static void ReplaceCommentsCoverSnapshot(UIViewController *viewController, UIView *cover, UITableView *tableView, CGFloat navBarBottom) {
+    UIView *old = objc_getAssociatedObject(viewController, kCommentsCollapseCoverSnapshotKey);
+    [old removeFromSuperview];
+    objc_setAssociatedObject(viewController, kCommentsCollapseCoverSnapshotKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIView *rootView = viewController.view;
+    if (!rootView || !tableView.window || navBarBottom <= 0.0) return;
+    CGRect bandInRoot = CGRectMake(0.0, 0.0, CGRectGetWidth(rootView.bounds), navBarBottom);
+    CGRect bandInTable = [rootView convertRect:bandInRoot toView:tableView];
+    UIView *snapshot = [tableView resizableSnapshotViewFromRect:bandInTable afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
+    if (!snapshot) return;
+    UIView *host = [cover isKindOfClass:[UIVisualEffectView class]] ? ((UIVisualEffectView *)cover).contentView : cover;
+    snapshot.frame = host.bounds;
+    snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    snapshot.userInteractionEnabled = NO;
+    [host addSubview:snapshot];
+    objc_setAssociatedObject(viewController, kCommentsCollapseCoverSnapshotKey, snapshot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void RemoveCommentsCoverSnapshot(UIViewController *viewController) {
+    UIView *old = objc_getAssociatedObject(viewController, kCommentsCollapseCoverSnapshotKey);
+    [old removeFromSuperview];
+    objc_setAssociatedObject(viewController, kCommentsCollapseCoverSnapshotKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static BOOL CommentsCoverSurfaceIsOpaque(UIViewController *viewController, UITableView *tableView) {
     UIColor *coverColor = GetCommentsCoverColor(viewController, tableView);
     UIColor *resolved = [coverColor resolvedColorWithTraitCollection:viewController.view.traitCollection];
@@ -324,6 +362,7 @@ static void HideCommentsCollapseCover(UIViewController *viewController, NSUInteg
 
     rootCoverView.hidden = YES;
     toolbarCoverView.hidden = YES;
+    RemoveCommentsCoverSnapshot(viewController);
     ApolloLog(@"[CommentsClip] Hide collapse cover generation=%lu", (unsigned long)generation);
 }
 
@@ -379,6 +418,15 @@ static void ShowCommentsCollapseCover(NSString *reason) {
     rootCoverView.hidden = NO;
     toolbarCoverView.hidden = (toolbarHostView == nil);
     LayoutCommentsCollapseCover(viewController);
+    // The snapshot is of the live list, before the cover could hide any of
+    // it: the cover is laid out above but has not been drawn yet
+    // (afterScreenUpdates:NO), and the pane's transparent list keeps its
+    // material instead.
+    if (CommentsCoverSurfaceIsOpaque(viewController, tableView)) {
+        ReplaceCommentsCoverSnapshot(viewController, rootCoverView, tableView, GetNavigationBarBottom(viewController));
+    } else {
+        RemoveCommentsCoverSnapshot(viewController);
+    }
 
     ApolloLog(@"[CommentsClip] Show collapse cover reason=%@ generation=%lu opaqueSurface=%d pinTop=%d navBottom=%.1f toolbarHost=%@ rootFrame=%@ toolbarFrame=%@ tableFrame=%@ tableBounds=%@",
               reason,
@@ -431,6 +479,7 @@ static void ShowCommentsCollapseCover(NSString *reason) {
         UIView *toolbarCoverView = objc_getAssociatedObject(self, kCommentsCollapseToolbarCoverViewKey);
         rootCoverView.hidden = YES;
         toolbarCoverView.hidden = YES;
+        RemoveCommentsCoverSnapshot((UIViewController *)self);
         objc_setAssociatedObject(self, kCommentsCollapseTopPinKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kCommentsCollapseTopPinOffsetKey, nil,
