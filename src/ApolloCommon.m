@@ -945,10 +945,6 @@ UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFl
         [fill setFill];
         [path fill];
 
-        [[UIColor separatorColor] setStroke];
-        path.lineWidth = 0.5;
-        [path stroke];
-
         UIFont *font = [UIFont systemFontOfSize:size * 0.58];
         NSDictionary *attrs = @{NSFontAttributeName: font};
         CGSize textSize = [emoji sizeWithAttributes:attrs];
