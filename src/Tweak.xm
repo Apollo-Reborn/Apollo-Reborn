@@ -24,6 +24,7 @@
 #import "ApolloTranslation.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloAutomaticBackup.h"
 #import "Version.h"
 #import "UserDefaultConstants.h"
 #import "ApolloPostFilterStore.h"
@@ -35,6 +36,7 @@
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloPerAccountFavorites.h"
+#import "ApolloFavoritesSorting.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
 #import "crash/ApolloCrashPromptCoordinator.h"
@@ -3620,6 +3622,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     }
     if (ApolloDefaultsKeyChangesNativeFavorites(key)) {
         ApolloPerAccountFavoritesNativeFavoritesDidChange();
+        ApolloFavoritesSortingSchedule();
     }
 }
 
@@ -3646,6 +3649,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     }
     if (ApolloDefaultsKeyChangesNativeFavorites(key)) {
         ApolloPerAccountFavoritesNativeFavoritesDidChange();
+        ApolloFavoritesSortingSchedule();
     }
 }
 
@@ -3701,6 +3705,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 
     NSDictionary *defaultValues = @{UDKeyBlockAnnouncements: @YES,
                                     UDKeyEnableFLEX: @NO,
+                                    UDKeyAutomaticBackupsEnabled: @NO,
+                                    UDKeyAutomaticBackupIntervalDays: @3,
+                                    UDKeyAutomaticBackupDestination: @0,
                                     UDKeyCrashCaptureEnabled: @YES,
                                     UDKeyTrendingSubredditsLimit: @"5",
                                     UDKeyShowRandNsfw: @NO,
@@ -3712,17 +3719,19 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeySubredditFeedIconStyle: @(ApolloSubredditFeedIconStyleClassic),
                                     UDKeySubredditFeedLayout: @(ApolloSubredditFeedLayoutRows),
                                     UDKeyPerAccountFavoritesEnabled: @NO,
+                                    UDKeySortFavoritesAlphabetically: @NO,
                                     UDKeyModernSubredditDividers: @YES,
                                     UDKeyShowDeletedComments: @NO,
                                     UDKeyTapToRevealDeletedComments: @NO,
                                     UDKeyPassiveDeletedComments: @NO,
                                     UDKeyEnableFlairColors: @NO,
+                                    UDKeyBoldPostTitles: @NO,
                                     UDKeyShowRecentlyReadThumbnails: @YES,
                                     UDKeyFeedTextPostThumbnails: @YES,
                                     UDKeyFeedGalleryCarousel: @YES,
                                     UDKeyFeedGalleryEdgeSwipeNav: @NO,
                                     UDKeyForwardSwipeForgetAfterScrolling: @NO,
-                                    UDKeySwipeUpForComments: @YES,
+                                    UDKeySwipeUpForComments: @NO,
                                     UDKeySportsClipsInlineVideo: @YES,
                                     UDKeyDevvitInteractivePosts: @NO,
                                     UDKeyDevvitFeedWidgets: @YES,
@@ -3764,24 +3773,35 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyProfileShowStatCards: @YES,
                                     UDKeyProfileShowSocialLinks: @YES,
                                     UDKeyProfileShowActions: @YES,
-                                    UDKeyProfileAvatarStyle: @0,
+                                    UDKeyProfileAvatarStyle: @1, // Circle; registered defaults preserve saved choices.
+                                    UDKeyProfileLayoutPreviewPinned: @NO,
                                     UDKeyShowSubredditHeaders: @NO,
                                     UDKeySubredditHeaderImmersive: @YES,
                                     UDKeySubredditShowBanner: @YES,
                                     UDKeySubredditShowJoinButton: @YES,
+                                    UDKeySubredditShowUserFlairButton: @NO,
+                                    UDKeySubredditShowSidebarButton: @NO,
                                     UDKeySubredditShowDisplayName: @YES,
+                                    UDKeySubredditShowSubtitle: @YES,
+                                    UDKeySubredditShowDescription: @YES,
+                                    UDKeySubredditLayoutPreviewPinned: @YES,
                                     UDKeyCommunityHighlights: @NO,
                                     UDKeyCommunityHighlightsWeb: @NO,
                                     UDKeyAutoHideTabBarShowOnIdle: @YES,
                                     UDKeyClassicTabBarScrollBehavior: @NO,
+                                    UDKeyHideTopBarOnScroll: @NO,
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
+                                    UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
                                     UDKeyInfoRowTapComments: @YES,
                                     UDKeyInfoRowPopupMode: @YES,
                                     UDKeyInfoRowOverlayMode: @NO,
+                                    UDKeyCollapseNavigationActions: @NO,
+                                    UDKeyScrollReturnButton: @YES,
+                                    UDKeyCenterTitleBetweenButtons: @NO,
                                     UDKeyInfoRowTapTranslation: @YES,
                                     UDKeyLiveCommentsFollow: @YES,
                                     UDKeyPerPostCommentSort: @NO,
@@ -3835,6 +3855,13 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyRedditClientSecret: @""};
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
     [standardDefaults registerDefaults:defaultValues];
+    sAutomaticBackupsEnabled = [standardDefaults boolForKey:UDKeyAutomaticBackupsEnabled];
+    sAutomaticBackupIntervalDays = [standardDefaults integerForKey:UDKeyAutomaticBackupIntervalDays];
+    if (![@[@1, @3, @7] containsObject:@(sAutomaticBackupIntervalDays)]) {
+        sAutomaticBackupIntervalDays = 3;
+        [standardDefaults setInteger:3 forKey:UDKeyAutomaticBackupIntervalDays];
+    }
+    sAutomaticBackupDestination = [standardDefaults integerForKey:UDKeyAutomaticBackupDestination] == 1 ? 1 : 0;
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
 
@@ -4002,14 +4029,10 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sHideTabBarTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles];
     ApolloNormalizeNativeHideUsernameForIconOnlyTabBar();
-    // The old master switch was retired in favour of the Profile Layout screen.
-    // Migrate existing installs that had it off so the visible per-band controls
-    // cannot appear to do nothing behind an unreachable legacy preference.
-    if (![standardDefaults boolForKey:UDKeyShowDetailedProfiles]) {
-        [standardDefaults setBool:YES forKey:UDKeyShowDetailedProfiles];
-        ApolloLog(@"[ProfileLayout] migrated retired detailed-profile master switch to enabled");
-    }
-    sShowDetailedProfiles = YES;
+    // Profile Layout exposes this master again as its Native density. The
+    // registered default remains ON for new installs; an explicit OFF now
+    // persists and restores Apollo's original profile page across launches.
+    sShowDetailedProfiles = [standardDefaults boolForKey:UDKeyShowDetailedProfiles];
     sBadgeBookEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBadgeBookEnabled];
     // No launch-time icon prewarm: sessions that never open a profile shouldn't
     // pay for decoded badge bitmaps. The strip (on first preview data) and the
@@ -4020,19 +4043,32 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sProfileShowStatCards = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowStatCards];
     sProfileShowSocialLinks = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowSocialLinks];
     sProfileShowActions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowActions];
+    // Start the shared avatar-shape feature on Circle for every installation,
+    // including users with an older Profile Layout choice. Run once so later
+    // explicit shape selections remain intact across launches.
+    NSString *sharedAvatarShapeDefaultMigration = @"SharedAvatarShapeCircleDefaultApplied";
+    if (![standardDefaults boolForKey:sharedAvatarShapeDefaultMigration]) {
+        [standardDefaults setInteger:1 forKey:UDKeyProfileAvatarStyle];
+        [standardDefaults setBool:YES forKey:sharedAvatarShapeDefaultMigration];
+    }
     sProfileAvatarStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyProfileAvatarStyle];
     if (sProfileAvatarStyle < 0 || sProfileAvatarStyle > 2) {
-        sProfileAvatarStyle = 0;
-        [standardDefaults setInteger:0 forKey:UDKeyProfileAvatarStyle];
+        sProfileAvatarStyle = 1;
+        [standardDefaults setInteger:1 forKey:UDKeyProfileAvatarStyle];
     }
     sShowSubredditHeaders = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders];
     sSubredditHeaderImmersive = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditHeaderImmersive];
     sSubredditShowBanner = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowBanner];
     sSubredditShowJoinButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowJoinButton];
+    sSubredditShowUserFlairButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowUserFlairButton];
+    sSubredditShowSidebarButton = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowSidebarButton];
     sSubredditShowDisplayName = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowDisplayName];
+    sSubredditShowSubtitle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowSubtitle];
+    sSubredditShowDescription = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySubredditShowDescription];
     sCommunityHighlights = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlights];
     sCommunityHighlightsWeb = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb];
     sClassicTabBarScrollBehavior = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyClassicTabBarScrollBehavior];
+    sHideTopBarOnScroll = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTopBarOnScroll];
     if (ApolloSupportsNativeTabBarScrollBehavior() &&
         ![standardDefaults boolForKey:UDKeyAutoHideTabBarShowOnIdle]) {
         // Idle re-expansion is now bundled into both selectable scroll modes.
@@ -4049,6 +4085,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
+    sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
@@ -4069,6 +4106,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         [[NSUserDefaults standardUserDefaults] setBool:NO forKey:UDKeyApolloRememberSubredditCommentsSort];
         ApolloLog(@"[PerPostSort] exclusivity: normalized stale both-on at launch (native Remember Subreddit Sort -> OFF)");
     }
+    sCollapseNavigationActions = [standardDefaults boolForKey:UDKeyCollapseNavigationActions];
+    sScrollReturnButton = [standardDefaults boolForKey:UDKeyScrollReturnButton];
+    sCenterTitleBetweenButtons = [standardDefaults boolForKey:UDKeyCenterTitleBetweenButtons];
     sScrollEdgeEffectStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyScrollEdgeEffectStyle];
     NSInteger systemHeaderStyle = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 27
         ? ApolloScrollEdgeEffectStyleHard
@@ -4079,13 +4119,9 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         // result once, then store the explicit Soft/Hard choice users now see.
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
-    } else if (sScrollEdgeEffectStyle == 3) {
-        // Retired Hidden mode: closest surviving intent (no hard cutoff line)
-        // is Soft. 3 stays reserved — see the enum note in ApolloState.h.
-        sScrollEdgeEffectStyle = ApolloScrollEdgeEffectStyleSoft;
-        [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     } else if (sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleSoft &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHard &&
+               sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleHidden &&
                sScrollEdgeEffectStyle != ApolloScrollEdgeEffectStyleBlur) {
         sScrollEdgeEffectStyle = systemHeaderStyle;
         [standardDefaults setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
@@ -4105,9 +4141,11 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
         [standardDefaults setInteger:sSubredditFeedLayout forKey:UDKeySubredditFeedLayout];
     }
     sPerAccountFavoritesEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerAccountFavoritesEnabled];
+    sSortFavoritesAlphabetically = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySortFavoritesAlphabetically];
     sHideSubredditListDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideSubredditListDescriptions];
     sHideMultiredditDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideMultiredditDescriptions];
     sEnableFlairColors = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFlairColors];
+    sBoldPostTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyBoldPostTitles];
     sEnableBulkTranslation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableBulkTranslation];
     sAutoTranslateOnAppear = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutoTranslateOnAppear];
     sTapToTranslate = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTapToTranslate];
@@ -4449,6 +4487,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     // synthesis has finished, so the first projection sees the final persisted
     // account array. The feature is dormant when its opt-in flag is off.
     ApolloPerAccountFavoritesStart();
+    [[ApolloAutomaticBackup sharedManager] start];
 
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();

@@ -24,18 +24,20 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Main-queue result: assignments snapshot collection membership. Badge items remain
+// shared live objects; late scrape results replace properties on this same result.
 @interface ApolloUserBadges : NSObject
 @property(nonatomic, copy) NSString *username;
 // Catalogue achievement identifiers the user has earned.
-@property(nonatomic, strong) NSSet<NSString *> *earnedAchievementIDs;
+@property(nonatomic, copy) NSSet<NSString *> *earnedAchievementIDs;
 // The user's actual trophies, as ApolloBadgeItems (catalogue-joined where possible;
 // live/uncatalogued ones carry their scraped title/bio/imageURL with isLiveUncatalogued=YES).
-@property(nonatomic, strong) NSArray<ApolloBadgeItem *> *trophies;
+@property(nonatomic, copy) NSArray<ApolloBadgeItem *> *trophies;
 // Earned achievement id → the art URL the achievements page served for it. For
 // badges whose catalogue entry has no bundled icon (Reddit publicly serves only
 // a faint "ghost" placeholder until someone earns them), this is the only source
 // of the real artwork — the UI async-loads from here when bundledImage is nil.
-@property(nonatomic, strong) NSDictionary<NSString *, NSString *> *earnedAchievementImageURLs;
+@property(nonatomic, copy) NSDictionary<NSString *, NSString *> *earnedAchievementImageURLs;
 // NO when the achievements page couldn't be read (e.g. login-gated / markup miss),
 // so the UI can present the book without asserting a (wrong) all-locked state.
 @property(nonatomic) BOOL achievementsResolved;

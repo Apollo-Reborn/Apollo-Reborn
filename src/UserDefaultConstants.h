@@ -17,6 +17,14 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
+// days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
+// Folder permission, installation identity and last-run state live separately
+// in Application Support, so exporting/restoring settings cannot transfer them.
+static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled";
+static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
+// Legacy destination value retained for compatibility with older builds.
+static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -55,6 +63,11 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 // account's bucket back through Apollo's native FavoriteSubreddits key so every
 // stock reader/mutator continues to work unchanged.
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
+// Alphabetize shared favorites and disable manual reordering. Default NO.
+static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Per-account sorting preferences, keyed by the per-account favorites identity
+// (u:name / anonymous). Missing entries default OFF; shared preference is above.
+static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
 // Versioned envelope: { "version": 1, "buckets": { "u:name": [subreddits],
 // "anonymous": [subreddits] } }. Missing bucket and explicit empty bucket are
 // intentionally distinct; accounts created after the first migration start empty.
@@ -98,6 +111,10 @@ static NSString *const ApolloSubredditSectionsChangedNotification = @"ApolloSubr
 static NSString *const UDKeySubredditSectionsPreviewPinned = @"SubredditSectionsPreviewPinned";
 // Color post (link) and user/author flairs with Reddit's assigned colors. Default NO.
 static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
+// Feed post titles in Semibold instead of Apollo's Regular (large + compact
+// posts, crossposts, comment post context). Appearance > Posts > Bold Post
+// Titles; default NO. See ApolloBoldPostTitles.xm.
+static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
 static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
@@ -219,13 +236,29 @@ static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
+// UI-only preference: keep the Profile Layout preview visible while scrolling.
+// Default NO; independent of the subreddit preview and actual profile layout.
+static NSString *const UDKeyProfileLayoutPreviewPinned = @"ProfileLayoutPreviewPinned";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // New (Immersive, with the melt/ambient backdrop) vs Classic (same content,
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
+// Show direct actions beside Join in Apollo Reborn's subreddit header.
+// Both default to NO; User Flair is also hidden when the subreddit disallows it.
+static NSString *const UDKeySubredditShowUserFlairButton = @"SubredditShowUserFlairButton";
+static NSString *const UDKeySubredditShowSidebarButton = @"SubredditShowSidebarButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
+// Whether the Reborn header shows the community title + member-count line.
+// Before metadata it falls back to r/name; redundant titles leave only the count.
+// Defaults to YES; surfaced as "Subtitle".
+static NSString *const UDKeySubredditShowSubtitle = @"SubredditShowSubtitle";
+// Whether the Reborn subreddit header shows the community's about text.
+// Defaults to YES alongside the other header bands.
+static NSString *const UDKeySubredditShowDescription = @"SubredditShowDescription";
+// Keep the Subreddit Layout settings preview visible while scrolling. Default YES.
+static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPreviewPinned";
 // Backing values for the single Community Highlights picker. Keeping the old
 // keys maps existing settings naturally: both YES = Full, master only = Partial,
 // master NO = Off.
@@ -242,6 +275,9 @@ static NSString *const UDKeyClassicTabBarScrollBehavior = @"ClassicTabBarScrollB
 // Apollo's native preference, mirrored in Reborn's Interface > Tab Bar screen
 // and consumed by the Liquid Glass compatibility layer as its source of truth.
 static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
+// Liquid Glass only. Also hides/reveals the top navigation bar with the bottom
+// tab bar while Hide Bars on Scroll is enabled. Default NO; remembered when off.
+static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
 // bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
@@ -259,6 +295,10 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
+// default OFF via registerDefaults. See ApolloLiquidGlass.xm.
+static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill
@@ -311,9 +351,17 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// Navigation actions collapse and between-buttons title centering are opt-in (default off).
+static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+// Show the return button (and the navigation-bar tap) after a status bar tap
+// scrolls a feed or comment thread to the top. Default YES; the second
+// status bar tap returns to the saved position regardless.
+static NSString *const UDKeyScrollReturnButton = @"ScrollReturnButton";
+static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
+
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).
 // 0 = retired System Default (migrates to 1 on iOS 26 or 2 on iOS 27),
-// 1 = Soft, 2 = Hard, 3 = retired Hidden, 4 = Blur.
+// 1 = Soft, 2 = Hard, 3 = Hidden, 4 = Blur.
 static NSString *const UDKeyScrollEdgeEffectStyle = @"ScrollEdgeEffectStyle";
 // Render image URLs (i.redd.it, preview.redd.it, i.imgur.com, generic .png/.jpg/.jpeg/.webp)
 // inline within post selftext and comments instead of leaving them as plain text links.
@@ -507,6 +555,10 @@ static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOve
 // Debug-only override (seconds, >= 5) for how long the modern Chat surface
 // must be hidden/inactive before returning to it auto-refreshes the list.
 static NSString *const UDKeyChatStaleRefreshOverride = @"ChatStaleRefreshOverride";
+// Embedded Inbox Chat > Messages room filter: "direct" (default), "group", "all".
+static NSString *const UDKeyChatMessagesFilter = @"ChatMessagesFilter";
+// Embedded Inbox Chat > Messages: show unread rooms only (Reddit's "Unread" switch).
+static NSString *const UDKeyChatMessagesUnreadOnly = @"ChatMessagesUnreadOnly";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent
@@ -611,7 +663,7 @@ static NSString *const UDKeyForwardSwipeForgetAfterScrolling = @"ForwardSwipeFor
 // In the fullscreen viewer for post-backed images, galleries, GIFs, and video,
 // an upward vertical flick or comments-button tap opens a media-owned comments
 // pane. The normal downward flick still dismisses when the pane is closed.
-// Default YES. See ApolloSwipeUpComments.xm. No change notification: the flag
+// Default NO (opt-in). See ApolloSwipeUpComments.xm. No change notification: the flag
 // is read live at gesture/tap time, so a toggle applies immediately without
 // any cached state to invalidate (unlike the carousel above).
 static NSString *const UDKeySwipeUpForComments = @"SwipeUpForComments";

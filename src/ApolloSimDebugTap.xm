@@ -16,7 +16,11 @@
 #if APOLLO_SIM_BUILD
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloAsyncDisplayGuard.h"
+#import "ApolloChatRoomDirectory.h"
 #import "ApolloCommentVoteInsights.h"
+#import <AVFoundation/AVFoundation.h>
+#import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloFloatingTabs.h"
 #import "ApolloLinkPreviewFetcher.h"
@@ -24,6 +28,7 @@
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloWebTextDecoding.h"
 #import "ApolloState.h"
+#import "ApolloTextureDecls.h"
 #import "UserDefaultConstants.h"
 #import "UIWindow+Apollo.h"
 
@@ -51,7 +56,102 @@ void ApolloSubredditIndexDebugDescribeTables(void); // ApolloSubredditIndexPolis
 - (UIEvent *)_touchesEvent;
 @end
 
-static NSString *const kApolloSimTapFile = @"/tmp/apollofix-tap.txt";
+// The command file and the Darwin notification that announces it are
+// machine-global, and several simulators driven by parallel sessions are the
+// norm on a dev box — a tap meant for one app landed in every listening app.
+// Each launch can therefore name its own pair via the environment
+// (SIMCTL_CHILD_APOLLOFIX_TAP_FILE / SIMCTL_CHILD_APOLLOFIX_TAP_NOTIFY on the
+// simctl launch line); the historical defaults remain for single-session use.
+static NSString *const kApolloSimDefaultTapFile = @"/tmp/apollofix-tap.txt";
+static NSString *const kApolloSimDefaultTapNotify = @"apollofix.debugtap";
+
+static NSString *ApolloSimTapFile(void) {
+    NSString *env = NSProcessInfo.processInfo.environment[@"APOLLOFIX_TAP_FILE"];
+    return env.length ? env : kApolloSimDefaultTapFile;
+}
+
+static NSString *ApolloSimTapNotify(void) {
+    NSString *env = NSProcessInfo.processInfo.environment[@"APOLLOFIX_TAP_NOTIFY"];
+    return env.length ? env : kApolloSimDefaultTapNotify;
+}
+
+// "mediastate": dump the presented fullscreen viewer's player + the audio
+// session, for the rotation-mute diagnosis (issue #1072).
+static id ApolloSimDebugIvar(id obj, const char *name) {
+    if (!obj) return nil;
+    Ivar ivar = class_getInstanceVariable([obj class], name);
+    return ivar ? object_getIvar(obj, ivar) : nil;
+}
+
+static void ApolloSimDebugDumpMediaState(void) {
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+    UIWindowScene *scene = ApolloAllWindows().firstObject.windowScene;
+    ApolloLog(@"[SimDebugTap] mediastate: session=%@ orientation=%ld",
+              session.category, (long)scene.interfaceOrientation);
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *vc = window.rootViewController;
+        while (vc) {
+            NSString *name = NSStringFromClass([vc class]);
+            ApolloLog(@"[SimDebugTap] mediastate: presented chain -> %@ bounds=%@", name,
+                      NSStringFromCGRect(vc.view.bounds));
+            if ([name containsString:@"MediaPageViewController"]) {
+                NSArray *pages = [vc respondsToSelector:@selector(viewControllers)]
+                    ? [(UIPageViewController *)vc viewControllers] : @[];
+                for (UIViewController *page in pages) {
+                    AVPlayer *player = ApolloSimDebugIvar(page, "player");
+                    NSString *source = @"player";
+                    if (!player) {
+                        id container = ApolloSimDebugIvar(page, "playerLayerContainerView");
+                        id layer = ApolloSimDebugIvar(container, "playerLayer");
+                        if ([layer isKindOfClass:[AVPlayerLayer class]]) {
+                            player = [(AVPlayerLayer *)layer player];
+                            source = @"playerLayerContainerView";
+                        }
+                    }
+                    ApolloLog(@"[SimDebugTap] mediastate: page=%@ player=%p (%@) muted=%d rate=%.2f bounds=%@",
+                              NSStringFromClass([page class]), player, source,
+                              player ? (int)[player isMuted] : -1, player ? [player rate] : 0.0f,
+                              NSStringFromCGRect(page.view.bounds));
+                }
+            }
+            vc = vc.presentedViewController;
+        }
+        // The feed table under the viewer: offset/insets, visible rows and
+        // each visible cell's video player, so a rotation-driven visibility
+        // change can be correlated with the fullscreen player above it.
+        UIViewController *root = window.rootViewController;
+        UIViewController *content = root;
+        if ([content isKindOfClass:[UITabBarController class]]) content = [(UITabBarController *)content selectedViewController];
+        if ([content isKindOfClass:[UINavigationController class]]) content = [(UINavigationController *)content topViewController];
+        UITableView *table = nil;
+        if ([content.view isKindOfClass:[UITableView class]]) table = (UITableView *)content.view;
+        for (UIView *sub in content.view.subviews) {
+            if ([sub isKindOfClass:[UITableView class]]) { table = (UITableView *)sub; break; }
+        }
+        if (!table) continue;
+        ApolloLog(@"[SimDebugTap] mediastate: feed %@ table bounds=%@ offset=%@ insets=%@ window=%p",
+                  NSStringFromClass([content class]), NSStringFromCGRect(table.bounds),
+                  NSStringFromCGPoint(table.contentOffset),
+                  NSStringFromUIEdgeInsets(table.adjustedContentInset), table.window);
+        for (UITableViewCell *cell in table.visibleCells) {
+            NSIndexPath *ip = [table indexPathForCell:cell];
+            id node = [cell respondsToSelector:@selector(node)] ? [(id)cell node] : nil;
+            id rich = ApolloSimDebugIvar(node, "richMediaNode");
+            id videoNode = ApolloSimDebugIvar(rich, "videoNode");
+            SEL layerSel = NSSelectorFromString(@"playerLayer");
+            id layer = [videoNode respondsToSelector:layerSel]
+                ? ((id (*)(id, SEL))objc_msgSend)(videoNode, layerSel) : nil;
+            AVPlayer *player = [layer isKindOfClass:[AVPlayerLayer class]] ? [(AVPlayerLayer *)layer player] : nil;
+            SEL playerSel = NSSelectorFromString(@"player");
+            if (!player && [videoNode respondsToSelector:playerSel]) {
+                player = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
+            }
+            ApolloLog(@"[SimDebugTap] mediastate:   row %ld frame=%@ node=%@ videoNode=%p player=%p muted=%d rate=%.2f",
+                      (long)ip.row, NSStringFromCGRect(cell.frame), NSStringFromClass([node class]),
+                      videoNode, player, player ? (int)[player isMuted] : -1, player ? [player rate] : 0.0f);
+        }
+    }
+}
 
 static void ApolloSimDebugSendTouch(UITouch *touch) {
     UIApplication *app = UIApplication.sharedApplication;
@@ -632,11 +732,74 @@ static void ApolloSimInstallLowPowerModeOverride(void) {
     ApolloLog(@"[SimDebugTap] lpm override installed on %@", NSStringFromClass(cls));
 }
 
+@interface ASDisplayNode (ApolloSimDebugDisplayGuard)
+- (void)setBounds:(CGRect)bounds;
+- (CALayer *)layer;
+- (void)displayImmediately;
+@end
+
+// "bitmapassert" command: push UIKit's legacy image context with a size
+// CGBitmapContextCreate rejects, so the SDK-gated assert behind #1097 can be
+// observed directly. A glass shell (Apollo relinked against the iOS 26 SDK)
+// raises NSInternalInconsistencyException; a classic shell pushes no context
+// and raises nothing.
+static void ApolloSimDebugBitmapAssert(void) {
+    @try {
+        UIGraphicsBeginImageContextWithOptions(CGSizeZero, NO, 0);
+        CGContextRef context = UIGraphicsGetCurrentContext();
+        ApolloLog(@"[SimDebugTap] bitmapassert: no exception, context %@", context ? @"pushed" : @"absent");
+        if (context) UIGraphicsEndImageContext();
+    } @catch (NSException *exception) {
+        ApolloLog(@"[SimDebugTap] bitmapassert: raised %@: %@", exception.name, exception.reason);
+    }
+}
+
+// "displayguard W H [capMP]" command: synchronously display a throwaway
+// ASTextNode with W x H pt bounds through the same
+// _displayBlockWithAsynchronous: path the display queue uses, optionally
+// lowering ApolloAsyncDisplayGuard's pixel budget to capMP megapixels first
+// (restored afterwards), and log whether the guard skipped the display, caught
+// UIKit's assert, or the node rendered.
+static void ApolloSimDebugDisplayGuardTest(NSString *payload) {
+    NSMutableArray<NSString *> *numbers = [NSMutableArray array];
+    for (NSString *part in [payload componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
+        if (part.length > 0) [numbers addObject:part];
+    }
+    if (numbers.count < 2) { ApolloLog(@"[SimDebugTap] malformed displayguard: %@", payload); return; }
+    double width = numbers[0].doubleValue;
+    double height = numbers[1].doubleValue;
+    double capPixels = numbers.count >= 3 ? numbers[2].doubleValue * 1e6 : 0;
+    ApolloAsyncDisplayGuardSetMaxPixelsForTesting(capPixels);
+
+    ASTextNode *node = [[objc_getClass("ASTextNode") alloc] init];
+    node.attributedText = [[NSAttributedString alloc] initWithString:@"display guard test"
+                                                          attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:17]}];
+    [node setBounds:CGRectMake(0, 0, width, height)];
+    CALayer *layer = [node layer];
+    ApolloLog(@"[SimDebugTap] displayguard: displaying ASTextNode %.0fx%.0f pt (cap %.0f MP)",
+              width, height, ApolloAsyncDisplayGuardMaxPixels() / 1e6);
+    @try {
+        [node displayImmediately];
+        ApolloLog(@"[SimDebugTap] displayguard: returned, contents %@", layer.contents ? @"set" : @"nil");
+    } @catch (NSException *exception) {
+        ApolloLog(@"[SimDebugTap] displayguard: exception ESCAPED the guard, %@: %@", exception.name, exception.reason);
+    }
+    ApolloAsyncDisplayGuardSetMaxPixelsForTesting(0);
+}
+
 static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *observer,
                                           CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSString *contents = [NSString stringWithContentsOfFile:kApolloSimTapFile
+        NSString *contents = [NSString stringWithContentsOfFile:ApolloSimTapFile()
                                                        encoding:NSUTF8StringEncoding error:nil];
+        if ([contents hasPrefix:@"bitmapassert"]) {
+            ApolloSimDebugBitmapAssert();
+            return;
+        }
+        if ([contents hasPrefix:@"displayguard "]) {
+            ApolloSimDebugDisplayGuardTest([contents substringFromIndex:13]);
+            return;
+        }
         if ([contents hasPrefix:@"insetbottom "]) {
             ApolloSimDebugForceBottomInset([[contents substringFromIndex:12] doubleValue]);
             return;
@@ -714,6 +877,20 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugNavChurn(mode);
             return;
         }
+        // "openurl <url>" command: route a reddit / apollo:// URL through
+        // Apollo's own scheme handling from INSIDE the process. `simctl openurl`
+        // goes through SpringBoard, which on iOS 26 fronts an "Open in Apollo?"
+        // confirmation that no in-process bridge can tap — this skips it.
+        if ([contents hasPrefix:@"openurl "]) {
+            NSString *raw = [[contents substringFromIndex:8]
+                             stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = [NSURL URLWithString:raw];
+            NSURL *apolloURL = [url.scheme.lowercaseString isEqualToString:@"apollo"]
+                ? url : ApolloURLByConvertingResolvedURLToApolloScheme(url);
+            BOOL routed = apolloURL && ApolloRouteResolvedURLViaApolloScheme(apolloURL);
+            ApolloLog(@"[SimDebugTap] openurl %@ -> %@", raw, routed ? @"routed" : @"NOT routed");
+            return;
+        }
         // "devvitjs <js>" command: evaluate JS in the live interactive-post
         // widget's web view and log the result (DOM inspection without a web
         // inspector). See ApolloDevvitDebugEvaluateJS in ApolloDevvitPosts.xm.
@@ -722,11 +899,85 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloDevvitDebugEvaluateJS([contents substringFromIndex:9]);
             return;
         }
+        // "chatjs <js>" command: evaluate JS in the most recently created
+        // modern Chat/Modmail web view (the Inbox hub's, normally) and log
+        // the result. Lets a sim reproduce web-side states the sim's own
+        // WebKit never produces — e.g. `chatjs history.replaceState(null,"",
+        // "/chat")` inside a room mimics the device's room-under-a-list-URL
+        // desync. See ApolloDirectChatDebugEvaluateJS in ApolloDirectChatWeb.xm.
+        if ([contents hasPrefix:@"chatjs "]) {
+            extern void ApolloDirectChatDebugEvaluateJS(NSString *js);
+            ApolloDirectChatDebugEvaluateJS([contents substringFromIndex:7]);
+            return;
+        }
+        // "chatrooms": log the cached chat room directory (names, participants,
+        // newest-message timestamps). "chatresolve <subject>|<partner>|<ts>":
+        // resolve a chat mirror's room the way a tapped inbox row does and log
+        // the result — exercises the titled-subject corroboration guard with
+        // arbitrary partner / timestamp combinations.
+        if ([contents hasPrefix:@"chatrooms"]) {
+            ApolloChatRoomDirectoryDebugDump();
+            return;
+        }
+        if ([contents hasPrefix:@"chatresolve "]) {
+            NSArray<NSString *> *parts = [[contents substringFromIndex:12] componentsSeparatedByString:@"|"];
+            NSString *subject = parts.count > 0 ? parts[0] : @"";
+            NSString *partner = parts.count > 1 && parts[1].length > 0 ? parts[1] : nil;
+            NSTimeInterval timestamp = parts.count > 2 ? parts[2].doubleValue : 0;
+            ApolloChatRoomDirectoryResolve(subject, partner, timestamp, ^(NSString *chatPath) {
+                ApolloLog(@"[SimDebugTap] chatresolve subject=%@ partner=%@ ts=%.0f -> %@",
+                          subject, partner ?: @"(nil)", timestamp, chatPath ?: @"(nil: legacy thread)");
+            });
+            return;
+        }
+        // "devvitload <url>": load another URL in the first on-window widget.
+        if ([contents hasPrefix:@"devvitload "]) {
+            extern void ApolloDevvitDebugLoadURL(NSString *urlString);
+            ApolloDevvitDebugLoadURL([[contents substringFromIndex:11]
+                                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]);
+            return;
+        }
+        // "devvitstats": live/parked/detached widget population + prewarm state.
+        if ([contents hasPrefix:@"devvitstats"]) {
+            extern void ApolloDevvitDebugStats(void);
+            ApolloDevvitDebugStats();
+            return;
+        }
+        // "devvittoggle posts|feed on|off": flip a Devvit setting like its switch.
+        if ([contents hasPrefix:@"devvittoggle "]) {
+            extern void ApolloDevvitDebugToggle(NSString *which, BOOL on);
+            NSArray *parts = [[contents substringFromIndex:13] componentsSeparatedByString:@" "];
+            if (parts.count >= 2) ApolloDevvitDebugToggle(parts[0], [parts[1] isEqualToString:@"on"]);
+            return;
+        }
+        // "memwarn": simulate a memory warning in-process.
+        if ([contents hasPrefix:@"memwarn"]) {
+            SEL sel = NSSelectorFromString(@"_performMemoryWarning");
+            UIApplication *app = UIApplication.sharedApplication;
+            if ([app respondsToSelector:sel]) {
+                ((void (*)(id, SEL))objc_msgSend)(app, sel);
+                ApolloLog(@"[SimDebugTap] memory warning simulated");
+            } else {
+                ApolloLog(@"[SimDebugTap] memory warning: _performMemoryWarning unavailable");
+            }
+            return;
+        }
+        // "devvitlayout": dump widget-vs-host geometry, force a host layout
+        // pass, dump again.
+        if ([contents hasPrefix:@"devvitlayout"]) {
+            extern void ApolloDevvitDebugLayout(void);
+            ApolloDevvitDebugLayout();
+            return;
+        }
         // "devvitsweep": run the interactive-post stale-width sweep now, with
         // a per-surface geometry dump.
         if ([contents hasPrefix:@"devvitsweep"]) {
             extern void ApolloDevvitDebugSweep(void);
             ApolloDevvitDebugSweep();
+            return;
+        }
+        if ([contents hasPrefix:@"mediastate"]) {
+            ApolloSimDebugDumpMediaState();
             return;
         }
         // "rotate <landscape|portrait>" command: rotate the scene from inside
@@ -790,6 +1041,32 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                           urlString, preview.siteName ?: @"(nil)", preview.title ?: @"(nil)",
                           preview.desc ?: @"(nil)", preview.imageURL.absoluteString ?: @"(nil)");
             }];
+            return;
+        }
+        // "safari <url>" command: present Apollo's own in-app browser
+        // (ApolloSafariViewController, the SFSafariViewController subclass
+        // behind "In-App Safari") for a URL from the topmost view controller,
+        // exactly as a link tap would. Needs no Reddit session, so the
+        // loading-state appearance (issue #1008) can be exercised headlessly.
+        if ([contents hasPrefix:@"safari "]) {
+            NSString *urlString = [[contents substringFromIndex:7] stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+            if (!url) { ApolloLog(@"[SimDebugTap] malformed safari url: %@", urlString); return; }
+            UIViewController *top = nil;
+            for (UIWindow *window in ApolloAllWindows()) {
+                if (window.hidden || !window.rootViewController) continue;
+                top = window.rootViewController;
+                if (window.isKeyWindow) break;
+            }
+            while (top.presentedViewController) top = top.presentedViewController;
+            Class safariClass = objc_getClass("_TtC6Apollo26ApolloSafariViewController");
+            if (!top || !safariClass) { ApolloLog(@"[SimDebugTap] safari: no presenter/class"); return; }
+            id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
+            UIViewController *safariVC = msgSend([safariClass alloc], @selector(initWithURL:), url);
+            ApolloLog(@"[SimDebugTap] safari: presenting %@ for %@ from %@",
+                      NSStringFromClass(safariVC.class), urlString, NSStringFromClass(top.class));
+            [top presentViewController:safariVC animated:YES completion:nil];
             return;
         }
         // "translate <google|libre|auto> <text>" command: run text through the
@@ -862,9 +1139,9 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
     %init(ApolloSimNavChurn);
     ApolloSimInstallLowPowerModeOverride();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-        ApolloSimDebugTapNotification, CFSTR("apollofix.debugtap"), NULL,
+        ApolloSimDebugTapNotification, (__bridge CFStringRef)ApolloSimTapNotify(), NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately);
-    ApolloLog(@"[SimDebugTap] listening for apollofix.debugtap");
+    ApolloLog(@"[SimDebugTap] listening for %@ (commands from %@)", ApolloSimTapNotify(), ApolloSimTapFile());
     ApolloLog(@"[CommentInsights][parser] self-tests %@",
               ApolloCommentVoteInsightsRunParserSelfTests() ? @"passed" : @"FAILED");
     NSString *charsetFailure = nil;

@@ -30,6 +30,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
 #import "ApolloTextureDecls.h"
+#import "ApolloDevvitPosts.h"
 #import "Tweak.h"
 
 #pragma mark - FoundationModels bridge (declared, resolved at runtime)
@@ -1128,10 +1129,36 @@ static NSUInteger ApolloAIWordCount(NSString *text) {
     return words;
 }
 
+// A live interactive (Devvit) post renders as its widget, not as its body:
+// the selftext is Reddit's old-Reddit fallback plus whatever the app appended
+// (match data, rules), none of which the user sees once the widget stands in
+// for it — so there is nothing to post- or link-summarize, and attempting it
+// only ever produced an error card above the widget. Every body-derived path
+// (post text, article link, the discussion summary's grounding context) asks
+// here. Logged once per post; the callers run several times per viewing.
+static BOOL ApolloAILinkIsDevvitWidgetPost(id link) {
+    if (!link || !ApolloDevvitLinkShowsWidget(link)) return NO;
+    static NSMutableSet<NSString *> *logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ logged = [NSMutableSet set]; });
+    NSString *fullName = ApolloAILinkFullName(link) ?: @"?";
+    @synchronized (logged) {
+        if (![logged containsObject:fullName]) {
+            [logged addObject:fullName];
+            NSString *body = ApolloAICleanInputText(ApolloAIStringSel(link, @selector(selfText)) ?: @"", 0) ?: @"";
+            ApolloLog(@"[AISummary] %@ is a live interactive post — no post/link summary (body %lu words, threshold %lu)",
+                      fullName, (unsigned long)ApolloAIWordCount(body),
+                      (unsigned long)ApolloAISanitizedPostWordThreshold());
+        }
+    }
+    return YES;
+}
+
 // Title + selftext for the post, or nil for non-self (link/image) posts or
 // bodies too short to be worth summarizing.
 static NSString *ApolloAIPostText(id link) {
     if (!link) return nil;
+    if (ApolloAILinkIsDevvitWidgetPost(link)) return nil;
     BOOL isSelf = [link respondsToSelector:@selector(isSelfPostWithSelfText)] &&
         ((BOOL (*)(id, SEL))objc_msgSend)(link, @selector(isSelfPostWithSelfText));
 
@@ -1169,7 +1196,9 @@ static NSString *ApolloAIPostContextForComments(id link) {
         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
 
     NSMutableString *context = [NSMutableString stringWithFormat:@"Post title: %@\n", title];
-    if (selfText.length > 0) {
+    // An interactive post's body is the fallback/data blob — the title alone
+    // is the honest topic for the discussion.
+    if (selfText.length > 0 && !ApolloAILinkIsDevvitWidgetPost(link)) {
         NSUInteger snippetMax = 160;
         NSString *snippet = selfText.length > snippetMax ? [selfText substringToIndex:snippetMax] : selfText;
         [context appendFormat:@"Post body: %@\n", snippet];
@@ -1310,6 +1339,7 @@ static NSString *ApolloAIFirstArticleURLInSelfText(id link) {
 // Returned regardless of how much body text there is — the caller decides the
 // mode: no body -> Link summary; body present -> Both (post + article) summary.
 static NSString *ApolloAIArticleURLForPost(id link) {
+    if (ApolloAILinkIsDevvitWidgetPost(link)) return nil;
     if (ApolloAILinkIsArticle(link)) {
         NSURL *url = ((NSURL *(*)(id, SEL))objc_msgSend)(link, @selector(URL));
         if ([url isKindOfClass:[NSURL class]]) return url.absoluteString;
@@ -3049,6 +3079,12 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                 objc_setAssociatedObject(vc, &kApolloAIProvisionalPostRequestKey, nil, OBJC_ASSOCIATION_ASSIGN);
             }
             ApolloLog(@"[AISummary] nothing to summarize for %@", fullName);
+            // A card restored onto the header from a stale cache (a live
+            // interactive post summarized before such posts were excluded)
+            // has nothing behind it any more — retire it.
+            if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateNone, nil)) {
+                ApolloAIForceHeaderRemeasure(fullName);
+            }
         }
     }
     }   // end "Post & Link Summaries" sub-toggle gate
@@ -3529,12 +3565,55 @@ static void ApolloAIMaybeRouteDebugURL(void) {
 }
 #endif
 
+// The Live Interactive Posts setting flipped. Turned OFF, such a post's body
+// is Apollo's own rendering again and the normal generation pass may
+// summarize it. Turned ON, its body is hidden behind the widget again — so a
+// post/link card generated in the meantime (the setting can be toggled with
+// the thread still open) describes text the user can no longer see: retire
+// it, drop its cache entry, and cancel anything in flight.
+static void ApolloAIDevvitSettingsChanged(void) {
+    if (!sDevvitInteractivePosts) return;
+    ApolloAIEnsureState();
+    BOOL persist = NO;
+    for (id headerNode in sHeaderNodes.allObjects) {
+        id link = ApolloAIScanForLink(headerNode);
+        if (!link || !ApolloDevvitLinkShowsWidget(link)) continue;
+        NSString *fullName = ApolloAILinkFullName(link);
+        if (fullName.length == 0) continue;
+        NSString *requestID = sPostRequestIDs[fullName];
+        if (requestID.length) [ApolloAIBridge() cancelRequest:requestID];
+        [sPostInFlight removeObject:fullName];
+        [sPostRequestIDs removeObjectForKey:fullName];
+        [sLinkSummaryPosts removeObject:fullName];
+        [sBothSummaryPosts removeObject:fullName];
+        [sPostEmpty removeObject:fullName];
+        ApolloAIClearFailure(fullName, YES);
+        if (sPostSummaryCache[fullName]) {
+            [sPostSummaryCache removeObjectForKey:fullName];
+            [sPostSummaryMode removeObjectForKey:fullName];
+            [sPostSummaryDetails removeObjectForKey:fullName];
+            [sPostSummaryProfiles removeObjectForKey:fullName];
+            persist = YES;
+        }
+        if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateNone, nil)) {
+            ApolloAIForceHeaderRemeasure(fullName);
+        }
+        ApolloLog(@"[AISummary] %@ is a live interactive post again — retired its post/link card", fullName);
+    }
+    if (persist) ApolloAIPersistSummaries();
+}
+
 %ctor {
     @autoreleasepool {
         ApolloAIEnsureState();
         ApolloFoundationModels *bridge = ApolloAIBridge();
         ApolloLog(@"[AISummary] loaded; bridge=%@ availabilityStatus=%ld",
                   bridge ? @"yes" : @"no", bridge ? (long)[bridge availabilityStatus] : -1);
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:ApolloDevvitFeedOwnershipChangedNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(__unused NSNotification *note) { ApolloAIDevvitSettingsChanged(); }];
 
 #if APOLLO_SIM_BUILD
         ApolloAIMaybeRouteDebugURL();

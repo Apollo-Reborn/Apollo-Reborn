@@ -18,7 +18,9 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloPerAccountFavorites.h"
+#import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
+#import "ApolloScrollToTop.h"
 #import "ApolloTabBarHideStyle.h"
 #import "ApolloTagFilters.h"
 #import "ApolloBadgeBookScraper.h"   // ApolloBadgeBookInvalidate() — Clear Tweak Caches
@@ -44,6 +46,9 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloLocalBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -62,6 +67,63 @@
 // mirror the video player's own speed menu minus 1.0× (holding at normal speed
 // would be a no-op). ApolloSanitizedHoldSpeed() guards the stored value to this set.
 static const float kVideoHoldSpeeds[] = { 0.25f, 0.5f, 0.75f, 1.25f, 1.5f, 2.0f };
+static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailable);
+
+// Compact native pull-down used by Liquid Glass settings. The current value
+// stays visible in the row and the paired chevrons communicate that it opens
+// a menu rather than navigating to another screen.
+static UIButton *ApolloSettingsMenuButton(NSString *menuTitle,
+                                          NSString *currentTitle,
+                                          NSArray<NSString *> *titles,
+                                          NSInteger currentIndex,
+                                          void (^apply)(NSInteger index)) {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *symbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold];
+    UIImage *chevrons = [UIImage systemImageNamed:@"chevron.up.chevron.down"
+                                withConfiguration:symbolConfiguration];
+    UIColor *foreground = UIColor.secondaryLabelColor;
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
+        configuration.title = currentTitle;
+        configuration.image = chevrons;
+        configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+        configuration.imagePadding = 3.0;
+        configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+        configuration.baseForegroundColor = foreground;
+        configuration.titleTextAttributesTransformer =
+            ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *attributes) {
+                NSMutableDictionary *compact = [attributes mutableCopy];
+                compact[NSFontAttributeName] = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+                compact[NSForegroundColorAttributeName] = foreground;
+                return compact;
+            };
+        button.configuration = configuration;
+    } else {
+        [button setTitle:currentTitle forState:UIControlStateNormal];
+        [button setImage:chevrons forState:UIControlStateNormal];
+        [button setTitleColor:foreground forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        button.semanticContentAttribute = UISemanticContentAttributeForceRightToLeft;
+    }
+    button.tintColor = foreground;
+    NSMutableArray<UIAction *> *actions = [NSMutableArray arrayWithCapacity:titles.count];
+    [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger index, __unused BOOL *stop) {
+        UIAction *action = [UIAction actionWithTitle:title image:nil identifier:nil
+                                             handler:^(__unused UIAction *selected) {
+            if (apply) apply((NSInteger)index);
+        }];
+        action.state = ((NSInteger)index == currentIndex)
+            ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }];
+    button.menu = [UIMenu menuWithTitle:menuTitle image:nil identifier:nil
+                                options:UIMenuOptionsSingleSelection children:actions];
+    button.showsMenuAsPrimaryAction = YES;
+    button.accessibilityLabel = currentTitle;
+    [button sizeToFit];
+    return button;
+}
 
 // "0.25×" / "0.5×" / … / "2×", using the U+00D7 multiplication sign Apollo uses.
 static NSString *ApolloVideoHoldSpeedTitle(float speed) {
@@ -352,6 +414,10 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
+@end
+
+@interface CustomAPIViewController ()
+@property (nonatomic) BOOL resolvingRestoreFolder;
 @end
 
 @implementation CustomAPIViewController
@@ -836,10 +902,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"linkPreviews.settings"];
     [self reloadRowWithID:@"polls.settings"];
     [self reloadRowWithID:@"sub.feedShortcuts"];
-    // Refresh the tab-bar presentation and its dependent gesture row after
+    // Refresh the tab-bar presentation and its dependent rows after
     // returning to Interface or after preferences are restored elsewhere.
+    [self visibilityDidChange];
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
+    [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
+    [self reloadRowWithID:@"interface.avatarShape"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
     [self reloadRowWithID:@"feat.profileLayout"];
@@ -1142,7 +1211,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *backup =
         [ApolloSettingsRow buttonRowWithID:@"data.backup"
                                      title:@"Backup Settings"
-                                    action:^{ [weakSelf backupSettings]; }];
+                                    action:^{
+            ApolloAutomaticBackupViewController *controller = [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    backup.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -1762,65 +1837,75 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf hideUsernameTabSwitchToggled:sender]; }];
     hideUsernameTab.visible = ^BOOL { return !sHideTabBarTitles; };
 
-    ApolloSettingsRow *hideBarsOnScroll;
-    if (ApolloSupportsNativeTabBarScrollBehavior()) {
-        hideBarsOnScroll =
-            [ApolloSettingsRow valueRowWithID:@"interface.hideBarsOnScroll"
-                                        title:@"Hide Bars on Scroll"
-                                       detail:^NSString * { return ApolloTabBarHideStyleCurrentTitle(); }
-                                     onSelect:^{
-                ApolloSettingsPresentPicker(weakSelf,
-                    [weakSelf cellForRowID:@"interface.hideBarsOnScroll"],
-                    @"Hide Bars on Scroll",
-                    ApolloTabBarHideStyleOptionTitles(),
-                    ApolloTabBarHideStyleCurrentOptionIndex(),
-                    ^(NSInteger pickedIndex) {
-                        ApolloTabBarHideStyleApplyOptionIndex(pickedIndex);
-                        [weakSelf reloadRowWithID:@"interface.hideBarsOnScroll"];
-                        [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
-                    });
-            }];
-        hideBarsOnScroll.configure = ^(UITableViewCell *cell) {
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        };
-    } else {
-        // Before Liquid Glass, retain the original on/off control rather than
-        // offering presentation styles the system cannot display.
-        hideBarsOnScroll =
-            [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
-                                         title:@"Hide Bars on Scroll"
-                                          isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
-                                      onToggle:^(UISwitch *sender) {
-                ApolloTabBarHideBarsSetEnabled(sender.isOn);
-                [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
-            }];
-    }
+    ApolloSettingsRow *hideBarsOnScroll =
+        [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
+                                     title:@"Hide Bars on Scroll"
+                                      isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
+                                  onToggle:^(UISwitch *sender) {
+            ApolloTabBarHideBarsSetEnabled(sender.isOn);
+            [weakSelf visibilityDidChange];
+        }];
+
+    ApolloSettingsRow *hideStyle =
+        [ApolloSettingsRow customRowWithID:@"interface.hideStyle"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloHideStyleMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloHideStyleMenu"];
+            cell.textLabel.text = @"Hide Style";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Hide Style", ApolloTabBarHideStyleCurrentTitle(),
+                ApolloTabBarHideStyleOptionTitles(), ApolloTabBarHideStyleCurrentOptionIndex(),
+                ^(NSInteger index) {
+                    ApolloTabBarHideStyleApplyOptionIndex(index);
+                    [weakSelf reloadRowWithID:@"interface.hideStyle"];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
+    hideStyle.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+    };
+
+    // Keep the remembered choice while Hide Bars is off; only its row hides.
+    ApolloSettingsRow *hideTopBarToo =
+        [ApolloSettingsRow switchRowWithID:@"interface.hideTopBarToo"
+                                     title:@"Hide Header on Scroll"
+                                      isOn:^BOOL { return sHideTopBarOnScroll; }
+                                  onToggle:^(UISwitch *sender) {
+            if (sHideTopBarOnScroll == sender.isOn) return;
+            sHideTopBarOnScroll = sender.isOn;
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyHideTopBarOnScroll];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
+        }];
+    hideTopBarToo.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+    };
 
     // Both behavior choices include idle re-expansion. A single picker keeps
     // the gesture models mutually exclusive and explicit.
     ApolloSettingsRow *tabBarScrollBehavior =
-        [ApolloSettingsRow valueRowWithID:@"interface.tabBarScrollBehavior"
-                                    title:@"Scroll Behavior"
-                                   detail:^NSString * { return sClassicTabBarScrollBehavior ? @"Classic" : @"Two-Gesture"; }
-                                 onSelect:^{
-            ApolloSettingsPresentPicker(weakSelf,
-                [weakSelf cellForRowID:@"interface.tabBarScrollBehavior"],
-                @"Scroll Behavior",
-                @[ @"Two-Gesture", @"Classic" ],
-                sClassicTabBarScrollBehavior ? 1 : 0,
-                ^(NSInteger pickedIndex) {
-                    [weakSelf setTabBarScrollBehaviorClassic:(pickedIndex == 1)];
+        [ApolloSettingsRow customRowWithID:@"interface.tabBarScrollBehavior"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloScrollBehaviorMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloScrollBehaviorMenu"];
+            cell.textLabel.text = @"Scroll Behavior";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Scroll Behavior",
+                sClassicTabBarScrollBehavior ? @"Classic" : @"Two-Gesture",
+                @[ @"Two-Gesture", @"Classic" ], sClassicTabBarScrollBehavior ? 1 : 0,
+                ^(NSInteger index) {
+                    [weakSelf setTabBarScrollBehaviorClassic:(index == 1)];
+                    [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
                 });
-        }];
-    tabBarScrollBehavior.configure = ^(UITableViewCell *cell) {
-        cell.accessoryType = [weakSelf apollo_nativeHideBarsOnScrollEnabled]
-            ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
+    tabBarScrollBehavior.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
-    tabBarScrollBehavior.enabled = ^BOOL {
-        return ApolloSupportsNativeTabBarScrollBehavior() &&
-               [weakSelf apollo_nativeHideBarsOnScrollEnabled];
-    };
-    tabBarScrollBehavior.visible = ^BOOL { return ApolloSupportsNativeTabBarScrollBehavior(); };
 
     // Temporary iPad stopgap (#387): only show it where the option can work.
     ApolloSettingsRow *iPadTabBarBottom =
@@ -1832,14 +1917,25 @@ typedef NS_ENUM(NSInteger, Tag) {
         return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass();
     };
 
+    // See ApolloLiquidGlass.xm — either/or with drag-to-switch-tab.
+    ApolloSettingsRow *tabBarSwipeNavigation =
+        [ApolloSettingsRow switchRowWithID:@"gen.tabBarSwipeNavigation"
+                                     title:@"Swipe Tab Bar to Navigate"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation]; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
+    tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
+
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
         ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
+    if (IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
-                                                      hideBarsOnScroll, tabBarScrollBehavior,
-                                                      iPadTabBarBottom ]];
+                                                      hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
+                                                      iPadTabBarBottom, tabBarSwipeNavigation ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -1851,6 +1947,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf userAvatarsSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *avatarShape =
+        [ApolloSettingsRow valueRowWithID:@"interface.avatarShape"
+                                    title:@"Profile Picture Shape"
+                                   detail:^NSString * { return [weakSelf profilePictureShapeText]; }
+                                 onSelect:^{
+            [weakSelf presentProfilePictureShapePickerFromSourceView:
+                [weakSelf cellForRowID:@"interface.avatarShape"]];
+        }];
+    avatarShape.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
+
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
 
@@ -1858,30 +1966,79 @@ typedef NS_ENUM(NSInteger, Tag) {
     // Glass only — hidden otherwise rather than shown-disabled, since the row
     // has nothing to preview/explain on a non-Glass device.
     ApolloSettingsRow *scrollEdgeEffect =
-        [ApolloSettingsRow valueRowWithID:@"gen.scrollEdgeEffect"
-                                    title:@"Header Style"
-                                   detail:^NSString * { return [weakSelf scrollEdgeEffectStyleText]; }
-                                 onSelect:^{
-            [weakSelf presentScrollEdgeEffectStyleSheetFromSourceView:[weakSelf cellForRowID:@"gen.scrollEdgeEffect"]];
-        }];
-    scrollEdgeEffect.configure = ^(UITableViewCell *cell) { cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator; };
+        [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloHeaderStyleMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloHeaderStyleMenu"];
+            BOOL blurAvailable = ApolloProgressiveBlurAvailable();
+            NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithObjects:@"Soft", @"Hard", nil];
+            if (blurAvailable) [titles addObject:@"Blur"];
+            [titles addObject:@"Hidden"];
+            NSInteger currentIndex = 0;
+            NSInteger currentStyle = ApolloResolvedScrollEdgeEffectStyle();
+            for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
+                if (ApolloHeaderStylePickerValue(index, blurAvailable) == currentStyle) {
+                    currentIndex = index;
+                    break;
+                }
+            }
+            cell.textLabel.text = @"Header Style";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Header Style", [weakSelf scrollEdgeEffectStyleText],
+                titles, currentIndex, ^(NSInteger index) {
+                    [weakSelf setScrollEdgeEffectStyle:ApolloHeaderStylePickerValue(index, blurAvailable)];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
+    ApolloSettingsRow *scrollReturnButton = [ApolloSettingsRow switchRowWithID:@"interface.scrollReturnButton"
+        title:@"Return Button"
+        isOn:^BOOL { return sScrollReturnButton; }
+        onToggle:^(UISwitch *sender) {
+            sScrollReturnButton = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyScrollReturnButton];
+            ApolloScrollReturnButtonSettingChanged();
+        }];
+
+    ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
+        title:@"Collapse Navigation Actions"
+        isOn:^BOOL { return sCollapseNavigationActions; }
+        onToggle:^(UISwitch *sender) {
+            sCollapseNavigationActions = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
+            [weakSelf visibilityDidChange];
+            ApolloNavigationTitlesRefresh();
+        }];
+    collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
+
+    ApolloSettingsRow *centerBetween = [ApolloSettingsRow switchRowWithID:@"interface.CenterTitleBetweenButtons"
+        title:@"Center Title Between Buttons"
+        isOn:^BOOL { return sCenterTitleBetweenButtons; }
+        onToggle:^(UISwitch *sender) {
+            sCenterTitleBetweenButtons = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
+            ApolloNavigationTitlesRefresh();
+        }];
+    centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
+
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Tap the top-right ellipsis to reveal navigation actions; scrolling collapses them. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default."
-                                              rows:@[ userAvatars, scrollEdgeEffect ]];
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
-// Display order of the Header Style picker. Raw values are NOT contiguous
-// (3 was the retired Hidden mode, Blur is 4), so the picker maps index↔value
-// through this table instead of using the enum value as the index.
+// Display order differs from stored values; Blur is optional, while Hidden
+// always remains the last choice. Map picker indices explicitly.
 static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailable) {
     const NSInteger values[] = {
         ApolloScrollEdgeEffectStyleSoft,
         ApolloScrollEdgeEffectStyleHard,
-        ApolloScrollEdgeEffectStyleBlur,
+        blurAvailable ? ApolloScrollEdgeEffectStyleBlur : ApolloScrollEdgeEffectStyleHidden,
+        ApolloScrollEdgeEffectStyleHidden,
     };
-    NSInteger count = blurAvailable ? 3 : 2;
+    NSInteger count = blurAvailable ? 4 : 3;
     if (index < 0 || index >= count) return ApolloScrollEdgeEffectStyleSoft;
     return values[index];
 }
@@ -1891,6 +2048,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         case ApolloScrollEdgeEffectStyleSoft: return @"Soft";
         case ApolloScrollEdgeEffectStyleHard: return @"Hard";
         case ApolloScrollEdgeEffectStyleBlur: return @"Blur";
+        case ApolloScrollEdgeEffectStyleHidden: return @"Hidden";
         default: return @"Soft";
     }
 }
@@ -1909,6 +2067,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSMutableArray<NSString *> *options =
         [NSMutableArray arrayWithObjects:@"Soft", @"Hard", nil];
     if (blurAvailable) [options addObject:@"Blur"];
+    [options addObject:@"Hidden"];
 
     NSInteger currentIndex = 0;
     NSInteger currentStyle = ApolloResolvedScrollEdgeEffectStyle();
@@ -2107,7 +2266,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   onToggle:^(UISwitch *sender) { [weakSelf swipeUpCommentsSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media."
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default."
                                               rows:@[ feedGalleries, edgeSwipeNav, swipeComments ]];
 }
 
@@ -2295,6 +2454,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (NSString *)profileLayoutSummaryText {
+    if (!sShowDetailedProfiles) return @"Native (Apollo)";
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     [parts addObject:sProfileHeaderImmersive ? @"Immersive" : @"Compact"];
     switch (sProfileAvatarStyle) {
@@ -2311,6 +2471,34 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
     }
     return [parts componentsJoinedByString:@" · "];
+}
+
+- (NSString *)profilePictureShapeText {
+    switch (sProfileAvatarStyle) {
+        case 1:  return @"Circle";
+        case 2:  return @"Square";
+        default: return @"Full";
+    }
+}
+
+- (void)presentProfilePictureShapePickerFromSourceView:(UIView *)sourceView {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, sourceView, @"Profile Picture Shape",
+                                @[@"Full", @"Circle", @"Square"],
+                                sProfileAvatarStyle, ^(NSInteger pickedIndex) {
+        if (pickedIndex < 0 || pickedIndex > 2) return;
+        sProfileAvatarStyle = pickedIndex;
+        [[NSUserDefaults standardUserDefaults] setInteger:pickedIndex
+                                                   forKey:UDKeyProfileAvatarStyle];
+        [weakSelf reloadRowWithID:@"interface.avatarShape"];
+        [weakSelf reloadRowWithID:@"feat.profileLayout"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
+                          object:@"ApolloProfileAvatarStyleChanged"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloProfileTabAvatarIconChangedNotification"
+                          object:nil];
+    });
 }
 
 // Subreddits group screen (ApolloSubredditsSettingsViewController), two
@@ -2330,11 +2518,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
-    // Pushes the dedicated Subreddit Layout screen — the single customize
-    // screen for everything subreddit-page-related: Density (New, Classic, or
-    // Apollo's native header), the Apollo Reborn header show switches, and
-    // Community Highlights (also a subreddit-page feature, not a
-    // subreddit-list one).
     ApolloSettingsRow *subredditLayout =
         [self hubDisclosureRowWithID:@"sub.layout"
                                 title:@"Subreddit Layout"
@@ -2516,20 +2699,33 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                      title:@"Per-Account Favorites"
                                       isOn:^BOOL { return sPerAccountFavoritesEnabled; }
                                   onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
+    ApolloSettingsRow *sortFavoritesAlphabetically =
+        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
+                                     title:@"Sort Favorites Alphabetically"
+                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
+                                  onToggle:^(UISwitch *sender) {
+                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
+                                      [sender setOn:sSortFavoritesAlphabetically animated:YES];
+                                  }];
+    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Keeps an independent Favorites list for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores Apollo's shared list."
-                                              rows:@[ perAccountFavorites ]];
+                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list."
+                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically ]];
 }
 
 - (NSString *)subredditLayoutSummaryText {
-    if (!sShowSubredditHeaders) return @"Native (Apollo)";
+    if (!sShowSubredditHeaders) return @"Native";
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sSubredditHeaderImmersive ? @"New (Immersive)" : @"Classic (Compact)"];
+    [parts addObject:sSubredditHeaderImmersive ? @"Immersive" : @"Compact"];
     NSMutableArray<NSString *> *hidden = [NSMutableArray array];
     if (!sSubredditShowBanner) [hidden addObject:@"Banner"];
     if (!sSubredditShowJoinButton) [hidden addObject:@"Join Button"];
+    if (!sSubredditShowUserFlairButton) [hidden addObject:@"User Flair Button"];
+    if (!sSubredditShowSidebarButton) [hidden addObject:@"Sidebar Button"];
     if (!sSubredditShowDisplayName) [hidden addObject:@"Subreddit Name"];
+    if (!sSubredditShowSubtitle) [hidden addObject:@"Subtitle"];
+    if (!sSubredditShowDescription) [hidden addObject:@"Description"];
     if (hidden.count > 0) {
         [parts addObject:[NSString stringWithFormat:@"%@ off", [hidden componentsJoinedByString:@", "]]];
     }
@@ -3229,7 +3425,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Data"]) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup .zip contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
+            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup file contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Default API Keys"]) {
         text = [[NSMutableAttributedString alloc]
@@ -3980,7 +4176,10 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (void)perAccountFavoritesSwitchToggled:(UISwitch *)sender {
     ApolloPerAccountFavoritesSetResult result =
         ApolloPerAccountFavoritesSetEnabled(sender.isOn);
-    if (result == ApolloPerAccountFavoritesSetResultApplied) return;
+    if (result == ApolloPerAccountFavoritesSetResultApplied) {
+        [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+        return;
+    }
 
     [sender setOn:sPerAccountFavoritesEnabled animated:YES];
     if (result == ApolloPerAccountFavoritesSetResultUnsupportedStore) {
@@ -4048,6 +4247,22 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     sIPadTabBarBottom = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sIPadTabBarBottom forKey:UDKeyIPadTabBarBottom];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloIPadTabBarBottomChangedNotification object:nil];
+}
+
+// Takes effect on next relaunch — see ApolloLiquidGlass.xm.
+- (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
+    sTabBarSwipeNavigation = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sTabBarSwipeNavigation forKey:UDKeyTabBarSwipeNavigation];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Restart Required"
+                         message:@"Quit and reopen Apollo for this change to take effect."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit & Reopen"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {
@@ -4261,11 +4476,43 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)restoreSettings {
+    if (self.resolvingRestoreFolder || self.presentedViewController) return;
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
+        message:@"Choose where the backup is stored."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloLocalBackupsViewController *controller =
+                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentRestorePickerAtDirectory:nil];
+            });
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *source = [self cellForRowID:@"data.restore"];
+    sheet.popoverPresentationController.sourceView = source ?: self.view;
+    sheet.popoverPresentationController.sourceRect = source ? source.bounds
+        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
-    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
+    // The custom extension carries the Files icon; old ZIP backups remain importable.
+    // Resolve by extension too, so a tweak-only installation without the IPA's
+    // exported declaration can still select a dynamically identified backup.
+    UTType *backupType = [UTType typeWithFilenameExtension:@"apollobackup"];
+    NSArray<UTType *> *types = backupType ? @[backupType, UTTypeZIP] : @[UTTypeZIP];
+    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;
+    documentPicker.directoryURL = folderURL;
     [self presentViewController:documentPicker animated:YES completion:nil];
 }
 
@@ -4393,6 +4640,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 @implementation ApolloSubredditsSettingsViewController
 - (NSString *)apollo_screenTitle { return @"Subreddits"; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // The quick account switcher leaves this controller on screen, so it does
+    // not get another viewWillAppear. Also refresh when a loading account's
+    // identity resolves and the sorting control becomes available again.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_favoritesSortingStateDidChange:)
+                                                 name:ApolloFavoritesSortingStateDidChangeNotification
+                                               object:nil];
+}
+- (void)apollo_favoritesSortingStateDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self reloadRowWithID:@"sub.perAccountFavorites"];
+    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+}
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildSubredditsMainSection],
               [self buildSubredditsFavoritesSection],
@@ -4403,6 +4665,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // Refresh the Subreddit Sections summary after returning from that screen
     // (the order / Following toggle may have just changed).
     [self reloadRowWithID:@"sub.sections"];
+    // Account changes can select a different alphabetical-sorting preference.
+    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
 }
 @end
 

@@ -33,6 +33,9 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sAutomaticBackupsEnabled;
+extern NSInteger sAutomaticBackupIntervalDays;
+extern NSInteger sAutomaticBackupDestination; // 0 = local, 1 = selected Files folder
 extern BOOL sShowDeletedComments;
 extern BOOL sTapToRevealDeletedComments;
 extern BOOL sPassiveDeletedComments;
@@ -126,9 +129,11 @@ void ApolloNormalizeNativeHideUsernameForIconOnlyTabBar(void);
 // large avatar/snoovatar, display name, bio, and the Social Links band (Buy Me a
 // Coffee, Instagram, X, …). When OFF, profiles revert to Apollo's compact stock
 // layout — the detailed header is not installed and any existing one is torn down.
-// Independent of sShowUserAvatars (inline avatars). The Social Links band lives
-// inside this header, so it is gated on this same flag. Default ON via
-// registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.{h,m}.
+// Profile Layout exposes three densities with the same two-boolean encoding as
+// Subreddit Layout: Immersive = master + immersive, Compact = master + flat,
+// Native = !master. Independent of sShowUserAvatars (inline avatars). The Social
+// Links band lives inside this header, so it is gated on this same flag. Default
+// ON via registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.
 extern BOOL sShowDetailedProfiles;
 extern BOOL sBadgeBookEnabled;
 extern BOOL sProfileHeaderImmersive;
@@ -138,20 +143,21 @@ extern BOOL sProfileShowSocialLinks;
 extern BOOL sProfileShowActions;
 extern NSInteger sProfileAvatarStyle; // 0 Full snoovatar, 1 Circle, 2 Square
 extern BOOL sShowSubredditHeaders;
-// Subreddit Layout density has three user-visible states:
-// New = sShowSubredditHeaders + sSubredditHeaderImmersive,
-// Classic = sShowSubredditHeaders + !sSubredditHeaderImmersive,
-// Native = !sShowSubredditHeaders (Apollo's current/pre-3.5 header).
+// Header Style maps onto the existing boolean preferences:
+// Immersive = sShowSubredditHeaders && sSubredditHeaderImmersive
+// Compact   = sShowSubredditHeaders && !sSubredditHeaderImmersive
+// Native    = !sShowSubredditHeaders
 extern BOOL sSubredditHeaderImmersive;
-// Per-section show switches on the subreddit header (banner / Join button /
-// display name) — same "turn off the bands you don't need" pattern as the
-// profile header's per-section switches.
 extern BOOL sSubredditShowBanner;
 extern BOOL sSubredditShowJoinButton;
-// Whether the community's big bold title (e.g. "Reddit Science") shows above
-// the r/name line. Direct on/off choice rather than the old auto-hide-if-
-// similar-to-r/name heuristic, so behavior is predictable across subreddits.
+extern BOOL sSubredditShowUserFlairButton;
+extern BOOL sSubredditShowSidebarButton;
+// Whether the short subreddit name (e.g. "science") appears as the bold title.
 extern BOOL sSubredditShowDisplayName;
+// Whether the community title + member-count subtitle appears below it. Before
+// metadata arrives it falls back to r/name; a redundant title leaves only the count.
+extern BOOL sSubredditShowSubtitle;
+extern BOOL sSubredditShowDescription;
 // Backing booleans for the single Community Highlights mode picker:
 //   Off     = both NO
 //   Partial = sCommunityHighlights YES, sCommunityHighlightsWeb NO
@@ -174,6 +180,9 @@ extern ApolloTabBarHideStyle sTabBarHideStyle;
 #ifdef __cplusplus
 extern "C" {
 #endif
+// Opt-in top navigation bar movement, following the bottom tab bar's scroll
+// behavior while Hide Bars on Scroll is enabled. Default NO.
+extern BOOL sHideTopBarOnScroll;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
@@ -188,6 +197,9 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
 // bottom (classic) instead of the top-center pill. Opt-in; default OFF via
 // registerDefaults. Temporary stopgap for issue #387. See ApolloIPadTabBarBottom.xm.
 extern BOOL sIPadTabBarBottom;
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
+extern BOOL sTabBarSwipeNavigation;
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.
@@ -228,7 +240,7 @@ extern BOOL sPerPostCommentSort;
 // iOS 26+ Liquid Glass. iOS 26 defaults to Soft; iOS 27 betas default to Hard,
 // which some users find jarring. Only the top (header) edge is governed — the
 // tab-bar/bottom edge always keeps the system's own treatment. See
-// ApolloScrollEdgeEffect.xm (Soft/Hard enforcement) and
+// ApolloScrollEdgeEffect.xm (Soft/Hard/Hidden enforcement) and
 // ApolloProgressiveBlur.xm (Blur's tweak-drawn variable blur).
 typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     // Retired user-facing System Default value. Load-time migration resolves
@@ -236,11 +248,13 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleAutomatic = 0,
     ApolloScrollEdgeEffectStyleSoft      = 1,
     ApolloScrollEdgeEffectStyleHard      = 2,
-    // 3 was Hidden, retired: visually indistinguishable from Soft, so stored 3s
-    // migrate to Soft at load (Tweak.xm). Never reuse 3 for a new mode — the
-    // migration could not tell an old Hidden user from a new-mode user.
+    // Preserve the original Hidden value for existing preferences/backups.
+    ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
+extern BOOL sCollapseNavigationActions;
+extern BOOL sScrollReturnButton;
+extern BOOL sCenterTitleBetweenButtons;
 extern NSInteger sScrollEdgeEffectStyle;
 // Resolves the retired Automatic value defensively if it is observed before
 // load-time migration, and resolves Blur to the OS-equivalent Soft/Hard style
@@ -271,7 +285,13 @@ void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
+#ifdef __cplusplus
+}
+#endif
 // Whether the nav title for this view controller should size its JumpBar to
 // its actual content (with truncation if still too wide) instead of Apollo's
 // fixed native width (ApolloSubredditHeaders.xm's subreddit feeds).
@@ -305,6 +325,8 @@ extern NSInteger sSubredditFeedLayout;
 // Opt-in per-account FavoriteSubreddits projection. Defaults OFF; see
 // ApolloPerAccountFavorites.{h,m}.
 extern BOOL sPerAccountFavoritesEnabled;
+// Effective sorting preference for the materialized favorites scope.
+extern BOOL sSortFavoritesAlphabetically;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;
@@ -316,6 +338,11 @@ extern BOOL sHideMultiredditDescriptions;
 // colors (filled pill + matching text color). When NO, Apollo's default grey
 // flair styling is preserved. See ApolloFlairColors.xm.
 extern BOOL sEnableFlairColors;
+
+// Render feed post titles (large + compact posts, crossposts, the post
+// context above a comment) in Semibold instead of Apollo's Regular.
+// Appearance > Posts > Bold Post Titles. See ApolloBoldPostTitles.xm.
+extern BOOL sBoldPostTitles;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text

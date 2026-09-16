@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -3110,6 +3111,9 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *recovery = ApolloMetaFeedRecoverStaleRow((id<UITableViewDataSource>)self,
+                                                            tableView, indexPath);
+    if (recovery) return recovery;
     UITableViewCell *cell = %orig;
     if (tableView) {
         if (!sApolloSubredditKnownTables) sApolloSubredditKnownTables = [NSHashTable weakObjectsHashTable];

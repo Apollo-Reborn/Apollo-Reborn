@@ -23,4 +23,9 @@ NSArray *_Nullable ApolloUserFlairBuildPiecesForText(NSString *flairText, NSStri
 // arbitrary queue). Fires immediately when the catalogue is already warm.
 void ApolloUserFlairEnsureEmojisForSubreddit(NSString *subreddit, void (^completion)(void));
 
+// The cached catalogue for a subreddit as @[ @{ @"name": token, @"url": png } ],
+// or nil when it hasn't been fetched yet (call the ensure function first).
+// Synchronous, network-free; a partial catalogue is returned as-is.
+NSArray<NSDictionary<NSString *, NSString *> *> *_Nullable ApolloUserFlairCachedEmojisForSubreddit(NSString *subreddit);
+
 NS_ASSUME_NONNULL_END

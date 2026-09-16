@@ -58,12 +58,14 @@
 // and because the context reference is weak, a context that has been freed reads as nil, so a
 // new context recycled at the same address can never be handed a finished animator.
 //
-// TWO THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
+// THREE THINGS THE INTERRUPTIBLE PATH CHANGES, HANDLED HERE
 // - UIKit only disables user interaction on the transitioning views for NON-interruptible
 //   animators. Left interactive, the finger that started the edge pan still delivers its
 //   delayed touch to the post cell under it, which lit up the cell's highlight for two
-//   frames at the start of every swipe. Both views are made non-interactive for the
-//   transition and restored on completion, matching what UIKit did before.
+//   frames at the start of every swipe. Only the outgoing view is made non-interactive
+//   and restored on completion. The incoming page must accept a new scroll immediately:
+//   a touch that begins while it is disabled is lost for the whole drag, even if the final
+//   few frames of the transition finish and restore interaction a moment later.
 // - The bar now genuinely cross-fades, so the incoming title control exists at partial alpha
 //   for the whole drag. ApolloLiquidGlass installs its title capsule on any title control
 //   that appears, which put a translucent capsule at the incoming title's (differently
@@ -71,6 +73,12 @@
 //   code consults ApolloNavTransitionInFlight() and skips new installs/recentres while an
 //   INTERACTIVE transition runs; the completion below asks it to refresh the settled bar,
 //   where the winning title's capsule fades in. Timed push/pop is left exactly as before.
+// - UIPercentDrivenInteractiveTransition uses completionCurve to settle a legacy animator,
+//   but an interruptible animator uses timingCurve instead. With no timingCurve it resumes
+//   our linear drag animation, losing Apollo's quick release even at the same duration.
+//   Bridge the native driver's completionCurve when it is handed to UIKit, using the same
+//   UICubicTimingParameters conversion as UIKit's legacy path. UIKit still owns remaining
+//   distance, completionSpeed, reversal and completion; dragging stays linear.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -143,9 +151,21 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     UIView *fromView = [ctx viewForKey:UITransitionContextFromViewKey] ?: fromVC.view;
     UIView *toView = [ctx viewForKey:UITransitionContextToViewKey] ?: toVC.view;
     BOOL push = ApolloNavAnimatorIsPresenting(animatorObject);
-    UISearchController *fromSearch = fromVC.navigationItem.searchController;
-    BOOL restoreSearchOnCancel = ApolloNativeFeedSearchEnabled() && !fromSearch.active &&
-                                 CGRectGetHeight(fromSearch.searchBar.bounds) > 1.0;
+    UINavigationItem *fromItem = fromVC.navigationItem;
+    UISearchController *fromSearch = fromItem.searchController;
+    UINavigationController *navigationController = fromVC.navigationController;
+    BOOL hadRevealedSearch = ApolloNativeFeedSearchEnabled() && interactive && !push && fromSearch && !fromSearch.active &&
+        fromItem.hidesSearchBarWhenScrolling && CGRectGetHeight(fromSearch.searchBar.bounds) > 1.0;
+    __block BOOL holdsRevealedInset = NO;
+    if (hadRevealedSearch) {
+        [fromVC.transitionCoordinator notifyWhenInteractionChangesUsingBlock:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            if (!context.isCancelled || fromItem.searchController != fromSearch || fromSearch.active) return;
+            // A cancelled pop must keep the outgoing page's existing safe-area band.
+            // Otherwise UIKit briefly removes it and reparks the entire feed upward.
+            holdsRevealedInset = YES;
+            fromItem.hidesSearchBarWhenScrolling = NO;
+        }];
+    }
     CGFloat width = CGRectGetWidth(container.bounds);
     CGFloat parallax = width / kApolloNavParallaxDivisor;
 
@@ -176,12 +196,11 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         [container insertSubview:dim belowSubview:shadow];
     }
 
-    // UIKit does this itself for non-interruptible animators; without it the touch that
-    // began the edge pan keeps feeding the cell under the finger (delayed highlight flash).
+    // Suppress the original swipe's delayed cell highlight on the outgoing page only.
+    // The incoming page owns new touches: disabling it until animation completion drops
+    // an immediate follow-up scroll for its entire drag, making the list feel frozen.
     BOOL fromWasInteractive = fromView.userInteractionEnabled;
-    BOOL toWasInteractive = toView.userInteractionEnabled;
     fromView.userInteractionEnabled = NO;
-    toView.userInteractionEnabled = NO;
     UINavigationBar *navigationBar = toVC.navigationController.navigationBar
         ?: fromVC.navigationController.navigationBar;
 
@@ -227,22 +246,37 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
             fromView.frame = fromRest;
         }
         fromView.userInteractionEnabled = fromWasInteractive;
-        toView.userInteractionEnabled = toWasInteractive;
         ApolloLog(@"[InterruptibleNav] %s animator for ctx %p finished (cancelled=%d)",
                   push ? "push" : "pop", (void *)ctx, cancelled);
         // No cache bookkeeping here: this may synchronously start the next transition (a push or
         // pop issued from didShowViewController:), whose animator must survive untouched. The
         // per-context lookup in interruptibleAnimatorForTransition: keeps the two apart.
-        [ctx completeTransition:!cancelled];
-        // completeTransition: synchronously restores the item stack and feed
-        // geometry on cancellation. Keep the guard up through that cleanup.
-        if (interactive && sApolloNavTransitionsInFlight > 0) sApolloNavTransitionsInFlight--;
-        if (cancelled && restoreSearchOnCancel) {
-            ApolloNativeFeedSearchRestoreCancelledNavigation(fromVC);
-        }
+        void (^complete)(void) = ^{
+            [ctx completeTransition:!cancelled];
+            // Keep the guard through UIKit's synchronous item-stack restoration.
+            if (interactive && sApolloNavTransitionsInFlight > 0) sApolloNavTransitionsInFlight--;
+            if (holdsRevealedInset) {
+                holdsRevealedInset = NO;
+                // UIKit defers its final content-overlay layout until after
+                // completeTransition:. Flush it while the existing band is held;
+                // releasing the policy first lets that pass briefly remove it.
+                if (!ApolloNavTransitionInFlight() &&
+                    navigationController.topViewController == fromVC &&
+                    navigationController.visibleViewController == fromVC) {
+                    [navigationController.view setNeedsLayout];
+                    [navigationController.view layoutIfNeeded];
+                }
+                fromItem.hidesSearchBarWhenScrolling = YES;
+            }
+            if (cancelled && interactive) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
+        };
+        // The reversed animator has already returned the page to its rest frame.
+        // Item, inset and title restoration must not start a second animation.
+        if (cancelled) [UIView performWithoutAnimation:complete];
+        else complete();
         // The bar has settled on whichever item won; give the title capsules that were held
         // back during the cross-fade their chance now (they fade in rather than pop).
-        if (interactive) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
+        if (interactive && !cancelled) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
     }];
     // The animator's blocks hold ctx, the views and the dim/shadow until it finishes;
     // UIViewPropertyAnimator drops them then, so nothing here outlives the transition.
@@ -250,6 +284,30 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 }
 
 %group ApolloInterruptibleNav
+
+%hook _TtC6Apollo26ApolloNavigationController
+
+- (id<UIViewControllerInteractiveTransitioning>)navigationController:(UINavigationController *)navigationController
+                       interactionControllerForAnimationController:(id<UIViewControllerAnimatedTransitioning>)animationController {
+    id<UIViewControllerInteractiveTransitioning> interactionController = %orig;
+    // Scope the bridge to the Apollo animator replaced below. Preserve a timing provider
+    // supplied by the app, and leave non-percent-driven interaction controllers alone.
+    Class animatorClass = objc_getClass("_TtC6Apollo24ApolloNavigationAnimator");
+    if ([(id)animationController isKindOfClass:animatorClass] &&
+        [(id)interactionController isKindOfClass:UIPercentDrivenInteractiveTransition.class]) {
+        UIPercentDrivenInteractiveTransition *driver = (id)interactionController;
+        if (!driver.timingCurve) {
+            // Read the native value rather than hardcoding an easing curve: UIKit's
+            // default includes system timing behavior beyond the public curve enum.
+            driver.timingCurve = [[UICubicTimingParameters alloc] initWithAnimationCurve:driver.completionCurve];
+            ApolloLog(@"[InterruptibleNav] preserving native gesture completion curve (%ld)",
+                      (long)driver.completionCurve);
+        }
+    }
+    return interactionController;
+}
+
+%end
 
 %hook _TtC6Apollo24ApolloNavigationAnimator
 
@@ -269,7 +327,10 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 - (void)animateTransition:(id<UIViewControllerContextTransitioning>)ctx {
     UIViewPropertyAnimator *animator = (UIViewPropertyAnimator *)
         [(id<UIViewControllerAnimatedTransitioning>)self interruptibleAnimatorForTransition:ctx];
-    if (!animator) { %orig; return; }
+    if (!animator) {
+        %orig;
+        return;
+    }
     [animator startAnimation];
 }
 
