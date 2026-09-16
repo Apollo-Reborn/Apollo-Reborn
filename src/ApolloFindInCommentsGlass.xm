@@ -353,6 +353,34 @@ BOOL ApolloFindInCommentsGlassOwnsRightItems(UINavigationItem *navItem) {
     return bridge != nil && bridge.navigatorInstalled;
 }
 
+// UIKit's platter wraps a custom view with about 9pt a side (a 94pt platter around the
+// 76pt navigator, iOS 26.5 and 27.0); used only until the real platter exists.
+static const CGFloat kFGPlatterInset = 9.0;
+
+CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView *view) {
+    ApolloFindInCommentsGlassBridge *bridge = FGBridgeOwningNavItem(navItem);
+    if (!bridge || !bridge.navigatorInstalled || !view) return CGRectNull;
+    UIView *navigator = bridge.navigatorView;
+    CGFloat width = navigator.intrinsicContentSize.width + 2.0 * kFGPlatterInset;
+    if (navigator.window && navigator.window == view.window) {
+        UIView *platter = navigator.superview;
+        while (platter && ![NSStringFromClass(platter.class) containsString:@"NavigationBarPlatterView"]) {
+            platter = platter.superview;
+        }
+        UIView *edge = platter ?: navigator;
+        CGRect frame = [edge.superview convertRect:edge.frame toView:view];
+        // iOS 26.5 hands the navigator the outgoing pill's platter and animates it down
+        // to the navigator's size (120 → 84pt over ~0.3s), its model frame following at
+        // the end; until it has the navigator's width it is still the outgoing edge.
+        if (CGRectGetWidth(frame) >= 1.0 && CGRectGetWidth(frame) <= width + 1.0) return frame;
+    }
+    // Not laid out at the navigator's size yet: the slot it takes, from the trailing
+    // margin in.
+    CGFloat margin = MAX(16.0, view.layoutMargins.right);
+    return CGRectMake(CGRectGetMaxX(view.bounds) - margin - width, CGRectGetMinY(view.bounds),
+                      width, CGRectGetHeight(view.bounds));
+}
+
 static UIScrollView *FGTableForVC(UIViewController *vc) {
     id tableNode = FGObjectIvar(vc, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;

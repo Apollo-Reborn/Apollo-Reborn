@@ -8,6 +8,7 @@
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNavigationTitlePresentation.h"
+#import "ApolloFindInCommentsGlass.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
@@ -1794,6 +1795,17 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // edges are not the editor's available width; reserve the final items once.
     if (searchActions) {
         rightLimit -= MAX(16.0, bar.layoutMargins.right) + searchActionsWidth;
+    }
+    // The Find in Comments navigator (ApolloFindInCommentsGlass.xm) holds the trailing
+    // group for the length of a glass search. Its swap keeps the outgoing action pill's
+    // platter on screen for a beat, and a recenter pass landing in that beat fitted the
+    // title to that outgoing edge — "264 Comments" squeezed to a 128pt "264 Com…" until
+    // the next pass refit it to the navigator's. The navigator's own platter is the edge,
+    // laid out or not; the outgoing one is skipped like Apollo's search actions above.
+    CGRect navigatorEdge = ApolloFindInCommentsGlassTrailingFrame(bar.topItem, bar);
+    if (!searchActions && !CGRectIsNull(navigatorEdge)) {
+        searchActions = YES;
+        rightLimit = MIN(rightLimit, CGRectGetMinX(navigatorEdge));
     }
     CGRect collapsedActions = ApolloNavigationActionsCollapsedFrame(bar);
     if (!searchActions && !CGRectIsNull(collapsedActions)) {
