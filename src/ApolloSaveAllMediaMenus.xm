@@ -205,15 +205,178 @@ static ApolloSaveAllMenuContext *sApolloSaveAllArmedContext;
 static CFTimeInterval sApolloSaveAllArmedAt;
 static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
 
+// Full-screen image menus share Apollo's native handlers. Capture the native
+// controllers at menu creation so a later page change cannot change the image
+// being copied or saved. Videos/GIFs keep their existing download menus.
+static NSUInteger sApolloFullScreenNativeMenuBuild;
+static char kApolloFullScreenImageMenuKey;
+
+@interface ApolloFullScreenImageMenu : NSObject
+@property (nonatomic, weak) UIViewController *page;
+@property (nonatomic, weak) UIViewController *viewer;
+@property (nonatomic, weak) UIView *source;
+@property (nonatomic, strong) id imageActions;
+@property (nonatomic, strong) id shareActions;
+@property (nonatomic, strong) ApolloSaveAllMenuContext *album;
+@property (nonatomic) BOOL ended;
+@property (nonatomic, copy) dispatch_block_t pending;
+@end
+@implementation ApolloFullScreenImageMenu
+@end
+
+static UIViewController *ApolloFullScreenCurrentViewer(UIViewController *page) {
+    if (![page isKindOfClass:UIPageViewController.class]) return nil;
+    UIViewController *viewer = ((UIPageViewController *)page).viewControllers.firstObject;
+    return [viewer isKindOfClass:NSClassFromString(@"Apollo.MediaViewerController")] ? viewer : nil;
+}
+
+static ApolloFullScreenImageMenu *ApolloFullScreenImageContext(UIViewController *page, UIView *source) {
+    UIViewController *viewer = ApolloFullScreenCurrentViewer(page);
+    id imageView = ApolloSaveAllObjectIvar(viewer, "imageView");
+    if (!viewer || ApolloSaveAllObjectIvar(viewer, "player") ||
+        ![imageView isKindOfClass:UIImageView.class] || !((UIImageView *)imageView).image) return nil;
+    SEL animated = NSSelectorFromString(@"animatedImage");
+    if ([imageView respondsToSelector:animated] && ((id (*)(id, SEL))objc_msgSend)(imageView, animated)) return nil;
+    ApolloFullScreenImageMenu *context = [ApolloFullScreenImageMenu new];
+    context.page = page;
+    context.viewer = viewer;
+    context.source = source ?: page.view;
+    context.album = ApolloSaveAllContextForPage(page);
+    sApolloFullScreenNativeMenuBuild++;
+    @try {
+        context.imageActions = ApolloNativeActionMenuCaptureController(context.source, ^{
+            ((void (*)(id, SEL, id))objc_msgSend)(page, @selector(moreButtonTapped:), context.source);
+        });
+        if (context.album) {
+            context.shareActions = ApolloNativeActionMenuCaptureController(context.source, ^{
+                ((void (*)(id, SEL, id))objc_msgSend)(page, @selector(shareButtonTappedWithSender:), context.source);
+            });
+        }
+    } @finally { sApolloFullScreenNativeMenuBuild--; }
+    if (!ApolloNativeActionMenuHasAction(context.imageActions, 26) ||
+        !ApolloNativeActionMenuHasAction(context.imageActions, 100)) return nil;
+    return context;
+}
+
+static UIAction *ApolloFullScreenImageAction(NSString *title, NSString *symbol,
+                                             ApolloFullScreenImageMenu *context, dispatch_block_t perform) {
+    return [UIAction actionWithTitle:title image:[UIImage systemImageNamed:symbol] identifier:nil
+        handler:^(__unused UIAction *action) {
+            // Programmatic menus use the shared presenter's completion; held
+            // menus use the viewer delegate's completion. Neither may present
+            // another menu/share sheet while UIKit is still dismissing this one.
+            dispatch_block_t retained = ^{
+                if (context.page.viewIfLoaded.window) perform();
+            };
+            if (ApolloNativeActionMenuPerformAfterDismissal(context, retained)) return;
+            if (context.ended) dispatch_async(dispatch_get_main_queue(), retained);
+            else context.pending = perform;
+        }];
+}
+
+static void ApolloFullScreenShareImage(ApolloFullScreenImageMenu *context) {
+    if (ApolloNativeActionMenuHasAction(context.shareActions, 27)) {
+        ApolloNativeActionMenuInvokeAction(context.shareActions, 27);
+    } else if (context.page.viewIfLoaded.window && ApolloFullScreenCurrentViewer(context.page) == context.viewer) {
+        // A single image's native share button prepares the system share sheet.
+        // Both long-press Share and the chooser's Share Image use this path.
+        sApolloFullScreenNativeMenuBuild++;
+        @try { ((void (*)(id, SEL, id))objc_msgSend)(context.page, @selector(shareButtonTappedWithSender:), context.source); }
+        @finally { sApolloFullScreenNativeMenuBuild--; }
+    }
+}
+
+static UIMenu *ApolloFullScreenImageMenuBuild(ApolloFullScreenImageMenu *context, BOOL sharing) {
+    __weak ApolloFullScreenImageMenu *weakContext = context;
+    NSMutableArray *actions = [NSMutableArray array];
+    if (sharing) {
+        [actions addObject:ApolloFullScreenImageAction(@"Share Image", @"square.and.arrow.up", context, ^{
+            ApolloFullScreenShareImage(weakContext);
+        })];
+    } else {
+        [actions addObject:ApolloFullScreenImageAction(@"Copy Image", @"doc.on.doc", context, ^{
+            ApolloNativeActionMenuInvokeAction(weakContext.imageActions, 100);
+        })];
+    }
+    [actions addObject:ApolloFullScreenImageAction(@"Save Image", @"square.and.arrow.down", context, ^{
+        ApolloNativeActionMenuInvokeAction(weakContext.imageActions, 26);
+    })];
+    if (context.album) {
+        [actions addObject:ApolloFullScreenImageAction(kApolloSaveAllTitle, @"square.and.arrow.down.on.square", context, ^{
+            ApolloSaveAllBegin(weakContext.album);
+        })];
+    }
+    if (sharing) {
+        if (ApolloNativeActionMenuHasAction(context.shareActions, 19)) {
+            [actions addObject:ApolloFullScreenImageAction(@"Share Album Link", @"link", context, ^{
+                ApolloNativeActionMenuInvokeAction(weakContext.shareActions, 19);
+            })];
+        }
+    } else {
+        [actions addObject:ApolloFullScreenImageAction(@"Share", @"square.and.arrow.up", context, ^{
+            ApolloFullScreenShareImage(weakContext);
+        })];
+    }
+    return [UIMenu menuWithTitle:@"" children:actions];
+}
+
+static void ApolloFullScreenShowShareMenu(ApolloFullScreenImageMenu *context) {
+    if (!context.page.viewIfLoaded.window) return;
+    context.ended = NO;
+    UIView *source = ApolloSaveAllObjectIvar(context.page, "shareButton") ?: context.source;
+    __weak ApolloFullScreenImageMenu *weakContext = context;
+    ApolloNativeActionMenuPresentCaptured(ApolloFullScreenImageMenuBuild(context, YES), source, context, ^{
+        weakContext.ended = YES;
+    });
+}
+
+static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
+    NSMutableArray *children = [NSMutableArray array];
+    for (UIMenuElement *element in menu.children) {
+        if ([element isKindOfClass:UIMenu.class]) {
+            UIMenu *nested = ApolloFullScreenWithoutSharing((UIMenu *)element);
+            if (nested.children.count) [children addObject:nested];
+        } else if (![element.title isEqualToString:@"Share"] && ![element.title isEqualToString:@"Share Album Link"]) {
+            [children addObject:element];
+        }
+    }
+    return [menu menuByReplacingChildren:children];
+}
+
 %hook _TtC6Apollo23MediaPageViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     sApolloSaveAllVisiblePage = (UIViewController *)self;
 }
 - (void)moreButtonTapped:(id)sender {
+    if (sApolloFullScreenNativeMenuBuild) {
+        %orig;
+        return;
+    }
     sApolloSaveAllArmedContext = ApolloSaveAllContextForPage((UIViewController *)self);
     sApolloSaveAllArmedAt = CACurrentMediaTime();
+    UIView *source = [sender isKindOfClass:UIView.class] ? sender : ((UIViewController *)self).view;
+    id controller = ApolloNativeActionMenuCaptureController(source, ^{
+        %orig;
+    });
+    if (controller) {
+        UIMenu *menu = ApolloFullScreenWithoutSharing(ApolloNativeActionMenuBuildCaptured(controller));
+        if (ApolloNativeActionMenuPresentCaptured(menu, source, controller, nil)) return;
+    }
     %orig;
+}
+- (void)shareButtonTappedWithSender:(id)sender {
+    if (sApolloFullScreenNativeMenuBuild) {
+        %orig;
+        return;
+    }
+    UIView *source = [sender isKindOfClass:UIView.class] ? sender : ((UIViewController *)self).view;
+    ApolloFullScreenImageMenu *context = ApolloFullScreenImageContext((UIViewController *)self, source);
+    if (!context) {
+        %orig;
+        return;
+    }
+    ApolloFullScreenShowShareMenu(context);
 }
 %end
 
@@ -235,7 +398,29 @@ static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
 %end
 
 %hook _TtC6Apollo21MediaViewerController
+- (void)scrollViewLongPressed:(UIGestureRecognizer *)recognizer {
+    UIViewController *page = ApolloSaveAllPageForController((UIViewController *)self);
+    ApolloFullScreenImageMenu *context = ApolloFullScreenImageContext(page, recognizer.view);
+    if (!context) {
+        %orig;
+        return;
+    }
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        __weak ApolloFullScreenImageMenu *weakContext = context;
+        ApolloNativeActionMenuPresentCaptured(ApolloFullScreenImageMenuBuild(context, NO), recognizer.view, context, ^{
+            weakContext.ended = YES;
+        });
+    }
+}
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
+    ApolloFullScreenImageMenu *image = ApolloFullScreenImageContext(
+        ApolloSaveAllPageForController((UIViewController *)self), interaction.view);
+    if (image) {
+        UIContextMenuConfiguration *config = [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
+            actionProvider:^UIMenu *(__unused NSArray *suggested) { return ApolloFullScreenImageMenuBuild(image, NO); }];
+        objc_setAssociatedObject(config, &kApolloFullScreenImageMenuKey, image, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return config;
+    }
     ApolloSaveAllMenuContext *previous = sApolloSaveAllConfigContext;
     sApolloSaveAllConfigContext = ApolloSaveAllContextForPage(ApolloSaveAllPageForController((UIViewController *)self));
     UIContextMenuConfiguration *configuration = %orig;
@@ -248,6 +433,18 @@ static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
 // the selected UIAction's handler has run.
 %new
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willEndForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
+    ApolloFullScreenImageMenu *image = objc_getAssociatedObject(configuration, &kApolloFullScreenImageMenuKey);
+    if (image) {
+        dispatch_block_t finish = ^{
+            image.ended = YES;
+            dispatch_block_t pending = image.pending;
+            image.pending = nil;
+            if (pending) pending();
+        };
+        if (animator) [animator addCompletion:finish];
+        else dispatch_async(dispatch_get_main_queue(), finish);
+        return;
+    }
     ApolloSaveAllMenuContext *context = objc_getAssociatedObject(configuration, &kApolloSaveAllMenuContextKey);
     if (!context) return;
     dispatch_block_t finish = ^{
