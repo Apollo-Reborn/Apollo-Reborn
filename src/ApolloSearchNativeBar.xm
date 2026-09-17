@@ -1497,57 +1497,6 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 
 %end
 
-// MARK: - Posts tab re-selection
-//
-// Apollo's native top check ignores the inset UIKit adds for native search.
-// Use adjustedContentInset for both the check and scroll destination,
-// preserving Apollo's one-level back navigation when already at the top.
-// A followed user's profile opened directly from the subreddit list needs the
-// same behavior in both appearances: Apollo only handles PostsViewController
-// and RedditListViewController here, so [RedditList, Profile] does nothing.
-// Deeper profile stacks keep Apollo's native return-to-feed behavior.
-%hook _TtC6Apollo13SceneDelegate
-
-- (BOOL)tabBarController:(UITabBarController *)tabBarController
- shouldSelectViewController:(UIViewController *)viewController {
-    if (tabBarController.selectedIndex == 0 &&
-        viewController == tabBarController.selectedViewController &&
-        [viewController isKindOfClass:objc_getClass("_TtC6Apollo26ApolloNavigationController")]) {
-        UINavigationController *nav = (UINavigationController *)viewController;
-        UIViewController *feed = nav.topViewController;
-        BOOL managedPostsFeed = ApolloNativeFeedSearchEnabled() &&
-            [feed isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")];
-        BOOL profileFromSubredditList = nav.viewControllers.count == 2 &&
-            [nav.viewControllers.firstObject isKindOfClass:objc_getClass("_TtC6Apollo24RedditListViewController")] &&
-            [feed isKindOfClass:objc_getClass("_TtC6Apollo21ProfileViewController")];
-        if (managedPostsFeed || profileFromSubredditList) {
-            UIScrollView *table = NSBTableForVC(feed);
-            if (table && (profileFromSubredditList || objc_getAssociatedObject(table, kNSBFeedTableKey) != nil)) {
-                CGFloat topInset = table.adjustedContentInset.top;
-                BOOL atTop = round(table.contentOffset.y) == -round(topInset);
-                if (NSBTraceEnabled()) {
-                    ApolloLog(@"[NSBTrace] Posts re-tap (%@) -> %@ (y=%.1f inTop=%.1f adjTop=%.1f)",
-                              NSStringFromClass(feed.class), atTop ? @"pop" : @"scroll", table.contentOffset.y,
-                              table.contentInset.top, topInset);
-                }
-                if (atTop) {
-                    [nav popViewControllerAnimated:YES];
-                } else {
-                    // Use Apollo's table-node entry point, as its native handler
-                    // does, with the same full inset used by the predicate.
-                    id tableNode = ApolloNSBObjectIvar(feed, "tableNode");
-                    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(tableNode,
-                        @selector(setContentOffset:animated:), CGPointMake(0.0, -topInset), YES);
-                }
-                return NO;
-            }
-        }
-    }
-    return %orig(tabBarController, viewController);
-}
-
-%end
-
 // MARK: - Apollo's field must never take focus
 //
 // Apollo re-focuses its own field when restoring a search on return-to-feed

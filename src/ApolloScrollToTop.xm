@@ -679,8 +679,78 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 }
 %end
 
+// The Posts tab's native re-selection dispatch recognizes only a few controller
+// classes. Handle the navigation stack once, including profiles, trophies,
+// multireddits, comment lists, and tweak-owned lists. This is independent of
+// status-bar taps, whose second tap deliberately restores the saved position.
+static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewport) {
+    if (view.hidden || view.alpha < 0.01 || !view.window) return nil;
+    CGRect visible = CGRectIntersection([view convertRect:view.bounds toView:nil], viewport);
+    if (CGRectIsNull(visible) || CGRectIsEmpty(visible)) return nil;
+    if ([view isKindOfClass:UIScrollView.class]) {
+        UIScrollView *scroll = (UIScrollView *)view;
+        // Ignore Apollo's empty status-bar proxy and horizontal media carousels.
+        // Stop at the outer content list so an embedded post cannot win over it.
+        BOOL list = [scroll isKindOfClass:UITableView.class] ||
+                    [scroll isKindOfClass:UICollectionView.class];
+        BOOL vertical = scroll.contentSize.height + scroll.adjustedContentInset.top +
+                        scroll.adjustedContentInset.bottom > scroll.bounds.size.height + 1;
+        if (scroll.scrollEnabled && (vertical || (list && scroll.alwaysBounceVertical))) return scroll;
+    }
+    UIScrollView *best = nil;
+    CGFloat bestArea = 0;
+    for (UIView *child in view.subviews) {
+        UIScrollView *candidate = ApolloPostsTabContentScrollView(child, viewport);
+        if (!candidate) continue;
+        CGRect frame = CGRectIntersection([candidate convertRect:candidate.bounds toView:nil], viewport);
+        CGFloat area = frame.size.width * frame.size.height;
+        if (area > bestArea) {
+            best = candidate;
+            bestArea = area;
+        }
+    }
+    return best;
+}
+
+%hook ApolloPostsTabSceneDelegate
+- (BOOL)tabBarController:(UITabBarController *)tabBarController
+ shouldSelectViewController:(UIViewController *)viewController {
+    if (tabBarController.selectedIndex != 0 ||
+        viewController != tabBarController.selectedViewController ||
+        ![viewController isKindOfClass:UINavigationController.class]) {
+        return %orig(tabBarController, viewController);
+    }
+    UINavigationController *nav = (UINavigationController *)viewController;
+    UIViewController *owner = nav.topViewController;
+    // Do not navigate behind a modal or interrupt an interactive push/pop.
+    if (nav.presentedViewController || tabBarController.presentedViewController || nav.transitionCoordinator) return NO;
+    UIView *content = owner.viewIfLoaded;
+    if (!content.window) return NO;
+    // Texture's real table is authoritative even when empty or short. Do not
+    // use scrollsToTop: the status-bar implementation intentionally disables it.
+    UIScrollView *scroll = ApolloScrollReturnTable(owner);
+    if (!scroll.window || scroll.hidden) {
+        scroll = ApolloPostsTabContentScrollView(content, [content convertRect:content.bounds toView:nil]);
+    }
+    CGFloat top = -scroll.adjustedContentInset.top;
+    if (scroll && scroll.contentOffset.y > top + 1) {
+        // A tab tap must never enter the status-bar undo path.
+        [objc_getAssociatedObject(owner, &kApolloScrollReturn) clearAnimated:NO];
+        [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, top)
+                       animated:!UIAccessibilityIsReduceMotionEnabled()];
+        ApolloLog(@"[PostsTab] Scrolled %@ to top", NSStringFromClass(owner.class));
+    } else if (nav.viewControllers.count > 1) {
+        [nav popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
+        ApolloLog(@"[PostsTab] Returned one page from %@", NSStringFromClass(owner.class));
+    }
+    // Returning NO also prevents UIKit/Apollo from popping again after our scroll.
+    return NO;
+}
+%end
+
 %ctor {
-    %init(ApolloScrollReturnTableController = objc_getClass("_TtC6Apollo21ASTableViewController"),
+    %init(ApolloPostsTabSceneDelegate = objc_getClass("_TtC6Apollo13SceneDelegate"),
+          ApolloScrollReturnTableController = objc_getClass("_TtC6Apollo21ASTableViewController"),
           ApolloScrollReturnPostsController = objc_getClass("_TtC6Apollo19PostsViewController"),
           ApolloScrollReturnCommentsController = objc_getClass("_TtC6Apollo22CommentsViewController"),
           ApolloScrollReturnUserCommentsController = objc_getClass("_TtC6Apollo26UserCommentsViewController"),
