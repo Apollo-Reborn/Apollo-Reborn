@@ -930,6 +930,42 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             });
             return;
         }
+        // "chatunread <t4_fullname>" / "chatread <t4_fullname> [shared]": flip a
+        // legacy-inbox message's read state on Reddit through the client the
+        // chat-mirror tap uses (the signed-in account's), or with `shared`
+        // through RDKClient.sharedClient — Apollo's app-only bootstrap client,
+        // whose read mark Reddit ignores. Re-arms a read mirror as unread so the
+        // tap -> back -> refresh cycle can be repeated, and shows both outcomes
+        // in the log. Main thread: ApolloActiveAccountClient() requires it.
+        if ([contents hasPrefix:@"chatunread "] || [contents hasPrefix:@"chatread "]) {
+            BOOL unread = [contents hasPrefix:@"chatunread "];
+            NSArray<NSString *> *parts = [[[contents substringFromIndex:unread ? 11 : 9]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                componentsSeparatedByString:@" "];
+            NSString *fullName = parts.firstObject ?: @"";
+            BOOL useShared = parts.count > 1 && [parts[1] isEqualToString:@"shared"];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                Class clientClass = objc_getClass("RDKClient");
+                id client = useShared
+                    ? ((id (*)(id, SEL))objc_msgSend)(clientClass, NSSelectorFromString(@"sharedClient"))
+                    : ApolloActiveAccountClient();
+                SEL selector = NSSelectorFromString(unread ? @"markMessageWithFullNameAsUnread:completion:"
+                                                           : @"markMessageWithFullNameAsRead:completion:");
+                NSString *label = [NSString stringWithFormat:@"%@ %@ via %@ client",
+                                   unread ? @"chatunread" : @"chatread", fullName,
+                                   useShared ? @"shared (app-only)" : @"active account"];
+                if (!client || ![client respondsToSelector:selector]) {
+                    ApolloLog(@"[SimDebugTap] %@ -> no client (%@)", label, client ? @"selector missing" : @"nil");
+                    return;
+                }
+                void (^completion)(NSError *) = ^(NSError *error) {
+                    ApolloLog(@"[SimDebugTap] %@ -> %@", label,
+                              error ? [NSString stringWithFormat:@"FAILED: %@", error] : @"ok");
+                };
+                ((id (*)(id, SEL, id, id))objc_msgSend)(client, selector, fullName, completion);
+            });
+            return;
+        }
         // "devvitload <url>": load another URL in the first on-window widget.
         if ([contents hasPrefix:@"devvitload "]) {
             extern void ApolloDevvitDebugLoadURL(NSString *urlString);
