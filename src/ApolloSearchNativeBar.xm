@@ -2077,7 +2077,20 @@ static UIButton *NSBMakeCancelStandIn(UIButton *original, UISearchBar *bar) {
     if (!standIn || !button.superview || !standIn.superview) return;
     // Called inside the transition's animation block, after the searching
     // layout has been applied: the button's model frame is its final slot.
-    standIn.frame = [button.superview convertRect:button.frame toView:standIn.superview];
+    // The glass background does not ride a frame animation — UIKit places it
+    // from the model frame — so animating the frame parked the bubble at the
+    // final slot while the glyph slid into it from the bottom right. Lay the
+    // stand-in out at its final frame without animation and slide it in with
+    // a transform instead, so bubble and glyph move as one piece.
+    CGRect finalFrame = [button.superview convertRect:button.frame toView:standIn.superview];
+    CGRect parked = standIn.frame;
+    [UIView performWithoutAnimation:^{
+        standIn.frame = finalFrame;
+        standIn.transform = CGAffineTransformMakeTranslation(CGRectGetMinX(parked) - CGRectGetMinX(finalFrame),
+                                                             CGRectGetMinY(parked) - CGRectGetMinY(finalFrame));
+        [standIn layoutIfNeeded];
+    }];
+    standIn.transform = CGAffineTransformIdentity;
     standIn.alpha = 1.0;
     if (NSBTraceEnabled()) {
         ApolloLog(@"[NSBTrace] cancel stand-in animating to %@ (in animation block: %d)",
