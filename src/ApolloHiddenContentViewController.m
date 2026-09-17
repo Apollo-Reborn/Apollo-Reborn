@@ -579,21 +579,13 @@ static char kApolloHiddenRememberedMediaIndex;
     else if (age >= 3600) { amount = (NSInteger)(age / 3600); unit = @"h"; }
     else if (age >= 60) { amount = (NSInteger)(age / 60); unit = @"m"; }
     self.dateLabel.text = item.createdDate ? [NSString stringWithFormat:@"%ld%@", (long)amount, unit] : @"";
-    BOOL isImagePost = item.kind == ApolloHiddenContentKindPost && (item.mediaURLs.count > 0 || item.previewURL != nil);
-    if (isImagePost) {
-        // Apollo presents an image post as media plus its post-preview card;
-        // don't make the post title look like a comment body above the image.
-        self.bodyLabel.text = item.body;
-        self.bodyLabel.hidden = item.body.length == 0;
-    } else {
-        self.bodyLabel.text = item.kind == ApolloHiddenContentKindPost && item.title.length
-            ? [NSString stringWithFormat:@"%@%@", item.title, item.body.length ? [@"\n\n" stringByAppendingString:item.body] : @""]
-            : (item.body.length ? item.body : @"No text in the archive");
-        self.bodyLabel.hidden = NO;
-    }
-    NSString *contextTitle = item.kind == ApolloHiddenContentKindComment
-        ? item.parentPostTitle
-        : (isImagePost ? item.title : nil);
+    // All posts use the same overview preview as comments: the title belongs
+    // with the subreddit, while only archived body text appears above it.
+    // Hide an empty post body rather than repeating its title outside the card.
+    BOOL isPost = item.kind == ApolloHiddenContentKindPost;
+    self.bodyLabel.text = item.body.length ? item.body : (isPost ? nil : @"No text in the archive");
+    self.bodyLabel.hidden = isPost && item.body.length == 0;
+    NSString *contextTitle = isPost ? item.title : item.parentPostTitle;
     // Keep the parent title and subreddit as separate paragraphs, like the
     // native overview preview, with a small gap and quieter subreddit text.
     NSString *subreddit = item.subreddit ?: @"";
