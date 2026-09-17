@@ -312,7 +312,13 @@ static char kApolloHiddenRememberedMediaIndex;
         self.previewHeight.active = YES;
         self.contentStack = [[UIStackView alloc] initWithArrangedSubviews:@[self.headerStack, self.bodyLabel, self.mediaContainerView, self.contextLabel]];
         self.contentStack.axis = UILayoutConstraintAxisVertical;
+        self.contentStack.alignment = UIStackViewAlignmentCenter;
         self.contentStack.spacing = 8;
+        // Media may reach the feed edges; text keeps Overview's normal inset.
+        for (UIView *textRow in @[self.headerStack, self.bodyLabel, self.contextLabel]) {
+            [textRow.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor constant:-30].active = YES;
+        }
+        [self.mediaContainerView.widthAnchor constraintEqualToAnchor:self.contentStack.widthAnchor].active = YES;
         self.contentStack.translatesAutoresizingMaskIntoConstraints = NO;
         // Apollo's profile Overview separates entries with a short section
         // gutter rather than UITableView's one-pixel rule.
@@ -321,8 +327,8 @@ static char kApolloHiddenRememberedMediaIndex;
         [self.contentView addSubview:self.contentStack];
         [self.contentView addSubview:self.overviewSeparatorView];
         [NSLayoutConstraint activateConstraints:@[
-            [self.contentStack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:15],
-            [self.contentStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-15],
+            [self.contentStack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [self.contentStack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
             [self.contentStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
             [self.contentStack.bottomAnchor constraintEqualToAnchor:self.overviewSeparatorView.topAnchor constant:-10],
             [self.overviewSeparatorView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
@@ -1223,7 +1229,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     if (height) return height.doubleValue;
     ApolloHiddenContentItem *item = [self apollo_itemsForTable:tableView][indexPath.row];
     CGFloat ratio = item.previewAspectRatio;
-    CGFloat mediaHeight = (item.mediaURLs.count || item.previewURL) ? MAX(0, tableView.bounds.size.width - 28) / (isfinite(ratio) && ratio >= 0.1 && ratio <= 10 ? ratio : 1) : 0;
+    CGFloat mediaHeight = (item.mediaURLs.count || item.previewURL) ? tableView.bounds.size.width / (isfinite(ratio) && ratio >= 0.1 && ratio <= 10 ? ratio : 1) : 0;
     return 160 + mediaHeight;
 }
 
