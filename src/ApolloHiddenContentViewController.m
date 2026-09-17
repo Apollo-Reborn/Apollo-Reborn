@@ -833,14 +833,19 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-@interface ApolloHiddenContentViewController ()
+@interface ApolloHiddenContentViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic) BOOL loading;
 @property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *items;
 @property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *allItems;
 @property (nonatomic, strong) UISegmentedControl *contentTabs;
 @property (nonatomic) NSInteger selectedTab;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *tabOffsets;
+@property (nonatomic, strong) NSArray<UITableViewController *> *tabControllers;
+@property (nonatomic, strong) NSArray<NSArray<ApolloHiddenContentItem *> *> *tabItems;
+@property (nonatomic, strong) NSTimer *progressTimer;
+@property (nonatomic) double progressTarget;
+@property (nonatomic) double progressStart;
+@property (nonatomic) CFTimeInterval progressStartedAt;
 
 @property (nonatomic, strong) UIView *statusContainerView;
 @property (nonatomic, strong) DACircularProgressView *progressRing;
@@ -852,7 +857,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 
 + (void)presentForUsername:(NSString *)username fromViewController:(UIViewController *)presenter {
     if (username.length == 0 || !presenter) return;
-    ApolloHiddenContentViewController *list = [[ApolloHiddenContentViewController alloc] initWithStyle:UITableViewStylePlain];
+    ApolloHiddenContentViewController *list = [ApolloHiddenContentViewController new];
     list.username = username;
     if (presenter.navigationController) {
         [presenter.navigationController pushViewController:list animated:YES];
@@ -862,7 +867,22 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = nil;
-    self.tabOffsets = [NSMutableDictionary dictionary];
+    self.tabItems = @[@[], @[]];
+    NSMutableArray *controllers = [NSMutableArray array];
+    for (NSInteger tab = 0; tab < 2; tab++) {
+        UITableViewController *controller = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
+        [self addChildViewController:controller];
+        controller.view.frame = self.view.bounds;
+        controller.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.view addSubview:controller.view];
+        [controller didMoveToParentViewController:self];
+        controller.tableView.dataSource = self;
+        controller.tableView.delegate = self;
+        controller.view.hidden = tab != 0;
+        controller.tableView.scrollsToTop = tab == 0;
+        [controllers addObject:controller];
+    }
+    self.tabControllers = controllers;
     self.contentTabs = [[UISegmentedControl alloc] initWithItems:@[@"Posts", @"Comments"]];
     self.contentTabs.selectedSegmentIndex = 0;
     // UIKit owns the complete interactive-glass animation timeline.
@@ -875,17 +895,21 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     // The shared owner handles Hard/Soft/Blur/Automatic, scrolling and pushes.
     self.navigationItem.titleView = self.contentTabs;
     [self apollo_applyTabTheme];
-    [self.tableView registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 64.0;
-    self.tableView.alwaysBounceVertical = YES;
-    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.tableView.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
-    self.tableView.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+    for (UITableViewController *controller in self.tabControllers) {
+        UITableView *table = controller.tableView;
+        [table registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
+        table.rowHeight = UITableViewAutomaticDimension;
+        table.estimatedRowHeight = 64.0;
+        table.alwaysBounceVertical = YES;
+        table.separatorStyle = UITableViewCellSeparatorStyleNone;
+        table.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
+        table.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
 
-    UIRefreshControl *refreshControl = [UIRefreshControl new];
-    [refreshControl addTarget:self action:@selector(apollo_refreshTriggered) forControlEvents:UIControlEventValueChanged];
-    self.tableView.refreshControl = refreshControl;
+        UIRefreshControl *refreshControl = [UIRefreshControl new];
+        [refreshControl addTarget:self action:@selector(apollo_refreshTriggered) forControlEvents:UIControlEventValueChanged];
+        table.refreshControl = refreshControl;
+
+    }
 
     // tableView.backgroundView rather than a plain subview of self.view: it's a
     // fixed, non-scrolling layer UIKit keeps sized to the table view's bounds.
@@ -942,28 +966,41 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     }
 }
 
+- (UITableView *)tableView {
+    return self.tabControllers[self.selectedTab].tableView;
+}
+
+- (NSArray<ApolloHiddenContentItem *> *)apollo_itemsForTable:(UITableView *)table {
+    return self.tabItems[table == self.tabControllers[0].tableView ? 0 : 1];
+}
+
 - (void)apollo_applyContentFilter {
-    ApolloHiddenContentKind kind = self.selectedTab == 0 ? ApolloHiddenContentKindPost : ApolloHiddenContentKindComment;
-    NSMutableArray *visible = [NSMutableArray array];
+    NSMutableArray *posts = [NSMutableArray array];
+    NSMutableArray *comments = [NSMutableArray array];
     for (ApolloHiddenContentItem *item in self.allItems) {
-        if (item.kind == kind) [visible addObject:item];
+        [(item.kind == ApolloHiddenContentKindPost ? posts : comments) addObject:item];
     }
-    self.items = visible;
+    self.tabItems = @[posts, comments];
+    self.items = self.tabItems[self.selectedTab];
     [self.emptyStateLabel removeFromSuperview];
-    [self.tableView reloadData];
+    for (UITableViewController *controller in self.tabControllers) [controller.tableView reloadData];
     if (!self.loading && self.items.count == 0) [self apollo_showEmptyState];
 }
 
 - (void)apollo_contentTabChanged {
-    self.tabOffsets[@(self.selectedTab)] = @(self.tableView.contentOffset.y);
+    // Each table owns its offset, measured heights, cells and album state.
+    // Never reload a table merely because its tab becomes visible.
+    [self.tableView setContentOffset:self.tableView.contentOffset animated:NO];
+    self.tableView.scrollsToTop = NO;
+    self.tableView.backgroundView = nil;
+    self.tabControllers[self.selectedTab].view.hidden = YES;
     self.selectedTab = self.contentTabs.selectedSegmentIndex;
-    [self apollo_applyContentFilter];
-    [self.tableView layoutIfNeeded];
-    CGFloat top = -self.tableView.adjustedContentInset.top;
-    CGFloat bottom = MAX(top, self.tableView.contentSize.height - self.tableView.bounds.size.height + self.tableView.adjustedContentInset.bottom);
-    NSNumber *saved = self.tabOffsets[@(self.selectedTab)];
-    CGFloat offset = saved ? saved.doubleValue : top;
-    [self.tableView setContentOffset:CGPointMake(0, MIN(bottom, MAX(top, offset))) animated:NO];
+    self.items = self.tabItems[self.selectedTab];
+    self.tableView.scrollsToTop = YES;
+    self.tabControllers[self.selectedTab].view.hidden = NO;
+    self.tableView.backgroundView = self.statusContainerView;
+    [self.emptyStateLabel removeFromSuperview];
+    if (!self.loading && self.items.count == 0) [self apollo_showEmptyState];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -985,6 +1022,9 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 - (void)apollo_fetchForceRefresh:(BOOL)forceRefresh {
     if (self.loading) return;
     self.loading = YES;
+    [self.progressTimer invalidate];
+    self.progressTimer = nil;
+    self.progressTarget = 0;
     self.progressRing.progress = 0;
     self.progressRing.hidden = self.items.count > 0;
     self.progressLabel.hidden = self.items.count > 0;
@@ -1019,18 +1059,44 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 - (void)apollo_updateProgress:(double)fraction stage:(NSString *)stage {
     // Updates arrive only when network work completes; never advance a timer
     // toward an invented completion percentage while a request is stalled.
-    double progress = MAX(self.progressRing.progress, MIN(1, fraction));
-    [self.progressRing setProgress:progress animated:YES];
+    double progress = MAX(self.progressTarget, MIN(1, fraction));
+    self.progressStart = self.progressRing.progress;
+    self.progressTarget = progress;
+    self.progressStartedAt = CACurrentMediaTime();
+    if (!self.progressTimer) {
+        __weak typeof(self) weakSelf = self;
+        self.progressTimer = [NSTimer timerWithTimeInterval:1.0 / 60.0 repeats:YES block:^(NSTimer *timer) {
+            typeof(self) owner = weakSelf;
+            if (!owner) { [timer invalidate]; return; }
+            double t = MIN(1, (CACurrentMediaTime() - owner.progressStartedAt) / 0.25);
+            double eased = t * t * (3 - 2 * t);
+            [owner.progressRing setProgress:owner.progressStart + (owner.progressTarget - owner.progressStart) * eased animated:NO];
+            if (t >= 1) { [timer invalidate]; owner.progressTimer = nil; }
+        }];
+        [[NSRunLoop mainRunLoop] addTimer:self.progressTimer forMode:NSRunLoopCommonModes];
+    }
     self.progressRing.accessibilityValue = [NSString stringWithFormat:@"%.0f%%", progress * 100];
     self.progressLabel.text = stage;
 }
 
 - (void)apollo_finishWithItems:(NSArray *)items error:(NSString *)error {
     self.loading = NO;
-    [self.progressRing setProgress:error ? self.progressRing.progress : 1 animated:NO];
-    self.progressRing.hidden = YES;
-    self.progressLabel.hidden = YES;
-    [self.tableView.refreshControl endRefreshing];
+    if (error) {
+        [self.progressTimer invalidate];
+        self.progressTimer = nil;
+        self.progressRing.hidden = YES;
+        self.progressLabel.hidden = YES;
+    } else {
+        [self apollo_updateProgress:1 stage:@"Loaded"];
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (!weakSelf.loading) {
+                weakSelf.progressRing.hidden = YES;
+                weakSelf.progressLabel.hidden = YES;
+            }
+        });
+    }
+    for (UITableViewController *controller in self.tabControllers) [controller.tableView.refreshControl endRefreshing];
     if (error) {
         [self apollo_showError:error];
         return;
@@ -1076,12 +1142,12 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.items.count;
+    return [self apollo_itemsForTable:tableView].count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloHiddenContentCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell" forIndexPath:indexPath];
-    ApolloHiddenContentItem *item = self.items[indexPath.row];
+    ApolloHiddenContentItem *item = [self apollo_itemsForTable:tableView][indexPath.row];
     [cell configureWithItem:item username:self.username];
     __weak typeof(self) weakSelf = self;
     __weak ApolloHiddenContentCell *weakCell = cell;
@@ -1119,7 +1185,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    ApolloHiddenContentItem *item = self.items[indexPath.row];
+    ApolloHiddenContentItem *item = [self apollo_itemsForTable:tableView][indexPath.row];
 
     // Deleted and Removed items have no useful live reddit.com page (it's just
     // Reddit's own tombstone) -- show the archived copy instead. Only a
