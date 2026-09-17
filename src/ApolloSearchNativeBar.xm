@@ -1988,7 +1988,9 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 // prepared, moved to the final slot inside UIKit's animation block so it
 // keeps UIKit's timing and curve, and removed when the transition completes
 // or is cancelled — by then UIKit's button is on screen in the same place.
-// Only the bars this module attaches, only on iOS 27.
+// For the bars this module attaches and for any other navigation-bar-hosted
+// search bar that keeps the navigation bar up while searching (the Settings
+// search, ApolloSettingsSearch.m — same transition, same gap); only on iOS 27.
 @interface _UISearchBarVisualProviderIOS : NSObject
 - (UISearchBar *)searchBar;
 @end
@@ -2000,6 +2002,17 @@ static UINavigationBar *NSBNavigationBarHosting(UIView *view) {
     UIView *v = view.superview;
     while (v && ![v isKindOfClass:UINavigationBar.class]) v = v.superview;
     return (UINavigationBar *)v;
+}
+
+// A bar whose cancel entrance the module draws: one this module attaches, or
+// a navigation item's search bar whose controller keeps the navigation bar
+// during the presentation (the Settings search). A controller that hides the
+// bar runs a different transition — the whole bar moves — and is left to
+// UIKit.
+static BOOL NSBWantsCancelStandIn(UISearchBar *bar) {
+    if (objc_getAssociatedObject(bar, kNSBNativeBarKey)) return YES;
+    UISearchController *controller = NSBNavigationBarHosting(bar).topItem.searchController;
+    return controller != nil && controller.searchBar == bar && !controller.hidesNavigationBarDuringPresentation;
 }
 
 static void NSBRemoveCancelStandIn(UISearchBar *bar, const char *why) {
@@ -2049,7 +2062,7 @@ static UIButton *NSBMakeCancelStandIn(UIButton *original, UISearchBar *bar) {
     %orig;
     if (!ApolloNativeFeedSearchEnabled()) return;
     UISearchBar *bar = [self searchBar];
-    if (!bar || !objc_getAssociatedObject(bar, kNSBNativeBarKey)) return;
+    if (!bar || !NSBWantsCancelStandIn(bar)) return;
     NSBRemoveCancelStandIn(bar, "new transition");
     if (state != kNSBSearchLayoutStateSearching) return;
     UIButton *button = MSHookIvar<UIButton *>(self, "_cancelButton");
