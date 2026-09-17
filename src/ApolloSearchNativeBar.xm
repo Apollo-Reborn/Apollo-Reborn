@@ -137,6 +137,7 @@ static BOOL    sNSBAwaitingScroll    = NO;
 static CGFloat sNSBDismissTargetTop = 0.0;
 
 static const void *kNSBBridgeKey     = &kNSBBridgeKey;      // VC -> bridge delegate object
+static const void *kNSBNativeBarKey  = &kNSBNativeBarKey;   // UISearchBar -> @YES for the bars this module attaches
 static const void *kNSBFeedTableKey  = &kNSBFeedTableKey;   // ASTableView -> @YES (native-managed table: a feed, or a comments screen)
 static const void *kNSBAppearedKey   = &kNSBAppearedKey;    // VC -> @YES once it has appeared at least once
 static CGFloat sNSBToolbarBand = 45.0; // Apollo's resting toolbar height (the band its inset reserves)
@@ -954,6 +955,9 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
     sc.searchBar.delegate = bridge;
     UIColor *accent = ApolloThemeAccentColor();
     if (accent) sc.searchBar.tintColor = accent;
+    // Hard header style: keep the field clear of the band's edge.
+    ApolloHeaderStyleRegisterSearchBar(sc.searchBar);
+    objc_setAssociatedObject(sc.searchBar, kNSBNativeBarKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (@available(iOS 16.0, *)) {
         // iPhone stacks by default; force it on iPad too so the bar keeps the
@@ -1023,7 +1027,10 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 @property (nonatomic) BOOL visible;
 @property (nonatomic) NSUInteger generation;
 @property (nonatomic) BOOL revealInFlight;
-@property (nonatomic) BOOL revealAttemptedAtTop;
+// The reveal is armed only by a PROGRAMMATIC route to the top rest (see
+// NSBArmReveal) and consumed by the one attempt it permits; a user gesture
+// disarms it. A collapsed palette the user scrolled to is theirs to keep.
+@property (nonatomic) BOOL revealArmed;
 @property (nonatomic) BOOL revealCheckPending;
 @property (nonatomic) BOOL revealAfterRefreshPending;
 // Notes that outlive an appearance, so NSBInvalidateRestingSearch leaves them
@@ -1034,6 +1041,15 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // does, when the transition into the feed was cancelled).
 @property (nonatomic) BOOL leftAtTop;
 @property (nonatomic) BOOL reappearanceHold;
+// The counterpart note: the list left resting at the collapsed rest with the
+// bar scrolled away (the user's doing). Consumed by the next viewWillAppear
+// into keepCollapsedOnAppear, which holds for that appearance: no hold, and
+// no appearance-driven reveal, so the screen comes back the way it was left.
+// Without it a round trip (swipe back to the subreddit list, forward again)
+// brought the bar back whenever the list had stopped exactly where the bar
+// hid, while a list scrolled a little further came back untouched.
+@property (nonatomic) BOOL leftCollapsedAtRest;
+@property (nonatomic) BOOL keepCollapsedOnAppear;
 // The palette's fully expanded height, learned from settled observations (60pt
 // on an iPhone). A refresh that ends on a full reload can leave the palette
 // parked PART way collapsed with the list resting flush under it — the same
@@ -1041,6 +1057,12 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // tells that state apart from a revealed one.
 @property (nonatomic) CGFloat paletteFullHeight;
 @property (nonatomic) CGFloat paletteFullWidth;   // the width that height was learned at (a rotation relearns)
+// The drag in progress began at the collapsed rest with the bar scrolled away
+// (set at pan begin, consumed when the drag ends): a release that is still
+// pulled down then opens the bar instead of snapping shut. pullRestOffset is
+// the offset the drag started from.
+@property (nonatomic) BOOL pullFromCollapsedRest;
+@property (nonatomic) CGFloat pullRestOffset;
 @end
 @implementation ApolloNativeSearchRestingState
 @end
@@ -1072,7 +1094,7 @@ static void NSBInvalidateRestingSearch(UIViewController *vc) {
     state.generation++;
     state.revealCheckPending = NO;
     state.revealAfterRefreshPending = NO;
-    state.revealAttemptedAtTop = NO;
+    state.revealArmed = NO;
     BOOL wasRevealing = state.revealInFlight;
     state.revealInFlight = NO;
     // End only our own temporary reveal, before the appearance callback lets
@@ -1100,6 +1122,55 @@ static void NSBApplyScrollAwayPolicy(UIViewController *vc, UIScrollView *table) 
 // rest with the bar away, expand and re-anchor it in one layout transaction.
 // Restore the scroll-away policy before returning to the run loop, so a new
 // drag can never cache a non-collapsible search bar.
+// MARK: - Who brought the list to the top?
+//
+// Resting at the top with the palette collapsed means two very different
+// things. Reached by the USER — a drag that stops exactly where the bar has
+// just scrolled away, or a flick UIKit's own collapse tracking settles there —
+// it is the state every scroll-away search bar in iOS rests in, and the bar
+// comes back with a pull, the way it does everywhere else. Reached by CODE —
+// Apollo's tab-bar scroll-to-top, a jump to the first comment, a refresh that
+// ends on a reload, a re-appearance — it is a dead end that nothing but another
+// pull can leave, and the reveal below repairs it.
+//
+// The repair used to fire on every arrival at the rest regardless of who made
+// it, which was #1138: stop a drag right where the bar disappears and it
+// sprang back open (UIKit's settling animation lands on the rest a beat after
+// the finger lifts, with neither isDragging nor isDecelerating set), and a
+// list resting a couple of points past the collapsed rest re-opened the bar on
+// the next unrelated offset write — collapsing a comment was enough.
+//
+// So the reveal is now ARMED by the programmatic routes to the top, and only
+// by them, and a user gesture on the list disarms it. Each arm permits one
+// attempt; the async check consumes it once the list has settled.
+static void NSBArmReveal(UIScrollView *table, const char *why) {
+    if (!table || objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(NSBFeedVCForView(table));
+    if (!state || state.revealInFlight) return;
+    if (!state.revealArmed && NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] reveal armed (%s): y=%.1f adjTop=%.1f", why,
+                  table.contentOffset.y, table.adjustedContentInset.top);
+    }
+    state.revealArmed = YES;
+}
+
+static void NSBDisarmReveal(UIScrollView *table, const char *why) {
+    if (!table || objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(NSBFeedVCForView(table));
+    if (!state || !state.revealArmed) return;
+    state.revealArmed = NO;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] reveal disarmed (%s): y=%.1f adjTop=%.1f", why,
+                  table.contentOffset.y, table.adjustedContentInset.top);
+    }
+}
+
+// The user's finger, or the momentum it left behind, is moving the list:
+// UIKit's collapse tracking owns the palette and decides where it settles.
+static BOOL NSBUserIsScrolling(UIScrollView *table) {
+    return table.isDragging || table.isTracking || table.isDecelerating;
+}
+
 // Poll a live refresh out and then re-run the reveal check. Bounded so a stuck
 // refresh cannot keep this alive forever.
 static void NSBScheduleRevealCheck(UIScrollView *table);
@@ -1124,6 +1195,36 @@ static void NSBRecheckRevealAfterRefresh(UIViewController *vc, UIScrollView *tab
             return;
         }
         state.revealAfterRefreshPending = NO;
+        // A refresh ending on a full reload can leave the palette parked
+        // collapsed (or part way) with the list flush beneath it — the dead
+        // end this exists for, reached by code, not by the finger that
+        // started the refresh.
+        NSBArmReveal(sv, "refresh ended");
+        NSBScheduleRevealCheck(sv);
+    });
+}
+
+// A programmatic scroll (setContentOffset:animated:) reaches the rest only when
+// its animation ends, and the last frame's write can be checked while UIKit
+// still counts the animation as running. Look again shortly, a bounded number
+// of times, rather than spinning on the run loop.
+static void NSBRecheckRevealAfterAnimation(UIViewController *vc, UIScrollView *table,
+                                          NSUInteger generation, NSUInteger attempt) {
+    if (attempt >= 40) return;   // ~2s: an animation that long is not a scroll to the top
+    __weak UIViewController *weakVC = vc;
+    __weak UIScrollView *weakTable = table;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *strongVC = weakVC;
+        UIScrollView *sv = weakTable;
+        ApolloNativeSearchRestingState *state = NSBRestingStateForVC(strongVC);
+        if (!sv || !state || state.generation != generation || !state.revealArmed) return;
+        if (@available(iOS 17.4, *)) {
+            if (sv.isScrollAnimating) {
+                NSBRecheckRevealAfterAnimation(strongVC, sv, generation, attempt + 1);
+                return;
+            }
+        }
         NSBScheduleRevealCheck(sv);
     });
 }
@@ -1131,8 +1232,8 @@ static void NSBRecheckRevealAfterRefresh(UIViewController *vc, UIScrollView *tab
 static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table) {
     if (!NSBHasSettledFeedGeometry(vc, table)) return;
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
-    if (state.revealInFlight || state.revealAttemptedAtTop || sNSBDismissWindow) return;
-    if (table.isDragging || table.isDecelerating || table.isTracking) return;
+    if (state.revealInFlight || sNSBDismissWindow) return;
+    if (NSBUserIsScrolling(table)) return;
     UINavigationItem *navItem = vc.navigationItem;
     UISearchController *sc = navItem.searchController;
     if (!sc || sc.active || !navItem.hidesSearchBarWhenScrolling) return;
@@ -1163,9 +1264,26 @@ static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table)
     if (barHeight > state.paletteFullHeight && barHeight < 100.0) state.paletteFullHeight = barHeight;
     BOOL revealed = barHeight > 1.0 &&
                     (state.paletteFullHeight <= 1.0 || barHeight >= state.paletteFullHeight - 1.0);
+    if (!state.revealArmed) return;   // the user left it like this (NSBArmReveal)
+    // A programmatic scroll still animating has not settled: the arm survives
+    // and the check comes back once the animation is over. (UIKit's own
+    // palette settle after a drag is a scroll animation too, but a drag has
+    // already disarmed the reveal by the time it runs.)
+    if (@available(iOS 17.4, *)) {
+        if (table.isScrollAnimating) {
+            NSBRecheckRevealAfterAnimation(vc, table, state.generation, 0);
+            return;
+        }
+    }
+    // One attempt per arm, whether or not it turns out to be needed.
+    state.revealArmed = NO;
     if (revealed) return;                                              // already revealed
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] reveal at top rest: y=%.1f adjTop=%.1f bar=%.1f/%.1f",
+                  table.contentOffset.y, table.adjustedContentInset.top, barHeight,
+                  state.paletteFullHeight);
+    }
     state.revealInFlight = YES;
-    state.revealAttemptedAtTop = YES;
     // A delayed policy restore kept the bar non-collapsible through the next
     // drag; a delayed offset correction exposed the collapsed frame on cancel.
     // Flush UIKit's expanded inset before re-anchoring, then re-enable collapse
@@ -1182,10 +1300,17 @@ static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table)
     state.revealInFlight = NO;
 }
 
+void ApolloNativeFeedSearchWillScrollToTop(UIScrollView *scrollView) {
+    if (!ApolloNativeFeedSearchEnabled() || !scrollView) return;
+    if (NSBUserIsScrolling(scrollView)) return;
+    NSBArmReveal(scrollView, "scroll-to-top jump");
+}
+
 void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
     if (!ApolloNativeFeedSearchEnabled() || !vc || !NSBIsNativeSearchVC(vc)) return;
     UIScrollView *table = NSBTableForVC(vc);
     if (!NSBHasSettledFeedGeometry(vc, table)) return;
+    if (NSBRestingStateForVC(vc).keepCollapsedOnAppear) return;   // left with the bar away: keep it
     // completeTransition: restores the item stack before UIKit's next layout
     // collapses the returned search. Flush that layout and repair in the same
     // transaction, while the presentation still has the pre-cancel geometry.
@@ -1193,6 +1318,7 @@ void ApolloNativeFeedSearchRestoreCancelledNavigation(UIViewController *vc) {
         UIView *navigationView = vc.navigationController.view;
         [navigationView setNeedsLayout];
         [navigationView layoutIfNeeded];
+        NSBArmReveal(table, "cancelled navigation");
         NSBEnsureBarRevealedAtTop(vc, table);
     }];
 }
@@ -1208,13 +1334,12 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     UIViewController *vc = NSBFeedVCForView(table);
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
     if (!state.visible || state.revealCheckPending || state.revealInFlight) return;
-    // One repair per arrival at the top, not one per layout pass if UIKit
-    // declines the reveal. New scrolling permits another recovery at its end.
-    if (table.isDragging || table.isTracking ||
-        fabs(table.contentOffset.y + table.adjustedContentInset.top) > 2.0) {
-        state.revealAttemptedAtTop = NO;
+    // The user has the list: wherever their gesture leaves the palette is
+    // where it stays (NSBArmReveal). A live drag reveals on its own anyway.
+    if (NSBUserIsScrolling(table)) {
+        NSBDisarmReveal(table, "user scrolling");
+        return;
     }
-    if (table.isDragging || table.isTracking) return; // a live drag reveals on its own
     NSUInteger generation = state.generation;
     // A refresh in flight holds the feed above its rest and owns the band the
     // palette would expand into, so the reveal has to wait it out — but it must
@@ -1237,7 +1362,11 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         if (!currentState || currentState.generation != generation) return;
         currentState.revealCheckPending = NO;
         UIScrollView *sv = weakTable;
-        if (!sv || sv.isDecelerating || sv.isDragging || sv.isTracking) return;
+        if (!sv) return;
+        if (NSBUserIsScrolling(sv)) {
+            NSBDisarmReveal(sv, "user scrolling at check");
+            return;
+        }
         NSBApplyScrollAwayPolicy(strongVC, sv);
         NSBEnsureBarRevealedAtTop(strongVC, sv);
     });
@@ -1256,10 +1385,22 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // once the view is off-screen its safe area — and so the adjusted inset
     // the rest is measured against — is no longer trustworthy. Feeds and the
     // comments screen alike.
+    // "At the top" is the REVEALED top: resting at the collapsed rest with the
+    // bar scrolled away is the user's arrangement and is noted separately so
+    // the re-appearance keeps it (leftCollapsedAtRest).
     ApolloNativeSearchRestingState *leavingState = NSBRestingStateForVC(vc);
     UIScrollView *leavingTable = NSBTableForVC(vc);
-    leavingState.leftAtTop = leavingTable &&
+    BOOL leavingAtRest = leavingTable &&
         leavingTable.contentOffset.y <= -leavingTable.adjustedContentInset.top + 2.0;
+    BOOL leavingRevealed = CGRectGetHeight([vc navigationItem].searchController.searchBar.bounds) > 1.0;
+    leavingState.leftAtTop = leavingAtRest && leavingRevealed;
+    leavingState.leftCollapsedAtRest = leavingAtRest && !leavingRevealed;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] leaving: y=%.1f adjTop=%.1f bar=%.1f -> leftAtTop=%d leftCollapsedAtRest=%d",
+                  leavingTable.contentOffset.y, leavingTable.adjustedContentInset.top,
+                  CGRectGetHeight([vc navigationItem].searchController.searchBar.bounds),
+                  (int)leavingState.leftAtTop, (int)leavingState.leftCollapsedAtRest);
+    }
     if (leavingState.reappearanceHold) {
         // Still held here means viewDidAppear never ran (a cancelled
         // interactive pop or forward swipe into this screen): put the scroll-away
@@ -1315,6 +1456,13 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     ApolloNativeSearchRestingState *reappearState = NSBRestingStateForVC((UIViewController *)self);
     BOOL leftAtTop = reappearState.leftAtTop;
     reappearState.leftAtTop = NO;
+    // One-shot as well: a list that left with the bar scrolled away comes back
+    // that way (viewDidAppear skips the appearance reveal for this appearance).
+    reappearState.keepCollapsedOnAppear = reappearState.leftCollapsedAtRest;
+    reappearState.leftCollapsedAtRest = NO;
+    if (reappearState.keepCollapsedOnAppear && NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] re-appearance: left at the collapsed rest, keeping the bar away");
+    }
     UISearchController *reappearSC = navItem.searchController;
     if (reappearSC && !reappearSC.active && navItem.hidesSearchBarWhenScrolling &&
         leftAtTop && !sNSBDismissWindow) {
@@ -1370,7 +1518,9 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     if (!navItem.searchController) return;
     // Cancellation sends didAppear from inside completeTransition:, before
     // UIKit finishes restoring the palette. Read its geometry next turn.
-    NSBScheduleRevealCheck(NSBTableForVC((UIViewController *)self));
+    UIScrollView *appearedTable = NSBTableForVC((UIViewController *)self);
+    if (!appearedState.keepCollapsedOnAppear) NSBArmReveal(appearedTable, "appeared");
+    NSBScheduleRevealCheck(appearedTable);
     // Safety net for the return-to-live-query path: if Apollo's search-active
     // layout hid the nav bar before the guard armed, put it back.
     UINavigationBar *nav = [(UIViewController *)self navigationController].navigationBar;
@@ -1535,6 +1685,9 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
                 } else {
                     // Use Apollo's table-node entry point, as its native handler
                     // does, with the same full inset used by the predicate.
+                    // The user asked for the top of the feed: the bar comes
+                    // with it (NSBArmReveal).
+                    NSBArmReveal(table, "Posts re-tap");
                     id tableNode = ApolloNSBObjectIvar(feed, "tableNode");
                     ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(tableNode,
                         @selector(setContentOffset:animated:), CGPointMake(0.0, -topInset), YES);
@@ -1587,6 +1740,23 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 - (void)apollo_nativeSearchPanBegan:(UIPanGestureRecognizer *)pan {
     if (pan.state != UIGestureRecognizerStateBegan || !ApolloNativeFeedSearchEnabled()) return;
     UIScrollView *table = (UIScrollView *)self;
+    // The finger is down: whatever the palette does from here is the user's.
+    NSBDisarmReveal(table, "pan began");
+    // Note a drag that starts at the collapsed rest with the bar away, for the
+    // release retarget below (NSBPaletteSnap).
+    UIViewController *vc = NSBFeedVCForView((UIView *)self);
+    ApolloNativeSearchRestingState *state = vc ? NSBRestingStateForVC(vc) : nil;
+    if (state) {
+        UINavigationItem *navItem = vc.navigationItem;
+        UISearchController *sc = navItem.searchController;
+        BOOL atRest = fabs(table.contentOffset.y + table.adjustedContentInset.top) < 2.0;
+        BOOL barAway = CGRectGetHeight(sc.searchBar.bounds) <= 1.0;
+        state.pullFromCollapsedRest = sc && !sc.active && navItem.hidesSearchBarWhenScrolling && atRest && barAway;
+        state.pullRestOffset = table.contentOffset.y;
+        if (NSBTraceEnabled() && state.pullFromCollapsedRest) {
+            ApolloLog(@"[NSBTrace] drag began at the collapsed rest: y=%.1f", table.contentOffset.y);
+        }
+    }
     if (@available(iOS 17.4, *)) {
         if (table.isScrollAnimating) {
             // UIKit's search-palette settling animation can outlive the old
@@ -1631,10 +1801,14 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 - (void)setContentOffset:(CGPoint)offset {
     UIScrollView *sv = (UIScrollView *)self;
     if (ApolloNativeFeedSearchEnabled()) NSBScheduleRevealCheck(sv);
-    if (ApolloNativeFeedSearchEnabled() && NSBRetargetApolloTopPark(sv, &offset.y) &&
-        NSBTraceEnabled()) {
-        ApolloLog(@"[NSBTrace] retarget offset -> %.1f (inTop=%.1f adjTop=%.1f)",
-                  offset.y, sv.contentInset.top, sv.adjustedContentInset.top);
+    if (ApolloNativeFeedSearchEnabled() && NSBRetargetApolloTopPark(sv, &offset.y)) {
+        // A settled park on Apollo's idea of the top is code asking for the
+        // top of the feed; the bar belongs with it.
+        NSBArmReveal(sv, "top park (offset)");
+        if (NSBTraceEnabled()) {
+            ApolloLog(@"[NSBTrace] retarget offset -> %.1f (inTop=%.1f adjTop=%.1f)",
+                      offset.y, sv.contentInset.top, sv.adjustedContentInset.top);
+        }
     }
     // The user grabbing the feed ends the dismiss window (fallback for a drag
     // the will-begin-dragging notification did not announce).
@@ -1702,10 +1876,12 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
                   bounds.origin.y, CGRectGetHeight(tbar.bounds), sv.safeAreaInsets.top,
                   sv.adjustedContentInset.top, sv.contentInset.top, (int)sv.isDragging);
     }
-    if (ApolloNativeFeedSearchEnabled() && NSBRetargetApolloTopPark(sv, &bounds.origin.y) &&
-        NSBTraceEnabled()) {
-        ApolloLog(@"[NSBTrace] retarget bounds -> %.1f (inTop=%.1f adjTop=%.1f)",
-                  bounds.origin.y, sv.contentInset.top, sv.adjustedContentInset.top);
+    if (ApolloNativeFeedSearchEnabled() && NSBRetargetApolloTopPark(sv, &bounds.origin.y)) {
+        NSBArmReveal(sv, "top park (bounds)");
+        if (NSBTraceEnabled()) {
+            ApolloLog(@"[NSBTrace] retarget bounds -> %.1f (inTop=%.1f adjTop=%.1f)",
+                      bounds.origin.y, sv.contentInset.top, sv.adjustedContentInset.top);
+        }
     }
     if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
         sv == sNSBSessionTable && sv.isDragging) {
@@ -1830,6 +2006,22 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
         ApolloLog(@"[NSBTrace] retarget animated -> %.1f (inTop=%.1f adjTop=%.1f)",
                   offset.y, self.contentInset.top, self.adjustedContentInset.top);
     }
+    // An animated scroll aimed EXACTLY at the top rest of a managed list is
+    // code asking for the top — the status-bar tap, a scroll-to-top of
+    // Apollo's own (its tab-bar one is armed at the source, above) — so arm
+    // the reveal to bring the bar with it; it resolves once the animation has
+    // settled. Exactly, not "within reach": Apollo's comment collapse keeps
+    // the thread in place with an animated scroll whose target is the content
+    // clamp, and on a short thread that clamp lands a couple of points shy of
+    // the rest — a content correction, not a request for the top (#1138's
+    // second symptom). Never for a gesture in flight: UIKit routes its own
+    // palette settle through here too.
+    if (ApolloNativeFeedSearchEnabled() && animated &&
+        objc_getAssociatedObject(self, kNSBFeedTableKey) != nil &&
+        !NSBUserIsScrolling((UIScrollView *)self) &&
+        fabs(offset.y + self.adjustedContentInset.top) < 0.5) {
+        NSBArmReveal((UIScrollView *)self, "animated scroll to top");
+    }
     if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
         (UIScrollView *)self == sNSBSessionTable &&
         !self.isDragging && !self.isTracking) {
@@ -1849,6 +2041,232 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 }
 
 %end
+
+// MARK: - iOS 27: the cancel button's entrance, drawn by the module
+//
+// Activating a nav-bar-hosted search bar runs UIKit's search presentation
+// transition: the field shrinks and the cancel button slides in from the
+// trailing edge while fading up. On iOS 26 that is what shows. On iOS 27 the
+// button's layer animates exactly the same way (sampled every 33ms: opacity
+// 0 -> 1, x 386 -> 342) but nothing of it is composited until the transition
+// completes, so the X pops in fully formed once the field has settled — on
+// Home and in comments, in every header style, with UIKit's glass button and
+// with a plain filled one alike. Nothing the module does to that button
+// changes it (un-hiding it early, re-driving its alpha, swapping its
+// configuration were all tried), so on iOS 27 the entrance is drawn by a
+// stand-in instead: a button built from UIKit's own configuration, added to
+// the navigation bar above the search bar (outside the container whose
+// layout the transition freezes) at the parked slot when the transition is
+// prepared, moved to the final slot inside UIKit's animation block so it
+// keeps UIKit's timing and curve, and removed when the transition completes
+// or is cancelled — by then UIKit's button is on screen in the same place.
+// For the bars this module attaches and for any other navigation-bar-hosted
+// search bar that keeps the navigation bar up while searching (the Settings
+// search, ApolloSettingsSearch.m — same transition, same gap); only on iOS 27.
+@interface _UISearchBarVisualProviderIOS : NSObject
+- (UISearchBar *)searchBar;
+@end
+
+static const NSInteger kNSBSearchLayoutStateSearching = 3;   // _UISearchBarLayoutState searching
+static const void *kNSBCancelStandInKey = &kNSBCancelStandInKey;   // UISearchBar -> stand-in button
+
+static UINavigationBar *NSBNavigationBarHosting(UIView *view) {
+    UIView *v = view.superview;
+    while (v && ![v isKindOfClass:UINavigationBar.class]) v = v.superview;
+    return (UINavigationBar *)v;
+}
+
+// A bar whose cancel entrance the module draws: one this module attaches, or
+// a navigation item's search bar whose controller keeps the navigation bar
+// during the presentation (the Settings search). A controller that hides the
+// bar runs a different transition — the whole bar moves — and is left to
+// UIKit.
+static BOOL NSBWantsCancelStandIn(UISearchBar *bar) {
+    if (objc_getAssociatedObject(bar, kNSBNativeBarKey)) return YES;
+    UISearchController *controller = NSBNavigationBarHosting(bar).topItem.searchController;
+    return controller != nil && controller.searchBar == bar && !controller.hidesNavigationBarDuringPresentation;
+}
+
+static void NSBRemoveCancelStandIn(UISearchBar *bar, const char *why) {
+    UIButton *standIn = objc_getAssociatedObject(bar, kNSBCancelStandInKey);
+    if (!standIn) return;
+    objc_setAssociatedObject(bar, kNSBCancelStandInKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [standIn removeFromSuperview];
+    if (NSBTraceEnabled()) ApolloLog(@"[NSBTrace] cancel stand-in removed (%s)", why);
+}
+
+// The fill the search field actually shows: the theme runtime paints its own
+// opaque pill over UIKit's material (ApolloThemeRuntime.xm), and UIKit's
+// cancel button takes the field's material too, so a stand-in filled with that
+// pill colour hands over to UIKit's button without a visible change. Without
+// a pill (stock look) the nearest is a glass capsule.
+static UIButton *NSBMakeCancelStandIn(UIButton *original, UISearchBar *bar) {
+    // Same glyph as UIKit's button, label-coloured like it, on the stock glass
+    // look. Not UIKit's own material: its button carries the search field's
+    // dynamic background, and that material is exactly what the transition
+    // does not composite — a stand-in given the same material (via the
+    // private configuration call) vanished with it, while a plain view in the
+    // same place showed. Not the theme's pill colour either: UIKit's button
+    // keeps the stock material whatever the theme paints on the field, so a
+    // stand-in sampled from the field matched the field and not the button,
+    // and the glass "bubble" only arrived with UIKit's button when the
+    // transition ended (icpryde, dark custom theme). The glass configuration
+    // measures within 0.1–0.4 luma of the settled button in dark and light
+    // custom themes and under Blur and Hard; prominent glass is far brighter.
+    if (@available(iOS 26.0, *)) {
+        UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
+        configuration.image = original.configuration.image ?: [original imageForState:UIControlStateNormal];
+        configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        configuration.baseForegroundColor = UIColor.labelColor;
+        configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+        UIButton *standIn = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+        standIn.userInteractionEnabled = NO;    // the real button underneath takes the tap
+        standIn.accessibilityElementsHidden = YES;
+        return standIn;
+    }
+    return nil;
+}
+
+%group NSBCancelStandIn
+%hook _UISearchBarVisualProviderIOS
+
+- (void)prepareForTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    if (!ApolloNativeFeedSearchEnabled()) return;
+    UISearchBar *bar = [self searchBar];
+    if (!bar || !NSBWantsCancelStandIn(bar)) return;
+    NSBRemoveCancelStandIn(bar, "new transition");
+    if (state != kNSBSearchLayoutStateSearching) return;
+    UIButton *button = MSHookIvar<UIButton *>(self, "_cancelButton");
+    UINavigationBar *navBar = NSBNavigationBarHosting(bar);
+    if (!button || !button.superview || !navBar) return;
+    UIButton *standIn = NSBMakeCancelStandIn(button, bar);
+    if (!standIn) return;
+    // The resting layout has just been applied: the button sits parked past
+    // the trailing edge, where the entrance starts.
+    standIn.frame = [button.superview convertRect:button.frame toView:navBar];
+    standIn.alpha = 0.0;
+    [navBar addSubview:standIn];
+    objc_setAssociatedObject(bar, kNSBCancelStandInKey, standIn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] cancel stand-in parked at %@", NSStringFromCGRect(standIn.frame));
+    }
+}
+
+- (void)animateTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    if (state != kNSBSearchLayoutStateSearching) return;
+    UISearchBar *bar = [self searchBar];
+    UIButton *standIn = bar ? objc_getAssociatedObject(bar, kNSBCancelStandInKey) : nil;
+    UIButton *button = standIn ? MSHookIvar<UIButton *>(self, "_cancelButton") : nil;
+    if (!standIn || !button.superview || !standIn.superview) return;
+    // Called inside the transition's animation block, after the searching
+    // layout has been applied: the button's model frame is its final slot.
+    // The glass background does not ride a frame animation — UIKit places it
+    // from the model frame — so animating the frame parked the bubble at the
+    // final slot while the glyph slid into it from the bottom right. Lay the
+    // stand-in out at its final frame without animation and slide it in with
+    // a transform instead, so bubble and glyph move as one piece.
+    CGRect finalFrame = [button.superview convertRect:button.frame toView:standIn.superview];
+    CGRect parked = standIn.frame;
+    [UIView performWithoutAnimation:^{
+        standIn.frame = finalFrame;
+        standIn.transform = CGAffineTransformMakeTranslation(CGRectGetMinX(parked) - CGRectGetMinX(finalFrame),
+                                                             CGRectGetMinY(parked) - CGRectGetMinY(finalFrame));
+        [standIn layoutIfNeeded];
+    }];
+    standIn.transform = CGAffineTransformIdentity;
+    standIn.alpha = 1.0;
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] cancel stand-in animating to %@ (in animation block: %d)",
+                  NSStringFromCGRect(standIn.frame), (int)[UIView areAnimationsEnabled]);
+    }
+}
+
+- (void)completeTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    UISearchBar *bar = [self searchBar];
+    if (bar) NSBRemoveCancelStandIn(bar, "transition complete");
+}
+
+- (void)cancelTransitionToSearchLayoutState:(NSInteger)state {
+    %orig;
+    UISearchBar *bar = [self searchBar];
+    if (bar) NSBRemoveCancelStandIn(bar, "transition cancelled");
+}
+
+%end
+%end
+
+static __attribute__((constructor)) void NSBCancelStandInInstall(void) {
+    if (@available(iOS 27.0, *)) {
+        Class provider = objc_getClass("_UISearchBarVisualProviderIOS");
+        if (provider && class_getInstanceMethod(provider, @selector(prepareForTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(animateTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(completeTransitionToSearchLayoutState:)) &&
+            class_getInstanceMethod(provider, @selector(cancelTransitionToSearchLayoutState:)) &&
+            class_getInstanceVariable(provider, "_cancelButton")) {
+            %init(NSBCancelStandIn, _UISearchBarVisualProviderIOS = provider);
+            ApolloLog(@"[NativeSearch] cancel stand-in hooks installed (iOS 27)");
+        } else {
+            ApolloLog(@"[NativeSearch] cancel stand-in hooks NOT installed: provider/selectors/ivar missing");
+        }
+    }
+}
+
+// MARK: - A pull at the collapsed rest opens the bar
+//
+// UIKit snaps a released palette to the nearer of its two rests (the midpoint
+// rule in -_scrollOffsetRetargettedToDetentOffsetIfNecessary:...), so a short
+// pull down at the collapsed rest peeks the top of the field and then snaps it
+// away again. That reads as a glitch, and before this branch the module hid it
+// by re-expanding the bar after the snap (peek, snap shut, snap open). Retarget
+// the release instead: a drag that began at the collapsed rest with the bar
+// away and is still pulled down when the finger lifts ends at the revealed
+// rest, so the peek continues into the open bar in one motion. Anything else
+// (a drag that started elsewhere, a pull that went back past the rest, a
+// release already headed for the revealed rest) is left to UIKit.
+%group NSBPaletteSnap
+%hook UINavigationController
+
+- (void)_observeScrollView:(UIScrollView *)scrollView willEndDraggingWithVelocity:(CGPoint)velocity
+      targetContentOffset:(CGPoint *)targetContentOffset unclampedOriginalTarget:(CGPoint)unclampedTarget {
+    %orig;
+    if (!targetContentOffset || !ApolloNativeFeedSearchEnabled() ||
+        objc_getAssociatedObject(scrollView, kNSBFeedTableKey) == nil) return;
+    UIViewController *vc = NSBFeedVCForView(scrollView);
+    ApolloNativeSearchRestingState *state = vc ? NSBRestingStateForVC(vc) : nil;
+    if (!state || !state.pullFromCollapsedRest) return;
+    state.pullFromCollapsedRest = NO;
+    CGFloat y = scrollView.contentOffset.y;
+    if (y >= state.pullRestOffset - 0.5) return;               // not pulled past the collapsed rest
+    SEL detentsSel = NSSelectorFromString(@"_scrollDetentOffsetsForScrollView:");
+    if (![self respondsToSelector:detentsSel]) return;
+    NSArray<NSNumber *> *detents = ((id (*)(id, SEL, id))objc_msgSend)(self, detentsSel, scrollView);
+    if (![detents isKindOfClass:NSArray.class] || detents.count < 2) return;
+    NSNumber *revealed = [detents valueForKeyPath:@"@min.self"];
+    if (!revealed || targetContentOffset->y <= revealed.doubleValue + 0.5) return;   // already opening
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] pull at the collapsed rest: y=%.1f target %.1f -> %.1f (detents %@)",
+                  y, targetContentOffset->y, revealed.doubleValue, detents);
+    }
+    targetContentOffset->y = revealed.doubleValue;
+}
+
+%end
+%end
+
+// Installed from its own constructor (the selector is private, so its
+// presence is checked first) rather than from the module's %ctor below.
+static __attribute__((constructor)) void NSBPaletteSnapInstall(void) {
+    if (class_getInstanceMethod(UINavigationController.class,
+            @selector(_observeScrollView:willEndDraggingWithVelocity:targetContentOffset:unclampedOriginalTarget:))) {
+        %init(NSBPaletteSnap);
+        ApolloLog(@"[NativeSearch] palette snap hook installed");
+    } else {
+        ApolloLog(@"[NativeSearch] palette snap hook NOT installed: selector missing");
+    }
+}
 
 %ctor {
     %init;

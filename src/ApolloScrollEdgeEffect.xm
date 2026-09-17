@@ -203,7 +203,109 @@ static void ApolloNudgeViewTree(UIView *view) {
     }
 }
 
+// MARK: - Hard: room above a nav-bar-hosted search field
+//
+// Under the Hard header style UIKit paints the navigation bar's title row as
+// a solid band with a hard bottom edge. A search bar hosted in the bar sits in
+// its own 54pt row below that band (the search bar registers its own scroll
+// pocket, so the band stops above it), and UIKit lays its 44pt field out flush
+// with the top of that row (0pt above it on iOS 27, 1pt on iOS 26): the hard
+// edge lands exactly on the top of the field and the field reads as cut off
+// (reported with #1138; Soft and Blur have no edge there, so the same geometry
+// looks padded). The row's height is the bar's to decide — a taller natural
+// height, intrinsic size or palette preferredHeight is ignored by the iOS 26
+// bar — so the room has to come from inside the row: centre the field in it,
+// splitting the row's slack (10pt on iOS 27, 16pt on iOS 26) evenly above and
+// below instead of leaving it all at the bottom, through UISearchBar's
+// edge-specific content inset override (the SPI UIKit provides for exactly
+// this; the field keeps its height). Even, not "as much as possible on top":
+// the slack is small, and a field pushed down until it nearly touches the
+// content looked just as cramped from the other side. The split is computed
+// from the insets UIKit itself resolved for the hosted bar, read while no
+// override is active, so each OS keeps its own row.
+//
+// Timing: the bar's visual provider zeroes its private insets in -prepare
+// (and the navigation bar drives the effective-inset recomputation), so an
+// override written when the search controller is created is gone by the time
+// the bar is hosted. It is applied once the bar is in a window — from the
+// UISearchBar didMoveToWindow hook ApolloThemeRuntime.xm already owns — and
+// re-applied live when the style changes; every other style hands the insets
+// back to UIKit (an empty edge mask). Applied to every nav-bar search bar the
+// tweak installs: feed and comments through the native search attach, Settings
+// through its own, and the Giphy / theme gallery / AI models / Recently Read
+// screens.
+static NSHashTable<UISearchBar *> *sApolloHeaderStyleSearchBars;
+static char kApolloHeaderStyleSearchBarBaseInsetKey;   // NSValue(UIEdgeInsets): UIKit's own insets
+
+static void ApolloHeaderStyleApplySearchBarInsets(UISearchBar *searchBar) {
+    SEL overrideSelector = NSSelectorFromString(@"_setOverrideContentInsets:forRectEdges:");
+    SEL querySelector = NSSelectorFromString(@"_getOverrideContentInsets:overriddenEdges:");
+    SEL effectiveSelector = NSSelectorFromString(@"_effectiveContentInset");
+    SEL refreshSelector = NSSelectorFromString(@"_updateEffectiveContentInset");
+    if (!searchBar || ![searchBar respondsToSelector:overrideSelector] ||
+        ![searchBar respondsToSelector:querySelector] ||
+        ![searchBar respondsToSelector:effectiveSelector]) return;
+    BOOL hard = IsLiquidGlass() && ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleHard;
+
+    // UIKit's own insets are only readable while nothing overrides them; keep
+    // the last such reading as the base the shift is applied to.
+    UIEdgeInsets current = UIEdgeInsetsZero;
+    NSUInteger overridden = 0;
+    ((void (*)(id, SEL, UIEdgeInsets *, NSUInteger *))objc_msgSend)(searchBar, querySelector, &current, &overridden);
+    if (overridden == 0) {
+        UIEdgeInsets effective = ((UIEdgeInsets (*)(id, SEL))objc_msgSend)(searchBar, effectiveSelector);
+        objc_setAssociatedObject(searchBar, &kApolloHeaderStyleSearchBarBaseInsetKey,
+                                 [NSValue valueWithUIEdgeInsets:effective], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSValue *baseValue = objc_getAssociatedObject(searchBar, &kApolloHeaderStyleSearchBarBaseInsetKey);
+    if (hard && !baseValue) return;   // nothing measured yet; the window arrival will
+    UIEdgeInsets base = baseValue ? baseValue.UIEdgeInsetsValue : UIEdgeInsetsZero;
+
+    UIEdgeInsets insets = UIEdgeInsetsZero;
+    NSUInteger edges = UIRectEdgeNone;   // no edge overridden: UIKit's own insets again
+    if (hard) {
+        CGFloat slack = MAX(0.0, base.top) + MAX(0.0, base.bottom);
+        CGFloat top = round(slack);          // whole points: even split, any odd point below
+        top = floor(top / 2.0);
+        insets = UIEdgeInsetsMake(top, 0.0, slack - top, 0.0);
+        edges = UIRectEdgeTop | UIRectEdgeBottom;
+    }
+    if (overridden == edges && (edges == UIRectEdgeNone ||
+                                (fabs(current.top - insets.top) < 0.01 && fabs(current.bottom - insets.bottom) < 0.01))) {
+        return;   // already in place
+    }
+    ((void (*)(id, SEL, UIEdgeInsets, NSUInteger))objc_msgSend)(searchBar, overrideSelector, insets, edges);
+    // The provider stores the override; the navigation bar normally asks for
+    // the recomputation, so ask for it here to take effect on this layout.
+    if ([searchBar respondsToSelector:refreshSelector]) {
+        ((void (*)(id, SEL))objc_msgSend)(searchBar, refreshSelector);
+    }
+    [searchBar setNeedsLayout];
+    ApolloLog(@"[HeaderStyle] search field insets %@: base=(%.1f,%.1f) -> (%.1f,%.1f) edges=%lu on %@",
+              hard ? @"centred for Hard" : @"restored", base.top, base.bottom,
+              hard ? insets.top : base.top, hard ? insets.bottom : base.bottom,
+              (unsigned long)edges, searchBar.placeholder ?: @"");
+}
+
+void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar) {
+    if (!searchBar || !IsLiquidGlass()) return;
+    if (!sApolloHeaderStyleSearchBars) sApolloHeaderStyleSearchBars = [NSHashTable weakObjectsHashTable];
+    [sApolloHeaderStyleSearchBars addObject:searchBar];
+    if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
+}
+
+void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar) {
+    if (!searchBar.window || !IsLiquidGlass()) return;
+    if (![sApolloHeaderStyleSearchBars containsObject:searchBar]) return;
+    ApolloHeaderStyleApplySearchBarInsets(searchBar);
+}
+
 static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
+    // Registered bars on screen first; the ones off screen pick the style up
+    // when they next enter a window.
+    for (UISearchBar *searchBar in sApolloHeaderStyleSearchBars) {
+        if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
+    }
     for (UIWindow *window in UIApplication.sharedApplication.windows) {
         ApolloApplyAndNudgeViewTree(window);
     }
