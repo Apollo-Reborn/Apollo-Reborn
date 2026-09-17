@@ -66,14 +66,14 @@ UIKit icon renderer was stubbed for the host build.
   other order tripped UITableView's batch-update assertion on an untouched
   menu's first drag (section 3 went 0 → 1 rows). Found in the glass sim on
   2026-09-14 (KSCrash report, `_Bug_Detected_In_Client_Of_UITableView_Invalid_
-  Number_Of_Rows_In_Section`) and fixed; the switch path was never affected
-  (`reloadRowWithID:` does not re-snapshot).
-- A switch flip restyles the tapped cell IN PLACE (`styleItemCell:forItem:
-  hidden:`) and never reloads the row: `reloadRowWithID:` replaced the cell
-  under the switch while its knob was mid-transition, which cut the iOS 26
-  morph short and briefly composited two switches (device recording,
-  2026-09-14 23:07). After the change the glass sim's recording shows the
-  full knob-to-track morph on both flips (60 fps frame crops).
+  Number_Of_Rows_In_Section`) and fixed; the visibility-tap path was never
+  affected (`reloadRowWithID:` does not re-snapshot).
+- Rows are tap-to-check (checkmark in the accent, drag grip to its right,
+  both in one accessory view; the All overview drops the grip). A tap restyles
+  the tapped cell IN PLACE (`styleItemCell:forItem:hidden:`, checkmark fading
+  over 0.2 s) and never reloads the row: the earlier switch rows showed that a
+  reload swaps the cell out under the finger (device recording, 2026-09-14
+  23:07) and re-resolves the estimates of rows above the viewport.
 - The ••• button top-right IS the preview (there is no pinned card any
   more — it took a third of the screen). Tapping it opens the menu being
   edited as Apollo would open it right now, with the saved order and
@@ -92,10 +92,10 @@ UIKit icon renderer was stubbed for the host build.
   cell per variant, cached per cell width and content size category). UIKit
   self-sized the rows from a 52 pt estimate;
   subtitled rows are taller, so any batch update re-resolved the estimates of
-  rows above the viewport and scrolled the list several rows on every switch
-  flip while scrolled down (sim recording, 2026-09-15 02:11). After the
-  change a flip deep in the list moves nothing but the switch and its row's
-  dimming (frame-diff of the list region: ~3 vs 8–26 before).
+  rows above the viewport and scrolled the list several rows on every
+  visibility change while scrolled down (sim recording, 2026-09-15 02:11).
+  After the change a tap deep in the list moves nothing but its row's
+  checkmark and dimming (frame-diff of the list region: ~3 vs 8–26 before).
 - Glass specs with a custom `buildElement` (Gallery View's combined section,
   the profile Hidden & Deleted row, Sticky as Subreddit) place their own
   element. `ApolloActionMenuInjectMenuElements` now diffs the children before
@@ -108,7 +108,7 @@ UIKit icon renderer was stubbed for the host build.
   their own placement.
 - The settings list includes only that builder's supported actions; conditional
   entries say “Shown when available.” The ••• preview dims rows the menu didn't offer last time.
-- All switches affect every supporting context; mixed visibility is labelled.
+- All's taps affect every supporting context; mixed visibility is labelled.
   All has no reorder controls. Individual menus can override the choice.
 - Reset removes the saved order and hidden set. Unknown native kinds remain
   visible. If a layout would hide every native row, the sheet shows all native
@@ -228,7 +228,7 @@ Full branch reviewed against freshly fetched upstream main `4683371` (3.7.1).
   All→Author OFF logged only post/post-detail/comment writes; Post→Author ON
   produced “Shown in Some Menus” in All. All has no preview or drag grips.
   Final build: short back swipe (2,500→55,500 over 900ms) left settings open;
-  subsequent Upvote toggle updated preview. Reset This Menu logged removal of
+  subsequent Upvote tap updated preview. Reset This Menu logged removal of
   the Post customization. Pinned preview remained visible while scrolling.
 - Host model and Swift ownership harnesses passed (described above).
 
