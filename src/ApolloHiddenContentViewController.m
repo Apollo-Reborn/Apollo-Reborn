@@ -614,7 +614,9 @@ static char kApolloHiddenRememberedMediaIndex;
     NSInteger avatarStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyProfileAvatarStyle];
     self.avatarView.layer.cornerRadius = avatarStyle == 2 ? ApolloHiddenOverviewAvatarSize() * 0.24 : ApolloHiddenOverviewAvatarSize() / 2;
     self.avatarView.hidden = ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
-    self.avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
+    ApolloUserProfileCache *avatarCache = ApolloUserProfileCache.sharedCache;
+    NSURL *cachedAvatarURL = [avatarCache cachedInfoForUsername:author].iconURL;
+    self.avatarView.image = [avatarCache cachedImageForURL:cachedAvatarURL] ?: [UIImage systemImageNamed:@"person.crop.circle.fill"];
     self.avatarView.tintColor = ApolloThemeAccentColor() ?: self.tintColor;
     for (UIView *page in self.mediaPagesStack.arrangedSubviews) {
         [self.mediaPagesStack removeArrangedSubview:page];
@@ -841,6 +843,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 @property (nonatomic, strong) UISegmentedControl *contentTabs;
 @property (nonatomic) NSInteger selectedTab;
 @property (nonatomic, strong) NSArray<UITableViewController *> *tabControllers;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *rowHeights;
 @property (nonatomic, strong) NSArray<NSArray<ApolloHiddenContentItem *> *> *tabItems;
 @property (nonatomic, strong) NSTimer *progressTimer;
 @property (nonatomic) double progressTarget;
@@ -868,6 +871,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [super viewDidLoad];
     self.title = nil;
     self.tabItems = @[@[], @[]];
+    self.rowHeights = [NSMutableDictionary dictionary];
     NSMutableArray *controllers = [NSMutableArray array];
     for (NSInteger tab = 0; tab < 2; tab++) {
         UITableViewController *controller = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
@@ -1015,8 +1019,16 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self apollo_applyTabTheme];
-    // Reconfigure cached rows when returning after changing avatar preferences.
-    [self.tableView reloadData];
+    // A cancelled interactive pop also re-enters here. Keep the existing
+    // cells/images and offsets; appearance updates do not require a reload.
+    for (UITableViewController *controller in self.tabControllers) {
+        for (ApolloHiddenContentCell *cell in controller.tableView.visibleCells) {
+            [cell apollo_applyOverviewTheme];
+            NSInteger style = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyProfileAvatarStyle];
+            cell.avatarView.layer.cornerRadius = style == 2 ? ApolloHiddenOverviewAvatarSize() * 0.24 : ApolloHiddenOverviewAvatarSize() / 2;
+            cell.avatarView.hidden = ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
+        }
+    }
 }
 
 - (void)apollo_fetchForceRefresh:(BOOL)forceRefresh {
@@ -1101,6 +1113,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         [self apollo_showError:error];
         return;
     }
+    [self.rowHeights removeAllObjects];
     self.allItems = items ?: @[];
     [self apollo_applyContentFilter];
 }
@@ -1177,7 +1190,24 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     return cell;
 }
 
+// Key measurements by item, width and text size so rotation/Dynamic Type
+// cannot reuse a height measured under a different layout.
+- (NSString *)apollo_heightKeyForTable:(UITableView *)table indexPath:(NSIndexPath *)indexPath {
+    ApolloHiddenContentItem *item = [self apollo_itemsForTable:table][indexPath.row];
+    return [NSString stringWithFormat:@"%@|%.2f|%@", item.fullName, table.bounds.size.width, self.traitCollection.preferredContentSizeCategory];
+}
+
+- (CGFloat)tableView:(UITableView *)tableView estimatedHeightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSNumber *height = self.rowHeights[[self apollo_heightKeyForTable:tableView indexPath:indexPath]];
+    if (height) return height.doubleValue;
+    ApolloHiddenContentItem *item = [self apollo_itemsForTable:tableView][indexPath.row];
+    CGFloat ratio = item.previewAspectRatio;
+    CGFloat mediaHeight = (item.mediaURLs.count || item.previewURL) ? MAX(0, tableView.bounds.size.width - 28) / (isfinite(ratio) && ratio >= 0.1 && ratio <= 10 ? ratio : 1) : 0;
+    return 160 + mediaHeight;
+}
+
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    self.rowHeights[[self apollo_heightKeyForTable:tableView indexPath:indexPath]] = @(cell.bounds.size.height);
     ApolloHiddenContentCell *mediaCell = (ApolloHiddenContentCell *)cell;
     NSNumber *remembered = objc_getAssociatedObject(mediaCell.mediaSelectionItem, &kApolloHiddenRememberedMediaIndex);
     [mediaCell apollo_restoreMediaIndex:remembered.unsignedIntegerValue];
