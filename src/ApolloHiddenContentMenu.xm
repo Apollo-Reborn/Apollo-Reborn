@@ -6,7 +6,7 @@
 // directly, which can be nil for the signed-in user's own profile.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
 
-// Shared entry point for the profile shortcut and own-profile menu.
+// Entry point for the Hidden & Deleted profile shortcut.
 void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewController) {
     if (!profileViewController) return;
     NSString *profileUsername = ApolloUsernameFromProfileViewController(profileViewController);
