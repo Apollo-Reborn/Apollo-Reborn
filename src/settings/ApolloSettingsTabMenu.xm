@@ -1,3 +1,6 @@
+#import "ApolloSettingsShortcutsViewController.h"
+#import "ApolloSettingsRouter.h"
+#import "ApolloBuyUsACoffeeViewController.h"
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -102,15 +105,23 @@ static UIView *ApolloSettingsTabView(UITabBarController *controller) {
     return ApolloFindSettingsItemView(controller.tabBar, settingsItem);
 }
 
+// All shortcut destinations belong to one stack, regardless of the tab
+// where the menu was opened. This also gives the editor a single owner.
+static UINavigationController *ApolloSettingsShortcutNavigation(UITabBarController *controller) {
+    for (UIViewController *child in controller.viewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        UINavigationController *nav = (UINavigationController *)child;
+        if ([nav.viewControllers.firstObject isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return nav;
+    }
+    return nil;
+}
+
 static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewController *screen) {
     if (!controller) return;
     ApolloClearConsumedSettingsTouch(controller);
-    // Push from the visible page so UIKit can perform its normal transition
-    // without first revealing the Settings root underneath the destination.
-    UIViewController *selected = controller.selectedViewController;
-    UINavigationController *nav = [selected isKindOfClass:UINavigationController.class]
-        ? (UINavigationController *)selected : selected.navigationController;
-    if (!nav) return;
+    UINavigationController *nav = ApolloSettingsShortcutNavigation(controller);
+    if (!nav || !screen) return;
+    BOOL switchingTabs = controller.selectedViewController != nav;
 
     // Reuse a destination already in this navigation stack.
     UIViewController *destination = screen;
@@ -121,7 +132,7 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
         }
     }
     objc_setAssociatedObject(destination, &kApolloSettingsShortcutRoot, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (nav.topViewController == destination) return;
+    if (nav.topViewController == destination && !switchingTabs) return;
     // Disabling the tab bar alone lets hit testing fall through to the page.
     // Consume touches at the window until the navigation transition finishes.
     UIWindow *window = controller.view.window;
@@ -129,8 +140,19 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
     transitionShield.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     transitionShield.accessibilityElementsHidden = YES;
     [window addSubview:transitionShield];
+    if (switchingTabs) {
+        // Select the owning stack and start its normal navigation transition
+        // in the same run-loop turn. UIKit owns the page animation, just as
+        // when a shortcut is opened while Settings is already selected.
+        controller.selectedViewController = nav;
+        [nav.view layoutIfNeeded];
+        if (nav.topViewController == destination) {
+            [transitionShield removeFromSuperview];
+            return;
+        }
+    }
     if (destination != screen) {
-        if (nav.topViewController != destination) [nav popToViewController:destination animated:YES];
+        [nav popToViewController:destination animated:YES];
     } else {
         [nav pushViewController:destination animated:YES];
     }
@@ -163,9 +185,12 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 }
 @interface ApolloSettingsDismissSurface : UIView
 @property (nonatomic, weak) UIView *menuContainer;
+@property (nonatomic, weak) UIButton *editButton;
 @end
 @implementation ApolloSettingsDismissSurface
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIButton *button = self.editButton;
+    if (button && !button.hidden && [button pointInside:[self convertPoint:point toView:button] withEvent:event]) return nil;
     UIView *list = ApolloSettingsMenuList(self.menuContainer);
     if (list && [list pointInside:[self convertPoint:point toView:list] withEvent:event]) return nil;
     return [super hitTest:point withEvent:event];
@@ -192,29 +217,59 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 @property (nonatomic) BOOL animatingDismissal;
 @property (nonatomic, strong) UIView *dismissSurface;
 @property (nonatomic, strong) UIView *menuContainer;
+@property (nonatomic, strong) UIView *menuLayoutContainer;
+@property (nonatomic, strong) UIButton *editButton;
+@property (nonatomic, strong) CADisplayLink *editPositionLink;
 @end
 @implementation ApolloSettingsTabHold
+- (void)positionEditButton {
+    UIView *list = ApolloSettingsMenuList(self.menuContainer);
+    if (!list.window || !self.editButton) return;
+    CGRect frame = [list convertRect:list.bounds toView:self.menuContainer];
+    if (CGRectIsEmpty(frame)) return;
+    // Position independently of the native platter's internals; never change
+    // UIKit's menu layout or animation to make room for our accessory.
+    CGRect target = CGRectMake(CGRectGetMaxX(frame) - 44, CGRectGetMinY(frame) - 52, 44, 44);
+    target.origin.y = MAX(self.menuContainer.safeAreaInsets.top, target.origin.y);
+    if (!CGRectEqualToRect(self.editButton.frame, target)) self.editButton.frame = target;
+    [self.menuContainer bringSubviewToFront:self.editButton];
+    if (self.editButton.hidden) {
+        self.editButton.hidden = NO;
+        [UIView animateWithDuration:0.18 animations:^{ self.editButton.alpha = 1; }];
+    }
+}
+- (void)editShortcuts {
+    if (self.animatingDismissal || !self.interaction) return;
+    ApolloSettingsMenuHaptic();
+    __weak UITabBarController *controller = self.controller;
+    self.pendingAction = ^{
+        ApolloPushSettingsShortcut(controller, [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
+    };
+    self.editButton.userInteractionEnabled = NO;
+    [self.interaction dismissMenu];
+}
+
 - (void)prepareMenuImages {
     UITabBarController *controller = self.controller;
     UITraitCollection *traits = controller.traitCollection;
     if (self.menuImages && ![traits hasDifferentColorAppearanceComparedToTraitCollection:self.imageTraits]
-        && traits.displayScale == self.imageTraits.displayScale) return;
-    UIImage *backupTile = ApolloSettingsIconTileImage(@"square.and.arrow.up.fill", UIColor.systemBlueColor, controller.traitCollection);
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(36, 36)];
-    UIImage *backupImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [backupTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIImage *categoriesTile = ApolloSettingsIconTileImage(@"apollo.saved-categories", UIColor.systemGreenColor, controller.traitCollection);
-    UIImage *categoriesImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [categoriesTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIImage *themeTile = ApolloSettingsIconTileImage(@"paintbrush.fill", ApolloThemeManagerIconColor(), controller.traitCollection);
-    UIImage *themeImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [themeTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    self.menuImages = @{@"backup": backupImage, @"categories": categoriesImage, @"themes": themeImage,
-        @"requests": ApolloEmojiSettingsIcon(@"💡", UIColor.systemYellowColor, 36),
-        @"bugs": ApolloEmojiSettingsIcon(@"🐛", UIColor.systemRedColor, 36)};
+        && traits.displayScale == self.imageTraits.displayScale) {
+        // Unlike the other tiles, App Icon is user-selected artwork. Read the
+        // native row again on every presentation instead of freezing it in
+        // the appearance cache for the lifetime of the tab controller.
+        NSMutableDictionary *images = [self.menuImages mutableCopy];
+        UIImage *currentIcon = ApolloSettingsShortcutImage(@"app-icon", traits, 36);
+        if (currentIcon) images[@"app-icon"] = currentIcon;
+        else [images removeObjectForKey:@"app-icon"];
+        self.menuImages = images;
+        return;
+    }
+    NSMutableDictionary *images = [NSMutableDictionary dictionary];
+    for (NSString *identifier in ApolloSettingsShortcutCatalog()) {
+        UIImage *image = ApolloSettingsShortcutImage(identifier, traits, 36);
+        if (image) images[identifier] = image;
+    }
+    self.menuImages = images;
     self.imageTraits = traits;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
@@ -246,6 +301,13 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     self.menuContainer.userInteractionEnabled = YES;
     self.menuContainer.accessibilityViewIsModal = YES;
     [container addSubview:self.menuContainer];
+    // Keep a full 44pt customization button above even a scrolling 15-row
+    // menu. UIKit sizes its platter within this inset host; the outer view
+    // still owns our existing entrance/dismissal and the button.
+    CGFloat menuTop = container.safeAreaInsets.top + 52;
+    self.menuLayoutContainer = [[ApolloSettingsMenuContainer alloc] initWithFrame:CGRectMake(0, menuTop,
+        self.menuContainer.bounds.size.width, MAX(1, self.menuContainer.bounds.size.height - menuTop))];
+    [self.menuContainer addSubview:self.menuLayoutContainer];
     self.anchor = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMidX(sourceFrame) - 0.5,
         CGRectGetMidY(sourceFrame) - 0.5, 1.0, 1.0)];
     self.anchor.userInteractionEnabled = YES;
@@ -267,53 +329,42 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     [self prepareMenuImages];
     NSDictionary<NSString *, UIImage *> *images = self.menuImages;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
-        UIAction *backup = [UIAction actionWithTitle:@"Backup Settings"
-            image:images[@"backup"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
-                };
-            }];
-        UIAction *requests = [UIAction actionWithTitle:@"Feature Requests"
-            image:images[@"requests"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    UIViewController *selected = weakController.selectedViewController;
-                    UIViewController *presenter = [selected isKindOfClass:UINavigationController.class]
-                        ? ((UINavigationController *)selected).topViewController : selected;
-                    if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
-                };
-            }];
-        UIAction *bugs = [UIAction actionWithTitle:@"Bug Reports"
-            image:images[@"bugs"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloReportViewController alloc] init]);
-                };
-            }];
-        UIAction *categories = [UIAction actionWithTitle:@"Saved Categories"
-            image:images[@"categories"] identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[SavedCategoriesViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
-                };
-            }];
-        UIAction *themes = [UIAction actionWithTitle:@"Theme Manager"
-            image:images[@"themes"] identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloThemeManagerViewController alloc] init]);
-                };
-            }];
         NSMutableArray<UIMenu *> *groups = [NSMutableArray array];
-        for (UIAction *action in @[themes, categories, backup, requests, bugs]) {
+        for (NSString *identifier in ApolloSettingsShortcutIDs()) {
+            UIAction *action = [UIAction actionWithTitle:ApolloSettingsShortcutTitle(identifier)
+                image:images[identifier] identifier:nil handler:^(__unused UIAction *action) {
+                    ApolloSettingsMenuHaptic();
+                    weakSelf.pendingAction = ^{
+                        if ([identifier isEqualToString:@"feature-requests"]) {
+                            UINavigationController *nav = ApolloSettingsShortcutNavigation(weakController);
+                            if (!nav) return;
+                            ApolloClearConsumedSettingsTouch(weakController);
+                            weakController.selectedViewController = nav;
+                            UIViewController *presenter = nav.topViewController;
+                            if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
+                        } else {
+                            UIViewController *screen = [identifier isEqualToString:@"bug-reports"]
+                                ? [[ApolloReportViewController alloc] init] : ApolloSettingsRouteInstantiate(identifier);
+                            if ([identifier isEqualToString:@"buy-coffee"]) screen = [[ApolloBuyUsACoffeeViewController alloc] init];
+                            if (!screen) screen = ApolloSettingsNativeShortcutScreen(ApolloSettingsShortcutTitle(identifier));
+                            if (screen) ApolloPushSettingsShortcut(weakController, screen);
+                        }
+                    };
+                }];
             UIMenu *group = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                 options:UIMenuOptionsDisplayInline children:@[action]];
             if (@available(iOS 16.0, *)) group.preferredElementSize = UIMenuElementSizeLarge;
             [groups addObject:group];
+        }
+        if (groups.count == 0) {
+            // UIKit will not present an empty context menu. Keep a passive
+            // empty state so the existing customize button and dismissal
+            // lifecycle remain available even after the last shortcut is removed.
+            UIAction *empty = [UIAction actionWithTitle:@"No Shortcuts Enabled" image:nil identifier:nil
+                handler:^(__unused UIAction *action) {}];
+            empty.attributes = UIMenuElementAttributesDisabled;
+            [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                options:UIMenuOptionsDisplayInline children:@[empty]]];
         }
         UIMenu *menu = [UIMenu menuWithTitle:@"" children:groups];
         if (@available(iOS 16.0, *)) menu.preferredElementSize = UIMenuElementSizeLarge;
@@ -349,13 +400,15 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     if ([style respondsToSelector:overlap]) ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
     SEL containerSetter = NSSelectorFromString(@"setContainerView:");
     if ([style respondsToSelector:containerSetter]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(style, containerSetter, self.menuContainer);
+        ((void (*)(id, SEL, id))objc_msgSend)(style, containerSetter, self.menuLayoutContainer);
     }
     return style;
 }
 - (void)dismissFromBackdrop:(UITapGestureRecognizer *)gesture {
     if (self.animatingDismissal || !self.interaction) return;
     self.animatingDismissal = YES;
+    [self.editPositionLink invalidate];
+    self.editPositionLink = nil;
     self.dismissSurface.userInteractionEnabled = NO;
     ApolloLog(@"[SettingsTabMenu] Returning live menu to Settings");
     UIView *container = self.menuContainer;
@@ -403,6 +456,40 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     [surface addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(dismissFromBackdrop:)]];
     [container.window addSubview:surface];
     self.dismissSurface = surface;
+    UIButton *edit = [UIButton buttonWithType:UIButtonTypeSystem];
+    if (@available(iOS 26.0, *)) {
+        UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
+        configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        configuration.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
+        edit.configuration = configuration;
+    } else {
+        [edit setImage:[UIImage systemImageNamed:@"slider.horizontal.3"] forState:UIControlStateNormal];
+        edit.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        edit.layer.cornerRadius = 22;
+    }
+    edit.tintColor = UIColor.labelColor;
+    edit.accessibilityLabel = @"Edit shortcuts";
+    edit.accessibilityHint = @"Choose and reorder Settings tab shortcuts";
+    edit.hidden = YES;
+    edit.alpha = 0;
+    [edit addTarget:self action:@selector(editShortcuts) forControlEvents:UIControlEventTouchUpInside];
+    [self.menuContainer addSubview:edit];
+    self.editButton = edit;
+    surface.editButton = edit;
+    self.editPositionLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(positionEditButton)];
+    [self.editPositionLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    [self positionEditButton];
+    CADisplayLink *positionLink = self.editPositionLink;
+    __weak typeof(self) weakSelf = self;
+    void (^finishPositioning)(void) = ^{
+        [positionLink invalidate];
+        if (weakSelf.interaction == interaction) {
+            weakSelf.editPositionLink = nil;
+            [weakSelf positionEditButton];
+        }
+    };
+    if (animator) [animator addCompletion:finishPositioning];
+    else dispatch_async(dispatch_get_main_queue(), finishPositioning);
     // UIKit handles the entrance; a second parent scale competes with its bloom.
     self.menuContainer.alpha = 1;
     self.menuContainer.transform = CGAffineTransformIdentity;
@@ -413,6 +500,12 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     ApolloLog(@"[SettingsTabMenu] Presented native shortcuts");
 }
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willEndForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
+    [self.editPositionLink invalidate];
+    self.editPositionLink = nil;
+    UIButton *edit = self.editButton;
+    edit.userInteractionEnabled = NO;
+    self.editButton = nil;
+    [UIView animateWithDuration:0.18 animations:^{ edit.alpha = 0; } completion:^(__unused BOOL finished) { [edit removeFromSuperview]; }];
     UIView *handoffSurface = self.dismissSurface;
     ((ApolloSettingsDismissSurface *)handoffSurface).menuContainer = nil;
     self.dismissSurface = nil;
@@ -429,6 +522,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     menuContainer.accessibilityViewIsModal = NO;
     self.backdrop = nil;
     self.menuContainer = nil;
+    self.menuLayoutContainer = nil;
     self.anchor = nil;
     self.interaction = nil;
     self.animatingDismissal = NO;
@@ -495,5 +589,75 @@ static char kApolloSettingsTabHold;
     }
     if (ApolloHandleShortcutTabReselection(controller, viewController)) return NO;
     return %orig(controller, viewController);
+}
+%end
+
+// Use the actual Settings row factory for storyboard/Swift-native destinations.
+// Capturing the synchronous push avoids switching to Settings first, and keeps
+// all native initializer arguments and row-specific setup intact.
+static UINavigationController *sShortcutCaptureNavigation;
+static UIViewController *sShortcutCapturedScreen;
+
+static UIViewController *ApolloFindNativeSettingsRoot(UIViewController *controller) {
+    if ([controller isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return controller;
+    NSArray *children = [controller isKindOfClass:UITabBarController.class] ? ((UITabBarController *)controller).viewControllers
+        : [controller isKindOfClass:UINavigationController.class] ? ((UINavigationController *)controller).viewControllers : controller.childViewControllers;
+    for (UIViewController *child in children) {
+        UIViewController *found = ApolloFindNativeSettingsRoot(child);
+        if (found) return found;
+    }
+    return nil;
+}
+static UITableViewCell *ApolloNativeSettingsRow(NSString *title, UIViewController **owner, UITableView **sourceTable, NSIndexPath **path) {
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *root = ApolloFindNativeSettingsRoot(window.rootViewController);
+        if (!root) continue;
+        [root loadViewIfNeeded];
+        Ivar tableIvar = class_getInstanceVariable(root.class, "tableView");
+        UITableView *table = tableIvar ? object_getIvar(root, tableIvar) : nil;
+        if (![table isKindOfClass:UITableView.class]) continue;
+        id<UITableViewDataSource> dataSource = table.dataSource;
+        NSInteger sections = [dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)] ? [dataSource numberOfSectionsInTableView:table] : 1;
+        for (NSInteger section = 0; section < sections; section++) {
+            for (NSInteger row = 0; row < [dataSource tableView:table numberOfRowsInSection:section]; row++) {
+                NSIndexPath *index = [NSIndexPath indexPathForRow:row inSection:section];
+                UITableViewCell *cell = [dataSource tableView:table cellForRowAtIndexPath:index];
+                if ([cell.textLabel.text isEqualToString:title]) {
+                    if (owner) *owner = root;
+                    if (sourceTable) *sourceTable = table;
+                    if (path) *path = index;
+                    return cell;
+                }
+            }
+        }
+    }
+    return nil;
+}
+UIImage *ApolloSettingsNativeShortcutImage(NSString *title) {
+    return ApolloNativeSettingsRow(title, NULL, NULL, NULL).imageView.image;
+}
+UIViewController *ApolloSettingsNativeShortcutScreen(NSString *title) {
+    UIViewController *root = nil;
+    UITableView *table = nil;
+    NSIndexPath *path = nil;
+    if (!ApolloNativeSettingsRow(title, &root, &table, &path) || !root.navigationController) return nil;
+    sShortcutCaptureNavigation = root.navigationController;
+    sShortcutCapturedScreen = nil;
+    @try {
+        [table.delegate tableView:table didSelectRowAtIndexPath:path];
+    } @finally {
+        sShortcutCaptureNavigation = nil;
+    }
+    UIViewController *screen = sShortcutCapturedScreen;
+    sShortcutCapturedScreen = nil;
+    return screen;
+}
+%hook _TtC6Apollo26ApolloNavigationController
+- (void)pushViewController:(UIViewController *)screen animated:(BOOL)animated {
+    if ((id)self == sShortcutCaptureNavigation) {
+        sShortcutCapturedScreen = screen;
+        return;
+    }
+    %orig(screen, animated);
 }
 %end
