@@ -845,6 +845,15 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+// Publish the same geometry to UIKit's initial title fitting and the shared
+// glass owner, rather than a frame that disagrees with intrinsic size.
+@interface ApolloHiddenContentTabs : UISegmentedControl
+@end
+@implementation ApolloHiddenContentTabs
+- (CGSize)intrinsicContentSize { return CGSizeMake(220, 44); }
+- (CGSize)sizeThatFits:(CGSize)size { return self.intrinsicContentSize; }
+@end
+
 @interface ApolloHiddenContentViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic) BOOL loading;
@@ -897,18 +906,20 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         [controllers addObject:controller];
     }
     self.tabControllers = controllers;
-    self.contentTabs = [[UISegmentedControl alloc] initWithItems:@[@"Posts", @"Comments"]];
+    self.contentTabs = [[ApolloHiddenContentTabs alloc] initWithItems:@[@"Posts", @"Comments"]];
     self.contentTabs.selectedSegmentIndex = 0;
     // UIKit owns the complete interactive-glass animation timeline.
     self.contentTabs.accessibilityLabel = @"Hidden and deleted content";
-    [self.contentTabs setWidth:100 forSegmentAtIndex:0];
-    [self.contentTabs setWidth:100 forSegmentAtIndex:1];
-    [self.contentTabs.widthAnchor constraintEqualToConstant:200].active = YES;
+    [self.contentTabs setWidth:110 forSegmentAtIndex:0];
+    [self.contentTabs setWidth:110 forSegmentAtIndex:1];
+    [self.contentTabs.widthAnchor constraintEqualToConstant:220].active = YES;
     [self.contentTabs addTarget:self action:@selector(apollo_contentTabChanged) forControlEvents:UIControlEventValueChanged];
     // Use Apollo's shared navigation-title presentation and glass lifecycle.
     // The shared owner handles Hard/Soft/Blur/Automatic, scrolling and pushes.
-    self.navigationItem.titleView = self.contentTabs;
     [self apollo_applyTabTheme];
+    [self.contentTabs sizeToFit];
+    [self.contentTabs layoutIfNeeded];
+    self.navigationItem.titleView = self.contentTabs;
     for (UITableViewController *controller in self.tabControllers) {
         UITableView *table = controller.tableView;
         [table registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
@@ -973,7 +984,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     }];
     // Let UIKit own label contrast during the glass selector's transition.
     // Forcing foreground colors fights its temporary vibrancy/legibility state.
-    NSDictionary *attributes = @{NSFontAttributeName:[UIFont systemFontOfSize:13 weight:UIFontWeightSemibold]};
+    NSDictionary *attributes = @{NSFontAttributeName:[UIFont systemFontOfSize:16 weight:UIFontWeightSemibold]};
     for (NSNumber *state in @[@(UIControlStateNormal), @(UIControlStateSelected),
                              @(UIControlStateHighlighted), @(UIControlStateSelected | UIControlStateHighlighted)]) {
         [self.contentTabs setTitleTextAttributes:attributes forState:state.unsignedIntegerValue];

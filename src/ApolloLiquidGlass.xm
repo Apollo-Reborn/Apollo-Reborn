@@ -1714,8 +1714,15 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     UIViewController *topVC = ApolloOwningTopViewController(titleControl);
     id<UIViewControllerTransitionCoordinator> transition = topVC.transitionCoordinator;
+    NSArray<UIView *> *titleCandidates = [controller titleContentViews];
+    BOOL segmentedTitle = titleCandidates.count == 1 &&
+        [titleCandidates.firstObject isKindOfClass:UISegmentedControl.class];
+    // Segmented titles already supply their full intrinsic geometry. During
+    // navigation the outgoing profile's Accounts/actions platters are still
+    // visible; fitting against those temporary edges clips the capsule ends.
+    // Keep UIKit's supplied size until the completion/cancellation refresh.
     if (transition.isAnimated && transition != controller.completedTransition &&
-        !ApolloNavigationTitlePresentationOwnsControl(titleControl)) {
+        (segmentedTitle || !ApolloNavigationTitlePresentationOwnsControl(titleControl))) {
         // UIKit may animate only nested hosts. Retry explicitly on transition
         // completion/cancellation instead of relying on another layout pass.
         if (controller.pendingTransition != transition) {
