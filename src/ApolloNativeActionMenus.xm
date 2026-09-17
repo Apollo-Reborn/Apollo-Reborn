@@ -147,6 +147,7 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, assign) BOOL removeSourceViewOnEnd;
 @property (nonatomic, weak) id actionController;
 @property (nonatomic, copy) dispatch_block_t afterDismissalAction;
+@property (nonatomic, copy) dispatch_block_t didEnd;
 @property (nonatomic, strong) ApolloNativeActionMenuSurfaceLease *surfaceLease;
 // Keep the presentation window and anchor point for the menu's short lifetime.
 // A selected action may push another controller before UIKit asks for its
@@ -740,7 +741,37 @@ static NSInteger ApolloNativeActionMenuRowForActionKind(id actionController,
     return NSNotFound;
 }
 
+static BOOL sApolloNativeCapturingController;
+static id sApolloNativeCapturedController;
+
+id ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build) {
+    if (sApolloNativeCapturingController || !source.window || !build) return nil;
+    sApolloNativeCapturingController = YES;
+    sApolloNativeCapturedController = nil;
+    @try { build(); }
+    @finally { sApolloNativeCapturingController = NO; }
+    id controller = sApolloNativeCapturedController;
+    sApolloNativeCapturedController = nil;
+    if (controller) objc_setAssociatedObject(controller, &kApolloNativeActionMenuSourceViewKey,
+        source, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return controller;
+}
+
+BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind) {
+    return controller && ApolloNativeActionMenuRowForActionKind(controller, kind) != NSNotFound;
+}
+
+void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
+    NSInteger row = ApolloNativeActionMenuRowForActionKind(controller, kind);
+    if (row != NSNotFound) ApolloNativeActionMenuSelectRow(controller, row);
+}
+
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
+    if (sApolloNativeCapturingController &&
+        [actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) {
+        sApolloNativeCapturedController = actionController;
+        return YES;
+    }
     UIViewController *owner = sApolloNativeDirectActionOwner;
     if (!owner || ![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) {
         return NO;
@@ -1212,6 +1243,9 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     if (ApolloNativeActionMenuPresenterForController(self.actionController) == self) {
         ApolloNativeActionMenuSetPresenterForController(self.actionController, nil);
     }
+    dispatch_block_t didEnd = self.didEnd;
+    self.didEnd = nil;
+    if (didEnd) didEnd();
     UIWindow *window = self.presentationWindow;
     dispatch_block_t selectedAction = self.afterDismissalAction;
     if (!selectedAction && ApolloNativeActionMenuActivePresenter(window) == self) {
@@ -1545,6 +1579,19 @@ static UIViewController *ApolloNativeActionMenuTopMostPresenter(UIViewController
         result = result.presentedViewController;
     }
     return result;
+}
+
+UIMenu *ApolloNativeActionMenuBuildCaptured(id controller) {
+    return ApolloNativeActionMenuBuildMenu(controller, NO);
+}
+
+BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller, dispatch_block_t didEnd) {
+    if (!menu.children.count || !source.window) return NO;
+    ApolloNativeActionMenuPresenter *presenter = [ApolloNativeActionMenuPresenter new];
+    presenter.menu = menu;
+    presenter.actionController = controller;
+    presenter.didEnd = didEnd;
+    return [presenter presentFromView:source completion:nil];
 }
 
 static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {
