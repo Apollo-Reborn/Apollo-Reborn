@@ -174,6 +174,7 @@ static UIColor *ApolloHiddenOverviewMetadataColor(void) {
 @property (nonatomic) CGFloat mediaAspectRatio;
 @property (nonatomic) BOOL compactMedia;
 @property (nonatomic) NSUInteger mediaGeneration;
+@property (nonatomic) BOOL configuringContent;
 
 @property (nonatomic, strong) UIStackView *headerStack;
 @property (nonatomic, strong) UIView *headerMiddleSpacer;
@@ -416,7 +417,12 @@ static char kApolloHiddenRememberedMediaIndex;
     // Recalculate the self-sizing row when an asynchronous image resolves.
     UIView *parent = self.superview;
     while (parent && ![parent isKindOfClass:UITableView.class]) parent = parent.superview;
-    if (parent) [(UITableView *)parent performBatchUpdates:nil completion:nil];
+    if (parent && !self.configuringContent) {
+        [UIView performWithoutAnimation:^{
+            [(UITableView *)parent performBatchUpdates:nil completion:nil];
+            [parent layoutIfNeeded];
+        }];
+    }
 }
 - (void)apollo_showUnavailableAtIndex:(NSUInteger)index {
     [self.unavailableMediaIndexes addIndex:index];
@@ -493,7 +499,8 @@ static char kApolloHiddenRememberedMediaIndex;
         [self.loadedMediaIndexes addIndex:index];
         NSURL *url = self.mediaURLs[index];
         __weak typeof(self) weakSelf = self;
-        [ApolloUserProfileCache.sharedCache requestImageForURL:url completion:^(UIImage *image) {
+        UIImage *cachedImage = [ApolloUserProfileCache.sharedCache cachedImageForURL:url];
+        void (^applyImage)(UIImage *) = ^(UIImage *image) {
             typeof(self) owner = weakSelf;
             if (!owner || owner.mediaGeneration != generation || ![owner.representedName isEqualToString:representedName] || index >= owner.mediaURLs.count || ![owner.mediaURLs[index] isEqual:url]) return;
             ApolloHiddenImageIsTombstone(image, ^(BOOL unavailable) {
@@ -502,16 +509,17 @@ static char kApolloHiddenRememberedMediaIndex;
                 if (unavailable) {
                     [cell apollo_showUnavailableAtIndex:index];
                 } else {
-                    [UIView transitionWithView:cell.mediaImageViews[index] duration:0.18
-                        options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowAnimatedContent
-                        animations:^{ cell.mediaImageViews[index].image = image; } completion:nil];
+                    // Cached media is already loaded content, not a new reveal.
+                    cell.mediaImageViews[index].image = image;
                     // A distant page can finish loading after the selection
                     // callback. Keep the same dismissal source current then too.
                     if (cell.currentMediaIndex == index) [cell apollo_transitionSourceForIndex:index];
                 }
                 if (cell.mediaURLs.count == 1) cell.mediaLabel.hidden = YES;
             });
-        }];
+        };
+        if (cachedImage) applyImage(cachedImage);
+        else [ApolloUserProfileCache.sharedCache requestImageForURL:url completion:applyImage];
     }
 }
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
@@ -541,6 +549,7 @@ static char kApolloHiddenRememberedMediaIndex;
     }];
 }
 - (void)configureWithItem:(ApolloHiddenContentItem *)item username:(NSString *)username {
+    self.configuringContent = YES;
     self.pendingMediaSelectionRestore = YES;
     self.mediaSelectionItem = nil;
     self.transitionSourceView.image = nil;
@@ -674,6 +683,7 @@ static char kApolloHiddenRememberedMediaIndex;
         }];
     }];
     [self apollo_loadMediaAroundIndex:0];
+    self.configuringContent = NO;
 }
 - (void)prepareForReuse {
     [super prepareForReuse];
