@@ -6,11 +6,10 @@ extern "C" {
 #endif
 
 // C-only reserved-region geometry so host tests can compile without UIKit.
-// UIKit's iOS 27.1 `-[UIView reservedRegionsForKind:options:]` (when it
-// exists at runtime) feeds these helpers. Compile-time 27.1 headers are
-// optional — CI still builds against 26.0 — so the ObjC caller keeps
-// `respondsToSelector:` probes instead of requiring published enum types.
-// Older SDKs/runtimes pass an empty list and fall back to chrome / safe-area.
+// Runtime callers pass an empty list (UIKit reservedRegions SIGSEGVs on
+// Duo even with window+scene during first commit). Hinge gutters come
+// from layoutMargins / chrome instead. These helpers stay so a future
+// safe API can feed the same gap/edge math.
 
 typedef struct {
     double x;
@@ -260,10 +259,9 @@ static inline int ApolloReservedEvenColumnCount(int columns, int minCount, int m
 
 __BEGIN_DECLS
 
-/// Active reserved-region rects in `view` coordinates. Empty when the iOS 27.1
-/// API is missing, or when `view` has no window / windowScene yet (calling
-/// reservedRegions off-window SIGSEGVs on Duo). `includeInactive` is for
-/// structural decisions (gallery column count) only.
+/// Active reserved-region rects in `view` coordinates. Always empty:
+/// UIKit reservedRegions SIGSEGVs on Duo even with window+scene during
+/// first commit. `includeInactive` is kept for the public signature.
 NSUInteger ApolloDeviceCopyReservedRectsForView(UIView *view,
                                                 CGRect *outRects,
                                                 NSUInteger maxCount,
@@ -273,20 +271,20 @@ NSUInteger ApolloDeviceCopyReservedRectsForView(UIView *view,
 /// columns even so tiles do not sit under a known fold.
 BOOL ApolloDeviceHasDivisionRegionInView(UIView *view);
 
-/// Safe-area + hinge-sized layout-margin extra, then max'd with edge-flush
-/// reserved regions. Equals `ApolloDeviceChromeInsetsForView` pre-27.1.
+/// Safe-area + hinge-sized layout-margin extra. Equals
+/// `ApolloDeviceChromeInsetsForView` while reservedRegions is unused.
 UIEdgeInsets ApolloDeviceMediaInsetsForView(UIView *view);
 
 /// Avoidance derived from active reserved rects (gaps + edge extras).
-/// Zeroed when `view` is nil or not yet in a window scene.
+/// Zeroed while reservedRegions is unused; chrome/layoutMargins own gutters.
 ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view);
 
 /// Shift `frame` off any active reserved rect in `container`. Returns
-/// `frame` unchanged when the 27.1 API is missing.
+/// `frame` unchanged while reservedRegions is unused.
 CGRect ApolloDeviceShiftRectOffReservedInView(UIView *container, CGRect frame);
 
 /// Shift `view.frame` off any active reserved rect in its superview.
-/// No-op when the 27.1 API is missing or the frame is already clear.
+/// No-op while reservedRegions is unused or the frame is already clear.
 void ApolloDeviceAvoidReservedRegionsForView(UIView *view);
 
 /// Place a full-width chrome bar so it does not cover a vertical hinge.

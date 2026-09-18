@@ -226,11 +226,9 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         pair == ApolloFeedSplitPairFeedComments ? 1 : 0, usable);
     ApolloReservedAvoidance avoid;
     memset(&avoid, 0, sizeof(avoid));
-    // Scene connect pushes the root VC before the nav view is windowed.
-    // reservedRegions SIGSEGVs there; hinge gutters wait for viewDidAppear.
-    if (container.window && container.window.windowScene) {
-        avoid = ApolloDeviceReservedAvoidanceForView(container);
-    }
+    // Collect never calls reservedRegions (Duo first-commit SIGSEGV).
+    // hasVerticalGap stays false; chrome extra / layoutMargins own gutters.
+    avoid = ApolloDeviceReservedAvoidanceForView(container);
     double hingeX = 0.0;
     double hingeW = 0.0;
     if (avoid.hasVerticalGap && avoid.gapWidth > 0.0) {

@@ -22,7 +22,7 @@ letterbox: the *guest* Apollo binary still advertised SDK 19.0 / 26.
 | Dynamic Island chrome | Apollo hardcodes 14 Pro positions (`FauxCutOutView` y=11.5, 125×37). **Step 1:** shift from `-[UIScreen _exclusionArea]` on the *window scene's* screen; hide faux cutout / pals / tap overlay when that screen has no pill-shaped cutout. Dropped the `safeAreaInsets.top == 59` proportional fallback (wrong on iPhone Air / iOS 27, #826). | A hinge or vertical reserved bar must not pass the pill sanity check (it should not). Full `ArrangementView` / `reservedRegions` avoidance is step 4. |
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is covered for **media/PiP** in step 4; floating-tab bubbles still rely on chrome insets only. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
-| Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (chrome insets max'd with edge-flush reserved regions). A center hinge is a gap, not fake left+right insets: the gallery transport sits on the larger remaining side; MediaPage close + PiP buttons shift off the rect. Gallery columns go even when a (possibly inactive) division exists. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Runtime `reservedRegions` spelling/kind values stay probed (0..2). A hinge UIKit never reports still cannot be guessed from `_exclusionArea`. Step 5 did not replace the probes — see below. |
+| Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (safe area + hinge-sized layout-margin extra). C geometry helpers stay; the reserved-rect list is always empty. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Do **not** call UIKit `reservedRegions` — it SIGSEGVs on Duo even with window+scene during first CA commit (x0=NULL at +0x10). A hinge UIKit never reports as layoutMargins / safe area still cannot be guessed from `_exclusionArea`. |
 | Feed / posts | **Primary open-Duo chrome is the concept mock + rail:** current **feed** on the left, selected **post + comments** on the right. Slim rail: Home, Popular, All, **My Subreddits** (not Saved), Profile, Settings. My Subreddits puts the subscriptions list in the left pane to pick a destination; choosing a subreddit returns that feed to the left pane. Compact stays the stock tab bar + single column. Do **not** wrap tabs in `UISplitViewController`. | Previous list\|feed-as-default ask is superseded. Cover display has no companion UI. Inbox is not a rail item. |
 | Toolchain | **Step 5:** device `make package` pins `iphone:clang:27.1:14.0` when `iPhoneOS27.1.sdk` exists; otherwise `26.0:14.0`. Sim: unchanged `latest` / 15.0. **Screen-fill:** `--liquid-glass` now sets the *guest* `LC_BUILD_VERSION` sdk to **27.1** (still min 15.0) so Duo grants a full canvas; `IsLiquidGlass()` remains major >= 19. | A 27.1 Simulator runtime is not a device SDK. Cached `.sim/glass-base.ipa` at 19.0 must be regenerated. Classic (no glass) guests stay letterboxed. CI (Xcode 26.0.1) stays on the tweak 26.0 fallback. |
 
@@ -81,12 +81,12 @@ SDK bump.
 
 ### 4. Gallery / media hinge avoidance — done
 
-- Do **not** wrap media in `UIArrangementViewController`. The 26.0 SDK
-  has no `reservedRegions` headers, so the call is entirely runtime
-  (step 5's 27.1 pin is optional / CI still uses 26.0):
-  `respondsToSelector:` for `reservedRegionsForKind:options:` (and two
-  spelling fallbacks), kind probe `0..2`, options bit 0 = includeInactive.
-- Soft-degrade: missing selector → empty rect list →
+- Do **not** wrap media in `UIArrangementViewController`. Do **not** call
+  UIKit `reservedRegions` / `reservedRegionsForKind:options:` — probing
+  kinds 0..2 on a normal navigation view SIGSEGVs on the Duo sim even
+  after `view.window` and `windowScene` are set (first CA commit,
+  `x0=NULL` at +0x10). That is not an NSException.
+- Soft-degrade: `ApolloReservedCollect` returns 0 / zero margins, so
   `ApolloDeviceMediaInsetsForView` equals `ApolloDeviceChromeInsetsForView`
   (safe area + hinge-sized layout-margin extra). iOS 14 builds unchanged.
 - A center hinge is a **gap**, not left+right edge insets (those would
@@ -119,12 +119,10 @@ SDK bump.
 - CI workflows still `xcode-select` Xcode 26.0.1 and do not install 27.1.
   The Makefile fallback keeps those builds on 26.0. When a runner later
   ships a real `iPhoneOS27.1.sdk`, the pin flips without a workflow change.
-- `reservedRegions` stays on `respondsToSelector:` + kind probe `0..2`.
-  Public iOS 27.0 UIKit headers have no reserved-region types/enums, this
-  tree has no 27.1 headers, and CI still compiles against 26.0. Inventing
-  `UIReservedRegionKind*` under `#if` would either fail a 26-only
-  toolchain or never compile-in. Revisit when a real 27.1 SDK is on the
-  machine that does the compile.
+- Do **not** call `reservedRegions` from the launch / first-layout path.
+  A window+scene guard was not enough on Duo. Revisit only with a
+  documented-safe UIKit API after compiling against a real
+  `iPhoneOS27.1.sdk` — never reintroduce a delayed probe in a crash fix.
 
 Install notes for maintainers: AGENTS.md / CONTRIBUTING.md "Required SDK".
 
@@ -248,16 +246,16 @@ Confirm feed size-class layout (step 3 + open Duo):
 
 Confirm gallery / media hinge avoidance (step 4):
 
-- Pre-27.1 sim: gallery Done / transport and PiP corners match today's
-  safe-area layout (chrome extra is 0 on a normal iPhone). Log:
-  `[MediaHinge] reservedRegions unavailable; chrome/safe-area fallback`.
+- Gallery Done / transport and PiP corners use chrome / safe-area /
+  layoutMargins (reserved-rect list is always empty). Launch on Duo must
+  not SIGSEGV in UIKit reservedRegions.
 - PiP last-resort window is created from `ApolloDevicePreferredScreen()`,
   not a raw `mainScreen.bounds` read.
 - When a Duo sim / 27.1 runtime exists: open Gallery and MediaViewer on
   the inner display, partially fold. Transport / close / PiP card stay
-  off the division strip. Log: `[MediaHinge] reservedRegions selector=…`.
-- Gallery grid uses an even column count while a division region exists.
-- Flat (inactive zero-width division) does not change columns or chrome.
+  off a hinge that UIKit reports as safe area or extra layout margin.
+- Gallery grid column-count stays on the chrome-only path (no division
+  probe) until a safe reserved-region API exists.
 
 Confirm Pixel Pals / faux cutout:
 
@@ -300,12 +298,10 @@ the sim stubs.
   rects, the pill sanity check fails closed (no shift, hide tweak chrome).
 - `uname` remapping is process-wide, happens on arbitrary threads, and does
   not consult UIKit. Later layout uses the live window's cutout.
-- iOS 27.1 `reservedRegions` is still called only through `objc_msgSend`
-  after `respondsToSelector:`. Kind raw values and the exact selector
-  spelling may still drift. Step 5 did not replace the probe: 27.1 headers
-  are optional (CI stays on 26.0), and public 27.0 UIKit has no published
-  ObjC enum names to `#if` against. Replace the probe only after compiling
-  against a real `iPhoneOS27.1.sdk` and reading those headers.
+- Do **not** call iOS 27.1 `reservedRegions` (any selector spelling) from
+  this tweak. Window+scene is not a sufficient guard: first CA commit on
+  Duo still SIGSEGVs (`x0=NULL` at +0x10). C geometry helpers stay; gutters
+  come from layoutMargins / chrome. Do not add a delayed probe.
 - A 27.1 device SDK may set `MinimumDeploymentTarget` to 15.0 the same
   way later 26/27 SDKs did. We still pass `:14.0`. If clang starts
   hard-failing that combination, keep the 26.0 fallback for ship builds

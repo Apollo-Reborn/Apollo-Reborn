@@ -2,147 +2,23 @@
 #import "ApolloDeviceChromeInsets.h"
 #import "ApolloDeviceGeometry.h"
 
-#import <objc/message.h>
-#import <objc/runtime.h>
 #import <string.h>
 
-#import "ApolloCommon.h"
-
-// iOS 27.1 UIKit spelling (Swift: UIView.reservedRegions(kind:options:)).
-// Step 5 pins a 27.1 *device* SDK when iPhoneOS27.1.sdk is present, but CI
-// and many Macs still compile against 26.0. Public iOS 27.0 headers have no
-// reservedRegions types/enums (and 27.1 ObjC names are not in this tree),
-// so we keep respondsToSelector: + kind probe 0..2 instead of inventing
-// UIReservedRegionKind* that would fail a 26-only toolchain or silently
-// mismatch. Options bit 0 is `.includeInactive` per Apple's Tech Talk.
-enum {
-    kApolloReservedKindProbeMin = 0,
-    kApolloReservedKindProbeMax = 2,
-    kApolloReservedOptionIncludeInactive = 1 << 0,
-};
-
-static SEL ApolloReservedRegionsSelector(void) {
-    static SEL selector = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if ([UIView instancesRespondToSelector:@selector(reservedRegionsForKind:options:)]) {
-            selector = @selector(reservedRegionsForKind:options:);
-        } else {
-            SEL alt = NSSelectorFromString(@"reservedRegionsWithKind:options:");
-            if ([UIView instancesRespondToSelector:alt]) {
-                selector = alt;
-            } else {
-                alt = NSSelectorFromString(@"reservedRegionsOfKind:options:");
-                if ([UIView instancesRespondToSelector:alt]) selector = alt;
-            }
-        }
-        if (selector) {
-            ApolloLog(@"[MediaHinge] reservedRegions selector=%s", sel_getName(selector));
-        } else {
-            ApolloLog(@"[MediaHinge] reservedRegions unavailable; chrome/safe-area fallback");
-        }
-        if (objc_getClass("UIArrangementViewController")) {
-            ApolloLog(@"[MediaHinge] UIArrangementViewController present (unused: media is full-bleed, not a primary/secondary pair)");
-        }
-    });
-    return selector;
-}
-
-static BOOL ApolloReservedRegionIsActive(id region, BOOL includeInactive) {
-    if (includeInactive || !region) return YES;
-    if ([region respondsToSelector:@selector(isActive)]) {
-        return ((BOOL (*)(id, SEL))objc_msgSend)(region, @selector(isActive));
-    }
-    id value = [region respondsToSelector:@selector(valueForKey:)]
-        ? [region valueForKey:@"isActive"] : nil;
-    if ([value respondsToSelector:@selector(boolValue)]) return [value boolValue];
-    return YES;
-}
-
-static BOOL ApolloReservedReadFrame(id region, CGRect *outRect, BOOL allowEmpty) {
-    if (!region || !outRect) return NO;
-    CGRect frame = CGRectNull;
-    if ([region respondsToSelector:@selector(frame)]) {
-        frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, @selector(frame));
-    } else if ([region isKindOfClass:[NSValue class]]) {
-        frame = [(NSValue *)region CGRectValue];
-    } else {
-        return NO;
-    }
-    if (CGRectIsNull(frame)) return NO;
-    if (!allowEmpty && CGRectIsEmpty(frame)) return NO;
-    if (frame.size.width < 0.0 || frame.size.height < 0.0) return NO;
-    *outRect = frame;
-    return YES;
-}
-
-static BOOL ApolloReservedReadMargins(id region, UIEdgeInsets *outInsets) {
-    if (!region || !outInsets) return NO;
-    if (![region respondsToSelector:@selector(margins)]) return NO;
-    UIEdgeInsets margins = ((UIEdgeInsets (*)(id, SEL))objc_msgSend)(region, @selector(margins));
-    if (margins.top < 0.0 || margins.left < 0.0
-        || margins.bottom < 0.0 || margins.right < 0.0) {
-        return NO;
-    }
-    *outInsets = margins;
-    return YES;
-}
-
-// UIKit's reservedRegions implementation reads the window scene (offset
-// ~0x10). Calling it from initWithRootViewController: / scene connect —
-// before view.window is set — SIGSEGVs. That is not an NSException, so
-// @try cannot save us. Require a live window + scene first.
-static BOOL ApolloReservedViewCanQuery(UIView *view) {
-    if (!view) return NO;
-    UIWindow *window = view.window;
-    if (!window) return NO;
-    return window.windowScene != nil;
-}
-
+// UIKit reservedRegions SIGSEGVs on Duo sim even with window+scene during
+// first commit (x0=0 at +0x10); hinge gutters come from layoutMargins/chrome
+// instead. Do not call reservedRegions / reservedRegionsForKind:options: /
+// objc_msgSend of that selector.
 static NSUInteger ApolloReservedCollect(UIView *view,
                                         CGRect *outRects,
                                         NSUInteger maxCount,
                                         BOOL includeInactive,
                                         UIEdgeInsets *outMargins) {
+    (void)view;
+    (void)outRects;
+    (void)maxCount;
+    (void)includeInactive;
     if (outMargins) *outMargins = UIEdgeInsetsZero;
-    SEL selector = ApolloReservedRegionsSelector();
-    if (!ApolloReservedViewCanQuery(view) || !outRects || maxCount == 0 || !selector) {
-        return 0;
-    }
-
-    typedef NSArray *(*ReservedIMP)(id, SEL, NSInteger, NSUInteger);
-    ReservedIMP imp = (ReservedIMP)objc_msgSend;
-    NSUInteger options = includeInactive ? kApolloReservedOptionIncludeInactive : 0;
-    NSUInteger count = 0;
-    UIEdgeInsets margins = UIEdgeInsetsZero;
-
-    for (NSInteger kind = kApolloReservedKindProbeMin; kind <= kApolloReservedKindProbeMax; kind++) {
-        NSArray *regions = nil;
-        @try {
-            regions = imp(view, selector, kind, options);
-        } @catch (__unused NSException *exception) {
-            regions = nil;
-        }
-        if (![regions isKindOfClass:[NSArray class]]) continue;
-        for (id region in regions) {
-            if (!ApolloReservedRegionIsActive(region, includeInactive)) continue;
-            CGRect frame = CGRectZero;
-            if (!ApolloReservedReadFrame(region, &frame, includeInactive)) continue;
-            UIEdgeInsets regionMargins;
-            if (ApolloReservedReadMargins(region, &regionMargins)) {
-                margins.top = MAX(margins.top, regionMargins.top);
-                margins.left = MAX(margins.left, regionMargins.left);
-                margins.bottom = MAX(margins.bottom, regionMargins.bottom);
-                margins.right = MAX(margins.right, regionMargins.right);
-            }
-            if (count < maxCount) {
-                outRects[count] = frame;
-                count++;
-            }
-        }
-    }
-    if (outMargins) *outMargins = margins;
-    return count;
+    return 0;
 }
 
 static void ApolloReservedConvertRects(const CGRect *rects,
@@ -166,7 +42,7 @@ NSUInteger ApolloDeviceCopyReservedRectsForView(UIView *view,
 ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view) {
     ApolloReservedAvoidance empty;
     memset(&empty, 0, sizeof(empty));
-    if (!ApolloReservedViewCanQuery(view)) return empty;
+    if (!view) return empty;
     CGRect rects[8];
     UIEdgeInsets margins = UIEdgeInsetsZero;
     NSUInteger count = ApolloReservedCollect(view, rects, 8, NO, &margins);
@@ -182,7 +58,7 @@ ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view) {
 }
 
 BOOL ApolloDeviceHasDivisionRegionInView(UIView *view) {
-    if (!ApolloReservedViewCanQuery(view)) return NO;
+    if (!view) return NO;
     CGRect rects[8];
     NSUInteger count = ApolloDeviceCopyReservedRectsForView(view, rects, 8, YES);
     if (count == 0) return NO;

@@ -1,10 +1,11 @@
 // ApolloMediaHinge.xm
 //
 // Keep Apollo's fullscreen MediaPage chrome (close button and anything that
-// mirrors it) off an iOS 27.1 reserved region. Stock MediaViewer is a single
+// mirrors it) off a hinge-sized gutter. Stock MediaViewer is a single
 // full-bleed pager — wrapping it in UIArrangementViewController would break
-// presentation, swipe-up comments, and PiP — so we query reservedRegions at
-// runtime and no-op on older SDKs.
+// presentation, swipe-up comments, and PiP. UIKit reservedRegions SIGSEGVs
+// on Duo even with window+scene during first commit, so avoidance is
+// chrome / layoutMargins only (empty reserved list).
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
