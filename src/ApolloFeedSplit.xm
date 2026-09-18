@@ -6,6 +6,7 @@
 //
 // Open Duo / Regular **primary chrome is the concept mock**: current feed
 // on the left, selected post + comments on the right (feed | comments).
+// A lone feed stays in the leading half (never full-bleed across the hinge).
 // The slim rail switches Home / Popular / All / My Subreddits / Profile /
 // Settings. **list | feed** tiles only while My Subreddits is picking a
 // destination; choosing a subreddit puts that feed back in the left pane.
@@ -22,6 +23,7 @@
 // and we do not double-count the notch.
 
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
 
@@ -42,6 +44,7 @@
 static char kApolloFeedSplitPrimaryAlongsideKey;
 static char kApolloFeedSplitSeparatorKey;
 static char kApolloFeedSplitMutatingStackKey;
+static char kApolloFeedSplitApplyingKey;
 static char kApolloFeedSplitLastModeKey;
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
@@ -100,6 +103,45 @@ static void ApolloFeedSplitSetFrame(UIView *view, CGRect frame) {
     if (CGRectEqualToRect(view.frame, frame)) return;
     view.autoresizingMask = UIViewAutoresizingNone;
     view.frame = frame;
+}
+
+// Column view + the VC's own view must both match frames.feed / detail.
+// RedditList otherwise keeps a full-bleed or letterboxed inner frame.
+static void ApolloFeedSplitPinColumn(UIViewController *controller,
+                                     UIView *container,
+                                     ApolloFeedSplitRect rect) {
+    if (!controller || !container) return;
+    if (!controller.isViewLoaded) [controller loadViewIfNeeded];
+    UIView *layout = ApolloFeedSplitLayoutView(controller, container);
+    if (!layout) return;
+    CGRect frame = CGRectMake(rect.x, rect.y, rect.width, rect.height);
+    layout.clipsToBounds = YES;
+    ApolloFeedSplitSetFrame(layout, frame);
+    UIView *view = controller.view;
+    if (view && view != layout) {
+        view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        if (!CGRectEqualToRect(view.frame, layout.bounds)) {
+            view.frame = layout.bounds;
+        }
+    }
+    if (view && [controller respondsToSelector:@selector(tableView)]) {
+        UIView *table = nil;
+        @try {
+            table = ((UIView * (*)(id, SEL))objc_msgSend)(controller, @selector(tableView));
+        } @catch (__unused NSException *exception) {
+            table = nil;
+        }
+        if ([table isKindOfClass:[UIView class]] && table.superview == view) {
+            table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            if (!CGRectEqualToRect(table.frame, view.bounds)) {
+                table.frame = view.bounds;
+            }
+        }
+    }
+    if (view) {
+        [view setNeedsLayout];
+        [view layoutIfNeeded];
+    }
 }
 
 static UIView *ApolloFeedSplitSeparator(UINavigationController *nav, BOOL create) {
@@ -203,12 +245,54 @@ static void ApolloFeedSplitLogModeIfChanged(UINavigationController *nav, ApolloF
               name, pairName, (long)nav.traitCollection.horizontalSizeClass);
 }
 
+static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated);
+
+static UIViewController *ApolloFeedSplitFirstFeedOnStack(UINavigationController *nav) {
+    if (!nav) return nil;
+    for (UIViewController *controller in nav.viewControllers) {
+        if (ApolloFeedSplitIsListController(controller)) continue;
+        if (ApolloFeedSplitIsFeedController(controller)) return controller;
+    }
+    return nil;
+}
+
+extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) {
+    ApolloDuoRailSetPickingSubreddits(YES);
+    if (!nav) {
+        ApolloLog(@"[FeedSplit] My Subreddits skipped (no posts nav)");
+        return;
+    }
+    UIViewController *root = nav.viewControllers.firstObject;
+    UIViewController *feed = ApolloFeedSplitFirstFeedOnStack(nav);
+    NSArray<UIViewController *> *want = nil;
+    if (root && feed && root != feed) {
+        want = @[ root, feed ];
+    } else if (root) {
+        want = @[ root ];
+    }
+    objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (want && ![nav.viewControllers isEqualToArray:want]) {
+        [nav setViewControllers:want animated:NO];
+    }
+    if (root && !root.isViewLoaded) [root loadViewIfNeeded];
+    if (feed && !feed.isViewLoaded) [feed loadViewIfNeeded];
+    objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloFeedSplitApply(nav, NO);
+    ApolloLog(@"[FeedSplit] My Subreddits list|feed stack=%lu",
+              (unsigned long)nav.viewControllers.count);
+}
+
 static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     if (!nav.isViewLoaded || ApolloRowMeasureInProgress()) return;
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
+    if (objc_getAssociatedObject(nav, &kApolloFeedSplitApplyingKey)) return;
+    objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIView *container = ApolloFeedSplitContainerView(nav);
-    if (!container || CGRectIsEmpty(container.bounds)) return;
+    if (!container || CGRectIsEmpty(container.bounds)) {
+        objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
 
     UIViewController *feed = nil;
     UIViewController *detail = nil;
@@ -237,7 +321,8 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     }
     ApolloFeedSplitFrames frames = ApolloFeedSplitFramesMake(
         container.bounds.size.width, container.bounds.size.height,
-        extraLeft, extraRight, mode, rtl ? 1 : 0, tileStyle, hingeX, hingeW);
+        extraLeft, extraRight, mode, rtl ? 1 : 0, tileStyle, hingeX, hingeW,
+        ApolloDuoRailIsActive() ? 1 : 0);
 
     void (^apply)(void) = ^{
         UIView *separator = ApolloFeedSplitSeparator(nav, mode == ApolloFeedSplitModeTiled);
@@ -268,18 +353,14 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         if (feedLayout.superview != container) {
             [container insertSubview:feedLayout atIndex:0];
         }
-        ApolloFeedSplitSetFrame(feedLayout, CGRectMake(frames.feed.x, frames.feed.y,
-                                                       frames.feed.width, frames.feed.height));
+        ApolloFeedSplitPinColumn(feed, container, frames.feed);
 
         if (mode == ApolloFeedSplitModeTiled && detail) {
             UIView *detailLayout = ApolloFeedSplitLayoutView(detail, container);
-            if (detailLayout) {
-                if (detailLayout.superview != container) {
-                    [container addSubview:detailLayout];
-                }
-                ApolloFeedSplitSetFrame(detailLayout, CGRectMake(frames.detail.x, frames.detail.y,
-                                                                 frames.detail.width, frames.detail.height));
+            if (detailLayout && detailLayout.superview != container) {
+                [container addSubview:detailLayout];
             }
+            ApolloFeedSplitPinColumn(detail, container, frames.detail);
             ApolloFeedSplitSetPrimaryAlongside(feed, YES);
             if (separator) {
                 CGFloat gutter = rtl
@@ -299,11 +380,15 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         }
     };
 
-    if (animated) {
-        [UIView animateWithDuration:0.25 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:apply completion:nil];
-    } else {
-        apply();
+    if (animated && !ApolloDuoRailIsActive()) {
+        [UIView animateWithDuration:0.25 delay:0.0 options:UIViewAnimationOptionCurveEaseInOut animations:apply completion:^(BOOL finished) {
+            (void)finished;
+            objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }];
+        return;
     }
+    apply();
+    objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void ApolloFeedSplitScheduleApply(UINavigationController *nav) {
@@ -399,7 +484,7 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         if (nav.transitionCoordinator) {
             ApolloFeedSplitScheduleApply(nav);
         } else {
-            ApolloFeedSplitApply(nav, YES);
+            ApolloFeedSplitApply(nav, ApolloDuoRailIsActive() ? NO : YES);
         }
     }
 }
@@ -430,19 +515,28 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
 
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     UIViewController *popped = %orig;
-    ApolloFeedSplitScheduleApply((UINavigationController *)self);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (!objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) {
+        ApolloFeedSplitScheduleApply(nav);
+    }
     return popped;
 }
 
 - (NSArray<UIViewController *> *)popToViewController:(UIViewController *)viewController animated:(BOOL)animated {
     NSArray<UIViewController *> *popped = %orig;
-    ApolloFeedSplitScheduleApply((UINavigationController *)self);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (!objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) {
+        ApolloFeedSplitScheduleApply(nav);
+    }
     return popped;
 }
 
 - (NSArray<UIViewController *> *)popToRootViewControllerAnimated:(BOOL)animated {
     NSArray<UIViewController *> *popped = %orig;
-    ApolloFeedSplitScheduleApply((UINavigationController *)self);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (!objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) {
+        ApolloFeedSplitScheduleApply(nav);
+    }
     return popped;
 }
 

@@ -7,7 +7,9 @@ extern "C" {
 
 // Size-class two-pane layout for Regular-width iPhone (Plus/Max
 // landscape, Duo inner). Primary reading pair is feed | comments
-// (concept mock). list | feed is only the My Subreddits picker.
+// (concept mock). A lone feed/list on a Duo-wide canvas stays in the
+// leading half — never a full-bleed column across the hinge.
+// list | feed is the My Subreddits picker.
 // C-only so host tests can compile this header without UIKit.
 
 enum {
@@ -37,7 +39,7 @@ enum {
     ApolloFeedSplitFeedMaxWidth = 428,
     ApolloFeedSplitGutterWidth = 12,
     ApolloFeedSplitCenteredMaxWidth = 700,
-    ApolloFeedSplitBalancedMinWidth = 800, /* mock 50/50 / un-capped feed */
+    ApolloFeedSplitBalancedMinWidth = 800, /* mock 50/50; feed-only pins leading */
     ApolloFeedSplitMinRegularWidth =
         ApolloFeedSplitFeedMinWidth + ApolloFeedSplitGutterWidth + ApolloFeedSplitFeedMinWidth,
 };
@@ -76,9 +78,27 @@ static inline ApolloFeedSplitMode ApolloFeedSplitModeForTraits(int horizontalSiz
     return hasDetail ? ApolloFeedSplitModeTiled : ApolloFeedSplitModeCentered;
 }
 
+static inline int ApolloFeedSplitUsableIsDuoWide(double usableWidth) {
+    return usableWidth + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth;
+}
+
+// Leading pane for a lone feed/list, or either column of a Duo-wide tile.
+// ~50% minus gutter so feed-only, list|feed, and feed|comments share width.
+static inline double ApolloFeedSplitLeadingColumnWidth(double usableWidth) {
+    double gutter = (double)ApolloFeedSplitGutterWidth;
+    double half = (usableWidth - gutter) * 0.5;
+    if (half < (double)ApolloFeedSplitFeedMinWidth) {
+        half = usableWidth * 0.5;
+    }
+    if (half < 0.0) half = 0.0;
+    if (half > usableWidth) half = usableWidth;
+    return half;
+}
+
 static inline ApolloFeedSplitTileStyle ApolloFeedSplitTileStyleForPair(int readingPair,
                                                                        double usableWidth) {
-    if (readingPair && usableWidth + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth) {
+    (void)readingPair;
+    if (ApolloFeedSplitUsableIsDuoWide(usableWidth)) {
         return ApolloFeedSplitTileBalanced;
     }
     return ApolloFeedSplitTileMaster;
@@ -92,7 +112,8 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
                                                               int rightToLeft,
                                                               ApolloFeedSplitTileStyle tileStyle,
                                                               double hingeGapX,
-                                                              double hingeGapWidth) {
+                                                              double hingeGapWidth,
+                                                              int pinLeading) {
     ApolloFeedSplitFrames frames;
     frames.feed.x = 0.0;
     frames.feed.y = 0.0;
@@ -117,11 +138,20 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
 
     if (mode == ApolloFeedSplitModeCentered) {
         double feedWidth = usable;
-        if (usable + 0.5 < (double)ApolloFeedSplitBalancedMinWidth
-            && feedWidth > (double)ApolloFeedSplitCenteredMaxWidth) {
-            feedWidth = (double)ApolloFeedSplitCenteredMaxWidth;
+        int duoLeading = pinLeading || ApolloFeedSplitUsableIsDuoWide(usable);
+        if (duoLeading) {
+            feedWidth = ApolloFeedSplitLeadingColumnWidth(usable);
+            if (rightToLeft) {
+                frames.feed.x = containerWidth - extraRight - feedWidth;
+            } else {
+                frames.feed.x = extraLeft;
+            }
+        } else {
+            if (feedWidth > (double)ApolloFeedSplitCenteredMaxWidth) {
+                feedWidth = (double)ApolloFeedSplitCenteredMaxWidth;
+            }
+            frames.feed.x = extraLeft + (usable - feedWidth) * 0.5;
         }
-        frames.feed.x = extraLeft + (usable - feedWidth) * 0.5;
         frames.feed.width = feedWidth;
         frames.feed.height = containerHeight;
         return frames;
@@ -188,6 +218,16 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
 
 #ifdef __cplusplus
 }
+#endif
+
+#if defined(__OBJC__)
+#import <UIKit/UIKit.h>
+
+__BEGIN_DECLS
+/// Instant list|feed (or list-only leading) for the Subs rail. No UIKit
+/// push animation and a single FeedSplit apply — avoids hinge width thrash.
+void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav);
+__END_DECLS
 #endif
 
 #endif

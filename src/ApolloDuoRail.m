@@ -124,27 +124,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
     UINavigationController *nav = ApolloDuoRailPostsNav(tabs);
     if (item == ApolloDuoRailItemSubreddits) {
-        ApolloDuoRailSetPickingSubreddits(YES);
-        if (nav.viewControllers.count > 2) {
-            UIViewController *root = nav.viewControllers.firstObject;
-            UIViewController *feed = nil;
-            for (UIViewController *controller in nav.viewControllers) {
-                if (controller == root) continue;
-                const char *name = class_getName(controller.class);
-                if (name && (strstr(name, "PostsViewController")
-                             || strstr(name, "LitePostsViewController")
-                             || strstr(name, "SavedPostsCommentsViewController"))) {
-                    feed = controller;
-                    break;
-                }
-            }
-            if (root && feed) {
-                [nav setViewControllers:@[ root, feed ] animated:YES];
-            } else {
-                [nav popToRootViewControllerAnimated:YES];
-            }
-        }
-        ApolloLog(@"[DuoRail] My Subreddits (list leading)");
+        ApolloFeedSplitShowSubredditPicker(nav);
         return;
     }
     ApolloDuoRailSetPickingSubreddits(NO);

@@ -65,9 +65,11 @@ or an SDK bump.
   split columns defensively; it now also treats a nav child whose view is
   still in the window as visible (the tiled feed).
 - Regular + usable width ≥ 652pt (`320+12+320`):
-  - list only / feed only → centered (full width on canvases ≥ 800pt)
+  - list only / feed only → leading half on Duo-wide / rail-active canvases
+    (never a full-bleed column across the hinge); Plus landscape still centers
   - feed + comments → tiled **feed | comments** (primary mock reading pair)
   - list + feed → tiled **list | feed** only while My Subreddits is picking
+    (instant rail apply; list fills `frames.feed`)
 - Compact, unspecified, or Regular-but-narrow → stacked (UIKit's existing
   push). Swipe-up media-pane comments never tile.
 - Column frames use `ApolloDeviceChromeExtra` (hinge-sized layout-margin
@@ -233,11 +235,11 @@ Confirm feed size-class layout (step 3 + open Duo):
 - Regular / Duo inner open: slim rail + **feed | comments** after a
   post (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular /
   All switch the left-pane feed. My Subreddits is `pair=list-feed`
-  only while picking.
+  only while picking (list fills the leading column; no push animation).
 - A center reserved hinge should sit in the gutter, not under a
   title or comment.
-- List-only or feed-only on the stack (no pair): that screen is a
-  centered column (`mode=centered`), not a 900pt+ stretched list.
+- List-only or feed-only on the stack (no pair): leading half
+  (`mode=centered`, Duo-wide / rail), not a 900pt+ column across the fold.
 - Fold / rotate Regular → Compact: comments go full width; feed leaves.
 - Tap a second post in the still-visible feed: comments column replaces,
   back still returns to the feed.
@@ -319,7 +321,7 @@ the sim stubs.
   vs LCD-1 — pass the display id. Touches on the unused chrome should
   fall through the floating-tab overlay (`hitTest` + same-scene bind).
 - Apollo's Posts-tab second tap still pops to the list (list-only
-  centered). That is stock navigation, not a three-column keep.
+  leading on Duo). That is stock navigation, not a three-column keep.
 - The Duo rail hides the stock tab bar (and `_UITabContainerView` when
   present). Inbox is not a rail item; open it from the inbox destination
   Apollo already owns. Auto-hide-on-scroll will not unhide the tab bar
