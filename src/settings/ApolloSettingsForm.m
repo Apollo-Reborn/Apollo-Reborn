@@ -443,14 +443,20 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         }
         case ApolloSFRowKindValue:
         case ApolloSFRowKindDisclosure: {
-            static NSString *const reuseID = @"ApolloSFValue";
+            // A disclosure row may carry its detail as a subtitle under the
+            // title (wraps, never truncates) rather than as a trailing value;
+            // that variant gets its own reuse pool since the cell style differs.
+            BOOL subtitle = row.kind == ApolloSFRowKindDisclosure && row.detailAsSubtitle;
+            NSString *reuseID = subtitle ? @"ApolloSFDisclosureSubtitle" : @"ApolloSFValue";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
-            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseID];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1
+                                                  reuseIdentifier:reuseID];
             BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             cell.textLabel.enabled = enabled;
             cell.detailTextLabel.text = row.detail ? row.detail() : nil;
+            cell.detailTextLabel.numberOfLines = subtitle ? 0 : 1;
             cell.detailTextLabel.textColor = enabled
                 ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
             cell.accessoryType = (enabled && row.kind == ApolloSFRowKindDisclosure)

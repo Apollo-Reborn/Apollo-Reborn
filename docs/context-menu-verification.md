@@ -159,6 +159,18 @@ UIKit icon renderer was stubbed for the host build.
   describes this limitation.
 
 
+- The settings screen is a hub list (All Menus; the four ••• menus; the three
+  moderator menus, each row with its glyph and a "Default" / "Custom order ·
+  N hidden" summary) that pushes one editor per menu
+  (`ApolloActionMenuEditorViewController initWithContext:`). Each editor is
+  also a settings route (`action-menus-<context>`) so settings search still
+  indexes every action and opens the right editor; the hub keeps the
+  `action-menus` route. The hub rebuilds its rows on every return so the
+  summaries track the editors.
+- Hub rows are disclosure rows with the form layer's new opt-in
+  `detailAsSubtitle` (Subtitle-style cell, own reuse pool, detail wraps):
+  as a trailing value "Custom order · 1 hidden" truncated beside
+  "Post (Comments)" on the iOS 27 sim. No other screen opts in.
 - Moderator menus are three more contexts (Moderator (Subreddit) / (Post) /
   (Comment)) with the same rules: no stored layout means untouched; only a
   moderator-flagged sheet applies a moderator layout; the settings preview
