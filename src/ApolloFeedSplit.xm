@@ -5,9 +5,9 @@
 // column.
 //
 // Open Duo / Regular: the slim leading rail (ApolloDuoRail) is the destination
-// switcher. **feed | comments** is the reading pair once a post is open.
-// **list | feed** tiles only while My Subreddits (or a list→feed push) is
-// on the stack so picking a subreddit updates the trailing feed.
+// switcher. The concept mock's primary reading pair is **feed | post+comments**
+// spanning the hinge (balanced columns on a wide inner canvas). **list | feed**
+// tiles only while My Subreddits (or a list→feed push) is on the stack.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -26,6 +26,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloDeviceChromeInsets.h"
+#import "ApolloDeviceReservedRegions.h"
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloState.h"
 
@@ -215,9 +216,20 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     BOOL rtl = nav.view.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
+    ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, NULL, NULL);
+    double usable = ApolloFeedSplitUsableWidth(container.bounds.size.width, extraLeft, extraRight);
+    ApolloFeedSplitTileStyle tileStyle = ApolloFeedSplitTileStyleForPair(
+        pair == ApolloFeedSplitPairFeedComments ? 1 : 0, usable);
+    ApolloReservedAvoidance avoid = ApolloDeviceReservedAvoidanceForView(container);
+    double hingeX = 0.0;
+    double hingeW = 0.0;
+    if (avoid.hasVerticalGap && avoid.gapWidth > 0.0) {
+        hingeX = avoid.gapX;
+        hingeW = avoid.gapWidth;
+    }
     ApolloFeedSplitFrames frames = ApolloFeedSplitFramesMake(
         container.bounds.size.width, container.bounds.size.height,
-        extraLeft, extraRight, mode, rtl ? 1 : 0);
+        extraLeft, extraRight, mode, rtl ? 1 : 0, tileStyle, hingeX, hingeW);
 
     void (^apply)(void) = ^{
         UIView *separator = ApolloFeedSplitSeparator(nav, mode == ApolloFeedSplitModeTiled);
@@ -262,7 +274,10 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
             }
             ApolloFeedSplitSetPrimaryAlongside(feed, YES);
             if (separator) {
-                CGFloat gutter = (CGFloat)ApolloFeedSplitGutterWidth;
+                CGFloat gutter = rtl
+                    ? (CGFloat)(frames.feed.x - (frames.detail.x + frames.detail.width))
+                    : (CGFloat)(frames.detail.x - (frames.feed.x + frames.feed.width));
+                if (gutter < 1.0) gutter = (CGFloat)ApolloFeedSplitGutterWidth;
                 CGFloat mid = rtl
                     ? (CGFloat)(frames.feed.x - gutter / 2.0)
                     : (CGFloat)(frames.feed.x + frames.feed.width + gutter / 2.0);

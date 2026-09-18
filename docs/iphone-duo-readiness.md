@@ -167,9 +167,17 @@ Runtime belt (`src/ApolloDeviceDisplay.{h,m,xm}`):
   the leading pane). Profile / Settings use `goToProfileTab` /
   `goToSettingsTab`. Compact and ordinary Plus landscape (~736pt,
   single screen) keep the stock tab bar.
-- **Reading pair:** feed | comments after a post is open. **list | feed**
-  only while the subreddit list is the leading master so a tap updates
-  the trailing feed without collapsing Regular to one column.
+- **Reading pair (concept mock):** once a post is open, **feed |
+  post+comments** tiles as a book-like 50/50 split on canvases ≥ 800pt
+  (the mock's two pages). A vertical reserved hinge becomes the gutter
+  so titles / media / comments do not sit under the fold. Narrower
+  Regular (Plus landscape) keeps the older 390pt master column.
+  **list | feed** only while My Subreddits is the leading master. Sort
+  pills stay Apollo's existing Hot/New/Top/Rising chrome on the feed.
+
+The attached concept mock (open book, dark chrome) is the visual for
+that reading pair: rail + feed on the left page, selected post and
+comments on the right page, nothing critical in the fold.
 
 Cover / outer display: no second Apollo UI. The cover is left alone
 aside from not stealing the key window or overlay. Dual `simctl io`
@@ -234,8 +242,10 @@ Confirm feed size-class layout (step 3 + open Duo):
   (`[DuoRail] shown`). Home / Popular / All switch the current feed;
   My Subreddits shows the list. After picking a subreddit,
   `[FeedSplit] mode=tiled pair=list-feed` until a post is opened.
-- Opening a post then tiles feed | comments
-  (`[FeedSplit] mode=tiled pair=feed-comments`).
+- Opening a post then tiles feed | comments as a ~50/50 book split
+  on the inner canvas (`[FeedSplit] mode=tiled pair=feed-comments`).
+  A center reserved hinge should sit in the gutter, not under a title
+  or comment.
 - List-only or feed-only on the stack (no pair): that screen is a
   centered column (`mode=centered`), not a 900pt+ stretched list.
 - Fold / rotate Regular → Compact: comments go full width; feed leaves.

@@ -6,10 +6,9 @@ extern "C" {
 #endif
 
 // Size-class two-pane layout for Regular-width iPhone (Plus/Max
-// landscape, Duo inner). Reading pair is feed | comments; list | feed
-// tiles while the subreddit list is the leading master. C-only so host
-// tests can compile this header without UIKit. Values match
-// UIUserInterfaceSizeClass.
+// landscape, Duo inner). The concept mock's reading pair is feed |
+// post+comments spanning the hinge; list | feed is the My Subreddits
+// picker. C-only so host tests can compile this header without UIKit.
 
 enum {
     ApolloFeedSplitSizeClassUnspecified = 0,
@@ -23,6 +22,13 @@ typedef enum {
     ApolloFeedSplitModeTiled = 2,
 } ApolloFeedSplitMode;
 
+// Master = phone-width leading column (list | feed). Balanced = the
+// mock's book split (feed | comments) on a wide inner canvas.
+typedef enum {
+    ApolloFeedSplitTileMaster = 0,
+    ApolloFeedSplitTileBalanced = 1,
+} ApolloFeedSplitTileStyle;
+
 // Two min-width columns (320+320) plus the gutter, so Regular-but-narrow
 // poses (some folds, small Plus widths) stay a single column.
 enum {
@@ -31,6 +37,7 @@ enum {
     ApolloFeedSplitFeedMaxWidth = 428,
     ApolloFeedSplitGutterWidth = 12,
     ApolloFeedSplitCenteredMaxWidth = 700,
+    ApolloFeedSplitBalancedMinWidth = 800, /* mock 50/50 / un-capped feed */
     ApolloFeedSplitMinRegularWidth =
         ApolloFeedSplitFeedMinWidth + ApolloFeedSplitGutterWidth + ApolloFeedSplitFeedMinWidth,
 };
@@ -69,12 +76,23 @@ static inline ApolloFeedSplitMode ApolloFeedSplitModeForTraits(int horizontalSiz
     return hasDetail ? ApolloFeedSplitModeTiled : ApolloFeedSplitModeCentered;
 }
 
+static inline ApolloFeedSplitTileStyle ApolloFeedSplitTileStyleForPair(int readingPair,
+                                                                       double usableWidth) {
+    if (readingPair && usableWidth + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth) {
+        return ApolloFeedSplitTileBalanced;
+    }
+    return ApolloFeedSplitTileMaster;
+}
+
 static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWidth,
                                                               double containerHeight,
                                                               double extraLeft,
                                                               double extraRight,
                                                               ApolloFeedSplitMode mode,
-                                                              int rightToLeft) {
+                                                              int rightToLeft,
+                                                              ApolloFeedSplitTileStyle tileStyle,
+                                                              double hingeGapX,
+                                                              double hingeGapWidth) {
     ApolloFeedSplitFrames frames;
     frames.feed.x = 0.0;
     frames.feed.y = 0.0;
@@ -99,7 +117,8 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
 
     if (mode == ApolloFeedSplitModeCentered) {
         double feedWidth = usable;
-        if (feedWidth > (double)ApolloFeedSplitCenteredMaxWidth) {
+        if (usable + 0.5 < (double)ApolloFeedSplitBalancedMinWidth
+            && feedWidth > (double)ApolloFeedSplitCenteredMaxWidth) {
             feedWidth = (double)ApolloFeedSplitCenteredMaxWidth;
         }
         frames.feed.x = extraLeft + (usable - feedWidth) * 0.5;
@@ -109,23 +128,45 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
     }
 
     double gutter = (double)ApolloFeedSplitGutterWidth;
-    if (gutter > usable) gutter = 0.0;
-    double feedWidth = (double)ApolloFeedSplitFeedPreferredWidth;
-    if (feedWidth > (double)ApolloFeedSplitFeedMaxWidth) {
-        feedWidth = (double)ApolloFeedSplitFeedMaxWidth;
+    double feedWidth = 0.0;
+    double detailWidth = 0.0;
+
+    if (hingeGapWidth > 0.0
+        && hingeGapX > extraLeft
+        && hingeGapX + hingeGapWidth < containerWidth - extraRight) {
+        gutter = hingeGapWidth;
+        feedWidth = hingeGapX - extraLeft;
+        detailWidth = (containerWidth - extraRight) - (hingeGapX + hingeGapWidth);
+        if (feedWidth < (double)ApolloFeedSplitFeedMinWidth
+            || detailWidth < (double)ApolloFeedSplitFeedMinWidth) {
+            hingeGapWidth = 0.0;
+        }
     }
-    if (feedWidth < (double)ApolloFeedSplitFeedMinWidth) {
-        feedWidth = (double)ApolloFeedSplitFeedMinWidth;
+
+    if (hingeGapWidth <= 0.0) {
+        if (gutter > usable) gutter = 0.0;
+        if (tileStyle == ApolloFeedSplitTileBalanced) {
+            feedWidth = (usable - gutter) * 0.5;
+            if (feedWidth < 0.0) feedWidth = 0.0;
+        } else {
+            feedWidth = (double)ApolloFeedSplitFeedPreferredWidth;
+            if (feedWidth > (double)ApolloFeedSplitFeedMaxWidth) {
+                feedWidth = (double)ApolloFeedSplitFeedMaxWidth;
+            }
+            if (feedWidth < (double)ApolloFeedSplitFeedMinWidth) {
+                feedWidth = (double)ApolloFeedSplitFeedMinWidth;
+            }
+            double maxFeed = usable - gutter - (double)ApolloFeedSplitFeedMinWidth;
+            if (maxFeed < (double)ApolloFeedSplitFeedMinWidth) {
+                feedWidth = (usable - gutter) * 0.5;
+                if (feedWidth < 0.0) feedWidth = 0.0;
+            } else if (feedWidth > maxFeed) {
+                feedWidth = maxFeed;
+            }
+        }
+        detailWidth = usable - feedWidth - gutter;
+        if (detailWidth < 0.0) detailWidth = 0.0;
     }
-    double maxFeed = usable - gutter - (double)ApolloFeedSplitFeedMinWidth;
-    if (maxFeed < (double)ApolloFeedSplitFeedMinWidth) {
-        feedWidth = (usable - gutter) * 0.5;
-        if (feedWidth < 0.0) feedWidth = 0.0;
-    } else if (feedWidth > maxFeed) {
-        feedWidth = maxFeed;
-    }
-    double detailWidth = usable - feedWidth - gutter;
-    if (detailWidth < 0.0) detailWidth = 0.0;
 
     frames.showsDetail = 1;
     frames.feed.width = feedWidth;
@@ -135,6 +176,9 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
     if (rightToLeft) {
         frames.feed.x = containerWidth - extraRight - feedWidth;
         frames.detail.x = extraLeft;
+    } else if (hingeGapWidth > 0.0) {
+        frames.feed.x = extraLeft;
+        frames.detail.x = hingeGapX + hingeGapWidth;
     } else {
         frames.feed.x = extraLeft;
         frames.detail.x = extraLeft + feedWidth + gutter;
