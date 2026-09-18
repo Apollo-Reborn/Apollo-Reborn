@@ -51,6 +51,54 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking) {
     ApolloLog(@"[DuoRail] My Subreddits picking=%d", picking ? 1 : 0);
 }
 
+static UINavigationController *ApolloDuoRailNavFromController(UIViewController *controller) {
+    if ([controller isKindOfClass:[UINavigationController class]]) {
+        return (UINavigationController *)controller;
+    }
+    if ([controller.navigationController isKindOfClass:[UINavigationController class]]) {
+        return controller.navigationController;
+    }
+    return nil;
+}
+
+// Posts tab without goToHomeTab — that selector pops to RedditList / opens
+// Home and would wipe a restored list|feed (or race a feed push that
+// re-dismisses the directory while picking is YES).
+static UINavigationController *ApolloDuoRailFindPostsNav(UITabBarController *tabs, BOOL selectTab) {
+    if (!tabs) return nil;
+    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
+    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class apolloNav = objc_getClass("_TtC6Apollo26ApolloNavigationController");
+    UINavigationController *best = nil;
+    for (UIViewController *child in tabs.viewControllers) {
+        UINavigationController *nav = ApolloDuoRailNavFromController(child);
+        if (!nav) continue;
+        BOOL looksPosts = NO;
+        for (UIViewController *vc in nav.viewControllers) {
+            if ((listClass && [vc isKindOfClass:listClass])
+                || (postsClass && [vc isKindOfClass:postsClass])) {
+                looksPosts = YES;
+                break;
+            }
+        }
+        if (looksPosts) {
+            best = nav;
+            break;
+        }
+        if (!best && apolloNav && [nav isKindOfClass:apolloNav]) {
+            best = nav;
+        }
+    }
+    if (!best && tabs.viewControllers.count > 0) {
+        best = ApolloDuoRailNavFromController(tabs.viewControllers.firstObject);
+    }
+    if (selectTab && best && tabs.selectedViewController != best
+        && [tabs.viewControllers containsObject:best]) {
+        tabs.selectedViewController = best;
+    }
+    return best;
+}
+
 static UINavigationController *ApolloDuoRailPostsNav(UITabBarController *tabs) {
     if (!tabs) return nil;
     if ([tabs respondsToSelector:@selector(goToHomeTab)]) {
@@ -60,14 +108,8 @@ static UINavigationController *ApolloDuoRailPostsNav(UITabBarController *tabs) {
             ApolloLog(@"[DuoRail] goToHomeTab threw: %@", exception);
         }
     }
-    UIViewController *selected = tabs.selectedViewController;
-    if ([selected isKindOfClass:[UINavigationController class]]) {
-        return (UINavigationController *)selected;
-    }
-    if ([selected.navigationController isKindOfClass:[UINavigationController class]]) {
-        return selected.navigationController;
-    }
-    return nil;
+    return ApolloDuoRailNavFromController(tabs.selectedViewController)
+        ?: ApolloDuoRailFindPostsNav(tabs, NO);
 }
 
 static BOOL ApolloDuoRailOpenListRow(UINavigationController *nav, NSInteger row) {
@@ -122,11 +164,12 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
         return;
     }
 
-    UINavigationController *nav = ApolloDuoRailPostsNav(tabs);
     if (item == ApolloDuoRailItemSubreddits) {
+        UINavigationController *nav = ApolloDuoRailFindPostsNav(tabs, YES);
         ApolloFeedSplitShowSubredditPicker(nav);
         return;
     }
+    UINavigationController *nav = ApolloDuoRailPostsNav(tabs);
     ApolloDuoRailSetPickingSubreddits(NO);
     if (item == ApolloDuoRailItemHome) {
         if (ApolloDuoRailOpenListRow(nav, 0)) {

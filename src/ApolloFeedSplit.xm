@@ -53,6 +53,12 @@ static char kApolloFeedSplitLastModeKey;
 static char kApolloFeedSplitSavedListKey;
 static char kApolloFeedSplitSpanCoalesceKey;
 static char kApolloFeedSplitNavBarOwnerKey;
+static char kApolloFeedSplitLastApplySizeKey;
+
+// Survives a posts-nav identity change. Associated object on the nav can
+// go missing if goToHomeTab rebuilds the stack controller; Subs restore
+// must still find the directory.
+static UIViewController *sApolloFeedSplitSavedListVC = nil;
 
 static UIView *ApolloFeedSplitSeparator(UINavigationController *nav, BOOL create);
 static UIViewController *ApolloFeedSplitSavedList(UINavigationController *nav);
@@ -107,12 +113,30 @@ static BOOL ApolloFeedSplitIsReadingDetailController(UIViewController *controlle
 }
 
 static UIViewController *ApolloFeedSplitSavedList(UINavigationController *nav) {
-    return nav ? objc_getAssociatedObject(nav, &kApolloFeedSplitSavedListKey) : nil;
+    UIViewController *list = nav ? objc_getAssociatedObject(nav, &kApolloFeedSplitSavedListKey) : nil;
+    if (ApolloFeedSplitIsListController(list)) return list;
+    if (ApolloFeedSplitIsListController(sApolloFeedSplitSavedListVC)) {
+        return sApolloFeedSplitSavedListVC;
+    }
+    return nil;
 }
 
 static void ApolloFeedSplitSaveList(UINavigationController *nav, UIViewController *list) {
-    if (!nav || !ApolloFeedSplitIsListController(list)) return;
-    objc_setAssociatedObject(nav, &kApolloFeedSplitSavedListKey, list, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!ApolloFeedSplitIsListController(list)) return;
+    sApolloFeedSplitSavedListVC = list;
+    if (nav) {
+        objc_setAssociatedObject(nav, &kApolloFeedSplitSavedListKey, list, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void ApolloFeedSplitRememberListOnStack(UINavigationController *nav) {
+    if (!nav) return;
+    for (UIViewController *controller in nav.viewControllers) {
+        if (ApolloFeedSplitIsListController(controller)) {
+            ApolloFeedSplitSaveList(nav, controller);
+            return;
+        }
+    }
 }
 
 typedef enum {
@@ -176,14 +200,12 @@ static void ApolloFeedSplitPinColumn(UIViewController *controller,
         } @catch (__unused NSException *exception) {
             table = nil;
         }
-        if ([table isKindOfClass:[UIView class]] && table.superview == view) {
+        // Only RedditList is a UIKit table. Posts/comments are Texture;
+        // writing table.frame / contentInsetAdjustmentNever there paints
+        // the same glyphs twice (header + body ghosting).
+        if (ApolloFeedSplitIsListController(controller)
+            && [table isKindOfClass:[UIView class]] && table.superview == view) {
             table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            if (ApolloDuoRailIsActive() && [table isKindOfClass:[UIScrollView class]]) {
-                // Frame already starts after the rail; do not add the tab
-                // controller's safe-area inset again (ghosted/double rows).
-                ((UIScrollView *)table).contentInsetAdjustmentBehavior =
-                    UIScrollViewContentInsetAdjustmentNever;
-            }
             if (!CGRectEqualToRect(table.frame, view.bounds)) {
                 table.frame = view.bounds;
             }
@@ -207,13 +229,28 @@ static void ApolloFeedSplitPinColumnClamped(UIViewController *controller,
     ApolloFeedSplitPinColumn(controller, container, rect);
 }
 
-// Shared UINavigationBar is full-width by default, so "Home" / sub names
-// center on the hinge. Pin the bar to the pane that owns the title:
-// leading when the lone feed/list is centered, trailing when the top VC
-// is the tiled detail (feed in list|feed, comments in feed|comments).
+// Shared UINavigationBar stays full-width (from the rail). Shrinking the
+// bar onto the comments column stacked its title on the post header
+// (ghosted "Weekly Advice Thread"). Shift only the title control into
+// the owning pane so titles are not on the hinge.
 static void ApolloFeedSplitClearNavBarOwner(UINavigationController *nav) {
     if (!nav) return;
     objc_setAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static UIView *ApolloFeedSplitNavBarTitleControl(UINavigationBar *bar) {
+    if (!bar) return nil;
+    for (UIView *sub in bar.subviews) {
+        const char *name = class_getName(sub.class);
+        if (name && (strstr(name, "TitleControl") || strstr(name, "TitleView"))) {
+            return sub;
+        }
+        for (UIView *inner in sub.subviews) {
+            const char *innerName = class_getName(inner.class);
+            if (innerName && strstr(innerName, "TitleControl")) return inner;
+        }
+    }
+    return bar.topItem.titleView;
 }
 
 static void ApolloFeedSplitPinNavigationBar(UINavigationController *nav,
@@ -230,7 +267,6 @@ static void ApolloFeedSplitPinNavigationBar(UINavigationController *nav,
     }
     ApolloFeedSplitRect owner = frames.feed;
     if (mode == ApolloFeedSplitModeTiled && frames.showsDetail) {
-        // Top VC owns the title: feed in list|feed, comments in feed|comments.
         owner = frames.detail;
     }
     (void)rtl;
@@ -238,23 +274,40 @@ static void ApolloFeedSplitPinNavigationBar(UINavigationController *nav,
         ApolloFeedSplitClearNavBarOwner(nav);
         return;
     }
-    CGRect column = CGRectMake((CGFloat)owner.x, 0.0, (CGFloat)owner.width,
-                               container ? container.bounds.size.height : nav.view.bounds.size.height);
-    UIView *from = container && container.superview ? container : nav.view;
-    CGRect inNav = [from convertRect:column toView:nav.view];
+    CGFloat rail = (CGFloat)ApolloDuoRailWidth;
     CGRect barFrame = bar.frame;
-    barFrame.origin.x = inNav.origin.x;
-    barFrame.size.width = inNav.size.width;
-    if (barFrame.size.width < 8.0) {
-        ApolloFeedSplitClearNavBarOwner(nav);
-        return;
-    }
-    objc_setAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey,
-                             [NSValue valueWithCGRect:barFrame],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    bar.autoresizingMask = UIViewAutoresizingNone;
-    if (!CGRectEqualToRect(bar.frame, barFrame)) {
+    CGFloat navWidth = nav.view.bounds.size.width;
+    if (navWidth < 8.0) return;
+    barFrame.origin.x = rail;
+    barFrame.size.width = navWidth - rail;
+    if (barFrame.size.width < 8.0) return;
+    bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    if (fabs(bar.frame.origin.x - barFrame.origin.x) > 0.5
+        || fabs(bar.frame.size.width - barFrame.size.width) > 0.5) {
         bar.frame = barFrame;
+    }
+
+    UIView *from = container && container.superview ? container : nav.view;
+    CGRect column = CGRectMake((CGFloat)owner.x, 0.0, (CGFloat)owner.width, 1.0);
+    CGRect ownerInNav = [from convertRect:column toView:nav.view];
+    CGRect ownerInBar = [nav.view convertRect:ownerInNav toView:bar];
+    ownerInBar.origin.y = 0.0;
+    ownerInBar.size.height = bar.bounds.size.height;
+    objc_setAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey,
+                             [NSValue valueWithCGRect:ownerInBar],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIView *title = ApolloFeedSplitNavBarTitleControl(bar);
+    if (title && ownerInBar.size.width > 8.0) {
+        CGRect titleFrame = title.frame;
+        titleFrame.origin.x = ownerInBar.origin.x + (ownerInBar.size.width - titleFrame.size.width) * 0.5;
+        if (titleFrame.origin.x < ownerInBar.origin.x) titleFrame.origin.x = ownerInBar.origin.x;
+        if (titleFrame.origin.x + titleFrame.size.width > ownerInBar.origin.x + ownerInBar.size.width) {
+            titleFrame.size.width = ownerInBar.size.width;
+            titleFrame.origin.x = ownerInBar.origin.x;
+        }
+        if (!CGRectEqualToRect(title.frame, titleFrame)) {
+            title.frame = titleFrame;
+        }
     }
 }
 
@@ -267,10 +320,14 @@ static void ApolloFeedSplitApplyStoredNavBar(UINavigationBar *bar) {
     if (!nav) return;
     NSValue *value = objc_getAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey);
     if (!value) return;
-    CGRect frame = value.CGRectValue;
-    bar.autoresizingMask = UIViewAutoresizingNone;
-    if (!CGRectEqualToRect(bar.frame, frame)) {
-        bar.frame = frame;
+    CGRect ownerInBar = value.CGRectValue;
+    UIView *title = ApolloFeedSplitNavBarTitleControl(bar);
+    if (!title || ownerInBar.size.width < 8.0) return;
+    CGRect titleFrame = title.frame;
+    titleFrame.origin.x = ownerInBar.origin.x + (ownerInBar.size.width - titleFrame.size.width) * 0.5;
+    if (titleFrame.origin.x < ownerInBar.origin.x) titleFrame.origin.x = ownerInBar.origin.x;
+    if (!CGRectEqualToRect(title.frame, titleFrame)) {
+        title.frame = titleFrame;
     }
 }
 
@@ -281,6 +338,29 @@ static BOOL ApolloFeedSplitViewIsColumnOf(UIView *sub, UIViewController *vc, UIV
     if (!sub || !vc.isViewLoaded) return NO;
     UIView *layout = ApolloFeedSplitLayoutView(vc, container);
     return sub == layout || sub == vc.view;
+}
+
+static BOOL ApolloFeedSplitIsSnapshotView(UIView *view) {
+    if (!view) return NO;
+    const char *name = class_getName(view.class);
+    return name && (strstr(name, "Snapshot") || strstr(name, "Replicant")
+                    || strstr(name, "PortalView"));
+}
+
+static void ApolloFeedSplitDedupeHostedView(UIView *container, UIViewController *vc) {
+    if (!container || !vc.isViewLoaded) return;
+    UIView *layout = ApolloFeedSplitLayoutView(vc, container);
+    UIView *view = vc.view;
+    if (!layout || !view || layout == view) return;
+    if (view.superview == container && layout.superview == container) {
+        [view removeFromSuperview];
+        if (view.superview != layout) {
+            [layout addSubview:view];
+            view.frame = layout.bounds;
+        }
+        ApolloLog(@"[FeedSplit] deduped sibling host %@ / %@",
+                  NSStringFromClass(layout.class), NSStringFromClass(view.class));
+    }
 }
 
 static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
@@ -300,6 +380,12 @@ static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
 
     for (UIView *sub in [container.subviews copy]) {
         if (sub == ApolloFeedSplitSeparator(nav, NO)) continue;
+        if (ApolloFeedSplitIsSnapshotView(sub)) {
+            ApolloLog(@"[FeedSplit] removing leftover snapshot %@",
+                      NSStringFromClass(sub.class));
+            [sub removeFromSuperview];
+            continue;
+        }
         UIViewController *owner = nil;
         for (UIViewController *vc in candidates) {
             if (ApolloFeedSplitViewIsColumnOf(sub, vc, container)) {
@@ -313,29 +399,65 @@ static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
                   NSStringFromClass(sub.class), NSStringFromClass(owner.class));
         [sub removeFromSuperview];
     }
+    ApolloFeedSplitDedupeHostedView(container, primary);
+    ApolloFeedSplitDedupeHostedView(container, secondary);
 }
 
 static BOOL ApolloFeedSplitChildSpansMidX(UIView *container) {
     if (!container) return NO;
     CGFloat mid = (CGFloat)ApolloFeedSplitContainerMidX(container.bounds.size.width);
     if (mid < 1.0) return NO;
+    CGFloat slop = 48.0;
     for (UIView *sub in container.subviews) {
         CGRect f = sub.frame;
         if (f.size.width < 1.0) continue;
-        if (CGRectGetMinX(f) + 0.5 < mid && CGRectGetMaxX(f) > mid + 0.5) {
-            // Ignore hairline separators and the full-width nav chrome wrappers
-            // that are not our column content (very short height or <2pt wide).
-            if (f.size.width < 2.0 || f.size.height < 2.0) continue;
-            // A view that is essentially the full container is a hinge span.
-            if (f.size.width + 1.0 >= container.bounds.size.width * 0.85) {
-                return YES;
-            }
-            if (CGRectGetMinX(f) < mid - 20.0 && CGRectGetMaxX(f) > mid + 20.0) {
-                return YES;
-            }
+        if (ApolloFeedSplitIsSnapshotView(sub)) continue;
+        if (f.size.width < 2.0 || f.size.height < 2.0) continue;
+        if (CGRectGetMinX(f) + slop < mid && CGRectGetMaxX(f) > mid + slop
+            && f.size.width + 1.0 >= container.bounds.size.width * 0.70) {
+            return YES;
         }
     }
     return NO;
+}
+
+static BOOL ApolloFeedSplitScrollViewIsActive(UIScrollView *scroll) {
+    return scroll && (scroll.tracking || scroll.dragging || scroll.decelerating);
+}
+
+static BOOL ApolloFeedSplitControllerIsScrolling(UIViewController *vc) {
+    if (!vc.isViewLoaded) return NO;
+    if ([vc.view isKindOfClass:[UIScrollView class]]
+        && ApolloFeedSplitScrollViewIsActive((UIScrollView *)vc.view)) {
+        return YES;
+    }
+    if ([vc respondsToSelector:@selector(tableView)]) {
+        UIScrollView *table = nil;
+        @try {
+            table = ((UIScrollView * (*)(id, SEL))objc_msgSend)(vc, @selector(tableView));
+        } @catch (__unused NSException *exception) {
+            table = nil;
+        }
+        if ([table isKindOfClass:[UIScrollView class]]
+            && ApolloFeedSplitScrollViewIsActive(table)) {
+            return YES;
+        }
+    }
+    for (UIView *sub in vc.view.subviews) {
+        if ([sub isKindOfClass:[UIScrollView class]]
+            && ApolloFeedSplitScrollViewIsActive((UIScrollView *)sub)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL ApolloFeedSplitNavIsScrolling(UINavigationController *nav) {
+    if (!nav) return NO;
+    for (UIViewController *vc in nav.viewControllers) {
+        if (ApolloFeedSplitControllerIsScrolling(vc)) return YES;
+    }
+    return ApolloFeedSplitControllerIsScrolling(nav.topViewController);
 }
 
 static UIView *ApolloFeedSplitSeparator(UINavigationController *nav, BOOL create) {
@@ -467,23 +589,54 @@ static UIViewController *ApolloFeedSplitFirstFeedOnStack(UINavigationController 
     return nil;
 }
 
+static UIViewController *ApolloFeedSplitFindListAnywhere(UINavigationController *preferred) {
+    UIViewController *list = ApolloFeedSplitSavedList(preferred);
+    if (list) return list;
+    if (preferred) {
+        for (UIViewController *controller in preferred.viewControllers) {
+            if (ApolloFeedSplitIsListController(controller)) return controller;
+        }
+    }
+    UIViewController *root = ApolloMainTabBarController();
+    if (![root isKindOfClass:[UITabBarController class]]) return nil;
+    UITabBarController *tabs = (UITabBarController *)root;
+    for (UIViewController *child in tabs.viewControllers) {
+        UINavigationController *nav = nil;
+        if ([child isKindOfClass:[UINavigationController class]]) {
+            nav = (UINavigationController *)child;
+        } else if ([child.navigationController isKindOfClass:[UINavigationController class]]) {
+            nav = child.navigationController;
+        }
+        if (!nav) continue;
+        for (UIViewController *controller in nav.viewControllers) {
+            if (ApolloFeedSplitIsListController(controller)) {
+                ApolloFeedSplitSaveList(preferred ?: nav, controller);
+                return controller;
+            }
+        }
+    }
+    return nil;
+}
+
 extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) {
     ApolloDuoRailSetPickingSubreddits(YES);
     if (!nav) {
         ApolloLog(@"[FeedSplit] My Subreddits skipped (no posts nav)");
         return;
     }
-    UIViewController *list = nil;
-    for (UIViewController *controller in nav.viewControllers) {
-        if (ApolloFeedSplitIsListController(controller)) {
-            list = controller;
-            break;
-        }
-    }
-    if (!list) list = ApolloFeedSplitSavedList(nav);
+    ApolloFeedSplitRememberListOnStack(nav);
+    UIViewController *list = ApolloFeedSplitFindListAnywhere(nav);
     UIViewController *feed = ApolloFeedSplitFirstFeedOnStack(nav);
     if (!feed && ApolloFeedSplitIsFeedController(nav.topViewController)) {
         feed = nav.topViewController;
+    }
+    if (!feed) {
+        for (UIViewController *controller in nav.viewControllers) {
+            if (ApolloFeedSplitIsFeedController(controller)) {
+                feed = controller;
+                break;
+            }
+        }
     }
     NSArray<UIViewController *> *want = nil;
     if (list && feed && list != feed) {
@@ -493,25 +646,29 @@ extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) 
     } else if (feed) {
         want = @[ feed ];
     }
+    ApolloLog(@"[FeedSplit] My Subreddits restore list=%d feed=%d saved=%d stack=%lu → %lu",
+              list ? 1 : 0, feed ? 1 : 0,
+              ApolloFeedSplitSavedList(nav) ? 1 : 0,
+              (unsigned long)nav.viewControllers.count,
+              (unsigned long)(want ? want.count : 0));
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (want && ![nav.viewControllers isEqualToArray:want]) {
         [nav setViewControllers:want animated:NO];
     }
     if (list && !list.isViewLoaded) [list loadViewIfNeeded];
     if (feed && !feed.isViewLoaded) [feed loadViewIfNeeded];
+    if (list) ApolloFeedSplitSaveList(nav, list);
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // Directory must stay leading-half only (never full-bleed across hinge).
     ApolloFeedSplitForceTiledForSeconds(0.8);
     ApolloFeedSplitApply(nav, NO);
     UIView *container = ApolloFeedSplitContainerView(nav);
     UIViewController *primary = nil;
     UIViewController *secondary = nil;
     ApolloFeedSplitPairOnStack(nav, &primary, &secondary);
-    if (!primary) primary = nav.topViewController;
+    if (!primary) primary = list ?: nav.topViewController;
+    if (!secondary) secondary = feed;
     ApolloFeedSplitRemoveForeignColumns(nav, container, primary, secondary);
     ApolloFeedSplitReapplySoon();
-    ApolloLog(@"[FeedSplit] My Subreddits list|feed stack=%lu",
-              (unsigned long)nav.viewControllers.count);
 }
 
 static void ApolloFeedSplitConsiderNav(UIViewController *vc, NSMutableArray *navs) {
@@ -603,6 +760,7 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     if (!nav.isViewLoaded || ApolloRowMeasureInProgress()) return;
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitApplyingKey)) return;
+    ApolloFeedSplitRememberListOnStack(nav);
     objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIView *container = ApolloFeedSplitContainerView(nav);
@@ -755,6 +913,9 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         return;
     }
     apply();
+    objc_setAssociatedObject(nav, &kApolloFeedSplitLastApplySizeKey,
+                             [NSValue valueWithCGSize:container.bounds.size],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(nav, &kApolloFeedSplitApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -844,34 +1005,32 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     UIView *container = ApolloFeedSplitContainerView(nav);
     BOOL duoRail = ApolloDuoRailIsActive();
-    BOOL force = ApolloFeedSplitShouldForceTiled();
-    BOOL spans = (duoRail || force) && ApolloFeedSplitChildSpansMidX(container);
+    BOOL spans = duoRail && ApolloFeedSplitChildSpansMidX(container);
+    BOOL scrolling = duoRail && ApolloFeedSplitNavIsScrolling(nav);
 
-    // During a push/pop transition UIKit still lays children full-bleed.
-    // Alongside + completion restore; while DuoRail/force is up, Apply every
-    // pass — do NOT skip because of transitionCoordinator when rail is active.
     if (nav.transitionCoordinator) {
         ApolloFeedSplitScheduleApply(nav);
-        if (duoRail || force || spans) {
-            ApolloFeedSplitApply(nav, NO);
-        }
+        if (spans) ApolloFeedSplitApply(nav, NO);
         return;
     }
 
-    // Any child spanning midX while DuoRail is active → re-Apply immediately.
-    // Coalesce tight layout loops without dropping the correction.
-    if (spans) {
+    // Active drag/deceleration: do not re-pin (that hitches the comments
+    // pane). Only intervene if a column has gone truly full-bleed.
+    if (scrolling && !spans) {
+        return;
+    }
+
+    NSValue *lastSize = objc_getAssociatedObject(nav, &kApolloFeedSplitLastApplySizeKey);
+    BOOL sizeChanged = !lastSize
+        || !CGSizeEqualToSize(lastSize.CGSizeValue, container.bounds.size);
+    if (!spans && !sizeChanged && duoRail) {
         NSNumber *last = objc_getAssociatedObject(nav, &kApolloFeedSplitSpanCoalesceKey);
         CFTimeInterval now = CACurrentMediaTime();
-        if (last && (now - last.doubleValue) < 0.016) {
-            // Still Apply — coalescing only skips the log spam path by falling
-            // through once per frame budget; never skip the clamp itself when
-            // the previous Apply could not clear the span.
+        if (last && (now - last.doubleValue) < 0.12) {
+            return;
         }
         objc_setAssociatedObject(nav, &kApolloFeedSplitSpanCoalesceKey, @(now),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloFeedSplitApply(nav, NO);
-        return;
     }
     ApolloFeedSplitApply(nav, NO);
 }
@@ -1024,6 +1183,11 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
 
 - (void)layoutSubviews {
     %orig;
+    UINavigationController *nav = nil;
+    if ([self.delegate isKindOfClass:[UINavigationController class]]) {
+        nav = (UINavigationController *)self.delegate;
+    }
+    if (nav && ApolloFeedSplitNavIsScrolling(nav)) return;
     ApolloFeedSplitApplyStoredNavBar((UINavigationBar *)self);
 }
 

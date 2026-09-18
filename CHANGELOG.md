@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 - Keep gallery chrome, MediaViewer close/PiP buttons, and the in-app PiP card off hinge-sized gutters using safe-area + layout-margin extras. Do not call UIKit `reservedRegions` — it SIGSEGVs on Duo even after the view has a window and scene (first CA commit, x0=NULL). PiP no longer sizes its last-resort window from a raw `UIScreen.mainScreen` read
 - On open Duo, pin MediaViewer to the trailing half (same pane as the post) so an image tap does not full-bleed under the hinge; swipe-dismiss re-applies the two-pane feed split so the list does not stretch across both panes
 - Duo polish: list/feed columns start after the slim rail (no covered row text); the navigation bar/title pins to the owning pane instead of centering on the hinge; Home/Popular/All stay leading-half when alone; orphan column views are removed so feed rows are not ghosted twice
+- Duo: stop ghosting post/comment text (do not pin Texture tables or shrink the nav bar over the comments header); skip FeedSplit Apply while the detail pane is scrolling so comments do not hitch; tapping Subs restores the saved directory (no goToHomeTab reset)
 
 ## [v3.7.1] - 2026-09-13
 

@@ -363,5 +363,9 @@ the sim stubs.
   extra is at least `ApolloDuoRailWidth` so columns start to its right.
   Tab-level `additionalSafeAreaInsets.left` is not used for Posts
   (Texture ignored it; UIKit tables would double-count). Profile /
-  Settings navs still get that inset. The shared `UINavigationBar` is
-  framed to the owning column so titles cannot center on the hinge.
+  Settings navs still get that inset. The shared `UINavigationBar`
+  stays full-width from the rail; only the title control is shifted
+  into the owning pane (shrinking the bar onto comments ghosted the
+  post title). Apply is skipped while a column scroll view is
+  tracking/decelerating. Subs must not call `goToHomeTab` — that
+  popped/reset the stack and re-dismissed the restored directory.
