@@ -83,6 +83,7 @@
 #import "ApolloFloatingTabsCrests.h"
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceDisplay.h"
 #import "ApolloDeviceGeometry.h"
 #import "ApolloState.h"
 #import "ApolloSubredditInfoCache.h"
@@ -667,7 +668,11 @@ static ApolloFloatingTabsController *sFTController = nil;
 // =============================================================================
 
 - (void)bindOverlayToPreferredScene {
-    UIWindowScene *scene = ApolloDevicePreferredWindowScene();
+    // Stay on the app window's scene so a full-size overlay cannot sit on
+    // the inner Duo panel while ThemeableWindow is letterboxed on the cover
+    // (or the other way around) and swallow hits on the unused chrome.
+    UIWindow *appWindow = ApolloDeviceAppWindow();
+    UIWindowScene *scene = appWindow.windowScene ?: ApolloDevicePreferredWindowScene();
     if (!self.window || !scene || self.window.windowScene == scene) return;
     self.window.windowScene = scene;
     ApolloLog(@"[FloatingTabs] Overlay rebound to scene %p", scene);
@@ -686,7 +691,8 @@ static ApolloFloatingTabsController *sFTController = nil;
         self.window.hidden = NO;
         return;
     }
-    UIWindowScene *scene = ApolloDevicePreferredWindowScene();
+    UIWindow *appWindow = ApolloDeviceAppWindow();
+    UIWindowScene *scene = appWindow.windowScene ?: ApolloDevicePreferredWindowScene();
     ApolloFloatingTabsWindow *window;
     if (scene) {
         window = [[ApolloFloatingTabsWindow alloc] initWithWindowScene:scene];

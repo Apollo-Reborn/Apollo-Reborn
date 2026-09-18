@@ -1,5 +1,6 @@
 #import "ApolloDeviceGeometry.h"
 #import "ApolloDeviceChromeInsets.h"
+#import "ApolloDeviceDisplay.h"
 
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -20,16 +21,60 @@ static const CGFloat kApolloFauxCutOutHeight = 37.0;
 UIWindowScene *ApolloDevicePreferredWindowScene(void) {
     UIApplication *application = [UIApplication sharedApplication];
     if (!application) return nil;
+
+    UIWindowScene *firstActive = nil;
+    UIWindowScene *largestActive = nil;
     UIWindowScene *fallback = nil;
+    UIWindowScene *largestAny = nil;
+    CGFloat largestActiveArea = -1.0;
+    CGFloat largestAnyArea = -1.0;
+    CGFloat screenSizes[8][2];
+    unsigned screenCount = 0;
+
     for (UIScene *scene in application.connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
-        if (windowScene.activationState == UISceneActivationStateForegroundActive) {
-            return windowScene;
-        }
+        CGSize size = windowScene.screen.bounds.size;
+        CGFloat area = (CGFloat)ApolloDisplayArea(size.width, size.height);
         if (!fallback) fallback = windowScene;
+        if (area > largestAnyArea) {
+            largestAnyArea = area;
+            largestAny = windowScene;
+        }
+        if (windowScene.activationState == UISceneActivationStateForegroundActive) {
+            if (!firstActive) firstActive = windowScene;
+            if (area > largestActiveArea) {
+                largestActiveArea = area;
+                largestActive = windowScene;
+            }
+        }
+        if (size.width > 0.0 && size.height > 0.0 && screenCount < 8) {
+            unsigned i;
+            int seen = 0;
+            for (i = 0; i < screenCount; i++) {
+                if (fabs(screenSizes[i][0] - size.width) < 1.0
+                    && fabs(screenSizes[i][1] - size.height) < 1.0) {
+                    seen = 1;
+                    break;
+                }
+            }
+            if (!seen) {
+                screenSizes[screenCount][0] = size.width;
+                screenSizes[screenCount][1] = size.height;
+                screenCount++;
+            }
+        }
     }
-    return fallback;
+
+    int dual = 0;
+    if (screenCount >= 2) {
+        dual = ApolloDisplayScreensAreDual(screenSizes[0][0], screenSizes[0][1],
+                                           screenSizes[1][0], screenSizes[1][1]);
+    }
+    if (ApolloDisplayShouldPreferLargestScene((int)screenCount, dual)) {
+        return largestActive ?: largestAny ?: firstActive ?: fallback;
+    }
+    return firstActive ?: fallback;
 }
 
 UIScreen *ApolloDevicePreferredScreen(void) {

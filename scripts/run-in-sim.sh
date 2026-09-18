@@ -170,13 +170,24 @@ if [[ -f "$APP_DIR/Info.plist" ]]; then
 fi
 # Liquid Glass is an irreversible patch baked into the cached shell (SDK bump +
 # Assets.car swap), so re-prepare when the requested --glass state differs from
-# what's cached. The cached state is read from the main binary's linked SDK:
-# >= 19.0 (iOS 26) means glass is on.
+# what's cached. Glass now advertises sdk 27.1 (Duo full-bleed + IsLiquidGlass).
+# A leftover sdk 19.0 / 26.x shell still looks "glass" but letterboxes on Duo.
+# >= 19.0 means glass is on; glass also requires major.minor >= 27.1.
 if [[ -f "$APP_DIR/Apollo" ]]; then
-    CACHED_SDK_MAJOR="$(vtool -show-build "$APP_DIR/Apollo" 2>/dev/null | awk '/sdk/{split($2,v,"."); print v[1]}')"
-    CACHED_GLASS=0; [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 19 ]] && CACHED_GLASS=1
-    if [[ "$CACHED_GLASS" != "$GLASS" ]]; then
-        log "Requested glass=$GLASS differs from prepared glass=$CACHED_GLASS — re-preparing app"
+    CACHED_SDK="$(vtool -show-build "$APP_DIR/Apollo" 2>/dev/null | awk '/sdk/{print $2; exit}')"
+    CACHED_SDK_MAJOR="${CACHED_SDK%%.*}"
+    CACHED_SDK_REST="${CACHED_SDK#*.}"
+    CACHED_SDK_MINOR="${CACHED_SDK_REST%%.*}"
+    CACHED_GLASS=0
+    [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -ge 19 ]] && CACHED_GLASS=1
+    CACHED_DUO=0
+    if [[ -n "$CACHED_SDK_MAJOR" && "$CACHED_SDK_MAJOR" -gt 27 ]]; then
+        CACHED_DUO=1
+    elif [[ "$CACHED_SDK_MAJOR" == 27 && "${CACHED_SDK_MINOR:-0}" -ge 1 ]]; then
+        CACHED_DUO=1
+    fi
+    if [[ "$CACHED_GLASS" != "$GLASS" || ( "$GLASS" == 1 && "$CACHED_DUO" != 1 ) ]]; then
+        log "Requested glass=$GLASS (sdk 27.1) differs from prepared glass=$CACHED_GLASS sdk=${CACHED_SDK:-none} — re-preparing app"
         FRESH_APP=1
     fi
 fi
@@ -185,16 +196,25 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     [[ -f "$BASE_IPA" ]] || die "base IPA not found at $BASE_IPA (set BASE_IPA=...)"
 
     # With --glass, prep from a Liquid-Glass-patched base produced by the canonical
-    # patch.sh --liquid-glass (SDK bump to iOS 26 + duplicate-LC_RPATH fix + Assets.car
+    # patch.sh --liquid-glass (SDK bump to 27.1 + duplicate-LC_RPATH fix + Assets.car
     # swap + CFBundleAlternateIcons metadata — the latter is what flips the tweak's
-    # icon-picker on). Cached as ./.sim/glass-base.ipa; regenerated only when the base
-    # IPA changes. The platform patch below then re-targets it at the simulator.
+    # icon-picker on). Cached as ./.sim/glass-base.ipa; regenerated when the base
+    # IPA changes or the cached bump is older than 27.1. The platform patch below
+    # then re-targets it at the simulator.
     SRC_IPA="$BASE_IPA"
     if [[ "$GLASS" == 1 ]]; then
         SRC_IPA="$WORK_DIR/glass-base.ipa"
+        GLASS_SDK_STAMP="$WORK_DIR/glass-base.sdk"
+        NEED_GLASS_BASE=0
         if [[ ! -f "$SRC_IPA" || "$BASE_IPA" -nt "$SRC_IPA" ]]; then
-            log "Generating Liquid Glass base IPA via patch.sh --liquid-glass (cached at $SRC_IPA)"
+            NEED_GLASS_BASE=1
+        elif [[ ! -f "$GLASS_SDK_STAMP" || "$(cat "$GLASS_SDK_STAMP" 2>/dev/null)" != "27.1" ]]; then
+            NEED_GLASS_BASE=1
+        fi
+        if [[ "$NEED_GLASS_BASE" == 1 ]]; then
+            log "Generating Liquid Glass base IPA via patch.sh --liquid-glass (sdk 27.1; cached at $SRC_IPA)"
             ./patch.sh "$BASE_IPA" --liquid-glass -o "$SRC_IPA"
+            echo "27.1" > "$GLASS_SDK_STAMP"
         fi
     fi
 

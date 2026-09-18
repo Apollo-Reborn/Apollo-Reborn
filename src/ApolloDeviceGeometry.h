@@ -11,6 +11,8 @@ __BEGIN_DECLS
 UIScreen *ApolloDeviceScreenForWindow(UIWindow *window);
 
 /// Foreground-active `UIWindowScene`, else any connected window scene, else nil.
+/// When two attached screens look like Duo inner+cover, prefers the larger
+/// (inner) active scene so chrome is not bound to the cover.
 UIWindowScene *ApolloDevicePreferredWindowScene(void);
 
 /// Foreground-active `UIWindowScene.screen`, else `UIScreen.mainScreen`.
