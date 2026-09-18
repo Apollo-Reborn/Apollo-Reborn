@@ -48,6 +48,43 @@ sorting, observed native preview order, per-context isolation, explicit
 reordering, reset, duplicate/unknown IDs and malformed stored arrays. Only the
 UIKit icon renderer was stubbed for the host build.
 
+### Moderator menus (2026-09-17)
+
+- Apollo flags its moderator sheets on the ActionController itself
+  (`isShowingOnlyModeratorActions`, read by the glass renderer already); the
+  owner reads the same ivar through `class_getInstanceVariable` and lets a
+  moderator context claim only such a sheet (and such a sheet take only a
+  moderator context).
+- Entry points (Hopper, all already hooked by the glass renderer for its
+  source-view capture, so the arm/disarm sits inside those hooks — one hook per
+  selector): `-[PostsViewController moderatorBarButtonItemTappedWithSender:]`
+  (subreddit); `-[LargePostCellNode moderatorOptionsButtonTappedWithSender:]`
+  0x10030a3e4, `-[CompactPostCellNode …]` 0x1007e58fc, the
+  `moderatorBannerNodeTappedWithSender:` on both cell nodes, `RichMediaNode`
+  0x10058c450 and `CommentsHeaderCellNode` 0x10056d8b4, and
+  `-[CommentsViewController moderatorBarButtonItemTappedWithSender:]` (post);
+  `-[CommentCellNode moderatorBannerNodeTappedWithSender:]` 0x100508c54 and
+  the comment cell's own shield `-[CommentCellNode modButtonTappedWithSender:]`
+  0x100508c6c → `sub_10050a200` → `sub_1005485bc(comment, sectionController,
+  navigationController, closure)` (comment; the shield had no hook before —
+  added). Modmail's `-[PrivateMessageViewController
+  modActionsBarButtonItemTappedWithSender:]` stays untouched.
+- The Moderator row (kind 124) of a ••• sheet opens the object's moderator
+  sheet only after the ••• sheet has dismissed, so the tap hooks' synchronous
+  arm can't cover it: the glass action handler and the legacy `willSelect`
+  (native row whose kind is 124) call `ApolloActionMenuArmModeratorFollowUp`,
+  which arms the post's or comment's moderator context (from the parent
+  sheet's own context) inside the usual 2 s arm window; a non-moderator sheet
+  arriving first leaves it armed, a moderator sheet claims it.
+- Captured kinds (moderator of r/ApolloReborn, glass sim 26.5): subreddit
+  shield `164,163,166,167,168,169,178,203,165,170,171,172,209,175,210,179,177,
+  186,162`; post shield = post ••• Moderator row = comments nav-bar shield
+  `126,128,125,138,140,216,145,153,142,130,155,162`; comment shield = comment
+  ••• Moderator row `126,128,125,130,142,161,155,162`. Toggle pairs share an
+  item (Approve/Reapprove, Lock/Unlock 142/143/146/152, Sticky/Unsticky,
+  Mark/Unmark OC …); the post's Set Post Flair item now also carries kind 145
+  (the moderator's) next to 47 (your own post's).
+
 ## Behavior contracts
 
 - Opening settings, switching menus, and changing visibility do not create a
@@ -121,6 +158,12 @@ UIKit icon renderer was stubbed for the host build.
   cell dequeue contract. Their relative order is customizable; the footer
   describes this limitation.
 
+
+- Moderator menus are three more contexts (Moderator (Subreddit) / (Post) /
+  (Comment)) with the same rules: no stored layout means untouched; only a
+  moderator-flagged sheet applies a moderator layout; the settings preview
+  draws them in the moderator tint with destructive rows red, behind a shield
+  bar button instead of •••; All lists their items too.
 
 ## Reviewer checklist
 

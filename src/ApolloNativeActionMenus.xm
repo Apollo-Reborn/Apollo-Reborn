@@ -812,6 +812,8 @@ static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitl
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
             });
+            // The moderator sheet this row opens gets its own saved layout.
+            ApolloActionMenuArmModeratorFollowUp(actionController);
         }
         ApolloNativeActionMenuSelectRow(actionController, row);
     }];
@@ -842,11 +844,15 @@ BOOL ApolloNativeActionMenusActive(void) {
 // round trip: the settings preview shows the menu, it never performs it.
 UIMenuElement *ApolloNativeActionMenuPreviewAction(NSString *title, UIImage *image, BOOL moderator, BOOL enabled) {
     if (title.length == 0) return nil;
-    UIColor *tintColor = moderator ? ApolloNativeActionMenuModeratorColor() : nil;
+    BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
+    UIColor *tintColor = (moderator && !destructive) ? ApolloNativeActionMenuModeratorColor() : nil;
     if (tintColor && image) image = ApolloNativeActionMenuTintedImage(image, tintColor);
     UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {}];
     ApolloNativeActionMenuStyleElementTitle(action, tintColor ? UIColor.labelColor : nil);
-    if (!enabled) action.attributes = UIMenuElementAttributesDisabled;
+    UIMenuElementAttributes attributes = 0;
+    if (destructive) attributes |= UIMenuElementAttributesDestructive;
+    if (!enabled) attributes |= UIMenuElementAttributesDisabled;
+    action.attributes = attributes;
     return action;
 }
 
@@ -1644,14 +1650,24 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1669,14 +1685,24 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1694,8 +1720,25 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorComment);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
+}
+
+// The comment cell's own shield (Hopper: -[CommentCellNode modButtonTappedWithSender:]).
+- (void)modButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorComment);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1723,16 +1766,26 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo22CommentsHeaderCellNode
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1772,8 +1825,13 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorSubreddit);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1797,8 +1855,13 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 

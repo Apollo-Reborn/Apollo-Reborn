@@ -133,6 +133,9 @@ void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
 // Capture the current tap on this exact controller before UIKit defers a
 // legacy presentation. Called by the existing native-menu presentation owner.
 void ApolloActionMenuCaptureContextForController(id actionController);
+// From the handlers of a ••• sheet's Moderator row: arm the moderator context
+// that row opens (post's or comment's) for the sheet about to follow.
+void ApolloActionMenuArmModeratorFollowUp(id actionController);
 
 void ApolloActionMenuPrepareController(id actionController, NSString *_Nullable menuTitleHint);
 

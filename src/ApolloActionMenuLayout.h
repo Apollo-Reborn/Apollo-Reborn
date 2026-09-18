@@ -43,6 +43,13 @@ extern ApolloActionMenuContext const ApolloActionMenuContextPost;
 extern ApolloActionMenuContext const ApolloActionMenuContextPostDetail;
 // A comment's •••.
 extern ApolloActionMenuContext const ApolloActionMenuContextComment;
+// A moderator's menus (Apollo flags these sheets isShowingOnlyModeratorActions):
+// the shield at the top of a subreddit you moderate; a post's — its cell's
+// shield, the Moderator row of its ••• menus and the shield at the top of its
+// comments; a comment's — its shield and the Moderator row of its •••.
+extern ApolloActionMenuContext const ApolloActionMenuContextModeratorSubreddit;
+extern ApolloActionMenuContext const ApolloActionMenuContextModeratorPost;
+extern ApolloActionMenuContext const ApolloActionMenuContextModeratorComment;
 
 // Presentation order for pickers.
 NSArray<ApolloActionMenuContext> *ApolloActionMenuAllContexts(void);
@@ -52,6 +59,11 @@ NSString *ApolloActionMenuContextTitle(ApolloActionMenuContext context);
 NSString *ApolloActionMenuContextDescription(ApolloActionMenuContext context);
 // Recognises stored ids (defensive: an unknown string in defaults is ignored).
 BOOL ApolloActionMenuContextIsValid(NSString *_Nullable context);
+// One of the moderator menus (drawn in the moderator tint, no locked rows).
+BOOL ApolloActionMenuContextIsModerator(ApolloActionMenuContext _Nullable context);
+// The moderator menu that `context`'s Moderator row opens: the post's for
+// post and post-detail, the comment's for comment, nil for the rest.
+ApolloActionMenuContext _Nullable ApolloActionMenuModeratorContextFollowing(ApolloActionMenuContext _Nullable context);
 
 @interface ApolloActionMenuItem : NSObject
 @property (nonatomic, copy, readonly) NSString *itemID;

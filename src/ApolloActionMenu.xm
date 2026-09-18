@@ -187,14 +187,48 @@ UIImage *ApolloActionMenuSymbolIcon(NSString *symbolName) {
 // order after every catalogued item. A context with no saved layout is left
 // exactly as Apollo built it.
 
+// Apollo flags its moderator sheets (the shield buttons' and the Moderator
+// row's) on the controller itself.
+static BOOL ApolloActionMenuControllerIsModeratorOnly(id controller) {
+    if (!controller) return NO;
+    Ivar ivar = class_getInstanceVariable(object_getClass(controller), "isShowingOnlyModeratorActions");
+    if (!ivar) return NO;
+    return *(BOOL *)((uint8_t *)(__bridge void *)controller + ivar_getOffset(ivar));
+}
+
 static char kApolloActionMenuControllerContextKey;
 
 void ApolloActionMenuCaptureContextForController(id controller) {
     if (![controller isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
     if (objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey)) return;
     ApolloActionMenuContext context = ApolloActionMenuTakeArmedContext();
-    if (context) objc_setAssociatedObject(controller, &kApolloActionMenuControllerContextKey,
-                                         context, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (!context) return;
+    // A moderator context fits only a sheet Apollo flagged moderator-only, and
+    // such a sheet takes only a moderator context. The Moderator row arms its
+    // follow-up while the ••• sheet is still dismissing, so a sheet that isn't
+    // the mod sheet leaves the context armed for the one that is (within the
+    // arm window); a ••• context landing on a mod sheet is dropped, never
+    // misapplied.
+    BOOL moderatorSheet = ApolloActionMenuControllerIsModeratorOnly(controller);
+    if (ApolloActionMenuContextIsModerator(context) != moderatorSheet) {
+        ApolloLog(@"[ActionMenu] armed context %@ does not fit a %@ sheet — %@", context,
+                  moderatorSheet ? @"moderator" : @"regular", moderatorSheet ? @"dropped" : @"left armed");
+        if (!moderatorSheet) ApolloActionMenuArmContext(context);
+        return;
+    }
+    objc_setAssociatedObject(controller, &kApolloActionMenuControllerContextKey, context, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+// The Moderator row of a ••• sheet opens that object's moderator sheet once
+// the ••• sheet has dismissed — too late for the tap hooks' synchronous arm —
+// so the row's handlers (the glass action, the legacy willSelect) arm it
+// here; the capture above lets only a moderator-flagged sheet claim it.
+void ApolloActionMenuArmModeratorFollowUp(id actionController) {
+    ApolloActionMenuContext context = objc_getAssociatedObject(actionController, &kApolloActionMenuControllerContextKey);
+    ApolloActionMenuContext moderator = ApolloActionMenuModeratorContextFollowing(context);
+    if (!moderator) return;
+    ApolloLog(@"[ActionMenu] Moderator row of the %@ sheet — arming %@ for the sheet it opens", context, moderator);
+    ApolloActionMenuArmContext(moderator);
 }
 
 static char kApolloActionMenuElementKindKey;
@@ -499,9 +533,11 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
         ApolloLog(@"[ActionMenu] %lu spec(s) matched '%@': %@", (unsigned long)matched.count, menuTitle,
                   [matched valueForKey:@"identifier"]);
     }
-    if (context) {
-        // Diagnostic for the Action Menus catalogue: the kinds this context
-        // actually presented (no titles — those can carry user/subreddit names).
+    {
+        // Diagnostic for the Action Menus catalogue: the kinds EVERY sheet
+        // presents (no titles — those can carry user/subreddit names), the
+        // context it resolved to (none = left untouched) and whether Apollo
+        // flagged it as one of its moderator sheets.
         void *buffer = ApolloReadRawIvar(controller, "actions");
         int64_t count = ApolloSwiftArrayCount(buffer);
         NSMutableArray<NSString *> *kinds = [NSMutableArray arrayWithCapacity:(NSUInteger)MAX(count, 0)];
@@ -510,7 +546,8 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
                                           + (NSUInteger)i * kApolloActionMenuNativeElementStride);
             [kinds addObject:[NSString stringWithFormat:@"%u", kind]];
         }
-        ApolloLog(@"[ActionMenu] context=%@ customized=%d kinds=[%@] specs=%@", context, customized,
+        ApolloLog(@"[ActionMenu] context=%@ customized=%d moderatorOnly=%d kinds=[%@] specs=%@", context ?: @"(none)", customized,
+                  ApolloActionMenuControllerIsModeratorOnly(controller),
                   [kinds componentsJoinedByString:@","], [matched valueForKey:@"identifier"]);
     }
     return state;
@@ -890,9 +927,23 @@ static void ApolloActionMenuPerformSpec(id controller, UITableView *tableView,
 typedef NSIndexPath *(*ApolloActionMenuWillSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
 static ApolloActionMenuWillSelectIMP sApolloActionMenuOrigWillSelect = NULL;
 
+// The native kind at a row of the (already permuted) actions buffer.
+static uint16_t ApolloActionMenuNativeKindAtRow(id controller, NSInteger row) {
+    void *buffer = ApolloReadRawIvar(controller, "actions");
+    int64_t count = buffer ? ApolloSwiftArrayCount(buffer) : 0;
+    if (row < 0 || row >= count) return UINT16_MAX;
+    return *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
+                         + (NSUInteger)row * kApolloActionMenuNativeElementStride);
+}
+
 static NSIndexPath *ApolloActionMenuWillSelectRow(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
     ApolloActionMenuSpec *spec = ApolloActionMenuSpecAtIndexPath(self, indexPath);
     if (!spec) {
+        // A native row. The Moderator row (kind 124) opens the moderator sheet
+        // after this sheet dismisses: arm that sheet's context now.
+        if (indexPath.section == 0 && ApolloActionMenuNativeKindAtRow(self, indexPath.row) == 124) {
+            ApolloActionMenuArmModeratorFollowUp(self);
+        }
         if (sApolloActionMenuOrigWillSelect) return sApolloActionMenuOrigWillSelect(self, _cmd, tableView, indexPath);
         return indexPath;
     }

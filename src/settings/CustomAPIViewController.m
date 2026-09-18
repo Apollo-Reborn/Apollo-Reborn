@@ -1962,7 +1962,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             return [[ApolloActionMenuSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
     return [ApolloSettingsSection sectionWithTitle:@"Menus"
-                                            footer:@"Reorder or hide the items in the ••• menus of feeds, posts and comments."
+                                            footer:@"Reorder or hide the items in the ••• menus of feeds, posts and comments, and in the moderator menus."
                                               rows:@[ actionMenus ]];
 }
 

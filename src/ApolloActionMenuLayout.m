@@ -7,6 +7,9 @@ ApolloActionMenuContext const ApolloActionMenuContextFeed = @"feed";
 ApolloActionMenuContext const ApolloActionMenuContextPost = @"post";
 ApolloActionMenuContext const ApolloActionMenuContextPostDetail = @"post-detail";
 ApolloActionMenuContext const ApolloActionMenuContextComment = @"comment";
+ApolloActionMenuContext const ApolloActionMenuContextModeratorSubreddit = @"moderator-subreddit";
+ApolloActionMenuContext const ApolloActionMenuContextModeratorPost = @"moderator-post";
+ApolloActionMenuContext const ApolloActionMenuContextModeratorComment = @"moderator-comment";
 
 static NSString *const kApolloActionMenuLayoutOrderKey = @"order";
 static NSString *const kApolloActionMenuLayoutHiddenKey = @"hidden";
@@ -14,7 +17,9 @@ static NSString *const kApolloActionMenuSpecItemPrefix = @"spec.";
 
 NSArray<ApolloActionMenuContext> *ApolloActionMenuAllContexts(void) {
     return @[ ApolloActionMenuContextFeed, ApolloActionMenuContextPost,
-              ApolloActionMenuContextPostDetail, ApolloActionMenuContextComment ];
+              ApolloActionMenuContextPostDetail, ApolloActionMenuContextComment,
+              ApolloActionMenuContextModeratorSubreddit, ApolloActionMenuContextModeratorPost,
+              ApolloActionMenuContextModeratorComment ];
 }
 
 BOOL ApolloActionMenuContextIsValid(NSString *context) {
@@ -26,6 +31,9 @@ NSString *ApolloActionMenuContextTitle(ApolloActionMenuContext context) {
     if ([context isEqualToString:ApolloActionMenuContextPost]) return @"Post";
     if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"Post (Comments)";
     if ([context isEqualToString:ApolloActionMenuContextComment]) return @"Comment";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"Moderator (Subreddit)";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"Moderator (Post)";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"Moderator (Comment)";
     return context ?: @"";
 }
 
@@ -34,7 +42,23 @@ NSString *ApolloActionMenuContextDescription(ApolloActionMenuContext context) {
     if ([context isEqualToString:ApolloActionMenuContextPost]) return @"The ••• button on a post in a feed.";
     if ([context isEqualToString:ApolloActionMenuContextPostDetail]) return @"The ••• button at the top of a post's comments.";
     if ([context isEqualToString:ApolloActionMenuContextComment]) return @"The ••• button on a comment.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) return @"The moderator shield at the top of a subreddit you moderate.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) return @"The moderator shield on a post, the Moderator row in a post’s ••• menus, and the shield at the top of its comments.";
+    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) return @"The moderator shield on a comment, and the Moderator row in its ••• menu.";
     return @"";
+}
+
+BOOL ApolloActionMenuContextIsModerator(ApolloActionMenuContext context) {
+    return [context isEqualToString:ApolloActionMenuContextModeratorSubreddit]
+        || [context isEqualToString:ApolloActionMenuContextModeratorPost]
+        || [context isEqualToString:ApolloActionMenuContextModeratorComment];
+}
+
+ApolloActionMenuContext ApolloActionMenuModeratorContextFollowing(ApolloActionMenuContext context) {
+    if ([context isEqualToString:ApolloActionMenuContextPost] ||
+        [context isEqualToString:ApolloActionMenuContextPostDetail]) return ApolloActionMenuContextModeratorPost;
+    if ([context isEqualToString:ApolloActionMenuContextComment]) return ApolloActionMenuContextModeratorComment;
+    return nil;
 }
 
 #pragma mark - Items
@@ -168,13 +192,47 @@ static ApolloActionMenuItem *ApolloAMItemPostSize(void)    { return ApolloAMNati
 static ApolloActionMenuItem *ApolloAMItemUserFlair(void)   { return ApolloAMNative(@"user-flair", @"Set User Flair", @"option-set-flair", K(@46, @144)); }
 static ApolloActionMenuItem *ApolloAMItemModerators(void)  { return ApolloAMNative(@"moderators", @"View Moderators", @"option-moderator", K(@37)); }
 static ApolloActionMenuItem *ApolloAMItemNotifications(void){ return ApolloAMNative(@"notifications", @"Subreddit Notifications", @"option-notifications", K(@106)); }
-static ApolloActionMenuItem *ApolloAMItemPostFlair(void) { return ApolloAMNative(@"post-flair", @"Set Post Flair", @"option-set-flair", K(@47)); }
+static ApolloActionMenuItem *ApolloAMItemPostFlair(void) { return ApolloAMNative(@"post-flair", @"Set Post Flair", @"option-set-flair", K(@47, @145)); } // 47 = your own post, 145 = as a moderator
 static ApolloActionMenuItem *ApolloAMItemExcludeSubscriptions(void) { return ApolloAMNative(@"exclude-subscriptions", @"Exclude Subscriptions", @"option-block", K(@222)); }
 static ApolloActionMenuItem *ApolloAMItemMuteNotifs(void)  { return ApolloAMNative(@"mute-notifications", @"Mute Notifications", @"option-mute-notifications", K(@251, @252)); }
 
 static ApolloActionMenuItem *ApolloAMItemFloatingTabs(void)    { return ApolloAMTweak(@"FloatingTabs", @"Keep in Floating Tab", @"pin.circle"); }
 static ApolloActionMenuItem *ApolloAMItemDeletedComments(void) { return ApolloAMTweak(@"DeletedComments", @"Show Deleted Comments", @"eye"); }
 static ApolloActionMenuItem *ApolloAMItemGalleryView(void)     { return ApolloAMTweak(@"GalleryView", @"Gallery View", @"square.grid.2x2"); }
+
+// Moderator menus (kinds captured from the live sheets, signed in as a
+// moderator of r/ApolloReborn, 2026-09-17). Toggle pairs share an item.
+static ApolloActionMenuItem *ApolloAMItemModApprove(void)     { return ApolloAMNative(@"mod-approve", @"Approve", @"option-approve", K(@126, @127)); }
+static ApolloActionMenuItem *ApolloAMItemModRemove(void)      { return ApolloAMNative(@"mod-remove", @"Remove", @"option-trash", K(@128)); }
+static ApolloActionMenuItem *ApolloAMItemModSpam(void)        { return ApolloAMNative(@"mod-spam", @"Mark Spam", @"option-spam", K(@125)); }
+static ApolloActionMenuItem *ApolloAMItemModOC(void)          { return ApolloAMNative(@"mod-oc", @"Mark OC", @"option-original-content", K(@216, @217)); }
+static ApolloActionMenuItem *ApolloAMItemModSticky(void)      { return ApolloAMNative(@"mod-sticky", @"Sticky", @"option-sticky", K(@153, @154)); }
+static ApolloActionMenuItem *ApolloAMItemModLock(void)        { return ApolloAMNative(@"mod-lock", @"Lock", @"option-lock", K(@142, @143, @146, @152)); }
+static ApolloActionMenuItem *ApolloAMItemModIgnore(void)      { return ApolloAMNative(@"mod-ignore-reports", @"Ignore Reports", @"option-block", K(@130, @131)); }
+static ApolloActionMenuItem *ApolloAMItemModViewReports(void) { return ApolloAMNative(@"mod-view-reports", @"View Reports", @"option-report", K(@129)); }
+static ApolloActionMenuItem *ApolloAMItemModDistinguish(void) { return ApolloAMNative(@"mod-distinguish", @"Distinguish", @"option-moderator", K(@136, @137)); }
+static ApolloActionMenuItem *ApolloAMItemModSuggested(void)   { return ApolloAMNative(@"mod-suggested-sort", @"Set Suggested Sort", @"option-set-suggested-sort", K(@132, @133)); }
+static ApolloActionMenuItem *ApolloAMItemModContest(void)     { return ApolloAMNative(@"mod-contest-mode", @"Enable Contest Mode", @"option-contest-mode", K(@134, @135)); }
+static ApolloActionMenuItem *ApolloAMItemModBanUser(void)     { return ApolloAMNative(@"mod-ban-user", @"Ban User", @"option-ban", K(@155)); }
+static ApolloActionMenuItem *ApolloAMItemModNuke(void)        { return ApolloAMNative(@"mod-nuke", @"Comment Nuke", @"option-comment-nuke", K(@161)); }
+static ApolloActionMenuItem *ApolloAMItemModCompliment(void)  { return ApolloAMNative(@"mod-compliment", @"Get Compliment", @"option-congratulate-self", K(@162)); }
+static ApolloActionMenuItem *ApolloAMItemModMail(void)        { return ApolloAMNative(@"mod-mail", @"Mod Mail", @"option-mail", K(@164)); }
+static ApolloActionMenuItem *ApolloAMItemModQueue(void)       { return ApolloAMNative(@"mod-queue", @"Mod Queue", @"option-mod-queue", K(@163)); }
+static ApolloActionMenuItem *ApolloAMItemModLog(void)         { return ApolloAMNative(@"mod-log", @"Mod Log", @"option-mod-log", K(@166)); }
+static ApolloActionMenuItem *ApolloAMItemModReports(void)     { return ApolloAMNative(@"mod-reports", @"Reports", @"option-report", K(@167)); }
+static ApolloActionMenuItem *ApolloAMItemModSpamQueue(void)   { return ApolloAMNative(@"mod-spam-queue", @"Spam", @"option-spam", K(@168)); }
+static ApolloActionMenuItem *ApolloAMItemModUnmoderated(void) { return ApolloAMNative(@"mod-unmoderated", @"Unmoderated", @"option-hide", K(@169)); }
+static ApolloActionMenuItem *ApolloAMItemModEdited(void)      { return ApolloAMNative(@"mod-edited", @"Edited", @"option-edit", K(@178)); }
+static ApolloActionMenuItem *ApolloAMItemModAllComments(void) { return ApolloAMNative(@"mod-all-comments", @"All Comments", @"option-comments", K(@203)); }
+static ApolloActionMenuItem *ApolloAMItemModTraffic(void)     { return ApolloAMNative(@"mod-traffic", @"Traffic Stats", @"option-traffic-stats", K(@165)); }
+static ApolloActionMenuItem *ApolloAMItemModBanUsers(void)    { return ApolloAMNative(@"mod-ban-users", @"Ban Users", @"option-ban", K(@170)); }
+static ApolloActionMenuItem *ApolloAMItemModMuteUsers(void)   { return ApolloAMNative(@"mod-mute-users", @"Mute Users", @"option-mute-modmail", K(@171)); }
+static ApolloActionMenuItem *ApolloAMItemModEditFlair(void)   { return ApolloAMNative(@"mod-edit-flair", @"Edit Flair", @"option-set-flair", K(@172)); }
+static ApolloActionMenuItem *ApolloAMItemModRemovalReason(void){ return ApolloAMNative(@"mod-removal-reasons", @"Removal Reason", @"option-removal-reason", K(@209)); }
+static ApolloActionMenuItem *ApolloAMItemModRules(void)       { return ApolloAMNative(@"mod-rules", @"Rules", @"option-rules", K(@175)); }
+static ApolloActionMenuItem *ApolloAMItemModAutoMod(void)     { return ApolloAMNative(@"mod-automoderator", @"AutoModerator", @"option-automoderator", K(@210)); }
+static ApolloActionMenuItem *ApolloAMItemModApproved(void)    { return ApolloAMNative(@"mod-approved-submitters", @"Approved Submitters", @"option-approved-submitters", K(@179)); }
+static ApolloActionMenuItem *ApolloAMItemModModerators(void)  { return ApolloAMNative(@"mod-moderators", @"Moderators", @"option-moderator", K(@177)); }
 
 #undef K
 
@@ -239,6 +297,34 @@ static NSArray<ApolloActionMenuItem *> *ApolloActionMenuBuildCatalog(ApolloActio
                ApolloAMItemShareImage(), ApolloAMItemCollapseTop(), ApolloAMItemAward(), ApolloAMItemReport() ],
             @[ ApolloAMItemViewReplies(), ApolloAMItemParent(), ApolloAMItemTranslate(),
                ApolloAMItemEdit(), ApolloAMItemDelete(), ApolloAMItemMuteNotifs() ]);
+    }
+    if ([context isEqualToString:ApolloActionMenuContextModeratorSubreddit]) {
+        // The feed nav bar's shield: 164,163,166,167,168,169,178,203,165,170,
+        // 171,172,209,175,210,179,177,186,162.
+        return ApolloAMCatalogWithUsual(
+            @[ ApolloAMItemModMail(), ApolloAMItemModQueue(), ApolloAMItemModLog(), ApolloAMItemModReports(),
+               ApolloAMItemModSpamQueue(), ApolloAMItemModUnmoderated(), ApolloAMItemModEdited(), ApolloAMItemModAllComments(),
+               ApolloAMItemModTraffic(), ApolloAMItemModBanUsers(), ApolloAMItemModMuteUsers(), ApolloAMItemModEditFlair(),
+               ApolloAMItemModRemovalReason(), ApolloAMItemModRules(), ApolloAMItemModAutoMod(), ApolloAMItemModApproved(),
+               ApolloAMItemModModerators(), ApolloAMItemReport(), ApolloAMItemModCompliment() ],
+            @[]);
+    }
+    if ([context isEqualToString:ApolloActionMenuContextModeratorPost]) {
+        // A post's shield (cell, ••• Moderator row, comments nav bar — one
+        // builder): 126,128,125,138,140,216,145,153,142,130,155,162. The rest
+        // appear for your own post, a reported one, or in the comments view.
+        return ApolloAMCatalogWithUsual(
+            @[ ApolloAMItemModApprove(), ApolloAMItemModRemove(), ApolloAMItemModSpam(), ApolloAMItemNSFW(),
+               ApolloAMItemSpoiler(), ApolloAMItemModOC(), ApolloAMItemPostFlair(), ApolloAMItemModSticky(),
+               ApolloAMItemModLock(), ApolloAMItemModIgnore(), ApolloAMItemModBanUser(), ApolloAMItemModCompliment() ],
+            @[ ApolloAMItemModDistinguish(), ApolloAMItemModViewReports(), ApolloAMItemModSuggested(), ApolloAMItemModContest() ]);
+    }
+    if ([context isEqualToString:ApolloActionMenuContextModeratorComment]) {
+        // A comment's shield / ••• Moderator row: 126,128,125,130,142,161,155,162.
+        return ApolloAMCatalogWithUsual(
+            @[ ApolloAMItemModApprove(), ApolloAMItemModRemove(), ApolloAMItemModSpam(), ApolloAMItemModIgnore(),
+               ApolloAMItemModLock(), ApolloAMItemModNuke(), ApolloAMItemModBanUser(), ApolloAMItemModCompliment() ],
+            @[ ApolloAMItemModDistinguish(), ApolloAMItemModSticky(), ApolloAMItemModViewReports() ]);
     }
     return @[];
 }

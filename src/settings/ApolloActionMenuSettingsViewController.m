@@ -9,10 +9,11 @@
 
 #import <objc/runtime.h>
 
-// The screen lists the selected ••• menu's items — drag to reorder, tap to
-// check or uncheck — and the ••• button in the top-right corner IS the preview: tap it and
-// it opens the menu being edited as Apollo would open it right now, with the
-// saved order and visibility applied. On Liquid Glass that is a real UIMenu
+// The screen lists the selected menu's items — the ••• menus and, for
+// moderators, the shield menus — drag to reorder, tap to check or uncheck —
+// and the button in the top-right corner IS the preview (••• or the shield,
+// whichever opens the menu being edited): tap it and it opens that menu as
+// Apollo would open it right now, with the saved order and visibility applied. On Liquid Glass that is a real UIMenu
 // (the same UIKit menu Apollo's own ••• buttons show); on earlier iOS it is a
 // sheet styled after Apollo's classic action sheet. It is built fresh every
 // time it opens, so every change shows the next time it is tapped — exactly as
@@ -72,7 +73,8 @@ static UIMenu *ApolloAMBuildGlassPreviewMenu(ApolloActionMenuContext context) {
             element = ApolloSubmitPostTypesMenu(nil, ^{});
         }
         if (!element) {
-            BOOL moderator = [item.itemID isEqualToString:@"moderator"];
+            // The moderator menus draw every row in the mod tint, like the real ones.
+            BOOL moderator = ApolloActionMenuContextIsModerator(context) || [item.itemID isEqualToString:@"moderator"];
             element = ApolloNativeActionMenuPreviewAction(item.title, [item icon], moderator, row.available);
         }
         if (!element) continue;
@@ -85,6 +87,17 @@ static UIMenu *ApolloAMBuildGlassPreviewMenu(ApolloActionMenuContext context) {
         [children addObject:element];
     }
     return [UIMenu menuWithTitle:@"" children:children];
+}
+
+// The bar button's glyph: Apollo's ••• for the ••• menus, its moderator
+// shield for the moderator menus (that is the button those menus open from).
+static UIImage *ApolloAMPreviewButtonImage(ApolloActionMenuContext context) {
+    if (ApolloActionMenuContextIsModerator(context)) {
+        UIImage *shield = [[ApolloActionMenuCatalogItem(ApolloActionMenuContextPost, @"moderator") icon]
+                           imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        if (shield) return shield;
+    }
+    return [UIImage systemImageNamed:@"ellipsis"];
 }
 
 #pragma mark - Legacy preview sheet (pre-Liquid Glass)
@@ -126,6 +139,8 @@ static const CGFloat kApolloAMSheetTextX = 68.0;
 
 @interface ApolloAMPreviewSheetViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, copy) NSArray<ApolloAMPreviewRow *> *rows;
+// Every row pushes a screen (the subreddit moderator sheet): chevrons on all.
+@property (nonatomic) BOOL chevronsOnEveryRow;
 @property (nonatomic, strong) UIColor *accentColor;
 @property (nonatomic, strong) UIColor *cardColor;
 @property (nonatomic, strong) UIColor *separatorColor;
@@ -246,8 +261,10 @@ static const CGFloat kApolloAMSheetTextX = 68.0;
     cell.imageView.image = [row.item icon];
     cell.imageView.tintColor = ink;
     cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
-    // Submit Post opens the post-type list on the classic sheet — chevron.
-    cell.accessoryType = ApolloAMItemIsSubmitPost(row.item) ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+    // Submit Post opens the post-type list on the classic sheet — chevron;
+    // the subreddit moderator sheet's rows all push a screen — chevrons.
+    cell.accessoryType = (self.chevronsOnEveryRow || ApolloAMItemIsSubmitPost(row.item))
+        ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
     cell.contentView.alpha = row.available ? 1.0 : kApolloAMPreviewUnavailableAlpha;
     cell.accessibilityLabel = row.available ? row.item.title
         : [NSString stringWithFormat:@"%@, shown when available", row.item.title];
@@ -388,10 +405,11 @@ static const CGFloat kApolloAMAccessoryHeight = 28.0;
     self.tableView.dragDelegate = self;
     self.tableView.dropDelegate = self;
 
-    // The preview: a ••• button like Apollo's own, top-right. On glass it
-    // carries the preview UIMenu (built fresh on every tap); before glass it
-    // presents the classic-sheet preview.
-    UIImage *ellipsis = [UIImage systemImageNamed:@"ellipsis"];
+    // The preview: a ••• button like Apollo's own, top-right (a shield while a
+    // moderator menu is being edited — that is that menu's button). On glass
+    // it carries the preview UIMenu (built fresh on every tap); before glass
+    // it presents the classic-sheet preview.
+    UIImage *ellipsis = ApolloAMPreviewButtonImage(ApolloActionMenuContextPost);
     UIBarButtonItem *preview;
     if (ApolloNativeActionMenusActive()) {
         preview = [[UIBarButtonItem alloc] initWithImage:ellipsis menu:nil];
@@ -421,6 +439,7 @@ static const CGFloat kApolloAMAccessoryHeight = 28.0;
     UIBarButtonItem *button = self.previewButton;
     if (!button) return;
     button.enabled = !self.editingAllMenus; // All is not a menu
+    button.image = ApolloAMPreviewButtonImage(self.editingAllMenus ? nil : self.context);
     if (!ApolloNativeActionMenusActive()) return;
     if (@available(iOS 15.0, *)) {
         __weak __typeof(self) weakSelf = self;
@@ -441,7 +460,10 @@ static const CGFloat kApolloAMAccessoryHeight = 28.0;
     if (self.editingAllMenus) return;
     ApolloAMPreviewSheetViewController *sheet = [[ApolloAMPreviewSheetViewController alloc] init];
     sheet.rows = ApolloAMLegacyPreviewRows(self.context);
-    sheet.accentColor = [self apollo_themeAccentColor] ?: ApolloThemeAccentColor() ?: self.view.tintColor;
+    sheet.chevronsOnEveryRow = [self.context isEqualToString:ApolloActionMenuContextModeratorSubreddit];
+    // Apollo colours its classic moderator sheet in the mod tint.
+    sheet.accentColor = ApolloActionMenuContextIsModerator(self.context) ? ApolloModeratorColor()
+        : ([self apollo_themeAccentColor] ?: ApolloThemeAccentColor() ?: self.view.tintColor);
     sheet.cardColor = [self apollo_themeCellBackgroundColor] ?: UIColor.systemBackgroundColor;
     sheet.separatorColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
     [self presentViewController:sheet animated:NO completion:nil];
@@ -568,12 +590,14 @@ static const CGFloat kApolloAMAccessoryHeight = 28.0;
     NSString *menuFooter;
     NSString *itemsFooter;
     if (self.editingAllMenus) {
-        menuFooter = @"Visibility across all four menus. Choose a specific menu to reorder its actions and preview it with the ••• button.";
+        menuFooter = @"Visibility across every menu, the moderator menus included. Choose a specific menu to reorder its actions and preview it with the button at the top.";
         itemsFooter = @"Tap an action to show or hide it across the menus that support it. Shown in Some Menus means your per-menu choices differ. Select a menu to adjust its choices and order.";
     } else {
         menuFooter = [ApolloActionMenuContextDescription(context)
-                      stringByAppendingString:@" Tap ••• at the top to see this menu as it opens right now, with your order and visibility applied."];
-        itemsFooter = @"Only actions supported by this menu are listed. Some appear only for your own content or when a feature is enabled; the ••• preview dims those. Tap an action to show or hide it; touch and hold to reorder. Hiding keeps Apollo’s order.";
+                      stringByAppendingString:ApolloActionMenuContextIsModerator(context)
+                          ? @" Tap the shield at the top to see this menu as it opens right now, with your order and visibility applied."
+                          : @" Tap ••• at the top to see this menu as it opens right now, with your order and visibility applied."];
+        itemsFooter = @"Only actions supported by this menu are listed. Some appear only for your own content or when a feature is enabled; the preview at the top dims those. Tap an action to show or hide it; touch and hold to reorder. Hiding keeps Apollo’s order.";
         NSString *lockedNote = [self lockedItemsNote];
         if (lockedNote) itemsFooter = [itemsFooter stringByAppendingFormat:@" %@", lockedNote];
         if (!ApolloNativeActionMenusActive()) {
