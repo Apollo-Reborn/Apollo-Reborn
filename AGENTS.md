@@ -25,34 +25,60 @@ The Makefile automatically generates `src/Version.h` from the `control` file and
 
 **macOS 27 / Apple Silicon without Rosetta:** azule's bundled helpers (`~/Azule/bin/darwin/{ldid,insert_dylib,jq}`) are x86_64-only and upstream has not shipped arm64 builds, so azule fails with `Bad CPU type in executable` once Rosetta is gone. Replace them in place with arm64 builds (`brew install ldid jq` and symlink those two; compile `insert_dylib` from Tyilo/insert_dylib `main.c` with `clang -arch arm64`). They must live in that directory because azule prepends it to `PATH`. Separately, Xcode 27's `lipo` only recognizes the bundled CydiaSubstrate's legacy arm64e slice as `arm64e.old`; `scripts/modules/strip-substrate-arm64e.sh` handles both spellings and fails the build (rather than warning) if the slice cannot be removed, since shipping it aborts at launch on arm64e iOS 26 devices.
 
-### Required SDK: iOS 26.0 pinned via `$THEOS/sdks` (device builds only)
+### Required SDK: iOS 27.1 preferred, 26.0 fallback (device builds only)
 
-`Makefile` sets `TARGET := iphone:clang:26.0:14.0` — the tweak still supports iOS 14 users, but newer Xcode betas (Xcode 27+, shipping the iOS 27 SDK) raised the SDK's own `MinimumDeploymentTarget` to iOS 15.0 (confirmed via `iPhoneOS.sdk/SDKSettings.json` → `SupportedTargets.iphoneos.MinimumDeploymentTarget`), so compiling with `latest` against that SDK can no longer target iOS 14.0 and additionally turns on `-Werror,-Wdeprecated-declarations` for several iOS-15-deprecated UIKit APIs the tweak still legitimately uses below that floor.
+Device `make package` (when you do **not** pass `TARGET` on the command line) pins:
 
-The fix is to pin the build to an iOS 26.0 SDK explicitly instead of `latest`, without touching the Xcode.app bundle. Theos merges SDK candidates from both `$THEOS_SDKS_PATH` (`$THEOS/sdks`) and Xcode's bundled SDK directory (see `$THEOS/makefiles/targets/_common/darwin_head.mk`), so dropping an `iPhoneOS26.0.sdk` folder into `$THEOS/sdks/` is enough — no Xcode reinstall or modification required.
+- `iphone:clang:27.1:14.0` when a real `iPhoneOS27.1.sdk` exists in `$THEOS_SDKS_PATH` (`$THEOS/sdks`) **or** the active Xcode `Platforms/iPhoneOS.platform/Developer/SDKs`
+- otherwise `iphone:clang:26.0:14.0`
+
+The iOS 14 deployment floor does not change. Override with `APOLLO_DEVICE_SDK=27.1` or `APOLLO_DEVICE_SDK=26.0`. `scripts/run-in-sim.sh` still passes `TARGET=simulator:clang:latest:15.0` on the command line; GNU make will not let the Makefile override that.
+
+The tweak still supports iOS 14 users. Newer Xcode betas (Xcode 27+, shipping the iOS 27 SDK) raised the SDK's own `MinimumDeploymentTarget` to iOS 15.0 (confirmed via `iPhoneOS.sdk/SDKSettings.json` → `SupportedTargets.iphoneos.MinimumDeploymentTarget`), so compiling with `latest` against that SDK can no longer target iOS 14.0 and additionally turns on `-Werror,-Wdeprecated-declarations` for several iOS-15-deprecated UIKit APIs the tweak still legitimately uses below that floor. Pinning a named SDK instead of `latest` is the same trick as before — only the preferred version is now 27.1 when that folder is actually present.
+
+Theos merges SDK candidates from both `$THEOS_SDKS_PATH` (`$THEOS/sdks`) and Xcode's bundled SDK directory (see `$THEOS/makefiles/targets/_common/darwin_head.mk`). It matches the **folder name** `iPhoneOS<version>.sdk` (the unversioned `iPhoneOS.sdk` does **not** satisfy a `27.1` pin). Dropping `iPhoneOS27.1.sdk` or `iPhoneOS26.0.sdk` into `$THEOS/sdks/` is enough — no Xcode.app modification required.
 
 **This same trick does not work for the simulator build** (`scripts/run-in-sim.sh`) — see the "Fast iteration in the iOS Simulator" section below for why pairing an old Simulator SDK with a newer clang is a real, blocked incompatibility rather than something to route around. The simulator script instead just bumped its own floor to iOS 15.0, which only affects local dev convenience, not real device support.
 
 Because the device build (14.0) and simulator build (15.0) have different floors, code using an iOS-15-deprecated API (`UIApplication.windows`, `UIButton.contentEdgeInsets`/`imageEdgeInsets`, `adjustsImageWhenHighlighted`/`adjustsImageWhenDisabled`, etc.) only trips `-Wdeprecated-declarations` under the simulator target, not the device one. Theos turns on `-Werror` globally (`$THEOS/makefiles/common.mk`), so without intervention that warning would fail simulator-only builds. Rather than wrapping every call site in `#pragma clang diagnostic ignored "-Wdeprecated-declarations"`, `Makefile`'s `ApolloReborn_CFLAGS` carries `-Wno-error=deprecated-declarations` — this demotes the diagnostic back to a non-fatal warning (still visible in build output) without fully hiding it via `-Wno-deprecated-declarations`, and without needing a pragma anywhere. Prefer migrating off a deprecated API outright when there's a safe non-deprecated replacement (e.g. `ApolloAllWindows()` for `UIApplication.windows`); reach for the deprecated API only when the replacement (e.g. `UIButtonConfiguration`) isn't available at the device build's iOS 14 floor.
 
-**If `$THEOS/sdks/iPhoneOS26.0.sdk` is missing on a local dev machine** (fresh setup, etc.), get it one of these ways, in order of preference:
+**An iOS 27.1 Simulator runtime is not a device SDK.** Xcode 26.6 can install `com.apple.CoreSimulator.SimRuntime.iOS-27-1` and still only ship a 26.x `iPhoneOS.sdk`. Do **not** copy that folder to `$THEOS/sdks/iPhoneOS27.1.sdk` — Theos would then compile device code against the wrong headers.
+
+**If you want the 27.1 device pin** (Duo / reserved-region headers when Apple actually ships them), get a real `iPhoneOS27.1.sdk` this way, in order of preference:
+
+1. **Extract from an Xcode that actually ships the iOS 27.1 device SDK** (Xcode 27.x / whichever first bundles it — not Xcode 26.6 + a 27.1 sim runtime). Confirm the version before copying:
+   ```bash
+   python3 -c 'import json,sys; p=sys.argv[1]; print(json.load(open(p)).get("Version"))' \
+     "$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/SDKSettings.json"
+   ```
+   Only if that prints `27.1`:
+   ```bash
+   mkdir -p "$THEOS/sdks"
+   cp -R "$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
+         "$THEOS/sdks/iPhoneOS27.1.sdk"
+   ```
+   If Xcode already has a versioned `iPhoneOS27.1.sdk` (often a symlink next to `iPhoneOS.sdk`), Theos finds it without a `$THEOS/sdks` copy.
+2. **[theos/sdks](https://github.com/theos/sdks)** — the Theos org's own collection. Best-vetted third-party source, but only goes up to iOS 16.5 as of writing, so it cannot supply 26.0 or 27.1.
+3. **[xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs)** — broader version coverage and private-framework stubs. Less centrally vetted than `theos/sdks` (an individual's repo). SDK bundles are headers/`.tbd` stubs/plists — nothing executes at build time — so the practical risk is "bad headers cause a miscompile." Use only if that repo actually contains 27.1, and still land it at `$THEOS/sdks/iPhoneOS27.1.sdk`.
+
+**If `$THEOS/sdks/iPhoneOS26.0.sdk` is missing** and you do not have 27.1 either, the fallback pin needs 26.0:
 
 1. **Extract from a locally installed Xcode 26.x** (most trustworthy — it's your own Apple-issued copy):
    ```bash
    cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
          "$THEOS/sdks/iPhoneOS26.0.sdk"
    ```
-2. **[theos/sdks](https://github.com/theos/sdks)** — the Theos org's own collection of extracted SDKs. Best-vetted third-party source, but only goes up to iOS 16.5 as of writing, so this source cannot be used for now.
-3. **[xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs)** — broader version coverage (including iOS 26) and bundles private framework headers/symbols. Less centrally vetted than `theos/sdks` (an individual's repo, not Theos org), but SDK bundles are just headers/`.tbd` stubs/plists — nothing executes at build time — so the practical risk is "bad headers cause a miscompile," not a code-execution supply-chain attack. Reasonable to use when you need a version you can't extract yourself.
+2. Same third-party sources as above, only if they actually contain 26.0.
 
-Whichever source, the result must land at `$THEOS/sdks/iPhoneOS26.0.sdk` (folder name matters — Theos matches `iPhoneOS<version>.sdk`) for `TARGET := iphone:clang:26.0:14.0` to resolve. Verify with:
+Whichever source, the folder name matters — Theos matches `iPhoneOS<version>.sdk`. Verify with:
 ```bash
 xcodebuild -showsdks 2>&1  # confirms what Xcode itself sees (won't show $THEOS/sdks entries)
 ls "$THEOS/sdks/"          # confirms Theos has it
+ls "$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs/"
 ```
-This SDK lives outside the repo (`$THEOS/sdks` is a local Theos install path, not checked into git) — a new contributor needs to repeat this step once.
+These SDKs live outside the repo (`$THEOS/sdks` is a local Theos install path, not checked into git) — a new contributor needs to repeat this step once.
 
-**CI does this differently.** The GitHub Actions `macos-15` runner image ships several Xcode versions side by side, including `/Applications/Xcode_26.0.1.app` (full iOS 26.0 SDK included) alongside the default active Xcode (16.4, which doesn't have it). So the build/release/PR-build workflows just run `sudo xcode-select -s /Applications/Xcode_26.0.1.app` before `make package`, rather than copying anything into `$THEOS/sdks`. This is simpler than the local-dev approach and carries no version-skew risk for CI specifically, because the runner's default Xcode is *older* than 26.0.1, not newer — switching to it is a strict upgrade of the whole toolchain, not a deliberate old-SDK/new-clang pairing the way the local dev setup is. (That pairing risk is real, though — see the Simulator SDK note above — so don't reach for a global `xcode-select` switch on a machine where the default Xcode is *newer* than the SDK you need.)
+**CI does this differently.** The GitHub Actions `macos-15` runner image ships several Xcode versions side by side, including `/Applications/Xcode_26.0.1.app` (full iOS 26.0 SDK included) alongside the default active Xcode (16.4, which doesn't have it). The build/release/PR-build workflows run `sudo xcode-select -s /Applications/Xcode_26.0.1.app` before `make package` and do **not** copy a 27.1 SDK into `$THEOS/sdks`. The Makefile then falls back to `26.0:14.0`. This is simpler than the local-dev approach and carries no version-skew risk for CI specifically, because the runner's default Xcode is *older* than 26.0.1, not newer — switching to it is a strict upgrade of the whole toolchain, not a deliberate old-SDK/new-clang pairing the way the local-dev 26.0-in-`$THEOS/sdks` copy is. When a runner image later ships a real `iPhoneOS27.1.sdk`, the device pin flips to 27.1 without a workflow change. (The pairing risk is real, though — see the Simulator SDK note above — so don't reach for a global `xcode-select` switch on a machine where the default Xcode is *newer* than the SDK you need.)
 
 ### Fast iteration in the iOS Simulator
 

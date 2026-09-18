@@ -12,13 +12,28 @@ git submodule update --init --recursive
 make package
 ```
 
-**Required SDK.** `Makefile` pins `TARGET := iphone:clang:26.0:14.0` so the tweak keeps supporting iOS 14 users even though newer Xcode releases raised their SDK's own minimum deployment target above that. This means an iOS 26.0 SDK must exist at `$THEOS/sdks/iPhoneOS26.0.sdk` — Theos checks `$THEOS/sdks` in addition to the active Xcode's own SDKs directory, so this works without modifying Xcode.app. If it's missing, `make package` will fail to find the SDK; get one via (in order of preference):
+**Required SDK.** Device `make package` prefers `TARGET := iphone:clang:27.1:14.0` when a real `iPhoneOS27.1.sdk` exists in `$THEOS/sdks` or the active Xcode `iPhoneOS.platform/Developer/SDKs` directory. Otherwise it keeps `iphone:clang:26.0:14.0` so CI (Xcode 26.0.1) and Macs without a 27.1 *device* SDK still build. The iOS 14 deployment floor does not change.
 
-1. Copy it out of a locally installed Xcode 26.x: `cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" "$THEOS/sdks/iPhoneOS26.0.sdk"`
-2. [theos/sdks](https://github.com/theos/sdks) — best-vetted, but only goes up to iOS 16.5, so it cannot be used for now
-3. [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs) — contains iOS 26 SDKs, community maintained
+Theos matches the **folder name** `iPhoneOS<version>.sdk` (see `$THEOS/makefiles/targets/_common/darwin_head.mk`). An iOS 27.1 Simulator runtime (`com.apple.CoreSimulator.SimRuntime.iOS-27-1`) is not this SDK — do not copy Xcode 26.x's `iPhoneOS.sdk` and rename it `iPhoneOS27.1.sdk`.
 
-This only applies to device builds — `scripts/run-in-sim.sh` deliberately doesn't use this trick (see [AGENTS.md](AGENTS.md) under "Required SDK" for why pairing an old Simulator SDK with a newer clang doesn't work the same way). See that same section for the full explanation.
+Install, in order of preference:
+
+1. **27.1 device SDK** from an Xcode that actually ships it (Xcode 27.x / whichever first bundles iOS 27.1). Confirm `SDKSettings.json` → `Version` is `27.1`, then:
+   ```bash
+   mkdir -p "$THEOS/sdks"
+   cp -R "$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
+         "$THEOS/sdks/iPhoneOS27.1.sdk"
+   ```
+   If Xcode already has a versioned `iPhoneOS27.1.sdk` next to `iPhoneOS.sdk`, Theos will find it without a `$THEOS/sdks` copy.
+2. **26.0 fallback** from a locally installed Xcode 26.x (required when 27.1 is absent):
+   ```bash
+   cp -R "/Applications/Xcode_26.x.x.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk" \
+         "$THEOS/sdks/iPhoneOS26.0.sdk"
+   ```
+3. [theos/sdks](https://github.com/theos/sdks) — best-vetted, but only goes up to iOS 16.5, so it cannot supply 26.0 or 27.1
+4. [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs) — community dumps; use only if they actually contain the version you need, and still land it at the Theos folder name above
+
+Force a pin with `APOLLO_DEVICE_SDK=27.1` or `APOLLO_DEVICE_SDK=26.0`. This only applies to device builds — `scripts/run-in-sim.sh` still uses `TARGET=simulator:clang:latest:15.0` (see [AGENTS.md](AGENTS.md) under "Required SDK" for why the simulator must stay on `latest`).
 
 ## Testing in the iOS Simulator
 

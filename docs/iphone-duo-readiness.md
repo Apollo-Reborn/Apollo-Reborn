@@ -7,10 +7,10 @@ iOS 27.1) will exercise size-class changes, dual scenes, horizontal safe
 areas, and hinge reserved regions that neither Apollo nor most of this tweak
 were written for.
 
-This is a maintainer plan, not a rewrite. Steps 1–4 (device identity + live
-island geometry, floating tabs / Liquid Glass scene chrome, feed/post
-size-class layouts, then gallery/media hinge avoidance) are implemented.
-Step 5 (iOS 27.1 SDK pin) stays queued.
+This is a maintainer plan, not a rewrite. Steps 1–5 are implemented
+(device identity + live island geometry, floating tabs / Liquid Glass
+scene chrome, feed/post size-class layouts, gallery/media hinge
+avoidance, then the 27.1 device-SDK pin with a 26.0 CI fallback).
 
 ## What is already true in the tweak
 
@@ -20,9 +20,9 @@ Step 5 (iOS 27.1 SDK pin) stays queued.
 | Dynamic Island chrome | Apollo hardcodes 14 Pro positions (`FauxCutOutView` y=11.5, 125×37). **Step 1:** shift from `-[UIScreen _exclusionArea]` on the *window scene's* screen; hide faux cutout / pals / tap overlay when that screen has no pill-shaped cutout. Dropped the `safeAreaInsets.top == 59` proportional fallback (wrong on iPhone Air / iOS 27, #826). | A hinge or vertical reserved bar must not pass the pill sanity check (it should not). Full `ArrangementView` / `reservedRegions` avoidance is step 4. |
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is covered for **media/PiP** in step 4; floating-tab bubbles still rely on chrome insets only. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
-| Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (chrome insets max'd with edge-flush reserved regions). A center hinge is a gap, not fake left+right insets: the gallery transport sits on the larger remaining side; MediaPage close + PiP buttons shift off the rect. Gallery columns go even when a (possibly inactive) division exists. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Runtime `reservedRegions` spelling/kind values are probed (0..2). A hinge UIKit never reports still cannot be guessed from `_exclusionArea`. SDK pin is step 5. |
+| Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (chrome insets max'd with edge-flush reserved regions). A center hinge is a gap, not fake left+right insets: the gallery transport sits on the larger remaining side; MediaPage close + PiP buttons shift off the rect. Gallery columns go even when a (possibly inactive) division exists. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Runtime `reservedRegions` spelling/kind values stay probed (0..2). A hinge UIKit never reports still cannot be guessed from `_exclusionArea`. Step 5 did not replace the probes — see below. |
 | Feed / posts | **Step 3:** no stock Regular-width split to unlock. The tweak tiles inside `_TtC6Apollo26ApolloNavigationController` when the horizontal size class is Regular and the usable width is at least two 320pt columns (`ApolloFeedSplitLayout.h`). Compact stays a single column. Feed VCs (Posts / LitePosts / Saved / search results) sit leading; `CommentsViewController` sits trailing. Swipe-up pane comments are skipped. Tab children stay Apollo navs — do **not** wrap them in `UISplitViewController`. `ApolloIPadTabBarBottom` stays idiom-gated. | Profile / inbox / settings pushes stay stacked. Feed cells that size from the screen instead of their view may still stretch inside a column. Hinge pixels that are not extra layout margin are step 4. |
-| Toolchain | Device: `TARGET := iphone:clang:26.0:14.0`. Sim: `latest` / iOS 15.0 floor. Liquid Glass needs a glass-patched guest (SDK 19+/26+) plus iOS 26+ runtime. | Duo-specific reserved-region / full-bleed APIs are iOS 27.1. Do not bump the pinned 26.0 SDK until that SDK is actually available to Theos **and** we still need iOS 14 device builds. **Step 5.** |
+| Toolchain | **Step 5:** device `make package` pins `iphone:clang:27.1:14.0` when `iPhoneOS27.1.sdk` exists in `$THEOS/sdks` or the active Xcode `iPhoneOS.platform/Developer/SDKs`; otherwise `26.0:14.0`. Sim: unchanged `latest` / iOS 15.0 floor (`scripts/run-in-sim.sh` command-line TARGET). Liquid Glass needs a glass-patched guest (SDK 19+/26+) plus iOS 26+ runtime. | A 27.1 Simulator runtime is not a device SDK. CI (Xcode 26.0.1) stays on the 26.0 fallback. A 27.1 SDK may still refuse `-miphoneos-version-min=14.0` if its `MinimumDeploymentTarget` is 15.0 — residual, not solved by inventing headers. |
 
 ## Phased work
 
@@ -78,8 +78,9 @@ SDK bump.
 
 ### 4. Gallery / media hinge avoidance — done
 
-- Do **not** pin `TARGET` to 27.1 (step 5). The 26.0 SDK has no
-  `reservedRegions` headers, so the call is entirely runtime:
+- Do **not** wrap media in `UIArrangementViewController`. The 26.0 SDK
+  has no `reservedRegions` headers, so the call is entirely runtime
+  (step 5's 27.1 pin is optional / CI still uses 26.0):
   `respondsToSelector:` for `reservedRegionsForKind:options:` (and two
   spelling fallbacks), kind probe `0..2`, options bit 0 = includeInactive.
 - Soft-degrade: missing selector → empty rect list →
@@ -95,13 +96,34 @@ SDK bump.
 - `_exclusionArea` is still island-only (pill sanity). A non-pill rect is
   not treated as a hinge.
 
-### 5. Toolchain toward iOS 27.1
+### 5. Toolchain toward iOS 27.1 — done
 
-- Pin a 27.1 SDK the same way AGENTS.md pins 26.0 (`$THEOS/sdks`), without
-  raising the device deployment floor past 14.0.
-- Simulator stays on `latest` (do not pair an old Simulator SDK with a newer
-  clang).
-- Gate new 27.1-only calls with availability / `respondsToSelector:`.
+- Device pin (Makefile, only when `TARGET` is not on the command line):
+  `iphone:clang:27.1:14.0` if `iPhoneOS27.1.sdk` exists in `$THEOS/sdks`
+  (`THEOS_SDKS_PATH`) or `$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/SDKs`;
+  else `iphone:clang:26.0:14.0`. Floor stays `:14.0`. Override with
+  `APOLLO_DEVICE_SDK=27.1` or `26.0`.
+- Theos matches the **folder name** `iPhoneOS<version>.sdk` (see
+  `$THEOS/makefiles/targets/_common/darwin_head.mk`). The unversioned
+  `iPhoneOS.sdk` does not satisfy a `27.1` pin.
+- **Do not** copy Xcode 26.6's `iPhoneOS.sdk` (or any 26.x device SDK) to
+  `$THEOS/sdks/iPhoneOS27.1.sdk`. An iOS 27.1 Simulator runtime
+  (`com.apple.CoreSimulator.SimRuntime.iOS-27-1`) is not this SDK. Confirm
+  `SDKSettings.json` → `Version` is `27.1` before copying from an Xcode
+  that actually ships the 27.1 *device* SDK.
+- Simulator stays on `latest` / `DEPLOY_MIN=15.0` (`scripts/run-in-sim.sh`).
+  Do not pair an old Simulator SDK with a newer clang.
+- CI workflows still `xcode-select` Xcode 26.0.1 and do not install 27.1.
+  The Makefile fallback keeps those builds on 26.0. When a runner later
+  ships a real `iPhoneOS27.1.sdk`, the pin flips without a workflow change.
+- `reservedRegions` stays on `respondsToSelector:` + kind probe `0..2`.
+  Public iOS 27.0 UIKit headers have no reserved-region types/enums, this
+  tree has no 27.1 headers, and CI still compiles against 26.0. Inventing
+  `UIReservedRegionKind*` under `#if` would either fail a 26-only
+  toolchain or never compile-in. Revisit when a real 27.1 SDK is on the
+  machine that does the compile.
+
+Install notes for maintainers: AGENTS.md / CONTRIBUTING.md "Required SDK".
 
 ## Testing
 
@@ -203,9 +225,15 @@ the sim stubs.
   rects, the pill sanity check fails closed (no shift, hide tweak chrome).
 - `uname` remapping is process-wide, happens on arbitrary threads, and does
   not consult UIKit. Later layout uses the live window's cutout.
-- iOS 27.1 `reservedRegions` is called only through `objc_msgSend` after
-  `respondsToSelector:`. Kind raw values and the exact selector spelling
-  may still drift when the 27.1 SDK ships — step 5 should replace the
-  probe with real headers if they differ.
+- iOS 27.1 `reservedRegions` is still called only through `objc_msgSend`
+  after `respondsToSelector:`. Kind raw values and the exact selector
+  spelling may still drift. Step 5 did not replace the probe: 27.1 headers
+  are optional (CI stays on 26.0), and public 27.0 UIKit has no published
+  ObjC enum names to `#if` against. Replace the probe only after compiling
+  against a real `iPhoneOS27.1.sdk` and reading those headers.
+- A 27.1 device SDK may set `MinimumDeploymentTarget` to 15.0 the same
+  way later 26/27 SDKs did. We still pass `:14.0`. If clang starts
+  hard-failing that combination, keep the 26.0 fallback for ship builds
+  rather than raising the floor.
 - `UIArrangementViewController` is intentionally not adopted for
   MediaViewer / gallery (full-bleed pager, not a primary/secondary pair).

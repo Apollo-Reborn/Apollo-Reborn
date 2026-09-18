@@ -7,8 +7,10 @@ extern "C" {
 
 // C-only reserved-region geometry so host tests can compile without UIKit.
 // UIKit's iOS 27.1 `-[UIView reservedRegionsForKind:options:]` (when it
-// exists) feeds these helpers; older SDKs/runtimes pass an empty list and
-// fall back to chrome / safe-area insets.
+// exists at runtime) feeds these helpers. Compile-time 27.1 headers are
+// optional — CI still builds against 26.0 — so the ObjC caller keeps
+// `respondsToSelector:` probes instead of requiring published enum types.
+// Older SDKs/runtimes pass an empty list and fall back to chrome / safe-area.
 
 typedef struct {
     double x;

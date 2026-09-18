@@ -9,8 +9,12 @@
 #import "ApolloCommon.h"
 
 // iOS 27.1 UIKit spelling (Swift: UIView.reservedRegions(kind:options:)).
-// Kind raw values are not in the pinned 26.0 SDK; probe 0..2 so a 1-based
-// enum still works. Options bit 0 is `.includeInactive` per Apple's Tech Talk.
+// Step 5 pins a 27.1 *device* SDK when iPhoneOS27.1.sdk is present, but CI
+// and many Macs still compile against 26.0. Public iOS 27.0 headers have no
+// reservedRegions types/enums (and 27.1 ObjC names are not in this tree),
+// so we keep respondsToSelector: + kind probe 0..2 instead of inventing
+// UIReservedRegionKind* that would fail a 26-only toolchain or silently
+// mismatch. Options bit 0 is `.includeInactive` per Apple's Tech Talk.
 enum {
     kApolloReservedKindProbeMin = 0,
     kApolloReservedKindProbeMax = 2,
