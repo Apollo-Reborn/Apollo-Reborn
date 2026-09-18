@@ -263,8 +263,10 @@ Confirm feed size-class layout (step 3 + open Duo):
 - List-only or feed-only on the stack (no pair): leading half
   (`mode=centered`, Duo-wide / rail), not a 900pt+ column across the fold.
 - Fold / rotate Regular → Compact: comments go full width; feed leaves.
-- Tap a second post in the still-visible feed: comments column replaces,
-  back still returns to the feed.
+- Tap a second or third post in the still-visible feed: the right pane
+  Mail-replaces with that post's comments (`@[feed, latestDetail]`,
+  `animated:NO`). It must not stay on the first post or go blank.
+  Back still returns to the feed.
 - Swipe-up-for-comments media pane is unchanged (sheet, not a tile).
 - iPad "Move Tab Bar to Bottom" stays off on iPhone.
 
@@ -357,8 +359,11 @@ the sim stubs.
 - list | feed is the My Subreddits directory. A sub tap dismisses it
   from the visible stack but retains the list VC; Subs restores
   `@[savedList, feed]`. Opening a topic is feed | comments (or any
-  reading-detail pane). Do **not** add UIView `layoutSubviews`
-  frame-lock hooks (they freeze scroll and buttons).
+  reading-detail pane). A later left-pane topic tap replaces the
+  right pane (`@[feed, latestDetail]`); do not push a third screen
+  or leave PairOnStack looking only at `[oldComments, newComments]`.
+  Do **not** add UIView `layoutSubviews` frame-lock hooks (they
+  freeze scroll and buttons).
 - The slim rail is painted on the tab controller. FeedSplit leading
   extra is at least `ApolloDuoRailWidth` so columns start to its right.
   Tab-level `additionalSafeAreaInsets.left` is not used for Posts

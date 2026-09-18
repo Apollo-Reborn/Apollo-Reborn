@@ -12,6 +12,10 @@
 // Tapping a subreddit dismisses the directory from the stack but retains
 // the list VC so Subs can restore it. That sub's posts sit leading until
 // a topic opens as **feed | comments** (or any reading-detail pane).
+// A later left-pane topic tap Mail-replaces the right pane
+// (`@[feed, latestDetail]`, animated:NO) — it must not push onto
+// `[feed, oldComments]` (top is no longer the feed, so a "tile only if
+// top is feed" path leaves the first post painted or blanks the right).
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -144,6 +148,9 @@ typedef enum {
     ApolloFeedSplitPairListFeed,
     ApolloFeedSplitPairFeedComments,
 } ApolloFeedSplitPair;
+
+static UIViewController *ApolloFeedSplitFirstFeedOnStack(UINavigationController *nav);
+static void ApolloFeedSplitMarkApplyDirty(UINavigationController *nav);
 
 static UIView *ApolloFeedSplitContainerView(UINavigationController *nav) {
     if (!nav.isViewLoaded) return nil;
@@ -380,12 +387,21 @@ static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
 
     for (UIView *sub in [container.subviews copy]) {
         if (sub == ApolloFeedSplitSeparator(nav, NO)) continue;
+        const char *name = class_getName(sub.class);
+        if (name && (strstr(name, "NavigationBar") || strstr(name, "Toolbar")
+                     || strstr(name, "Transition") || strstr(name, "DropShadow")
+                     || strstr(name, "Dimming") || strstr(name, "Separator"))) {
+            continue;
+        }
         if (ApolloFeedSplitIsSnapshotView(sub)) {
             ApolloLog(@"[FeedSplit] removing leftover snapshot %@",
                       NSStringFromClass(sub.class));
             [sub removeFromSuperview];
             continue;
         }
+        BOOL keep = ApolloFeedSplitViewIsColumnOf(sub, primary, container)
+            || ApolloFeedSplitViewIsColumnOf(sub, secondary, container);
+        if (keep) continue;
         UIViewController *owner = nil;
         for (UIViewController *vc in candidates) {
             if (ApolloFeedSplitViewIsColumnOf(sub, vc, container)) {
@@ -393,11 +409,15 @@ static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
                 break;
             }
         }
-        if (!owner) continue;
-        if (owner == primary || owner == secondary) continue;
-        ApolloLog(@"[FeedSplit] removing orphan column %@ (%@)",
-                  NSStringFromClass(sub.class), NSStringFromClass(owner.class));
-        [sub removeFromSuperview];
+        if (owner && (owner == primary || owner == secondary)) continue;
+        // Previous comments/feed hosts stay in the container after a topic
+        // replace because they are no longer on the stack (no candidate).
+        if (owner || (CGRectGetWidth(sub.frame) >= 80.0 && CGRectGetHeight(sub.frame) >= 80.0)) {
+            ApolloLog(@"[FeedSplit] removing leftover column %@ (%@)",
+                      NSStringFromClass(sub.class),
+                      owner ? NSStringFromClass(owner.class) : @"unowned");
+            [sub removeFromSuperview];
+        }
     }
     ApolloFeedSplitDedupeHostedView(container, primary);
     ApolloFeedSplitDedupeHostedView(container, secondary);
@@ -497,12 +517,17 @@ static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *na
     }
     UIViewController *detail = stack.lastObject;
     UIViewController *previous = stack[stack.count - 2];
-    // Post-open: feed | reading-detail wins so drilling into a thread does
-    // not keep a three-column list|feed|comments layout.
-    if (ApolloFeedSplitIsReadingDetailController(detail) && ApolloFeedSplitIsFeedController(previous)) {
-        if (primaryOut) *primaryOut = previous;
-        if (detailOut) *detailOut = detail;
-        return ApolloFeedSplitPairFeedComments;
+    // Post-open: feed | latest reading-detail. A second topic tap used
+    // to leave [feed, oldComments, newComments]; looking only at the
+    // last two then returned None and Apply would not swap the right pane.
+    if (ApolloFeedSplitIsReadingDetailController(detail)) {
+        UIViewController *feed = ApolloFeedSplitIsFeedController(previous)
+            ? previous : ApolloFeedSplitFirstFeedOnStack(nav);
+        if (feed && feed != detail) {
+            if (primaryOut) *primaryOut = feed;
+            if (detailOut) *detailOut = detail;
+            return ApolloFeedSplitPairFeedComments;
+        }
     }
     if (ApolloFeedSplitIsFeedController(detail)
         && ApolloFeedSplitIsListController(previous)) {
@@ -579,6 +604,8 @@ static void ApolloFeedSplitLogModeIfChanged(UINavigationController *nav, ApolloF
 }
 
 static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated);
+static void ApolloFeedSplitMarkApplyDirty(UINavigationController *nav);
+static UIViewController *ApolloFeedSplitFirstFeedOnStack(UINavigationController *nav);
 
 static UIViewController *ApolloFeedSplitFirstFeedOnStack(UINavigationController *nav) {
     if (!nav) return nil;
@@ -659,6 +686,7 @@ extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) 
     if (feed && !feed.isViewLoaded) [feed loadViewIfNeeded];
     if (list) ApolloFeedSplitSaveList(nav, list);
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloFeedSplitMarkApplyDirty(nav);
     ApolloFeedSplitForceTiledForSeconds(0.8);
     ApolloFeedSplitApply(nav, NO);
     UIView *container = ApolloFeedSplitContainerView(nav);
@@ -955,25 +983,100 @@ static BOOL ApolloFeedSplitWouldTile(UINavigationController *nav) {
         == ApolloFeedSplitModeTiled;
 }
 
+static void ApolloFeedSplitMarkApplyDirty(UINavigationController *nav) {
+    if (!nav) return;
+    objc_setAssociatedObject(nav, &kApolloFeedSplitLastApplySizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(nav, &kApolloFeedSplitSpanCoalesceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloFeedSplitDetachHost(UIView *container, UIViewController *controller) {
+    if (!container || !controller.isViewLoaded) return;
+    UIView *layout = ApolloFeedSplitLayoutView(controller, container);
+    if (layout && layout.superview == container) {
+        [layout removeFromSuperview];
+    }
+    if (controller.view.superview == container && controller.view != layout) {
+        [controller.view removeFromSuperview];
+    }
+}
+
+// Mail-style: right pane is always @[feed, latestDetail]. A second left-pane
+// topic tap must not push onto [feed, oldComments] (top is no longer the
+// feed, so the old tile-on-feed path skipped and the first post stayed).
+static BOOL ApolloFeedSplitReplaceReadingDetail(UINavigationController *nav,
+                                                UIViewController *detail) {
+    if (!nav || !detail) return NO;
+    UIViewController *feed = ApolloFeedSplitFirstFeedOnStack(nav);
+    if (!feed || feed == detail) return NO;
+    if (!ApolloFeedSplitIsReadingDetailController(detail)) return NO;
+
+    NSArray<UIViewController *> *stack = nav.viewControllers;
+    NSMutableArray<UIViewController *> *oldDetails = [NSMutableArray array];
+    for (UIViewController *controller in stack) {
+        if (controller == feed || controller == detail) continue;
+        if (ApolloFeedSplitIsReadingDetailController(controller)) {
+            [oldDetails addObject:controller];
+        }
+    }
+    NSArray<UIViewController *> *want = @[ feed, detail ];
+    UIView *container = ApolloFeedSplitContainerView(nav);
+    if (![stack isEqualToArray:want]) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [nav setViewControllers:want animated:NO];
+        if (!detail.isViewLoaded) [detail loadViewIfNeeded];
+        objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [CATransaction commit];
+        for (UIViewController *oldDetail in oldDetails) {
+            ApolloFeedSplitDetachHost(container, oldDetail);
+        }
+    } else if (!detail.isViewLoaded) {
+        [detail loadViewIfNeeded];
+    }
+
+    ApolloFeedSplitMarkApplyDirty(nav);
+    ApolloFeedSplitForceTiledForSeconds(0.8);
+    ApolloFeedSplitApply(nav, NO);
+    ApolloFeedSplitRemoveForeignColumns(nav, container, feed, detail);
+    ApolloLog(@"[FeedSplit] replaced reading detail stack=%lu old=%lu new=%@",
+              (unsigned long)want.count,
+              (unsigned long)oldDetails.count,
+              NSStringFromClass(detail.class));
+    return YES;
+}
+
 static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav) {
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
-    NSArray<UIViewController *> *stack = nav.viewControllers;
-    if (stack.count < 3) return;
-    UIViewController *top = stack.lastObject;
-    UIViewController *mid = stack[stack.count - 2];
-    UIViewController *under = stack[stack.count - 3];
-    if (!ApolloFeedSplitIsReadingDetailController(top)
-        || !ApolloFeedSplitIsReadingDetailController(mid)) return;
-    if (!ApolloFeedSplitIsFeedController(under)) return;
+    UIViewController *feed = ApolloFeedSplitFirstFeedOnStack(nav);
+    UIViewController *top = nav.viewControllers.lastObject;
+    if (!feed || !top || feed == top) return;
+    if (!ApolloFeedSplitIsReadingDetailController(top)) return;
     if (!ApolloFeedSplitWouldTile(nav)) return;
+    NSArray<UIViewController *> *stack = nav.viewControllers;
+    NSArray<UIViewController *> *want = @[ feed, top ];
+    if ([stack isEqualToArray:want]) return;
 
-    NSMutableArray<UIViewController *> *next = [stack mutableCopy];
-    [next removeObjectAtIndex:next.count - 2];
+    NSMutableArray<UIViewController *> *detached = [NSMutableArray array];
+    for (UIViewController *controller in stack) {
+        if (controller == feed || controller == top) continue;
+        if (ApolloFeedSplitIsReadingDetailController(controller)) {
+            [detached addObject:controller];
+        }
+    }
+    UIView *container = ApolloFeedSplitContainerView(nav);
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [nav setViewControllers:next animated:NO];
+    [nav setViewControllers:want animated:NO];
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIViewController *controller in detached) {
+        ApolloFeedSplitDetachHost(container, controller);
+    }
+    ApolloFeedSplitMarkApplyDirty(nav);
+    ApolloFeedSplitForceTiledForSeconds(0.8);
+    ApolloFeedSplitApply(nav, NO);
+    ApolloFeedSplitRemoveForeignColumns(nav, container, feed, top);
     ApolloLog(@"[FeedSplit] replaced comments column (stack %lu→%lu)",
-              (unsigned long)stack.count, (unsigned long)next.count);
+              (unsigned long)stack.count, (unsigned long)want.count);
 }
 
 // List still visible: selecting another subreddit should replace the feed
@@ -1088,6 +1191,7 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         && (ApolloDuoRailIsPickingSubreddits() || listOnStack);
     if (subPick) {
         ApolloFeedSplitSaveList(nav, listOnNav ?: ApolloFeedSplitSavedList(nav));
+        ApolloFeedSplitMarkApplyDirty(nav);
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1108,13 +1212,22 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         return;
     }
 
-    // Topic / post: any reading-detail on top of a feed tiles, no slide.
+    // Topic / post: tile as feed|detail. If comments are already showing,
+    // replace that detail (top is no longer the feed — a second left-pane
+    // tap used to %orig-push and leave the first post painted).
     if (duoTile && viewController
         && ApolloFeedSplitIsReadingDetailController(viewController)
-        && ApolloFeedSplitIsFeedController(nav.topViewController)) {
+        && (ApolloFeedSplitIsFeedController(nav.topViewController)
+            || ApolloFeedSplitIsReadingDetailController(nav.topViewController)
+            || ApolloFeedSplitFirstFeedOnStack(nav))) {
+        if (ApolloFeedSplitReplaceReadingDetail(nav, viewController)) {
+            ApolloFeedSplitReapplySoon();
+            return;
+        }
         %orig(viewController, NO);
         ApolloFeedSplitCollapseReplacedComments(nav);
         ApolloFeedSplitForceTiledForSeconds(0.8);
+        ApolloFeedSplitMarkApplyDirty(nav);
         ApolloFeedSplitApply(nav, NO);
         ApolloLog(@"[FeedSplit] topic open tiled; scheduling ReapplySoon");
         ApolloFeedSplitReapplySoon();
@@ -1174,7 +1287,29 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
+    if (ApolloDuoRailIsActive()
+        && ApolloFeedSplitPairOnStack(nav, NULL, NULL) == ApolloFeedSplitPairFeedComments) {
+        ApolloFeedSplitMarkApplyDirty(nav);
+        ApolloFeedSplitForceTiledForSeconds(0.8);
+        ApolloFeedSplitApply(nav, NO);
+        ApolloFeedSplitReapplySoon();
+        return;
+    }
     ApolloFeedSplitScheduleApply(nav);
+}
+
+- (void)showViewController:(UIViewController *)viewController sender:(id)sender {
+    UINavigationController *nav = (UINavigationController *)self;
+    BOOL duoTile = ApolloDuoRailIsActive() && ApolloFeedSplitWouldTile(nav);
+    if (duoTile && viewController
+        && ApolloFeedSplitIsReadingDetailController(viewController)
+        && ApolloFeedSplitFirstFeedOnStack(nav)) {
+        if (ApolloFeedSplitReplaceReadingDetail(nav, viewController)) {
+            ApolloFeedSplitReapplySoon();
+            return;
+        }
+    }
+    %orig;
 }
 
 %end
