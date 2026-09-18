@@ -23,7 +23,7 @@ letterbox: the *guest* Apollo binary still advertised SDK 19.0 / 26.
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is covered for **media/PiP** in step 4; floating-tab bubbles still rely on chrome insets only. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
 | Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (chrome insets max'd with edge-flush reserved regions). A center hinge is a gap, not fake left+right insets: the gallery transport sits on the larger remaining side; MediaPage close + PiP buttons shift off the rect. Gallery columns go even when a (possibly inactive) division exists. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Runtime `reservedRegions` spelling/kind values stay probed (0..2). A hinge UIKit never reports still cannot be guessed from `_exclusionArea`. Step 5 did not replace the probes — see below. |
-| Feed / posts | **Step 3:** no stock Regular-width split to unlock. The tweak tiles inside `_TtC6Apollo26ApolloNavigationController` when the horizontal size class is Regular and the usable width is at least two 320pt columns (`ApolloFeedSplitLayout.h`). Compact stays a single column. Feed VCs (Posts / LitePosts / Saved / search results) sit leading; `CommentsViewController` sits trailing. Swipe-up pane comments are skipped. Tab children stay Apollo navs — do **not** wrap them in `UISplitViewController`. `ApolloIPadTabBarBottom` stays idiom-gated. | Profile / inbox / settings pushes stay stacked. Feed cells that size from the screen instead of their view may still stretch inside a column. Hinge pixels that are not extra layout margin are step 4. |
+| Feed / posts | **Step 3 + screen-fill:** tiles inside `_TtC6Apollo26ApolloNavigationController` when Regular and usable width ≥ 652pt. **Primary open-Duo chrome is list \| feed** (`RedditListViewController` leading, current `PostsViewController` trailing). Selecting another subreddit replaces the feed column. **When a post is open, feed \| comments takes over.** Compact stays stacked. Swipe-up pane comments are skipped. Do **not** wrap tabs in `UISplitViewController`. | Profile / inbox / settings stay stacked. The mock’s feed\|post+comments layout is secondary (post-open only). Cover display has no companion UI. |
 | Toolchain | **Step 5:** device `make package` pins `iphone:clang:27.1:14.0` when `iPhoneOS27.1.sdk` exists; otherwise `26.0:14.0`. Sim: unchanged `latest` / 15.0. **Screen-fill:** `--liquid-glass` now sets the *guest* `LC_BUILD_VERSION` sdk to **27.1** (still min 15.0) so Duo grants a full canvas; `IsLiquidGlass()` remains major >= 19. | A 27.1 Simulator runtime is not a device SDK. Cached `.sim/glass-base.ipa` at 19.0 must be regenerated. Classic (no glass) guests stay letterboxed. CI (Xcode 26.0.1) stays on the tweak 26.0 fallback. |
 
 ## Phased work
@@ -158,6 +158,12 @@ Runtime belt (`src/ApolloDeviceDisplay.{h,m,xm}`):
 - Do **not** wrap the app in `UISplitViewController`. FeedSplit tiles
   inside `ApolloNavigationController` once Regular width actually
   occurs on the filled canvas.
+- **Primary open-Duo browsing chrome:** `RedditListViewController` |
+  current feed. Selecting a subreddit on the left replaces the feed
+  column (does not push a third screen). **After opening a post:**
+  existing feed | comments tile. Compact stays a single column. The
+  attached concept mock (feed | post+comments) is secondary inspiration
+  for hinge-aware two-pane spanning, not the default chrome.
 
 Cover / outer display: no second Apollo UI. The cover is left alone
 aside from not stealing the key window or overlay. Dual `simctl io`
@@ -211,12 +217,15 @@ Confirm floating tabs / Liquid Glass (step 2):
 - `[FloatingTabs] Overlay window created (scene=yes)` / `Overlay rebound`
   in `apollofix` logs.
 
-Confirm feed | comments size-class layout (step 3):
+Confirm feed size-class layout (step 3 + open Duo):
 
-- Compact portrait (any phone): opening a post still covers the feed.
-- Regular landscape (Plus/Max sim, or Duo inner Regular): opening a post
-  keeps the feed on the leading side and comments on the trailing side.
-  `[FeedSplit] mode=tiled` in `apollofix` logs.
+- Compact portrait (any phone): opening a subreddit or post still covers
+  the previous screen.
+- Regular / Duo inner open: the subreddit list stays leading and the
+  current feed stays trailing (`[FeedSplit] mode=tiled pair=list-feed`).
+  Tapping another subreddit replaces the feed column.
+- Opening a post then tiles feed | comments
+  (`[FeedSplit] mode=tiled pair=feed-comments`).
 - Regular with no post open: feed is a centered column (`mode=centered`),
   not a 900pt+ stretched list.
 - Fold / rotate Regular → Compact: comments go full width; feed leaves.

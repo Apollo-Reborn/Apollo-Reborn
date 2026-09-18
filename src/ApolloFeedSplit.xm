@@ -1,16 +1,20 @@
 // ApolloFeedSplit.xm
 //
-// Regular-width feed | comments layout for Duo's inner display (and any
-// other Regular-width iPhone, e.g. Plus/Max landscape). Compact stays a
-// single column.
+// Regular-width two-pane layout for Duo's inner display (and any other
+// Regular-width iPhone, e.g. Plus/Max landscape). Compact stays a single
+// column.
+//
+// Primary open-Duo browsing chrome is **subreddit list | current feed**.
+// When a post is open, **feed | comments** takes over (the earlier pair).
+// The concept mock's feed|post+comments layout is secondary inspiration
+// only — hinge-aware two-pane, not the default browsing chrome.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
 // in a split would break the many call sites that treat
 // tab.selectedViewController as that nav (settings, floating tabs, swipe-up
 // comments, URL routing, video swipe). So we keep the real stack and tile
-// inside the existing nav: feed stays leading, comments stay trailing, back
-// / pop / topViewController keep working.
+// inside the existing nav. back / pop / topViewController keep working.
 //
 // Column frames use layout-margin EXTRA only (ApolloDeviceChromeExtra), not
 // the full chrome inset, so children still apply their own safeAreaInsets
@@ -55,6 +59,16 @@ static BOOL ApolloFeedSplitIsCommentsController(UIViewController *controller) {
     if (!comments || ![controller isKindOfClass:comments]) return NO;
     return !ApolloSwipeCommentsIsPaneCommentsController(controller);
 }
+
+static BOOL ApolloFeedSplitIsListController(UIViewController *controller) {
+    return ApolloFeedSplitIsClass(controller, "_TtC6Apollo24RedditListViewController");
+}
+
+typedef enum {
+    ApolloFeedSplitPairNone = 0,
+    ApolloFeedSplitPairListFeed,
+    ApolloFeedSplitPairFeedComments,
+} ApolloFeedSplitPair;
 
 static UIView *ApolloFeedSplitContainerView(UINavigationController *nav) {
     if (!nav.isViewLoaded) return nil;
@@ -108,18 +122,32 @@ static void ApolloFeedSplitSetPrimaryAlongside(UIViewController *feed, BOOL alon
     [feed endAppearanceTransition];
 }
 
-static BOOL ApolloFeedSplitHasDetailPair(UINavigationController *nav,
-                                         UIViewController **feedOut,
-                                         UIViewController **detailOut) {
+static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *nav,
+                                                      UIViewController **primaryOut,
+                                                      UIViewController **detailOut) {
     NSArray<UIViewController *> *stack = nav.viewControllers;
-    if (stack.count < 2) return NO;
+    if (stack.count < 2) {
+        if (primaryOut) *primaryOut = nil;
+        if (detailOut) *detailOut = nil;
+        return ApolloFeedSplitPairNone;
+    }
     UIViewController *detail = stack.lastObject;
-    if (!ApolloFeedSplitIsCommentsController(detail)) return NO;
     UIViewController *previous = stack[stack.count - 2];
-    if (!ApolloFeedSplitIsFeedController(previous)) return NO;
-    if (feedOut) *feedOut = previous;
-    if (detailOut) *detailOut = detail;
-    return YES;
+    // Post-open: feed | comments wins so drilling into a thread does not
+    // keep a three-column list|feed|comments layout.
+    if (ApolloFeedSplitIsCommentsController(detail) && ApolloFeedSplitIsFeedController(previous)) {
+        if (primaryOut) *primaryOut = previous;
+        if (detailOut) *detailOut = detail;
+        return ApolloFeedSplitPairFeedComments;
+    }
+    if (ApolloFeedSplitIsFeedController(detail) && ApolloFeedSplitIsListController(previous)) {
+        if (primaryOut) *primaryOut = previous;
+        if (detailOut) *detailOut = detail;
+        return ApolloFeedSplitPairListFeed;
+    }
+    if (primaryOut) *primaryOut = nil;
+    if (detailOut) *detailOut = nil;
+    return ApolloFeedSplitPairNone;
 }
 
 static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *nav,
@@ -129,10 +157,11 @@ static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *na
                                                       UIViewController **detailOut) {
     UIViewController *feed = nil;
     UIViewController *detail = nil;
-    BOOL hasDetail = ApolloFeedSplitHasDetailPair(nav, &feed, &detail);
+    ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, &feed, &detail);
+    BOOL hasDetail = pair != ApolloFeedSplitPairNone;
     if (!hasDetail) {
         UIViewController *top = nav.topViewController;
-        if (ApolloFeedSplitIsFeedController(top)) {
+        if (ApolloFeedSplitIsFeedController(top) || ApolloFeedSplitIsListController(top)) {
             feed = top;
         }
     }
@@ -161,8 +190,12 @@ static void ApolloFeedSplitLogModeIfChanged(UINavigationController *nav, ApolloF
     const char *name = "stacked";
     if (mode == ApolloFeedSplitModeCentered) name = "centered";
     else if (mode == ApolloFeedSplitModeTiled) name = "tiled";
-    ApolloLog(@"[FeedSplit] mode=%s sizeClass=%ld",
-              name, (long)nav.traitCollection.horizontalSizeClass);
+    ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, NULL, NULL);
+    const char *pairName = "none";
+    if (pair == ApolloFeedSplitPairListFeed) pairName = "list-feed";
+    else if (pair == ApolloFeedSplitPairFeedComments) pairName = "feed-comments";
+    ApolloLog(@"[FeedSplit] mode=%s pair=%s sizeClass=%ld",
+              name, pairName, (long)nav.traitCollection.horizontalSizeClass);
 }
 
 static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
@@ -300,6 +333,28 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
               (unsigned long)stack.count, (unsigned long)next.count);
 }
 
+// List still visible: selecting another subreddit should replace the feed
+// column instead of pushing a third full-width Posts screen.
+static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
+    if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
+    NSArray<UIViewController *> *stack = nav.viewControllers;
+    if (stack.count < 3) return;
+    UIViewController *top = stack.lastObject;
+    UIViewController *mid = stack[stack.count - 2];
+    UIViewController *under = stack[stack.count - 3];
+    if (!ApolloFeedSplitIsFeedController(top) || !ApolloFeedSplitIsFeedController(mid)) return;
+    if (!ApolloFeedSplitIsListController(under)) return;
+    if (!ApolloFeedSplitWouldTile(nav)) return;
+
+    NSMutableArray<UIViewController *> *next = [stack mutableCopy];
+    [next removeObjectAtIndex:next.count - 2];
+    objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [nav setViewControllers:next animated:NO];
+    objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[FeedSplit] replaced feed column (stack %lu→%lu)",
+              (unsigned long)stack.count, (unsigned long)next.count);
+}
+
 %hook _TtC6Apollo26ApolloNavigationController
 
 - (void)viewDidLayoutSubviews {
@@ -343,6 +398,7 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
     %orig;
     UINavigationController *nav = (UINavigationController *)self;
     ApolloFeedSplitCollapseReplacedComments(nav);
+    ApolloFeedSplitCollapseReplacedFeeds(nav);
     ApolloFeedSplitScheduleApply(nav);
 }
 
@@ -369,6 +425,7 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
     UINavigationController *nav = (UINavigationController *)self;
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
     ApolloFeedSplitCollapseReplacedComments(nav);
+    ApolloFeedSplitCollapseReplacedFeeds(nav);
     ApolloFeedSplitScheduleApply(nav);
 }
 
@@ -381,5 +438,5 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
         return;
     }
     %init;
-    ApolloLog(@"[FeedSplit] hook installed (Regular feed|comments tile; Compact stacks)");
+    ApolloLog(@"[FeedSplit] hook installed (Regular list|feed, then feed|comments; Compact stacks)");
 }
