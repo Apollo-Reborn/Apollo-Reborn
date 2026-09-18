@@ -24,7 +24,6 @@
 #import "ApolloCommon.h"
 #import "ApolloFloatingTabs.h"
 #import "ApolloLinkPreviewFetcher.h"
-#import "ApolloMemoryDiagnostics.h"
 #import "ApolloTranslation.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloWebTextDecoding.h"
@@ -864,17 +863,6 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
                                                                 object:NSProcessInfo.processInfo];
             ApolloLog(@"[SimDebugTap] lpm -> %d (isLowPowerModeEnabled=%d)",
                       sApolloSimForceLowPowerMode, NSProcessInfo.processInfo.isLowPowerModeEnabled);
-            return;
-        }
-        // "memwarn" command: post the same notification UIKit posts under real
-        // low-memory pressure, so the coordinated cache purge can be exercised
-        // and measured without waiting for jetsam to take an interest. The
-        // simulator never generates the real signal on its own.
-        if ([contents hasPrefix:@"memwarn"]) {
-            ApolloMemoryLogFootprint(@"memwarn requested");
-            [NSNotificationCenter.defaultCenter
-                postNotificationName:UIApplicationDidReceiveMemoryWarningNotification
-                              object:UIApplication.sharedApplication];
             return;
         }
         if ([contents hasPrefix:@"crash "]) {
