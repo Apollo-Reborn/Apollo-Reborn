@@ -68,9 +68,9 @@ or an SDK bump.
   - list only / feed only → leading half on Duo-wide / rail-active canvases
     (never a full-bleed column across the hinge); Plus landscape still centers
   - feed + comments → tiled **feed | comments** (primary mock reading pair)
-  - list + feed → tiled **list | feed** for `[RedditList, Posts]` (directory
-    left, current or just-picked sub feed right). Tapping a subreddit does
-    **not** pin the feed leading. Opening a post is `feed | comments`.
+  - list + feed → tiled **list | feed** only while My Subreddits is picking.
+    Tapping a subreddit dismisses the directory; that sub's posts sit in
+    the leading half. Opening a post is `feed | comments`.
 - Compact, unspecified, or Regular-but-narrow → stacked (UIKit's existing
   push). Swipe-up media-pane comments never tile.
 - Column frames use `ApolloDeviceChromeExtra` (hinge-sized layout-margin

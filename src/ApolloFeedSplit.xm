@@ -8,10 +8,10 @@
 // on the left, selected post + comments on the right (feed | comments).
 // A lone feed stays in the leading half (never full-bleed across the hinge).
 // The slim rail switches Home / Popular / All / My Subreddits / Profile /
-// Settings. **list | feed** is the directory step: RedditList on the left,
-// the current (or just-picked) sub feed on the right. Opening a post then
-// switches to **feed | comments** (feed left, comments right). Do not pin
-// the feed leading on a mere subreddit selection.
+// Settings. **list | feed** is only while My Subreddits is picking (directory
+// left, current feed right). Tapping a subreddit dismisses the directory:
+// that sub's posts sit in the leading half; the right pane stays empty
+// until a post opens as **feed | comments**.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -49,8 +49,6 @@ static char kApolloFeedSplitSeparatorKey;
 static char kApolloFeedSplitMutatingStackKey;
 static char kApolloFeedSplitApplyingKey;
 static char kApolloFeedSplitLastModeKey;
-static char kApolloFeedSplitLockedFrameKey;
-static char kApolloFeedSplitRestoringFrameKey;
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
     Class cls = name ? objc_getClass(name) : Nil;
@@ -107,17 +105,10 @@ static UIView *ApolloFeedSplitLayoutView(UIViewController *controller, UIView *c
     return view;
 }
 
-static void ApolloFeedSplitClearLockedFrame(UIView *view) {
-    if (!view) return;
-    objc_setAssociatedObject(view, &kApolloFeedSplitLockedFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
 static void ApolloFeedSplitSetFrame(UIView *view, CGRect frame) {
     if (!view) return;
-    view.autoresizingMask = UIViewAutoresizingNone;
-    objc_setAssociatedObject(view, &kApolloFeedSplitLockedFrameKey,
-                             [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (CGRectEqualToRect(view.frame, frame)) return;
+    view.autoresizingMask = UIViewAutoresizingNone;
     view.frame = frame;
 }
 
@@ -174,6 +165,9 @@ static void ApolloFeedSplitSetPrimaryAlongside(UIViewController *feed, BOOL alon
     if (feed.navigationController.transitionCoordinator) return;
     objc_setAssociatedObject(feed, &kApolloFeedSplitPrimaryAlongsideKey,
                              alongside ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // beginAppearanceTransition on the still-visible feed steals touches
+    // on open Duo (scroll and buttons die).
+    if (ApolloDuoRailIsActive()) return;
     if (!feed.isViewLoaded) return;
     [feed beginAppearanceTransition:alongside animated:NO];
     [feed endAppearanceTransition];
@@ -197,10 +191,8 @@ static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *na
         if (detailOut) *detailOut = detail;
         return ApolloFeedSplitPairFeedComments;
     }
-    // Directory (and a sub tap from it): list stays left, feed stays right.
-    // Do not require the picking flag — clearing it on push used to slam the
-    // new feed into Centered/leading (everything on the left).
-    if (ApolloFeedSplitIsFeedController(detail)
+    if (ApolloDuoRailIsPickingSubreddits()
+        && ApolloFeedSplitIsFeedController(detail)
         && ApolloFeedSplitIsListController(previous)) {
         if (primaryOut) *primaryOut = previous;
         if (detailOut) *detailOut = detail;
@@ -350,24 +342,17 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
             if (top.isViewLoaded) {
                 UIView *topLayout = ApolloFeedSplitLayoutView(top, container);
                 if (topLayout) {
-                    ApolloFeedSplitClearLockedFrame(topLayout);
-                    if (top.view && top.view != topLayout) {
-                        ApolloFeedSplitClearLockedFrame(top.view);
-                    }
+                    ApolloFeedSplitSetFrame(topLayout, container.bounds);
                     topLayout.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    topLayout.frame = container.bounds;
                 }
             }
             if (feed && feed != top) {
                 UIView *feedLayout = ApolloFeedSplitLayoutView(feed, container);
-                ApolloFeedSplitClearLockedFrame(feedLayout);
-                if (feed.isViewLoaded) ApolloFeedSplitClearLockedFrame(feed.view);
                 if (feedLayout && feedLayout.superview == container) {
                     [feedLayout removeFromSuperview];
                 }
                 ApolloFeedSplitSetPrimaryAlongside(feed, NO);
             }
-            ApolloFeedSplitClearLockedFrame(separator);
             if (separator.superview) [separator removeFromSuperview];
             return;
         }
@@ -493,57 +478,6 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
               (unsigned long)stack.count, (unsigned long)next.count);
 }
 
-static void ApolloFeedSplitApplyFromChild(UIViewController *child) {
-    if (!child || !ApolloDuoRailIsActive()) return;
-    UINavigationController *nav = child.navigationController;
-    if (!nav) return;
-    ApolloFeedSplitApply(nav, NO);
-}
-
-%hook UIView
-
-- (void)layoutSubviews {
-    %orig;
-    if (objc_getAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey)) return;
-    NSValue *locked = objc_getAssociatedObject(self, &kApolloFeedSplitLockedFrameKey);
-    if (![locked isKindOfClass:[NSValue class]]) return;
-    CGRect want = locked.CGRectValue;
-    if (CGRectEqualToRect(self.frame, want)) return;
-    objc_setAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    self.autoresizingMask = UIViewAutoresizingNone;
-    self.frame = want;
-    objc_setAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-%end
-
-%hook _TtC6Apollo19PostsViewController
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    ApolloFeedSplitApplyFromChild((UIViewController *)self);
-}
-
-%end
-
-%hook _TtC6Apollo23LitePostsViewController
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    ApolloFeedSplitApplyFromChild((UIViewController *)self);
-}
-
-%end
-
-%hook _TtC6Apollo24RedditListViewController
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    ApolloFeedSplitApplyFromChild((UIViewController *)self);
-}
-
-%end
-
 %hook _TtC6Apollo26ApolloNavigationController
 
 - (void)viewDidLayoutSubviews {
@@ -587,31 +521,21 @@ static void ApolloFeedSplitApplyFromChild(UIViewController *child) {
     UINavigationController *nav = (UINavigationController *)self;
     BOOL duoTile = ApolloDuoRailIsActive() && ApolloFeedSplitWouldTile(nav);
 
-    // Stock push slides the incoming VC from the right (looks like a swipe
-    // left). On Duo list|feed the new sub feed already belongs in the right
-    // pane — skip %orig and swap the stack instead.
-    if (duoTile && viewController && ApolloFeedSplitIsFeedController(viewController)) {
-        NSArray<UIViewController *> *stack = nav.viewControllers;
-        UIViewController *top = stack.lastObject;
-        UIViewController *list = nil;
-        if (stack.count >= 2
-            && ApolloFeedSplitIsListController(stack[stack.count - 2])
-            && ApolloFeedSplitIsFeedController(top)) {
-            list = stack[stack.count - 2];
-        } else if (ApolloFeedSplitIsListController(top) && ApolloDuoRailIsPickingSubreddits()) {
-            list = top;
-        }
-        if (list && list != viewController) {
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [nav setViewControllers:@[ list, viewController ] animated:NO];
-            objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [CATransaction commit];
-            ApolloFeedSplitApply(nav, NO);
-            ApolloLog(@"[FeedSplit] replaced right feed without push slide");
-            return;
-        }
+    // Subreddit tap while picking: dismiss the directory. That sub's posts
+    // become the sole VC and sit in the leading half (right empty until a
+    // post opens). Skip %orig so the stock push does not slide.
+    if (duoTile && viewController && ApolloFeedSplitIsFeedController(viewController)
+        && ApolloDuoRailIsPickingSubreddits()) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloDuoRailSetPickingSubreddits(NO);
+        [nav setViewControllers:@[ viewController ] animated:NO];
+        objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [CATransaction commit];
+        ApolloFeedSplitApply(nav, NO);
+        ApolloLog(@"[FeedSplit] dismissed directory; sub feed leading");
+        return;
     }
 
     if (duoTile && ApolloFeedSplitIsCommentsController(viewController)) {
