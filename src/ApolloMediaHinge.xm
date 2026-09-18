@@ -41,10 +41,10 @@ static CGRect ApolloMediaHingeTrailingFrame(UIView *container) {
     if (size.width < 8.0 || size.height < 8.0) return CGRectZero;
     UIEdgeInsets safe = container.safeAreaInsets;
     UIEdgeInsets margins = container.layoutMargins;
-    double extraLeft = ApolloFeedSplitLeadingExtra(
-        ApolloDeviceChromeExtra(safe.left, margins.left),
+    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+    double extraRight = ApolloFeedSplitTrailingExtra(
+        ApolloDeviceChromeExtra(safe.right, margins.right),
         ApolloDuoRailIsActive() ? 1 : 0);
-    double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     BOOL rtl = NO;
     if ([container respondsToSelector:@selector(effectiveUserInterfaceLayoutDirection)]) {
         rtl = container.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;

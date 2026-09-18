@@ -186,11 +186,17 @@ int main(void) {
     Check(Near(ApolloFeedSplitBookStart(1000.0, 400.0), 0.0),
           "a margin that already is the left pane is not added again");
     Check(Near(ApolloFeedSplitBookStart(736.0, 64.0), 64.0),
-          "slim rail inset still shifts content even when extra+minColumn > mid");
-    Check(Near(ApolloFeedSplitLeadingExtra(0.0, 1), (double)ApolloDuoRailWidth),
-          "rail-active leading extra is the rail width");
-    Check(Near(ApolloFeedSplitLeadingExtra(80.0, 1), 80.0),
-          "chrome extra larger than the rail wins");
+          "slim left chrome still shifts content even when extra+minColumn > mid");
+    Check(Near(ApolloFeedSplitBookEnd(736.0, 64.0), 736.0 - 64.0),
+          "slim trailing rail still insets even when extra+minColumn > mid");
+    Check(Near(ApolloFeedSplitLeadingExtra(0.0, 1), 0.0),
+          "leading extra is chrome-only (rail is trailing)");
+    Check(Near(ApolloFeedSplitTrailingExtra(0.0, 1), (double)ApolloDuoRailWidth),
+          "rail-active trailing extra is the rail width");
+    Check(Near(ApolloFeedSplitTrailingExtra(80.0, 1), 80.0),
+          "chrome extra larger than the rail wins on the trailing side");
+    Check(Near(ApolloFeedSplitTrailingExtra(0.0, 0), 0.0),
+          "rail-inactive trailing extra stays chrome-only");
     Check(Near(ApolloFeedSplitLeadingExtra(0.0, 0), 0.0),
           "rail-inactive leading extra stays chrome-only");
 
@@ -215,12 +221,28 @@ int main(void) {
           "pinLeading stacked becomes centered leading, not full-bleed");
 
     ApolloFeedSplitFrames railCentered = ApolloFeedSplitFramesMake(
-        1000.0, 400.0, ApolloFeedSplitLeadingExtra(0.0, 1), 0.0,
+        1000.0, 400.0, 0.0, ApolloFeedSplitTrailingExtra(0.0, 1),
         ApolloFeedSplitModeCentered, 0,
         ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
-    Check(Near(railCentered.feed.x, (double)ApolloDuoRailWidth)
+    Check(Near(railCentered.feed.x, 0.0)
               && railCentered.feed.x + railCentered.feed.width + 0.5 <= 500.0,
-          "lone feed starts after the rail and stays left of the hinge");
+          "lone feed stays left of the hinge; trailing rail does not shift it");
+
+    ApolloFeedSplitFrames railTiled = ApolloFeedSplitFramesMake(
+        1000.0, 400.0, 0.0, ApolloFeedSplitTrailingExtra(0.0, 1),
+        ApolloFeedSplitModeTiled, 0,
+        ApolloFeedSplitTileBalanced, 0.0, 0.0, 1);
+    Check(railTiled.showsDetail
+              && railTiled.detail.x + 0.5 >= 500.0
+              && Near(railTiled.detail.x + railTiled.detail.width, 1000.0 - (double)ApolloDuoRailWidth),
+          "tiled comments stop before the trailing rail");
+
+    ApolloFeedSplitRect fullBleed = spanRect;
+    fullBleed.width = 1000.0;
+    ApolloFeedSplitRect trailUnderRail = ApolloFeedSplitClampRectToHalfInsets(
+        fullBleed, 1000.0, 400.0, 1, 0.0, (double)ApolloDuoRailWidth);
+    Check(Near(trailUnderRail.x + trailUnderRail.width, 1000.0 - (double)ApolloDuoRailWidth),
+          "trailing clamp honors the rail book end");
 
     ApolloFeedSplitFrames balanced = ApolloFeedSplitFramesMake(
         1000.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeTiled, 0,

@@ -67,10 +67,11 @@ or an SDK bump.
 - Regular + usable width ≥ 652pt (`320+12+320`):
   - list only / feed only → leading half on Duo-wide / rail-active canvases
     (never a full-bleed column across the hinge); Plus landscape still centers
-    unless the Duo rail is active. Leading extra is at least the rail width
-    so row text cannot start under the rail. The shared navigation bar is
-    pinned to the owning pane (leading when the feed is alone, trailing
-    when the top VC is the tiled detail) so titles do not sit on the hinge.
+    unless the Duo rail is active. Trailing extra is at least the rail width
+    so comments/feed text cannot sit under the right-edge rail. The shared
+    navigation bar is pinned to the owning pane (leading when the feed is
+    alone, trailing when the top VC is the tiled detail) so titles do not
+    sit on the hinge.
   - feed + comments → tiled **feed | comments** (primary mock reading pair)
   - list + feed → tiled **list | feed** (My Subreddits directory). Tapping
     a subreddit dismisses the directory from the stack but retains the
@@ -179,14 +180,14 @@ Runtime belt (`src/ApolloDeviceDisplay.{h,m,xm}`):
   **post + comments** on the right. Wide canvases use a hinge-aware
   ~50/50 split. The previous “list | feed as the only primary chrome”
   ask is superseded.
-- Slim rail, top → bottom: Home, Popular, All, **My Subreddits**,
-  then Profile and Settings at the bottom. My Subreddits overlays the
-  subscriptions list in the left pane with the current feed on the
-  right; tapping a subreddit dismisses the directory (list retained)
-  and pins that sub's posts leading. Tapping Subs again restores
-  list|feed. Opening a topic tiles feed | comments (or any
-  reading-detail pane). Compact and ordinary Plus landscape keep the
-  stock tab bar.
+- Slim rail on the **far right** (Duo system controls live there),
+  top → bottom: **My Subreddits**, Home, Popular, All, then Profile
+  and Settings at the bottom. Launch selects Subs: directory left,
+  live feed right (not a blank trailing pane). Tapping a subreddit
+  dismisses the directory (list retained) and pins that sub's posts
+  leading. Tapping Subs again restores list|feed. Opening a topic
+  tiles feed | comments (or any reading-detail pane). Compact and
+  ordinary Plus landscape keep the stock tab bar.
 
 Cover / outer display: no second Apollo UI. The cover is left alone
 aside from not stealing the key window or overlay. Dual `simctl io`
@@ -203,11 +204,12 @@ scripts/run-in-sim.sh --glass --fresh-app --logs
 
 Expect `[DeviceDisplay] canvas fill hook installed` and `[DuoRail]
 shown`. The UI must span the **inner** display (not a phone column)
-with the slim rail on the leading edge. Home / Popular / All should
-put that **feed in the left pane**. Opening a post tiles **feed |
-comments** (`[FeedSplit] mode=tiled pair=feed-comments`). My
-Subreddits shows the list leading (`pair=list-feed`); tapping a
-subreddit dismisses the directory and pins that sub's posts leading.
+with the slim rail on the **trailing** edge. Launch is Subs /
+list|feed. Home / Popular / All should put that **feed in the left
+pane**. Opening a post tiles **feed | comments** (`[FeedSplit]
+mode=tiled pair=feed-comments`). My Subreddits shows the list
+leading (`pair=list-feed`); tapping a subreddit dismisses the
+directory and pins that sub's posts leading.
 Opening a post is `pair=feed-comments`.
 `vtool -show-build .sim/Payload/Apollo.app/Apollo` should report `sdk 27.1`.
 
@@ -249,15 +251,18 @@ Confirm feed size-class layout (step 3 + open Duo):
 
 - Compact portrait (any phone): stock tab bar; opening a subreddit or
   post still covers the previous screen. No rail.
-- Regular / Duo inner open: slim rail + **feed | comments** after a
-  post (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular /
-  All switch feeds and stay **leading-half** when alone (`mode=centered`).
+- Regular / Duo inner open: slim **trailing** rail + **list | feed**
+  on launch (Subs selected). After a post, **feed | comments**
+  (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular / All
+  switch feeds and stay **leading-half** when alone (`mode=centered`).
   My Subreddits is `pair=list-feed` while picking; tapping a subreddit
   puts that sub's posts in the left half (list retained). Tapping Subs
   again restores the directory. Opening a topic is `pair=feed-comments`
-  (any reading-detail pane), not a full-screen push. List/feed text
-  starts after the rail; nav titles live in the owning pane, not on
-  the hinge. No ghosted duplicate rows after a sub pick or post open.
+  (any reading-detail pane), not a full-screen push. Comments/feed
+  text stop before the trailing rail; nav titles live in the owning
+  pane, not on the hinge. No ghosted duplicate rows after a sub pick
+  or post open. Overscrolling comments must not reveal a second copy
+  of the same post.
 - A center reserved hinge should sit in the gutter, not under a
   title or comment.
 - List-only or feed-only on the stack (no pair): leading half
@@ -364,13 +369,15 @@ the sim stubs.
   or leave PairOnStack looking only at `[oldComments, newComments]`.
   Do **not** add UIView `layoutSubviews` frame-lock hooks (they
   freeze scroll and buttons).
-- The slim rail is painted on the tab controller. FeedSplit leading
-  extra is at least `ApolloDuoRailWidth` so columns start to its right.
-  Tab-level `additionalSafeAreaInsets.left` is not used for Posts
-  (Texture ignored it; UIKit tables would double-count). Profile /
-  Settings navs still get that inset. The shared `UINavigationBar`
-  stays full-width from the rail; only the title control is shifted
-  into the owning pane (shrinking the bar onto comments ghosted the
-  post title). Apply is skipped while a column scroll view is
-  tracking/decelerating. Subs must not call `goToHomeTab` — that
-  popped/reset the stack and re-dismissed the restored directory.
+- The slim rail is painted on the **trailing** edge of the tab
+  controller. FeedSplit trailing extra is at least `ApolloDuoRailWidth`
+  so columns stop to its left. Tab-level `additionalSafeAreaInsets`
+  is not used for Posts (Texture ignored it; UIKit tables would
+  double-count). Profile / Settings navs get a right inset. The
+  shared `UINavigationBar` stays full-width up to the rail; only the
+  title control is shifted into the owning pane (shrinking the bar
+  onto comments ghosted the post title). Apply is skipped while a
+  column scroll view is tracking/decelerating. Subs must not call
+  `goToHomeTab` — that popped/reset the stack and re-dismissed the
+  restored directory. Only one trailing detail host may remain after
+  a topic apply (overscroll must not reveal a stationary duplicate).

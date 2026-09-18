@@ -7,8 +7,8 @@
 // Open Duo / Regular **primary chrome is the concept mock**: current feed
 // on the left, selected post + comments on the right (feed | comments).
 // A lone feed stays in the leading half (never full-bleed across the hinge).
-// The slim rail switches Home / Popular / All / My Subreddits / Profile /
-// Settings. **list | feed** is the directory (RedditList left, feed right).
+// The slim trailing rail is My Subreddits / Home / Popular / All /
+// Profile / Settings. **list | feed** is the directory (RedditList left, feed right).
 // Tapping a subreddit dismisses the directory from the stack but retains
 // the list VC so Subs can restore it. That sub's posts sit leading until
 // a topic opens as **feed | comments** (or any reading-detail pane).
@@ -25,8 +25,8 @@
 // inside the existing nav. back / pop / topViewController keep working.
 //
 // Column frames use layout-margin EXTRA plus the slim Duo rail width
-// (ApolloFeedSplitLeadingExtra) so list/feed text starts to the right of
-// the rail. Children still apply their own safeAreaInsets for the notch.
+// (ApolloFeedSplitTrailingExtra) so comments/feed text stop left of the
+// trailing rail. Children still apply their own safeAreaInsets for the notch.
 
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -88,6 +88,19 @@ extern "C" void ApolloFeedSplitForceTiledForSeconds(NSTimeInterval seconds) {
 
 static BOOL ApolloFeedSplitShouldForceTiled(void) {
     return ApolloDuoRailIsActive() || ApolloFeedSplitForceTiledActive();
+}
+
+static void ApolloFeedSplitChromeExtras(UIView *insetView, double *leftOut, double *rightOut) {
+    UIEdgeInsets safe = insetView ? insetView.safeAreaInsets : UIEdgeInsetsZero;
+    UIEdgeInsets margins = insetView ? insetView.layoutMargins : UIEdgeInsetsZero;
+    if (leftOut) {
+        *leftOut = ApolloDeviceChromeExtra(safe.left, margins.left);
+    }
+    if (rightOut) {
+        *rightOut = ApolloFeedSplitTrailingExtra(
+            ApolloDeviceChromeExtra(safe.right, margins.right),
+            ApolloDuoRailIsActive() ? 1 : 0);
+    }
 }
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
@@ -231,7 +244,14 @@ static void ApolloFeedSplitPinColumnClamped(UIViewController *controller,
     if (width < 1.0 || height < 1.0) return;
     if (ApolloFeedSplitShouldForceTiled()
         || width + 0.5 >= (CGFloat)ApolloFeedSplitBalancedMinWidth) {
-        rect = ApolloFeedSplitClampRectToHalf(rect, width, height, trailing ? 1 : 0);
+        UIEdgeInsets safe = container.safeAreaInsets;
+        UIEdgeInsets margins = container.layoutMargins;
+        double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+        double extraRight = ApolloFeedSplitTrailingExtra(
+            ApolloDeviceChromeExtra(safe.right, margins.right),
+            ApolloDuoRailIsActive() ? 1 : 0);
+        rect = ApolloFeedSplitClampRectToHalfInsets(rect, width, height, trailing ? 1 : 0,
+                                                    extraLeft, extraRight);
     }
     ApolloFeedSplitPinColumn(controller, container, rect);
 }
@@ -285,7 +305,7 @@ static void ApolloFeedSplitPinNavigationBar(UINavigationController *nav,
     CGRect barFrame = bar.frame;
     CGFloat navWidth = nav.view.bounds.size.width;
     if (navWidth < 8.0) return;
-    barFrame.origin.x = rail;
+    barFrame.origin.x = 0.0;
     barFrame.size.width = navWidth - rail;
     if (barFrame.size.width < 8.0) return;
     bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -423,6 +443,55 @@ static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
     ApolloFeedSplitDedupeHostedView(container, secondary);
 }
 
+// Overscroll ghost: a leftover comments host (or the same VC mirrored as a
+// sibling wrapper/snapshot) sits behind the live trailing scroll view.
+// Keep exactly one trailing-column host — the current detail's layout.
+static void ApolloFeedSplitKeepSingleTrailingDetail(UINavigationController *nav,
+                                                    UIView *container,
+                                                    UIViewController *detail) {
+    if (!nav || !container || !detail.isViewLoaded) return;
+    ApolloFeedSplitDedupeHostedView(container, detail);
+    UIView *keepLayout = ApolloFeedSplitLayoutView(detail, container);
+    UIView *keepView = detail.view;
+    UIView *snapshotHost = keepLayout ?: keepView;
+    if (snapshotHost) {
+        for (UIView *sub in [snapshotHost.subviews copy]) {
+            if (sub == keepView) continue;
+            if (ApolloFeedSplitIsSnapshotView(sub)) {
+                ApolloLog(@"[FeedSplit] removing nested snapshot %@",
+                          NSStringFromClass(sub.class));
+                [sub removeFromSuperview];
+            }
+        }
+    }
+    double mid = ApolloFeedSplitContainerMidX(container.bounds.size.width);
+    for (UIView *sub in [container.subviews copy]) {
+        if (sub == keepLayout || sub == keepView) continue;
+        if (sub == ApolloFeedSplitSeparator(nav, NO)) continue;
+        const char *name = class_getName(sub.class);
+        if (name && (strstr(name, "NavigationBar") || strstr(name, "Toolbar")
+                     || strstr(name, "DropShadow") || strstr(name, "Dimming")
+                     || strstr(name, "Separator"))) {
+            continue;
+        }
+        if (keepView && ([keepView isDescendantOfView:sub] || [sub isDescendantOfView:keepView])) {
+            continue;
+        }
+        CGRect f = sub.frame;
+        BOOL sized = CGRectGetWidth(f) >= 80.0 && CGRectGetHeight(f) >= 80.0;
+        if (!sized && !sub.hidden && sub.alpha >= 0.05) continue;
+        BOOL occupiesTrail = CGRectGetMaxX(f) > mid + 8.0 && CGRectGetMinX(f) + 8.0 >= mid * 0.45;
+        BOOL parked = sub.hidden || sub.alpha < 0.05 || CGRectGetMinX(f) > container.bounds.size.width;
+        if (ApolloFeedSplitIsSnapshotView(sub) || occupiesTrail || (parked && sized)) {
+            ApolloLog(@"[FeedSplit] removing trailing duplicate %@ frame=%@ hidden=%d alpha=%.2f",
+                      NSStringFromClass(sub.class), NSStringFromCGRect(f),
+                      sub.hidden ? 1 : 0, sub.alpha);
+            [sub removeFromSuperview];
+        }
+    }
+    ApolloFeedSplitDedupeHostedView(container, detail);
+}
+
 static BOOL ApolloFeedSplitChildSpansMidX(UIView *container) {
     if (!container) return NO;
     CGFloat mid = (CGFloat)ApolloFeedSplitContainerMidX(container.bounds.size.width);
@@ -555,12 +624,9 @@ static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *na
             feed = top;
         }
     }
-    UIEdgeInsets safe = insetView.safeAreaInsets;
-    UIEdgeInsets margins = insetView.layoutMargins;
-    double extraLeft = ApolloFeedSplitLeadingExtra(
-        ApolloDeviceChromeExtra(safe.left, margins.left),
-        ApolloDuoRailIsActive() ? 1 : 0);
-    double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
+    double extraLeft = 0.0;
+    double extraRight = 0.0;
+    ApolloFeedSplitChromeExtras(insetView, &extraLeft, &extraRight);
     double usable = ApolloFeedSplitUsableWidth(containerSize.width, extraLeft, extraRight);
     ApolloFeedSplitMode mode = ApolloFeedSplitModeForTraits(
         (int)nav.traitCollection.horizontalSizeClass, usable, hasDetail ? 1 : 0);
@@ -802,12 +868,9 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     ApolloFeedSplitMode mode = ApolloFeedSplitCurrentMode(nav, container.bounds.size, nav.view, &feed, &detail);
     ApolloFeedSplitLogModeIfChanged(nav, mode);
 
-    UIEdgeInsets safe = nav.view.safeAreaInsets;
-    UIEdgeInsets margins = nav.view.layoutMargins;
-    double extraLeft = ApolloFeedSplitLeadingExtra(
-        ApolloDeviceChromeExtra(safe.left, margins.left),
-        ApolloDuoRailIsActive() ? 1 : 0);
-    double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
+    double extraLeft = 0.0;
+    double extraRight = 0.0;
+    ApolloFeedSplitChromeExtras(nav.view, &extraLeft, &extraRight);
     BOOL rtl = nav.view.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
     ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, NULL, NULL);
     double usable = ApolloFeedSplitUsableWidth(container.bounds.size.width, extraLeft, extraRight);
@@ -847,11 +910,13 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         double ch = container.bounds.size.height;
         double cw = container.bounds.size.width;
         if (ApolloFeedSplitRectSpansMidX(frames.feed, mid) || mode == ApolloFeedSplitModeCentered) {
-            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, cw, ch, rtl ? 1 : 0);
+            frames.feed = ApolloFeedSplitClampRectToHalfInsets(frames.feed, cw, ch, rtl ? 1 : 0,
+                                                              extraLeft, extraRight);
         }
         if (frames.showsDetail) {
             if (ApolloFeedSplitRectSpansMidX(frames.detail, mid) || mode == ApolloFeedSplitModeTiled) {
-                frames.detail = ApolloFeedSplitClampRectToHalf(frames.detail, cw, ch, rtl ? 0 : 1);
+                frames.detail = ApolloFeedSplitClampRectToHalfInsets(frames.detail, cw, ch, rtl ? 0 : 1,
+                                                                    extraLeft, extraRight);
             }
         }
     }
@@ -911,6 +976,7 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
             ApolloFeedSplitPinColumnClamped(detail, container, frames.detail, !rtl);
             ApolloFeedSplitSetPrimaryAlongside(feed, YES);
             ApolloFeedSplitRemoveForeignColumns(nav, container, feed, detail);
+            ApolloFeedSplitKeepSingleTrailingDetail(nav, container, detail);
             if (separator) {
                 CGFloat gutter = rtl
                     ? (CGFloat)(frames.feed.x - (frames.detail.x + frames.detail.width))
@@ -972,12 +1038,9 @@ static BOOL ApolloFeedSplitWouldTile(UINavigationController *nav) {
         && size.width + 0.5 >= (double)ApolloFeedSplitMinRegularWidth) {
         return YES;
     }
-    UIEdgeInsets safe = nav.view.safeAreaInsets;
-    UIEdgeInsets margins = nav.view.layoutMargins;
-    double extraLeft = ApolloFeedSplitLeadingExtra(
-        ApolloDeviceChromeExtra(safe.left, margins.left),
-        ApolloDuoRailIsActive() ? 1 : 0);
-    double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
+    double extraLeft = 0.0;
+    double extraRight = 0.0;
+    ApolloFeedSplitChromeExtras(nav.view, &extraLeft, &extraRight);
     double usable = ApolloFeedSplitUsableWidth(size.width, extraLeft, extraRight);
     return ApolloFeedSplitModeForTraits((int)nav.traitCollection.horizontalSizeClass, usable, 1)
         == ApolloFeedSplitModeTiled;
@@ -990,13 +1053,24 @@ static void ApolloFeedSplitMarkApplyDirty(UINavigationController *nav) {
 }
 
 static void ApolloFeedSplitDetachHost(UIView *container, UIViewController *controller) {
-    if (!container || !controller.isViewLoaded) return;
-    UIView *layout = ApolloFeedSplitLayoutView(controller, container);
-    if (layout && layout.superview == container) {
+    if (!controller.isViewLoaded) return;
+    UIView *view = controller.view;
+    UIView *layout = container ? ApolloFeedSplitLayoutView(controller, container) : nil;
+    if (layout && layout.superview) {
         [layout removeFromSuperview];
     }
-    if (controller.view.superview == container && controller.view != layout) {
-        [controller.view removeFromSuperview];
+    if (view.superview) {
+        [view removeFromSuperview];
+    }
+    if (!container) return;
+    for (UIView *sub in [container.subviews copy]) {
+        if (sub == view || sub == layout) {
+            [sub removeFromSuperview];
+            continue;
+        }
+        if ([view isDescendantOfView:sub] || [sub isDescendantOfView:view]) {
+            [sub removeFromSuperview];
+        }
     }
 }
 
@@ -1039,6 +1113,7 @@ static BOOL ApolloFeedSplitReplaceReadingDetail(UINavigationController *nav,
     ApolloFeedSplitForceTiledForSeconds(0.8);
     ApolloFeedSplitApply(nav, NO);
     ApolloFeedSplitRemoveForeignColumns(nav, container, feed, detail);
+    ApolloFeedSplitKeepSingleTrailingDetail(nav, container, detail);
     ApolloLog(@"[FeedSplit] replaced reading detail stack=%lu old=%lu new=%@",
               (unsigned long)want.count,
               (unsigned long)oldDetails.count,
@@ -1075,6 +1150,7 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
     ApolloFeedSplitForceTiledForSeconds(0.8);
     ApolloFeedSplitApply(nav, NO);
     ApolloFeedSplitRemoveForeignColumns(nav, container, feed, top);
+    ApolloFeedSplitKeepSingleTrailingDetail(nav, container, top);
     ApolloLog(@"[FeedSplit] replaced comments column (stack %lu→%lu)",
               (unsigned long)stack.count, (unsigned long)want.count);
 }

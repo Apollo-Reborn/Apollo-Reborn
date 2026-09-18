@@ -12,34 +12,37 @@
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloThemeRuntime.h"
 
-// Open-Duo leading rail. Regular + (dual screens or a wide inner canvas)
-// replaces the stock tab bar with Home / Popular / All / My Subreddits /
-// Profile / Settings. Compact and ordinary Plus landscape keep the tab bar.
+// Open-Duo trailing rail. Regular + (dual screens or a wide inner canvas)
+// replaces the stock tab bar with My Subreddits / Home / Popular / All /
+// Profile / Settings on the far right (Duo system controls live there).
+// Compact and ordinary Plus landscape keep the tab bar.
 //
-// Navigation reuses Apollo's own tab selectors and RedditList row 0 (Home),
-// plus apollo://reddit.com/r/popular|all — the same paths Quick Actions use.
+// First show defaults to Subs: list|feed so the right pane is a live feed,
+// not a blank half. Navigation reuses Apollo's own tab selectors and
+// RedditList row 0 (Home), plus apollo://reddit.com/r/popular|all.
 
 typedef NS_ENUM(NSInteger, ApolloDuoRailItem) {
-    ApolloDuoRailItemHome = 0,
+    ApolloDuoRailItemSubreddits = 0,
+    ApolloDuoRailItemHome,
     ApolloDuoRailItemPopular,
     ApolloDuoRailItemAll,
-    ApolloDuoRailItemSubreddits,
     ApolloDuoRailItemProfile,
     ApolloDuoRailItemSettings,
     ApolloDuoRailItemCount,
 };
 
 static const char *kApolloDuoRailTitles[] = {
-    "Home", "Popular", "All", "Subs", "Profile", "Settings",
+    "Subs", "Home", "Popular", "All", "Profile", "Settings",
 };
 static const char *kApolloDuoRailSymbols[] = {
-    "house", "flame", "globe", "list.bullet", "person", "gearshape",
+    "list.bullet", "house", "flame", "globe", "person", "gearshape",
 };
 
 static char kApolloDuoRailViewKey;
 static char kApolloDuoRailActiveKey;
 static char kApolloDuoRailSelectedKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
+static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
 BOOL ApolloDuoRailIsPickingSubreddits(void) {
     return sApolloDuoRailPickingSubreddits;
@@ -272,7 +275,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
         [buttons addObject:button];
     }
     self.buttons = buttons;
-    self.selectedItem = ApolloDuoRailItemHome;
+    self.selectedItem = ApolloDuoRailItemSubreddits;
     [self apollo_applyTheme];
     return self;
 }
@@ -379,26 +382,57 @@ static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) 
     }
 }
 
+static BOOL ApolloDuoRailNavHasFeed(UINavigationController *nav) {
+    if (!nav) return NO;
+    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class liteClass = objc_getClass("_TtC6Apollo23LitePostsViewController");
+    Class savedClass = objc_getClass("_TtC6Apollo32SavedPostsCommentsViewController");
+    Class searchClass = objc_getClass("_TtC6Apollo32PostsSearchResultsViewController");
+    for (UIViewController *controller in nav.viewControllers) {
+        if ((postsClass && [controller isKindOfClass:postsClass])
+            || (liteClass && [controller isKindOfClass:liteClass])
+            || (savedClass && [controller isKindOfClass:savedClass])
+            || (searchClass && [controller isKindOfClass:searchClass])) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Launch / first rail show: Subs selected, directory left, live feed right.
+static void ApolloDuoRailOpenDefaultDirectory(UITabBarController *tabs) {
+    UINavigationController *nav = ApolloDuoRailFindPostsNav(tabs, YES);
+    objc_setAssociatedObject(tabs, &kApolloDuoRailSelectedKey,
+                             @(ApolloDuoRailItemSubreddits), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloDuoRailView *rail = objc_getAssociatedObject(tabs, &kApolloDuoRailViewKey);
+    [rail apollo_setSelectedItem:ApolloDuoRailItemSubreddits];
+    if (nav && !ApolloDuoRailNavHasFeed(nav)) {
+        ApolloDuoRailOpenListRow(nav, 0);
+    }
+    ApolloFeedSplitShowSubredditPicker(nav);
+    ApolloLog(@"[DuoRail] default Subs list|feed");
+}
+
 static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
-    // Posts / FeedSplit columns start at extraLeft = rail width. Do not also
+    // Posts / FeedSplit columns stop at extraRight = rail width. Do not also
     // push additionalSafeAreaInsets on the tab controller — Texture ignored
-    // that inset (rail covered text) and UIKit tables would double-count
-    // once the column frame already starts after the rail.
+    // that inset and UIKit tables would double-count once the column frame
+    // already ends before the rail.
     UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
-    if (fabs(tabInsets.left) > 0.5) {
-        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, tabInsets.right);
+    if (fabs(tabInsets.left) > 0.5 || fabs(tabInsets.right) > 0.5) {
+        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, 0.0);
     }
 
     UIViewController *posts = tabs.viewControllers.firstObject;
     for (UIViewController *child in tabs.viewControllers) {
         if (!child) continue;
         UIEdgeInsets current = child.additionalSafeAreaInsets;
-        CGFloat want = 0.0;
+        CGFloat wantRight = 0.0;
         if (show && child != posts) {
-            want = (CGFloat)ApolloDuoRailWidth;
+            wantRight = (CGFloat)ApolloDuoRailWidth;
         }
-        if (fabs(current.left - want) < 0.5) continue;
-        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, want, current.bottom, current.right);
+        if (fabs(current.left) < 0.5 && fabs(current.right - wantRight) < 0.5) continue;
+        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, 0.0, current.bottom, wantRight);
     }
 }
 
@@ -431,20 +465,34 @@ void ApolloDuoRailSync(void) {
         objc_setAssociatedObject(tabs, &kApolloDuoRailViewKey, rail, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGRect bounds = tabs.view.bounds;
-    rail.frame = CGRectMake(0.0, 0.0, (CGFloat)ApolloDuoRailWidth, bounds.size.height);
+    CGFloat railWidth = (CGFloat)ApolloDuoRailWidth;
+    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
+    rail.frame = CGRectMake(bounds.size.width - railWidth, 0.0, railWidth, bounds.size.height);
     if (rail.superview != tabs.view) {
         [tabs.view addSubview:rail];
     }
     [tabs.view bringSubviewToFront:rail];
     NSNumber *selected = objc_getAssociatedObject(tabs, &kApolloDuoRailSelectedKey);
-    if (selected) [rail apollo_setSelectedItem:(ApolloDuoRailItem)selected.integerValue];
+    if (selected) {
+        [rail apollo_setSelectedItem:(ApolloDuoRailItem)selected.integerValue];
+    } else {
+        [rail apollo_setSelectedItem:ApolloDuoRailItemSubreddits];
+    }
     [rail apollo_applyTheme];
 
     ApolloDuoRailApplyInsets(tabs, YES);
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown (%.0fx%.0f Regular dual/wide)",
+        ApolloLog(@"[DuoRail] shown trailing (%.0fx%.0f Regular dual/wide)",
                   bounds.size.width, bounds.size.height);
+        if (!sApolloDuoRailOpenedDefaultDirectory) {
+            sApolloDuoRailOpenedDefaultDirectory = YES;
+            ApolloDuoRailOpenDefaultDirectory(tabs);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                ApolloFeedSplitShowSubredditPicker(ApolloDuoRailFindPostsNav(tabs, YES));
+            });
+        }
     }
 }

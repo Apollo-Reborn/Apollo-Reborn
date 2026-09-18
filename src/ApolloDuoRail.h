@@ -6,7 +6,7 @@
 
 __BEGIN_DECLS
 
-/// YES while the open-Duo leading rail is installed and the stock tab bar
+/// YES while the open-Duo trailing rail is installed and the stock tab bar
 /// should stay hidden. Compact / ordinary iPhone keep the tab bar.
 BOOL ApolloDuoRailIsActive(void);
 

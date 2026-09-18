@@ -89,18 +89,25 @@ static inline double ApolloFeedSplitContainerMidX(double containerWidth) {
     return containerWidth * 0.5;
 }
 
-// extraLeft for column frames: chrome extra, but never less than the
-// slim Duo rail so list/feed text cannot start under the rail.
+// extraLeft is chrome only. The slim Duo rail sits on the *trailing*
+// edge (system controls are hardcoded there), so rail width belongs
+// in extraRight via TrailingExtra — never under the left pane.
 static inline double ApolloFeedSplitLeadingExtra(double chromeExtra, int railActive) {
+    (void)railActive;
+    if (chromeExtra < 0.0) chromeExtra = 0.0;
+    return chromeExtra;
+}
+
+static inline double ApolloFeedSplitTrailingExtra(double chromeExtra, int railActive) {
     if (chromeExtra < 0.0) chromeExtra = 0.0;
     double rail = railActive ? (double)ApolloDuoRailWidth : 0.0;
     return chromeExtra > rail ? chromeExtra : rail;
 }
 
 // Rail / chrome start for the left pane. A fat margin that already
-// *is* the leading half is not stacked again. A slim rail inset must
-// still shift content to the right of the rail, even on Plus widths
-// where extraLeft + minColumn > mid.
+// *is* the leading half is not stacked again. A slim left chrome
+// inset must still shift content, even on Plus widths where
+// extraLeft + minColumn > mid.
 static inline double ApolloFeedSplitBookStart(double containerWidth, double extraLeft) {
     if (extraLeft < 0.0) extraLeft = 0.0;
     double mid = ApolloFeedSplitContainerMidX(containerWidth);
@@ -113,10 +120,15 @@ static inline double ApolloFeedSplitBookStart(double containerWidth, double extr
     return extraLeft;
 }
 
+// Trailing book edge. Same slim-rail exception as BookStart: extraRight
+// of 64 on a 736pt canvas would otherwise collapse (64+320 > mid).
 static inline double ApolloFeedSplitBookEnd(double containerWidth, double extraRight) {
     if (extraRight < 0.0) extraRight = 0.0;
     double mid = ApolloFeedSplitContainerMidX(containerWidth);
     if (extraRight + (double)ApolloFeedSplitFeedMinWidth > mid) {
+        if (extraRight + 0.5 < (double)ApolloFeedSplitFeedMinWidth && extraRight < mid) {
+            return containerWidth - extraRight;
+        }
         return containerWidth;
     }
     return containerWidth - extraRight;
@@ -175,6 +187,32 @@ static inline ApolloFeedSplitRect ApolloFeedSplitClampRectToHalf(ApolloFeedSplit
         }
         if (out.x + out.width > maxX) {
             out.width = maxX - out.x;
+        }
+    }
+    if (out.width < 0.0) out.width = 0.0;
+    return out;
+}
+
+// Same half clamp, then honor book start/end so a trailing rail is not
+// covered when a full-bleed column is forced into the right pane.
+static inline ApolloFeedSplitRect ApolloFeedSplitClampRectToHalfInsets(ApolloFeedSplitRect rect,
+                                                                      double containerWidth,
+                                                                      double containerHeight,
+                                                                      int trailing,
+                                                                      double extraLeft,
+                                                                      double extraRight) {
+    ApolloFeedSplitRect out = ApolloFeedSplitClampRectToHalf(rect, containerWidth,
+                                                            containerHeight, trailing);
+    if (trailing) {
+        double maxX = ApolloFeedSplitBookEnd(containerWidth, extraRight);
+        if (out.x + out.width > maxX) {
+            out.width = maxX - out.x;
+        }
+    } else {
+        double minX = ApolloFeedSplitBookStart(containerWidth, extraLeft);
+        if (out.x < minX) {
+            out.width -= (minX - out.x);
+            out.x = minX;
         }
     }
     if (out.width < 0.0) out.width = 0.0;

@@ -5,9 +5,9 @@
 extern "C" {
 #endif
 
-// Slim leading rail on open Duo / very wide Regular. Compact and ordinary
-// Plus landscape keep Apollo's stock tab bar. C-only so host tests compile
-// without UIKit.
+// Slim trailing rail on open Duo / very wide Regular (system controls
+// live on the right). Compact and ordinary Plus landscape keep Apollo's
+// stock tab bar. C-only so host tests compile without UIKit.
 
 enum {
     ApolloDuoRailWidth = 64,
