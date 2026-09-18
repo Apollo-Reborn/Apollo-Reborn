@@ -72,6 +72,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFloatingTabs.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
@@ -141,7 +142,8 @@ static BOOL PPCSWriteCurrentSort(id vc, int64_t raw) {
 // rather than a feed cell: the URL scheme, inbox, and — the one that made this matter
 // — a Floating Tab restored after a relaunch, which reopens cold through Apollo's URL
 // router (ApolloFloatingTabs.xm's openTab:). Those opens carry the id in the `linkID`
-// Swift ivar instead, in the same bare form, so the sort still restores.
+// Swift ivar instead — normally the same bare form, but tolerate a t3_ fullname
+// there the way ApolloURLOpenCommentSort.xm does, so both opens key the same entry.
 static NSString *PPCSPostID(id vc) {
     id link = PPCSObjectIvar(vc, "link");
     if (link && [link respondsToSelector:@selector(identifier)]) {
@@ -149,6 +151,7 @@ static NSString *PPCSPostID(id vc) {
         if ([identifier isKindOfClass:[NSString class]] && identifier.length > 0) return identifier;
     }
     NSString *linkID = ApolloReadSwiftStringIvar(vc, "linkID");
+    if ([linkID hasPrefix:@"t3_"]) linkID = [linkID substringFromIndex:3];
     return linkID.length > 0 ? linkID : nil;
 }
 
@@ -227,7 +230,16 @@ static void PPCSDisarm(void) {
     if (sPerPostCommentSort) {
         NSString *postID = PPCSPostID(self);
         int64_t saved = postID ? PPCSSavedSortForPost(postID) : 0;
-        if (saved >= 1 && saved <= 7) {   // Live(8) is never stored; anything else is stale/garbage
+        // A relaunch-restored Floating Tab reopening this post asks for the sort its
+        // screen was last on; ApolloURLOpenCommentSort.xm writes that one (it hooks
+        // viewDidLoad after this module, so its pre-write would run first and this one
+        // would silently overwrite it — the completion then refetches). Leave the ivar
+        // to it; the tab's sort outranks this memory in the URL-open chain anyway.
+        int64_t tabSort = postID ? ApolloFloatingTabsPendingCommentSortForPost(postID) : 0;
+        if (saved >= 1 && saved <= 7 && tabSort >= 1 && tabSort <= 8) {
+            ApolloLog(@"[PerPostSort] post %@ has saved sort %@ but a Floating Tab is reopening it on %@; leaving the pre-write to URLOpenSort",
+                      postID, PPCSSortName(saved), PPCSSortName(tabSort));
+        } else if (saved >= 1 && saved <= 7) {   // Live(8) is never stored; anything else is stale/garbage
             int64_t cur = 0;
             BOOL curSet = PPCSReadCurrentSort(self, &cur);
             if ((!curSet || cur != saved) && PPCSWriteCurrentSort(self, saved)) {
