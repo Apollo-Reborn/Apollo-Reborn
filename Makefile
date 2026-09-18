@@ -128,6 +128,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloMediaMetadata.m \
     $(SRC_DIR)/ApolloMediaAutoplay.m \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
+    $(SRC_DIR)/ApolloCommentHeaderLayout.xm \
     $(SRC_DIR)/ApolloInboxCommentScroll.xm \
     $(SRC_DIR)/ApolloFindInComments.xm \
     $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
