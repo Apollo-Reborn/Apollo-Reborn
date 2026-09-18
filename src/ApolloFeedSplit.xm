@@ -4,10 +4,12 @@
 // Regular-width iPhone, e.g. Plus/Max landscape). Compact stays a single
 // column.
 //
-// Open Duo / Regular: the slim leading rail (ApolloDuoRail) is the destination
-// switcher. The concept mock's primary reading pair is **feed | post+comments**
-// spanning the hinge (balanced columns on a wide inner canvas). **list | feed**
-// tiles only while My Subreddits (or a list→feed push) is on the stack.
+// Open Duo / Regular **primary browsing chrome is list | feed**
+// (RedditListViewController leading, current PostsViewController trailing).
+// Selecting another subreddit replaces the feed column. **feed | comments**
+// only after a post is opened (wins over list|feed). The concept mock's
+// feed|post+comments book split is secondary: hinge-aware 50/50 when that
+// pair is showing, not the default browsing chrome.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -453,5 +455,5 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         return;
     }
     %init;
-    ApolloLog(@"[FeedSplit] hook installed (Regular rail destinations; list|feed while picking; feed|comments when a post is open; Compact stacks)");
+    ApolloLog(@"[FeedSplit] hook installed (Regular list|feed primary; feed|comments after a post; Compact stacks)");
 }
