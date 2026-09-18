@@ -6,8 +6,8 @@
 //
 // Primary open-Duo browsing chrome is **subreddit list | current feed**.
 // When a post is open, **feed | comments** takes over (the earlier pair).
-// The concept mock's feed|post+comments layout is secondary inspiration
-// only — hinge-aware two-pane, not the default browsing chrome.
+// A dedicated feed|post+comments browsing mode (the concept mock) is an
+// optional future item — not built here beyond the post-open tile.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
