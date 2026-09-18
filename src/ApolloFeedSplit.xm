@@ -24,6 +24,7 @@
 // the full chrome inset, so children still apply their own safeAreaInsets
 // and we do not double-count the notch.
 
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -511,12 +512,50 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
 }
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    %orig;
     UINavigationController *nav = (UINavigationController *)self;
+    BOOL duoTile = ApolloDuoRailIsActive() && ApolloFeedSplitWouldTile(nav);
+
+    // Stock push slides the incoming VC from the right (looks like a swipe
+    // left). On Duo list|feed the new sub feed already belongs in the right
+    // pane — skip %orig and swap the stack instead.
+    if (duoTile && viewController && ApolloFeedSplitIsFeedController(viewController)) {
+        NSArray<UIViewController *> *stack = nav.viewControllers;
+        UIViewController *top = stack.lastObject;
+        UIViewController *list = nil;
+        if (stack.count >= 2
+            && ApolloFeedSplitIsListController(stack[stack.count - 2])
+            && ApolloFeedSplitIsFeedController(top)) {
+            list = stack[stack.count - 2];
+        } else if (ApolloFeedSplitIsListController(top) && ApolloDuoRailIsPickingSubreddits()) {
+            list = top;
+        }
+        if (list && list != viewController) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [nav setViewControllers:@[ list, viewController ] animated:NO];
+            objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [CATransaction commit];
+            ApolloFeedSplitApply(nav, NO);
+            ApolloLog(@"[FeedSplit] replaced right feed without push slide");
+            return;
+        }
+    }
+
+    if (duoTile && ApolloFeedSplitIsCommentsController(viewController)) {
+        %orig(viewController, NO);
+        ApolloFeedSplitCollapseReplacedComments(nav);
+        ApolloFeedSplitApply(nav, NO);
+        return;
+    }
+
+    %orig;
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
-    // A subreddit tap must keep list|feed (directory left, that sub's feed
-    // right). Do not clear picking or force a leading feed-only apply.
+    if (duoTile) {
+        ApolloFeedSplitApply(nav, NO);
+        return;
+    }
     ApolloFeedSplitScheduleApply(nav);
 }
 
