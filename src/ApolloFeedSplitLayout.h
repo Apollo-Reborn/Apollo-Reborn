@@ -7,9 +7,8 @@ extern "C" {
 
 // Size-class two-pane layout for Regular-width iPhone (Plus/Max
 // landscape, Duo inner). Primary browsing pair is list | feed; a post
-// then uses feed | comments (hinge-aware / 50/50 on a wide canvas —
-// the concept mock is secondary inspiration). C-only so host tests
-// can compile this header without UIKit.
+// then uses feed | comments. C-only so host tests can compile this
+// header without UIKit.
 
 enum {
     ApolloFeedSplitSizeClassUnspecified = 0,

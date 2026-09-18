@@ -7,9 +7,8 @@
 // Open Duo / Regular **primary browsing chrome is list | feed**
 // (RedditListViewController leading, current PostsViewController trailing).
 // Selecting another subreddit replaces the feed column. **feed | comments**
-// only after a post is opened (wins over list|feed). The concept mock's
-// feed|post+comments book split is secondary: hinge-aware 50/50 when that
-// pair is showing, not the default browsing chrome.
+// only after a post is opened (wins over list|feed). A dedicated mock-style
+// feed|post+comments browsing mode is optional/future — not built here.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
