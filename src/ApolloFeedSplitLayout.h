@@ -277,6 +277,10 @@ __BEGIN_DECLS
 /// Instant list|feed (or list-only leading) for the Subs rail. No UIKit
 /// push animation and a single FeedSplit apply — avoids hinge width thrash.
 void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav);
+
+/// Find the posts ApolloNavigationController and Apply the current pair.
+/// Used after MediaViewer dismiss so the two-pane split returns.
+void ApolloFeedSplitReapplyVisible(void);
 __END_DECLS
 #endif
 

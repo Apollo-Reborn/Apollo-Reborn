@@ -101,6 +101,13 @@ SDK bump.
   PiP button, and the in-app PiP card use that path.
   `UIArrangementViewController` is logged if present and left unused —
   wrapping the pager would break presentation / swipe-up / PiP.
+- On open Duo, `MediaViewerController` (and the presented MediaPage) pin
+  to the trailing half — the same rect as the comments/detail pane — so
+  an image opened from the right post does not sit under the hinge.
+  `MediaPage` / `MediaViewer` disappear and
+  `MediaViewerPresentationController dismissalTransitionDidEnd` call
+  `ApolloFeedSplitReapplyVisible()` at 0.05s and 0.2s so the two-pane
+  split returns after swipe-dismiss. `reservedRegions` stays unused.
 - `_exclusionArea` is still island-only (pill sanity). A non-pill rect is
   not treated as a hinge.
 
@@ -265,6 +272,10 @@ Confirm gallery / media hinge avoidance (step 4):
 - When a Duo sim / 27.1 runtime exists: open Gallery and MediaViewer on
   the inner display, partially fold. Transport / close / PiP card stay
   off a hinge that UIKit reports as safe area or extra layout margin.
+- Open a topic (feed left, post right), tap the image in the right pane:
+  MediaViewer stays in the trailing half. Swipe-dismiss: two-pane split
+  returns (feed does not stretch across the hinge; rail stays in its
+  column, not floating on a full-bleed list).
 - Gallery grid column-count stays on the chrome-only path (no division
   probe) until a safe reserved-region API exists.
 

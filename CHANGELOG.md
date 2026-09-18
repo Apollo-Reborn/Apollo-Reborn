@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - Keep **Floating Post Tabs** and Liquid Glass nav titles on the active window scene's safe area (and any hinge-sized layout-margin extra) instead of `UIScreen.mainScreen` bounds, so a fold/resize does not park bubbles or side chrome in the wrong panel
 - On Regular-width iPhone (Plus/Max landscape, Duo inner), keep the feed beside comments instead of stretching a single column; Compact stays stacked. Opening another post from the still-visible feed replaces the comments column rather than pushing a third screen
 - Keep gallery chrome, MediaViewer close/PiP buttons, and the in-app PiP card off hinge-sized gutters using safe-area + layout-margin extras. Do not call UIKit `reservedRegions` — it SIGSEGVs on Duo even after the view has a window and scene (first CA commit, x0=NULL). PiP no longer sizes its last-resort window from a raw `UIScreen.mainScreen` read
+- On open Duo, pin MediaViewer to the trailing half (same pane as the post) so an image tap does not full-bleed under the hinge; swipe-dismiss re-applies the two-pane feed split so the list does not stretch across both panes
 
 ## [v3.7.1] - 2026-09-13
 

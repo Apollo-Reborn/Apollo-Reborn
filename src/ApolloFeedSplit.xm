@@ -313,6 +313,42 @@ extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) 
               (unsigned long)nav.viewControllers.count);
 }
 
+static void ApolloFeedSplitConsiderNav(UIViewController *vc, NSMutableArray *navs) {
+    if (!vc || !navs) return;
+    UINavigationController *nav = nil;
+    Class apolloNav = objc_getClass("_TtC6Apollo26ApolloNavigationController");
+    if (apolloNav && [vc isKindOfClass:apolloNav]) {
+        nav = (UINavigationController *)vc;
+    } else if ([vc isKindOfClass:[UINavigationController class]]) {
+        nav = (UINavigationController *)vc;
+    } else if ([vc.navigationController isKindOfClass:[UINavigationController class]]) {
+        nav = vc.navigationController;
+    }
+    if (!nav || [navs containsObject:nav]) return;
+    [navs addObject:nav];
+}
+
+extern "C" void ApolloFeedSplitReapplyVisible(void) {
+    UIViewController *root = ApolloMainTabBarController();
+    if (![root isKindOfClass:[UITabBarController class]]) {
+        ApolloLog(@"[FeedSplit] ReapplyVisible skipped (no tab bar)");
+        return;
+    }
+    UITabBarController *tabs = (UITabBarController *)root;
+    NSMutableArray *navs = [NSMutableArray array];
+    ApolloFeedSplitConsiderNav(tabs.selectedViewController, navs);
+    for (UIViewController *child in tabs.viewControllers) {
+        ApolloFeedSplitConsiderNav(child, navs);
+    }
+    if (navs.count == 0) {
+        ApolloLog(@"[FeedSplit] ReapplyVisible skipped (no posts nav)");
+        return;
+    }
+    for (UINavigationController *nav in navs) {
+        ApolloFeedSplitApply(nav, NO);
+    }
+}
+
 static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     if (!nav.isViewLoaded || ApolloRowMeasureInProgress()) return;
     if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
