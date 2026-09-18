@@ -1,3 +1,4 @@
+#include "ApolloDeviceChromeInsets.h"
 #include "ApolloDeviceIdentity.h"
 
 #include <stdio.h>
@@ -97,6 +98,19 @@ int main(void) {
           "notch identity is iPhone14,7");
     Check(ApolloDeviceIdentityModelForKind(ApolloDeviceIdentityKeep) == NULL,
           "keep has no remap string");
+
+    Check(ApolloDeviceChromeInset(0.0, 16.0) == 0.0,
+          "standard 16pt layout margin does not shift chrome");
+    Check(ApolloDeviceChromeInset(47.0, 47.0) == 47.0,
+          "safe-area-only landscape inset is unchanged");
+    Check(ApolloDeviceChromeInset(47.0, 63.0) == 47.0,
+          "safe + standard 16pt margin stays on the safe area");
+    Check(ApolloDeviceChromeInset(0.0, 80.0) == 64.0,
+          "hinge-sized layout margin beyond 16pt is honored");
+    Check(ApolloDeviceChromeInset(80.0, 80.0) == 80.0,
+          "hinge reported as safe area is used as-is");
+    Check(ApolloDeviceChromeInset(0.0, 16.4) == 0.0,
+          "sub-point noise on the 16pt margin is ignored");
 
     printf("OK: %u checks\n", checks);
     return 0;

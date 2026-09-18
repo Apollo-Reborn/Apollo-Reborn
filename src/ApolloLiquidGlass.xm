@@ -4,6 +4,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloState.h"
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
@@ -1226,7 +1227,8 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         }
     }
 
-    CGFloat scale = hostView.window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGFloat scale = ApolloDeviceScreenForWindow(hostView.window).scale;
+    if (scale <= 0.0) scale = 2.0;
     frame.origin.x = round(frame.origin.x * scale) / scale;
     frame.origin.y = round(frame.origin.y * scale) / scale;
     frame.size.width = round(frame.size.width * scale) / scale;
@@ -1778,8 +1780,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // (don't recurse to the buttons inside, which sit a few points further in).
     // Otherwise recurse into containers (e.g. _UITAMICAdaptorView wrappers) and
     // treat controls / labels / image views / visual-effect bubbles as edges.
-    CGFloat leftLimit = CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left;
-    CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - bar.safeAreaInsets.right;
+    UIEdgeInsets chromeInsets = ApolloDeviceChromeInsetsForView(bar);
+    CGFloat leftLimit = CGRectGetMinX(bar.bounds) + chromeInsets.left;
+    CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - chromeInsets.right;
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
     BOOL searching = jumpBar && ApolloJumpBarIsSearching(jumpBar);
     BOOL searchActions = NO;
@@ -1793,7 +1796,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // Outgoing platters remain visible during the search handoff. Their moving
     // edges are not the editor's available width; reserve the final items once.
     if (searchActions) {
-        rightLimit -= MAX(16.0, bar.layoutMargins.right) + searchActionsWidth;
+        // 16pt gap before the cancel cluster. Do not re-subtract layout
+        // margins — chromeInsets already honored any hinge extra.
+        rightLimit -= 16.0 + searchActionsWidth;
     }
     CGRect collapsedActions = ApolloNavigationActionsCollapsedFrame(bar);
     if (!searchActions && !CGRectIsNull(collapsedActions)) {
@@ -1862,7 +1867,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // Settings screens with only Back keep their title at the bar midpoint.
     BOOL centerBetweenButtons = sCenterTitleBetweenButtons && !sCollapseNavigationActions &&
         !searching && !CGRectIsNull(actions) && !CGRectIsEmpty(actions) &&
-        leftLimit > CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left + 0.5;
+        leftLimit > CGRectGetMinX(bar.bounds) + chromeInsets.left + 0.5;
     if (centerBetweenButtons) {
         rightLimit = MIN(rightLimit, CGRectGetMinX(actions));
         geometry.center = (leftLimit + rightLimit) / 2.0;

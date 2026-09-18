@@ -10,8 +10,16 @@ __BEGIN_DECLS
 /// else `UIScreen.mainScreen`.
 UIScreen *ApolloDeviceScreenForWindow(UIWindow *window);
 
+/// Foreground-active `UIWindowScene`, else any connected window scene, else nil.
+UIWindowScene *ApolloDevicePreferredWindowScene(void);
+
 /// Foreground-active `UIWindowScene.screen`, else `UIScreen.mainScreen`.
 UIScreen *ApolloDevicePreferredScreen(void);
+
+/// Safe-area insets plus any layout-margin extra beyond the standard 16pt
+/// system margin. Use for chrome that must clear a hinge-adjacent strip
+/// without shifting everyday iPhone layout by that 16pt.
+UIEdgeInsets ApolloDeviceChromeInsetsForView(UIView *view);
 
 /// Physical Dynamic Island cutout in the screen's logical points, via
 /// `-[UIScreen _exclusionArea]` — the same source UIKit's status bar uses.

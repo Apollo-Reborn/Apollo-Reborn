@@ -1,4 +1,5 @@
 #import "ApolloDeviceGeometry.h"
+#import "ApolloDeviceChromeInsets.h"
 
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -16,19 +17,35 @@
 static const CGFloat kApolloFauxCutOutY = 11.5;
 static const CGFloat kApolloFauxCutOutHeight = 37.0;
 
-UIScreen *ApolloDevicePreferredScreen(void) {
-    UIScreen *fallback = [UIScreen mainScreen];
+UIWindowScene *ApolloDevicePreferredWindowScene(void) {
     UIApplication *application = [UIApplication sharedApplication];
-    if (!application) return fallback;
+    if (!application) return nil;
+    UIWindowScene *fallback = nil;
     for (UIScene *scene in application.connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
-        if (windowScene.activationState == UISceneActivationStateForegroundActive
-            && windowScene.screen) {
-            return windowScene.screen;
+        if (windowScene.activationState == UISceneActivationStateForegroundActive) {
+            return windowScene;
         }
+        if (!fallback) fallback = windowScene;
     }
     return fallback;
+}
+
+UIScreen *ApolloDevicePreferredScreen(void) {
+    UIWindowScene *scene = ApolloDevicePreferredWindowScene();
+    if (scene.screen) return scene.screen;
+    return [UIScreen mainScreen];
+}
+
+UIEdgeInsets ApolloDeviceChromeInsetsForView(UIView *view) {
+    if (!view) return UIEdgeInsetsZero;
+    UIEdgeInsets safe = view.safeAreaInsets;
+    UIEdgeInsets margins = view.layoutMargins;
+    return UIEdgeInsetsMake(ApolloDeviceChromeInset(safe.top, margins.top),
+                            ApolloDeviceChromeInset(safe.left, margins.left),
+                            ApolloDeviceChromeInset(safe.bottom, margins.bottom),
+                            ApolloDeviceChromeInset(safe.right, margins.right));
 }
 
 UIScreen *ApolloDeviceScreenForWindow(UIWindow *window) {

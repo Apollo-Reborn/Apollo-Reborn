@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - Stop treating every newer iPhone as a hardcoded iPhone 14 Pro for Pixel Pals. Unrecognized models (including future foldables) remap as Dynamic Island unless they are a known notch-only phone, and the island overlay follows the current window scene's cutout instead of a 59pt 14 Pro safe area
+- Keep **Floating Post Tabs** and Liquid Glass nav titles on the active window scene's safe area (and any hinge-sized layout-margin extra) instead of `UIScreen.mainScreen` bounds, so a fold/resize does not park bubbles or side chrome in the wrong panel
 
 ## [v3.7.1] - 2026-09-13
 
