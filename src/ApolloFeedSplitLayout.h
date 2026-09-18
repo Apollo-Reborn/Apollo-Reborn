@@ -82,17 +82,39 @@ static inline int ApolloFeedSplitUsableIsDuoWide(double usableWidth) {
     return usableWidth + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth;
 }
 
-// Leading pane for a lone feed/list, or either column of a Duo-wide tile.
-// ~50% minus gutter so feed-only, list|feed, and feed|comments share width.
-static inline double ApolloFeedSplitLeadingColumnWidth(double usableWidth) {
-    double gutter = (double)ApolloFeedSplitGutterWidth;
-    double half = (usableWidth - gutter) * 0.5;
-    if (half < (double)ApolloFeedSplitFeedMinWidth) {
-        half = usableWidth * 0.5;
+// Geometric hinge: mid of the *container*, not mid of already-shrunk usable.
+static inline double ApolloFeedSplitContainerMidX(double containerWidth) {
+    return containerWidth * 0.5;
+}
+
+// Rail / chrome start for the left pane. A margin that already reserves
+// ~the leading half is the pane itself — do not add it on top of a 50% split.
+static inline double ApolloFeedSplitBookStart(double containerWidth, double extraLeft) {
+    if (extraLeft < 0.0) extraLeft = 0.0;
+    double mid = ApolloFeedSplitContainerMidX(containerWidth);
+    if (extraLeft + (double)ApolloFeedSplitFeedMinWidth > mid) {
+        return 0.0;
     }
-    if (half < 0.0) half = 0.0;
-    if (half > usableWidth) half = usableWidth;
-    return half;
+    return extraLeft;
+}
+
+static inline double ApolloFeedSplitBookEnd(double containerWidth, double extraRight) {
+    if (extraRight < 0.0) extraRight = 0.0;
+    double mid = ApolloFeedSplitContainerMidX(containerWidth);
+    if (extraRight + (double)ApolloFeedSplitFeedMinWidth > mid) {
+        return containerWidth;
+    }
+    return containerWidth - extraRight;
+}
+
+// Left physical pane: book start → container mid − half gutter.
+static inline double ApolloFeedSplitLeadingColumnWidth(double containerWidth, double extraLeft) {
+    double start = ApolloFeedSplitBookStart(containerWidth, extraLeft);
+    double mid = ApolloFeedSplitContainerMidX(containerWidth);
+    double gutter = (double)ApolloFeedSplitGutterWidth * 0.5;
+    double width = mid - start - gutter;
+    if (width < 0.0) width = 0.0;
+    return width;
 }
 
 static inline ApolloFeedSplitTileStyle ApolloFeedSplitTileStyleForPair(int readingPair,
@@ -136,23 +158,31 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
         return frames;
     }
 
+    int bookSplit = pinLeading || ApolloFeedSplitUsableIsDuoWide(usable);
+    double mid = ApolloFeedSplitContainerMidX(containerWidth);
+    double halfGutter = (double)ApolloFeedSplitGutterWidth * 0.5;
+    double bookStart = ApolloFeedSplitBookStart(containerWidth, extraLeft);
+    double bookEnd = ApolloFeedSplitBookEnd(containerWidth, extraRight);
+
     if (mode == ApolloFeedSplitModeCentered) {
         double feedWidth = usable;
-        int duoLeading = pinLeading || ApolloFeedSplitUsableIsDuoWide(usable);
-        if (duoLeading) {
-            feedWidth = ApolloFeedSplitLeadingColumnWidth(usable);
+        if (bookSplit) {
+            feedWidth = ApolloFeedSplitLeadingColumnWidth(containerWidth, extraLeft);
             if (rightToLeft) {
-                frames.feed.x = containerWidth - extraRight - feedWidth;
+                frames.feed.x = mid + halfGutter;
+                frames.feed.width = bookEnd - frames.feed.x;
             } else {
-                frames.feed.x = extraLeft;
+                frames.feed.x = bookStart;
+                frames.feed.width = feedWidth;
             }
+            if (frames.feed.width < 0.0) frames.feed.width = 0.0;
         } else {
             if (feedWidth > (double)ApolloFeedSplitCenteredMaxWidth) {
                 feedWidth = (double)ApolloFeedSplitCenteredMaxWidth;
             }
             frames.feed.x = extraLeft + (usable - feedWidth) * 0.5;
+            frames.feed.width = feedWidth;
         }
-        frames.feed.width = feedWidth;
         frames.feed.height = containerHeight;
         return frames;
     }
@@ -171,6 +201,26 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
             || detailWidth < (double)ApolloFeedSplitFeedMinWidth) {
             hingeGapWidth = 0.0;
         }
+    }
+
+    if (hingeGapWidth <= 0.0 && (pinLeading || tileStyle == ApolloFeedSplitTileBalanced)) {
+        frames.showsDetail = 1;
+        frames.feed.height = containerHeight;
+        frames.detail.height = containerHeight;
+        if (rightToLeft) {
+            frames.feed.x = mid + halfGutter;
+            frames.feed.width = bookEnd - frames.feed.x;
+            frames.detail.x = bookStart;
+            frames.detail.width = mid - halfGutter - bookStart;
+        } else {
+            frames.feed.x = bookStart;
+            frames.feed.width = mid - halfGutter - bookStart;
+            frames.detail.x = mid + halfGutter;
+            frames.detail.width = bookEnd - frames.detail.x;
+        }
+        if (frames.feed.width < 0.0) frames.feed.width = 0.0;
+        if (frames.detail.width < 0.0) frames.detail.width = 0.0;
+        return frames;
     }
 
     if (hingeGapWidth <= 0.0) {

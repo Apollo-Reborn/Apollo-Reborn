@@ -68,8 +68,10 @@ or an SDK bump.
   - list only / feed only → leading half on Duo-wide / rail-active canvases
     (never a full-bleed column across the hinge); Plus landscape still centers
   - feed + comments → tiled **feed | comments** (primary mock reading pair)
-  - list + feed → tiled **list | feed** only while My Subreddits is picking
-    (instant rail apply; list fills `frames.feed`)
+  - list + feed → tiled **list | feed** while My Subreddits shows the directory
+    (instant rail apply; list fills `frames.feed`). Tapping a subreddit leaves
+    the directory: that sub's feed stays left-of-hinge, posts/comments use the
+    right pane (`feed | comments`)
 - Compact, unspecified, or Regular-but-narrow → stacked (UIKit's existing
   push). Swipe-up media-pane comments never tile.
 - Column frames use `ApolloDeviceChromeExtra` (hinge-sized layout-margin
@@ -235,7 +237,7 @@ Confirm feed size-class layout (step 3 + open Duo):
 - Regular / Duo inner open: slim rail + **feed | comments** after a
   post (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular /
   All switch the left-pane feed. My Subreddits is `pair=list-feed`
-  only while picking (list fills the leading column; no push animation).
+  for the directory; tapping a subreddit is `feed` left / comments right.
 - A center reserved hinge should sit in the gutter, not under a
   title or comment.
 - List-only or feed-only on the stack (no pair): leading half

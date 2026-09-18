@@ -8,8 +8,9 @@
 // on the left, selected post + comments on the right (feed | comments).
 // A lone feed stays in the leading half (never full-bleed across the hinge).
 // The slim rail switches Home / Popular / All / My Subreddits / Profile /
-// Settings. **list | feed** tiles only while My Subreddits is picking a
-// destination; choosing a subreddit puts that feed back in the left pane.
+// Settings. **list | feed** tiles while My Subreddits shows the directory.
+// Choosing a subreddit leaves the directory: that sub's **feed** stays in
+// the left pane (to the hinge) and the right pane is for posts/comments.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -507,8 +508,13 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
+    // Subreddit tap leaves the directory. Keep two-pane chrome: that sub's
+    // feed fills the left half; a later post push tiles comments on the right.
+    // Instant apply — do not let the push coordinator full-bleed then snap.
     if (ApolloDuoRailIsPickingSubreddits() && ApolloFeedSplitIsFeedController(nav.topViewController)) {
         ApolloDuoRailSetPickingSubreddits(NO);
+        ApolloFeedSplitApply(nav, NO);
+        return;
     }
     ApolloFeedSplitScheduleApply(nav);
 }

@@ -70,28 +70,46 @@ int main(void) {
           "centered feed sits in the remaining width");
     Check(!centered.showsDetail, "centered has no detail frame");
 
-    double wideLeading = ApolloFeedSplitLeadingColumnWidth(900.0);
+    double wideLeading = ApolloFeedSplitLeadingColumnWidth(900.0, 0.0);
     ApolloFeedSplitFrames centeredWide = ApolloFeedSplitFramesMake(
         900.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeCentered, 0,
         ApolloFeedSplitTileMaster, 0.0, 0.0, 0);
     Check(Near(centeredWide.feed.width, wideLeading) && Near(centeredWide.feed.x, 0.0),
           "wide Duo canvas pins a lone feed to the leading half");
-    Check(centeredWide.feed.width + 0.5 < 900.0 && !centeredWide.showsDetail,
-          "lone Duo feed does not span the hinge");
+    Check(centeredWide.feed.x + centeredWide.feed.width + 0.5 <= 450.0
+              && !centeredWide.showsDetail,
+          "lone Duo feed stops at the container mid (hinge)");
 
     ApolloFeedSplitFrames centeredWideRTL = ApolloFeedSplitFramesMake(
         900.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeCentered, 1,
         ApolloFeedSplitTileMaster, 0.0, 0.0, 0);
-    Check(Near(centeredWideRTL.feed.width, wideLeading)
-              && Near(centeredWideRTL.feed.x, 900.0 - wideLeading),
-          "RTL Duo feed-only sits on the trailing physical edge");
+    Check(Near(centeredWideRTL.feed.x, 450.0 + 6.0)
+              && Near(centeredWideRTL.feed.width, 900.0 - (450.0 + 6.0)),
+          "RTL Duo feed-only sits on the trailing physical half");
 
     ApolloFeedSplitFrames centeredRail = ApolloFeedSplitFramesMake(
         736.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeCentered, 0,
         ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
-    Check(Near(centeredRail.feed.width, ApolloFeedSplitLeadingColumnWidth(736.0))
+    Check(Near(centeredRail.feed.width, ApolloFeedSplitLeadingColumnWidth(736.0, 0.0))
               && Near(centeredRail.feed.x, 0.0),
           "rail-active Plus-width still pins leading instead of centering");
+
+    ApolloFeedSplitFrames centeredChrome = ApolloFeedSplitFramesMake(
+        1000.0, 400.0, 64.0, 0.0, ApolloFeedSplitModeCentered, 0,
+        ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
+    Check(Near(centeredChrome.feed.x, 64.0),
+          "rail/chrome extra only shifts the left pane start");
+    Check(Near(centeredChrome.feed.width, 500.0 - 64.0 - 6.0),
+          "left pane still reaches the container mid, not 50% of shrunk usable");
+
+    ApolloFeedSplitFrames centeredFatMargin = ApolloFeedSplitFramesMake(
+        1000.0, 400.0, 400.0, 400.0, ApolloFeedSplitModeCentered, 0,
+        ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
+    Check(Near(centeredFatMargin.feed.x, 0.0)
+              && Near(centeredFatMargin.feed.width, ApolloFeedSplitLeadingColumnWidth(1000.0, 400.0)),
+          "a half-width readable margin is not stacked on the book split");
+    Check(centeredFatMargin.feed.width + 0.5 >= 400.0,
+          "fat margins do not crumple the feed into a skinny left strip");
 
     ApolloFeedSplitFrames centeredInset = ApolloFeedSplitFramesMake(
         780.0, 400.0, 20.0, 20.0, ApolloFeedSplitModeCentered, 0,
@@ -162,9 +180,11 @@ int main(void) {
           "Duo-wide list|feed uses the same leading half as feed|comments");
     Check(ApolloFeedSplitTileStyleForPair(1, 736.0) == ApolloFeedSplitTileMaster,
           "Plus landscape feed|comments stays master-detail");
-    Check(Near(ApolloFeedSplitLeadingColumnWidth(900.0),
-               (900.0 - (double)ApolloFeedSplitGutterWidth) * 0.5),
-          "leading column is half the usable width minus gutter");
+    Check(Near(ApolloFeedSplitLeadingColumnWidth(900.0, 0.0),
+               450.0 - (double)ApolloFeedSplitGutterWidth * 0.5),
+          "leading column runs from origin to container mid minus half gutter");
+    Check(Near(ApolloFeedSplitBookStart(1000.0, 400.0), 0.0),
+          "a margin that already is the left pane is not added again");
 
     ApolloFeedSplitFrames balanced = ApolloFeedSplitFramesMake(
         1000.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeTiled, 0,
@@ -173,8 +193,20 @@ int main(void) {
           "balanced feed takes half the canvas minus gutter");
     Check(Near(balanced.detail.width, balanced.feed.width),
           "balanced comments pane matches the feed pane");
-    Check(Near(balanced.detail.x, balanced.feed.width + (double)ApolloFeedSplitGutterWidth),
-          "balanced detail sits after the gutter");
+    Check(Near(balanced.detail.x, 500.0 + (double)ApolloFeedSplitGutterWidth * 0.5),
+          "balanced comments sit on the right of the container mid");
+    Check(balanced.detail.x + 0.5 >= 500.0,
+          "detail is not stacked on the left pane");
+
+    ApolloFeedSplitFrames bookTiledExtra = ApolloFeedSplitFramesMake(
+        1000.0, 400.0, 64.0, 20.0, ApolloFeedSplitModeTiled, 0,
+        ApolloFeedSplitTileBalanced, 0.0, 0.0, 0);
+    Check(Near(bookTiledExtra.feed.x, 64.0)
+              && bookTiledExtra.feed.x + bookTiledExtra.feed.width + 0.5 <= 500.0,
+          "tiled feed stays in the left physical pane after chrome extra");
+    Check(bookTiledExtra.detail.x + 0.5 >= 500.0
+              && Near(bookTiledExtra.detail.x + bookTiledExtra.detail.width, 980.0),
+          "tiled comments fill the right physical pane");
 
     ApolloFeedSplitFrames hinged = ApolloFeedSplitFramesMake(
         1000.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeTiled, 0,
