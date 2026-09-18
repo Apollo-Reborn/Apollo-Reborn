@@ -16,8 +16,10 @@
 // only choose the per-subreddit memory (when the URL carried a subreddit) or Default Sort, and
 // nothing revisits the choice once the post arrives: in the whole binary `suggestedSort` is
 // read by init(link:) and the sort menu only, never by loadComments() or its completion.
-// "Remember Post Sort" (ApolloPerPostCommentSort.xm) has the matching gap — its viewDidLoad
-// write needs `link` to look the post up — so it never applied to URL opens either.
+// "Remember Post Sort" (ApolloPerPostCommentSort.xm) used to have the matching gap — its
+// viewDidLoad write needed `link` to look the post up. It now reads the `linkID` ivar on
+// link-less opens too, so a remembered post sort feeds the first fetch there as well; the
+// completion below still corrects a fetch that went out on something else.
 //
 // Floating Tabs (ApolloFloatingTabs.xm) reopen relaunch-restored tabs through the same router;
 // such a tab remembers the sort its screen was last on and publishes it for the few seconds the

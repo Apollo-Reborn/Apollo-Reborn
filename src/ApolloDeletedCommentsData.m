@@ -44,6 +44,11 @@ static NSMutableDictionary<NSString *, NSDictionary *> *sApolloDeletedCommentsAr
 static NSMutableDictionary<NSString *, NSMutableArray *> *sApolloDeletedCommentsArcticInflight = nil;
 static NSDate *sApolloDeletedCommentsArcticCooldownUntil = nil;
 static NSMutableSet<NSString *> *sApolloDeletedCommentsThreadOverrides = nil;
+// Lock-free mirror of "the override set is non-empty". ApolloDeletedCommentsFeatureActive()
+// is the per-label gate for a hook that every text assignment in the app walks, on
+// Texture's background layout threads, so with the global toggle off it must not
+// reach for the registry lock at all.
+static _Bool sApolloDeletedCommentsHasThreadOverrides = false;
 
 static NSString *const ApolloDeletedCommentsMarkerKey = @"apollo_recovered_deleted_comment";
 static NSString *const ApolloDeletedCommentsReasonKey = @"apollo_recovered_deleted_reason";
@@ -112,6 +117,8 @@ void ApolloDeletedCommentsSetThreadOverride(NSString *linkFullName, BOOL enabled
         } else {
             [sApolloDeletedCommentsThreadOverrides removeObject:key];
         }
+        __atomic_store_n(&sApolloDeletedCommentsHasThreadOverrides,
+                         sApolloDeletedCommentsThreadOverrides.count > 0, __ATOMIC_RELEASE);
     }
     ApolloLog(@"[DeletedComments] Thread override %@ for %@", enabled ? @"ON" : @"OFF", key);
 }
@@ -119,6 +126,7 @@ void ApolloDeletedCommentsSetThreadOverride(NSString *linkFullName, BOOL enabled
 BOOL ApolloDeletedCommentsHasThreadOverride(NSString *linkFullName) {
     NSString *key = ApolloDeletedCommentsOverrideKeyForLink(linkFullName);
     if (key.length == 0) return NO;
+    if (!__atomic_load_n(&sApolloDeletedCommentsHasThreadOverrides, __ATOMIC_ACQUIRE)) return NO;
     @synchronized(ApolloDeletedCommentsRegistryLock()) {
         return [sApolloDeletedCommentsThreadOverrides containsObject:key];
     }
@@ -130,6 +138,7 @@ BOOL ApolloDeletedCommentsHasThreadOverride(NSString *linkFullName) {
 // threads fetch and patch while the global toggle is off.
 BOOL ApolloDeletedCommentsFeatureActive(void) {
     if (sShowDeletedComments) return YES;
+    if (!__atomic_load_n(&sApolloDeletedCommentsHasThreadOverrides, __ATOMIC_ACQUIRE)) return NO;
     @synchronized(ApolloDeletedCommentsRegistryLock()) {
         return sApolloDeletedCommentsThreadOverrides.count > 0;
     }

@@ -103,6 +103,13 @@ UIImage *ApolloBundledPDFTemplateImage(NSString *baseName, CGSize maxSize);
 // trailing-debounce relayout schedulers (InlineImages, LinkPreviews).
 double ApolloPerfNowMs(void);
 
+// Decoded backing-store size of `image` in bytes — the number an image cache's
+// totalCostLimit has to be given for the limit to mean anything. A
+// totalCostLimit with cost-less insertions never evicts by bytes at all.
+// Prefers the CGImage's real row stride; falls back to points x scale^2 x 4 for
+// CIImage-backed images that have no bitmap yet. Saturates instead of wrapping.
+NSUInteger ApolloImageByteCost(UIImage *image);
+
 // The build variant string sent with the anonymous usage heartbeat, e.g.
 // "glass", "deb-rootless". The source of truth is stamped at package time (IPA
 // variants set Info.plist "ARBuildVariant"; .deb installs drop an "ARVariant.txt"
@@ -272,4 +279,17 @@ NSString *ApolloDebugPoisonAccountAccessibility(void);
 // marked objects — otherwise tweak UI can be mistaken for the post body.
 void ApolloMarkTweakUITextNode(id node);
 BOOL ApolloTextNodeIsTweakUI(id node);
+
+// fishhook consolidation. Every rebind_symbols() call walks all ~2k images
+// loaded on iOS 26, so the modules below hand their bindings to the single call
+// in Tweak.xm's %ctor instead of each rebinding from its own constructor. The
+// direction has to be a pull: constructors run in link order and Tweak.xm links
+// first, so a registry those modules pushed into would always be flushed before
+// they filled it. Each function writes its bindings at `out` and returns how
+// many it wrote; ApolloRebornMaxAppendedRebindings bounds the caller's array.
+struct rebinding;
+enum { ApolloRebornMaxAppendedRebindings = 5 };
+size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out);
+size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out);
+size_t ApolloRecentlyReadAppendRebindings(struct rebinding *out);
 __END_DECLS

@@ -6,6 +6,7 @@
 #import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
@@ -344,7 +345,10 @@ static NSCache<NSString *, UIImage *> *RecentlyReadThumbnailCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        // Row thumbnails are ~60pt squares, so this holds the whole list.
+        cache.countLimit = 150;
+        cache.totalCostLimit = 5 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"recently-read-thumbs", cache);
     });
     return cache;
 }
@@ -1615,13 +1619,17 @@ static void ApolloCommentsVCTryMarkRead(id commentsVC, const char *trigger) {
 
 %end
 
-%ctor {
-    // Hook swift_allocObject to capture the ReadPostsTracker singleton
+// The install half of the swift_allocObject capture; hooked_swift_allocObject
+// above still owns the un-hook, which has to stay paired with the capture it
+// completes.
+size_t ApolloRecentlyReadAppendRebindings(struct rebinding *out) {
     sTrackerTypeMetadata = (__bridge void *)objc_getClass("_TtC6Apollo16ReadPostsTracker");
-    if (sTrackerTypeMetadata) {
-        rebind_symbols((struct rebinding[1]){{"swift_allocObject", (void *)hooked_swift_allocObject, (void **)&orig_swift_allocObject}}, 1);
-    }
+    if (!sTrackerTypeMetadata) return 0;
+    out[0] = (struct rebinding){"swift_allocObject", (void *)hooked_swift_allocObject, (void **)&orig_swift_allocObject};
+    return 1;
+}
 
+%ctor {
     // Native save completes (including its defaults write) before posting this.
     // In particular it arrives after a comments controller's viewDidDisappear,
     // later than the feed's initial viewWillAppear refresh on a navigation pop.

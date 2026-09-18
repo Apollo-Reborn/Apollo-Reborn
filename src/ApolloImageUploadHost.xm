@@ -3904,14 +3904,12 @@ static bool hooked_CGImageDestinationAddImage(CGImageDestinationRef destination,
     return result;
 }
 
-__attribute__((constructor))
-static void ApolloImageUploadHostInstallImageIOHooks(void) {
-    rebind_symbols((struct rebinding[2]) {
-        {"CGImageSourceCreateThumbnailAtIndex",
-            (void *)hooked_CGImageSourceCreateThumbnailAtIndex,
-            (void **)&orig_CGImageSourceCreateThumbnailAtIndex},
-        {"CGImageDestinationAddImage",
-            (void *)hooked_CGImageDestinationAddImage,
-            (void **)&orig_CGImageDestinationAddImage},
-    }, 2);
+size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out) {
+    out[0] = (struct rebinding){"CGImageSourceCreateThumbnailAtIndex",
+                                (void *)hooked_CGImageSourceCreateThumbnailAtIndex,
+                                (void **)&orig_CGImageSourceCreateThumbnailAtIndex};
+    out[1] = (struct rebinding){"CGImageDestinationAddImage",
+                                (void *)hooked_CGImageDestinationAddImage,
+                                (void **)&orig_CGImageDestinationAddImage};
+    return 2;
 }

@@ -4483,6 +4483,16 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    // Every text assignment in the app reaches this hook, on Texture's background
+    // layout threads. With the feature off none of the five helpers below can
+    // change the text, so one gate replaces the per-helper checks. The font
+    // capture sits inside the gate on purpose: it only feeds deleted-comment
+    // rendering, and until the first capture lands those bodies already fall back
+    // to the deterministic subheadline size (ApolloDeletedCommentsRecoveredBodyFont).
+    if (!ApolloDeletedCommentsFeatureActive()) {
+        %orig;
+        return;
+    }
     NSAttributedString *displayText = attributedText;
     ApolloDeletedCommentsCaptureLiveCommentBodyFont((id)self, displayText);
     displayText = ApolloDeletedCommentsAttributedTextWithTapToRevealPlaceholder((id)self, displayText);
