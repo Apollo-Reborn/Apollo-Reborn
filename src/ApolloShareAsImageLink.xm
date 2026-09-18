@@ -506,6 +506,32 @@ static BOOL ApolloShareLinkAlreadyHasLinkSource(NSArray *items) {
 
 #pragma mark - Copy Link support
 
+// Apollo's Safari activity claims it can handle every item (the native method
+// at 0x1000b9efc is just return YES). Selecting it makes ShareMediaManager's
+// completion construct ApolloSafariViewController with its captured URL.
+// Local GIF/video files aren't supported by SFSafariViewController and throw
+// NSInvalidArgumentException from initWithURL:configuration: on that path.
+// The activity factory can prepend https://reddit.com to a non-web source,
+// while the completion retains that unsupported original URL. The Swift helper
+// recognizes this native wrapping too. Don't reject the sheet's items: a media
+// sheet can contain a local file while Safari legitimately points to a web page.
+extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
+
+@interface _TtC6Apollo14SafariActivity : UIActivity
+@end
+
+%hook _TtC6Apollo14SafariActivity
+
+- (BOOL)canPerformWithActivityItems:(NSArray *)items {
+    Ivar urlIvar = class_getInstanceVariable([self class], "url");
+    if (!urlIvar) return NO;
+    const void *storage = (const uint8_t *)(__bridge const void *)self + ivar_getOffset(urlIvar);
+    if (!ApolloSwiftURLSupportsSafari(storage)) return NO;
+    return %orig;
+}
+
+%end
+
 // Apollo's "Copy Link" share-sheet action is its own UIActivity subclass, and it
 // does NOT read the share sheet's activity items. Apollo constructs it up front as
 // `CopyURLActivity(url:)` and hands it over in `applicationActivities`; its
