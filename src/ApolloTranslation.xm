@@ -341,6 +341,14 @@ static NSString *ApolloCachedLinkTranslationForKey(NSString *key) {
 // main.
 static uint32_t sTranslationCacheGeneration = 0;
 
+// YES from the moment the launch hydrate is dispatched until its main-queue
+// insert has run (or it gave up). The persist checks it before touching the
+// file: with the hydrate asynchronous, a background transition that lands
+// before the read has been folded into the mirrors would otherwise snapshot
+// empty mirrors and delete the very file it was still reading. Main-thread
+// only, like the generation above.
+static BOOL sTranslationDiskHydratePending = NO;
+
 // Full flush — caches AND mirrors. For "forget everything" flows (the
 // skip-language list changed). Clearing only the NSCaches would leave the
 // mirror fallbacks above serving the stale entries right back.
@@ -9949,6 +9957,13 @@ static void ApolloPersistTranslationCachesToDisk(void) {
 }
 
 static void ApolloPersistTranslationCachesInBackground(void) {
+    // The mirrors are not authoritative until the launch hydrate has folded the
+    // file in; writing (or deleting) now would lose everything still on disk.
+    // Nothing new can have been lost either way: the next background persists.
+    if (sTranslationDiskHydratePending) {
+        ApolloLog(@"[translation/persist] skipped: disk hydrate still in flight");
+        return;
+    }
     UIApplication *app = [UIApplication sharedApplication];
     __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
     void (^endTask)(void) = ^{
@@ -9987,34 +10002,39 @@ static NSDictionary<NSString *, NSString *> *ApolloTranslationEntriesStillValid(
 
 // The file holds up to 2048 comment + 256 link entries, so reading and parsing
 // it belongs off the launch thread; only the cache/mirror inserts hop back to
-// main, where every other reader of those caches lives. Nothing is restorable
-// while bulk translation is off, and the flag is already final here: Tweak.xm
-// links (and so its constructor runs) before this file.
+// main, where every other reader of those caches lives. It runs whether or not
+// bulk translation is on: Tap to Translate fills the same caches with it off,
+// and the persist on background writes whatever the mirrors hold, so skipping
+// the hydrate in a bulk-off session would replace the file with that session's
+// handful of entries (or delete it) and lose the cache the user built up.
 static void ApolloHydrateTranslationCachesFromDisk(void) {
-    if (!sEnableBulkTranslation) return;
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
     NSString *currentTag = ApolloCurrentTranslationTag();
     uint32_t generation = sTranslationCacheGeneration;
+    sTranslationDiskHydratePending = YES;
 
     dispatch_async(ApolloTranslationDiskQueue(), ^{
+        NSDictionary<NSString *, NSString *> *comments = nil;
+        NSDictionary<NSString *, NSString *> *links = nil;
         NSData *data = [NSData dataWithContentsOfURL:url];
-        if (!data) return;
-
-        NSError *err = nil;
-        id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
-        if (![root isKindOfClass:[NSDictionary class]]) {
-            ApolloLog(@"[translation/hydrate] bad plist: %@", err);
-            return;
+        if (data) {
+            NSError *err = nil;
+            id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
+            if (![root isKindOfClass:[NSDictionary class]]) {
+                ApolloLog(@"[translation/hydrate] bad plist: %@", err);
+            } else if ([root[@"version"] isEqualToString:kApolloTranslationDiskCacheVersion]) {
+                NSDate *now = [NSDate date];
+                comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
+                links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
+            }
         }
-        if (![root[@"version"] isEqualToString:kApolloTranslationDiskCacheVersion]) return;
 
-        NSDate *now = [NSDate date];
-        NSDictionary<NSString *, NSString *> *comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
-        NSDictionary<NSString *, NSString *> *links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
-        if (comments.count == 0 && links.count == 0) return;
-
+        // Always hop back, even with nothing to insert: the persist waits on the
+        // pending flag, and only the main thread may clear it.
         dispatch_async(dispatch_get_main_queue(), ^{
+            sTranslationDiskHydratePending = NO;
+            if (comments.count == 0 && links.count == 0) return;
             // This snapshot is only good if nothing invalidated it while the
             // read was in flight, and it must never win over a translation the
             // running app already produced for the same key.
