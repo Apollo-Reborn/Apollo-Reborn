@@ -488,6 +488,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         [self apollo_applyPrimaryTextColorToCell:cell];
     }
     if (row.configure) row.configure(cell);
+    ApolloSettingsApplyCellTypography(cell);
     return cell;
 }
 
@@ -553,6 +554,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayFooterView:view forSection:section];
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
     if (_footerHeightCheckPending) return;
     _footerHeightCheckPending = YES;

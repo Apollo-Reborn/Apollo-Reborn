@@ -57,6 +57,10 @@ UIColor *ApolloThemePageBackgroundColor(void);
 // own last-resort (typically UIColor.separatorColor).
 UIColor *ApolloThemeSeparatorColor(void);
 
+// Native settings text colors, including custom themes and Pure Black.
+UIColor *ApolloThemeSettingsTextColor(void);
+UIColor *ApolloThemeSettingsSecondaryTextColor(void);
+
 // Correct a RESOLVED color that was derived from a theme token under the wrong
 // appearance (ambient resolution vs the themed window — see issue #810):
 // returns the matching token's value for `traits`' light/dark mode, or nil

@@ -1558,6 +1558,31 @@ UIColor *ApolloThemePageBackgroundColor(void) {
     return custom ?: ApolloThemeStockPageBackgroundColor();
 }
 
+// Settings labels share Apollo's stock text palette. Keep this in the theme
+// runtime so custom themes and both Pure Black modes follow the same rules as
+// native rows, without copying a possibly stale on-screen label color.
+static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
+    UIColor *custom = ApolloThemeRuntimeColor(secondary ? ApolloThemeTokenSecondaryLabel : ApolloThemeTokenLabel);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+        uint32_t black = 0;
+        BOOL pure = dark && !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        uint32_t rgb = secondary ? (dark ? 0x94969D : 0x666666)
+            : (dark ? (pure ? 0xD0D1D6 : 0xEEEFF5) : 0x000000);
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
+UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
+
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).
