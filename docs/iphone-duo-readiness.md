@@ -67,6 +67,10 @@ or an SDK bump.
 - Regular + usable width ≥ 652pt (`320+12+320`):
   - list only / feed only → leading half on Duo-wide / rail-active canvases
     (never a full-bleed column across the hinge); Plus landscape still centers
+    unless the Duo rail is active. Leading extra is at least the rail width
+    so row text cannot start under the rail. The shared navigation bar is
+    pinned to the owning pane (leading when the feed is alone, trailing
+    when the top VC is the tiled detail) so titles do not sit on the hinge.
   - feed + comments → tiled **feed | comments** (primary mock reading pair)
   - list + feed → tiled **list | feed** (My Subreddits directory). Tapping
     a subreddit dismisses the directory from the stack but retains the
@@ -247,11 +251,13 @@ Confirm feed size-class layout (step 3 + open Duo):
   post still covers the previous screen. No rail.
 - Regular / Duo inner open: slim rail + **feed | comments** after a
   post (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular /
-  All switch feeds. My Subreddits is `pair=list-feed` while picking;
-  tapping a subreddit puts that sub's posts in the left half (list
-  retained). Tapping Subs again restores the directory. Opening a
-  topic is `pair=feed-comments` (any reading-detail pane), not a
-  full-screen push.
+  All switch feeds and stay **leading-half** when alone (`mode=centered`).
+  My Subreddits is `pair=list-feed` while picking; tapping a subreddit
+  puts that sub's posts in the left half (list retained). Tapping Subs
+  again restores the directory. Opening a topic is `pair=feed-comments`
+  (any reading-detail pane), not a full-screen push. List/feed text
+  starts after the rail; nav titles live in the owning pane, not on
+  the hinge. No ghosted duplicate rows after a sub pick or post open.
 - A center reserved hinge should sit in the gutter, not under a
   title or comment.
 - List-only or feed-only on the stack (no pair): leading half
@@ -353,3 +359,9 @@ the sim stubs.
   `@[savedList, feed]`. Opening a topic is feed | comments (or any
   reading-detail pane). Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
+- The slim rail is painted on the tab controller. FeedSplit leading
+  extra is at least `ApolloDuoRailWidth` so columns start to its right.
+  Tab-level `additionalSafeAreaInsets.left` is not used for Posts
+  (Texture ignored it; UIKit tables would double-count). Profile /
+  Settings navs still get that inset. The shared `UINavigationBar` is
+  framed to the owning column so titles cannot center on the hinge.

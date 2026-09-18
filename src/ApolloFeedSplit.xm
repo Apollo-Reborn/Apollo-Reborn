@@ -20,9 +20,9 @@
 // comments, URL routing, video swipe). So we keep the real stack and tile
 // inside the existing nav. back / pop / topViewController keep working.
 //
-// Column frames use layout-margin EXTRA only (ApolloDeviceChromeExtra), not
-// the full chrome inset, so children still apply their own safeAreaInsets
-// and we do not double-count the notch.
+// Column frames use layout-margin EXTRA plus the slim Duo rail width
+// (ApolloFeedSplitLeadingExtra) so list/feed text starts to the right of
+// the rail. Children still apply their own safeAreaInsets for the notch.
 
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -34,6 +34,7 @@
 #import "ApolloDeviceChromeInsets.h"
 #import "ApolloDeviceReservedRegions.h"
 #import "ApolloDuoRail.h"
+#import "ApolloDuoRailLayout.h"
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloState.h"
 
@@ -50,6 +51,34 @@ static char kApolloFeedSplitMutatingStackKey;
 static char kApolloFeedSplitApplyingKey;
 static char kApolloFeedSplitLastModeKey;
 static char kApolloFeedSplitSavedListKey;
+static char kApolloFeedSplitSpanCoalesceKey;
+static char kApolloFeedSplitNavBarOwnerKey;
+
+static UIView *ApolloFeedSplitSeparator(UINavigationController *nav, BOOL create);
+static UIViewController *ApolloFeedSplitSavedList(UINavigationController *nav);
+
+// Short-lived ModeTiled latch after topic open / media dismiss. Size-class
+// and DuoRailIsActive can flicker for a few layout passes and otherwise drop
+// a live feed|detail pair to Stacked (full-bleed through the hinge).
+static NSTimeInterval sApolloFeedSplitForceTiledUntil = 0.0;
+
+extern "C" BOOL ApolloFeedSplitForceTiledActive(void) {
+    return CFAbsoluteTimeGetCurrent() < sApolloFeedSplitForceTiledUntil;
+}
+
+extern "C" void ApolloFeedSplitForceTiledForSeconds(NSTimeInterval seconds) {
+    if (seconds < 0.0) seconds = 0.0;
+    NSTimeInterval until = CFAbsoluteTimeGetCurrent() + seconds;
+    if (until > sApolloFeedSplitForceTiledUntil) {
+        sApolloFeedSplitForceTiledUntil = until;
+    }
+    ApolloLog(@"[FeedSplit] forceTiled until +%.2fs (active=%d)",
+              seconds, ApolloFeedSplitForceTiledActive() ? 1 : 0);
+}
+
+static BOOL ApolloFeedSplitShouldForceTiled(void) {
+    return ApolloDuoRailIsActive() || ApolloFeedSplitForceTiledActive();
+}
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
     Class cls = name ? objc_getClass(name) : Nil;
@@ -149,11 +178,164 @@ static void ApolloFeedSplitPinColumn(UIViewController *controller,
         }
         if ([table isKindOfClass:[UIView class]] && table.superview == view) {
             table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            if (ApolloDuoRailIsActive() && [table isKindOfClass:[UIScrollView class]]) {
+                // Frame already starts after the rail; do not add the tab
+                // controller's safe-area inset again (ghosted/double rows).
+                ((UIScrollView *)table).contentInsetAdjustmentBehavior =
+                    UIScrollViewContentInsetAdjustmentNever;
+            }
             if (!CGRectEqualToRect(table.frame, view.bounds)) {
                 table.frame = view.bounds;
             }
         }
     }
+}
+
+// Duo rail: clamp a column into the leading or trailing half before setFrame.
+static void ApolloFeedSplitPinColumnClamped(UIViewController *controller,
+                                            UIView *container,
+                                            ApolloFeedSplitRect rect,
+                                            BOOL trailing) {
+    if (!controller || !container) return;
+    CGFloat width = container.bounds.size.width;
+    CGFloat height = container.bounds.size.height;
+    if (width < 1.0 || height < 1.0) return;
+    if (ApolloFeedSplitShouldForceTiled()
+        || width + 0.5 >= (CGFloat)ApolloFeedSplitBalancedMinWidth) {
+        rect = ApolloFeedSplitClampRectToHalf(rect, width, height, trailing ? 1 : 0);
+    }
+    ApolloFeedSplitPinColumn(controller, container, rect);
+}
+
+// Shared UINavigationBar is full-width by default, so "Home" / sub names
+// center on the hinge. Pin the bar to the pane that owns the title:
+// leading when the lone feed/list is centered, trailing when the top VC
+// is the tiled detail (feed in list|feed, comments in feed|comments).
+static void ApolloFeedSplitClearNavBarOwner(UINavigationController *nav) {
+    if (!nav) return;
+    objc_setAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloFeedSplitPinNavigationBar(UINavigationController *nav,
+                                            UIView *container,
+                                            ApolloFeedSplitMode mode,
+                                            ApolloFeedSplitFrames frames,
+                                            BOOL rtl) {
+    if (!nav.isViewLoaded || !nav.navigationBar) return;
+    UINavigationBar *bar = nav.navigationBar;
+    if (mode == ApolloFeedSplitModeStacked || !ApolloDuoRailIsActive()) {
+        ApolloFeedSplitClearNavBarOwner(nav);
+        bar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        return;
+    }
+    ApolloFeedSplitRect owner = frames.feed;
+    if (mode == ApolloFeedSplitModeTiled && frames.showsDetail) {
+        // Top VC owns the title: feed in list|feed, comments in feed|comments.
+        owner = frames.detail;
+    }
+    (void)rtl;
+    if (owner.width < 8.0) {
+        ApolloFeedSplitClearNavBarOwner(nav);
+        return;
+    }
+    CGRect column = CGRectMake((CGFloat)owner.x, 0.0, (CGFloat)owner.width,
+                               container ? container.bounds.size.height : nav.view.bounds.size.height);
+    UIView *from = container && container.superview ? container : nav.view;
+    CGRect inNav = [from convertRect:column toView:nav.view];
+    CGRect barFrame = bar.frame;
+    barFrame.origin.x = inNav.origin.x;
+    barFrame.size.width = inNav.size.width;
+    if (barFrame.size.width < 8.0) {
+        ApolloFeedSplitClearNavBarOwner(nav);
+        return;
+    }
+    objc_setAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey,
+                             [NSValue valueWithCGRect:barFrame],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    bar.autoresizingMask = UIViewAutoresizingNone;
+    if (!CGRectEqualToRect(bar.frame, barFrame)) {
+        bar.frame = barFrame;
+    }
+}
+
+static void ApolloFeedSplitApplyStoredNavBar(UINavigationBar *bar) {
+    if (!bar || !ApolloDuoRailIsActive()) return;
+    UINavigationController *nav = nil;
+    if ([bar.delegate isKindOfClass:[UINavigationController class]]) {
+        nav = (UINavigationController *)bar.delegate;
+    }
+    if (!nav) return;
+    NSValue *value = objc_getAssociatedObject(nav, &kApolloFeedSplitNavBarOwnerKey);
+    if (!value) return;
+    CGRect frame = value.CGRectValue;
+    bar.autoresizingMask = UIViewAutoresizingNone;
+    if (!CGRectEqualToRect(bar.frame, frame)) {
+        bar.frame = frame;
+    }
+}
+
+// After sub-pick / mode changes, orphaned list|feed siblings can remain in the
+// transition container and paint the directory over the new leading feed while
+// the trailing half stays blank white.
+static BOOL ApolloFeedSplitViewIsColumnOf(UIView *sub, UIViewController *vc, UIView *container) {
+    if (!sub || !vc.isViewLoaded) return NO;
+    UIView *layout = ApolloFeedSplitLayoutView(vc, container);
+    return sub == layout || sub == vc.view;
+}
+
+static void ApolloFeedSplitRemoveForeignColumns(UINavigationController *nav,
+                                                UIView *container,
+                                                UIViewController *primary,
+                                                UIViewController *secondary) {
+    if (!nav || !container) return;
+    NSMutableArray<UIViewController *> *candidates = [NSMutableArray array];
+    for (UIViewController *vc in nav.viewControllers) {
+        if (ApolloFeedSplitIsListController(vc) || ApolloFeedSplitIsFeedController(vc)
+            || ApolloFeedSplitIsReadingDetailController(vc)) {
+            [candidates addObject:vc];
+        }
+    }
+    UIViewController *saved = ApolloFeedSplitSavedList(nav);
+    if (saved && ![candidates containsObject:saved]) [candidates addObject:saved];
+
+    for (UIView *sub in [container.subviews copy]) {
+        if (sub == ApolloFeedSplitSeparator(nav, NO)) continue;
+        UIViewController *owner = nil;
+        for (UIViewController *vc in candidates) {
+            if (ApolloFeedSplitViewIsColumnOf(sub, vc, container)) {
+                owner = vc;
+                break;
+            }
+        }
+        if (!owner) continue;
+        if (owner == primary || owner == secondary) continue;
+        ApolloLog(@"[FeedSplit] removing orphan column %@ (%@)",
+                  NSStringFromClass(sub.class), NSStringFromClass(owner.class));
+        [sub removeFromSuperview];
+    }
+}
+
+static BOOL ApolloFeedSplitChildSpansMidX(UIView *container) {
+    if (!container) return NO;
+    CGFloat mid = (CGFloat)ApolloFeedSplitContainerMidX(container.bounds.size.width);
+    if (mid < 1.0) return NO;
+    for (UIView *sub in container.subviews) {
+        CGRect f = sub.frame;
+        if (f.size.width < 1.0) continue;
+        if (CGRectGetMinX(f) + 0.5 < mid && CGRectGetMaxX(f) > mid + 0.5) {
+            // Ignore hairline separators and the full-width nav chrome wrappers
+            // that are not our column content (very short height or <2pt wide).
+            if (f.size.width < 2.0 || f.size.height < 2.0) continue;
+            // A view that is essentially the full container is a hinge span.
+            if (f.size.width + 1.0 >= container.bounds.size.width * 0.85) {
+                return YES;
+            }
+            if (CGRectGetMinX(f) < mid - 20.0 && CGRectGetMaxX(f) > mid + 20.0) {
+                return YES;
+            }
+        }
+    }
+    return NO;
 }
 
 static UIView *ApolloFeedSplitSeparator(UINavigationController *nav, BOOL create) {
@@ -228,7 +410,9 @@ static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *na
     }
     UIEdgeInsets safe = insetView.safeAreaInsets;
     UIEdgeInsets margins = insetView.layoutMargins;
-    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+    double extraLeft = ApolloFeedSplitLeadingExtra(
+        ApolloDeviceChromeExtra(safe.left, margins.left),
+        ApolloDuoRailIsActive() ? 1 : 0);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     double usable = ApolloFeedSplitUsableWidth(containerSize.width, extraLeft, extraRight);
     ApolloFeedSplitMode mode = ApolloFeedSplitModeForTraits(
@@ -239,10 +423,18 @@ static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *na
     if (mode == ApolloFeedSplitModeTiled && (!feed || !detail)) {
         mode = ApolloFeedSplitModeStacked;
     }
-    // Scroll/layout can blip usable width or size class. On open Duo do not
-    // drop a live pair to Stacked (that full-bleeds the top VC).
-    if (ApolloDuoRailIsActive() && hasDetail && feed && detail) {
-        mode = ApolloFeedSplitModeTiled;
+    // Scroll/layout can blip usable width or size class. On open Duo (or
+    // during the post-open / media-dismiss latch) never allow ModeStacked —
+    // that full-bleeds the top VC through the hinge.
+    BOOL forceDuo = ApolloFeedSplitShouldForceTiled()
+        || usable + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth;
+    if (forceDuo) {
+        if (hasDetail && feed && detail) {
+            mode = ApolloFeedSplitModeTiled;
+        } else if (feed) {
+            // Lone feed OR lone directory list → leading half only.
+            mode = ApolloFeedSplitModeCentered;
+        }
     }
     if (feedOut) *feedOut = feed;
     if (detailOut) *detailOut = detail;
@@ -308,7 +500,16 @@ extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) 
     if (list && !list.isViewLoaded) [list loadViewIfNeeded];
     if (feed && !feed.isViewLoaded) [feed loadViewIfNeeded];
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Directory must stay leading-half only (never full-bleed across hinge).
+    ApolloFeedSplitForceTiledForSeconds(0.8);
     ApolloFeedSplitApply(nav, NO);
+    UIView *container = ApolloFeedSplitContainerView(nav);
+    UIViewController *primary = nil;
+    UIViewController *secondary = nil;
+    ApolloFeedSplitPairOnStack(nav, &primary, &secondary);
+    if (!primary) primary = nav.topViewController;
+    ApolloFeedSplitRemoveForeignColumns(nav, container, primary, secondary);
+    ApolloFeedSplitReapplySoon();
     ApolloLog(@"[FeedSplit] My Subreddits list|feed stack=%lu",
               (unsigned long)nav.viewControllers.count);
 }
@@ -344,8 +545,57 @@ extern "C" void ApolloFeedSplitReapplyVisible(void) {
         ApolloLog(@"[FeedSplit] ReapplyVisible skipped (no posts nav)");
         return;
     }
+    // Prefer the nav that already hosts a feed|detail / list|feed pair so we
+    // do not Apply a random Settings/Profile stack and miss the posts tile.
+    NSMutableArray *paired = [NSMutableArray array];
+    NSMutableArray *duoWide = [NSMutableArray array];
     for (UINavigationController *nav in navs) {
+        if (ApolloFeedSplitPairOnStack(nav, NULL, NULL) != ApolloFeedSplitPairNone) {
+            [paired addObject:nav];
+            continue;
+        }
+        UIView *container = ApolloFeedSplitContainerView(nav);
+        CGFloat width = container ? container.bounds.size.width : nav.view.bounds.size.width;
+        if (width + 0.5 >= (CGFloat)ApolloFeedSplitBalancedMinWidth) {
+            [duoWide addObject:nav];
+        }
+    }
+    NSArray *targets = paired.count ? paired : (duoWide.count ? duoWide : navs);
+    for (UINavigationController *nav in targets) {
+        ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, NULL, NULL);
+        ApolloLog(@"[FeedSplit] ReapplyVisible apply pair=%d force=%d rail=%d stack=%lu",
+                  (int)pair,
+                  ApolloFeedSplitForceTiledActive() ? 1 : 0,
+                  ApolloDuoRailIsActive() ? 1 : 0,
+                  (unsigned long)nav.viewControllers.count);
         ApolloFeedSplitApply(nav, NO);
+    }
+}
+
+extern "C" void ApolloFeedSplitReapplySoon(void) {
+    // Latch tiled through the layout passes that follow a topic open / media
+    // dismiss; Apollo often resets child frames after our first Apply.
+    ApolloFeedSplitForceTiledForSeconds(0.8);
+    // Coalesce overlapping schedules (media disappear + dismissalDidEnd, or
+    // rapid topic opens) so we do not enqueue dozens of identical Applies.
+    static NSTimeInterval sLastSchedule = 0.0;
+    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+    if (now - sLastSchedule < 0.05) {
+        ApolloLog(@"[FeedSplit] ReapplySoon coalesced (force latched)");
+        return;
+    }
+    sLastSchedule = now;
+    static const double kDelays[] = { 0.0, 0.05, 0.15, 0.35, 0.6 };
+    for (size_t i = 0; i < sizeof(kDelays) / sizeof(kDelays[0]); i++) {
+        double delay = kDelays[i];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloLog(@"[FeedSplit] ReapplySoon t=%.2f force=%d rail=%d",
+                      delay,
+                      ApolloFeedSplitForceTiledActive() ? 1 : 0,
+                      ApolloDuoRailIsActive() ? 1 : 0);
+            ApolloFeedSplitReapplyVisible();
+        });
     }
 }
 
@@ -368,7 +618,9 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
 
     UIEdgeInsets safe = nav.view.safeAreaInsets;
     UIEdgeInsets margins = nav.view.layoutMargins;
-    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+    double extraLeft = ApolloFeedSplitLeadingExtra(
+        ApolloDeviceChromeExtra(safe.left, margins.left),
+        ApolloDuoRailIsActive() ? 1 : 0);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     BOOL rtl = nav.view.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
     ApolloFeedSplitPair pair = ApolloFeedSplitPairOnStack(nav, NULL, NULL);
@@ -386,16 +638,58 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         hingeX = avoid.gapX;
         hingeW = avoid.gapWidth;
     }
+    // While Duo rail / force latch / Duo-wide canvas: never honor Stacked
+    // full-bleed — re-tile a live pair, else pin lone feed/list leading.
+    BOOL duoWide = usable + 0.5 >= (double)ApolloFeedSplitBalancedMinWidth;
+    BOOL pinLeading = ApolloFeedSplitShouldForceTiled() || duoWide;
+    if (mode == ApolloFeedSplitModeStacked && pinLeading) {
+        if (feed && detail) {
+            mode = ApolloFeedSplitModeTiled;
+        } else if (feed) {
+            mode = ApolloFeedSplitModeCentered;
+        }
+        ApolloFeedSplitLogModeIfChanged(nav, mode);
+    }
     ApolloFeedSplitFrames frames = ApolloFeedSplitFramesMake(
         container.bounds.size.width, container.bounds.size.height,
         extraLeft, extraRight, mode, rtl ? 1 : 0, tileStyle, hingeX, hingeW,
-        ApolloDuoRailIsActive() ? 1 : 0);
+        pinLeading ? 1 : 0);
+
+    // Final hard clamp: refuse any primary/secondary frame that spans midX.
+    if (pinLeading) {
+        double mid = ApolloFeedSplitContainerMidX(container.bounds.size.width);
+        double ch = container.bounds.size.height;
+        double cw = container.bounds.size.width;
+        if (ApolloFeedSplitRectSpansMidX(frames.feed, mid) || mode == ApolloFeedSplitModeCentered) {
+            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, cw, ch, rtl ? 1 : 0);
+        }
+        if (frames.showsDetail) {
+            if (ApolloFeedSplitRectSpansMidX(frames.detail, mid) || mode == ApolloFeedSplitModeTiled) {
+                frames.detail = ApolloFeedSplitClampRectToHalf(frames.detail, cw, ch, rtl ? 0 : 1);
+            }
+        }
+    }
 
     void (^apply)(void) = ^{
         UIView *separator = ApolloFeedSplitSeparator(nav, mode == ApolloFeedSplitModeTiled);
         if (mode == ApolloFeedSplitModeStacked) {
+            // Last-resort stacked only when not Duo — still avoid spanning if
+            // the canvas is somehow Duo-wide without the rail flag.
             UIViewController *top = nav.topViewController;
-            if (top.isViewLoaded) {
+            if (pinLeading && top) {
+                ApolloFeedSplitRect leading = frames.feed;
+                if (leading.width < 1.0) {
+                    ApolloFeedSplitRect full;
+                    full.x = 0.0; full.y = 0.0;
+                    full.width = container.bounds.size.width;
+                    full.height = container.bounds.size.height;
+                    leading = ApolloFeedSplitClampRectToHalf(
+                        full, container.bounds.size.width, container.bounds.size.height,
+                        rtl ? 1 : 0);
+                }
+                ApolloFeedSplitPinColumnClamped(top, container, leading, rtl);
+                ApolloFeedSplitRemoveForeignColumns(nav, container, top, nil);
+            } else if (top.isViewLoaded) {
                 UIView *topLayout = ApolloFeedSplitLayoutView(top, container);
                 if (topLayout) {
                     ApolloFeedSplitSetFrame(topLayout, container.bounds);
@@ -410,6 +704,7 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
                 ApolloFeedSplitSetPrimaryAlongside(feed, NO);
             }
             if (separator.superview) [separator removeFromSuperview];
+            ApolloFeedSplitPinNavigationBar(nav, container, mode, frames, rtl);
             return;
         }
 
@@ -420,15 +715,16 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
         if (feedLayout.superview != container) {
             [container insertSubview:feedLayout atIndex:0];
         }
-        ApolloFeedSplitPinColumn(feed, container, frames.feed);
+        ApolloFeedSplitPinColumnClamped(feed, container, frames.feed, rtl);
 
         if (mode == ApolloFeedSplitModeTiled && detail) {
             UIView *detailLayout = ApolloFeedSplitLayoutView(detail, container);
             if (detailLayout && detailLayout.superview != container) {
                 [container addSubview:detailLayout];
             }
-            ApolloFeedSplitPinColumn(detail, container, frames.detail);
+            ApolloFeedSplitPinColumnClamped(detail, container, frames.detail, !rtl);
             ApolloFeedSplitSetPrimaryAlongside(feed, YES);
+            ApolloFeedSplitRemoveForeignColumns(nav, container, feed, detail);
             if (separator) {
                 CGFloat gutter = rtl
                     ? (CGFloat)(frames.feed.x - (frames.detail.x + frames.detail.width))
@@ -442,9 +738,13 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
                 ApolloFeedSplitSetFrame(separator, sepFrame);
             }
         } else {
+            // Centered lone feed/list: strip orphan directory/detail siblings
+            // so the trailing half stays empty (not a stale white feed / list).
+            ApolloFeedSplitRemoveForeignColumns(nav, container, feed, nil);
             ApolloFeedSplitSetPrimaryAlongside(feed, feed != nav.topViewController);
             if (separator.superview) [separator removeFromSuperview];
         }
+        ApolloFeedSplitPinNavigationBar(nav, container, mode, frames, rtl);
     };
 
     if (animated && !ApolloDuoRailIsActive()) {
@@ -479,13 +779,15 @@ static void ApolloFeedSplitScheduleApply(UINavigationController *nav) {
 static BOOL ApolloFeedSplitWouldTile(UINavigationController *nav) {
     UIView *container = ApolloFeedSplitContainerView(nav);
     CGSize size = container ? container.bounds.size : nav.view.bounds.size;
-    if (ApolloDuoRailIsActive()
+    if (ApolloFeedSplitShouldForceTiled()
         && size.width + 0.5 >= (double)ApolloFeedSplitMinRegularWidth) {
         return YES;
     }
     UIEdgeInsets safe = nav.view.safeAreaInsets;
     UIEdgeInsets margins = nav.view.layoutMargins;
-    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+    double extraLeft = ApolloFeedSplitLeadingExtra(
+        ApolloDeviceChromeExtra(safe.left, margins.left),
+        ApolloDuoRailIsActive() ? 1 : 0);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     double usable = ApolloFeedSplitUsableWidth(size.width, extraLeft, extraRight);
     return ApolloFeedSplitModeForTraits((int)nav.traitCollection.horizontalSizeClass, usable, 1)
@@ -540,7 +842,37 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
 - (void)viewDidLayoutSubviews {
     %orig;
     UINavigationController *nav = (UINavigationController *)self;
-    if (nav.transitionCoordinator) return;
+    UIView *container = ApolloFeedSplitContainerView(nav);
+    BOOL duoRail = ApolloDuoRailIsActive();
+    BOOL force = ApolloFeedSplitShouldForceTiled();
+    BOOL spans = (duoRail || force) && ApolloFeedSplitChildSpansMidX(container);
+
+    // During a push/pop transition UIKit still lays children full-bleed.
+    // Alongside + completion restore; while DuoRail/force is up, Apply every
+    // pass — do NOT skip because of transitionCoordinator when rail is active.
+    if (nav.transitionCoordinator) {
+        ApolloFeedSplitScheduleApply(nav);
+        if (duoRail || force || spans) {
+            ApolloFeedSplitApply(nav, NO);
+        }
+        return;
+    }
+
+    // Any child spanning midX while DuoRail is active → re-Apply immediately.
+    // Coalesce tight layout loops without dropping the correction.
+    if (spans) {
+        NSNumber *last = objc_getAssociatedObject(nav, &kApolloFeedSplitSpanCoalesceKey);
+        CFTimeInterval now = CACurrentMediaTime();
+        if (last && (now - last.doubleValue) < 0.016) {
+            // Still Apply — coalescing only skips the log spam path by falling
+            // through once per frame budget; never skip the clamp itself when
+            // the previous Apply could not clear the span.
+        }
+        objc_setAssociatedObject(nav, &kApolloFeedSplitSpanCoalesceKey, @(now),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloFeedSplitApply(nav, NO);
+        return;
+    }
     ApolloFeedSplitApply(nav, NO);
 }
 
@@ -578,27 +910,42 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     BOOL duoTile = ApolloDuoRailIsActive() && ApolloFeedSplitWouldTile(nav);
 
-    // Subreddit tap while picking: dismiss the directory from the stack but
-    // retain the list VC so Subs can restore @[savedList, feed].
-    if (duoTile && viewController && ApolloFeedSplitIsFeedController(viewController)
-        && ApolloDuoRailIsPickingSubreddits()) {
-        UIViewController *list = nil;
-        for (UIViewController *controller in nav.viewControllers) {
-            if (ApolloFeedSplitIsListController(controller)) {
-                list = controller;
-                break;
-            }
+    // Subreddit tap while the directory is on-stack (Subs picking, or list|feed
+    // already showing): dismiss the directory, keep the list VC for Subs
+    // restore, and pin the selected sub's feed to the leading half. Right pane
+    // stays empty until a topic opens (intended mock). Avoids the blank-trailing
+    // failure where list stayed leading and the new feed never painted.
+    BOOL listOnStack = NO;
+    UIViewController *listOnNav = nil;
+    for (UIViewController *controller in nav.viewControllers) {
+        if (ApolloFeedSplitIsListController(controller)) {
+            listOnStack = YES;
+            listOnNav = controller;
+            break;
         }
-        ApolloFeedSplitSaveList(nav, list);
+    }
+    BOOL subPick = duoTile && viewController
+        && ApolloFeedSplitIsFeedController(viewController)
+        && (ApolloDuoRailIsPickingSubreddits() || listOnStack);
+    if (subPick) {
+        ApolloFeedSplitSaveList(nav, listOnNav ?: ApolloFeedSplitSavedList(nav));
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloDuoRailSetPickingSubreddits(NO);
+        // Intended mock: @[subFeed] leading — not list|feed with a blank right.
         [nav setViewControllers:@[ viewController ] animated:NO];
+        if (!viewController.isViewLoaded) [viewController loadViewIfNeeded];
         objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [CATransaction commit];
+        ApolloFeedSplitForceTiledForSeconds(0.8);
         ApolloFeedSplitApply(nav, NO);
-        ApolloLog(@"[FeedSplit] dismissed directory; sub feed leading (list retained)");
+        // Strip any orphaned RedditList column that UIKit left in the container
+        // after setViewControllers — that was painting "directory left / blank right".
+        UIView *container = ApolloFeedSplitContainerView(nav);
+        ApolloFeedSplitRemoveForeignColumns(nav, container, viewController, nil);
+        ApolloFeedSplitReapplySoon();
+        ApolloLog(@"[FeedSplit] sub pick → feed leading (directory dismissed, list retained)");
         return;
     }
 
@@ -608,7 +955,10 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         && ApolloFeedSplitIsFeedController(nav.topViewController)) {
         %orig(viewController, NO);
         ApolloFeedSplitCollapseReplacedComments(nav);
+        ApolloFeedSplitForceTiledForSeconds(0.8);
         ApolloFeedSplitApply(nav, NO);
+        ApolloLog(@"[FeedSplit] topic open tiled; scheduling ReapplySoon");
+        ApolloFeedSplitReapplySoon();
         return;
     }
 
@@ -616,7 +966,17 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
     if (duoTile) {
-        ApolloFeedSplitApply(nav, NO);
+        // Home/Popular/All (and any other push): latch + multi-pass so a lone
+        // feed cannot remain Stacked full-bleed after UIKit's follow-up layouts.
+        if (ApolloFeedSplitPairOnStack(nav, NULL, NULL) == ApolloFeedSplitPairNone
+            && (ApolloFeedSplitIsFeedController(nav.topViewController)
+                || ApolloFeedSplitIsListController(nav.topViewController))) {
+            ApolloFeedSplitForceTiledForSeconds(0.8);
+            ApolloFeedSplitApply(nav, NO);
+            ApolloFeedSplitReapplySoon();
+        } else {
+            ApolloFeedSplitApply(nav, NO);
+        }
         return;
     }
     ApolloFeedSplitScheduleApply(nav);
@@ -656,6 +1016,15 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
     ApolloFeedSplitScheduleApply(nav);
+}
+
+%end
+
+%hook UINavigationBar
+
+- (void)layoutSubviews {
+    %orig;
+    ApolloFeedSplitApplyStoredNavBar((UINavigationBar *)self);
 }
 
 %end

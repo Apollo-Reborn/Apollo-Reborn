@@ -41,7 +41,9 @@ static CGRect ApolloMediaHingeTrailingFrame(UIView *container) {
     if (size.width < 8.0 || size.height < 8.0) return CGRectZero;
     UIEdgeInsets safe = container.safeAreaInsets;
     UIEdgeInsets margins = container.layoutMargins;
-    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
+    double extraLeft = ApolloFeedSplitLeadingExtra(
+        ApolloDeviceChromeExtra(safe.left, margins.left),
+        ApolloDuoRailIsActive() ? 1 : 0);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     BOOL rtl = NO;
     if ([container respondsToSelector:@selector(effectiveUserInterfaceLayoutDirection)]) {
@@ -86,14 +88,7 @@ static void ApolloMediaHingePinToTrailingHalf(UIViewController *controller) {
 
 static void ApolloMediaHingeReapplySplitSoon(void) {
     if (!ApolloDuoRailIsActive()) return;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ApolloFeedSplitReapplyVisible();
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ApolloFeedSplitReapplyVisible();
-    });
+    ApolloFeedSplitReapplySoon();
 }
 
 %hook _TtC6Apollo21MediaViewerController

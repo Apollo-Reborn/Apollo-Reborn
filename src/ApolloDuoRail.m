@@ -337,16 +337,26 @@ static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) 
 }
 
 static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
-    UIEdgeInsets current = tabs.additionalSafeAreaInsets;
-    CGFloat existingSafe = tabs.view.safeAreaInsets.left - current.left;
-    if (existingSafe < 0.0) existingSafe = 0.0;
-    CGFloat want = 0.0;
-    if (show) {
-        want = (CGFloat)ApolloDuoRailWidth - existingSafe;
-        if (want < 0.0) want = 0.0;
+    // Posts / FeedSplit columns start at extraLeft = rail width. Do not also
+    // push additionalSafeAreaInsets on the tab controller — Texture ignored
+    // that inset (rail covered text) and UIKit tables would double-count
+    // once the column frame already starts after the rail.
+    UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
+    if (fabs(tabInsets.left) > 0.5) {
+        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, tabInsets.right);
     }
-    if (fabs(current.left - want) < 0.5) return;
-    tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, want, current.bottom, current.right);
+
+    UIViewController *posts = tabs.viewControllers.firstObject;
+    for (UIViewController *child in tabs.viewControllers) {
+        if (!child) continue;
+        UIEdgeInsets current = child.additionalSafeAreaInsets;
+        CGFloat want = 0.0;
+        if (show && child != posts) {
+            want = (CGFloat)ApolloDuoRailWidth;
+        }
+        if (fabs(current.left - want) < 0.5) continue;
+        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, want, current.bottom, current.right);
+    }
 }
 
 BOOL ApolloDuoRailIsActive(void) {

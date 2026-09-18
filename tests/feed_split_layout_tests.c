@@ -185,6 +185,42 @@ int main(void) {
           "leading column runs from origin to container mid minus half gutter");
     Check(Near(ApolloFeedSplitBookStart(1000.0, 400.0), 0.0),
           "a margin that already is the left pane is not added again");
+    Check(Near(ApolloFeedSplitBookStart(736.0, 64.0), 64.0),
+          "slim rail inset still shifts content even when extra+minColumn > mid");
+    Check(Near(ApolloFeedSplitLeadingExtra(0.0, 1), (double)ApolloDuoRailWidth),
+          "rail-active leading extra is the rail width");
+    Check(Near(ApolloFeedSplitLeadingExtra(80.0, 1), 80.0),
+          "chrome extra larger than the rail wins");
+    Check(Near(ApolloFeedSplitLeadingExtra(0.0, 0), 0.0),
+          "rail-inactive leading extra stays chrome-only");
+
+    ApolloFeedSplitRect spanRect;
+    spanRect.x = 0.0; spanRect.y = 0.0; spanRect.width = 900.0; spanRect.height = 400.0;
+    Check(ApolloFeedSplitRectSpansMidX(spanRect, 450.0),
+          "full-bleed column spans the container mid");
+    ApolloFeedSplitRect clampedLead = ApolloFeedSplitClampRectToHalf(spanRect, 900.0, 400.0, 0);
+    Check(clampedLead.x + clampedLead.width + 0.5 <= 450.0
+              && Near(clampedLead.x, 0.0),
+          "clamp-to-leading refuses to cross midX");
+    ApolloFeedSplitRect clampedTrail = ApolloFeedSplitClampRectToHalf(spanRect, 900.0, 400.0, 1);
+    Check(clampedTrail.x + 0.5 >= 450.0
+              && Near(clampedTrail.x + clampedTrail.width, 900.0),
+          "clamp-to-trailing starts at midX");
+
+    ApolloFeedSplitFrames stackedPinned = ApolloFeedSplitFramesMake(
+        900.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeStacked, 0,
+        ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
+    Check(!stackedPinned.showsDetail
+              && stackedPinned.feed.x + stackedPinned.feed.width + 0.5 <= 450.0,
+          "pinLeading stacked becomes centered leading, not full-bleed");
+
+    ApolloFeedSplitFrames railCentered = ApolloFeedSplitFramesMake(
+        1000.0, 400.0, ApolloFeedSplitLeadingExtra(0.0, 1), 0.0,
+        ApolloFeedSplitModeCentered, 0,
+        ApolloFeedSplitTileMaster, 0.0, 0.0, 1);
+    Check(Near(railCentered.feed.x, (double)ApolloDuoRailWidth)
+              && railCentered.feed.x + railCentered.feed.width + 0.5 <= 500.0,
+          "lone feed starts after the rail and stays left of the hinge");
 
     ApolloFeedSplitFrames balanced = ApolloFeedSplitFramesMake(
         1000.0, 400.0, 0.0, 0.0, ApolloFeedSplitModeTiled, 0,

@@ -1,6 +1,8 @@
 #ifndef APOLLO_FEED_SPLIT_LAYOUT_H
 #define APOLLO_FEED_SPLIT_LAYOUT_H
 
+#include "ApolloDuoRailLayout.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -87,12 +89,25 @@ static inline double ApolloFeedSplitContainerMidX(double containerWidth) {
     return containerWidth * 0.5;
 }
 
-// Rail / chrome start for the left pane. A margin that already reserves
-// ~the leading half is the pane itself — do not add it on top of a 50% split.
+// extraLeft for column frames: chrome extra, but never less than the
+// slim Duo rail so list/feed text cannot start under the rail.
+static inline double ApolloFeedSplitLeadingExtra(double chromeExtra, int railActive) {
+    if (chromeExtra < 0.0) chromeExtra = 0.0;
+    double rail = railActive ? (double)ApolloDuoRailWidth : 0.0;
+    return chromeExtra > rail ? chromeExtra : rail;
+}
+
+// Rail / chrome start for the left pane. A fat margin that already
+// *is* the leading half is not stacked again. A slim rail inset must
+// still shift content to the right of the rail, even on Plus widths
+// where extraLeft + minColumn > mid.
 static inline double ApolloFeedSplitBookStart(double containerWidth, double extraLeft) {
     if (extraLeft < 0.0) extraLeft = 0.0;
     double mid = ApolloFeedSplitContainerMidX(containerWidth);
     if (extraLeft + (double)ApolloFeedSplitFeedMinWidth > mid) {
+        if (extraLeft + 0.5 < (double)ApolloFeedSplitFeedMinWidth && extraLeft < mid) {
+            return extraLeft;
+        }
         return 0.0;
     }
     return extraLeft;
@@ -126,6 +141,46 @@ static inline ApolloFeedSplitTileStyle ApolloFeedSplitTileStyleForPair(int readi
     return ApolloFeedSplitTileMaster;
 }
 
+// True if rect crosses the container mid (hinge). Used to refuse full-bleed.
+static inline int ApolloFeedSplitRectSpansMidX(ApolloFeedSplitRect rect, double midX) {
+    if (rect.width <= 0.0) return 0;
+    double maxX = rect.x + rect.width;
+    return rect.x + 0.5 < midX && maxX > midX + 0.5;
+}
+
+// Clamp a column into the leading half (maxX <= mid) or trailing half (minX >= mid).
+static inline ApolloFeedSplitRect ApolloFeedSplitClampRectToHalf(ApolloFeedSplitRect rect,
+                                                                double containerWidth,
+                                                                double containerHeight,
+                                                                int trailing) {
+    double mid = ApolloFeedSplitContainerMidX(containerWidth);
+    double halfGutter = (double)ApolloFeedSplitGutterWidth * 0.5;
+    ApolloFeedSplitRect out = rect;
+    out.y = 0.0;
+    out.height = containerHeight > 0.0 ? containerHeight : 0.0;
+    if (trailing) {
+        double minX = mid + halfGutter;
+        if (out.x < minX) {
+            out.width -= (minX - out.x);
+            out.x = minX;
+        }
+        if (out.x + out.width > containerWidth) {
+            out.width = containerWidth - out.x;
+        }
+    } else {
+        double maxX = mid - halfGutter;
+        if (out.x < 0.0) {
+            out.width += out.x;
+            out.x = 0.0;
+        }
+        if (out.x + out.width > maxX) {
+            out.width = maxX - out.x;
+        }
+    }
+    if (out.width < 0.0) out.width = 0.0;
+    return out;
+}
+
 static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWidth,
                                                               double containerHeight,
                                                               double extraLeft,
@@ -154,6 +209,11 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
     if (extraRight < 0.0) extraRight = 0.0;
 
     double usable = ApolloFeedSplitUsableWidth(containerWidth, extraLeft, extraRight);
+    // pinLeading (Duo rail / force latch): never honor Stacked full-bleed —
+    // treat it as Centered so a lone feed/list stays in the leading half.
+    if (pinLeading && mode == ApolloFeedSplitModeStacked) {
+        mode = ApolloFeedSplitModeCentered;
+    }
     if (mode == ApolloFeedSplitModeStacked || usable <= 0.0) {
         return frames;
     }
@@ -184,6 +244,10 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
             frames.feed.width = feedWidth;
         }
         frames.feed.height = containerHeight;
+        if (pinLeading || bookSplit) {
+            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, containerWidth,
+                                                        containerHeight, rightToLeft ? 1 : 0);
+        }
         return frames;
     }
 
@@ -220,6 +284,12 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
         }
         if (frames.feed.width < 0.0) frames.feed.width = 0.0;
         if (frames.detail.width < 0.0) frames.detail.width = 0.0;
+        if (pinLeading || bookSplit) {
+            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, containerWidth,
+                                                        containerHeight, rightToLeft ? 1 : 0);
+            frames.detail = ApolloFeedSplitClampRectToHalf(frames.detail, containerWidth,
+                                                          containerHeight, rightToLeft ? 0 : 1);
+        }
         return frames;
     }
 
@@ -263,6 +333,24 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
         frames.feed.x = extraLeft;
         frames.detail.x = extraLeft + feedWidth + gutter;
     }
+
+    // Duo / rail: refuse any column that still spans the hinge.
+    if (pinLeading || ApolloFeedSplitUsableIsDuoWide(usable)) {
+        double mid = ApolloFeedSplitContainerMidX(containerWidth);
+        if (ApolloFeedSplitRectSpansMidX(frames.feed, mid)) {
+            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, containerWidth,
+                                                        containerHeight, rightToLeft ? 1 : 0);
+        }
+        if (frames.showsDetail && ApolloFeedSplitRectSpansMidX(frames.detail, mid)) {
+            frames.detail = ApolloFeedSplitClampRectToHalf(frames.detail, containerWidth,
+                                                          containerHeight, rightToLeft ? 0 : 1);
+        }
+        // Lone centered feed must stay leading (LTR) / trailing (RTL).
+        if (!frames.showsDetail && mode == ApolloFeedSplitModeCentered) {
+            frames.feed = ApolloFeedSplitClampRectToHalf(frames.feed, containerWidth,
+                                                        containerHeight, rightToLeft ? 1 : 0);
+        }
+    }
     return frames;
 }
 
@@ -279,8 +367,17 @@ __BEGIN_DECLS
 void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav);
 
 /// Find the posts ApolloNavigationController and Apply the current pair.
-/// Used after MediaViewer dismiss so the two-pane split returns.
+/// Used after MediaViewer dismiss / topic open so the two-pane split returns.
 void ApolloFeedSplitReapplyVisible(void);
+
+/// Keep ModeTiled for a short window even if size-class / DuoRail flickers
+/// (post-open and media-dismiss collapse). Honored by CurrentMode / Apply /
+/// nav viewDidLayoutSubviews. Does not install a UIView frame-lock.
+void ApolloFeedSplitForceTiledForSeconds(NSTimeInterval seconds);
+BOOL ApolloFeedSplitForceTiledActive(void);
+
+/// Apply now plus delayed passes (0 / 0.05 / 0.15 / 0.35 [/ extra]).
+void ApolloFeedSplitReapplySoon(void);
 __END_DECLS
 #endif
 
