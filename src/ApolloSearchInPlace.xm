@@ -241,7 +241,15 @@ static CGFloat ApolloFeedSearchRestTop(void) {
         if (bottom > 1.0) return bottom;
     }
     UIWindow *w = sFeedSearchNavBar.window ?: sFeedSearchTable.window ?: tb.window;
-    CGFloat safeTop = w ? w.safeAreaInsets.top : 59.0; // 59 ≈ Dynamic-Island top; transient pre-dock only
+    CGFloat safeTop = w.safeAreaInsets.top;
+    if (safeTop <= 0.0) {
+        for (UIWindow *candidate in ApolloAllWindows()) {
+            if (candidate.safeAreaInsets.top > 0.0) {
+                safeTop = candidate.safeAreaInsets.top;
+                break;
+            }
+        }
+    }
     return safeTop + 45.0;
 }
 

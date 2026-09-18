@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Stop treating every newer iPhone as a hardcoded iPhone 14 Pro for Pixel Pals. Unrecognized models (including future foldables) remap as Dynamic Island unless they are a known notch-only phone, and the island overlay follows the current window scene's cutout instead of a 59pt 14 Pro safe area
+
 ## [v3.7.1] - 2026-09-13
 
 ### Features
