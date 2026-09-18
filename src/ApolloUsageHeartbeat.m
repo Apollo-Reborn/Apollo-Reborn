@@ -184,13 +184,17 @@ static NSString *ApolloMonthlyToken(NSMutableDictionary *state, NSString *month,
 // (the NSUserDefaults + container plist mirrors do not), which fixes the consent
 // bug where someone who turned the heartbeat OFF, deleted the app, and
 // reinstalled came back silently opted IN (the on-by-default state).
-static BOOL ApolloHeartbeatKeychainReadOptOut(void) {
+// `status` (optional) receives the raw SecItemCopyMatching result so a caller
+// can tell a definitive "no item" (errSecItemNotFound) from a transient failure
+// it must not remember.
+static BOOL ApolloHeartbeatKeychainReadOptOut(OSStatus *status) {
     CFDictionaryRef query =
         ApolloCreateGenericPasswordIdentity(kHeartbeatKeychainService,
                                             kHeartbeatKeychainOptOutAccount);
-    BOOL optedOut = SecItemCopyMatching(query, NULL) == errSecSuccess;
+    OSStatus st = SecItemCopyMatching(query, NULL);
     CFRelease(query);
-    return optedOut;
+    if (status) *status = st;
+    return st == errSecSuccess;
 }
 
 static void ApolloHeartbeatKeychainWriteOptOut(BOOL optedOut) {
@@ -228,7 +232,7 @@ static NSString *sHeartbeatDaySatisfied = nil;
 static void ApolloHeartbeatMigrateOptOutToKeychain(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        if (ApolloHeartbeatKeychainReadOptOut()) return; // already durable
+        if (ApolloHeartbeatKeychainReadOptOut(NULL)) return; // already durable
         BOOL ud     = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDisableUsageHeartbeat];
         BOOL legacy = [ApolloHeartbeatReadState()[kStateDisabledKey] boolValue];
         if (ud || legacy) {
@@ -252,7 +256,16 @@ static void ApolloHeartbeatMigrateOptOutToKeychain(void) {
 // the answer within a process, so cache it and let them invalidate.
 BOOL ApolloUsageHeartbeatIsDisabled(void) {
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDisableUsageHeartbeat]) return YES;
-    if (sHeartbeatDisabledCache < 0) sHeartbeatDisabledCache = ApolloHeartbeatKeychainReadOptOut() ? 1 : 0;
+    if (sHeartbeatDisabledCache < 0) {
+        OSStatus st = errSecSuccess;
+        BOOL optedOut = ApolloHeartbeatKeychainReadOptOut(&st);
+        // Remember only a definitive answer. A transient failure (securityd
+        // unavailable, the item's protection class not readable right now)
+        // used to cost one wrong verdict; cached, it would pin "enabled" for
+        // the whole process and send a beat past a durable opt-out.
+        if (st == errSecSuccess || st == errSecItemNotFound) sHeartbeatDisabledCache = optedOut ? 1 : 0;
+        return optedOut;
+    }
     return sHeartbeatDisabledCache == 1;
 }
 
