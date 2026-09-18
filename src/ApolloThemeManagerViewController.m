@@ -1298,7 +1298,7 @@ static NSString *SpacedThemeName(NSString *raw) {
     cell.textLabel.textColor = label;
     cell.detailTextLabel.textColor = secondary;
     UIView *selBG = [[UIView alloc] init];
-    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
     cell.selectedBackgroundView = selBG;
     switch (row) {
         case 0:
@@ -1320,7 +1320,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         default:
             cell.textLabel.text = @"Selected / tapped row";
             cell.detailTextLabel.text = nil;
-            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
             cell.imageView.image = SwatchImage(sep, 22);
             break;
     }

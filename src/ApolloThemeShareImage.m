@@ -360,7 +360,7 @@ UIImage *ApolloThemeShareRenderCard(NSDictionary *theme, ApolloThemeMode mode) {
     UIColor *raised      = tok(ApolloThemeTokenTertiaryBackground); // the "Raised" input surface
     UIColor *gray        = tok(ApolloThemeTokenSecondaryLabel);
     UIColor *primaryText = tok(ApolloThemeTokenLabel);
-    UIColor *selection   = tok(ApolloThemeTokenSelection);
+    UIColor *selection   = tok(ApolloThemeTokenRowHighlight);
     UIColor *muted       = tok(ApolloThemeTokenTertiaryLabel); // label faded toward the page
 
     // Palette swatches: the user's actual input colours for this mode — the 5

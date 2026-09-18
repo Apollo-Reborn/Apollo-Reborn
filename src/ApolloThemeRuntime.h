@@ -39,6 +39,10 @@ UIColor *ApolloThemeRuntimeColor(ApolloThemeToken token);
 // supply their own last-resort (typically a view tint or systemBlue).
 UIColor *ApolloThemeAccentColor(void);
 
+// Independent press feedback: automatic custom tint, or Apollo's
+// original light/dark row highlight for stock themes.
+UIColor *ApolloThemeRowHighlightColor(void);
+
 // The EFFECTIVE card/cell background for tweak-drawn UI: the custom theme's
 // card color when one is active, else the stock theme's (Pure Black Dark
 // Mode aware). nil only if neither can be determined — callers supply their

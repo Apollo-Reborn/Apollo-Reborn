@@ -1466,6 +1466,16 @@ UIColor *ApolloThemeAccentColor(void) {
     return custom ?: ApolloThemeStockAccentColor();
 }
 
+// Stock tap feedback is independent of the selected accent (#743).
+UIColor *ApolloThemeRowHighlightColor(void) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenRowHighlight);
+    if (custom) return custom;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return ApolloThemeUIColorFromRGB(traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? 0x34373F : 0xF0F1F3);
+    }];
+}
+
 // Dark-mode card override for a non-tinted stock theme, per Apollo's Pure
 // Black tier. PURER is only consulted when Pure Black is also on — Apollo
 // hides its toggle (and ignores the stored value) once Pure Black is off,
