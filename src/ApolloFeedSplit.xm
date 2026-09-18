@@ -224,7 +224,13 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
     double usable = ApolloFeedSplitUsableWidth(container.bounds.size.width, extraLeft, extraRight);
     ApolloFeedSplitTileStyle tileStyle = ApolloFeedSplitTileStyleForPair(
         pair == ApolloFeedSplitPairFeedComments ? 1 : 0, usable);
-    ApolloReservedAvoidance avoid = ApolloDeviceReservedAvoidanceForView(container);
+    ApolloReservedAvoidance avoid;
+    memset(&avoid, 0, sizeof(avoid));
+    // Scene connect pushes the root VC before the nav view is windowed.
+    // reservedRegions SIGSEGVs there; hinge gutters wait for viewDidAppear.
+    if (container.window && container.window.windowScene) {
+        avoid = ApolloDeviceReservedAvoidanceForView(container);
+    }
     double hingeX = 0.0;
     double hingeW = 0.0;
     if (avoid.hasVerticalGap && avoid.gapWidth > 0.0) {

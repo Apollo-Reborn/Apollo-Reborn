@@ -261,8 +261,9 @@ static inline int ApolloReservedEvenColumnCount(int columns, int minCount, int m
 __BEGIN_DECLS
 
 /// Active reserved-region rects in `view` coordinates. Empty when the iOS 27.1
-/// API is missing at compile or runtime. `includeInactive` is for structural
-/// decisions (gallery column count) only.
+/// API is missing, or when `view` has no window / windowScene yet (calling
+/// reservedRegions off-window SIGSEGVs on Duo). `includeInactive` is for
+/// structural decisions (gallery column count) only.
 NSUInteger ApolloDeviceCopyReservedRectsForView(UIView *view,
                                                 CGRect *outRects,
                                                 NSUInteger maxCount,
@@ -277,6 +278,7 @@ BOOL ApolloDeviceHasDivisionRegionInView(UIView *view);
 UIEdgeInsets ApolloDeviceMediaInsetsForView(UIView *view);
 
 /// Avoidance derived from active reserved rects (gaps + edge extras).
+/// Zeroed when `view` is nil or not yet in a window scene.
 ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view);
 
 /// Shift `frame` off any active reserved rect in `container`. Returns

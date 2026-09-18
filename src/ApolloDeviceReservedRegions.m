@@ -88,6 +88,17 @@ static BOOL ApolloReservedReadMargins(id region, UIEdgeInsets *outInsets) {
     return YES;
 }
 
+// UIKit's reservedRegions implementation reads the window scene (offset
+// ~0x10). Calling it from initWithRootViewController: / scene connect —
+// before view.window is set — SIGSEGVs. That is not an NSException, so
+// @try cannot save us. Require a live window + scene first.
+static BOOL ApolloReservedViewCanQuery(UIView *view) {
+    if (!view) return NO;
+    UIWindow *window = view.window;
+    if (!window) return NO;
+    return window.windowScene != nil;
+}
+
 static NSUInteger ApolloReservedCollect(UIView *view,
                                         CGRect *outRects,
                                         NSUInteger maxCount,
@@ -95,7 +106,9 @@ static NSUInteger ApolloReservedCollect(UIView *view,
                                         UIEdgeInsets *outMargins) {
     if (outMargins) *outMargins = UIEdgeInsetsZero;
     SEL selector = ApolloReservedRegionsSelector();
-    if (!view || !outRects || maxCount == 0 || !selector) return 0;
+    if (!ApolloReservedViewCanQuery(view) || !outRects || maxCount == 0 || !selector) {
+        return 0;
+    }
 
     typedef NSArray *(*ReservedIMP)(id, SEL, NSInteger, NSUInteger);
     ReservedIMP imp = (ReservedIMP)objc_msgSend;
@@ -153,7 +166,7 @@ NSUInteger ApolloDeviceCopyReservedRectsForView(UIView *view,
 ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view) {
     ApolloReservedAvoidance empty;
     memset(&empty, 0, sizeof(empty));
-    if (!view) return empty;
+    if (!ApolloReservedViewCanQuery(view)) return empty;
     CGRect rects[8];
     UIEdgeInsets margins = UIEdgeInsetsZero;
     NSUInteger count = ApolloReservedCollect(view, rects, 8, NO, &margins);
@@ -169,7 +182,7 @@ ApolloReservedAvoidance ApolloDeviceReservedAvoidanceForView(UIView *view) {
 }
 
 BOOL ApolloDeviceHasDivisionRegionInView(UIView *view) {
-    if (!view) return NO;
+    if (!ApolloReservedViewCanQuery(view)) return NO;
     CGRect rects[8];
     NSUInteger count = ApolloDeviceCopyReservedRectsForView(view, rects, 8, YES);
     if (count == 0) return NO;
