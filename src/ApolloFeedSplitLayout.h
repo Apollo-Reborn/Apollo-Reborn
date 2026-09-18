@@ -6,9 +6,10 @@ extern "C" {
 #endif
 
 // Size-class two-pane layout for Regular-width iPhone (Plus/Max
-// landscape, Duo inner). Primary browsing pair is list | feed; a post
-// then uses feed | comments. C-only so host tests can compile this
-// header without UIKit. Values match UIUserInterfaceSizeClass.
+// landscape, Duo inner). Reading pair is feed | comments; list | feed
+// tiles while the subreddit list is the leading master. C-only so host
+// tests can compile this header without UIKit. Values match
+// UIUserInterfaceSizeClass.
 
 enum {
     ApolloFeedSplitSizeClassUnspecified = 0,

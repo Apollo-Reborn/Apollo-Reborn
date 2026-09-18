@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - Fill the **inner iPhone Duo display** instead of leaving Apollo in a phone-sized column: glass-patched builds now advertise SDK 27.1 (the guest binary's `LC_BUILD_VERSION`, which is what UIKit uses for Duo compatibility), and the tweak moves `ThemeableWindow` onto the larger scene and sizes it to that canvas. Floating-tab overlays bind to the same scene so they do not sit on the unused chrome and eat hits
-- On Regular-width / open Duo, keep the **subreddit list beside the current feed**; opening a post still tiles feed | comments. Compact stays a single column
+- On Regular-width / open Duo, show a slim **leading rail** (Home, Popular, All, My Subreddits, Profile, Settings) and fill the inner canvas. My Subreddits keeps the **subreddit list beside the current feed**; opening a post still tiles feed | comments. Compact and ordinary Plus landscape keep the stock tab bar
 - Stop treating every newer iPhone as a hardcoded iPhone 14 Pro for Pixel Pals. Unrecognized models (including future foldables) remap as Dynamic Island unless they are a known notch-only phone, and the island overlay follows the current window scene's cutout instead of a 59pt 14 Pro safe area
 - Keep **Floating Post Tabs** and Liquid Glass nav titles on the active window scene's safe area (and any hinge-sized layout-margin extra) instead of `UIScreen.mainScreen` bounds, so a fold/resize does not park bubbles or side chrome in the wrong panel
 - On Regular-width iPhone (Plus/Max landscape, Duo inner), keep the feed beside comments instead of stretching a single column; Compact stays stacked. Opening another post from the still-visible feed replaces the comments column rather than pushing a third screen

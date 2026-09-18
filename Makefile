@@ -95,6 +95,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDeviceDisplay.xm \
     $(SRC_DIR)/ApolloDeviceReservedRegions.m \
     $(SRC_DIR)/ApolloFeedSplit.xm \
+    $(SRC_DIR)/ApolloDuoRail.m \
+    $(SRC_DIR)/ApolloDuoRail.xm \
     $(SRC_DIR)/ApolloMediaHinge.xm \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
