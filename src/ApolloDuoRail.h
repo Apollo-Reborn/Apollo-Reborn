@@ -10,9 +10,8 @@ __BEGIN_DECLS
 /// should stay hidden. Compact / ordinary iPhone keep the tab bar.
 BOOL ApolloDuoRailIsActive(void);
 
-/// YES while My Subreddits is showing the list as the leading pane so the
-/// user can pick a destination. A sub tap dismisses the directory (list
-/// retained off-stack); Subs restores list|feed.
+/// YES while My Subreddits is the selected rail item (stock RedditList
+/// root). Compact / cover never set this — the rail is hidden there.
 BOOL ApolloDuoRailIsPickingSubreddits(void);
 void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 

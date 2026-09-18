@@ -19,8 +19,8 @@
 // is inner-only (Compact / cover-sized canvases never install it).
 // Compact and ordinary Plus landscape keep the tab bar.
 //
-// First show defaults to Subs: list|feed so the right pane is a live feed,
-// not a blank half. Navigation reuses Apollo's own tab selectors and
+// First show defaults to Subs: stock popToRoot onto RedditList (no
+// blank tiled half). Navigation reuses Apollo's own tab selectors and
 // RedditList row 0 (Home), plus apollo://reddit.com/r/popular|all.
 
 typedef NS_ENUM(NSInteger, ApolloDuoRailItem) {
@@ -67,8 +67,8 @@ static UINavigationController *ApolloDuoRailNavFromController(UIViewController *
 }
 
 // Posts tab without goToHomeTab — that selector pops to RedditList / opens
-// Home and would wipe a restored list|feed (or race a feed push that
-// re-dismisses the directory while picking is YES).
+// Home and would wipe a restored directory (or race a feed push that
+// re-dismisses RedditList while picking is YES).
 static UINavigationController *ApolloDuoRailFindPostsNav(UITabBarController *tabs, BOOL selectTab) {
     if (!tabs) return nil;
     Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
@@ -384,55 +384,28 @@ static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) 
     }
 }
 
-static BOOL ApolloDuoRailNavHasFeed(UINavigationController *nav) {
-    if (!nav) return NO;
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
-    Class liteClass = objc_getClass("_TtC6Apollo23LitePostsViewController");
-    Class savedClass = objc_getClass("_TtC6Apollo32SavedPostsCommentsViewController");
-    Class searchClass = objc_getClass("_TtC6Apollo32PostsSearchResultsViewController");
-    for (UIViewController *controller in nav.viewControllers) {
-        if ((postsClass && [controller isKindOfClass:postsClass])
-            || (liteClass && [controller isKindOfClass:liteClass])
-            || (savedClass && [controller isKindOfClass:savedClass])
-            || (searchClass && [controller isKindOfClass:searchClass])) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-// Launch / first rail show: Subs selected, directory left, live feed right.
+// Launch / first rail show: Subs selected, stock RedditList (no tile).
 static void ApolloDuoRailOpenDefaultDirectory(UITabBarController *tabs) {
     UINavigationController *nav = ApolloDuoRailFindPostsNav(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailSelectedKey,
                              @(ApolloDuoRailItemSubreddits), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloDuoRailView *rail = objc_getAssociatedObject(tabs, &kApolloDuoRailViewKey);
     [rail apollo_setSelectedItem:ApolloDuoRailItemSubreddits];
-    if (nav && !ApolloDuoRailNavHasFeed(nav)) {
-        ApolloDuoRailOpenListRow(nav, 0);
-    }
     ApolloFeedSplitShowSubredditPicker(nav);
-    ApolloLog(@"[DuoRail] default Subs list|feed");
+    ApolloLog(@"[DuoRail] default Subs stock directory");
 }
 
 static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
-    // Posts / FeedSplit columns stop at extraRight = rail width. Do not also
-    // push additionalSafeAreaInsets on the tab controller — Texture ignored
-    // that inset and UIKit tables would double-count once the column frame
-    // already ends before the rail.
+    // Stock nav: inset everyone from the trailing rail. No FeedSplit
+    // column frames, so this cannot double-count a pinned origin.
+    CGFloat wantRight = show ? (CGFloat)ApolloDuoRailWidth : 0.0;
     UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
-    if (fabs(tabInsets.left) > 0.5 || fabs(tabInsets.right) > 0.5) {
-        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, 0.0);
+    if (fabs(tabInsets.left) > 0.5 || fabs(tabInsets.right - wantRight) > 0.5) {
+        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, wantRight);
     }
-
-    UIViewController *posts = tabs.viewControllers.firstObject;
     for (UIViewController *child in tabs.viewControllers) {
         if (!child) continue;
         UIEdgeInsets current = child.additionalSafeAreaInsets;
-        CGFloat wantRight = 0.0;
-        if (show && child != posts) {
-            wantRight = (CGFloat)ApolloDuoRailWidth;
-        }
         if (fabs(current.left) < 0.5 && fabs(current.right - wantRight) < 0.5) continue;
         child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, 0.0, current.bottom, wantRight);
     }
@@ -491,10 +464,6 @@ void ApolloDuoRailSync(void) {
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;
             ApolloDuoRailOpenDefaultDirectory(tabs);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                ApolloFeedSplitShowSubredditPicker(ApolloDuoRailFindPostsNav(tabs, YES));
-            });
         }
     }
 }

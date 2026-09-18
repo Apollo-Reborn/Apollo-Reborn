@@ -7,11 +7,9 @@
 extern "C" {
 #endif
 
-// Size-class two-pane layout for Regular-width iPhone (Plus/Max
-// landscape, Duo inner). Primary reading pair is feed | comments
-// (concept mock). A lone feed/list on a Duo-wide canvas stays in the
-// leading half — never a full-bleed column across the hinge.
-// list | feed is the My Subreddits directory (restored by Subs).
+// Historical two-pane *math* for host tests. Runtime tiling is disabled
+// (`ApolloFeedSplitEnabled` is NO): open Duo uses the slim rail + stock
+// navigation. Do not call these frames from viewDidLayout to pin columns.
 // C-only so host tests can compile this header without UIKit.
 
 enum {
@@ -400,21 +398,16 @@ static inline ApolloFeedSplitFrames ApolloFeedSplitFramesMake(double containerWi
 #import <UIKit/UIKit.h>
 
 __BEGIN_DECLS
-/// Instant list|feed (or list-only leading) for the Subs rail. No UIKit
-/// push animation and a single FeedSplit apply — avoids hinge width thrash.
+/// Runtime column tiling. Always NO after the architecture reset.
+BOOL ApolloFeedSplitEnabled(void);
+
+/// Subs rail: stock popToRoot onto RedditList. Does not tile list|feed.
 void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav);
 
-/// Find the posts ApolloNavigationController and Apply the current pair.
-/// Used after MediaViewer dismiss / topic open so the two-pane split returns.
+/// No-ops. Kept so older media/rail call sites compile.
 void ApolloFeedSplitReapplyVisible(void);
-
-/// Keep ModeTiled for a short window even if size-class / DuoRail flickers
-/// (post-open and media-dismiss collapse). Honored by CurrentMode / Apply /
-/// nav viewDidLayoutSubviews. Does not install a UIView frame-lock.
 void ApolloFeedSplitForceTiledForSeconds(NSTimeInterval seconds);
 BOOL ApolloFeedSplitForceTiledActive(void);
-
-/// Apply now plus delayed passes (0 / 0.05 / 0.15 / 0.35 [/ extra]).
 void ApolloFeedSplitReapplySoon(void);
 __END_DECLS
 #endif
