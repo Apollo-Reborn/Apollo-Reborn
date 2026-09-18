@@ -23,7 +23,7 @@ letterbox: the *guest* Apollo binary still advertised SDK 19.0 / 26.
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is covered for **media/PiP** in step 4; floating-tab bubbles still rely on chrome insets only. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
 | Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (chrome insets max'd with edge-flush reserved regions). A center hinge is a gap, not fake left+right insets: the gallery transport sits on the larger remaining side; MediaPage close + PiP buttons shift off the rect. Gallery columns go even when a (possibly inactive) division exists. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Runtime `reservedRegions` spelling/kind values stay probed (0..2). A hinge UIKit never reports still cannot be guessed from `_exclusionArea`. Step 5 did not replace the probes — see below. |
-| Feed / posts | **Primary open-Duo chrome is list \| feed** (`RedditListViewController` leading, current feed trailing). Selecting a subreddit updates the right pane; Regular stays two-column. **feed \| comments** only after opening a post. Compact stays single-column. Do **not** wrap tabs in `UISplitViewController`. | A dedicated feed\|post+comments **browsing** mode (the concept mock) is an optional future item — not built this pass. Cover display has no companion UI. |
+| Feed / posts | **Primary open-Duo chrome is the concept mock + rail:** current **feed** on the left, selected **post + comments** on the right. Slim rail: Home, Popular, All, **My Subreddits** (not Saved), Profile, Settings. My Subreddits puts the subscriptions list in the left pane to pick a destination; choosing a subreddit returns that feed to the left pane. Compact stays the stock tab bar + single column. Do **not** wrap tabs in `UISplitViewController`. | Previous list\|feed-as-default ask is superseded. Cover display has no companion UI. Inbox is not a rail item. |
 | Toolchain | **Step 5:** device `make package` pins `iphone:clang:27.1:14.0` when `iPhoneOS27.1.sdk` exists; otherwise `26.0:14.0`. Sim: unchanged `latest` / 15.0. **Screen-fill:** `--liquid-glass` now sets the *guest* `LC_BUILD_VERSION` sdk to **27.1** (still min 15.0) so Duo grants a full canvas; `IsLiquidGlass()` remains major >= 19. | A 27.1 Simulator runtime is not a device SDK. Cached `.sim/glass-base.ipa` at 19.0 must be regenerated. Classic (no glass) guests stay letterboxed. CI (Xcode 26.0.1) stays on the tweak 26.0 fallback. |
 
 ## Phased work
@@ -65,9 +65,9 @@ or an SDK bump.
   split columns defensively; it now also treats a nav child whose view is
   still in the window as visible (the tiled feed).
 - Regular + usable width ≥ 652pt (`320+12+320`):
-  - list only / feed only → centered, capped at 700pt
-  - list + current feed → tiled **list | feed** (primary open-Duo chrome)
-  - feed + comments → tiled **feed | comments** (post open; wins over list|feed)
+  - list only / feed only → centered (full width on canvases ≥ 800pt)
+  - feed + comments → tiled **feed | comments** (primary mock reading pair)
+  - list + feed → tiled **list | feed** only while My Subreddits is picking
 - Compact, unspecified, or Regular-but-narrow → stacked (UIKit's existing
   push). Swipe-up media-pane comments never tile.
 - Column frames use `ApolloDeviceChromeExtra` (hinge-sized layout-margin
@@ -159,13 +159,18 @@ Runtime belt (`src/ApolloDeviceDisplay.{h,m,xm}`):
 - Do **not** wrap the app in `UISplitViewController`. FeedSplit tiles
   inside `ApolloNavigationController` once Regular width actually
   occurs on the filled canvas.
-- **Primary open-Duo browsing chrome:** `RedditListViewController` |
-  current `PostsViewController` (**list | feed**). Selecting a
-  subreddit updates the trailing feed; Regular stays two-column.
-- **After a post is open:** existing FeedSplit **feed | comments**
-  (already implemented; no extra mock mode this pass).
-- **Optional future:** a dedicated feed | post+comments browsing
-  mode (the concept mock) — not built beyond the post-open tile.
+- **Primary open-Duo chrome (concept mock + rail):** current
+  destination **feed** on the left (Home / Popular / All / selected
+  subreddit; sort pills stay Apollo’s Hot/New/Top/Rising), selected
+  **post + comments** on the right. Wide canvases use a hinge-aware
+  ~50/50 split. The previous “list | feed as the only primary chrome”
+  ask is superseded.
+- Slim rail, top → bottom: Home, Popular, All, **My Subreddits**,
+  then Profile and Settings at the bottom. My Subreddits overlays the
+  subscriptions list in the left pane; picking a subreddit puts that
+  feed back on the left (comments stay available on the right after a
+  post is opened). Compact and ordinary Plus landscape keep the stock
+  tab bar.
 
 Cover / outer display: no second Apollo UI. The cover is left alone
 aside from not stealing the key window or overlay. Dual `simctl io`
@@ -180,13 +185,14 @@ SIM_RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-27-1 \
 scripts/run-in-sim.sh --glass --fresh-app --logs
 ```
 
-Expect `[DeviceDisplay] canvas fill hook installed`. The UI must span
-the **inner** display (not a phone column). Regular browsing should
-show **subreddits left + current feed right**
-(`[FeedSplit] mode=tiled pair=list-feed`). Tapping another subreddit
-updates the right pane only. Opening a post then tiles feed | comments
-(`pair=feed-comments`). `vtool -show-build .sim/Payload/Apollo.app/Apollo`
-should report `sdk 27.1`.
+Expect `[DeviceDisplay] canvas fill hook installed` and `[DuoRail]
+shown`. The UI must span the **inner** display (not a phone column)
+with the slim rail on the leading edge. Home / Popular / All should
+put that **feed in the left pane**. Opening a post tiles **feed |
+comments** (`[FeedSplit] mode=tiled pair=feed-comments`). My
+Subreddits shows the list leading (`pair=list-feed` while picking);
+choosing a subreddit returns the feed to the left pane.
+`vtool -show-build .sim/Payload/Apollo.app/Apollo` should report `sdk 27.1`.
 
 ## Testing
 
@@ -226,12 +232,12 @@ Confirm feed size-class layout (step 3 + open Duo):
 
 - Compact portrait (any phone): stock tab bar; opening a subreddit or
   post still covers the previous screen. No rail.
-- Regular / Duo inner open: **list | feed** is the primary chrome
-  (`[FeedSplit] mode=tiled pair=list-feed`). Tapping another
-  subreddit (or Home / Popular / All) updates the trailing feed.
-- Opening a post then tiles feed | comments
-  (`[FeedSplit] mode=tiled pair=feed-comments`). A center reserved
-  hinge should sit in the gutter, not under a title or comment.
+- Regular / Duo inner open: slim rail + **feed | comments** after a
+  post (`[FeedSplit] mode=tiled pair=feed-comments`). Home / Popular /
+  All switch the left-pane feed. My Subreddits is `pair=list-feed`
+  only while picking.
+- A center reserved hinge should sit in the gutter, not under a
+  title or comment.
 - List-only or feed-only on the stack (no pair): that screen is a
   centered column (`mode=centered`), not a 900pt+ stretched list.
 - Fold / rotate Regular → Compact: comments go full width; feed leaves.
@@ -324,5 +330,5 @@ the sim stubs.
   while the rail is active.
 - Sort pills (Hot/New/Top/Rising) stay Apollo's existing feed chrome —
   the rail does not reimplement them.
-- Optional future: dedicated feed | post+comments browsing mode
-  (concept mock). This pass only has the existing post-open tile.
+- list | feed is no longer the default open-Duo chrome; it only
+  appears while My Subreddits is picking a destination.

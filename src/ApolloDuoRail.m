@@ -39,6 +39,17 @@ static const char *kApolloDuoRailSymbols[] = {
 static char kApolloDuoRailViewKey;
 static char kApolloDuoRailActiveKey;
 static char kApolloDuoRailSelectedKey;
+static BOOL sApolloDuoRailPickingSubreddits = NO;
+
+BOOL ApolloDuoRailIsPickingSubreddits(void) {
+    return sApolloDuoRailPickingSubreddits;
+}
+
+void ApolloDuoRailSetPickingSubreddits(BOOL picking) {
+    if (sApolloDuoRailPickingSubreddits == picking) return;
+    sApolloDuoRailPickingSubreddits = picking;
+    ApolloLog(@"[DuoRail] My Subreddits picking=%d", picking ? 1 : 0);
+}
 
 static UINavigationController *ApolloDuoRailPostsNav(UITabBarController *tabs) {
     if (!tabs) return nil;
@@ -97,12 +108,14 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     objc_setAssociatedObject(tabs, &kApolloDuoRailSelectedKey, @(item), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (item == ApolloDuoRailItemProfile) {
+        ApolloDuoRailSetPickingSubreddits(NO);
         if ([tabs respondsToSelector:@selector(goToProfileTab)]) {
             ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToProfileTab));
         }
         return;
     }
     if (item == ApolloDuoRailItemSettings) {
+        ApolloDuoRailSetPickingSubreddits(NO);
         if ([tabs respondsToSelector:@selector(goToSettingsTab)]) {
             ((void (*)(id, SEL))objc_msgSend)(tabs, @selector(goToSettingsTab));
         }
@@ -111,10 +124,30 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
     UINavigationController *nav = ApolloDuoRailPostsNav(tabs);
     if (item == ApolloDuoRailItemSubreddits) {
-        [nav popToRootViewControllerAnimated:YES];
+        ApolloDuoRailSetPickingSubreddits(YES);
+        if (nav.viewControllers.count > 2) {
+            UIViewController *root = nav.viewControllers.firstObject;
+            UIViewController *feed = nil;
+            for (UIViewController *controller in nav.viewControllers) {
+                if (controller == root) continue;
+                const char *name = class_getName(controller.class);
+                if (name && (strstr(name, "PostsViewController")
+                             || strstr(name, "LitePostsViewController")
+                             || strstr(name, "SavedPostsCommentsViewController"))) {
+                    feed = controller;
+                    break;
+                }
+            }
+            if (root && feed) {
+                [nav setViewControllers:@[ root, feed ] animated:YES];
+            } else {
+                [nav popToRootViewControllerAnimated:YES];
+            }
+        }
         ApolloLog(@"[DuoRail] My Subreddits (list leading)");
         return;
     }
+    ApolloDuoRailSetPickingSubreddits(NO);
     if (item == ApolloDuoRailItemHome) {
         if (ApolloDuoRailOpenListRow(nav, 0)) {
             ApolloLog(@"[DuoRail] opened Home feed");

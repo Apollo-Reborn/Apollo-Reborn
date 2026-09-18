@@ -4,11 +4,11 @@
 // Regular-width iPhone, e.g. Plus/Max landscape). Compact stays a single
 // column.
 //
-// Open Duo / Regular **primary browsing chrome is list | feed**
-// (RedditListViewController leading, current PostsViewController trailing).
-// Selecting another subreddit replaces the feed column. **feed | comments**
-// only after a post is opened (wins over list|feed). A dedicated mock-style
-// feed|post+comments browsing mode is optional/future — not built here.
+// Open Duo / Regular **primary chrome is the concept mock**: current feed
+// on the left, selected post + comments on the right (feed | comments).
+// The slim rail switches Home / Popular / All / My Subreddits / Profile /
+// Settings. **list | feed** tiles only while My Subreddits is picking a
+// destination; choosing a subreddit puts that feed back in the left pane.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -28,6 +28,7 @@
 #import "ApolloCommon.h"
 #import "ApolloDeviceChromeInsets.h"
 #import "ApolloDeviceReservedRegions.h"
+#import "ApolloDuoRail.h"
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloState.h"
 
@@ -142,7 +143,9 @@ static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *na
         if (detailOut) *detailOut = detail;
         return ApolloFeedSplitPairFeedComments;
     }
-    if (ApolloFeedSplitIsFeedController(detail) && ApolloFeedSplitIsListController(previous)) {
+    if (ApolloDuoRailIsPickingSubreddits()
+        && ApolloFeedSplitIsFeedController(detail)
+        && ApolloFeedSplitIsListController(previous)) {
         if (primaryOut) *primaryOut = previous;
         if (detailOut) *detailOut = detail;
         return ApolloFeedSplitPairListFeed;
@@ -415,6 +418,9 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
+    if (ApolloDuoRailIsPickingSubreddits() && ApolloFeedSplitIsFeedController(nav.topViewController)) {
+        ApolloDuoRailSetPickingSubreddits(NO);
+    }
     ApolloFeedSplitScheduleApply(nav);
 }
 
@@ -454,5 +460,5 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         return;
     }
     %init;
-    ApolloLog(@"[FeedSplit] hook installed (Regular list|feed primary; feed|comments after a post; Compact stacks)");
+    ApolloLog(@"[FeedSplit] hook installed (Regular feed|comments; list|feed while My Subreddits; Compact stacks)");
 }
