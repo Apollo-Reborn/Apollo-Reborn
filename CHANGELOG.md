@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Stop treating every newer iPhone as a hardcoded iPhone 14 Pro for Pixel Pals. Unrecognized models (including future foldables) remap as Dynamic Island unless they are a known notch-only phone, and the island overlay follows the current window scene's cutout instead of a 59pt 14 Pro safe area
 - Keep **Floating Post Tabs** and Liquid Glass nav titles on the active window scene's safe area (and any hinge-sized layout-margin extra) instead of `UIScreen.mainScreen` bounds, so a fold/resize does not park bubbles or side chrome in the wrong panel
 - On Regular-width iPhone (Plus/Max landscape, Duo inner), keep the feed beside comments instead of stretching a single column; Compact stays stacked. Opening another post from the still-visible feed replaces the comments column rather than pushing a third screen
+- Keep gallery chrome, MediaViewer close/PiP buttons, and the in-app PiP card out of an iOS 27.1 reserved region (fold / under-display camera) when that API exists; older runtimes keep using safe-area + hinge-sized layout-margin extras. PiP no longer sizes its last-resort window from a raw `UIScreen.mainScreen` read
 
 ## [v3.7.1] - 2026-09-13
 

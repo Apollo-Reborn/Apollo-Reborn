@@ -5,6 +5,8 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
+#import "ApolloDeviceReservedRegions.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -1186,25 +1188,22 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // =============================================================================
 
 - (void)ensureWindowForAnchorView:(UIView *)anchorView {
-    UIWindowScene *scene = anchorView.window.windowScene;
-    if (!scene) {
-        for (UIScene *candidate in [UIApplication sharedApplication].connectedScenes) {
-            if ([candidate isKindOfClass:[UIWindowScene class]]
-                && candidate.activationState == UISceneActivationStateForegroundActive) {
-                scene = (UIWindowScene *)candidate;
-                break;
-            }
-        }
-    }
+    UIWindowScene *scene = anchorView.window.windowScene ?: ApolloDevicePreferredWindowScene();
 
     if (self.window && (!scene || self.window.windowScene == scene)) {
         self.window.hidden = NO;
         return;
     }
 
-    ApolloPiPWindow *window = scene
-        ? [[ApolloPiPWindow alloc] initWithWindowScene:scene]
-        : [[ApolloPiPWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    ApolloPiPWindow *window = nil;
+    if (scene) {
+        window = [[ApolloPiPWindow alloc] initWithWindowScene:scene];
+    } else {
+        // Last resort only: no connected scene yet. Prefer the geometry
+        // helper's screen (still mainScreen if nothing else exists) so this
+        // is not a second, ad-hoc mainScreen reader.
+        window = [[ApolloPiPWindow alloc] initWithFrame:ApolloDevicePreferredScreen().bounds];
+    }
     window.windowLevel = UIWindowLevelNormal + 50; // above app UI, below alerts/keyboard
     window.backgroundColor = [UIColor clearColor];
 
@@ -1456,7 +1455,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 
 - (CGPoint)centerForCorner:(NSInteger)corner size:(CGSize)size {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceMediaInsetsForView(self.window);
     CGFloat leftX = insets.left + kPiPEdgeMargin + size.width / 2;
     CGFloat rightX = bounds.size.width - insets.right - kPiPEdgeMargin - size.width / 2;
     CGFloat topY = insets.top + kPiPEdgeMargin + size.height / 2;
@@ -1484,14 +1483,18 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // the safe area + margin.
 - (CGPoint)clampedCenter:(CGPoint)center forSize:(CGSize)size {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceMediaInsetsForView(self.window);
     CGFloat minX = insets.left + kPiPEdgeMargin + size.width / 2;
     CGFloat maxX = bounds.size.width - insets.right - kPiPEdgeMargin - size.width / 2;
     CGFloat minY = insets.top + kPiPEdgeMargin + size.height / 2;
     CGFloat maxY = bounds.size.height - insets.bottom - kPiPEdgeMargin - size.height / 2;
     if (maxX < minX) maxX = minX;
     if (maxY < minY) maxY = minY;
-    return CGPointMake(MAX(minX, MIN(maxX, center.x)), MAX(minY, MIN(maxY, center.y)));
+    CGPoint clamped = CGPointMake(MAX(minX, MIN(maxX, center.x)), MAX(minY, MIN(maxY, center.y)));
+    CGRect frame = [self frameForCenter:clamped size:size];
+    CGRect shifted = ApolloDeviceShiftRectOffReservedInView(self.window, frame);
+    if (CGRectEqualToRect(frame, shifted)) return clamped;
+    return CGPointMake(CGRectGetMidX(shifted), CGRectGetMidY(shifted));
 }
 
 // The resting position persists as a NORMALIZED center (fraction of window
@@ -1608,7 +1611,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // (clamped). Only kPiPStashVisibleWidth of the card stays on screen.
 - (CGRect)stashFrameForSide:(NSInteger)side size:(CGSize)size centerY:(CGFloat)centerY {
     CGRect bounds = self.window.bounds;
-    UIEdgeInsets insets = self.window.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceMediaInsetsForView(self.window);
     CGFloat y = centerY - size.height / 2;
     CGFloat minY = insets.top + kPiPEdgeMargin;
     CGFloat maxY = bounds.size.height - insets.bottom - kPiPEdgeMargin - size.height;
@@ -3432,11 +3435,13 @@ static void PiPRefreshFullscreenPiPButton(id pageVC) {
     if (pipButton.superview != closeButton.superview) {
         [closeButton.superview addSubview:pipButton];
     }
+    ApolloDeviceAvoidReservedRegionsForView(closeButton);
     CGRect closeFrame = closeButton.frame;
     CGFloat width = closeButton.superview.bounds.size.width;
     pipButton.frame = CGRectMake(width - closeFrame.origin.x - closeFrame.size.width,
                                  closeFrame.origin.y,
                                  closeFrame.size.width, closeFrame.size.height);
+    ApolloDeviceAvoidReservedRegionsForView(pipButton);
     pipButton.alpha = closeButton.alpha;
     // Only when the video can't be autoplaying inline (setting off, a
     // spoiler/NSFW post — those never autoplay — or a URL-opened viewer,

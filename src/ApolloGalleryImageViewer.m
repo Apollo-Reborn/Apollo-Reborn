@@ -4,6 +4,7 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceReservedRegions.h"
 #import "ApolloGalleryVideoExport.h"
 
 #import <Photos/Photos.h>
@@ -1098,8 +1099,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 
 - (void)apollo_layoutChrome {
     CGRect bounds = self.view.bounds;
-    UIEdgeInsets safe = UIEdgeInsetsZero;
-    if (@available(iOS 11.0, *)) safe = self.view.safeAreaInsets;
+    UIEdgeInsets safe = ApolloDeviceMediaInsetsForView(self.view);
 
     CGFloat top = safe.top + 12.0;
     CGFloat side = MAX(16.0, safe.left + 16.0);
@@ -1127,8 +1127,18 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     // Two different widths on purpose. The info panel keeps a readable line
     // length, so it stays capped; the transport is a scrubber and takes the
     // whole width it can get — capping it too is what left the controls
-    // huddled in the left half of a landscape screen.
+    // huddled in the left half of a landscape screen. A vertical reserved
+    // region (hinge) can still steal the middle of that span, so the bar
+    // sits on the larger remaining side when one exists.
     CGFloat availableWidth = bounds.size.width - side - rightSide;
+    CGFloat barX = side;
+    CGFloat barWidth = availableWidth;
+    ApolloDevicePlaceHorizontalBarInView(self.view, side, rightSide, &barX, &barWidth);
+    if (barWidth > 0.0) {
+        availableWidth = barWidth;
+        side = barX;
+        rightSide = bounds.size.width - barX - barWidth;
+    }
     CGFloat panelWidth = MIN(availableWidth, 460.0);
     CGFloat videoBarWidth = availableWidth;
     CGFloat textWidth = panelWidth - 24.0;
@@ -1199,6 +1209,11 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     self.toastPill.frame = CGRectMake((bounds.size.width - 220.0) / 2.0,
                                        toastAnchor - 46.0,
                                        220.0, 32.0);
+    ApolloDeviceAvoidReservedRegionsForView(self.statusPill);
+    ApolloDeviceAvoidReservedRegionsForView(self.toastPill);
+    if (!self.rotateOfferHost.hidden) {
+        ApolloDeviceAvoidReservedRegionsForView(self.rotateOfferHost);
+    }
 }
 
 #pragma mark Video transport
