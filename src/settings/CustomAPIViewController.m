@@ -419,6 +419,9 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController ()
 @property (nonatomic) BOOL resolvingRestoreFolder;
+// Hub only: whether the Setup section last rendered its "add a Reddit key"
+// footer, so viewWillAppear reloads that section only when the answer flips.
+@property (nonatomic) BOOL setupFooterShowsKeyNudge;
 @end
 
 @implementation CustomAPIViewController
@@ -878,6 +881,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     self.title = [self apollo_screenTitle];
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     if (![self apollo_isHub]) return;
+    // What the first table load renders; viewWillAppear compares against it.
+    self.setupFooterShowsKeyNudge = sRedditClientId.length == 0;
 
     [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
         (void)info;
@@ -916,9 +921,21 @@ typedef NS_ENUM(NSInteger, Tag) {
     // The Setup section footer (onboarding nudge) collapses once a Reddit key
     // exists, which may have just been entered on the pushed API Keys screen.
     // Section 0 is Setup on the hub; reloading it re-evaluates the footer.
-    if ([self apollo_isHub] && self.tableView.numberOfSections > 0) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                      withRowAnimation:UITableViewRowAnimationNone];
+    // Only when the nudge actually flips, though: a section reload re-measures
+    // that section's header and footer, and this runs inside the pop transition
+    // on every return to the hub, so an unconditional reload left a settle for
+    // the transition to animate (the list came back a few points high and slid
+    // down into place). Same suppression as -reloadRowWithID: for the rare
+    // reload that is still needed.
+    BOOL showsKeyNudge = sRedditClientId.length == 0;
+    if ([self apollo_isHub] && self.tableView.numberOfSections > 0 &&
+        showsKeyNudge != self.setupFooterShowsKeyNudge) {
+        self.setupFooterShowsKeyNudge = showsKeyNudge;
+        [UIView performWithoutAnimation:^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                          withRowAnimation:UITableViewRowAnimationNone];
+            [self.tableView layoutIfNeeded];
+        }];
     }
 }
 

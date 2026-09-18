@@ -177,6 +177,12 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     // A footer-height re-check is already queued for the next runloop turn
     // (see -tableView:willDisplayFooterView:forSection:).
     BOOL _footerHeightCheckPending;
+    // Footer states ("width|height|fitted") the re-measure pass has already
+    // been run for, per section model. A state is tried once: see
+    // -apollo_sf_remeasureMismatchedFooters for why that bound matters.
+    NSMapTable<ApolloSettingsSection *, NSMutableSet<NSString *> *> *_footerRemeasureAttempts;
+    // A re-check is parked on the running navigation transition's completion.
+    BOOL _footerHeightCheckDeferred;
 }
 
 - (NSArray<ApolloSettingsSection *> *)buildForm {
@@ -194,6 +200,7 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
 }
 
 - (void)rebuildForm {
+    [_footerRemeasureAttempts removeAllObjects];
     _sections = [self buildForm] ?: @[];
     _visibleSections = [self computeVisibleSections];
     _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
@@ -293,6 +300,9 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     _visibleRows = newRowsBySection;
     if (deletes.count == 0 && inserts.count == 0 &&
         deletedSections.count == 0 && insertedSections.count == 0) return;
+    // A section that comes back starts from UIKit's footer estimate again, so
+    // it is owed a fresh re-measure even if its state was tried before it hid.
+    if (insertedSections.count > 0) [_footerRemeasureAttempts removeAllObjects];
     [self.tableView beginUpdates];
     if (deletedSections.count > 0) {
         [self.tableView deleteSections:deletedSections withRowAnimation:UITableViewRowAnimationFade];
@@ -323,6 +333,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // may have changed, use -rebuildForm or follow with -visibilityDidChange.
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
+    [_footerRemeasureAttempts removeAllObjects];
     _sections = [self buildForm] ?: @[];
     _visibleSections = [self computeVisibleSections];
     _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
@@ -554,6 +565,10 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    [self apollo_sf_scheduleFooterHeightCheck];
+}
+
+- (void)apollo_sf_scheduleFooterHeightCheck {
     if (_footerHeightCheckPending) return;
     _footerHeightCheckPending = YES;
     __weak typeof(self) weakSelf = self;
@@ -565,22 +580,87 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     });
 }
 
+// The pass is bounded: each footer state (table width, current height, fitted
+// height) is tried ONCE per section model. When the table's own measurement and
+// the view's sizeThatFits: keep disagreeing, the pass cannot settle it, and
+// endUpdates puts the footers on screen again, which calls willDisplayFooterView:
+// again. Unbounded, that re-ran the pass on every runloop turn for as long as
+// such a footer was visible (2,293 passes in ~10s in a device log), and an
+// updates pass per frame stalls a scroll — worst when scrolling UP, where the
+// footers come in from the top. Anything that re-fonts a footer label after the
+// table measured it produces exactly that disagreement, so this cannot assume
+// one pass converges. A few distinct states per section are allowed (a label
+// whose font flips gives two or three), then the footer is left alone until
+// the form is rebuilt.
+static const NSUInteger kApolloSFMaxFooterRemeasureStates = 4;
+static NSString *const kApolloSFFooterGaveUpMarker = @"gave-up-logged";
+
 - (void)apollo_sf_remeasureMismatchedFooters {
     UITableView *tableView = self.tableView;
     if (!tableView.window) return;
-    NSInteger sections = tableView.numberOfSections;
+
+    // Not inside a navigation transition: viewWillAppear of a pop can put a
+    // footer back on its estimate (a section reload), and an updates pass run
+    // while the transition's animations are open gets its settle captured, so
+    // the rows visibly slide into place as the screen comes back. Look again
+    // once the transition is over.
+    // Footers keep appearing while the transition runs, so park one re-check,
+    // not one per appearance. The completion also fires for a cancelled
+    // interactive pop; the screen that stays then simply gets its check late.
+    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+    if (coordinator) {
+        if (_footerHeightCheckDeferred) return;
+        __weak typeof(self) weakSelf = self;
+        BOOL queued = [coordinator animateAlongsideTransition:nil
+                                                   completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_footerHeightCheckDeferred = NO;
+            [strongSelf apollo_sf_scheduleFooterHeightCheck];
+        }];
+        if (queued) {
+            _footerHeightCheckDeferred = YES;
+            return;
+        }
+    }
+
+    CGFloat width = CGRectGetWidth(tableView.bounds);
+    NSInteger sections = MIN(tableView.numberOfSections, (NSInteger)_visibleSections.count);
+    BOOL needsPass = NO;
     for (NSInteger section = 0; section < sections; section++) {
         UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
         CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:footer inTableView:tableView];
-        if (fitted <= 0.0 || fabs(fitted - CGRectGetHeight(footer.bounds)) < 0.5) continue;
+        CGFloat height = CGRectGetHeight(footer.bounds);
+        if (fitted <= 0.0 || fabs(fitted - height) < 0.5) continue;
+
+        ApolloSettingsSection *model = _visibleSections[(NSUInteger)section];
+        if (!_footerRemeasureAttempts) _footerRemeasureAttempts = [NSMapTable strongToStrongObjectsMapTable];
+        NSMutableSet<NSString *> *tried = [_footerRemeasureAttempts objectForKey:model];
+        if (!tried) {
+            tried = [NSMutableSet set];
+            [_footerRemeasureAttempts setObject:tried forKey:model];
+        }
+        NSString *state = [NSString stringWithFormat:@"%.0f|%.1f|%.1f", width, height, fitted];
+        if ([tried containsObject:state] || tried.count >= kApolloSFMaxFooterRemeasureStates) {
+            if (![tried containsObject:kApolloSFFooterGaveUpMarker]) {
+                [tried addObject:kApolloSFFooterGaveUpMarker];
+                ApolloLog(@"[SettingsForm] footer %ld is still %.1fpt tall where its view fits %.1fpt after a re-measure — leaving it",
+                          (long)section, height, fitted);
+            }
+            continue;
+        }
+        // Every visible footer is re-measured by the one pass below, so each
+        // mismatched one spends its try now.
+        [tried addObject:state];
+        needsPass = YES;
         ApolloLog(@"[SettingsForm] footer %ld is %.1fpt tall but its view fits %.1fpt — re-measuring visible footers",
-                  (long)section, CGRectGetHeight(footer.bounds), fitted);
-        [UIView performWithoutAnimation:^{
-            [tableView beginUpdates];
-            [tableView endUpdates];
-        }];
-        return;
+                  (long)section, height, fitted);
     }
+    if (!needsPass) return;
+    [UIView performWithoutAnimation:^{
+        [tableView beginUpdates];
+        [tableView endUpdates];
+    }];
 }
 
 @end
