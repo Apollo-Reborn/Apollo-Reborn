@@ -9,7 +9,7 @@ extern "C" {
 // landscape, Duo inner). Primary reading pair is feed | comments
 // (concept mock). A lone feed/list on a Duo-wide canvas stays in the
 // leading half — never a full-bleed column across the hinge.
-// list | feed is the My Subreddits picker.
+// list | feed is the My Subreddits directory (restored by Subs).
 // C-only so host tests can compile this header without UIKit.
 
 enum {

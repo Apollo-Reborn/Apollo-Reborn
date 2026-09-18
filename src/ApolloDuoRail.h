@@ -11,7 +11,8 @@ __BEGIN_DECLS
 BOOL ApolloDuoRailIsActive(void);
 
 /// YES while My Subreddits is showing the list as the leading pane so the
-/// user can pick a destination. FeedSplit tiles list|feed only then.
+/// user can pick a destination. A sub tap dismisses the directory (list
+/// retained off-stack); Subs restores list|feed.
 BOOL ApolloDuoRailIsPickingSubreddits(void);
 void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 

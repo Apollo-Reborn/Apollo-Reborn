@@ -8,10 +8,10 @@
 // on the left, selected post + comments on the right (feed | comments).
 // A lone feed stays in the leading half (never full-bleed across the hinge).
 // The slim rail switches Home / Popular / All / My Subreddits / Profile /
-// Settings. **list | feed** is only while My Subreddits is picking (directory
-// left, current feed right). Tapping a subreddit dismisses the directory:
-// that sub's posts sit in the leading half; the right pane stays empty
-// until a post opens as **feed | comments**.
+// Settings. **list | feed** is the directory (RedditList left, feed right).
+// Tapping a subreddit dismisses the directory from the stack but retains
+// the list VC so Subs can restore it. That sub's posts sit leading until
+// a topic opens as **feed | comments** (or any reading-detail pane).
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -49,6 +49,7 @@ static char kApolloFeedSplitSeparatorKey;
 static char kApolloFeedSplitMutatingStackKey;
 static char kApolloFeedSplitApplyingKey;
 static char kApolloFeedSplitLastModeKey;
+static char kApolloFeedSplitSavedListKey;
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
     Class cls = name ? objc_getClass(name) : Nil;
@@ -62,19 +63,27 @@ static BOOL ApolloFeedSplitIsFeedController(UIViewController *controller) {
         || ApolloFeedSplitIsClass(controller, "_TtC6Apollo32PostsSearchResultsViewController");
 }
 
-static BOOL ApolloFeedSplitIsCommentsController(UIViewController *controller) {
-    if (!controller) return NO;
-    if (ApolloSwipeCommentsIsPaneCommentsController(controller)) return NO;
-    // Saved posts is a feed whose class name also contains CommentsViewController.
-    if (ApolloFeedSplitIsFeedController(controller)) return NO;
-    Class comments = objc_getClass("_TtC6Apollo22CommentsViewController");
-    if (comments && [controller isKindOfClass:comments]) return YES;
-    const char *name = class_getName(controller.class);
-    return name && strstr(name, "CommentsViewController") != NULL;
-}
-
 static BOOL ApolloFeedSplitIsListController(UIViewController *controller) {
     return ApolloFeedSplitIsClass(controller, "_TtC6Apollo24RedditListViewController");
+}
+
+// Comments, or any other non-feed / non-list pushed from a feed (Apollo
+// sometimes uses a class that does not contain CommentsViewController).
+static BOOL ApolloFeedSplitIsReadingDetailController(UIViewController *controller) {
+    if (!controller) return NO;
+    if (ApolloSwipeCommentsIsPaneCommentsController(controller)) return NO;
+    if (ApolloFeedSplitIsFeedController(controller)) return NO;
+    if (ApolloFeedSplitIsListController(controller)) return NO;
+    return YES;
+}
+
+static UIViewController *ApolloFeedSplitSavedList(UINavigationController *nav) {
+    return nav ? objc_getAssociatedObject(nav, &kApolloFeedSplitSavedListKey) : nil;
+}
+
+static void ApolloFeedSplitSaveList(UINavigationController *nav, UIViewController *list) {
+    if (!nav || !ApolloFeedSplitIsListController(list)) return;
+    objc_setAssociatedObject(nav, &kApolloFeedSplitSavedListKey, list, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 typedef enum {
@@ -184,15 +193,14 @@ static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *na
     }
     UIViewController *detail = stack.lastObject;
     UIViewController *previous = stack[stack.count - 2];
-    // Post-open: feed | comments wins so drilling into a thread does not
-    // keep a three-column list|feed|comments layout.
-    if (ApolloFeedSplitIsCommentsController(detail) && ApolloFeedSplitIsFeedController(previous)) {
+    // Post-open: feed | reading-detail wins so drilling into a thread does
+    // not keep a three-column list|feed|comments layout.
+    if (ApolloFeedSplitIsReadingDetailController(detail) && ApolloFeedSplitIsFeedController(previous)) {
         if (primaryOut) *primaryOut = previous;
         if (detailOut) *detailOut = detail;
         return ApolloFeedSplitPairFeedComments;
     }
-    if (ApolloDuoRailIsPickingSubreddits()
-        && ApolloFeedSplitIsFeedController(detail)
+    if (ApolloFeedSplitIsFeedController(detail)
         && ApolloFeedSplitIsListController(previous)) {
         if (primaryOut) *primaryOut = previous;
         if (detailOut) *detailOut = detail;
@@ -273,19 +281,31 @@ extern "C" void ApolloFeedSplitShowSubredditPicker(UINavigationController *nav) 
         ApolloLog(@"[FeedSplit] My Subreddits skipped (no posts nav)");
         return;
     }
-    UIViewController *root = nav.viewControllers.firstObject;
+    UIViewController *list = nil;
+    for (UIViewController *controller in nav.viewControllers) {
+        if (ApolloFeedSplitIsListController(controller)) {
+            list = controller;
+            break;
+        }
+    }
+    if (!list) list = ApolloFeedSplitSavedList(nav);
     UIViewController *feed = ApolloFeedSplitFirstFeedOnStack(nav);
+    if (!feed && ApolloFeedSplitIsFeedController(nav.topViewController)) {
+        feed = nav.topViewController;
+    }
     NSArray<UIViewController *> *want = nil;
-    if (root && feed && root != feed) {
-        want = @[ root, feed ];
-    } else if (root) {
-        want = @[ root ];
+    if (list && feed && list != feed) {
+        want = @[ list, feed ];
+    } else if (list) {
+        want = @[ list ];
+    } else if (feed) {
+        want = @[ feed ];
     }
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (want && ![nav.viewControllers isEqualToArray:want]) {
         [nav setViewControllers:want animated:NO];
     }
-    if (root && !root.isViewLoaded) [root loadViewIfNeeded];
+    if (list && !list.isViewLoaded) [list loadViewIfNeeded];
     if (feed && !feed.isViewLoaded) [feed loadViewIfNeeded];
     objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloFeedSplitApply(nav, NO);
@@ -443,7 +463,8 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
     UIViewController *top = stack.lastObject;
     UIViewController *mid = stack[stack.count - 2];
     UIViewController *under = stack[stack.count - 3];
-    if (!ApolloFeedSplitIsCommentsController(top) || !ApolloFeedSplitIsCommentsController(mid)) return;
+    if (!ApolloFeedSplitIsReadingDetailController(top)
+        || !ApolloFeedSplitIsReadingDetailController(mid)) return;
     if (!ApolloFeedSplitIsFeedController(under)) return;
     if (!ApolloFeedSplitWouldTile(nav)) return;
 
@@ -521,11 +542,18 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     BOOL duoTile = ApolloDuoRailIsActive() && ApolloFeedSplitWouldTile(nav);
 
-    // Subreddit tap while picking: dismiss the directory. That sub's posts
-    // become the sole VC and sit in the leading half (right empty until a
-    // post opens). Skip %orig so the stock push does not slide.
+    // Subreddit tap while picking: dismiss the directory from the stack but
+    // retain the list VC so Subs can restore @[savedList, feed].
     if (duoTile && viewController && ApolloFeedSplitIsFeedController(viewController)
         && ApolloDuoRailIsPickingSubreddits()) {
+        UIViewController *list = nil;
+        for (UIViewController *controller in nav.viewControllers) {
+            if (ApolloFeedSplitIsListController(controller)) {
+                list = controller;
+                break;
+            }
+        }
+        ApolloFeedSplitSaveList(nav, list);
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -534,11 +562,14 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
         objc_setAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [CATransaction commit];
         ApolloFeedSplitApply(nav, NO);
-        ApolloLog(@"[FeedSplit] dismissed directory; sub feed leading");
+        ApolloLog(@"[FeedSplit] dismissed directory; sub feed leading (list retained)");
         return;
     }
 
-    if (duoTile && ApolloFeedSplitIsCommentsController(viewController)) {
+    // Topic / post: any reading-detail on top of a feed tiles, no slide.
+    if (duoTile && viewController
+        && ApolloFeedSplitIsReadingDetailController(viewController)
+        && ApolloFeedSplitIsFeedController(nav.topViewController)) {
         %orig(viewController, NO);
         ApolloFeedSplitCollapseReplacedComments(nav);
         ApolloFeedSplitApply(nav, NO);
