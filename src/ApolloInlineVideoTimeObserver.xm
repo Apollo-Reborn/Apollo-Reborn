@@ -93,26 +93,57 @@ static int32_t ApolloInlineVideoTimeObserverTimescale(void) {
 #if APOLLO_SIM_BUILD
 // Sim-only tick counter: logs ticks/s per video node every 5 s of playback so
 // the observer rate can be read straight off the log (200.0 with the default
-// timescale via the env override above, 30.0 with the fix).
-static void ApolloInlineVideoNoteTick(id node) {
-    static NSMapTable *counts = nil;   // node (weak) → @[start, count]
+// timescale via the env override above, 30.0 with the fix), plus the play →
+// first-tick latency so "does the lower rate delay playback start?" is a
+// measurement: 40–195 ms on a video's first play (asset warm-up) and ~12 ms on
+// re-plays with EITHER timescale, on the iOS 27 sim.
+static NSMapTable *ApolloInlineVideoSimStats(void) {
+    static NSMapTable *stats = nil;   // node (weak) → mutable dict
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ counts = [NSMapTable weakToStrongObjectsMapTable]; });
-    NSMutableArray *entry = [counts objectForKey:node];
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    dispatch_once(&once, ^{ stats = [NSMapTable weakToStrongObjectsMapTable]; });
+    return stats;
+}
+
+static NSMutableDictionary *ApolloInlineVideoSimEntry(id node) {
+    NSMutableDictionary *entry = [ApolloInlineVideoSimStats() objectForKey:node];
     if (!entry) {
-        [counts setObject:[@[@(now), @0] mutableCopy] forKey:node];
+        entry = [NSMutableDictionary dictionary];
+        [ApolloInlineVideoSimStats() setObject:entry forKey:node];
+    }
+    return entry;
+}
+
+// -play was requested: remember when, so the first tick can report the
+// play → first-progress latency (does the observer rate delay the start?).
+static void ApolloInlineVideoNotePlay(id node) {
+    NSMutableDictionary *entry = ApolloInlineVideoSimEntry(node);
+    entry[@"playAt"] = @(CFAbsoluteTimeGetCurrent());
+    entry[@"firstTickLogged"] = @NO;
+}
+
+static void ApolloInlineVideoNoteTick(id node) {
+    NSMutableDictionary *entry = ApolloInlineVideoSimEntry(node);
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (entry[@"playAt"] && ![entry[@"firstTickLogged"] boolValue]) {
+        entry[@"firstTickLogged"] = @YES;
+        ApolloLog(@"[InlineVideoTimeObserver] node=%p first tick %.0f ms after play (timescale %d)",
+                  node, (now - [entry[@"playAt"] doubleValue]) * 1000.0,
+                  [node periodicTimeObserverTimescale]);
+    }
+    if (!entry[@"start"]) {
+        entry[@"start"] = @(now);
+        entry[@"count"] = @0;
         return;
     }
-    NSUInteger count = [entry[1] unsignedIntegerValue] + 1;
-    CFAbsoluteTime elapsed = now - [entry[0] doubleValue];
+    NSUInteger count = [entry[@"count"] unsignedIntegerValue] + 1;
+    CFAbsoluteTime elapsed = now - [entry[@"start"] doubleValue];
     if (elapsed >= 5.0) {
         ApolloLog(@"[InlineVideoTimeObserver] node=%p %.1f ticks/s over %.1fs (timescale %d)",
                   node, count / elapsed, elapsed, [node periodicTimeObserverTimescale]);
-        entry[0] = @(now);
-        entry[1] = @0;
+        entry[@"start"] = @(now);
+        entry[@"count"] = @0;
     } else {
-        entry[1] = @(count);
+        entry[@"count"] = @(count);
     }
 }
 #endif
@@ -157,6 +188,11 @@ static void ApolloInlineVideoNoteTick(id node) {
 
 - (void)periodicTimeObserver:(CMTime)time {
     ApolloInlineVideoNoteTick(self);
+    %orig;
+}
+
+- (void)play {
+    ApolloInlineVideoNotePlay(self);
     %orig;
 }
 
