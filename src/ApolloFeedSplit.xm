@@ -234,6 +234,11 @@ static ApolloFeedSplitMode ApolloFeedSplitCurrentMode(UINavigationController *na
     if (mode == ApolloFeedSplitModeTiled && (!feed || !detail)) {
         mode = ApolloFeedSplitModeStacked;
     }
+    // Scroll/layout can blip usable width or size class. On open Duo do not
+    // drop a live pair to Stacked (that full-bleeds the top VC).
+    if (ApolloDuoRailIsActive() && hasDetail && feed && detail) {
+        mode = ApolloFeedSplitModeTiled;
+    }
     if (feedOut) *feedOut = feed;
     if (detailOut) *detailOut = detail;
     return mode;
@@ -421,6 +426,10 @@ static void ApolloFeedSplitScheduleApply(UINavigationController *nav) {
 static BOOL ApolloFeedSplitWouldTile(UINavigationController *nav) {
     UIView *container = ApolloFeedSplitContainerView(nav);
     CGSize size = container ? container.bounds.size : nav.view.bounds.size;
+    if (ApolloDuoRailIsActive()
+        && size.width + 0.5 >= (double)ApolloFeedSplitMinRegularWidth) {
+        return YES;
+    }
     UIEdgeInsets safe = nav.view.safeAreaInsets;
     UIEdgeInsets margins = nav.view.layoutMargins;
     double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
