@@ -49,6 +49,8 @@ static char kApolloFeedSplitSeparatorKey;
 static char kApolloFeedSplitMutatingStackKey;
 static char kApolloFeedSplitApplyingKey;
 static char kApolloFeedSplitLastModeKey;
+static char kApolloFeedSplitLockedFrameKey;
+static char kApolloFeedSplitRestoringFrameKey;
 
 static BOOL ApolloFeedSplitIsClass(UIViewController *controller, const char *name) {
     Class cls = name ? objc_getClass(name) : Nil;
@@ -105,10 +107,17 @@ static UIView *ApolloFeedSplitLayoutView(UIViewController *controller, UIView *c
     return view;
 }
 
+static void ApolloFeedSplitClearLockedFrame(UIView *view) {
+    if (!view) return;
+    objc_setAssociatedObject(view, &kApolloFeedSplitLockedFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 static void ApolloFeedSplitSetFrame(UIView *view, CGRect frame) {
     if (!view) return;
-    if (CGRectEqualToRect(view.frame, frame)) return;
     view.autoresizingMask = UIViewAutoresizingNone;
+    objc_setAssociatedObject(view, &kApolloFeedSplitLockedFrameKey,
+                             [NSValue valueWithCGRect:frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (CGRectEqualToRect(view.frame, frame)) return;
     view.frame = frame;
 }
 
@@ -144,10 +153,6 @@ static void ApolloFeedSplitPinColumn(UIViewController *controller,
                 table.frame = view.bounds;
             }
         }
-    }
-    if (view) {
-        [view setNeedsLayout];
-        [view layoutIfNeeded];
     }
 }
 
@@ -345,17 +350,24 @@ static void ApolloFeedSplitApply(UINavigationController *nav, BOOL animated) {
             if (top.isViewLoaded) {
                 UIView *topLayout = ApolloFeedSplitLayoutView(top, container);
                 if (topLayout) {
-                    ApolloFeedSplitSetFrame(topLayout, container.bounds);
+                    ApolloFeedSplitClearLockedFrame(topLayout);
+                    if (top.view && top.view != topLayout) {
+                        ApolloFeedSplitClearLockedFrame(top.view);
+                    }
                     topLayout.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                    topLayout.frame = container.bounds;
                 }
             }
             if (feed && feed != top) {
                 UIView *feedLayout = ApolloFeedSplitLayoutView(feed, container);
+                ApolloFeedSplitClearLockedFrame(feedLayout);
+                if (feed.isViewLoaded) ApolloFeedSplitClearLockedFrame(feed.view);
                 if (feedLayout && feedLayout.superview == container) {
                     [feedLayout removeFromSuperview];
                 }
                 ApolloFeedSplitSetPrimaryAlongside(feed, NO);
             }
+            ApolloFeedSplitClearLockedFrame(separator);
             if (separator.superview) [separator removeFromSuperview];
             return;
         }
@@ -480,6 +492,57 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     ApolloLog(@"[FeedSplit] replaced feed column (stack %lu→%lu)",
               (unsigned long)stack.count, (unsigned long)next.count);
 }
+
+static void ApolloFeedSplitApplyFromChild(UIViewController *child) {
+    if (!child || !ApolloDuoRailIsActive()) return;
+    UINavigationController *nav = child.navigationController;
+    if (!nav) return;
+    ApolloFeedSplitApply(nav, NO);
+}
+
+%hook UIView
+
+- (void)layoutSubviews {
+    %orig;
+    if (objc_getAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey)) return;
+    NSValue *locked = objc_getAssociatedObject(self, &kApolloFeedSplitLockedFrameKey);
+    if (![locked isKindOfClass:[NSValue class]]) return;
+    CGRect want = locked.CGRectValue;
+    if (CGRectEqualToRect(self.frame, want)) return;
+    objc_setAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.autoresizingMask = UIViewAutoresizingNone;
+    self.frame = want;
+    objc_setAssociatedObject(self, &kApolloFeedSplitRestoringFrameKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+%end
+
+%hook _TtC6Apollo19PostsViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloFeedSplitApplyFromChild((UIViewController *)self);
+}
+
+%end
+
+%hook _TtC6Apollo23LitePostsViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloFeedSplitApplyFromChild((UIViewController *)self);
+}
+
+%end
+
+%hook _TtC6Apollo24RedditListViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloFeedSplitApplyFromChild((UIViewController *)self);
+}
+
+%end
 
 %hook _TtC6Apollo26ApolloNavigationController
 
