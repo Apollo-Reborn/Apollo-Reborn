@@ -15,4 +15,13 @@ static inline double ApolloDeviceChromeInset(double safe, double margin) {
     return safe + extra;
 }
 
+// Layout-margin extra beyond the safe area. Column frames use this so a
+// child controller can still apply its own safeAreaInsets without a
+// double-count of the notch / home indicator.
+static inline double ApolloDeviceChromeExtra(double safe, double margin) {
+    double extra = ApolloDeviceChromeInset(safe, margin) - safe;
+    if (extra < 0.0) extra = 0.0;
+    return extra;
+}
+
 #endif

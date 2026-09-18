@@ -7,9 +7,9 @@ iOS 27.1) will exercise size-class changes, dual scenes, horizontal safe
 areas, and hinge reserved regions that neither Apollo nor most of this tweak
 were written for.
 
-This is a maintainer plan, not a rewrite. Steps 1 and 2 (device identity +
-live island geometry, then floating tabs / Liquid Glass scene chrome) are
-implemented. Steps 3–5 stay queued.
+This is a maintainer plan, not a rewrite. Steps 1–3 (device identity + live
+island geometry, floating tabs / Liquid Glass scene chrome, then feed/post
+size-class layouts) are implemented. Steps 4–5 stay queued.
 
 ## What is already true in the tweak
 
@@ -20,7 +20,7 @@ implemented. Steps 3–5 stay queued.
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is step 4 (`reservedRegions`). PiP still has a `mainScreen` last-resort frame — out of step 2 scope. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
 | Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`) | Column count follows view width; viewer chrome uses `safeAreaInsets` including left/right. | No hinge avoidance; full-bleed viewers can draw under a fold. **Step 4.** |
-| Feed / posts | Almost no `horizontalSizeClass` / `UISplitViewController` usage. `traitCollectionDidChange:` is mostly appearance. Devvit posts already react to width-class changes. | Inner 7.6" will look like a wide iPhone, not an iPad. Compact-only feed metrics will stretch. **Step 3.** |
+| Feed / posts | **Step 3:** no stock Regular-width split to unlock. The tweak tiles inside `_TtC6Apollo26ApolloNavigationController` when the horizontal size class is Regular and the usable width is at least two 320pt columns (`ApolloFeedSplitLayout.h`). Compact stays a single column. Feed VCs (Posts / LitePosts / Saved / search results) sit leading; `CommentsViewController` sits trailing. Swipe-up pane comments are skipped. Tab children stay Apollo navs — do **not** wrap them in `UISplitViewController`. `ApolloIPadTabBarBottom` stays idiom-gated. | Profile / inbox / settings pushes stay stacked. Feed cells that size from the screen instead of their view may still stretch inside a column. Hinge pixels that are not extra layout margin are step 4. |
 | Toolchain | Device: `TARGET := iphone:clang:26.0:14.0`. Sim: `latest` / iOS 15.0 floor. Liquid Glass needs a glass-patched guest (SDK 19+/26+) plus iOS 26+ runtime. | Duo-specific reserved-region / full-bleed APIs are iOS 27.1. Do not bump the pinned 26.0 SDK until that SDK is actually available to Theos **and** we still need iOS 14 device builds. **Step 5.** |
 
 ## Phased work
@@ -55,14 +55,25 @@ an SDK bump.
 Do **not** expand this step into feed size-class layouts, ArrangementView,
 or an SDK bump.
 
-### 3. Feed / post size-class layouts
+### 3. Feed / post size-class layouts — done
 
-- Inventory feed, compact post, comments header, and settings form widths.
-- Prefer the view's `traitCollection.horizontalSizeClass` and readable
-  content / layout margins over idiom checks. Duo inner is Regular-width
-  iPhone, not iPad — do not turn on `ApolloIPadTabBarBottom` there.
-- Split-view is optional and stock-Apollo-shaped; do not invent a sidebar
-  unless Apollo already has a Regular-width path worth unlocking.
+- Inventory: stock Apollo has almost no `horizontalSizeClass` /
+  `UISplitViewController` usage. `ApolloAutoHideMetaFeeds` already walked
+  split columns defensively; it now also treats a nav child whose view is
+  still in the window as visible (the tiled feed).
+- Regular + usable width ≥ 652pt (`320+12+320`):
+  - feed only → centered, capped at 700pt
+  - feed + comments → tiled leading | trailing
+- Compact, unspecified, or Regular-but-narrow → stacked (UIKit's existing
+  push). Swipe-up media-pane comments never tile.
+- Column frames use `ApolloDeviceChromeExtra` (hinge-sized layout-margin
+  extra only) so children still apply their own `safeAreaInsets`.
+- Opening another post from the still-visible feed replaces the comments
+  column instead of pushing a third screen.
+- Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
+
+Do **not** expand this step into ArrangementView / reservedRegions or an
+SDK bump.
 
 ### 4. Gallery / media hinge avoidance
 
@@ -85,8 +96,9 @@ or an SDK bump.
 The cloud Linux VM cannot run Theos or the iOS Simulator. Validate on a Mac:
 
 ```bash
-# Host-side identity + chrome-inset math (no UIKit)
+# Host-side identity + chrome-inset + feed-split math (no UIKit)
 tests/run_device_identity_tests.sh
+tests/run_feed_split_layout_tests.sh
 
 # Default inner loop
 scripts/run-in-sim.sh --logs
@@ -110,6 +122,20 @@ Confirm floating tabs / Liquid Glass (step 2):
 - `[FloatingTabs] Overlay window created (scene=yes)` / `Overlay rebound`
   in `apollofix` logs.
 
+Confirm feed | comments size-class layout (step 3):
+
+- Compact portrait (any phone): opening a post still covers the feed.
+- Regular landscape (Plus/Max sim, or Duo inner Regular): opening a post
+  keeps the feed on the leading side and comments on the trailing side.
+  `[FeedSplit] mode=tiled` in `apollofix` logs.
+- Regular with no post open: feed is a centered column (`mode=centered`),
+  not a 900pt+ stretched list.
+- Fold / rotate Regular → Compact: comments go full width; feed leaves.
+- Tap a second post in the still-visible feed: comments column replaces,
+  back still returns to the feed.
+- Swipe-up-for-comments media pane is unchanged (sheet, not a tile).
+- iPad "Move Tab Bar to Bottom" stays off on iPhone.
+
 Confirm Pixel Pals / faux cutout:
 
 - 14 Pro baseline: no y-shift (island matches Apollo's 11.5).
@@ -126,16 +152,26 @@ When a Duo simulator or device exists:
 - Fold with a floating tab open: overlay should follow the active scene;
   slivers should not rest in a hinge strip that UIKit reports as safe area
   or extra layout margin.
-- Note Regular-width feed stretch — that is step 3, not a step 1–2
-  regression. Gallery/media under the fold is step 4.
+- Note gallery/media under the fold — that is step 4, not a step 1–3
+  regression. Regular-width feed | comments should already tile.
 
 Device IPA remains required for APNs, FFmpeg v.redd.it remux, and anything
 the sim stubs.
 
 ## Residual risks
 
-- Stock Apollo may still assume a single phone-sized window. Steps 1–2
-  cannot fix feed column math or media viewers.
+- Stock Apollo may still assume a single phone-sized window. Steps 1–3
+  cannot fix media viewers or a hinge that UIKit does not expose as safe
+  area / extra layout margin.
+- Feed | comments tiling keeps the real nav stack (so floating tabs, URL
+  routing, and swipe-up capture still see `ApolloNavigationController`),
+  but it fights Apollo's push/pop animator for one layout pass. If a
+  transition looks wrong, check that apply is skipped while
+  `transitionCoordinator` is set.
+- Plus/Max landscape is Regular, so those users now get the two-pane
+  feed | comments layout. That is intentional, not a Duo-only gate.
+- Some Texture / post cells may still size from the screen width rather
+  than the column. Devvit already reacts to size-class changes.
 - `_exclusionArea` is private. If it disappears or starts returning hinge
   rects, the pill sanity check fails closed (no shift, hide tweak chrome).
 - `uname` remapping is process-wide, happens on arbitrary threads, and does

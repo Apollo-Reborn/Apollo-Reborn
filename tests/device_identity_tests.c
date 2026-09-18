@@ -111,6 +111,10 @@ int main(void) {
           "hinge reported as safe area is used as-is");
     Check(ApolloDeviceChromeInset(0.0, 16.4) == 0.0,
           "sub-point noise on the 16pt margin is ignored");
+    Check(ApolloDeviceChromeExtra(47.0, 63.0) == 0.0,
+          "standard safe+16 does not produce a column extra");
+    Check(ApolloDeviceChromeExtra(0.0, 80.0) == 64.0,
+          "hinge-sized extra is the chrome inset without the safe area");
 
     printf("OK: %u checks\n", checks);
     return 0;
