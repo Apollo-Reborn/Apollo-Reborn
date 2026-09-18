@@ -8,9 +8,10 @@
 // on the left, selected post + comments on the right (feed | comments).
 // A lone feed stays in the leading half (never full-bleed across the hinge).
 // The slim rail switches Home / Popular / All / My Subreddits / Profile /
-// Settings. **list | feed** tiles while My Subreddits shows the directory.
-// Choosing a subreddit leaves the directory: that sub's **feed** stays in
-// the left pane (to the hinge) and the right pane is for posts/comments.
+// Settings. **list | feed** is the directory step: RedditList on the left,
+// the current (or just-picked) sub feed on the right. Opening a post then
+// switches to **feed | comments** (feed left, comments right). Do not pin
+// the feed leading on a mere subreddit selection.
 //
 // Stock Apollo has no unlockable UISplitViewController path — AutoHideMetaFeeds
 // only walks split columns defensively. Wrapping a tab's ApolloNavigationController
@@ -62,9 +63,13 @@ static BOOL ApolloFeedSplitIsFeedController(UIViewController *controller) {
 
 static BOOL ApolloFeedSplitIsCommentsController(UIViewController *controller) {
     if (!controller) return NO;
+    if (ApolloSwipeCommentsIsPaneCommentsController(controller)) return NO;
+    // Saved posts is a feed whose class name also contains CommentsViewController.
+    if (ApolloFeedSplitIsFeedController(controller)) return NO;
     Class comments = objc_getClass("_TtC6Apollo22CommentsViewController");
-    if (!comments || ![controller isKindOfClass:comments]) return NO;
-    return !ApolloSwipeCommentsIsPaneCommentsController(controller);
+    if (comments && [controller isKindOfClass:comments]) return YES;
+    const char *name = class_getName(controller.class);
+    return name && strstr(name, "CommentsViewController") != NULL;
 }
 
 static BOOL ApolloFeedSplitIsListController(UIViewController *controller) {
@@ -186,8 +191,10 @@ static ApolloFeedSplitPair ApolloFeedSplitPairOnStack(UINavigationController *na
         if (detailOut) *detailOut = detail;
         return ApolloFeedSplitPairFeedComments;
     }
-    if (ApolloDuoRailIsPickingSubreddits()
-        && ApolloFeedSplitIsFeedController(detail)
+    // Directory (and a sub tap from it): list stays left, feed stays right.
+    // Do not require the picking flag — clearing it on push used to slam the
+    // new feed into Centered/leading (everything on the left).
+    if (ApolloFeedSplitIsFeedController(detail)
         && ApolloFeedSplitIsListController(previous)) {
         if (primaryOut) *primaryOut = previous;
         if (detailOut) *detailOut = detail;
@@ -508,14 +515,8 @@ static void ApolloFeedSplitCollapseReplacedFeeds(UINavigationController *nav) {
     UINavigationController *nav = (UINavigationController *)self;
     ApolloFeedSplitCollapseReplacedComments(nav);
     ApolloFeedSplitCollapseReplacedFeeds(nav);
-    // Subreddit tap leaves the directory. Keep two-pane chrome: that sub's
-    // feed fills the left half; a later post push tiles comments on the right.
-    // Instant apply — do not let the push coordinator full-bleed then snap.
-    if (ApolloDuoRailIsPickingSubreddits() && ApolloFeedSplitIsFeedController(nav.topViewController)) {
-        ApolloDuoRailSetPickingSubreddits(NO);
-        ApolloFeedSplitApply(nav, NO);
-        return;
-    }
+    // A subreddit tap must keep list|feed (directory left, that sub's feed
+    // right). Do not clear picking or force a leading feed-only apply.
     ApolloFeedSplitScheduleApply(nav);
 }
 
