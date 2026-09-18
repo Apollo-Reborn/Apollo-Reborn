@@ -25,6 +25,13 @@
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloState.h"
 
+// Logos' internal generator (simulator) only sees a forward class for this
+// Swift name unless we declare the UIKit superclass. Device CydiaSubstrate
+// builds are looser; match ApolloLiquidGlass.xm so `self` is a real
+// UINavigationController * for trait/transition properties and helpers.
+@interface _TtC6Apollo26ApolloNavigationController : UINavigationController
+@end
+
 static char kApolloFeedSplitPrimaryAlongsideKey;
 static char kApolloFeedSplitSeparatorKey;
 static char kApolloFeedSplitMutatingStackKey;
@@ -297,22 +304,24 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (self.transitionCoordinator) return;
-    ApolloFeedSplitApply(self, NO);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (nav.transitionCoordinator) return;
+    ApolloFeedSplitApply(nav, NO);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    ApolloFeedSplitApply(self, NO);
+    ApolloFeedSplitApply((UINavigationController *)self, NO);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     %orig;
-    if (previous.horizontalSizeClass != self.traitCollection.horizontalSizeClass) {
-        if (self.transitionCoordinator) {
-            ApolloFeedSplitScheduleApply(self);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (previous.horizontalSizeClass != nav.traitCollection.horizontalSizeClass) {
+        if (nav.transitionCoordinator) {
+            ApolloFeedSplitScheduleApply(nav);
         } else {
-            ApolloFeedSplitApply(self, YES);
+            ApolloFeedSplitApply(nav, YES);
         }
     }
 }
@@ -320,44 +329,47 @@ static void ApolloFeedSplitCollapseReplacedComments(UINavigationController *nav)
 - (void)viewWillTransitionToSize:(CGSize)size
        withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     %orig;
+    UINavigationController *nav = (UINavigationController *)self;
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         (void)context;
-        ApolloFeedSplitApply(self, NO);
+        ApolloFeedSplitApply(nav, NO);
     } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         (void)context;
-        ApolloFeedSplitApply(self, NO);
+        ApolloFeedSplitApply(nav, NO);
     }];
 }
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
     %orig;
-    ApolloFeedSplitCollapseReplacedComments(self);
-    ApolloFeedSplitScheduleApply(self);
+    UINavigationController *nav = (UINavigationController *)self;
+    ApolloFeedSplitCollapseReplacedComments(nav);
+    ApolloFeedSplitScheduleApply(nav);
 }
 
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     UIViewController *popped = %orig;
-    ApolloFeedSplitScheduleApply(self);
+    ApolloFeedSplitScheduleApply((UINavigationController *)self);
     return popped;
 }
 
 - (NSArray<UIViewController *> *)popToViewController:(UIViewController *)viewController animated:(BOOL)animated {
     NSArray<UIViewController *> *popped = %orig;
-    ApolloFeedSplitScheduleApply(self);
+    ApolloFeedSplitScheduleApply((UINavigationController *)self);
     return popped;
 }
 
 - (NSArray<UIViewController *> *)popToRootViewControllerAnimated:(BOOL)animated {
     NSArray<UIViewController *> *popped = %orig;
-    ApolloFeedSplitScheduleApply(self);
+    ApolloFeedSplitScheduleApply((UINavigationController *)self);
     return popped;
 }
 
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
     %orig;
-    if (objc_getAssociatedObject(self, &kApolloFeedSplitMutatingStackKey)) return;
-    ApolloFeedSplitCollapseReplacedComments(self);
-    ApolloFeedSplitScheduleApply(self);
+    UINavigationController *nav = (UINavigationController *)self;
+    if (objc_getAssociatedObject(nav, &kApolloFeedSplitMutatingStackKey)) return;
+    ApolloFeedSplitCollapseReplacedComments(nav);
+    ApolloFeedSplitScheduleApply(nav);
 }
 
 %end

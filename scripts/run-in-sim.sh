@@ -204,14 +204,19 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
     [[ -d "$APP_DIR" ]] || die "extracted IPA has no Payload/Apollo.app"
 
     # apollo-base.ipa is the "already-injected" device-build shell: it carries a
-    # prior device-targeted ApolloReborn build (as ApolloImprovedCustomApi.dylib)
-    # that hard-links CydiaSubstrate via jailbreak rootless paths. That's
-    # irrelevant here — the sim flow injects its own ApolloReborn.dylib via
-    # DYLD_INSERT_LIBRARIES — and CydiaSubstrate uses LC_VERSION_MIN_IPHONEOS
-    # (not LC_BUILD_VERSION), so the platform patcher below can't flip it to
-    # Simulator; dyld_sim hard-fails resolving its rootless-path dependency and
-    # SIGABRTs the whole app at launch. Strip both before patching.
-    rm -rf "$APP_DIR/Frameworks/ApolloImprovedCustomApi.dylib" "$APP_DIR/Frameworks/CydiaSubstrate.framework"
+    # prior device-targeted ApolloReborn build (ApolloReborn.dylib and/or the
+    # legacy ApolloImprovedCustomApi.dylib name) that hard-links CydiaSubstrate
+    # via jailbreak rootless paths. That's irrelevant here — the sim flow
+    # injects its own ApolloReborn.dylib via DYLD_INSERT_LIBRARIES — and
+    # CydiaSubstrate uses LC_VERSION_MIN_IPHONEOS (not LC_BUILD_VERSION), so
+    # the platform patcher below can't flip it to Simulator; dyld_sim
+    # hard-fails resolving its rootless-path dependency and SIGABRTs the
+    # whole app at launch. Strip the embedded tweak + Substrate before
+    # patching. Leaving ApolloReborn.dylib in Frameworks loads the *device*
+    # dylib alongside the inserted sim one and crashes on missing Substrate.
+    rm -rf "$APP_DIR/Frameworks/ApolloReborn.dylib" \
+           "$APP_DIR/Frameworks/ApolloImprovedCustomApi.dylib" \
+           "$APP_DIR/Frameworks/CydiaSubstrate.framework"
 
     write_patcher
     # Patch every Mach-O in the bundle (main binary + appex + frameworks).
