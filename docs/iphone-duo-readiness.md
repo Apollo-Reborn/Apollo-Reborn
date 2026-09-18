@@ -350,9 +350,12 @@ the sim stubs.
 - SDK 27.1 also opts the guest into Duo's vertical navigation / toolbar
   placement. Apollo's custom nav may look different from 19.0 glass;
   report leftovers rather than fighting UIKit's chrome.
-- Cover display: no companion UI. Screenshot `simctl io` may pick LCD
-  vs LCD-1 — pass the display id. Touches on the unused chrome should
-  fall through the floating-tab overlay (`hitTest` + same-scene bind).
+- Cover display: no companion UI and **no second Apollo rail**. Duo
+  already owns a vertical system pill on the cover's far right; that
+  screenshot is only the design cue for the *open inner* rail edge
+  (trailing/right). Screenshot `simctl io` may pick LCD vs LCD-1 —
+  pass the display id. Touches on the unused chrome should fall
+  through the floating-tab overlay (`hitTest` + same-scene bind).
 - Apollo's Posts-tab second tap still pops to the list (list-only
   leading on Duo). That is stock navigation, not a three-column keep.
 - The Duo rail hides the stock tab bar (and `_UITabContainerView` when

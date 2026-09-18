@@ -12,9 +12,11 @@
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloThemeRuntime.h"
 
-// Open-Duo trailing rail. Regular + (dual screens or a wide inner canvas)
+// Open-inner trailing rail. Regular + (dual screens or a wide inner canvas)
 // replaces the stock tab bar with My Subreddits / Home / Popular / All /
-// Profile / Settings on the far right (Duo system controls live there).
+// Profile / Settings on the far right — the same edge as Duo's cover
+// system pill. The cover/front display already has that pill; this rail
+// is inner-only (Compact / cover-sized canvases never install it).
 // Compact and ordinary Plus landscape keep the tab bar.
 //
 // First show defaults to Subs: list|feed so the right pane is a live feed,

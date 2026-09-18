@@ -16,6 +16,8 @@ static void Check(int condition, const char *message) {
 int main(void) {
     Check(!ApolloDuoRailShouldShow(0, 1, 900.0),
           "Compact never shows the rail");
+    Check(!ApolloDuoRailShouldShow(0, 1, 400.0),
+          "cover/front Compact canvas never gets a second Apollo rail");
     Check(!ApolloDuoRailShouldShow(1, 1, 500.0),
           "Regular below the two-column floor stays on the tab bar");
     Check(ApolloDuoRailShouldShow(1, 1, 652.0),
