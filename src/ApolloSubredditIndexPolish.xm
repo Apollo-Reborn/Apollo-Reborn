@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFavoriteConfirm.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -174,6 +175,7 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, weak) UITableViewCell *cell;
 @property (nonatomic, weak) UIControl *nativeControl;
 @property (nonatomic, copy) NSString *subredditName;
+- (void)apollo_performStarTap;
 @end
 
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl);
@@ -1305,6 +1307,22 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 }
 
 - (void)apollo_starTapped {
+    // When Confirm Favorite Changes is on, defer the mutation (and its
+    // scroll-anchor compensation) until the user confirms — otherwise the
+    // anchor restore would run against an unchanged table and the later
+    // confirmed mutation would shift rows with no compensation.
+    if (!ApolloFavoriteConfirmShouldPrompt()) {
+        [self apollo_performStarTap];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    ApolloFavoriteConfirmPresentForView(self, ^{
+        ApolloFavoriteConfirmSuppressNextTap();
+        [weakSelf apollo_performStarTap];
+    });
+}
+
+- (void)apollo_performStarTap {
     UIControl *nativeControl = self.nativeControl;
     UITableView *tableView = self.tableView;
     NSString *subredditName = self.subredditName;
