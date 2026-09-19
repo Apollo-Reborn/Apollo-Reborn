@@ -49,6 +49,7 @@ static char kApolloDuoRailSelectedKey;
 static char kApolloDuoRailSavedContentInsetLeftKey;
 static char kApolloDuoRailSavedPreferredSizeKey;
 static char kApolloDuoRailSavedAdditionalLeftKey;
+static char kApolloDuoRailRowStackShiftLoggedKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
 static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
@@ -645,11 +646,33 @@ static void ApolloDuoRailInsetHeaderView(UIView *header, CGFloat left) {
     }
 }
 
+static UILabel *ApolloDuoRailRedditTitleLabel(UITableViewCell *cell) {
+    if (!cell) return nil;
+    Ivar ivar = class_getInstanceVariable(cell.class, "redditTitleLabel");
+    if (!ivar) return nil;
+    id value = object_getIvar(cell, ivar);
+    return [value isKindOfClass:[UILabel class]] ? (UILabel *)value : nil;
+}
+
+static UIStackView *ApolloDuoRailMainStackView(UITableViewCell *cell) {
+    if (!cell) return nil;
+    Ivar ivar = class_getInstanceVariable(cell.class, "mainStackView");
+    if (!ivar) return nil;
+    id value = object_getIvar(cell, ivar);
+    return [value isKindOfClass:[UIStackView class]] ? (UIStackView *)value : nil;
+}
+
 static UILabel *ApolloDuoRailPrimaryLabelInCell(UITableViewCell *cell) {
-    if (cell.textLabel.text.length > 0) return cell.textLabel;
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell.contentView];
+    // redditTitleLabel is the visible FAVORITES / A–Z name. Do not prefer
+    // textLabel — custom RedditList cells can leave that at stock x=16
+    // while the real title already sits in the stack past the rail.
+    UILabel *redditTitle = ApolloDuoRailRedditTitleLabel(cell);
+    if (redditTitle.text.length > 0) return redditTitle;
+
     UILabel *best = nil;
-    CGFloat bestWidth = 0.0;
+    CGFloat bestMinX = CGFLOAT_MAX;
+    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell.contentView ?: cell];
     NSInteger inspected = 0;
     while (stack.count > 0 && inspected++ < 40) {
         UIView *view = stack.lastObject;
@@ -660,9 +683,11 @@ static UILabel *ApolloDuoRailPrimaryLabelInCell(UITableViewCell *cell) {
         if (![view isKindOfClass:[UILabel class]] || view.hidden) continue;
         UILabel *label = (UILabel *)view;
         if (label.text.length == 0) continue;
-        CGFloat width = CGRectGetWidth(label.bounds);
-        if (width > bestWidth) {
-            bestWidth = width;
+        CGRect inCell = [cell convertRect:label.bounds fromView:label];
+        if (CGRectGetMinX(inCell) > cellWidth * 0.45) continue;
+        if (CGRectGetWidth(inCell) < 8.0) continue;
+        if (CGRectGetMinX(inCell) < bestMinX) {
+            bestMinX = CGRectGetMinX(inCell);
             best = label;
         }
     }
@@ -680,31 +705,82 @@ static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     if (!cell || !ApolloDuoRailIsActive()) return;
 
+    // Shortcut rows (ApolloSubtitleTableViewCell) already honor the nav
+    // safe-area inset — Home / Popular / All / Moderator stay leading-
+    // aligned without any title or stack write. Do not touch them.
+    const char *cellName = class_getName(cell.class);
+    if (cellName && strstr(cellName, "ApolloSubtitleTableViewCell")) return;
+
+    // Custom RedditList favorite/sub rows use mainStackView +
+    // redditTitleLabel + star. Writing title.frame when the label's
+    // local x was 18 stacked a second 80pt on the already-inset stack
+    // and parked FAVORITES titles mid-pane. Never move the title.
+    cell.insetsLayoutMarginsFromSafeArea = YES;
+    cell.contentView.insetsLayoutMarginsFromSafeArea = YES;
+
     UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
-    // One clearance path: only bump when the *title* is still under the
-    // rail. The contentView is full-bleed at window x=0 even after
-    // additionalSafeAreaInsets has already inset the text — treating
-    // that as overlap stacked 80pt on the safe-area 80pt (mid-column
-    // titles, stars sitting on the first letter).
-    if (title) {
-        CGFloat titleWindowX = ApolloDuoRailWindowMinX(title);
-        CGFloat bump = (CGFloat)ApolloDuoRailRowTitleBump(titleWindowX);
-        if (bump > 0.5) {
-            CGRect frame = title.frame;
-            frame.origin.x += bump;
-            title.frame = frame;
+    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
+    if (!title) return;
+
+    // Cell-local target matches StyleHeaderView (FAVORITES at 98 when
+    // the cell is full-bleed). Window-x of the title itself is the
+    // wrong key — a leftover textLabel at x=16 or a stack-local frame
+    // looked "under the rail" and e248895 added another 80pt.
+    CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
+    CGFloat cellWindowX = ApolloDuoRailWindowMinX(cell);
+    CGFloat wantTitleX = (CGFloat)ApolloDuoRailRowTitleMinX(cellWindowX, 18.0);
+    CGFloat haveTitleX = CGRectGetMinX(titleInCell);
+    CGFloat titleDeficit = wantTitleX - haveTitleX;
+    // Cap at the rail inset so a bad convert cannot stack a second 80pt
+    // on an already-clear title (the e248895 mid-pane look).
+    if (titleDeficit > (CGFloat)ApolloDuoRailContentLeftInset()) {
+        titleDeficit = (CGFloat)ApolloDuoRailContentLeftInset();
+    }
+    if (titleDeficit > 0.5) {
+        UIView *shiftView = ApolloDuoRailMainStackView(cell);
+        if (!shiftView) {
+            UIView *parent = title.superview;
+            if ([parent isKindOfClass:[UIStackView class]] && parent != cell.contentView) {
+                shiftView = parent;
+            }
+        }
+        BOOL titleInShift = NO;
+        for (UIView *walk = title; walk && walk != cell; walk = walk.superview) {
+            if (walk == shiftView) {
+                titleInShift = YES;
+                break;
+            }
+        }
+        if (shiftView && titleInShift) {
+            CGRect stackFrame = shiftView.frame;
+            stackFrame.origin.x += titleDeficit;
+            if (stackFrame.origin.x < 0.0) stackFrame.origin.x = 0.0;
+            shiftView.frame = stackFrame;
+            titleInCell = [cell convertRect:title.bounds fromView:title];
+            if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey)) {
+                objc_setAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey, @YES,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                ApolloLog(@"[DuoRail] reddit-row stack +%.0f title→%.0f (want %.0f)",
+                          titleDeficit, CGRectGetMinX(titleInCell), wantTitleX);
+            }
         }
     }
 
-    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
-    if (!title || cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
-    if (ApolloDuoRailWindowMinX(title) + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset()) return;
+    if (cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
 
-    CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
-    CGFloat wantStarX = CGRectGetMaxX(titleInCell) + (CGFloat)ApolloDuoRailRowStarGap;
+    // Use the drawn text width, not the (often full-row) label frame.
+    // A stretchy title label's maxX sits by the trailing star; using that
+    // pulled the star to 452pt and Auto Layout dragged the title with it.
+    CGFloat textW = 0.0;
+    if (title.text.length > 0 && title.font) {
+        textW = [title.text sizeWithAttributes:@{ NSFontAttributeName: title.font }].width;
+    }
+    if (textW < 1.0) textW = CGRectGetWidth(titleInCell);
+    CGFloat titleMaxX = CGRectGetMinX(titleInCell) + MIN(textW, CGRectGetWidth(titleInCell));
+    CGFloat wantStarX = titleMaxX + (CGFloat)ApolloDuoRailRowStarGap;
     CGFloat maxStarX = (CGFloat)ApolloDuoRailRowMaxContentWidth - (CGFloat)ApolloDuoRailRowStarGap;
     if (wantStarX > maxStarX) wantStarX = maxStarX;
-    if (wantStarX + 0.5 < CGRectGetMaxX(titleInCell)) return;
+    if (wantStarX + 0.5 < titleMaxX) return;
 
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
     NSInteger inspected = 0;
@@ -723,7 +799,7 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         if (w < 16.0 || w > 72.0 || h < 16.0 || h > 72.0) continue;
         CGRect inCell = [cell convertRect:view.bounds fromView:view];
         if (CGRectGetMidX(inCell) < cellWidth * 0.45) continue;
-        if (CGRectGetMinX(inCell) + 0.5 < CGRectGetMaxX(titleInCell)) continue;
+        if (CGRectGetMinX(inCell) + 0.5 < titleMaxX) continue;
         if (CGRectGetMinX(inCell) <= wantStarX + 0.5) continue;
         CGFloat shift = CGRectGetMinX(inCell) - wantStarX;
         frame.origin.x -= shift;

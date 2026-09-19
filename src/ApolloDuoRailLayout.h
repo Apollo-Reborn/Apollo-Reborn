@@ -92,7 +92,10 @@ static inline int ApolloDuoRailContentNeedsLeadingClearance(double contentX,
 // Extra x to add to a *title* that is still under the rail. 0 when the
 // title's window minX is already at/after the content inset. Do not use
 // the cell contentView's window x — that view is full-bleed at 0 even
-// when safe-area margins have already cleared the text.
+// when safe-area margins have already cleared the text. Favorite/sub
+// rows must not apply this to title.frame (that stacked on redditTitle
+// labels already past the rail). Use ApolloDuoRailRowTitleMinX on the
+// main stack instead.
 static inline double ApolloDuoRailRowTitleBump(double titleWindowX) {
     if (titleWindowX + 0.5 >= ApolloDuoRailContentLeftInset()) return 0.0;
     return ApolloDuoRailContentLeftInset() - titleWindowX;
@@ -158,6 +161,15 @@ static inline double ApolloDuoRailHeaderTitleMinX(double headerWindowX,
     double overlap = ApolloDuoRailContentLeftInset() - headerWindowX;
     if (overlap < 0.0) overlap = 0.0;
     return stockTitleX + overlap;
+}
+
+// Target title minX *inside a full-bleed RedditList cell* — same number
+// StyleHeaderView uses for FAVORITES / MODERATOR / A. stockTitleX is
+// Apollo's 18pt leading. A cell that already starts past the rail
+// (window x >= 80) keeps stock 18 so we do not stack another inset.
+static inline double ApolloDuoRailRowTitleMinX(double cellWindowX,
+                                               double stockTitleX) {
+    return ApolloDuoRailHeaderTitleMinX(cellWindowX, stockTitleX);
 }
 
 // Show the rail when Regular *and landscape*, wide enough, and either

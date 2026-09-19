@@ -107,6 +107,12 @@ int main(void) {
           "a title already at the inset is not bumped again");
     Check(ApolloDuoRailRowTitleBump(98.0) == 0.0,
           "a safe-area-inset title is not double-shifted");
+    Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == 98.0,
+          "a full-bleed favorite row matches the FAVORITES header at x=98");
+    Check(ApolloDuoRailRowTitleMinX(80.0, 18.0) == 18.0,
+          "a cell already past the rail keeps the stock 18pt title");
+    Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == ApolloDuoRailHeaderTitleMinX(0.0, 18.0),
+          "favorite-row and header leading use the same minX");
     printf("OK: %u checks\n", checks);
     return 0;
 }

@@ -33,8 +33,10 @@ void ApolloDuoRailClearOpenContent(void);
 /// and pull favorite stars in toward titles on a wide canvas.
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
-/// Pull a Subreddits-row favorite star toward the title on open Duo.
-/// No-op when the rail is hidden. Safe to call from cell layoutSubviews.
+/// Align a RedditList favorite/sub row with the FAVORITES header on
+/// open Duo (shift the main stack, never title.frame) and pull the
+/// star to the drawn text’s trailing edge + 28pt. Shortcut rows are
+/// left alone. No-op when the rail is hidden.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.
