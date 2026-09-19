@@ -11,6 +11,10 @@ __BEGIN_DECLS
 /// (stock bottom UITabBar, no side rail).
 BOOL ApolloDuoRailIsActive(void);
 
+/// Live Duo mode for the app window: Phone / Closed / Open.
+/// Read-only — does not show, hide, or move the rail.
+int ApolloDuoCurrentMode(void);
+
 /// YES while My Subreddits is the selected rail item (stock RedditList
 /// root). Compact / cover never set this — the rail is hidden there.
 BOOL ApolloDuoRailIsPickingSubreddits(void);

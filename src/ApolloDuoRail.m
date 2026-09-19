@@ -9,6 +9,7 @@
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDeviceDisplay.h"
 #import "ApolloDeviceGeometry.h"
+#import "ApolloDuoSubsChrome.h"
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloThemeRuntime.h"
 
@@ -406,6 +407,17 @@ static int ApolloDuoRailCurrentMode(void) {
 
 static BOOL ApolloDuoRailIsLeading(void) {
     return ApolloDuoModeIsLeading(ApolloDuoRailCurrentMode());
+}
+
+static void ApolloDuoSubsChromeApplyToTabs(UITabBarController *tabs) {
+    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
+    if (!nav) nav = ApolloDuoRailFindPostsNav(tabs, NO);
+    UIViewController *top = nav.topViewController;
+    if (top) ApolloDuoSubsChromeApply(top);
+}
+
+int ApolloDuoCurrentMode(void) {
+    return ApolloDuoRailCurrentMode();
 }
 
 static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) {
@@ -1187,6 +1199,7 @@ void ApolloDuoRailSync(void) {
             objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[DuoRail] hidden; stock tab bar restored (mode=%d)", mode);
         }
+        ApolloDuoSubsChromeApplyToTabs(tabs);
         return;
     }
 
@@ -1249,4 +1262,5 @@ void ApolloDuoRailSync(void) {
             ApolloDuoRailOpenDefaultDirectory(tabs);
         }
     }
+    ApolloDuoSubsChromeApplyToTabs(tabs);
 }

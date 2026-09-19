@@ -9,6 +9,9 @@
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNavigationTitlePresentation.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoRailLayout.h"
+#import "ApolloDuoSubsChrome.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
@@ -1873,6 +1876,28 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         geometry.center = (leftLimit + rightLimit) / 2.0;
         geometry.maximumContentWidth = MAX(0, rightLimit - leftLimit -
             2 * (capsulePadding + kEdgePadding));
+    }
+
+    // Duo Subreddits: center over the list (right of the Open rail),
+    // not the full window, and keep the capsule out of corner/hinge
+    // chrome. Regular iPhone and non-RedditList screens are unchanged.
+    if (ApolloDuoSubsChromeControllerIsRedditList(topVC)) {
+        int duoMode = ApolloDuoCurrentMode();
+        if (ApolloDuoSubsChromeShouldApply(duoMode)) {
+            CGFloat barMin = CGRectGetMinX(bar.bounds);
+            CGFloat barMax = CGRectGetMaxX(bar.bounds);
+            CGFloat lead = (CGFloat)ApolloDuoSubsChromeTitleLeading(
+                duoMode, (double)(leftLimit - barMin));
+            CGFloat trail = (CGFloat)ApolloDuoSubsChromeTitleTrailing(
+                (double)(barMax - rightLimit));
+            leftLimit = MAX(leftLimit, barMin + lead);
+            rightLimit = MIN(rightLimit, barMax - trail);
+            geometry.center = (CGFloat)ApolloDuoSubsChromeTitleCenterBetween(
+                (double)leftLimit, (double)rightLimit);
+            geometry.maximumContentWidth = (CGFloat)ApolloDuoSubsChromeTitleMaxWidth(
+                (double)leftLimit, (double)rightLimit,
+                (double)(capsulePadding + kEdgePadding));
+        }
     }
 
     // Fit the original title through one constraint, preserving native text

@@ -34,6 +34,13 @@ enum {
     ApolloDuoRailRowStarGap = 28,
     ApolloDuoCoverPillWidth = 80,   /* cover system pill; Compact only */
     ApolloDuoCoverPillBottom = 120, /* lift FABs above the cover gear */
+    /* Subs nav chrome (title / Edit / floating +). Insets only the
+       controls — never the list — so Open stays full-width past the
+       rail and Closed stays uncrushed. Corner gutter keeps glyphs off
+       Duo's inner rounded corners without guessing a hinge rect. */
+    ApolloDuoSubsChromeCornerGutter = 20,
+    ApolloDuoSubsChromeFABSize = 56,
+    ApolloDuoSubsChromeFABMargin = 16,
     /* UITableView's default leading. RedditList headers paint at 18;
        shortcut ApolloSubtitleTableViewCell icons sit at safe-area + 16
        after the 80pt rail inset (window ≈96). Favorite titles key off
@@ -408,6 +415,107 @@ static inline int ApolloDuoRailShouldShow(int regularSizeClass,
     (void)regularSizeClass;
     return ApolloDuoModeFromBounds(dualDisplay, usableWidth, usableHeight)
         == ApolloDuoModeOpen;
+}
+
+// Subs nav chrome (centered title, Edit, floating +) on Duo only.
+// Regular iPhone stays stock Apollo. Does not show or hide the rail.
+static inline int ApolloDuoSubsChromeShouldApply(int mode) {
+    return mode == ApolloDuoModeOpen || mode == ApolloDuoModeClosed;
+}
+
+// Inline (not large) title so Liquid Glass / UIKit can center it.
+// Closed Compact keeps Apollo's stock large title.
+static inline int ApolloDuoSubsChromeShouldForceInlineTitle(int mode,
+                                                            int regularWidth) {
+    if (!ApolloDuoSubsChromeShouldApply(mode)) return 0;
+    if (mode == ApolloDuoModeOpen) return 1;
+    return regularWidth ? 1 : 0;
+}
+
+// Title leading edge in bar space. Open: at least the rail content
+// inset so "Subreddits" cannot sit under Posts/Subs. Closed: chrome
+// only (no rail).
+static inline double ApolloDuoSubsChromeTitleLeading(int mode,
+                                                     double chromeLeft) {
+    if (chromeLeft < 0.0) chromeLeft = 0.0;
+    if (mode == ApolloDuoModeOpen
+        && chromeLeft < ApolloDuoRailContentLeftInset()) {
+        return ApolloDuoRailContentLeftInset();
+    }
+    return chromeLeft;
+}
+
+// Title / Edit trailing inset. Honors hinge-sized chrome extras and
+// a minimum corner gutter so the control clears rounded corners.
+static inline double ApolloDuoSubsChromeTitleTrailing(double chromeRight) {
+    if (chromeRight < (double)ApolloDuoSubsChromeCornerGutter) {
+        return (double)ApolloDuoSubsChromeCornerGutter;
+    }
+    return chromeRight;
+}
+
+// Midpoint of the usable title band. Open looks centered over the
+// list (right of the rail), not the full window (which includes the
+// sidebar). Phone callers should not use this to move stock titles.
+static inline double ApolloDuoSubsChromeTitleCenterBetween(double leftEdge,
+                                                           double rightEdge) {
+    return (leftEdge + rightEdge) * 0.5;
+}
+
+static inline double ApolloDuoSubsChromeTitleMaxWidth(double leftEdge,
+                                                      double rightEdge,
+                                                      double padding) {
+    if (padding < 0.0) padding = 0.0;
+    double width = rightEdge - leftEdge - 2.0 * padding;
+    return width > 0.0 ? width : 0.0;
+}
+
+// FAB origin in the RedditList container. Trailing/bottom are chrome
+// + corner gutter (+ optional cover-pill lift). Size stays square.
+static inline ApolloDuoRailRect ApolloDuoSubsChromeFABFrame(double containerWidth,
+                                                            double containerHeight,
+                                                            double chromeRight,
+                                                            double chromeBottom,
+                                                            double buttonWidth,
+                                                            double buttonHeight) {
+    ApolloDuoRailRect rect;
+    rect.x = 0.0;
+    rect.y = 0.0;
+    rect.width = 0.0;
+    rect.height = 0.0;
+    if (containerWidth <= 0.0 || containerHeight <= 0.0) return rect;
+    if (buttonWidth < 1.0) buttonWidth = (double)ApolloDuoSubsChromeFABSize;
+    if (buttonHeight < 1.0) buttonHeight = (double)ApolloDuoSubsChromeFABSize;
+    double trail = chromeRight;
+    if (trail < (double)ApolloDuoSubsChromeCornerGutter) {
+        trail = (double)ApolloDuoSubsChromeCornerGutter;
+    }
+    trail += (double)ApolloDuoSubsChromeFABMargin;
+    double bottom = chromeBottom;
+    if (bottom < (double)ApolloDuoSubsChromeCornerGutter) {
+        bottom = (double)ApolloDuoSubsChromeCornerGutter;
+    }
+    bottom += (double)ApolloDuoSubsChromeFABMargin;
+    rect.width = buttonWidth;
+    rect.height = buttonHeight;
+    rect.x = containerWidth - trail - buttonWidth;
+    rect.y = containerHeight - bottom - buttonHeight;
+    if (rect.x < 0.0) rect.x = 0.0;
+    if (rect.y < 0.0) rect.y = 0.0;
+    return rect;
+}
+
+// Frame write guard. 0 when already on the target so viewDidLayout
+// is a no-op (same hang class as 25f8a7b constraint re-toggles).
+static inline int ApolloDuoSubsChromeShouldNudgeFrame(double haveX,
+                                                      double haveY,
+                                                      double wantX,
+                                                      double wantY) {
+    double dx = haveX - wantX;
+    double dy = haveY - wantY;
+    if (dx < 0.0) dx = -dx;
+    if (dy < 0.0) dy = -dy;
+    return dx > 0.5 || dy > 0.5;
 }
 
 #ifdef __cplusplus
