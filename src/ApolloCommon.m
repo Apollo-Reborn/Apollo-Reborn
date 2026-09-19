@@ -760,14 +760,17 @@ static UIColor *ApolloVisibleBackgroundColorForTable(UITableView *tableView,
     return nil;
 }
 
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller) {
+    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
+    return (ApolloThemeSourceTableIsStale(source) ? nil
+        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
+        ?: ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+}
+
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller) {
     if (!controller) return;
 
-    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
-    BOOL stale = ApolloThemeSourceTableIsStale(source);
-    UIColor *backgroundColor = (stale ? nil
-        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
-        ?: ApolloThemePageBackgroundColor() ?: controller.tableView.backgroundColor;
+    UIColor *backgroundColor = ApolloInheritedSettingsBackgroundColor(controller);
     controller.view.backgroundColor = backgroundColor;
     controller.tableView.backgroundColor = backgroundColor;
     controller.tableView.separatorColor = ApolloThemeSeparatorColor()
@@ -941,10 +944,6 @@ UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFl
         UIColor *fill = backgroundColor ?: [UIColor secondarySystemFillColor];
         [fill setFill];
         [path fill];
-
-        [[UIColor separatorColor] setStroke];
-        path.lineWidth = 0.5;
-        [path stroke];
 
         UIFont *font = [UIFont systemFontOfSize:size * 0.58];
         NSDictionary *attrs = @{NSFontAttributeName: font};

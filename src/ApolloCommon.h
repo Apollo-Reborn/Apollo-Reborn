@@ -70,6 +70,7 @@ NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
 void ApolloFlushReadPostIDsToDefaults(void);
 UITableView *ApolloInheritedSettingsThemeSourceTableView(UITableViewController *controller);
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller);
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller);
 
 // YES if sourceTable is nil or detached from its window. A covered (non-

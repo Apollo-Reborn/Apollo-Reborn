@@ -1,3 +1,4 @@
+#import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
@@ -1024,9 +1025,9 @@ typedef NS_ENUM(NSInteger, Tag) {
     openInApp.iconSystemName = @"arrow.up.forward.app.fill";      openInApp.iconTileColor = [UIColor systemBlueColor];
     pip.iconSystemName = @"pip.fill";                             pip.iconTileColor = [UIColor systemPurpleColor];
     translation.iconSystemName = @"character.bubble.fill";        translation.iconTileColor = [UIColor systemTealColor];
-    savedCategories.iconSystemName = @"bookmark.fill";            savedCategories.iconTileColor = [UIColor systemOrangeColor];
-    tagFilters.iconSystemName = @"tag.fill";                      tagFilters.iconTileColor = [UIColor systemGreenColor];
-    themeManager.iconSystemName = @"paintbrush.fill";             themeManager.iconTileColor = [UIColor systemIndigoColor];
+    savedCategories.iconSystemName = @"apollo.saved-categories";  savedCategories.iconTileColor = [UIColor systemGreenColor];
+    tagFilters.iconSystemName = @"tag.fill";                      tagFilters.iconTileColor = [UIColor systemOrangeColor];
+    themeManager.iconSystemName = @"paintbrush.fill";             themeManager.iconTileColor = ApolloThemeManagerIconColor();
     colorFlairs.iconSystemName = @"paintpalette.fill";            colorFlairs.iconTileColor = [UIColor systemPinkColor];
 
     return [ApolloSettingsSection sectionWithTitle:@"Shortcuts"
@@ -1936,7 +1937,10 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
-                                                      iPadTabBarBottom, tabBarSwipeNavigation ]];
+                                                      iPadTabBarBottom, tabBarSwipeNavigation,
+                                                      [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
+                                                          return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+                                                      }] ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {

@@ -122,6 +122,10 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 // rounded square. Cached per symbol + resolved color; the color is resolved
 // against the presenting view's traits because system colors differ slightly
 // between light and dark. Unknown symbol names fail soft to a plain tile.
+UIColor *ApolloThemeManagerIconColor(void) {
+    return UIColor.systemIndigoColor;
+}
+
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, UITraitCollection *traits) {
     static NSCache<NSString *, UIImage *> *cache;
     static dispatch_once_t once;
@@ -147,6 +151,33 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
     UIImage *tile = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
         [resolved setFill];
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:6.5] fill];
+        if ([symbolName isEqualToString:@"apollo.saved-categories"]) {
+            CGContextSaveGState(ctx.CGContext);
+            CGContextScaleCTM(ctx.CGContext, side / 36.0, side / 36.0);
+        // Two outlined bookmarks, matching the Saved Categories shortcut.
+        [UIColor.whiteColor setStroke];
+        UIBezierPath *rear = [UIBezierPath bezierPath];
+        [rear moveToPoint:CGPointMake(16, 9)];
+        [rear addLineToPoint:CGPointMake(16, 7)];
+        [rear addLineToPoint:CGPointMake(27, 7)];
+        [rear addLineToPoint:CGPointMake(27, 25)];
+        rear.lineWidth = 1.8;
+        rear.lineJoinStyle = kCGLineJoinRound;
+        rear.lineCapStyle = kCGLineCapRound;
+        [rear stroke];
+        UIBezierPath *front = [UIBezierPath bezierPath];
+        [front moveToPoint:CGPointMake(10, 11)];
+        [front addLineToPoint:CGPointMake(21, 11)];
+        [front addLineToPoint:CGPointMake(21, 29)];
+        [front addLineToPoint:CGPointMake(15.5, 24)];
+        [front addLineToPoint:CGPointMake(10, 29)];
+        [front closePath];
+        front.lineWidth = 1.8;
+        front.lineJoinStyle = kCGLineJoinRound;
+        [front stroke];
+            CGContextRestoreGState(ctx.CGContext);
+            return;
+        }
         CGSize gs = glyph.size;
         if (gs.width > 0 && gs.height > 0) {
             // Symbols vary in aspect ratio; cap the longer side so wide glyphs
@@ -191,6 +222,12 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 52.0;
     [self rebuildForm];
+}
+
+- (void)refreshFormAfterRowMove {
+    _sections = [self buildForm] ?: @[];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
 }
 
 - (void)rebuildForm {
@@ -382,6 +419,10 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 - (UITableViewCell *)cellForRowID:(NSString *)rowID {
     NSIndexPath *indexPath = [self indexPathForRowID:rowID];
     return indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+}
+
+- (ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self apollo_sf_rowAtIndexPath:indexPath];
 }
 
 - (ApolloSettingsRow *)apollo_sf_rowAtIndexPath:(NSIndexPath *)indexPath {

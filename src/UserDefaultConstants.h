@@ -1,3 +1,7 @@
+// Ordered Settings hold-menu route IDs. Missing value uses the default five;
+// an empty array intentionally disables the menu. Included in settings backups.
+static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
+
 // UserDefaults keys
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
