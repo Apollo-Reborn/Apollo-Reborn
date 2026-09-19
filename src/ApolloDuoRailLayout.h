@@ -191,17 +191,23 @@ static inline double ApolloDuoRailShortcutLeadMinX(double cellWindowX) {
                                         (double)ApolloDuoRailRowStockLead);
 }
 
-// Favorite rows have no icon. Image 2 parks their titles at the
-// shortcut icon column (Home / Popular row leading), not at
-// textLabel after the ~29pt glyph — that glyph column is ~30–40pt
-// further right and is the leftover wasted strip vs the target shot.
-// Prefer a live icon minX; otherwise a live text minX; else fallback.
+// Favorite rows have no icon. Portrait organization lines their
+// titles up with Home / Popular *text*, not the shortcut icon.
+// 4a76cd3 preferred the icon (96) and then Auto Layout snapped the
+// stack back, so the painted column stayed at ~178. Runtime wantX
+// is a live textLabel; fallback is last.
 static inline double ApolloDuoRailFavoriteTitleWantX(double iconMinX,
                                                      double textMinX,
                                                      double fallback) {
-    if (iconMinX > 0.5) return iconMinX;
     if (textMinX > 0.5) return textMinX;
+    if (iconMinX > 0.5) return iconMinX;
     return fallback;
+}
+
+// Horizontal constraint disable is one-shot. Re-toggling every
+// layoutSubviews is the 25f8a7b hang. 0 when already claimed.
+static inline int ApolloDuoRailRowShouldClaimLeading(int alreadyClaimed) {
+    return alreadyClaimed ? 0 : 1;
 }
 
 // After a real stack origin change, convertRect can still report the

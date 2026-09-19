@@ -51,6 +51,9 @@ static char kApolloDuoRailSavedPreferredSizeKey;
 static char kApolloDuoRailSavedAdditionalLeftKey;
 static char kApolloDuoRailRowStackShiftLoggedKey;
 static char kApolloDuoRailRowTightenBusyKey;
+static char kApolloDuoRailRowLeadingClaimedKey;
+static char kApolloDuoRailRowDisabledConstraintsKey;
+static char kApolloDuoRailShortcutTextWindowXKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
 static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
@@ -710,39 +713,115 @@ static UITableView *ApolloDuoRailTableForCell(UITableViewCell *cell) {
     return nil;
 }
 
-// Live Home / Popular / All / Moderator row leading inside `cell`'s
-// coordinates. Prefer the shortcut icon (Image 2 / rail-hug column).
-// Do not key off textLabel when an icon exists — that glyph sits
-// ~30–40pt further right and reopens the wasted column.
+// Live Home / Popular textLabel leading inside `cell`, from window-x.
+// Cached on the table so a scrolled-away shortcut still has a wantX.
 static CGFloat ApolloDuoRailShortcutLeadInCell(UITableViewCell *cell) {
     CGFloat fallback = (CGFloat)ApolloDuoRailShortcutLeadMinX(ApolloDuoRailWindowMinX(cell));
     UITableView *table = ApolloDuoRailTableForCell(cell);
     if (!table) return fallback;
 
+    CGFloat cellWindowX = ApolloDuoRailWindowMinX(cell);
+    CGFloat maxX = CGRectGetWidth(cell.bounds) * 0.45;
+
     for (UITableViewCell *other in table.visibleCells) {
         const char *name = class_getName(other.class);
         if (!name || !strstr(name, "ApolloSubtitleTableViewCell")) continue;
-
-        CGFloat iconX = 0.0;
-        UIImageView *icon = other.imageView;
-        if (icon && !icon.hidden && icon.image) {
-            CGRect inCell = [cell convertRect:icon.bounds fromView:icon];
-            iconX = CGRectGetMinX(inCell);
-        }
-
-        CGFloat textX = 0.0;
         UILabel *text = other.textLabel;
-        if (text && !text.hidden && text.text.length > 0) {
-            CGRect inCell = [cell convertRect:text.bounds fromView:text];
-            textX = CGRectGetMinX(inCell);
+        if (!text || text.hidden || text.text.length == 0) continue;
+        CGFloat textWindowX = ApolloDuoRailWindowMinX(text);
+        CGFloat inCell = textWindowX - cellWindowX;
+        if (inCell > 0.5 && inCell < maxX) {
+            objc_setAssociatedObject(table, &kApolloDuoRailShortcutTextWindowXKey,
+                                     @(textWindowX), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            return inCell;
         }
-
-        CGFloat want = (CGFloat)ApolloDuoRailFavoriteTitleWantX(iconX, textX, fallback);
-        CGFloat maxX = CGRectGetWidth(cell.bounds) * 0.45;
-        if (want > 0.5 && want < maxX) return want;
         break;
     }
+
+    NSNumber *cached = objc_getAssociatedObject(table, &kApolloDuoRailShortcutTextWindowXKey);
+    if (cached) {
+        CGFloat inCell = cached.doubleValue - cellWindowX;
+        if (inCell > 0.5 && inCell < maxX) return inCell;
+    }
     return fallback;
+}
+
+static BOOL ApolloDuoRailAttributeIsHorizontal(NSLayoutAttribute attribute) {
+    switch (attribute) {
+        case NSLayoutAttributeLeft:
+        case NSLayoutAttributeRight:
+        case NSLayoutAttributeLeading:
+        case NSLayoutAttributeTrailing:
+        case NSLayoutAttributeCenterX:
+        case NSLayoutAttributeLeftMargin:
+        case NSLayoutAttributeRightMargin:
+        case NSLayoutAttributeLeadingMargin:
+        case NSLayoutAttributeTrailingMargin:
+        case NSLayoutAttributeCenterXWithinMargins:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+static BOOL ApolloDuoRailConstraintPinsViewHorizontally(NSLayoutConstraint *constraint,
+                                                        UIView *view) {
+    if (!constraint || !constraint.active || !view) return NO;
+    if (constraint.firstItem != view && constraint.secondItem != view) return NO;
+    return ApolloDuoRailAttributeIsHorizontal(constraint.firstAttribute)
+        || ApolloDuoRailAttributeIsHorizontal(constraint.secondAttribute);
+}
+
+static UIView *ApolloDuoRailShiftViewForTitle(UITableViewCell *cell,
+                                              UIStackView *mainStack,
+                                              UILabel *title) {
+    if (mainStack) {
+        for (UIView *walk = title; walk && walk != cell; walk = walk.superview) {
+            if (walk == mainStack) return mainStack;
+        }
+    }
+    UIView *parent = title.superview;
+    if (parent && parent != cell && parent != cell.contentView) return parent;
+    return title;
+}
+
+static void ApolloDuoRailReleaseLeadingView(UITableViewCell *cell) {
+    if (!cell || !objc_getAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey)) return;
+    NSArray<NSLayoutConstraint *> *disabled =
+        objc_getAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey);
+    for (NSLayoutConstraint *constraint in disabled) {
+        if (constraint) constraint.active = YES;
+    }
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloDuoRailClaimLeadingView(UITableViewCell *cell, UIView *shiftView) {
+    if (!cell || !shiftView) return;
+    if (!ApolloDuoRailRowShouldClaimLeading(
+            [objc_getAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey) boolValue])) {
+        return;
+    }
+    // Stamp first so a sync re-enter during deactivate cannot toggle again.
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSMutableArray<NSLayoutConstraint *> *disabled = [NSMutableArray array];
+    UIView *host = shiftView.superview;
+    while (host) {
+        for (NSLayoutConstraint *constraint in host.constraints) {
+            if (ApolloDuoRailConstraintPinsViewHorizontally(constraint, shiftView)) {
+                constraint.active = NO;
+                [disabled addObject:constraint];
+            }
+        }
+        if (host == cell) break;
+        host = host.superview;
+    }
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey,
+                             [disabled copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
@@ -780,11 +859,14 @@ static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
 }
 
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
-    if (!cell || !ApolloDuoRailIsActive()) return;
-    // 25f8a7b hung the Duo sim (~99% CPU) by writing layoutMargins /
-    // deactivating centerX / activating a leading pin from layoutSubviews.
-    // Those invalidate the engine and re-enter this hook. Frame writes
-    // after %orig do not. Bail if we already entered this cell.
+    if (!cell) return;
+    if (!ApolloDuoRailIsActive()) {
+        ApolloDuoRailReleaseLeadingView(cell);
+        return;
+    }
+    // 25f8a7b hung by writing layoutMargins / re-toggling constraints /
+    // adding a pin every layoutSubviews. Claim is one-shot; this guard
+    // stops a sync re-enter during that first deactivate.
     if (objc_getAssociatedObject(cell, &kApolloDuoRailRowTightenBusyKey)) return;
 
     const char *cellName = class_getName(cell.class);
@@ -808,11 +890,8 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         mainStack.alignment = UIStackViewAlignmentLeading;
     }
 
-    UIView *shiftView = mainStack;
-    if (!shiftView) {
-        UIView *parent = title.superview;
-        if (parent && parent != cell && parent != cell.contentView) shiftView = parent;
-    }
+    UIView *shiftView = ApolloDuoRailShiftViewForTitle(cell, mainStack, title);
+    ApolloDuoRailClaimLeadingView(cell, shiftView);
 
     CGFloat textW = 0.0;
     if (title.text.length > 0 && title.font) {
@@ -823,9 +902,9 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     if (textW < 1.0) textW = MIN(CGRectGetWidth(titleInCell), 8.0);
     CGFloat haveTextX = CGRectGetMinX(titleInCell);
     CGFloat wantTitleX = ApolloDuoRailShortcutLeadInCell(cell);
-    // One idempotent stack nudge to the shortcut lead. No title.frame
-    // remainder (2eba156 stacked +80) and no constraint/margin writes
-    // (25f8a7b laid out forever).
+    // Idempotent nudge to the live Home textLabel. Claim already
+    // dropped the horizontal pins that snapped 4a76cd3 back. No
+    // title.frame remainder and no per-pass constraint/margin writes.
     if (shiftView && ApolloDuoRailRowShouldNudgeStack(haveTextX, wantTitleX)) {
         CGFloat delta = (CGFloat)ApolloDuoRailRowLeadDelta(haveTextX, wantTitleX);
         if (fabs(delta) > 0.5) {

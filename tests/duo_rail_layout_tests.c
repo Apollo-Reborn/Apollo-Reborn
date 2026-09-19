@@ -124,12 +124,18 @@ int main(void) {
           "a cell already past the rail keeps stock 16");
     Check(ApolloDuoRailShortcutLeadMinX(0.0) != ApolloDuoRailRowTitleMinX(0.0, 18.0),
           "runtime wantX is not the 2eba156 header column");
-    Check(ApolloDuoRailFavoriteTitleWantX(96.0, 137.0, 96.0) == 96.0,
-          "a live shortcut icon wins over the Home glyph (Image 2 column)");
+    Check(ApolloDuoRailFavoriteTitleWantX(96.0, 137.0, 96.0) == 137.0,
+          "live Home textLabel wins over the shortcut icon");
     Check(ApolloDuoRailFavoriteTitleWantX(0.0, 137.0, 96.0) == 137.0,
-          "textLabel is the fallback when the shortcut has no icon");
+          "textLabel is used when there is no icon");
+    Check(ApolloDuoRailFavoriteTitleWantX(96.0, 0.0, 96.0) == 96.0,
+          "icon is the fallback when textLabel is missing");
     Check(ApolloDuoRailFavoriteTitleWantX(0.0, 0.0, 96.0) == 96.0,
           "no live shortcut uses the 96pt fallback");
+    Check(ApolloDuoRailRowShouldClaimLeading(0) == 1,
+          "first layout may disable horizontal constraints once");
+    Check(ApolloDuoRailRowShouldClaimLeading(1) == 0,
+          "already-claimed rows must not re-toggle constraints (25f8a7b hang)");
 
     /* Image 1 / 92ea260 regressions. These fail on the policies we already
        shipped: only-push-right (mid-pane left alone), title.frame bump
@@ -196,8 +202,8 @@ int main(void) {
     }
     Check(ApolloDuoRailRowLeadDelta(178.0, 96.0) == -82.0,
           "Image 1 settled titles (header 98 + leftover 80) pull to 96");
-    Check(ApolloDuoRailRowLeadDelta(178.0, 96.0) < ApolloDuoRailRowLeadDelta(178.0, 137.0),
-          "keying off the Home glyph (≈137) would leave ~40pt of the wasted column");
+    Check(ApolloDuoRailRowLeadDelta(178.0, 137.0) == -41.0,
+          "4a76cd3 leftover 178 pulls to the live Home text (~137)");
     Check(ApolloDuoRailRowStarMinX(96.0, 40.0, 28.0) == 164.0,
           "star still sits after the drawn text at the new 96pt title lead");
 
@@ -218,10 +224,14 @@ int main(void) {
           "Image 1 leftover 178 is a second indented column");
     Check(!ApolloDuoRailRowIsPortraitOrganized(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 96.0),
           "18 + wide readable leading is the landscape waste Aaron sees");
-    Check(!ApolloDuoRailRowIsPortraitOrganized(137.0, 96.0),
-          "the Home glyph after the icon is a second column, not the lead");
+    Check(ApolloDuoRailRowIsPortraitOrganized(137.0, 137.0),
+          "titles on the live Home textLabel are portrait-organized");
+    Check(!ApolloDuoRailRowIsPortraitOrganized(178.0, 137.0),
+          "4a76cd3 leftover 178 is still a second column vs Home text");
+    Check(ApolloDuoRailRowWastedLeading(178.0, 137.0) == 41.0,
+          "Image 1 wastes 41pt left of the Home text lead");
     Check(ApolloDuoRailRowWastedLeading(178.0, 96.0) == 82.0,
-          "Image 1 wastes 82pt left of the shortcut lead");
+          "Image 1 wastes 82pt left of the shortcut icon lead");
     Check(ApolloDuoRailRowWastedLeading(96.0, 96.0) == 0.0,
           "portrait organization has no wasted leading");
     Check(!ApolloDuoRailRowShouldNudgeStack(96.0, 96.0),
@@ -230,6 +240,10 @@ int main(void) {
           "a 2pt header slop is already organized; do not nudge");
     Check(ApolloDuoRailRowShouldNudgeStack(178.0, 96.0),
           "Image 1 leftover 178 still needs one stack nudge");
+    Check(ApolloDuoRailRowShouldNudgeStack(178.0, 137.0),
+          "178 vs live Home text (~137) still needs one stack nudge");
+    Check(!ApolloDuoRailRowShouldNudgeStack(137.0, 137.0),
+          "titles already on Home text must not write frames again");
     Check(ApolloDuoRailRowShouldNudgeStack(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 96.0),
           "readable-centered landscape still needs one stack nudge");
     printf("OK: %u checks\n", checks);

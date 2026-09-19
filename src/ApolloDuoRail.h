@@ -33,12 +33,12 @@ void ApolloDuoRailClearOpenContent(void);
 /// Favorite/sub rows get rail clearance only — no wide-row star cluster.
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
-/// Portrait organization on open Duo: one leading column. Favorite /
-/// A–Z titles share the Home / Popular shortcut-row leading via a
-/// single idempotent stack-frame nudge (no layoutMargins / constraint
-/// writes — those re-entered layoutSubviews and hung 25f8a7b). Stars
-/// hug the drawn text. Shortcut rows are left alone. No-op when the
-/// rail is hidden or the title is already on the lead.
+/// Portrait organization on open Duo: favorite / A–Z titles share the
+/// live Home / Popular textLabel leading. One-shot disable of the
+/// stack's external horizontal constraints (never from every
+/// layoutSubviews — that hung 25f8a7b), then an idempotent frame
+/// nudge. No layoutMargins writes, no new pin. Stars hug the drawn
+/// text. Releases the claim when the rail hides.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.
