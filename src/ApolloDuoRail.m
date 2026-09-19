@@ -50,6 +50,9 @@ static char kApolloDuoRailSavedContentInsetLeftKey;
 static char kApolloDuoRailSavedPreferredSizeKey;
 static char kApolloDuoRailSavedAdditionalLeftKey;
 static char kApolloDuoRailRowStackShiftLoggedKey;
+static char kApolloDuoRailRowDisabledConstraintsKey;
+static char kApolloDuoRailRowLeadPinKey;
+static char kApolloDuoRailRowSavedAutoresizingKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
 static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
@@ -744,6 +747,138 @@ static CGFloat ApolloDuoRailShortcutLeadInCell(UITableViewCell *cell) {
     return fallback;
 }
 
+static BOOL ApolloDuoRailItemIsReadableGuide(id item, UIView *content) {
+    if (!item || !content || ![item isKindOfClass:[UILayoutGuide class]]) return NO;
+    UILayoutGuide *guide = (UILayoutGuide *)item;
+    if (guide == content.readableContentGuide) return YES;
+    UIView *parent = content.superview;
+    return parent && guide == parent.readableContentGuide;
+}
+
+static BOOL ApolloDuoRailConstraintIsWideLeading(NSLayoutConstraint *constraint,
+                                                 UIView *stack,
+                                                 UILabel *title,
+                                                 UIView *content) {
+    if (!constraint || !constraint.active) return NO;
+    id first = constraint.firstItem;
+    id second = constraint.secondItem;
+    BOOL involvesRow = (first == stack || second == stack || first == title || second == title);
+    if (!involvesRow) return NO;
+    BOOL centerX = constraint.firstAttribute == NSLayoutAttributeCenterX
+        || constraint.secondAttribute == NSLayoutAttributeCenterX;
+    BOOL readable = ApolloDuoRailItemIsReadableGuide(first, content)
+        || ApolloDuoRailItemIsReadableGuide(second, content);
+    return centerX || readable;
+}
+
+static void ApolloDuoRailRestoreRedditListPortraitLeading(UITableViewCell *cell) {
+    if (!cell) return;
+    NSArray<NSLayoutConstraint *> *disabled =
+        objc_getAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey);
+    for (NSLayoutConstraint *constraint in disabled) {
+        if (constraint) constraint.active = YES;
+    }
+    NSLayoutConstraint *pin = objc_getAssociatedObject(cell, &kApolloDuoRailRowLeadPinKey);
+    if (pin) pin.active = NO;
+    UIStackView *stack = ApolloDuoRailMainStackView(cell);
+    NSNumber *mask = objc_getAssociatedObject(cell, &kApolloDuoRailRowSavedAutoresizingKey);
+    if (stack && mask) {
+        stack.autoresizingMask = (UIViewAutoresizing)mask.unsignedIntegerValue;
+    }
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowLeadPinKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kApolloDuoRailRowSavedAutoresizingKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloDuoRailApplyPortraitMargins(UITableViewCell *cell) {
+    UIView *content = cell.contentView ?: cell;
+    cell.preservesSuperviewLayoutMargins = NO;
+    content.preservesSuperviewLayoutMargins = NO;
+    cell.insetsLayoutMarginsFromSafeArea = YES;
+    content.insetsLayoutMarginsFromSafeArea = YES;
+
+    UIEdgeInsets contentMargins = content.layoutMargins;
+    CGFloat contentWant = (CGFloat)ApolloDuoRailRowStockMarginLeft(content.safeAreaInsets.left);
+    if (fabs(contentMargins.left - contentWant) > 0.5) {
+        contentMargins.left = contentWant;
+        content.layoutMargins = contentMargins;
+    }
+    UIEdgeInsets cellMargins = cell.layoutMargins;
+    CGFloat cellWant = (CGFloat)ApolloDuoRailRowStockMarginLeft(cell.safeAreaInsets.left);
+    if (fabs(cellMargins.left - cellWant) > 0.5) {
+        cellMargins.left = cellWant;
+        cell.layoutMargins = cellMargins;
+    }
+}
+
+static void ApolloDuoRailPinRedditListLeading(UITableViewCell *cell,
+                                              UIView *shiftView,
+                                              UILabel *title) {
+    UIView *content = cell.contentView ?: cell;
+    if (!shiftView) shiftView = title;
+    if (!shiftView) return;
+
+    if (shiftView.translatesAutoresizingMaskIntoConstraints) {
+        if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowSavedAutoresizingKey)) {
+            objc_setAssociatedObject(cell, &kApolloDuoRailRowSavedAutoresizingKey,
+                                     @(shiftView.autoresizingMask),
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        UIViewAutoresizing mask = shiftView.autoresizingMask;
+        mask |= UIViewAutoresizingFlexibleRightMargin;
+        mask &= ~UIViewAutoresizingFlexibleLeftMargin;
+        shiftView.autoresizingMask = mask;
+    }
+
+    if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey)) {
+        NSMutableArray<NSLayoutConstraint *> *disabled = [NSMutableArray array];
+        NSArray<UIView *> *hosts = @[cell, content, shiftView];
+        for (UIView *host in hosts) {
+            for (NSLayoutConstraint *constraint in host.constraints) {
+                if (ApolloDuoRailConstraintIsWideLeading(constraint, shiftView, title, content)) {
+                    constraint.active = NO;
+                    [disabled addObject:constraint];
+                }
+            }
+        }
+        if (content.readableContentGuide) {
+            for (NSLayoutConstraint *constraint in content.readableContentGuide.owningView.constraints) {
+                if (ApolloDuoRailConstraintIsWideLeading(constraint, shiftView, title, content)) {
+                    constraint.active = NO;
+                    [disabled addObject:constraint];
+                }
+            }
+        }
+        objc_setAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey,
+                                 [disabled copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    if (shiftView != title && !objc_getAssociatedObject(cell, &kApolloDuoRailRowLeadPinKey)
+        && !shiftView.translatesAutoresizingMaskIntoConstraints) {
+        NSLayoutConstraint *pin =
+            [shiftView.leadingAnchor constraintEqualToAnchor:content.layoutMarginsGuide.leadingAnchor];
+        pin.priority = UILayoutPriorityRequired - 1;
+        pin.active = YES;
+        objc_setAssociatedObject(cell, &kApolloDuoRailRowLeadPinKey, pin,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    CGFloat lead = content.layoutMargins.left;
+    if (lead < 1.0) lead = (CGFloat)ApolloDuoRailRowStockLead;
+    UIView *superview = shiftView.superview ?: content;
+    CGRect target = CGRectMake(lead, 0.0, 1.0, 1.0);
+    CGRect inSuper = [superview convertRect:target fromView:content];
+    CGRect frame = shiftView.frame;
+    if (fabs(frame.origin.x - inSuper.origin.x) > 0.5) {
+        frame.origin.x = inSuper.origin.x;
+        if (frame.origin.x < 0.0) frame.origin.x = 0.0;
+        shiftView.frame = frame;
+    }
+}
+
 static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
     if (!cell) return nil;
     Ivar ivar = class_getInstanceVariable(cell.class, "accessoryButton");
@@ -779,11 +914,14 @@ static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
 }
 
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
-    if (!cell || !ApolloDuoRailIsActive()) return;
+    if (!cell) return;
+    if (!ApolloDuoRailIsActive()) {
+        ApolloDuoRailRestoreRedditListPortraitLeading(cell);
+        return;
+    }
 
-    // Shortcut rows (ApolloSubtitleTableViewCell) already honor the nav
-    // safe-area inset — Home / Popular / All / Moderator stay leading.
-    // Do not touch them. The mid-pane bug is RedditList-only.
+    // Shortcut rows already honor the nav safe-area — they are the
+    // leading line. Do not touch them.
     const char *cellName = class_getName(cell.class);
     if (cellName && strstr(cellName, "ApolloSubtitleTableViewCell")) return;
 
@@ -791,18 +929,16 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     UILabel *redditTitle = ApolloDuoRailRedditTitleLabel(cell);
     if (!mainStack && !redditTitle) return;
 
-    // Safe-area margins are the one clearance path for cells that honor
-    // them. They do not move a stack pinned to readableContentGuide /
-    // centerX — that is why shortcut rows were fine and FAVORITES were not.
-    cell.insetsLayoutMarginsFromSafeArea = YES;
-    cell.contentView.insetsLayoutMarginsFromSafeArea = YES;
-
     UILabel *title = redditTitle ?: ApolloDuoRailPrimaryLabelInCell(cell);
     if (!title) return;
 
-    // Force leading text. A stretchy label with center alignment draws
-    // "Apple" mid-pane while label.minX is still ~18; 92ea260 measured
-    // the frame and thought the row was already clear.
+    // Portrait organization: stock RedditList leading + rail safe-area
+    // only. Wide Regular otherwise centers a readable column (Image 1
+    // wasted gap). Pin the stack to layout-margin leading and drop
+    // centerX / readable constraints. No title.frame remainder — that
+    // stacked a second +80 on 2eba156.
+    ApolloDuoRailApplyPortraitMargins(cell);
+
     title.textAlignment = NSTextAlignmentLeft;
     [title setContentHuggingPriority:UILayoutPriorityRequired
                              forAxis:UILayoutConstraintAxisHorizontal];
@@ -813,6 +949,13 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         mainStack.alignment = UIStackViewAlignmentLeading;
     }
 
+    UIView *shiftView = mainStack;
+    if (!shiftView) {
+        UIView *parent = title.superview;
+        if (parent && parent != cell && parent != cell.contentView) shiftView = parent;
+    }
+    ApolloDuoRailPinRedditListLeading(cell, shiftView, title);
+
     CGFloat textW = 0.0;
     if (title.text.length > 0 && title.font) {
         textW = [title.text sizeWithAttributes:@{ NSFontAttributeName: title.font }].width;
@@ -820,59 +963,23 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
 
     CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
     if (textW < 1.0) textW = MIN(CGRectGetWidth(titleInCell), 8.0);
-    // Measure after left-align: visual text is at label.minX. Measuring
-    // before left-align and pulling by the center-text delta would drag
-    // a full-bleed label's origin negative.
     CGFloat haveTextX = CGRectGetMinX(titleInCell);
-
     CGFloat wantTitleX = ApolloDuoRailShortcutLeadInCell(cell);
-    CGFloat delta = (CGFloat)ApolloDuoRailRowLeadDelta(haveTextX, wantTitleX);
-
-    UIView *shiftView = mainStack;
-    if (!shiftView) {
-        UIView *parent = title.superview;
-        if (parent && parent != cell && parent != cell.contentView) shiftView = parent;
-    }
-    BOOL titleInShift = (shiftView == nil);
-    if (shiftView) {
-        for (UIView *walk = title; walk && walk != cell; walk = walk.superview) {
-            if (walk == shiftView) {
-                titleInShift = YES;
-                break;
-            }
-        }
-    }
-    BOOL stackMoved = NO;
-    if (shiftView && titleInShift && fabs(delta) > 0.5) {
+    if (!ApolloDuoRailRowIsPortraitOrganized(haveTextX, wantTitleX) && shiftView) {
+        CGFloat delta = (CGFloat)ApolloDuoRailRowLeadDelta(haveTextX, wantTitleX);
         CGRect stackFrame = shiftView.frame;
-        CGFloat oldX = stackFrame.origin.x;
         stackFrame.origin.x += delta;
         if (stackFrame.origin.x < 0.0) stackFrame.origin.x = 0.0;
-        if (fabs(stackFrame.origin.x - oldX) > 0.5) {
-            shiftView.frame = stackFrame;
-            stackMoved = YES;
-        }
+        shiftView.frame = stackFrame;
         titleInCell = [cell convertRect:title.bounds fromView:title];
-        if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey)) {
-            objc_setAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey, @YES,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[DuoRail] reddit-row stack %+.0f title→%.0f (want %.0f have was %.0f)",
-                      delta, CGRectGetMinX(titleInCell), wantTitleX, haveTextX);
-        }
+        haveTextX = CGRectGetMinX(titleInCell);
     }
-
-    // Remainder only when the stack write was a no-op. convertRect after
-    // a real stack move can still report the pre-move minX; applying the
-    // same +80 again is the Image 1 leftover column (titles at ~178,
-    // headers at 98).
-    titleInCell = [cell convertRect:title.bounds fromView:title];
-    CGFloat remain = (CGFloat)ApolloDuoRailRowLeadDelta(CGRectGetMinX(titleInCell), wantTitleX);
-    if (ApolloDuoRailRowShouldApplyTitleRemainder(stackMoved, remain)) {
-        CGRect titleFrame = title.frame;
-        titleFrame.origin.x += remain;
-        if (titleFrame.origin.x < 0.0) titleFrame.origin.x = 0.0;
-        title.frame = titleFrame;
-        titleInCell = [cell convertRect:title.bounds fromView:title];
+    if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey)) {
+        objc_setAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[DuoRail] reddit-row portrait-lead title=%.0f want=%.0f organized=%d",
+                  haveTextX, wantTitleX,
+                  ApolloDuoRailRowIsPortraitOrganized(haveTextX, wantTitleX));
     }
 
     // Hug the title to the drawn text so a stretchy label cannot keep
@@ -989,7 +1096,12 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
 
     if (![scrollView isKindOfClass:[UITableView class]]) return;
     UITableView *tableView = (UITableView *)scrollView;
-    if (!active) return;
+    if (!active) {
+        for (UITableViewCell *cell in tableView.visibleCells) {
+            ApolloDuoRailTightenSubredditRow(cell);
+        }
+        return;
+    }
 
     if (tableView.cellLayoutMarginsFollowReadableWidth) {
         tableView.cellLayoutMarginsFollowReadableWidth = NO;

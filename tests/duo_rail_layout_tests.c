@@ -96,7 +96,10 @@ int main(void) {
     Check(ApolloDuoRailRowMaxContentWidth == 480 && ApolloDuoRailRowStarGap == 28,
           "legacy cluster constants remain 480 / 28 and are unused at runtime");
     Check(ApolloDuoRailHeaderTitleMinX(0.0, 18.0) == 98.0,
-          "a header under the rail shifts FAVORITES from x=18 to x=98");
+          "legacy header 18→98 math stays locked");
+    Check(ApolloDuoRailHeaderTitleMinX(0.0, (double)ApolloDuoRailRowStockLead)
+              == ApolloDuoRailShortcutLeadMinX(0.0),
+          "runtime headers share the 96pt shortcut / title column");
     Check(ApolloDuoRailHeaderTitleMinX(80.0, 18.0) == 18.0,
           "a header already past the rail keeps the stock 18pt title");
     Check(ApolloDuoRailRowTitleBump(0.0) == 80.0,
@@ -197,6 +200,30 @@ int main(void) {
           "keying off the Home glyph (≈137) would leave ~40pt of the wasted column");
     Check(ApolloDuoRailRowStarMinX(96.0, 40.0, 28.0) == 164.0,
           "star still sits after the drawn text at the new 96pt title lead");
+
+    /* Portrait organization: one leading column. Landscape must use
+       stock margin (safe+16), not a readable-centered second column. */
+    Check(ApolloDuoRailRowStockMarginLeft(80.0) == 96.0,
+          "full-bleed stock leading is rail safe-area + 16");
+    Check(ApolloDuoRailRowStockMarginLeft(0.0) == 16.0,
+          "an already-inset contentView keeps portrait's 16pt lead");
+    Check(ApolloDuoRailRowStockMarginLeft(80.0)
+              != 16.0 + ApolloDuoRailReadableLeading(920.0, 672.0),
+          "readable-column extra must not become the favorite indent");
+    Check(ApolloDuoRailRowIsPortraitOrganized(96.0, 96.0),
+          "titles on the shortcut lead are portrait-organized");
+    Check(ApolloDuoRailRowIsPortraitOrganized(98.0, 96.0),
+          "header 98 is within a few points of shortcut 96");
+    Check(!ApolloDuoRailRowIsPortraitOrganized(178.0, 96.0),
+          "Image 1 leftover 178 is a second indented column");
+    Check(!ApolloDuoRailRowIsPortraitOrganized(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 96.0),
+          "18 + wide readable leading is the landscape waste Aaron sees");
+    Check(!ApolloDuoRailRowIsPortraitOrganized(137.0, 96.0),
+          "the Home glyph after the icon is a second column, not the lead");
+    Check(ApolloDuoRailRowWastedLeading(178.0, 96.0) == 82.0,
+          "Image 1 wastes 82pt left of the shortcut lead");
+    Check(ApolloDuoRailRowWastedLeading(96.0, 96.0) == 0.0,
+          "portrait organization has no wasted leading");
     printf("OK: %u checks\n", checks);
     return 0;
 }

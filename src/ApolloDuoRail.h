@@ -33,13 +33,13 @@ void ApolloDuoRailClearOpenContent(void);
 /// Favorite/sub rows get rail clearance only — no wide-row star cluster.
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
-/// Lead-align a RedditList favorite/sub row to the live Home / Popular
-/// shortcut row leading (icon column, fallback safe-area + 16 = 96) on
-/// open Duo. Not the FAVORITES header 18→98 column, and not a second
-/// +80 on title.frame after the stack already moved. Pulls a mid-pane
-/// stack left; pushes an under-rail stack right (right-shift capped at
-/// 80pt). Hugs the title to the drawn text and parks the star after it.
-/// Shortcut rows are left alone. No-op when the rail is hidden.
+/// Portrait organization on open Duo: one leading column. Favorite /
+/// A–Z titles share the Home / Popular shortcut-row leading (stock
+/// RedditList + rail safe-area only). Disables wide-Regular
+/// readable/centerX indent, pins the stack to layout-margin leading,
+/// and does not stack a second +80 on title.frame. Stars hug the
+/// drawn text. Shortcut rows are left alone. Restores stock
+/// constraints when the rail hides (portrait / Compact).
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.

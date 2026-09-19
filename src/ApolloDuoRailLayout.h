@@ -265,10 +265,36 @@ static inline double ApolloDuoRailRowStarMinX(double titleMinX,
 // Extra leading a centered readable column adds on a wide cell. Portrait
 // phone width (≤ readableMax) is 0 — titles stay stock. Landscape Duo
 // (~900pt) is tens to hundreds of points, which is the mid-pane gap.
+// Runtime must NOT keep that extra: landscape uses the same stock
+// leading as portrait, plus rail safe-area only.
 static inline double ApolloDuoRailReadableLeading(double cellWidth,
                                                   double readableMax) {
     if (readableMax <= 0.0 || cellWidth <= readableMax) return 0.0;
     return (cellWidth - readableMax) * 0.5;
+}
+
+// Portrait organization: content leading is safe-area + stock 16.
+// Full-bleed cell under the rail → 80+16=96. A contentView already
+// inset by the table's safe-area has safeLeft=0 → 16. Never add the
+// readable-column half-gap on top of that.
+static inline double ApolloDuoRailRowStockMarginLeft(double safeLeft) {
+    if (safeLeft < 0.0) safeLeft = 0.0;
+    return safeLeft + (double)ApolloDuoRailRowStockLead;
+}
+
+// Same leading line as Home / Popular (a few points). A second
+// indented column (Image 1 ~178, or 18+readable 124) fails this.
+static inline int ApolloDuoRailRowIsPortraitOrganized(double titleMinX,
+                                                      double shortcutLead) {
+    double gap = titleMinX - shortcutLead;
+    if (gap < 0.0) gap = -gap;
+    return gap <= 4.0;
+}
+
+static inline double ApolloDuoRailRowWastedLeading(double titleMinX,
+                                                   double shortcutLead) {
+    double gap = titleMinX - shortcutLead;
+    return gap > 0.0 ? gap : 0.0;
 }
 
 // Show the rail when Regular *and landscape*, wide enough, and either

@@ -2391,7 +2391,7 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
             CGRect inTable = [tableView convertRect:header.bounds fromView:header];
             windowX = CGRectGetMinX([tableView convertRect:inTable toView:nil]);
         }
-        headerX = (CGFloat)ApolloDuoRailHeaderTitleMinX(windowX, 18.0);
+        headerX = (CGFloat)ApolloDuoRailHeaderTitleMinX(windowX, (double)ApolloDuoRailRowStockLead);
     }
     label.frame = CGRectMake(headerX, 0.0, MAX(CGRectGetWidth(header.bounds) - headerX - 54.0, 0.0), CGRectGetHeight(header.bounds));
 
