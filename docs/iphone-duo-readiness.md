@@ -84,9 +84,10 @@ or an SDK bump.
   clears Duo’s system gear. Open-Duo content is expanded to the usable
   width right of the rail (letterboxed phone column → fill). RedditList
   headers that ignore safe-area are shifted so they do not clip under
-  Subs; favorite / A–Z titles keep stock RedditList leading (same as
-  portrait) plus rail clearance only — no wide-row star cluster. No
-  midX Apply loops and no `UIView` `layoutSubviews` frame-lock.
+  Subs; favorite / A–Z titles use a signed lead delta to the same
+  header minX (pull mid-pane / readable-centered stacks left; push
+  under-rail stacks at most 80pt). No midX Apply loops and no
+  `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -244,10 +245,10 @@ Confirm feed size-class layout (step 3 + open Duo):
   portrait or fold to Compact: rail is removed, tab bar returns,
   `additionalSafeAreaInsets.left` is 0 on the whole tree — no 68pt
   white bar beside the feed. Section headers (FAVORITES / MODERATOR)
-  start after the rail; favorite / A–Z titles keep the same stock
-  leading as portrait, shifted only enough to clear the rail (no
-  wide-row `RowMaxContentWidth` / star-tighten — that is landscape-
-  only and parked names mid-pane).
+  start after the rail; favorite / A–Z titles are lead-aligned to
+  that same header minX with a signed delta (mid-pane stacks pull
+  left; under-rail stacks push at most 80pt) so they match portrait
+  leading plus rail clearance.
 - Overscrolling comments must not reveal a second copy of the post
   (tiling is off, so there is no leftover detail host).
 - Swipe-up-for-comments media pane is unchanged (sheet).

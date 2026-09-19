@@ -93,12 +93,10 @@ static inline int ApolloDuoRailContentNeedsLeadingClearance(double contentX,
 }
 
 // Extra x to add to a *title* that is still under the rail. 0 when the
-// title's window minX is already at/after the content inset. Do not use
-// the cell contentView's window x — that view is full-bleed at 0 even
-// when safe-area margins have already cleared the text. Favorite/sub
-// rows must not apply this to title.frame (that stacked on redditTitle
-// labels already past the rail). Use ApolloDuoRailRowTitleMinX on the
-// main stack instead.
+// title's window minX is already at/after the content inset. Positive
+// only — 92ea260 used this as the whole policy and left Image 1
+// (mid-pane have≈400) untouched. Runtime lead-align uses
+// ApolloDuoRailRowLeadDelta (signed) instead.
 static inline double ApolloDuoRailRowTitleBump(double titleWindowX) {
     if (titleWindowX + 0.5 >= ApolloDuoRailContentLeftInset()) return 0.0;
     return ApolloDuoRailContentLeftInset() - titleWindowX;
@@ -175,6 +173,61 @@ static inline double ApolloDuoRailHeaderTitleMinX(double headerWindowX,
 static inline double ApolloDuoRailRowTitleMinX(double cellWindowX,
                                                double stockTitleX) {
     return ApolloDuoRailHeaderTitleMinX(cellWindowX, stockTitleX);
+}
+
+// Visual text minX inside a label. Center/right alignment on a stretchy
+// wide label is how "Apple" can sit mid-pane while label.minX is still 18.
+enum {
+    ApolloDuoRailTextAlignLeft = 0,
+    ApolloDuoRailTextAlignCenter = 1,
+    ApolloDuoRailTextAlignRight = 2,
+};
+
+static inline double ApolloDuoRailLabelTextMinX(double labelMinX,
+                                                double labelWidth,
+                                                double textWidth,
+                                                int align) {
+    if (textWidth < 0.0) textWidth = 0.0;
+    if (labelWidth < textWidth) labelWidth = textWidth;
+    if (align == ApolloDuoRailTextAlignCenter) {
+        return labelMinX + (labelWidth - textWidth) * 0.5;
+    }
+    if (align == ApolloDuoRailTextAlignRight) {
+        return labelMinX + (labelWidth - textWidth);
+    }
+    return labelMinX;
+}
+
+// Signed delta that puts visual text at wantX. Positive = still under the
+// rail (push right, capped at ContentLeftInset so we cannot stack a
+// second 80pt). Negative = mid-pane / readable-centered (pull left).
+// 92ea260 only applied the positive arm, so Image 1 (have≈400, want=98)
+// was left untouched.
+static inline double ApolloDuoRailRowLeadDelta(double haveTextMinX,
+                                               double wantX) {
+    double delta = wantX - haveTextMinX;
+    double maxRight = ApolloDuoRailContentLeftInset();
+    if (delta > maxRight) delta = maxRight;
+    return delta;
+}
+
+// Star sits after the drawn text, not at RowMaxContentWidth (452) and
+// not on the first letter (titleMinX).
+static inline double ApolloDuoRailRowStarMinX(double titleMinX,
+                                              double textWidth,
+                                              double gap) {
+    if (textWidth < 0.0) textWidth = 0.0;
+    if (gap < 0.0) gap = 0.0;
+    return titleMinX + textWidth + gap;
+}
+
+// Extra leading a centered readable column adds on a wide cell. Portrait
+// phone width (≤ readableMax) is 0 — titles stay stock. Landscape Duo
+// (~900pt) is tens to hundreds of points, which is the mid-pane gap.
+static inline double ApolloDuoRailReadableLeading(double cellWidth,
+                                                  double readableMax) {
+    if (readableMax <= 0.0 || cellWidth <= readableMax) return 0.0;
+    return (cellWidth - readableMax) * 0.5;
 }
 
 // Show the rail when Regular *and landscape*, wide enough, and either

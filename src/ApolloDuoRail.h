@@ -33,11 +33,11 @@ void ApolloDuoRailClearOpenContent(void);
 /// Favorite/sub rows get rail clearance only — no wide-row star cluster.
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
-/// Rail-clearance only for RedditList favorite/sub rows on open Duo.
-/// If the name is still under the rail, shift the main stack to the
-/// FAVORITES header minX. Never write title.frame and never apply the
-/// wide-row star cluster (that is what parked landscape titles
-/// mid-pane). Shortcut rows are left alone. No-op when the rail is hidden.
+/// Lead-align a RedditList favorite/sub row to the FAVORITES header
+/// minX on open Duo. Pulls a mid-pane / readable-centered stack left
+/// and pushes an under-rail stack right (right-shift capped at 80pt).
+/// Hugs the title to the drawn text and parks the star after it.
+/// Shortcut rows are left alone. No-op when the rail is hidden.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.

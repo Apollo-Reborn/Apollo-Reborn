@@ -113,6 +113,41 @@ int main(void) {
           "a cell already past the rail keeps the stock 18pt title");
     Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == ApolloDuoRailHeaderTitleMinX(0.0, 18.0),
           "favorite-row and header leading use the same minX");
+
+    /* Image 1 / 92ea260 regressions. These fail on the policies we already
+       shipped: only-push-right (mid-pane left alone), title.frame bump
+       stacked on safe-area (double-shift), and star at label.maxX / 452
+       (star-on-letter or star missing at the trailing edge). */
+    Check(ApolloDuoRailLabelTextMinX(18.0, 800.0, 50.0, ApolloDuoRailTextAlignCenter) == 393.0,
+          "center-aligned text in a stretchy label sits mid-pane (Image 1 glyph)");
+    Check(ApolloDuoRailLabelTextMinX(18.0, 800.0, 50.0, ApolloDuoRailTextAlignLeft) == 18.0,
+          "left-aligned text in the same stretchy label is at the label origin");
+    Check(ApolloDuoRailRowLeadDelta(400.0, 98.0) == -302.0,
+          "a mid-pane title column (Image 1, have≈400) must be pulled left");
+    Check(ApolloDuoRailRowLeadDelta(400.0, 98.0) < -0.5,
+          "92ea260 only-positive deficit would leave Image 1 untouched");
+    Check(ApolloDuoRailRowLeadDelta(18.0, 98.0) == 80.0,
+          "an under-rail title is pushed by at most the 80pt rail inset");
+    Check(ApolloDuoRailRowLeadDelta(0.0, 98.0) == 80.0,
+          "right-shift is capped at 80 so we cannot stack a second inset");
+    Check(ApolloDuoRailRowLeadDelta(98.0, 98.0) == 0.0,
+          "Image 2 / header-aligned titles are a no-op");
+    Check(ApolloDuoRailRowLeadDelta(178.0, 98.0) == -80.0,
+          "a double-shifted title (98+80) is pulled back, not pushed again");
+    Check(ApolloDuoRailRowLeadDelta(18.0, 98.0) != 18.0 + ApolloDuoRailRowTrailingExtra(920.0),
+          "trailing-extra must not be applied as a leading indent");
+    Check(ApolloDuoRailRowStarMinX(98.0, 40.0, 28.0) == 166.0,
+          "star sits after the drawn text, not at RowMaxContentWidth");
+    Check(ApolloDuoRailRowStarMinX(98.0, 40.0, 28.0) > 98.0 + 40.0 - 0.5,
+          "star is not on the first letter");
+    Check(ApolloDuoRailRowStarMinX(98.0, 40.0, 28.0) < (double)ApolloDuoRailRowMaxContentWidth,
+          "star is not parked at the 480pt cluster cap");
+    Check(ApolloDuoRailReadableLeading(390.0, 672.0) == 0.0,
+          "portrait phone width has no readable-column extra (Aaron's good look)");
+    Check(ApolloDuoRailReadableLeading(920.0, 672.0) == 124.0,
+          "wide Regular landscape adds a centered readable leading inset");
+    Check(ApolloDuoRailRowLeadDelta(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 98.0) < -0.5,
+          "readable-column leading on Duo landscape must be pulled back to 98");
     printf("OK: %u checks\n", checks);
     return 0;
 }
