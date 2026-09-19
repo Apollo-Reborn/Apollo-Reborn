@@ -394,10 +394,6 @@ static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
     return ApolloDuoModeFromWindow(window, ApolloDuoRailDualDisplays() ? 1 : 0);
 }
 
-static BOOL ApolloDuoRailShouldShowForTabs(UITabBarController *tabs) {
-    return ApolloDuoRailModeForTabs(tabs) != ApolloDuoModePhone;
-}
-
 static int ApolloDuoRailCurrentMode(void) {
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     NSNumber *stored = objc_getAssociatedObject(tabs, &kApolloDuoRailModeKey);
