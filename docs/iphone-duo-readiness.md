@@ -72,9 +72,11 @@ or an SDK bump.
   pushes. `UISplitViewController` / `UIArrangementViewController` are
   not adopted — wrapping a tab nav would break settings, floating tabs,
   swipe-up comments, and URL routing.
-- Tab children get `additionalSafeAreaInsets.right` = rail width while
-  the rail is shown, cleared on Compact. No `UIView` `layoutSubviews`
-  frame-lock.
+- The rail frame is inset by the window/scene safe area (and any
+  hinge-sized layout-margin extra): `x = width - 64 - max(safe.right, 8)`,
+  `y`/`height` honor `safe.top`/`safe.bottom`. Tab children get
+  `additionalSafeAreaInsets.right` = rail width + gutter while the rail
+  is shown, cleared on Compact. No `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -329,6 +331,10 @@ the sim stubs.
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
 - The slim rail is painted on the **trailing** edge of the tab
-  controller. Tab children get `additionalSafeAreaInsets.right` =
-  `ApolloDuoRailWidth` while the rail is shown (cleared on Compact).
-  Subs must not call `goToHomeTab` — that pops/resets the stack.
+  controller, inset from the window safe area so it does not sit under
+  Duo’s top-right time/Wi-Fi pill. Tab children get
+  `additionalSafeAreaInsets.right` = `ApolloDuoRailWidth` + gutter
+  while the rail is shown (cleared on Compact). Read window/scene
+  insets, not the tab view’s — those include the additional inset and
+  would walk the rail left every layout. Subs must not call
+  `goToHomeTab` — that pops/resets the stack.

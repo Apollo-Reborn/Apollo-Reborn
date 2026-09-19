@@ -28,6 +28,26 @@ int main(void) {
           "A single wide inner canvas shows the rail");
     Check(ApolloDuoRailWidth == 64,
           "rail width is the slim mock strip");
+    Check(ApolloDuoRailEdgeGutter == 8,
+          "min edge gutter is 8pt");
+    Check(ApolloDuoRailTrailingChrome(0.0, 16.0) == (double)ApolloDuoRailEdgeGutter,
+          "zero right inset still leaves the min gutter");
+    Check(ApolloDuoRailTrailingChrome(48.0, 64.0) == 48.0,
+          "status-pill right inset wins over the 16pt system margin");
+    Check(ApolloDuoRailTrailingChrome(48.0, 80.0) == 64.0,
+          "hinge-sized layout-margin extra adds to the right chrome");
+    Check(ApolloDuoRailContentRightInset() == 72.0,
+          "content additional right inset is rail + gutter");
+
+    ApolloDuoRailRect flush = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0, 16.0);
+    Check(flush.x == 1000.0 - 64.0 - 8.0 && flush.y == 0.0
+              && flush.width == 64.0 && flush.height == 800.0,
+          "zero-safe frame uses the min gutter, not flush-to-edge");
+
+    ApolloDuoRailRect pill = ApolloDuoRailFrameInBounds(1000.0, 800.0, 59.0, 48.0, 34.0, 64.0);
+    Check(pill.x == 1000.0 - 64.0 - 48.0 && pill.y == 59.0
+              && pill.width == 64.0 && pill.height == 800.0 - 59.0 - 34.0,
+          "window safe area insets the rail below/left of the status pill");
     printf("OK: %u checks\n", checks);
     return 0;
 }

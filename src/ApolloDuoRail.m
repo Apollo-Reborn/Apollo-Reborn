@@ -307,9 +307,12 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
+    // Frame is already window-safe inset. Keep a small gutter; if Sync
+    // has not applied yet, inherited safe.top still clears the pill.
     UIEdgeInsets safe = self.safeAreaInsets;
-    CGFloat top = MAX(safe.top, 8.0) + 4.0;
-    CGFloat bottom = MAX(safe.bottom, 8.0) + 4.0;
+    CGFloat gutter = (CGFloat)ApolloDuoRailEdgeGutter;
+    CGFloat top = MAX(safe.top, gutter);
+    CGFloat bottom = MAX(safe.bottom, gutter);
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
     CGFloat usable = height - top - bottom;
@@ -395,10 +398,30 @@ static void ApolloDuoRailOpenDefaultDirectory(UITabBarController *tabs) {
     ApolloLog(@"[DuoRail] default Subs stock directory");
 }
 
+// Window/scene chrome only. The tab view's safeAreaInsets include our
+// additionalSafeAreaInsets.right and would walk the rail left every pass.
+static UIEdgeInsets ApolloDuoRailSystemSafeInsets(UITabBarController *tabs) {
+    UIWindow *window = tabs.view.window;
+    if (window) return window.safeAreaInsets;
+    UIEdgeInsets viewSafe = tabs.view.safeAreaInsets;
+    UIEdgeInsets extra = tabs.additionalSafeAreaInsets;
+    return UIEdgeInsetsMake(MAX(0.0, viewSafe.top - extra.top),
+                            MAX(0.0, viewSafe.left - extra.left),
+                            MAX(0.0, viewSafe.bottom - extra.bottom),
+                            MAX(0.0, viewSafe.right - extra.right));
+}
+
+static UIEdgeInsets ApolloDuoRailSystemMargins(UITabBarController *tabs) {
+    UIWindow *window = tabs.view.window;
+    if (window) return window.layoutMargins;
+    return tabs.view.layoutMargins;
+}
+
 static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
-    // Stock nav: inset everyone from the trailing rail. No FeedSplit
-    // column frames, so this cannot double-count a pinned origin.
-    CGFloat wantRight = show ? (CGFloat)ApolloDuoRailWidth : 0.0;
+    // Stock nav: inset everyone from the trailing rail + gutter. System
+    // safe.right (status pill) is already in the window safe area — do
+    // not add it again or Edit/list collapse inward twice.
+    CGFloat wantRight = show ? (CGFloat)ApolloDuoRailContentRightInset() : 0.0;
     UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
     if (fabs(tabInsets.left) > 0.5 || fabs(tabInsets.right - wantRight) > 0.5) {
         tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, wantRight);
@@ -440,9 +463,17 @@ void ApolloDuoRailSync(void) {
         objc_setAssociatedObject(tabs, &kApolloDuoRailViewKey, rail, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CGRect bounds = tabs.view.bounds;
-    CGFloat railWidth = (CGFloat)ApolloDuoRailWidth;
-    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
-    rail.frame = CGRectMake(bounds.size.width - railWidth, 0.0, railWidth, bounds.size.height);
+    UIEdgeInsets safe = ApolloDuoRailSystemSafeInsets(tabs);
+    UIEdgeInsets margins = ApolloDuoRailSystemMargins(tabs);
+    ApolloDuoRailRect frame = ApolloDuoRailFrameInBounds(bounds.size.width,
+                                                         bounds.size.height,
+                                                         safe.top,
+                                                         safe.right,
+                                                         safe.bottom,
+                                                         margins.right);
+    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin
+        | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+    rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
     if (rail.superview != tabs.view) {
         [tabs.view addSubview:rail];
     }
@@ -459,8 +490,8 @@ void ApolloDuoRailSync(void) {
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown trailing (%.0fx%.0f Regular dual/wide)",
-                  bounds.size.width, bounds.size.height);
+        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f T=%.0f)",
+                  frame.x, frame.y, frame.width, frame.height, safe.right, safe.top);
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;
             ApolloDuoRailOpenDefaultDirectory(tabs);
