@@ -2382,7 +2382,7 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     CGFloat headerX = 18.0;
     // Full-bleed RedditList headers ignore additionalSafeAreaInsets and
     // draw under the leading Duo rail. Use window coordinates so a
-    // table that was already shifted to x=68 is not double-inset.
+    // table that was already shifted past the rail is not double-inset.
     if (ApolloDuoRailIsActive()) {
         CGFloat windowX = 0.0;
         if (header.window) {

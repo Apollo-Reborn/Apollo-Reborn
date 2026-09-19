@@ -9,6 +9,9 @@
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
 @end
 
+@interface ASTableView : UITableView
+@end
+
 %group ApolloDuoRailTabs
 
 %hook _TtC6Apollo22ApolloTabBarController
@@ -56,6 +59,23 @@
 
 %end
 
+%group ApolloDuoRailTexture
+
+// Texture feeds override layoutSubviews and ignore additionalSafeAreaInsets.
+// Re-apply after %orig so vote chevrons / thumbnails stay right of the rail.
+%hook ASTableView
+
+- (void)layoutSubviews {
+    %orig;
+    if (ApolloDuoRailIsActive()) {
+        ApolloDuoRailApplyListInsets((UIScrollView *)self);
+    }
+}
+
+%end
+
+%end
+
 %hook UIViewController
 
 - (void)viewDidLayoutSubviews {
@@ -98,6 +118,9 @@
         return;
     }
     %init(ApolloDuoRailTabs);
+    if (objc_getClass("ASTableView")) {
+        %init(ApolloDuoRailTexture);
+    }
     [[NSNotificationCenter defaultCenter] addObserverForName:UISceneDidActivateNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]

@@ -485,8 +485,8 @@ static void ApolloDuoApplyInsetsToController(UIViewController *controller,
 }
 
 // Show: only the tab controller and its tab-root navs get the leading
-// 68pt. Pushed content is frame-shifted instead so headers clear the
-// rail without stacking another 68pt on cells.
+// content inset. Pushed content is frame-shifted instead so headers
+// and Texture feeds clear the rail without stacking another inset.
 static void ApolloDuoApplyChromeInsets(UITabBarController *tabs,
                                        CGFloat wantLeft,
                                        CGFloat wantBottom,
@@ -735,14 +735,63 @@ static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
     return CGRectGetMinX(view.frame);
 }
 
+static BOOL ApolloDuoRailScrollViewIsTexture(UIScrollView *scrollView) {
+    if (!scrollView) return NO;
+    const char *name = class_getName(scrollView.class);
+    return name && strstr(name, "ASTable");
+}
+
+static UIScrollView *ApolloDuoRailFindPrimaryTable(UIView *view, NSInteger depth) {
+    if (!view || depth < 0) return nil;
+    if ([view isKindOfClass:[UIScrollView class]]
+        && ([view isKindOfClass:[UITableView class]] || ApolloDuoRailScrollViewIsTexture((UIScrollView *)view))) {
+        return (UIScrollView *)view;
+    }
+    UIScrollView *best = nil;
+    for (UIView *subview in view.subviews) {
+        UIScrollView *found = ApolloDuoRailFindPrimaryTable(subview, depth - 1);
+        if (!found) continue;
+        if (ApolloDuoRailScrollViewIsTexture(found)) return found;
+        if (!best) best = found;
+    }
+    return best;
+}
+
+// Shift a full-bleed Texture / UIKit table so its window minX is the
+// content inset. No-op when already clear. Frame write (not contentInset)
+// is what Texture honors — ASDK cells ignore additionalSafeAreaInsets.
+static BOOL ApolloDuoRailShiftScrollViewOffRail(UIScrollView *scrollView) {
+    if (!scrollView || !scrollView.superview || !ApolloDuoRailIsActive()) return NO;
+    CGFloat inset = (CGFloat)ApolloDuoRailContentLeftInset();
+    CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
+    if (windowX + 0.5 >= inset) return NO;
+    CGFloat bump = inset - windowX;
+    CGRect frame = scrollView.frame;
+    CGRect want = frame;
+    want.origin.x += bump;
+    want.size.width = MAX(0.0, want.size.width - bump);
+    if (fabs(want.origin.x - frame.origin.x) < 0.5
+        && fabs(want.size.width - frame.size.width) < 0.5) {
+        return NO;
+    }
+    scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    scrollView.frame = want;
+    return YES;
+}
+
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
     if (!scrollView) return;
     BOOL active = ApolloDuoRailIsActive();
+    if (active && ApolloDuoRailScrollViewIsTexture(scrollView)) {
+        // Texture paints cells to the table bounds, not the safe area.
+        // Shift the ASTableView itself so vote chevrons clear the rail.
+        ApolloDuoRailShiftScrollViewOffRail(scrollView);
+    }
     CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
     BOOL underRail = active && (windowX + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset());
-    // Do not stack contentInset.left on top of the nav's
-    // additionalSafeAreaInsets.left = 68 — that leftover 68pt is the
-    // white strip Aaron sees. Headers ignore both; shift their labels.
+    // UIKit RedditList cells already honor the nav safe-area inset.
+    // Do not stack contentInset.left on those — that was the portrait
+    // white strip. Texture got a frame shift above instead.
     ApolloDuoRailApplyScrollInsetLeft(scrollView, 0.0);
 
     if (![scrollView isKindOfClass:[UITableView class]]) return;
@@ -812,8 +861,8 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
         }
     }
     if (expanded && controller.isViewLoaded) {
-        // Frame already starts at x=68. Cancel the inherited +68 from the
-        // nav so cells are not double-inset (the portrait white bar).
+        // Frame already starts after the rail. Cancel the inherited
+        // leading safe-area so cells are not double-inset (portrait bar).
         UIEdgeInsets extra = controller.additionalSafeAreaInsets;
         CGFloat inherited = controller.view.safeAreaInsets.left - extra.left;
         if (inherited > 1.0) {
@@ -856,6 +905,7 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     }
     id tableNode = nil;
     Ivar nodeIvar = class_getInstanceVariable(controller.class, "tableNode");
+    if (!nodeIvar) nodeIvar = class_getInstanceVariable(controller.class, "_tableNode");
     if (nodeIvar) tableNode = object_getIvar(controller, nodeIvar);
     if (tableNode) {
         UIView *nodeView = nil;
@@ -863,6 +913,9 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
             nodeView = ((UIView *(*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
         }
         if ([nodeView isKindOfClass:[UIScrollView class]]) {
+            if (ApolloDuoRailShiftScrollViewOffRail((UIScrollView *)nodeView)) {
+                expanded = YES;
+            }
             ApolloDuoRailApplyListInsets((UIScrollView *)nodeView);
         }
         if (expanded) {
@@ -876,6 +929,13 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
                 ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
             }
         }
+    }
+    UIScrollView *found = ApolloDuoRailFindPrimaryTable(view ?: layout, 5);
+    if (found) {
+        if (ApolloDuoRailShiftScrollViewOffRail(found)) {
+            expanded = YES;
+        }
+        ApolloDuoRailApplyListInsets(found);
     }
 }
 
@@ -926,13 +986,15 @@ static void ApolloDuoRailRestoreController(UIViewController *controller, UIView 
         if ([table isKindOfClass:[UIScrollView class]]) {
             ApolloDuoRailApplyScrollInsetLeft((UIScrollView *)table, 0.0);
             if (table.superview) {
-                table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                if (fabs(CGRectGetMinX(table.frame)) > 0.5
-                    || fabs(CGRectGetWidth(table.frame) - CGRectGetWidth(table.superview.bounds)) > 0.5) {
-                    table.frame = table.superview.bounds;
-                }
+                ApolloDuoRailExpandView(table, table.superview.bounds);
             }
         }
+    }
+    UIScrollView *found = controller.isViewLoaded
+        ? ApolloDuoRailFindPrimaryTable(controller.view, 5) : nil;
+    if (found && found.superview) {
+        ApolloDuoRailApplyScrollInsetLeft(found, 0.0);
+        ApolloDuoRailExpandView(found, found.superview.bounds);
     }
 }
 
@@ -974,7 +1036,7 @@ void ApolloDuoRailSync(void) {
             coverRight = (CGFloat)ApolloDuoCoverPillWidth;
         }
         // Always zero leading insets on the whole tree — Compact / portrait
-        // must not keep a 68pt white strip after the rail is gone.
+        // must not keep a leftover white strip after the rail is gone.
         ApolloDuoClearLeadingChromeInsets(tabs, coverBottom, coverRight);
         ApolloDuoRailClearOpenContent();
         ApolloDuoRailSetTabBarHidden(tabs, NO);

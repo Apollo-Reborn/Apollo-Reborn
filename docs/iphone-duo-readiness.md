@@ -351,6 +351,8 @@ the sim stubs.
   dual-display Compact insets FABs 80×120 off Duo’s system pill.
   Open-Duo RedditList / feeds / posts fill the width right of the rail
   (stock nav letterbox is expanded; no SetPrimaryAlongside). Tab
-  children get `additionalSafeAreaInsets.left` = rail + 4pt while the
-  rail is shown (right stays 0). Subs must not call `goToHomeTab` —
+  children get `additionalSafeAreaInsets.left` = rail + 16pt (80) while
+  the rail is shown so feed vote chrome clears the hairline. Texture
+  `ASTableView` is frame-shifted the same way (it ignores safe area).
+  Right stays 0. Subs must not call `goToHomeTab` —
   that pops/resets the stack.

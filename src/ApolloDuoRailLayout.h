@@ -12,13 +12,15 @@ extern "C" {
 // Apollo's stock tab bar. C-only so host tests compile without UIKit.
 //
 // Open-inner rail hugs the leading edge (4pt gutter). Top is safe.top +
-// 8 only — ignore the trailing time/Wi-Fi status pill. Content inset is
-// leading 68 / trailing 0. A–Z stays stock (no extra trailing pin).
-// Compact and any portrait / vertical canvas hide the rail.
+// 8 only — ignore the trailing time/Wi-Fi status pill. Content starts
+// at rail width + 16pt so vote chevrons / thumbnails clear the rail
+// hairline (64+16=80). A–Z stays stock. Compact and any portrait /
+// vertical canvas hide the rail.
 
 enum {
     ApolloDuoRailWidth = 64,
-    ApolloDuoRailEdgeGutter = 4, /* hug the leading edge */
+    ApolloDuoRailEdgeGutter = 4,   /* rail hug from the leading edge */
+    ApolloDuoRailContentGutter = 16, /* content gap after the rail + hairline */
     ApolloDuoRailStatusGap = 8,  /* safe.top padding; ignore trailing pill */
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
@@ -45,7 +47,7 @@ static inline double ApolloDuoRailLeadingChrome(void) {
 }
 
 static inline double ApolloDuoRailContentLeftInset(void) {
-    return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
+    return (double)ApolloDuoRailWidth + (double)ApolloDuoRailContentGutter;
 }
 
 static inline double ApolloDuoRailContentRightInset(void) {
@@ -140,7 +142,7 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
 // Modern RedditList headers are painted at a hardcoded stockTitleX
 // (18pt). When the header still sits under the leading rail in window
 // space, shift the title by the overlap so "FAVORITES" is not clipped
-// to "ES". A header that already starts at x >= 68 is left alone.
+// to "ES". A header that already starts at x >= ContentLeftInset is left alone.
 static inline double ApolloDuoRailHeaderTitleMinX(double headerWindowX,
                                                   double stockTitleX) {
     if (stockTitleX < 0.0) stockTitleX = 0.0;

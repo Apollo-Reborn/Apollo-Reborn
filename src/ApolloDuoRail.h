@@ -20,12 +20,12 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 void ApolloDuoRailSync(void);
 
 /// Expand a letterboxed stock-nav column to the usable width right of
-/// the leading rail, starting at x = 68 so headers cannot sit under Subs.
-/// No midX clamp and no dual-VC hosting.
+/// the leading rail, starting at ContentLeftInset (80) so feed chrome
+/// and headers cannot sit under Subs. No midX clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
 
 /// Restore full-bleed frames / insets when the rail hides. Walks every
-/// tab nav stack so a leftover 68pt leading strip cannot survive Compact
+/// tab nav stack so a leftover leading strip cannot survive Compact
 /// / portrait. Also restores preferredContentSize fill hacks.
 void ApolloDuoRailClearOpenContent(void);
 
