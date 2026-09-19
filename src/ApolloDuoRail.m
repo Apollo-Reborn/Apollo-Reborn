@@ -669,13 +669,49 @@ static UILabel *ApolloDuoRailPrimaryLabelInCell(UITableViewCell *cell) {
     return best;
 }
 
+static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
+    if (!view) return 0.0;
+    if (view.window) {
+        return CGRectGetMinX([view convertRect:view.bounds toView:nil]);
+    }
+    return CGRectGetMinX(view.frame);
+}
+
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     if (!cell || !ApolloDuoRailIsActive()) return;
+
+    // After scroll, UITableView puts cells back to x=0 of a full-bleed
+    // table. Headers keep their own inset path; rows must be re-cleared
+    // from the content view's *window* position every layout.
+    UIView *content = cell.contentView ?: cell;
+    CGFloat overlap = (CGFloat)ApolloDuoRailRowLeadingOverlap(ApolloDuoRailWindowMinX(content));
+    if (overlap > 0.5) {
+        CGRect frame = content.frame;
+        if (CGRectGetMinX(frame) + 0.5 < overlap) {
+            CGFloat bump = overlap - CGRectGetMinX(frame);
+            frame.origin.x += bump;
+            frame.size.width = MAX(0.0, frame.size.width - bump);
+            content.frame = frame;
+        }
+        UIEdgeInsets margins = cell.layoutMargins;
+        if (margins.left < overlap - 0.5) {
+            margins.left = overlap;
+            cell.layoutMargins = margins;
+        }
+        UIEdgeInsets contentMargins = content.layoutMargins;
+        if (contentMargins.left < overlap - 0.5) {
+            contentMargins.left = overlap;
+            content.layoutMargins = contentMargins;
+        }
+    }
+
     CGFloat cellWidth = CGRectGetWidth(cell.bounds);
     if (cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
 
     UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
     if (!title) return;
+    // Do not pull stars toward a title that is still under the rail.
+    if (ApolloDuoRailWindowMinX(title) + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset()) return;
     CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
     CGFloat wantStarX = CGRectGetMaxX(titleInCell) + (CGFloat)ApolloDuoRailRowStarGap;
     CGFloat maxStarX = (CGFloat)ApolloDuoRailRowMaxContentWidth - (CGFloat)ApolloDuoRailRowStarGap;
@@ -725,14 +761,6 @@ static void ApolloDuoRailApplyScrollInsetLeft(UIScrollView *scrollView, CGFloat 
         objc_setAssociatedObject(scrollView, &kApolloDuoRailSavedContentInsetLeftKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-}
-
-static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
-    if (!view) return 0.0;
-    if (view.window) {
-        return CGRectGetMinX([view convertRect:view.bounds toView:nil]);
-    }
-    return CGRectGetMinX(view.frame);
 }
 
 static BOOL ApolloDuoRailScrollViewIsTexture(UIScrollView *scrollView) {
@@ -830,8 +858,20 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     ApolloDuoRailRect want = ApolloDuoRailContentFrameInBounds(containerWidth, containerHeight);
     CGRect wantFrame = CGRectMake(want.x, want.y, want.width, want.height);
     BOOL expanded = NO;
+    UIView *view = controller.view;
+    BOOL texture = NO;
+    UIScrollView *existingTable = ApolloDuoRailFindPrimaryTable(view, 5);
+    if (existingTable) texture = ApolloDuoRailScrollViewIsTexture(existingTable);
+    // Full-bleed UIKit lists (RedditList) stay full-width and use the
+    // nav's additionalSafeAreaInsets for cells — a frame shift here is
+    // undone on scroll. Only letterboxed phone columns and Texture
+    // feeds are moved to the content frame.
     UIView *layout = ApolloDuoRailLayoutView(controller, container);
+    BOOL letterboxed = layout
+        ? ApolloDuoRailContentIsLetterboxed(layout.frame.size.width, containerWidth)
+        : NO;
     if (layout && layout != container
+        && (letterboxed || texture)
         && ApolloDuoRailContentNeedsLeadingClearance(layout.frame.origin.x,
                                                      layout.frame.size.width,
                                                      containerWidth)) {
@@ -841,8 +881,11 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
         ApolloDuoRailExpandView(layout, wantFrame);
         expanded = YES;
     }
-    UIView *view = controller.view;
+    letterboxed = view
+        ? ApolloDuoRailContentIsLetterboxed(view.frame.size.width, containerWidth)
+        : letterboxed;
     if (view && view != layout && view != container
+        && (letterboxed || texture)
         && ApolloDuoRailContentNeedsLeadingClearance(view.frame.origin.x,
                                                      view.frame.size.width,
                                                      containerWidth)) {
@@ -860,22 +903,18 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
             controller.preferredContentSize = CGSizeMake((CGFloat)want.width, preferred.height);
         }
     }
-    if (expanded && controller.isViewLoaded) {
-        // Frame already starts after the rail. Cancel the inherited
-        // leading safe-area so cells are not double-inset (portrait bar).
+    if (controller.isViewLoaded) {
+        // Never cancel inherited leading safe-area on UIKit lists. A
+        // one-shot table/VC frame shift is undone on scroll, and the
+        // leftover additionalSafeAreaInsets.left = -80 was why rows
+        // slid under the rail while headers (separate path) stayed put.
         UIEdgeInsets extra = controller.additionalSafeAreaInsets;
-        CGFloat inherited = controller.view.safeAreaInsets.left - extra.left;
-        if (inherited > 1.0) {
-            if (!objc_getAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey)) {
-                objc_setAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey,
-                                         @(extra.left), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-            CGFloat wantLeft = -inherited;
-            if (fabs(extra.left - wantLeft) > 0.5) {
-                extra.left = wantLeft;
-                controller.additionalSafeAreaInsets = extra;
-            }
+        if (extra.left < -0.5) {
+            extra.left = 0.0;
+            controller.additionalSafeAreaInsets = extra;
         }
+        objc_setAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if ([controller respondsToSelector:@selector(tableView)]) {
         UIView *table = nil;
@@ -888,14 +927,17 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
             UIView *tableParent = table.superview ?: view;
             CGFloat parentWidth = tableParent ? CGRectGetWidth(tableParent.bounds) : containerWidth;
             CGFloat parentHeight = tableParent ? CGRectGetHeight(tableParent.bounds) : containerHeight;
+            BOOL tableTexture = ApolloDuoRailScrollViewIsTexture((UIScrollView *)table);
+            BOOL tableLetterboxed = ApolloDuoRailContentIsLetterboxed(table.frame.size.width, parentWidth);
             if (tableParent == container
+                && (tableTexture || tableLetterboxed)
                 && ApolloDuoRailContentNeedsLeadingClearance(table.frame.origin.x,
                                                              table.frame.size.width,
                                                              parentWidth)) {
                 ApolloDuoRailExpandView(table, wantFrame);
                 expanded = YES;
             } else if (tableParent != container
-                       && ApolloDuoRailContentIsLetterboxed(table.frame.size.width, parentWidth)) {
+                       && tableLetterboxed) {
                 table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
                 table.frame = CGRectMake(0.0, 0.0, parentWidth, parentHeight);
                 expanded = YES;
@@ -932,7 +974,8 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     }
     UIScrollView *found = ApolloDuoRailFindPrimaryTable(view ?: layout, 5);
     if (found) {
-        if (ApolloDuoRailShiftScrollViewOffRail(found)) {
+        if (ApolloDuoRailScrollViewIsTexture(found)
+            && ApolloDuoRailShiftScrollViewOffRail(found)) {
             expanded = YES;
         }
         ApolloDuoRailApplyListInsets(found);

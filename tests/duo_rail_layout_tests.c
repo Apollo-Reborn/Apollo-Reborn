@@ -99,6 +99,12 @@ int main(void) {
           "a header under the rail shifts FAVORITES from x=18 to x=98");
     Check(ApolloDuoRailHeaderTitleMinX(80.0, 18.0) == 18.0,
           "a header already past the rail keeps the stock 18pt title");
+    Check(ApolloDuoRailRowLeadingOverlap(0.0) == 80.0,
+          "a full-bleed row after scroll still needs the 80pt rail gap");
+    Check(ApolloDuoRailRowLeadingOverlap(40.0) == 40.0,
+          "a half-shifted row keeps the remaining overlap");
+    Check(ApolloDuoRailRowLeadingOverlap(80.0) == 0.0,
+          "a row already past the rail has no leading overlap");
     printf("OK: %u checks\n", checks);
     return 0;
 }
