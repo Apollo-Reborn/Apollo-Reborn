@@ -729,6 +729,19 @@ static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLink
 // visible comments re-measure their inline media immediately.
 static NSString *const ApolloInlineMediaLayoutDidChangeNotification = @"ApolloInlineMediaLayoutDidChangeNotification";
 
+// Per-menu ••• layouts (Apollo Reborn → Interface → Action Menus): a dictionary
+// keyed by ApolloActionMenuContext id → { "order": [itemID…], "hidden": [itemID…] }.
+// An absent context means Apollo's own order with nothing hidden, and that
+// sheet is never touched. Model and item vocabulary: ApolloActionMenuLayout.h.
+static NSString *const UDKeyActionMenuLayouts = @"ActionMenuLayouts";
+// Which catalogue items each ••• menu offered the last time it was opened
+// (context id → [itemID…]); written by the menu owner, read by the settings
+// screen's ••• preview so it mirrors this user's menus rather than the whole
+// catalogue.
+static NSString *const UDKeyActionMenuLastPresented = @"ActionMenuLastPresented";
+// Posted (object = the context id) whenever a menu's order or hidden set changes.
+static NSString *const ApolloActionMenuLayoutsChangedNotification = @"ApolloActionMenuLayoutsChangedNotification";
+
 // The last TWEAK_VERSION (without the leading "v") the What's New sheet was
 // shown for (or silently advanced past, when a version has no catalog entry).
 // Deliberately never registered with a default value, and an absent value is

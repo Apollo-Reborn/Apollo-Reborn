@@ -85,6 +85,10 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 // Insert/delete animation when `visible` flips (default UITableViewRowAnimationFade).
 @property (nonatomic) UITableViewRowAnimation showHideAnimation;
 
+// Disclosure rows only: show the detail as a subtitle under the title (it
+// wraps, never truncates) instead of a trailing value. Default NO.
+@property (nonatomic) BOOL detailAsSubtitle;
+
 // Optional post-configure hook (runs after the built-in configuration, before
 // theming). Use for one-off tweaks (fonts, detail color) without a custom row.
 @property (nonatomic, copy, nullable) void (^configure)(UITableViewCell *cell);

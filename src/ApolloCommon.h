@@ -223,6 +223,11 @@ BOOL ApolloPollsFeatureEnabled(void);
 // sheet's segmented control when it appears. Called from
 // ApolloNativeActionMenuBuildMenu when it hits actionKind 51 (Submit Post).
 UIMenu *ApolloSubmitPostTypesMenu(id actionController, void (^selectRow)(void));
+// One of the tweak's bundled custom new-post symbols ("custom.photo.badge.plus",
+// …) from ApolloPollSymbols.bundle, or nil when the bundle is unavailable —
+// callers fall back to a stock SF Symbol. Shared with the Action Menus settings
+// preview so its mock of the quick new-post buttons shows the real glyphs.
+UIImage *ApolloPollComposeSymbol(NSString *symbolName);
 
 // Container keychain mirror (Tweak.xm): the Valet items the real keychain could not persist
 // on a keychain-broken sideload, so a backup taken there still carries the signed-in account.
