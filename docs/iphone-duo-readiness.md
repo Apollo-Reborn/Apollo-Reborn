@@ -352,7 +352,8 @@ the sim stubs.
   Open-Duo RedditList / feeds / posts fill the width right of the rail
   (stock nav letterbox is expanded; no SetPrimaryAlongside). Tab
   children get `additionalSafeAreaInsets.left` = rail + 16pt (80) while
-  the rail is shown so feed vote chrome clears the hairline. Texture
-  `ASTableView` is frame-shifted the same way (it ignores safe area).
-  Right stays 0. Subs must not call `goToHomeTab` —
+  the rail is shown so feed vote chrome and RedditList *rows* keep that
+  inset while scrolling (do not cancel it after a one-shot frame shift).
+  Texture `ASTableView` is frame-shifted after its own layout (it ignores
+  safe area). Right stays 0. Subs must not call `goToHomeTab` —
   that pops/resets the stack.
