@@ -522,11 +522,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     return cell;
 }
 
-// Entering Edit mode: bypass the display filter so hidden rows reappear, and
-// reload so the rows (and their hide/unhide buttons) update immediately.
-// Leaving Edit mode: re-enable the filter and reload so hidden rows vanish.
-// No network refetch is needed — the rows are driven by the now-complete
-// moderatedSubreddits property through the scoped getter.
+// Show hidden moderator rows while editing without rebuilding the other sections.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
     if (wasEditing == editing) {
@@ -534,12 +530,23 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         return;
     }
 
-    // Refresh hidden rows before editing so reloads do not interrupt the animation.
-    sShowHiddenForEditing = editing;
     UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
+    sShowHiddenForEditing = editing;
     if (ApolloHideModHiddenList().count) {
-        [tableView reloadData];
-        [tableView layoutIfNeeded];
+        NSMutableIndexSet *changedSections = [NSMutableIndexSet new];
+        for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
+            NSInteger displayed = [tableView numberOfRowsInSection:section];
+            NSInteger updated = [tableView.dataSource tableView:tableView numberOfRowsInSection:section];
+            if (displayed != updated) [changedSections addIndex:section];
+        }
+        // Only moderator visibility changes. Keep all other cells and their
+        // loaded icons intact, including when the hidden list belongs to another account.
+        if (changedSections.count) {
+            [UIView performWithoutAnimation:^{
+                [tableView reloadSections:changedSections withRowAnimation:UITableViewRowAnimationNone];
+                [tableView layoutIfNeeded];
+            }];
+        }
     }
     %orig;
     for (UITableViewCell *cell in tableView.visibleCells) {
