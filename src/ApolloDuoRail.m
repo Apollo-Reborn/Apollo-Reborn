@@ -702,6 +702,48 @@ static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
     return CGRectGetMinX(view.frame);
 }
 
+static UITableView *ApolloDuoRailTableForCell(UITableViewCell *cell) {
+    for (UIView *view = cell.superview; view; view = view.superview) {
+        if ([view isKindOfClass:[UITableView class]]) return (UITableView *)view;
+    }
+    return nil;
+}
+
+// Live Home / Popular / All / Moderator row leading inside `cell`'s
+// coordinates. Prefer the shortcut icon (Image 2 / rail-hug column).
+// Do not key off textLabel when an icon exists — that glyph sits
+// ~30–40pt further right and reopens the wasted column.
+static CGFloat ApolloDuoRailShortcutLeadInCell(UITableViewCell *cell) {
+    CGFloat fallback = (CGFloat)ApolloDuoRailShortcutLeadMinX(ApolloDuoRailWindowMinX(cell));
+    UITableView *table = ApolloDuoRailTableForCell(cell);
+    if (!table) return fallback;
+
+    for (UITableViewCell *other in table.visibleCells) {
+        const char *name = class_getName(other.class);
+        if (!name || !strstr(name, "ApolloSubtitleTableViewCell")) continue;
+
+        CGFloat iconX = 0.0;
+        UIImageView *icon = other.imageView;
+        if (icon && !icon.hidden && icon.image) {
+            CGRect inCell = [cell convertRect:icon.bounds fromView:icon];
+            iconX = CGRectGetMinX(inCell);
+        }
+
+        CGFloat textX = 0.0;
+        UILabel *text = other.textLabel;
+        if (text && !text.hidden && text.text.length > 0) {
+            CGRect inCell = [cell convertRect:text.bounds fromView:text];
+            textX = CGRectGetMinX(inCell);
+        }
+
+        CGFloat want = (CGFloat)ApolloDuoRailFavoriteTitleWantX(iconX, textX, fallback);
+        CGFloat maxX = CGRectGetWidth(cell.bounds) * 0.45;
+        if (want > 0.5 && want < maxX) return want;
+        break;
+    }
+    return fallback;
+}
+
 static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
     if (!cell) return nil;
     Ivar ivar = class_getInstanceVariable(cell.class, "accessoryButton");
@@ -783,8 +825,7 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     // a full-bleed label's origin negative.
     CGFloat haveTextX = CGRectGetMinX(titleInCell);
 
-    CGFloat cellWindowX = ApolloDuoRailWindowMinX(cell);
-    CGFloat wantTitleX = (CGFloat)ApolloDuoRailRowTitleMinX(cellWindowX, 18.0);
+    CGFloat wantTitleX = ApolloDuoRailShortcutLeadInCell(cell);
     CGFloat delta = (CGFloat)ApolloDuoRailRowLeadDelta(haveTextX, wantTitleX);
 
     UIView *shiftView = mainStack;
@@ -801,11 +842,16 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
             }
         }
     }
+    BOOL stackMoved = NO;
     if (shiftView && titleInShift && fabs(delta) > 0.5) {
         CGRect stackFrame = shiftView.frame;
+        CGFloat oldX = stackFrame.origin.x;
         stackFrame.origin.x += delta;
         if (stackFrame.origin.x < 0.0) stackFrame.origin.x = 0.0;
-        shiftView.frame = stackFrame;
+        if (fabs(stackFrame.origin.x - oldX) > 0.5) {
+            shiftView.frame = stackFrame;
+            stackMoved = YES;
+        }
         titleInCell = [cell convertRect:title.bounds fromView:title];
         if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey)) {
             objc_setAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey, @YES,
@@ -815,12 +861,13 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         }
     }
 
-    // If the stack was already at x=0 (full-bleed) and the title sits
-    // mid-stack, the stack write is a no-op. Finish with a signed
-    // remainder on the title so Image 1 still lead-aligns.
+    // Remainder only when the stack write was a no-op. convertRect after
+    // a real stack move can still report the pre-move minX; applying the
+    // same +80 again is the Image 1 leftover column (titles at ~178,
+    // headers at 98).
     titleInCell = [cell convertRect:title.bounds fromView:title];
     CGFloat remain = (CGFloat)ApolloDuoRailRowLeadDelta(CGRectGetMinX(titleInCell), wantTitleX);
-    if (fabs(remain) > 0.5) {
+    if (ApolloDuoRailRowShouldApplyTitleRemainder(stackMoved, remain)) {
         CGRect titleFrame = title.frame;
         titleFrame.origin.x += remain;
         if (titleFrame.origin.x < 0.0) titleFrame.origin.x = 0.0;

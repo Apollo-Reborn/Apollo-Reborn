@@ -112,7 +112,21 @@ int main(void) {
     Check(ApolloDuoRailRowTitleMinX(80.0, 18.0) == 18.0,
           "a cell already past the rail keeps the stock 18pt title");
     Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == ApolloDuoRailHeaderTitleMinX(0.0, 18.0),
-          "favorite-row and header leading use the same minX");
+          "header-keyed RowTitleMinX stays 18→98 (not used at runtime)");
+    Check(ApolloDuoRailRowStockLead == 16,
+          "shortcut-row stock lead is UITableView's 16pt, not the header 18");
+    Check(ApolloDuoRailShortcutLeadMinX(0.0) == 96.0,
+          "full-bleed fallback wantX is safe-area 80 + 16, not header 98");
+    Check(ApolloDuoRailShortcutLeadMinX(80.0) == 16.0,
+          "a cell already past the rail keeps stock 16");
+    Check(ApolloDuoRailShortcutLeadMinX(0.0) != ApolloDuoRailRowTitleMinX(0.0, 18.0),
+          "runtime wantX is not the 2eba156 header column");
+    Check(ApolloDuoRailFavoriteTitleWantX(96.0, 137.0, 96.0) == 96.0,
+          "a live shortcut icon wins over the Home glyph (Image 2 column)");
+    Check(ApolloDuoRailFavoriteTitleWantX(0.0, 137.0, 96.0) == 137.0,
+          "textLabel is the fallback when the shortcut has no icon");
+    Check(ApolloDuoRailFavoriteTitleWantX(0.0, 0.0, 96.0) == 96.0,
+          "no live shortcut uses the 96pt fallback");
 
     /* Image 1 / 92ea260 regressions. These fail on the policies we already
        shipped: only-push-right (mid-pane left alone), title.frame bump
@@ -148,6 +162,41 @@ int main(void) {
           "wide Regular landscape adds a centered readable leading inset");
     Check(ApolloDuoRailRowLeadDelta(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 98.0) < -0.5,
           "readable-column leading on Duo landscape must be pulled back to 98");
+
+    /* 2eba156 leftover: stack +80 then a stale convertRect remainder
+       +80 parked titles at ~178 (Image 1). Remainder must not run after
+       a real stack move. */
+    Check(ApolloDuoRailRowShouldApplyTitleRemainder(1, 80.0) == 0,
+          "stale +80 remainder is skipped after the stack already moved");
+    Check(ApolloDuoRailRowShouldApplyTitleRemainder(1, -82.0) == 0,
+          "stale negative remainder is also skipped after a stack move");
+    Check(ApolloDuoRailRowShouldApplyTitleRemainder(0, 80.0) == 1,
+          "remainder still runs when the stack write was a no-op");
+    Check(ApolloDuoRailRowShouldApplyTitleRemainder(0, -80.0) == 1,
+          "a no-op stack can still pull a mid-stack title left");
+    Check(ApolloDuoRailRowShouldApplyTitleRemainder(0, 0.0) == 0,
+          "a zero remainder is a no-op");
+    {
+        double have = 18.0;
+        double want = ApolloDuoRailShortcutLeadMinX(0.0);
+        double delta = ApolloDuoRailRowLeadDelta(have, want);
+        double afterStack = have + delta;
+        double staleRemain = ApolloDuoRailRowLeadDelta(18.0, want);
+        double applied = ApolloDuoRailRowShouldApplyTitleRemainder(1, staleRemain)
+            ? staleRemain : 0.0;
+        Check(afterStack == 96.0,
+              "one stack delta from stock 18 lands at shortcut lead 96");
+        Check(afterStack + applied == 96.0,
+              "gating remainder keeps 96; does not stack a second +78");
+        Check(afterStack + staleRemain == 174.0,
+              "the 2eba156 double-apply (18+78+78) is the Image 1 column");
+    }
+    Check(ApolloDuoRailRowLeadDelta(178.0, 96.0) == -82.0,
+          "Image 1 settled titles (header 98 + leftover 80) pull to 96");
+    Check(ApolloDuoRailRowLeadDelta(178.0, 96.0) < ApolloDuoRailRowLeadDelta(178.0, 137.0),
+          "keying off the Home glyph (≈137) would leave ~40pt of the wasted column");
+    Check(ApolloDuoRailRowStarMinX(96.0, 40.0, 28.0) == 164.0,
+          "star still sits after the drawn text at the new 96pt title lead");
     printf("OK: %u checks\n", checks);
     return 0;
 }

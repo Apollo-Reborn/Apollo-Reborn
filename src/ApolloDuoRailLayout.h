@@ -32,6 +32,11 @@ enum {
     ApolloDuoRailRowStarGap = 28,
     ApolloDuoCoverPillWidth = 80,   /* cover system pill; Compact only */
     ApolloDuoCoverPillBottom = 120, /* lift FABs above the cover gear */
+    /* UITableView's default leading. RedditList headers paint at 18;
+       shortcut ApolloSubtitleTableViewCell icons sit at safe-area + 16
+       after the 80pt rail inset (window ≈96). Favorite titles key off
+       this, not the header 18→98 column. */
+    ApolloDuoRailRowStockLead = 16,
 };
 
 typedef struct {
@@ -170,9 +175,45 @@ static inline double ApolloDuoRailHeaderTitleMinX(double headerWindowX,
 // StyleHeaderView uses for FAVORITES / MODERATOR / A. stockTitleX is
 // Apollo's 18pt leading. A cell that already starts past the rail
 // (window x >= 80) keeps stock 18 so we do not stack another inset.
+// Runtime favorite-row align uses ApolloDuoRailShortcutLeadMinX (16)
+// instead — 2eba156 keyed titles to this 18→98 header column, then
+// stacked a stale remainder on top and parked them at ~178.
 static inline double ApolloDuoRailRowTitleMinX(double cellWindowX,
                                                double stockTitleX) {
     return ApolloDuoRailHeaderTitleMinX(cellWindowX, stockTitleX);
+}
+
+// Fallback wantX for a favorite / A–Z title: shortcut-row leading
+// (safe-area + UITableView's 16pt), not the header's 18pt. Full-bleed
+// cell → 96. A cell already past the rail keeps stock 16.
+static inline double ApolloDuoRailShortcutLeadMinX(double cellWindowX) {
+    return ApolloDuoRailHeaderTitleMinX(cellWindowX,
+                                        (double)ApolloDuoRailRowStockLead);
+}
+
+// Favorite rows have no icon. Image 2 parks their titles at the
+// shortcut icon column (Home / Popular row leading), not at
+// textLabel after the ~29pt glyph — that glyph column is ~30–40pt
+// further right and is the leftover wasted strip vs the target shot.
+// Prefer a live icon minX; otherwise a live text minX; else fallback.
+static inline double ApolloDuoRailFavoriteTitleWantX(double iconMinX,
+                                                     double textMinX,
+                                                     double fallback) {
+    if (iconMinX > 0.5) return iconMinX;
+    if (textMinX > 0.5) return textMinX;
+    return fallback;
+}
+
+// After a real stack origin change, convertRect can still report the
+// pre-move title minX. 2eba156 applied that stale LeadDelta again
+// (stack +80, then title.frame +80) and parked names at ~178 while
+// headers stayed at 98. Remainder is only for a no-op stack write
+// (full-bleed stack at x=0 with a mid-stack title).
+static inline int ApolloDuoRailRowShouldApplyTitleRemainder(int stackMoved,
+                                                            double remain) {
+    if (stackMoved) return 0;
+    if (remain < 0.0) remain = -remain;
+    return remain > 0.5;
 }
 
 // Visual text minX inside a label. Center/right alignment on a stretchy
