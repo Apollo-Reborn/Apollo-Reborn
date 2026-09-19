@@ -3185,7 +3185,6 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
     }
     // Star proxy + multireddit child styling are enhancement-only.
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
-        ApolloDuoRailTightenSubredditRow((UITableViewCell *)self);
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
         ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(tableView, (UITableViewCell *)self, [tableView indexPathForCell:(UITableViewCell *)self]);
     }

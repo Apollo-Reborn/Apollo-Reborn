@@ -5,22 +5,21 @@
 extern "C" {
 #endif
 
-// Slim *leading* rail on the open inner Duo canvas / very wide Regular.
-// Duo's cover/front already owns a vertical system pill on the far right
-// (back, feed, messages, profile, search, settings) — do not install a
-// second Apollo rail there. Compact and ordinary Plus landscape keep
-// Apollo's stock tab bar. C-only so host tests compile without UIKit.
+#include "ApolloDuoCompatibility.h"
+
+// One Duo chrome path: a 100–120pt vertical sidebar. Open Duo
+// (wide landscape UIWindow) is leading; Closed Duo (portrait-sized
+// Duo window) is trailing. Regular iPhone is Phone mode — stock
+// tab bar, no rail. Hide UITabBar in both Duo modes. C-only so
+// host tests compile without UIKit.
 //
-// Open-inner rail hugs the leading edge (4pt gutter). Top is safe.top +
-// 8 only — ignore the trailing time/Wi-Fi status pill. Content starts
-// at rail width + 16pt so vote chevrons / thumbnails clear the rail
-// hairline (64+16=80). A–Z stays stock. Compact and any portrait /
-// vertical canvas hide the rail.
+// Top is safe.top + 8 only. Content inset is rail + 8pt (112+8=120)
+// on the rail side. A–Z overlay is a later patch.
 
 enum {
-    ApolloDuoRailWidth = 64,
-    ApolloDuoRailEdgeGutter = 4,   /* rail hug from the leading edge */
-    ApolloDuoRailContentGutter = 16, /* content gap after the rail + hairline */
+    ApolloDuoRailWidth = 112,      /* 100–120pt sidebar, not the old 64pt strip */
+    ApolloDuoRailEdgeGutter = 0,   /* flush leading sidebar */
+    ApolloDuoRailContentGutter = 8, /* content gap after the rail hairline */
     ApolloDuoRailStatusGap = 8,  /* safe.top padding; ignore trailing pill */
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
@@ -62,6 +61,14 @@ static inline double ApolloDuoRailContentRightInset(void) {
     return 0.0;
 }
 
+static inline double ApolloDuoRailChromeLeftForMode(int mode) {
+    return mode == ApolloDuoModeOpen ? ApolloDuoRailContentLeftInset() : 0.0;
+}
+
+static inline double ApolloDuoRailChromeRightForMode(int mode) {
+    return mode == ApolloDuoModeClosed ? ApolloDuoRailContentLeftInset() : 0.0;
+}
+
 // Usable width right of the leading rail. Stock nav letterboxes to a
 // phone column on the wide inner canvas; fill targets this width.
 static inline double ApolloDuoRailContentFillWidth(double containerWidth) {
@@ -78,15 +85,22 @@ static inline int ApolloDuoRailContentIsLetterboxed(double contentWidth,
 
 // Table/content frame that starts after the leading rail. Headers in a
 // full-bleed table ignore additionalSafeAreaInsets and draw under Subs.
-static inline ApolloDuoRailRect ApolloDuoRailContentFrameInBounds(double boundsWidth,
-                                                                 double boundsHeight) {
+static inline ApolloDuoRailRect ApolloDuoRailContentFrameInBoundsForMode(double boundsWidth,
+                                                                        double boundsHeight,
+                                                                        int mode) {
     ApolloDuoRailRect rect;
-    rect.x = ApolloDuoRailContentLeftInset();
+    rect.x = ApolloDuoRailChromeLeftForMode(mode);
     rect.y = 0.0;
     rect.width = ApolloDuoRailContentFillWidth(boundsWidth);
     rect.height = boundsHeight > 0.0 ? boundsHeight : 0.0;
     if (rect.width < 0.0) rect.width = 0.0;
     return rect;
+}
+
+static inline ApolloDuoRailRect ApolloDuoRailContentFrameInBounds(double boundsWidth,
+                                                                 double boundsHeight) {
+    return ApolloDuoRailContentFrameInBoundsForMode(boundsWidth, boundsHeight,
+                                                    ApolloDuoModeOpen);
 }
 
 static inline int ApolloDuoRailContentNeedsLeadingClearance(double contentX,
@@ -136,11 +150,12 @@ static inline int ApolloDuoCoverChromeShouldApply(int regularSizeClass,
     return !regularSizeClass && dualDisplay;
 }
 
-static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
-                                                          double boundsHeight,
-                                                          double safeTop,
-                                                          double safeBottom,
-                                                          double pillMaxY) {
+static inline ApolloDuoRailRect ApolloDuoRailFrameInBoundsOnSide(double boundsWidth,
+                                                                double boundsHeight,
+                                                                double safeTop,
+                                                                double safeBottom,
+                                                                double pillMaxY,
+                                                                int leading) {
     ApolloDuoRailRect rect;
     rect.x = 0.0;
     rect.y = 0.0;
@@ -154,9 +169,20 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
     rect.width = (double)ApolloDuoRailWidth;
     rect.height = boundsHeight - top - safeBottom;
     if (rect.height < 0.0) rect.height = 0.0;
-    rect.x = ApolloDuoRailLeadingChrome();
+    rect.x = leading ? ApolloDuoRailLeadingChrome()
+                     : boundsWidth - (double)ApolloDuoRailWidth;
+    if (rect.x < 0.0) rect.x = 0.0;
     rect.y = top;
     return rect;
+}
+
+static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
+                                                          double boundsHeight,
+                                                          double safeTop,
+                                                          double safeBottom,
+                                                          double pillMaxY) {
+    return ApolloDuoRailFrameInBoundsOnSide(boundsWidth, boundsHeight,
+                                            safeTop, safeBottom, pillMaxY, 1);
 }
 
 // Modern RedditList headers are painted at a hardcoded stockTitleX
@@ -311,19 +337,16 @@ static inline int ApolloDuoRailRowShouldNudgeStack(double titleMinX,
     return !ApolloDuoRailRowIsPortraitOrganized(titleMinX, shortcutLead);
 }
 
-// Show the rail when Regular *and landscape*, wide enough, and either
-// two screens look like inner+cover or the single canvas is clearly
-// larger than Plus landscape (~736pt). Compact (cover/front, phone
-// column) and any portrait / vertical canvas always return 0 so the
-// stock tab bar comes back and no 68pt leading strip is left behind.
+// Rail whenever the window is Duo Open or Closed. Regular iPhone
+// (not dual, not wide) is Phone — stock tab bar. Compact + dual +
+// portrait is Closed (right rail). Wide landscape is Open (left rail).
 static inline int ApolloDuoRailShouldShow(int regularSizeClass,
                                           int dualDisplay,
                                           double usableWidth,
                                           double usableHeight) {
-    if (!regularSizeClass) return 0;
-    if (usableHeight > usableWidth + 0.5) return 0;
-    if (usableWidth + 0.5 < (double)ApolloDuoRailMinRegularWidth) return 0;
-    return dualDisplay || (usableWidth + 0.5 >= (double)ApolloDuoRailWideSingleScreen);
+    (void)regularSizeClass;
+    return ApolloDuoModeFromBounds(dualDisplay, usableWidth, usableHeight)
+        != ApolloDuoModePhone;
 }
 
 #ifdef __cplusplus

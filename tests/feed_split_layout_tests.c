@@ -193,7 +193,7 @@ int main(void) {
           "leading extra is chrome-only (rail is trailing)");
     Check(Near(ApolloFeedSplitTrailingExtra(0.0, 1), (double)ApolloDuoRailWidth),
           "rail-active trailing extra is the rail width");
-    Check(Near(ApolloFeedSplitTrailingExtra(80.0, 1), 80.0),
+    Check(Near(ApolloFeedSplitTrailingExtra(120.0, 1), 120.0),
           "chrome extra larger than the rail wins on the trailing side");
     Check(Near(ApolloFeedSplitTrailingExtra(0.0, 0), 0.0),
           "rail-inactive trailing extra stays chrome-only");

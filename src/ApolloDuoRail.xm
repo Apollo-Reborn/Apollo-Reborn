@@ -127,5 +127,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (leading landscape rail; portrait clears insets; cover FABs)");
+    ApolloLog(@"[DuoRail] hook installed (112pt sidebar: Open left / Closed right; Phone tab bar)");
 }

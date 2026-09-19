@@ -1,3 +1,4 @@
+#include "ApolloDuoCompatibility.h"
 #include "ApolloDuoRailLayout.h"
 
 #include <stdio.h>
@@ -14,39 +15,74 @@ static void Check(int condition, const char *message) {
 }
 
 int main(void) {
-    Check(!ApolloDuoRailShouldShow(0, 1, 900.0, 400.0),
-          "Compact never shows the rail");
-    Check(!ApolloDuoRailShouldShow(0, 1, 400.0, 900.0),
-          "cover/front Compact canvas never gets a second Apollo rail");
-    Check(!ApolloDuoRailShouldShow(1, 1, 500.0, 400.0),
-          "Regular below the two-column floor stays on the tab bar");
-    Check(ApolloDuoRailShouldShow(1, 1, 652.0, 500.0),
-          "Regular + dual screens at the floor shows the rail");
-    Check(!ApolloDuoRailShouldShow(1, 1, 652.0, 900.0),
-          "Regular portrait / vertical hides the rail");
+    Check(ApolloDuoModeFromBounds(0, 390.0, 844.0) == ApolloDuoModePhone,
+          "regular iPhone portrait is Phone");
+    Check(ApolloDuoModeFromBounds(0, 736.0, 414.0) == ApolloDuoModePhone,
+          "Plus landscape is Phone");
+    Check(ApolloDuoModeFromBounds(0, 932.0, 430.0) == ApolloDuoModePhone,
+          "Max landscape is Phone");
+    Check(ApolloDuoModeFromBounds(1, 400.0, 900.0) == ApolloDuoModeClosed,
+          "dual + portrait-sized window is Closed");
+    Check(ApolloDuoModeFromBounds(1, 390.0, 844.0) == ApolloDuoModeClosed,
+          "dual + leftover phone column is Closed until fill");
+    Check(ApolloDuoModeFromBounds(0, 744.0, 1133.0) == ApolloDuoModeClosed,
+          "wide portrait window is Closed (right rail)");
+    Check(ApolloDuoModeFromBounds(1, 1133.0, 744.0) == ApolloDuoModeOpen,
+          "dual + wide landscape is Open");
+    Check(ApolloDuoModeFromBounds(0, 1133.0, 744.0) == ApolloDuoModeOpen,
+          "wide landscape window is Open even without dual");
+    Check(ApolloDuoModeFromBounds(1, 652.0, 500.0) == ApolloDuoModePhone,
+          "dual landscape that is not wide is not yet Open or Closed");
+    Check(ApolloDuoModeIsLeading(ApolloDuoModeOpen),
+          "Open rail is leading");
+    Check(!ApolloDuoModeIsLeading(ApolloDuoModeClosed),
+          "Closed rail is trailing");
+    Check(ApolloDuoRailShouldShow(0, 1, 400.0, 900.0),
+          "Closed cover/front Compact shows the right rail");
+    Check(ApolloDuoRailShouldShow(1, 1, 390.0, 844.0),
+          "Closed leftover portrait Duo window still gets a rail");
     Check(!ApolloDuoRailShouldShow(1, 0, 736.0, 400.0),
           "Plus landscape (single screen, ~736pt) keeps the tab bar");
-    Check(ApolloDuoRailShouldShow(1, 0, 800.0, 500.0),
-          "A single wide inner canvas shows the rail");
-    Check(!ApolloDuoRailShouldShow(1, 0, 800.0, 1000.0),
-          "a tall portrait canvas never installs the rail");
-    Check(ApolloDuoRailWidth == 64,
-          "rail width is the slim mock strip");
-    Check(ApolloDuoRailEdgeGutter == 4,
-          "leading hug is a 4pt gutter");
-    Check(ApolloDuoRailContentGutter == 16,
-          "content gutter is 16pt past the rail hairline");
-    Check(ApolloDuoRailLeadingChrome() == 4.0,
-          "leading chrome is the tiny hug");
-    Check(ApolloDuoRailContentLeftInset() == 80.0,
-          "content additional left inset is rail + 16pt gutter");
+    Check(!ApolloDuoRailShouldShow(1, 0, 800.0, 500.0),
+          "the old 800pt single-canvas floor is not Open");
+    Check(!ApolloDuoRailShouldShow(0, 0, 390.0, 844.0),
+          "regular iPhone portrait keeps the tab bar");
+    Check(ApolloDuoRailShouldShow(1, 1, 1133.0, 744.0),
+          "Open inner landscape shows the left rail");
+    Check(ApolloDuoRailShouldShow(1, 0, 744.0, 1133.0),
+          "wide inner portrait is Closed (right rail)");
+    Check(ApolloDuoIsWideBounds(1133.0, 744.0),
+          "wide-window math keys off UIWindow-sized bounds");
+    Check(!ApolloDuoIsWideBounds(390.0, 844.0),
+          "phone-column bounds are not wide");
+    Check(ApolloDuoRailWidth == 112,
+          "rail width is the 100–120pt sidebar");
+    Check(ApolloDuoRailEdgeGutter == 0,
+          "sidebar is flush to the leading edge");
+    Check(ApolloDuoRailContentGutter == 8,
+          "content gutter is 8pt past the rail hairline");
+    Check(ApolloDuoRailLeadingChrome() == 0.0,
+          "leading chrome is flush, not a 4pt hug");
+    Check(ApolloDuoRailContentLeftInset() == 120.0,
+          "content additional left inset is rail + 8pt gutter");
     Check(ApolloDuoRailContentRightInset() == 0.0,
-          "open-inner content has no extra trailing inset");
-    Check(ApolloDuoRailContentFillWidth(1000.0) == 920.0,
+          "open-inner ContentRightInset helper stays 0");
+    Check(ApolloDuoRailChromeLeftForMode(ApolloDuoModeOpen) == 120.0,
+          "Open chrome insets the leading edge");
+    Check(ApolloDuoRailChromeRightForMode(ApolloDuoModeOpen) == 0.0,
+          "Open chrome does not inset the trailing edge");
+    Check(ApolloDuoRailChromeLeftForMode(ApolloDuoModeClosed) == 0.0,
+          "Closed chrome does not inset the leading edge");
+    Check(ApolloDuoRailChromeRightForMode(ApolloDuoModeClosed) == 120.0,
+          "Closed chrome insets the trailing edge");
+    Check(ApolloDuoRailChromeLeftForMode(ApolloDuoModePhone) == 0.0
+              && ApolloDuoRailChromeRightForMode(ApolloDuoModePhone) == 0.0,
+          "Phone chrome has no rail insets");
+    Check(ApolloDuoRailContentFillWidth(1000.0) == 880.0,
           "open-Duo fill width is container minus leading rail and gutter");
     Check(ApolloDuoRailContentIsLetterboxed(390.0, 1000.0),
           "a phone-width column on the inner canvas is letterboxed");
-    Check(!ApolloDuoRailContentIsLetterboxed(920.0, 1000.0),
+    Check(!ApolloDuoRailContentIsLetterboxed(880.0, 1000.0),
           "content already filling right of the rail is not letterboxed");
     Check(ApolloDuoRailTopInset(0.0, 0.0) == 8.0,
           "top is safe.top + 8 when the safe area is 0");
@@ -68,25 +104,35 @@ int main(void) {
           "ordinary single-screen Compact does not apply cover clearance");
 
     ApolloDuoRailRect hug = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0);
-    Check(hug.x == 4.0 && hug.y == 8.0
-              && hug.width == 64.0 && hug.height == 800.0 - 8.0,
-          "rail hugs the leading edge with only a 4pt gutter");
+    Check(hug.x == 0.0 && hug.y == 8.0
+              && hug.width == 112.0 && hug.height == 800.0 - 8.0,
+          "sidebar is flush to the leading edge");
 
     ApolloDuoRailRect under = ApolloDuoRailFrameInBounds(1000.0, 800.0, 20.0, 34.0, 72.0);
-    Check(under.x == 4.0 && under.y == 28.0
-              && under.width == 64.0 && under.height == 800.0 - 28.0 - 34.0,
+    Check(under.x == 0.0 && under.y == 28.0
+              && under.width == 112.0 && under.height == 800.0 - 28.0 - 34.0,
           "leading rail uses safe.top + 8 and ignores the trailing pill");
 
+    ApolloDuoRailRect closed = ApolloDuoRailFrameInBoundsOnSide(400.0, 900.0, 20.0, 34.0, 0.0, 0);
+    Check(closed.x == 400.0 - 112.0 && closed.y == 28.0
+              && closed.width == 112.0 && closed.height == 900.0 - 28.0 - 34.0,
+          "Closed rail is flush to the trailing edge");
+
+    ApolloDuoRailRect closedContent = ApolloDuoRailContentFrameInBoundsForMode(400.0, 900.0,
+                                                                              ApolloDuoModeClosed);
+    Check(closedContent.x == 0.0 && closedContent.width == 280.0,
+          "Closed content starts at x=0 and stops before the right rail");
+
     ApolloDuoRailRect content = ApolloDuoRailContentFrameInBounds(1000.0, 800.0);
-    Check(content.x == 80.0 && content.y == 0.0
-              && content.width == 920.0 && content.height == 800.0,
-          "open content starts at x=80 so feed chrome cannot sit under Subs");
+    Check(content.x == 120.0 && content.y == 0.0
+              && content.width == 880.0 && content.height == 800.0,
+          "open content starts at x=120 so feed chrome cannot sit under Posts/Subs");
     Check(ApolloDuoRailContentNeedsLeadingClearance(0.0, 1000.0, 1000.0),
           "a full-bleed view under the rail needs leading clearance");
     Check(ApolloDuoRailContentNeedsLeadingClearance(68.0, 932.0, 1000.0),
-          "the old 68pt flush edge still needs the 16pt hairline gap");
-    Check(!ApolloDuoRailContentNeedsLeadingClearance(80.0, 920.0, 1000.0),
-          "a view already starting at 80 and filling the rest does not");
+          "the old 68pt flush edge still needs clearance past the 112pt sidebar");
+    Check(!ApolloDuoRailContentNeedsLeadingClearance(120.0, 880.0, 1000.0),
+          "a view already starting at 120 and filling the rest does not");
     Check(ApolloDuoRailContentNeedsLeadingClearance(0.0, 390.0, 1000.0),
           "a letterboxed phone column needs leading clearance");
     Check(ApolloDuoRailRowTrailingExtra(480.0) == 0.0,
@@ -95,35 +141,35 @@ int main(void) {
           "trailing-extra math stays locked but is not applied at runtime");
     Check(ApolloDuoRailRowMaxContentWidth == 480 && ApolloDuoRailRowStarGap == 28,
           "legacy cluster constants remain 480 / 28 and are unused at runtime");
-    Check(ApolloDuoRailHeaderTitleMinX(0.0, 18.0) == 98.0,
-          "legacy header 18→98 math stays locked");
+    Check(ApolloDuoRailHeaderTitleMinX(0.0, 18.0) == 138.0,
+          "legacy header 18→138 math stays locked (unused at runtime)");
     Check(ApolloDuoRailHeaderTitleMinX(0.0, (double)ApolloDuoRailRowStockLead)
               == ApolloDuoRailShortcutLeadMinX(0.0),
-          "runtime headers share the 96pt shortcut / title column");
-    Check(ApolloDuoRailHeaderTitleMinX(80.0, 18.0) == 18.0,
+          "legacy header/shortcut helpers still share one inset");
+    Check(ApolloDuoRailHeaderTitleMinX(120.0, 18.0) == 18.0,
           "a header already past the rail keeps the stock 18pt title");
-    Check(ApolloDuoRailRowTitleBump(0.0) == 80.0,
-          "a title under the rail is bumped by the full 80pt inset");
-    Check(ApolloDuoRailRowTitleBump(18.0) == 62.0,
+    Check(ApolloDuoRailRowTitleBump(0.0) == 120.0,
+          "a title under the rail is bumped by the full 120pt inset");
+    Check(ApolloDuoRailRowTitleBump(18.0) == 102.0,
           "a stock-18 title under the rail is bumped to the inset");
-    Check(ApolloDuoRailRowTitleBump(80.0) == 0.0,
+    Check(ApolloDuoRailRowTitleBump(120.0) == 0.0,
           "a title already at the inset is not bumped again");
-    Check(ApolloDuoRailRowTitleBump(98.0) == 0.0,
+    Check(ApolloDuoRailRowTitleBump(138.0) == 0.0,
           "a safe-area-inset title is not double-shifted");
-    Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == 98.0,
-          "a full-bleed favorite row matches the FAVORITES header at x=98");
-    Check(ApolloDuoRailRowTitleMinX(80.0, 18.0) == 18.0,
+    Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == 138.0,
+          "a full-bleed favorite row matches the FAVORITES header at x=138");
+    Check(ApolloDuoRailRowTitleMinX(120.0, 18.0) == 18.0,
           "a cell already past the rail keeps the stock 18pt title");
     Check(ApolloDuoRailRowTitleMinX(0.0, 18.0) == ApolloDuoRailHeaderTitleMinX(0.0, 18.0),
-          "header-keyed RowTitleMinX stays 18→98 (not used at runtime)");
+          "header-keyed RowTitleMinX stays 18→138 (not used at runtime)");
     Check(ApolloDuoRailRowStockLead == 16,
           "shortcut-row stock lead is UITableView's 16pt, not the header 18");
-    Check(ApolloDuoRailShortcutLeadMinX(0.0) == 96.0,
-          "full-bleed fallback wantX is safe-area 80 + 16, not header 98");
-    Check(ApolloDuoRailShortcutLeadMinX(80.0) == 16.0,
+    Check(ApolloDuoRailShortcutLeadMinX(0.0) == 136.0,
+          "full-bleed fallback wantX is safe-area 120 + 16");
+    Check(ApolloDuoRailShortcutLeadMinX(120.0) == 16.0,
           "a cell already past the rail keeps stock 16");
     Check(ApolloDuoRailShortcutLeadMinX(0.0) != ApolloDuoRailRowTitleMinX(0.0, 18.0),
-          "runtime wantX is not the 2eba156 header column");
+          "runtime wantX is not the header column");
     Check(ApolloDuoRailFavoriteTitleWantX(96.0, 137.0, 96.0) == 137.0,
           "live Home textLabel wins over the shortcut icon");
     Check(ApolloDuoRailFavoriteTitleWantX(0.0, 137.0, 96.0) == 137.0,
@@ -150,9 +196,9 @@ int main(void) {
     Check(ApolloDuoRailRowLeadDelta(400.0, 98.0) < -0.5,
           "92ea260 only-positive deficit would leave Image 1 untouched");
     Check(ApolloDuoRailRowLeadDelta(18.0, 98.0) == 80.0,
-          "an under-rail title is pushed by at most the 80pt rail inset");
-    Check(ApolloDuoRailRowLeadDelta(0.0, 98.0) == 80.0,
-          "right-shift is capped at 80 so we cannot stack a second inset");
+          "an under-rail title is pushed toward wantX");
+    Check(ApolloDuoRailRowLeadDelta(0.0, 138.0) == 120.0,
+          "right-shift is capped at the 120pt rail inset");
     Check(ApolloDuoRailRowLeadDelta(98.0, 98.0) == 0.0,
           "Image 2 / header-aligned titles are a no-op");
     Check(ApolloDuoRailRowLeadDelta(178.0, 98.0) == -80.0,
@@ -193,12 +239,12 @@ int main(void) {
         double staleRemain = ApolloDuoRailRowLeadDelta(18.0, want);
         double applied = ApolloDuoRailRowShouldApplyTitleRemainder(1, staleRemain)
             ? staleRemain : 0.0;
-        Check(afterStack == 96.0,
-              "one stack delta from stock 18 lands at shortcut lead 96");
-        Check(afterStack + applied == 96.0,
-              "gating remainder keeps 96; does not stack a second +78");
-        Check(afterStack + staleRemain == 174.0,
-              "the 2eba156 double-apply (18+78+78) is the Image 1 column");
+        Check(afterStack == 136.0,
+              "one stack delta from stock 18 lands at shortcut lead 136");
+        Check(afterStack + applied == 136.0,
+              "gating remainder keeps 136; does not stack a second remainder");
+        Check(afterStack + staleRemain == 254.0,
+              "an ungated double-apply is still the leftover second column");
     }
     Check(ApolloDuoRailRowLeadDelta(178.0, 96.0) == -82.0,
           "Image 1 settled titles (header 98 + leftover 80) pull to 96");

@@ -6,25 +6,23 @@
 #import <string.h>
 
 #import "ApolloCommon.h"
-#import "ApolloDeviceChromeInsets.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloDeviceDisplay.h"
 #import "ApolloDeviceGeometry.h"
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloThemeRuntime.h"
 
-// Open-inner leading rail. Regular + (dual screens or a wide inner canvas)
-// replaces the stock tab bar with My Subreddits / Home / Popular / All /
-// Profile / Settings hugging the far left — away from Duo's trailing
-// time/Wi-Fi cluster and cover system pill. Top is safe.top + 8 only.
-// The cover/front already has that pill; this rail is inner-only.
-// Compact and ordinary Plus landscape keep the tab bar. On cover, extra
-// trailing / bottom safe-area insets lift FABs off Duo's system gear.
-// Open-Duo content is expanded to the usable width right of the rail so
-// stock nav does not stay a phone column.
+// One Duo chrome path: a 112pt vertical sidebar. Open Duo (wide
+// landscape UIWindow) is leading; Closed Duo (portrait-sized Duo
+// window) is trailing. Regular iPhone stays on the stock tab bar.
+// Both Duo modes hide UITabBar. Selected item uses the theme accent
+// (blue on stock) as a rounded pill. FeedSplit tiling stays off.
+// Per-cell RedditList Tighten is a no-op.
 //
-// First show defaults to Subs: stock popToRoot onto RedditList (no
-// blank tiled half). Navigation reuses Apollo's own tab selectors and
-// RedditList row 0 (Home), plus apollo://reddit.com/r/popular|all.
+// Mode keys off UIWindow.bounds (never UIScreen.mainScreen). First
+// show defaults to Subs: stock popToRoot onto RedditList. Navigation
+// reuses Apollo's own tab selectors and RedditList row 0 (Home),
+// plus apollo://reddit.com/r/popular|all.
 
 typedef NS_ENUM(NSInteger, ApolloDuoRailItem) {
     ApolloDuoRailItemSubreddits = 0,
@@ -37,7 +35,7 @@ typedef NS_ENUM(NSInteger, ApolloDuoRailItem) {
 };
 
 static const char *kApolloDuoRailTitles[] = {
-    "Subs", "Home", "Popular", "All", "Profile", "Settings",
+    "Posts/Subs", "Home", "Popular", "All", "Profile", "Settings",
 };
 static const char *kApolloDuoRailSymbols[] = {
     "list.bullet", "house", "flame", "globe", "person", "gearshape",
@@ -45,15 +43,13 @@ static const char *kApolloDuoRailSymbols[] = {
 
 static char kApolloDuoRailViewKey;
 static char kApolloDuoRailActiveKey;
+static char kApolloDuoRailModeKey;
 static char kApolloDuoRailSelectedKey;
 static char kApolloDuoRailSavedContentInsetLeftKey;
 static char kApolloDuoRailSavedPreferredSizeKey;
 static char kApolloDuoRailSavedAdditionalLeftKey;
-static char kApolloDuoRailRowStackShiftLoggedKey;
-static char kApolloDuoRailRowTightenBusyKey;
 static char kApolloDuoRailRowLeadingClaimedKey;
 static char kApolloDuoRailRowDisabledConstraintsKey;
-static char kApolloDuoRailShortcutTextWindowXKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
 static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
@@ -220,7 +216,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     self.tag = item;
     self.isAccessibilityElement = YES;
     NSString *title = [NSString stringWithUTF8String:kApolloDuoRailTitles[item]];
-    self.accessibilityLabel = (item == ApolloDuoRailItemSubreddits) ? @"My Subreddits" : title;
+    self.accessibilityLabel = (item == ApolloDuoRailItemSubreddits) ? @"Posts / Subreddits" : title;
     self.accessibilityTraits = UIAccessibilityTraitButton;
 
     self.iconView = [[UIImageView alloc] initWithFrame:CGRectZero];
@@ -276,6 +272,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 @property (nonatomic, copy) NSArray<ApolloDuoRailButton *> *buttons;
 @property (nonatomic, strong) UIView *separatorView;
 @property (nonatomic, assign) ApolloDuoRailItem selectedItem;
+@property (nonatomic, assign) BOOL leading;
 - (void)apollo_applyTheme;
 - (void)apollo_setSelectedItem:(ApolloDuoRailItem)item;
 @end
@@ -300,6 +297,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     self.separatorView.userInteractionEnabled = NO;
     [self addSubview:self.separatorView];
     self.selectedItem = ApolloDuoRailItemSubreddits;
+    self.leading = YES;
     [self apollo_applyTheme];
     return self;
 }
@@ -353,7 +351,8 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
         y += itemHeight;
     }
     CGFloat hairline = 1.0 / MAX(self.window.screen.scale, 1.0);
-    self.separatorView.frame = CGRectMake(width - hairline, 0.0, hairline, height);
+    CGFloat separatorX = self.leading ? (width - hairline) : 0.0;
+    self.separatorView.frame = CGRectMake(separatorX, 0.0, hairline, height);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
@@ -384,18 +383,30 @@ static BOOL ApolloDuoRailDualDisplays(void) {
     return ApolloDisplayScreensAreDual(a.width, a.height, b.width, b.height);
 }
 
+static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
+    if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) {
+        return ApolloDuoModePhone;
+    }
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        return ApolloDuoModePhone;
+    }
+    UIWindow *window = tabs.view.window ?: ApolloDeviceAppWindow();
+    return ApolloDuoModeFromWindow(window, ApolloDuoRailDualDisplays() ? 1 : 0);
+}
+
 static BOOL ApolloDuoRailShouldShowForTabs(UITabBarController *tabs) {
-    if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return NO;
-    int regular = tabs.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular ? 1 : 0;
-    UIEdgeInsets safe = tabs.view.safeAreaInsets;
-    UIEdgeInsets margins = tabs.view.layoutMargins;
-    double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
-    double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
-    double usable = ApolloFeedSplitUsableWidth(tabs.view.bounds.size.width, extraLeft, extraRight);
-    return ApolloDuoRailShouldShow(regular,
-                                   ApolloDuoRailDualDisplays() ? 1 : 0,
-                                   usable,
-                                   tabs.view.bounds.size.height);
+    return ApolloDuoRailModeForTabs(tabs) != ApolloDuoModePhone;
+}
+
+static int ApolloDuoRailCurrentMode(void) {
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    NSNumber *stored = objc_getAssociatedObject(tabs, &kApolloDuoRailModeKey);
+    if (stored) return stored.intValue;
+    return ApolloDuoRailModeForTabs(tabs);
+}
+
+static BOOL ApolloDuoRailIsLeading(void) {
+    return ApolloDuoModeIsLeading(ApolloDuoRailCurrentMode());
 }
 
 static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) {
@@ -650,139 +661,12 @@ static void ApolloDuoRailInsetHeaderView(UIView *header, CGFloat left) {
     }
 }
 
-static UILabel *ApolloDuoRailRedditTitleLabel(UITableViewCell *cell) {
-    if (!cell) return nil;
-    Ivar ivar = class_getInstanceVariable(cell.class, "redditTitleLabel");
-    if (!ivar) return nil;
-    id value = object_getIvar(cell, ivar);
-    return [value isKindOfClass:[UILabel class]] ? (UILabel *)value : nil;
-}
-
-static UIStackView *ApolloDuoRailMainStackView(UITableViewCell *cell) {
-    if (!cell) return nil;
-    Ivar ivar = class_getInstanceVariable(cell.class, "mainStackView");
-    if (!ivar) return nil;
-    id value = object_getIvar(cell, ivar);
-    return [value isKindOfClass:[UIStackView class]] ? (UIStackView *)value : nil;
-}
-
-static UILabel *ApolloDuoRailPrimaryLabelInCell(UITableViewCell *cell) {
-    // redditTitleLabel is the visible FAVORITES / A–Z name. Do not prefer
-    // textLabel — custom RedditList cells can leave that at stock x=16
-    // while the real title already sits in the stack past the rail.
-    UILabel *redditTitle = ApolloDuoRailRedditTitleLabel(cell);
-    if (redditTitle.text.length > 0) return redditTitle;
-
-    UILabel *best = nil;
-    CGFloat bestMinX = CGFLOAT_MAX;
-    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell.contentView ?: cell];
-    NSInteger inspected = 0;
-    while (stack.count > 0 && inspected++ < 40) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        for (UIView *subview in view.subviews) {
-            [stack addObject:subview];
-        }
-        if (![view isKindOfClass:[UILabel class]] || view.hidden) continue;
-        UILabel *label = (UILabel *)view;
-        if (label.text.length == 0) continue;
-        CGRect inCell = [cell convertRect:label.bounds fromView:label];
-        if (CGRectGetMinX(inCell) > cellWidth * 0.45) continue;
-        if (CGRectGetWidth(inCell) < 8.0) continue;
-        if (CGRectGetMinX(inCell) < bestMinX) {
-            bestMinX = CGRectGetMinX(inCell);
-            best = label;
-        }
-    }
-    return best;
-}
-
 static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
     if (!view) return 0.0;
     if (view.window) {
         return CGRectGetMinX([view convertRect:view.bounds toView:nil]);
     }
     return CGRectGetMinX(view.frame);
-}
-
-static UITableView *ApolloDuoRailTableForCell(UITableViewCell *cell) {
-    for (UIView *view = cell.superview; view; view = view.superview) {
-        if ([view isKindOfClass:[UITableView class]]) return (UITableView *)view;
-    }
-    return nil;
-}
-
-// Live Home / Popular textLabel leading inside `cell`, from window-x.
-// Cached on the table so a scrolled-away shortcut still has a wantX.
-static CGFloat ApolloDuoRailShortcutLeadInCell(UITableViewCell *cell) {
-    CGFloat fallback = (CGFloat)ApolloDuoRailShortcutLeadMinX(ApolloDuoRailWindowMinX(cell));
-    UITableView *table = ApolloDuoRailTableForCell(cell);
-    if (!table) return fallback;
-
-    CGFloat cellWindowX = ApolloDuoRailWindowMinX(cell);
-    CGFloat maxX = CGRectGetWidth(cell.bounds) * 0.45;
-
-    for (UITableViewCell *other in table.visibleCells) {
-        const char *name = class_getName(other.class);
-        if (!name || !strstr(name, "ApolloSubtitleTableViewCell")) continue;
-        UILabel *text = other.textLabel;
-        if (!text || text.hidden || text.text.length == 0) continue;
-        CGFloat textWindowX = ApolloDuoRailWindowMinX(text);
-        CGFloat inCell = textWindowX - cellWindowX;
-        if (inCell > 0.5 && inCell < maxX) {
-            objc_setAssociatedObject(table, &kApolloDuoRailShortcutTextWindowXKey,
-                                     @(textWindowX), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return inCell;
-        }
-        break;
-    }
-
-    NSNumber *cached = objc_getAssociatedObject(table, &kApolloDuoRailShortcutTextWindowXKey);
-    if (cached) {
-        CGFloat inCell = cached.doubleValue - cellWindowX;
-        if (inCell > 0.5 && inCell < maxX) return inCell;
-    }
-    return fallback;
-}
-
-static BOOL ApolloDuoRailAttributeIsHorizontal(NSLayoutAttribute attribute) {
-    switch (attribute) {
-        case NSLayoutAttributeLeft:
-        case NSLayoutAttributeRight:
-        case NSLayoutAttributeLeading:
-        case NSLayoutAttributeTrailing:
-        case NSLayoutAttributeCenterX:
-        case NSLayoutAttributeLeftMargin:
-        case NSLayoutAttributeRightMargin:
-        case NSLayoutAttributeLeadingMargin:
-        case NSLayoutAttributeTrailingMargin:
-        case NSLayoutAttributeCenterXWithinMargins:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static BOOL ApolloDuoRailConstraintPinsViewHorizontally(NSLayoutConstraint *constraint,
-                                                        UIView *view) {
-    if (!constraint || !constraint.active || !view) return NO;
-    if (constraint.firstItem != view && constraint.secondItem != view) return NO;
-    return ApolloDuoRailAttributeIsHorizontal(constraint.firstAttribute)
-        || ApolloDuoRailAttributeIsHorizontal(constraint.secondAttribute);
-}
-
-static UIView *ApolloDuoRailShiftViewForTitle(UITableViewCell *cell,
-                                              UIStackView *mainStack,
-                                              UILabel *title) {
-    if (mainStack) {
-        for (UIView *walk = title; walk && walk != cell; walk = walk.superview) {
-            if (walk == mainStack) return mainStack;
-        }
-    }
-    UIView *parent = title.superview;
-    if (parent && parent != cell && parent != cell.contentView) return parent;
-    return title;
 }
 
 static void ApolloDuoRailReleaseLeadingView(UITableViewCell *cell) {
@@ -798,168 +682,13 @@ static void ApolloDuoRailReleaseLeadingView(UITableViewCell *cell) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void ApolloDuoRailClaimLeadingView(UITableViewCell *cell, UIView *shiftView) {
-    if (!cell || !shiftView) return;
-    if (!ApolloDuoRailRowShouldClaimLeading(
-            [objc_getAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey) boolValue])) {
-        return;
-    }
-    // Stamp first so a sync re-enter during deactivate cannot toggle again.
-    objc_setAssociatedObject(cell, &kApolloDuoRailRowLeadingClaimedKey, @YES,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    NSMutableArray<NSLayoutConstraint *> *disabled = [NSMutableArray array];
-    UIView *host = shiftView.superview;
-    while (host) {
-        for (NSLayoutConstraint *constraint in host.constraints) {
-            if (ApolloDuoRailConstraintPinsViewHorizontally(constraint, shiftView)) {
-                constraint.active = NO;
-                [disabled addObject:constraint];
-            }
-        }
-        if (host == cell) break;
-        host = host.superview;
-    }
-    objc_setAssociatedObject(cell, &kApolloDuoRailRowDisabledConstraintsKey,
-                             [disabled copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static UIControl *ApolloDuoRailStarControlInCell(UITableViewCell *cell) {
-    if (!cell) return nil;
-    Ivar ivar = class_getInstanceVariable(cell.class, "accessoryButton");
-    if (ivar) {
-        id value = object_getIvar(cell, ivar);
-        if ([value isKindOfClass:[UIControl class]]) return (UIControl *)value;
-    }
-    UIControl *best = nil;
-    CGFloat bestMinX = CGFLOAT_MAX;
-    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
-    NSInteger inspected = 0;
-    while (stack.count > 0 && inspected++ < 50) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        for (UIView *subview in view.subviews) {
-            [stack addObject:subview];
-        }
-        if (![view isKindOfClass:[UIControl class]] || view.hidden) continue;
-        const char *name = class_getName(view.class);
-        if (name && strstr(name, "StarHitProxy")) continue;
-        CGFloat w = CGRectGetWidth(view.bounds);
-        CGFloat h = CGRectGetHeight(view.bounds);
-        if (w < 16.0 || w > 72.0 || h < 16.0 || h > 72.0) continue;
-        CGRect inCell = [cell convertRect:view.bounds fromView:view];
-        if (CGRectGetMidX(inCell) < cellWidth * 0.20) continue;
-        if (CGRectGetMinX(inCell) < bestMinX) {
-            bestMinX = CGRectGetMinX(inCell);
-            best = (UIControl *)view;
-        }
-    }
-    return best;
-}
-
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
+    // Aaron reset: per-cell readable / centerX / lead-delta writes hung
+    // once (25f8a7b) and still left the wrong layout. Row expansion is
+    // a later patch. Release any leftover claim so a recycled cell
+    // cannot keep 25f8a7b/c7f33e0 constraint surgery alive.
     if (!cell) return;
-    if (!ApolloDuoRailIsActive()) {
-        ApolloDuoRailReleaseLeadingView(cell);
-        return;
-    }
-    // 25f8a7b hung by writing layoutMargins / re-toggling constraints /
-    // adding a pin every layoutSubviews. Claim is one-shot; this guard
-    // stops a sync re-enter during that first deactivate.
-    if (objc_getAssociatedObject(cell, &kApolloDuoRailRowTightenBusyKey)) return;
-
-    const char *cellName = class_getName(cell.class);
-    if (cellName && strstr(cellName, "ApolloSubtitleTableViewCell")) return;
-
-    UIStackView *mainStack = ApolloDuoRailMainStackView(cell);
-    UILabel *redditTitle = ApolloDuoRailRedditTitleLabel(cell);
-    if (!mainStack && !redditTitle) return;
-
-    UILabel *title = redditTitle ?: ApolloDuoRailPrimaryLabelInCell(cell);
-    if (!title) return;
-
-    objc_setAssociatedObject(cell, &kApolloDuoRailRowTightenBusyKey, @YES,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    if (title.textAlignment != NSTextAlignmentLeft) {
-        title.textAlignment = NSTextAlignmentLeft;
-    }
-    if (mainStack && mainStack.axis == UILayoutConstraintAxisVertical
-        && mainStack.alignment == UIStackViewAlignmentCenter) {
-        mainStack.alignment = UIStackViewAlignmentLeading;
-    }
-
-    UIView *shiftView = ApolloDuoRailShiftViewForTitle(cell, mainStack, title);
-    ApolloDuoRailClaimLeadingView(cell, shiftView);
-
-    CGFloat textW = 0.0;
-    if (title.text.length > 0 && title.font) {
-        textW = [title.text sizeWithAttributes:@{ NSFontAttributeName: title.font }].width;
-    }
-
-    CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
-    if (textW < 1.0) textW = MIN(CGRectGetWidth(titleInCell), 8.0);
-    CGFloat haveTextX = CGRectGetMinX(titleInCell);
-    CGFloat wantTitleX = ApolloDuoRailShortcutLeadInCell(cell);
-    // Idempotent nudge to the live Home textLabel. Claim already
-    // dropped the horizontal pins that snapped 4a76cd3 back. No
-    // title.frame remainder and no per-pass constraint/margin writes.
-    if (shiftView && ApolloDuoRailRowShouldNudgeStack(haveTextX, wantTitleX)) {
-        CGFloat delta = (CGFloat)ApolloDuoRailRowLeadDelta(haveTextX, wantTitleX);
-        if (fabs(delta) > 0.5) {
-            CGRect stackFrame = shiftView.frame;
-            CGFloat nextX = stackFrame.origin.x + delta;
-            if (nextX < 0.0) nextX = 0.0;
-            if (fabs(nextX - stackFrame.origin.x) > 0.5) {
-                stackFrame.origin.x = nextX;
-                shiftView.frame = stackFrame;
-                titleInCell = [cell convertRect:title.bounds fromView:title];
-                haveTextX = CGRectGetMinX(titleInCell);
-            }
-        }
-    }
-    if (!objc_getAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey)) {
-        objc_setAssociatedObject(cell, &kApolloDuoRailRowStackShiftLoggedKey, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLog(@"[DuoRail] reddit-row lead title=%.0f want=%.0f organized=%d",
-                  haveTextX, wantTitleX,
-                  ApolloDuoRailRowIsPortraitOrganized(haveTextX, wantTitleX));
-    }
-
-    // Hug the title to the drawn text so a stretchy label cannot keep
-    // the star (or center-aligned glyphs) out at the trailing edge.
-    titleInCell = [cell convertRect:title.bounds fromView:title];
-    CGRect titleFrame = title.frame;
-    CGFloat localTextW = textW;
-    if (localTextW < 1.0) localTextW = 8.0;
-    if (CGRectGetWidth(titleFrame) > localTextW + 4.0) {
-        titleFrame.size.width = localTextW + 2.0;
-        title.frame = titleFrame;
-        titleInCell = [cell convertRect:title.bounds fromView:title];
-    }
-
-    UIControl *star = ApolloDuoRailStarControlInCell(cell);
-    if (star && star != (UIControl *)title) {
-        CGFloat gap = mainStack && mainStack.spacing > 0.5
-            ? mainStack.spacing
-            : (CGFloat)ApolloDuoRailRowStarGap;
-        CGFloat titleMaxX = CGRectGetMinX(titleInCell) + MIN(localTextW, CGRectGetWidth(titleInCell));
-        CGFloat wantStarX = (CGFloat)ApolloDuoRailRowStarMinX(CGRectGetMinX(titleInCell),
-                                                             MIN(localTextW, CGRectGetWidth(titleInCell)),
-                                                             gap);
-        CGRect starInCell = [cell convertRect:star.bounds fromView:star];
-        if (CGRectGetMinX(starInCell) > wantStarX + 0.5
-            && CGRectGetMinX(starInCell) + 0.5 >= titleMaxX) {
-            CGRect starFrame = star.frame;
-            starFrame.origin.x -= (CGRectGetMinX(starInCell) - wantStarX);
-            if (starFrame.origin.x < 0.0) starFrame.origin.x = 0.0;
-            star.frame = starFrame;
-        }
-    }
-
-    objc_setAssociatedObject(cell, &kApolloDuoRailRowTightenBusyKey, nil,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloDuoRailReleaseLeadingView(cell);
 }
 
 static void ApolloDuoRailApplyScrollInsetLeft(UIScrollView *scrollView, CGFloat left) {
@@ -1011,13 +740,23 @@ static UIScrollView *ApolloDuoRailFindPrimaryTable(UIView *view, NSInteger depth
 static BOOL ApolloDuoRailShiftScrollViewOffRail(UIScrollView *scrollView) {
     if (!scrollView || !scrollView.superview || !ApolloDuoRailIsActive()) return NO;
     CGFloat inset = (CGFloat)ApolloDuoRailContentLeftInset();
-    CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
-    if (windowX + 0.5 >= inset) return NO;
-    CGFloat bump = inset - windowX;
     CGRect frame = scrollView.frame;
     CGRect want = frame;
-    want.origin.x += bump;
-    want.size.width = MAX(0.0, want.size.width - bump);
+    if (ApolloDuoRailIsLeading()) {
+        CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
+        if (windowX + 0.5 >= inset) return NO;
+        CGFloat bump = inset - windowX;
+        want.origin.x += bump;
+        want.size.width = MAX(0.0, want.size.width - bump);
+    } else {
+        UIWindow *window = scrollView.window;
+        CGFloat windowMaxX = ApolloDuoRailWindowMinX(scrollView) + CGRectGetWidth(frame);
+        CGFloat limit = window
+            ? (CGRectGetWidth(window.bounds) - inset)
+            : (CGRectGetMaxX(scrollView.superview.bounds) - inset);
+        if (windowMaxX <= limit + 0.5) return NO;
+        want.size.width = MAX(0.0, want.size.width - (windowMaxX - limit));
+    }
     if (fabs(want.origin.x - frame.origin.x) < 0.5
         && fabs(want.size.width - frame.size.width) < 0.5) {
         return NO;
@@ -1036,7 +775,8 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
         ApolloDuoRailShiftScrollViewOffRail(scrollView);
     }
     CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
-    BOOL underRail = active && (windowX + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset());
+    BOOL underRail = active && ApolloDuoRailIsLeading()
+        && (windowX + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset());
     // UIKit RedditList cells already honor the nav safe-area inset.
     // Do not stack contentInset.left on those — that was the portrait
     // white strip. Texture got a frame shift above instead.
@@ -1065,9 +805,6 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
             }
         }
     }
-    for (UITableViewCell *cell in tableView.visibleCells) {
-        ApolloDuoRailTightenSubredditRow(cell);
-    }
 }
 
 static void ApolloDuoRailFillController(UIViewController *controller, UIView *container) {
@@ -1075,7 +812,10 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     if (!controller.isViewLoaded) return;
     CGFloat containerWidth = CGRectGetWidth(container.bounds);
     CGFloat containerHeight = CGRectGetHeight(container.bounds);
-    ApolloDuoRailRect want = ApolloDuoRailContentFrameInBounds(containerWidth, containerHeight);
+    int mode = ApolloDuoRailCurrentMode();
+    ApolloDuoRailRect want = ApolloDuoRailContentFrameInBoundsForMode(containerWidth,
+                                                                     containerHeight,
+                                                                     mode);
     CGRect wantFrame = CGRectMake(want.x, want.y, want.width, want.height);
     BOOL expanded = NO;
     UIView *view = controller.view;
@@ -1090,11 +830,14 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     BOOL letterboxed = layout
         ? ApolloDuoRailContentIsLetterboxed(layout.frame.size.width, containerWidth)
         : NO;
+    BOOL needsClearance = letterboxed || texture;
+    if (needsClearance && layout && ApolloDuoModeIsLeading(mode)) {
+        needsClearance = ApolloDuoRailContentNeedsLeadingClearance(layout.frame.origin.x,
+                                                                  layout.frame.size.width,
+                                                                  containerWidth);
+    }
     if (layout && layout != container
-        && (letterboxed || texture)
-        && ApolloDuoRailContentNeedsLeadingClearance(layout.frame.origin.x,
-                                                     layout.frame.size.width,
-                                                     containerWidth)) {
+        && needsClearance) {
         ApolloLog(@"[DuoRail] filled %@ x=%.0f w=%.0f → x=%.0f w=%.0f",
                   NSStringFromClass(controller.class),
                   layout.frame.origin.x, layout.frame.size.width, want.x, want.width);
@@ -1104,11 +847,14 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
     letterboxed = view
         ? ApolloDuoRailContentIsLetterboxed(view.frame.size.width, containerWidth)
         : letterboxed;
+    BOOL viewNeedsClearance = letterboxed || texture;
+    if (viewNeedsClearance && ApolloDuoModeIsLeading(mode)) {
+        viewNeedsClearance = ApolloDuoRailContentNeedsLeadingClearance(view.frame.origin.x,
+                                                                      view.frame.size.width,
+                                                                      containerWidth);
+    }
     if (view && view != layout && view != container
-        && (letterboxed || texture)
-        && ApolloDuoRailContentNeedsLeadingClearance(view.frame.origin.x,
-                                                     view.frame.size.width,
-                                                     containerWidth)) {
+        && viewNeedsClearance) {
         ApolloDuoRailExpandView(view, layout && layout != view ? layout.bounds : wantFrame);
         expanded = YES;
     }
@@ -1149,11 +895,14 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
             CGFloat parentHeight = tableParent ? CGRectGetHeight(tableParent.bounds) : containerHeight;
             BOOL tableTexture = ApolloDuoRailScrollViewIsTexture((UIScrollView *)table);
             BOOL tableLetterboxed = ApolloDuoRailContentIsLetterboxed(table.frame.size.width, parentWidth);
+            BOOL tableNeedsClearance = tableTexture || tableLetterboxed;
+            if (tableNeedsClearance && ApolloDuoModeIsLeading(mode)) {
+                tableNeedsClearance = ApolloDuoRailContentNeedsLeadingClearance(table.frame.origin.x,
+                                                                               table.frame.size.width,
+                                                                               parentWidth);
+            }
             if (tableParent == container
-                && (tableTexture || tableLetterboxed)
-                && ApolloDuoRailContentNeedsLeadingClearance(table.frame.origin.x,
-                                                             table.frame.size.width,
-                                                             parentWidth)) {
+                && tableNeedsClearance) {
                 ApolloDuoRailExpandView(table, wantFrame);
                 expanded = YES;
             } else if (tableParent != container
@@ -1286,26 +1035,22 @@ void ApolloDuoRailSync(void) {
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return;
 
-    BOOL show = ApolloDuoRailShouldShowForTabs(tabs);
+    int mode = ApolloDuoRailModeForTabs(tabs);
+    BOOL show = mode != ApolloDuoModePhone;
     ApolloDuoRailView *rail = objc_getAssociatedObject(tabs, &kApolloDuoRailViewKey);
     BOOL wasActive = [objc_getAssociatedObject(tabs, &kApolloDuoRailActiveKey) boolValue];
+    int previousMode = [objc_getAssociatedObject(tabs, &kApolloDuoRailModeKey) intValue];
 
     if (!show) {
         if (rail.superview) [rail removeFromSuperview];
-        CGFloat coverBottom = 0.0;
-        CGFloat coverRight = 0.0;
-        if (ApolloDuoCoverShouldApplyForTabs(tabs)) {
-            coverBottom = (CGFloat)ApolloDuoCoverPillBottom;
-            coverRight = (CGFloat)ApolloDuoCoverPillWidth;
-        }
-        // Always zero leading insets on the whole tree — Compact / portrait
-        // must not keep a leftover white strip after the rail is gone.
-        ApolloDuoClearLeadingChromeInsets(tabs, coverBottom, coverRight);
+        ApolloDuoClearLeadingChromeInsets(tabs, 0.0, 0.0);
         ApolloDuoRailClearOpenContent();
         ApolloDuoRailSetTabBarHidden(tabs, NO);
+        objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(ApolloDuoModePhone),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (wasActive) {
             objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[DuoRail] hidden; stock tab bar restored");
+            ApolloLog(@"[DuoRail] hidden; stock tab bar restored (regular iPhone)");
         }
         return;
     }
@@ -1314,15 +1059,26 @@ void ApolloDuoRailSync(void) {
         rail = [[ApolloDuoRailView alloc] initWithFrame:CGRectZero];
         objc_setAssociatedObject(tabs, &kApolloDuoRailViewKey, rail, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    BOOL leading = ApolloDuoModeIsLeading(mode);
+    rail.leading = leading;
     CGRect bounds = tabs.view.bounds;
     UIEdgeInsets safe = ApolloDuoRailSystemSafeInsets(tabs);
-    ApolloDuoRailRect frame = ApolloDuoRailFrameInBounds(bounds.size.width,
-                                                         bounds.size.height,
-                                                         safe.top,
-                                                         safe.bottom,
-                                                         0.0);
-    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleRightMargin;
-    rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
+    ApolloDuoRailRect frame = ApolloDuoRailFrameInBoundsOnSide(bounds.size.width,
+                                                              bounds.size.height,
+                                                              safe.top,
+                                                              safe.bottom,
+                                                              0.0,
+                                                              leading ? 1 : 0);
+    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight
+        | (leading ? UIViewAutoresizingFlexibleRightMargin
+                   : UIViewAutoresizingFlexibleLeftMargin);
+    CGRect nextFrame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
+    if (fabs(rail.frame.origin.x - nextFrame.origin.x) >= 0.5
+        || fabs(rail.frame.origin.y - nextFrame.origin.y) >= 0.5
+        || fabs(rail.frame.size.width - nextFrame.size.width) >= 0.5
+        || fabs(rail.frame.size.height - nextFrame.size.height) >= 0.5) {
+        rail.frame = nextFrame;
+    }
     if (rail.superview != tabs.view) {
         [tabs.view addSubview:rail];
     }
@@ -1335,13 +1091,24 @@ void ApolloDuoRailSync(void) {
     }
     [rail apollo_applyTheme];
 
-    ApolloDuoApplyChromeInsets(tabs, (CGFloat)ApolloDuoRailContentLeftInset(), 0.0, 0.0);
+    CGFloat wantLeft = (CGFloat)ApolloDuoRailChromeLeftForMode(mode);
+    CGFloat wantRight = (CGFloat)ApolloDuoRailChromeRightForMode(mode);
+    CGFloat wantBottom = 0.0;
+    if (mode == ApolloDuoModeClosed && ApolloDuoCoverShouldApplyForTabs(tabs)) {
+        wantBottom = (CGFloat)ApolloDuoCoverPillBottom;
+    }
+    ApolloDuoApplyChromeInsets(tabs, wantLeft, wantBottom, wantRight);
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (wasActive && previousMode != mode && previousMode != ApolloDuoModePhone) {
+        ApolloDuoRailClearOpenContent();
+    }
+    objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloDuoRailFillOpenContent();
-    if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown hugging leading (%.0f,%.0f %.0fx%.0f)",
-                  frame.x, frame.y, frame.width, frame.height);
+    if (!wasActive || previousMode != mode) {
+        ApolloLog(@"[DuoRail] shown %s sidebar (%.0f,%.0f %.0fx%.0f) mode=%d",
+                  leading ? "leading" : "trailing",
+                  frame.x, frame.y, frame.width, frame.height, mode);
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;
             ApolloDuoRailOpenDefaultDirectory(tabs);

@@ -6,8 +6,9 @@
 
 __BEGIN_DECLS
 
-/// YES while the open-Duo leading rail is installed and the stock tab bar
-/// should stay hidden. Compact / ordinary iPhone keep the tab bar.
+/// YES while a Duo sidebar is installed and the stock tab bar is
+/// hidden. Open = leading rail, Closed = trailing rail. Regular
+/// iPhone is NO. Gated on ApolloDuoModeFromWindow (UIWindow.bounds).
 BOOL ApolloDuoRailIsActive(void);
 
 /// YES while My Subreddits is the selected rail item (stock RedditList
@@ -19,9 +20,9 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 /// iOS 14 (missing tab-hide selectors are skipped).
 void ApolloDuoRailSync(void);
 
-/// Expand a letterboxed stock-nav column to the usable width right of
-/// the leading rail, starting at ContentLeftInset (80) so feed chrome
-/// and headers cannot sit under Subs. No midX clamp and no dual-VC hosting.
+/// Expand a letterboxed stock-nav column to the usable width beside
+/// the sidebar (left inset on Open, right inset on Closed). No midX
+/// clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
 
 /// Restore full-bleed frames / insets when the rail hides. Walks every
@@ -33,12 +34,9 @@ void ApolloDuoRailClearOpenContent(void);
 /// Favorite/sub rows get rail clearance only — no wide-row star cluster.
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
-/// Portrait organization on open Duo: favorite / A–Z titles share the
-/// live Home / Popular textLabel leading. One-shot disable of the
-/// stack's external horizontal constraints (never from every
-/// layoutSubviews — that hung 25f8a7b), then an idempotent frame
-/// nudge. No layoutMargins writes, no new pin. Stars hug the drawn
-/// text. Releases the claim when the rail hides.
+/// No-op. Per-cell readable / centerX / lead-delta thrash hung the Duo
+/// sim (25f8a7b) and still left the wrong layout. Releases any leftover
+/// constraint claim. Expanded Duo rows are a later patch.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.
