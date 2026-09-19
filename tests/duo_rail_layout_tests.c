@@ -92,9 +92,9 @@ int main(void) {
     Check(ApolloDuoRailRowTrailingExtra(480.0) == 0.0,
           "a 480pt row needs no extra trailing cluster");
     Check(ApolloDuoRailRowTrailingExtra(920.0) == 440.0,
-          "a wide Duo row pulls stars toward a 480pt title cluster");
+          "trailing-extra math stays locked but is not applied at runtime");
     Check(ApolloDuoRailRowMaxContentWidth == 480 && ApolloDuoRailRowStarGap == 28,
-          "title+star cluster is 480pt with a 28pt star gap");
+          "legacy cluster constants remain 480 / 28 and are unused at runtime");
     Check(ApolloDuoRailHeaderTitleMinX(0.0, 18.0) == 98.0,
           "a header under the rail shifts FAVORITES from x=18 to x=98");
     Check(ApolloDuoRailHeaderTitleMinX(80.0, 18.0) == 18.0,

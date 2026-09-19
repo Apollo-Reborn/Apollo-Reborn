@@ -25,8 +25,11 @@ enum {
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
     ApolloDuoRailLetterboxGap = 40, /* phone-width column vs usable fill */
-    ApolloDuoRailRowMaxContentWidth = 480, /* titles+stars; avoid a sparse wide row */
-    ApolloDuoRailRowStarGap = 28,          /* title.maxX → star.minX */
+    /* Kept for host tests only — do NOT apply at runtime. The wide-row
+       title+star cluster ran only on landscape cells ≥480 and dragged
+       FAVORITES titles mid-pane. Portrait (stock RedditList) is the look. */
+    ApolloDuoRailRowMaxContentWidth = 480,
+    ApolloDuoRailRowStarGap = 28,
     ApolloDuoCoverPillWidth = 80,   /* cover system pill; Compact only */
     ApolloDuoCoverPillBottom = 120, /* lift FABs above the cover gear */
 };
@@ -101,7 +104,9 @@ static inline double ApolloDuoRailRowTitleBump(double titleWindowX) {
     return ApolloDuoRailContentLeftInset() - titleWindowX;
 }
 
-// Extra trailing margin so title↔star is not a 700pt void on Duo.
+// Unused at runtime (wide-row cluster is off). Kept so host tests still
+// lock the old 480pt math. Do not apply this as a leading or trailing
+// margin — that is the mid-pane FAVORITES indent on landscape Duo.
 static inline double ApolloDuoRailRowTrailingExtra(double cellWidth) {
     if (cellWidth <= (double)ApolloDuoRailRowMaxContentWidth) return 0.0;
     return cellWidth - (double)ApolloDuoRailRowMaxContentWidth;

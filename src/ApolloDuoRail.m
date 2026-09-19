@@ -719,7 +719,6 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     cell.contentView.insetsLayoutMarginsFromSafeArea = YES;
 
     UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
-    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
     if (!title) return;
 
     // Cell-local target matches StyleHeaderView (FAVORITES at 98 when
@@ -766,46 +765,11 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         }
     }
 
-    if (cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
-
-    // Use the drawn text width, not the (often full-row) label frame.
-    // A stretchy title label's maxX sits by the trailing star; using that
-    // pulled the star to 452pt and Auto Layout dragged the title with it.
-    CGFloat textW = 0.0;
-    if (title.text.length > 0 && title.font) {
-        textW = [title.text sizeWithAttributes:@{ NSFontAttributeName: title.font }].width;
-    }
-    if (textW < 1.0) textW = CGRectGetWidth(titleInCell);
-    CGFloat titleMaxX = CGRectGetMinX(titleInCell) + MIN(textW, CGRectGetWidth(titleInCell));
-    CGFloat wantStarX = titleMaxX + (CGFloat)ApolloDuoRailRowStarGap;
-    CGFloat maxStarX = (CGFloat)ApolloDuoRailRowMaxContentWidth - (CGFloat)ApolloDuoRailRowStarGap;
-    if (wantStarX > maxStarX) wantStarX = maxStarX;
-    if (wantStarX + 0.5 < titleMaxX) return;
-
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
-    NSInteger inspected = 0;
-    while (stack.count > 0 && inspected++ < 50) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        for (UIView *subview in view.subviews) {
-            [stack addObject:subview];
-        }
-        if (![view isKindOfClass:[UIControl class]]) continue;
-        const char *name = class_getName(view.class);
-        if (name && strstr(name, "StarHitProxy")) continue;
-        CGRect frame = view.frame;
-        CGFloat w = CGRectGetWidth(frame);
-        CGFloat h = CGRectGetHeight(frame);
-        if (w < 16.0 || w > 72.0 || h < 16.0 || h > 72.0) continue;
-        CGRect inCell = [cell convertRect:view.bounds fromView:view];
-        if (CGRectGetMidX(inCell) < cellWidth * 0.45) continue;
-        if (CGRectGetMinX(inCell) + 0.5 < titleMaxX) continue;
-        if (CGRectGetMinX(inCell) <= wantStarX + 0.5) continue;
-        CGFloat shift = CGRectGetMinX(inCell) - wantStarX;
-        frame.origin.x -= shift;
-        if (frame.origin.x < 0.0) frame.origin.x = 0.0;
-        view.frame = frame;
-    }
+    // Do not run the wide-row title+star cluster (RowMaxContentWidth /
+    // trailing-extra / star-tighten). That path is landscape-only
+    // (cell ≥ 480) and is why FAVORITES names went mid-pane while
+    // portrait — stock RedditList, no rail, no tighten — looked right.
+    // Stars stay in the stock stack after the title.
 }
 
 static void ApolloDuoRailApplyScrollInsetLeft(UIScrollView *scrollView, CGFloat left) {
