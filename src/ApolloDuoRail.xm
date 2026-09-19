@@ -55,6 +55,15 @@
 
 %end
 
+%hook _TtC6Apollo22CommentsViewController
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+}
+
+%end
+
 %ctor {
     %init;
     Class tabs = objc_getClass("_TtC6Apollo22ApolloTabBarController");
@@ -69,5 +78,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (Regular dual/wide rail; Compact uses tab bar)");
+    ApolloLog(@"[DuoRail] hook installed (inner rail hug; cover FABs clear system pill)");
 }

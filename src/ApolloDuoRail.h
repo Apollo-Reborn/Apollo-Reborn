@@ -20,11 +20,18 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 void ApolloDuoRailSync(void);
 
 /// How far the A–Z index must sit in from table.bounds.maxX while the
-/// rail is shown (rail + gutter + window safe.right). 0 when hidden.
+/// rail is shown (rail + tiny gutter). 0 when hidden.
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
 
-/// Keep UITableView's native A–Z index on the list, left of the rail —
-/// never in the far-right status gutter beside the time/Wi-Fi pill.
+/// Keep UITableView's native A–Z index on the list, immediately leading
+/// the rail — not a third column in a trailing gutter.
 void ApolloDuoRailPinSectionIndex(UITableView *tableView);
+
+/// YES on Compact + dual displays (cover/front). Never YES when the
+/// open-inner rail is shown. Ordinary single-screen iPhone is NO.
+BOOL ApolloDuoCoverChromeIsActive(void);
+
+/// Nudge CommentsViewController.commentJumpButton off Duo's cover pill.
+void ApolloDuoCoverAdjustJumpButton(UIViewController *comments);
 
 __END_DECLS

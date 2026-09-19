@@ -72,14 +72,12 @@ or an SDK bump.
   pushes. `UISplitViewController` / `UIArrangementViewController` are
   not adopted — wrapping a tab nav would break settings, floating tabs,
   swipe-up comments, and URL routing.
-- The rail frame is inset by the window/scene safe area (and any
-  hinge-sized layout-margin extra): `x = width - 64 - max(safe.right, 8)`.
-  Top is `max(contentSafeTop, status/nav maxY, 120) + 8` so Subs starts fully
-  **below** the time/Wi-Fi pill, not beside it. The A–Z section index
-  stays on the list (left of the rail); it is not drawn in the
-  far-right status gutter. Tab children get
-  `additionalSafeAreaInsets.right` = rail width + gutter while the rail
-  is shown, cleared on Compact. No `UIView` `layoutSubviews` frame-lock.
+- Open-inner rail hugs the trailing edge (`x = width - 64 - 4`). Top is
+  the live status-pill `maxY + 4` (or `safe.top + 4`), not a 120pt
+  floor. A–Z stays on the list immediately leading the rail. Cover /
+  Compact never gets an Apollo rail; dual-display Compact adds trailing
+  + bottom safe-area extras so the comment-jump FAB clears Duo’s system
+  gear. No `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -333,13 +331,9 @@ the sim stubs.
   is no list|feed or feed|comments tile, no PairOnStack, and no
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
-- The slim rail is painted on the **trailing** edge of the tab
-  controller, inset from the window safe area and **below** Duo’s
-  top-right time/Wi-Fi pill (no app chrome in that vertical band).
-  The Subreddits A–Z index is pinned to the list, left of the rail —
-  never in the status gutter beside the pill. Tab children get
-  `additionalSafeAreaInsets.right` = `ApolloDuoRailWidth` + gutter
-  while the rail is shown (cleared on Compact). Read window/scene
-  insets, not the tab view’s — those include the additional inset and
-  would walk the rail left every layout. Subs must not call
-  `goToHomeTab` — that pops/resets the stack.
+- The slim rail **hugs** the trailing edge (4pt). It starts just under
+  the live time/Wi-Fi cluster. A–Z is on the list, immediately leading
+  the rail. Cover Compact never gets an Apollo rail; dual-display
+  Compact insets FABs off Duo’s system pill. Tab children get
+  `additionalSafeAreaInsets.right` = rail + 4pt while the rail is
+  shown. Subs must not call `goToHomeTab` — that pops/resets the stack.

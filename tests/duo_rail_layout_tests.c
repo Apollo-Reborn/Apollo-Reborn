@@ -28,38 +28,36 @@ int main(void) {
           "A single wide inner canvas shows the rail");
     Check(ApolloDuoRailWidth == 64,
           "rail width is the slim mock strip");
-    Check(ApolloDuoRailEdgeGutter == 8,
-          "min edge gutter is 8pt");
-    Check(ApolloDuoRailTrailingChrome(0.0, 16.0) == (double)ApolloDuoRailEdgeGutter,
-          "zero right inset still leaves the min gutter");
-    Check(ApolloDuoRailTrailingChrome(48.0, 64.0) == 48.0,
-          "status-pill right inset wins over the 16pt system margin");
-    Check(ApolloDuoRailTrailingChrome(48.0, 80.0) == 64.0,
-          "hinge-sized layout-margin extra adds to the right chrome");
-    Check(ApolloDuoRailContentRightInset() == 72.0,
-          "content additional right inset is rail + gutter");
-    Check(ApolloDuoRailStatusBandMin == 120,
-          "status-band floor clears the nav/pill row even when safe.top is 0");
-    Check(ApolloDuoRailTopInset(0.0, 0.0) == 128.0,
-          "zero chrome still starts below the 120pt status/nav band");
-    Check(ApolloDuoRailTopInset(59.0, 0.0) == 128.0,
-          "a small island inset does not leave Subs beside the pill");
-    Check(ApolloDuoRailTopInset(103.0, 0.0) == 128.0,
-          "content safe top below the floor still uses the 120pt band");
-    Check(ApolloDuoRailTopInset(59.0, 150.0) == 158.0,
-          "a taller live nav/status band wins the top inset");
-    Check(ApolloDuoRailSectionIndexTrailing(48.0) == 120.0,
-          "A–Z index trailing is rail+gutter plus the status gutter");
+    Check(ApolloDuoRailEdgeGutter == 4,
+          "trailing hug is a 4pt gutter");
+    Check(ApolloDuoRailTrailingChrome() == 4.0,
+          "trailing chrome is the tiny hug, not safe.right");
+    Check(ApolloDuoRailContentRightInset() == 68.0,
+          "content additional right inset is rail + tiny gutter");
+    Check(ApolloDuoRailTopInset(0.0, 0.0) == 4.0,
+          "no pill uses a modest safe.top padding, not a 120pt floor");
+    Check(ApolloDuoRailTopInset(20.0, 0.0) == 24.0,
+          "safe.top plus a small gap when the pill frame is unknown");
+    Check(ApolloDuoRailTopInset(20.0, 72.0) == 76.0,
+          "live status-pill maxY plus gap starts the rail just under Wi-Fi");
+    Check(ApolloDuoRailSectionIndexTrailing() == 68.0,
+          "A–Z index sits on the list immediately leading the rail");
+    Check(ApolloDuoCoverChromeShouldApply(0, 1),
+          "Compact + dual displays apply cover pill clearance");
+    Check(!ApolloDuoCoverChromeShouldApply(1, 1),
+          "Regular open-inner does not apply cover clearance");
+    Check(!ApolloDuoCoverChromeShouldApply(0, 0),
+          "ordinary single-screen Compact does not apply cover clearance");
 
-    ApolloDuoRailRect flush = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0, 16.0, 0.0);
-    Check(flush.x == 1000.0 - 64.0 - 8.0 && flush.y == 128.0
-              && flush.width == 64.0 && flush.height == 800.0 - 128.0,
-          "zero-safe frame uses the min gutter and starts below the status band");
+    ApolloDuoRailRect hug = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0);
+    Check(hug.x == 1000.0 - 64.0 - 4.0 && hug.y == 4.0
+              && hug.width == 64.0 && hug.height == 800.0 - 4.0,
+          "rail hugs the trailing edge with only a 4pt gutter");
 
-    ApolloDuoRailRect pill = ApolloDuoRailFrameInBounds(1000.0, 800.0, 59.0, 48.0, 34.0, 64.0, 0.0);
-    Check(pill.x == 1000.0 - 64.0 - 48.0 && pill.y == 128.0
-              && pill.width == 64.0 && pill.height == 800.0 - 128.0 - 34.0,
-          "rail starts below the status band and left of the trailing gutter");
+    ApolloDuoRailRect under = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 34.0, 72.0);
+    Check(under.x == 1000.0 - 64.0 - 4.0 && under.y == 76.0
+              && under.width == 64.0 && under.height == 800.0 - 76.0 - 34.0,
+          "rail starts just under the status pill and still hugs the edge");
     printf("OK: %u checks\n", checks);
     return 0;
 }

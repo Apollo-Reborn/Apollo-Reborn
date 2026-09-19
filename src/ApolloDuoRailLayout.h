@@ -1,8 +1,6 @@
 #ifndef APOLLO_DUO_RAIL_LAYOUT_H
 #define APOLLO_DUO_RAIL_LAYOUT_H
 
-#include "ApolloDeviceChromeInsets.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -10,26 +8,21 @@ extern "C" {
 // Slim trailing rail on the *open inner* Duo canvas / very wide Regular.
 // Duo's cover/front already owns a vertical system pill on the far right
 // (back, feed, messages, profile, search, settings) — do not install a
-// second Apollo rail there. That pill is the design cue for the *open*
-// layout edge only: our Subs/Home/Popular/All/Profile/Settings rail sits
-// on the same trailing side of the inner display. Compact and ordinary
-// Plus landscape keep Apollo's stock tab bar. C-only so host tests
-// compile without UIKit.
+// second Apollo rail there. Compact and ordinary Plus landscape keep
+// Apollo's stock tab bar. C-only so host tests compile without UIKit.
 //
-// The rail frame is inset by the *window/scene* safe area (plus any
-// hinge-sized layout-margin extra). Flush-to-bounds painting sits under
-// Duo's top-right time/Wi-Fi pill and clips the selected Subs button.
-//
-// Duo's pill is trailing chrome: window.safe.top is often 0, so a
-// safe.top+N extra still leaves Subs in the nav/pill row. Top is an
-// absolute floor (status+nav band) plus the live content/nav bottom.
+// Open-inner rail hugs the trailing edge (tiny 4pt gutter only). A
+// safe.right inset floated it in a white strip. Top is the live status
+// pill's maxY plus a small gap — not a 120pt floor.
 
 enum {
     ApolloDuoRailWidth = 64,
-    ApolloDuoRailEdgeGutter = 8, /* min gap from display edge / chrome */
-    ApolloDuoRailStatusBandMin = 120, /* floor so Subs is never beside 8:08+Wi-Fi */
-    ApolloDuoRailMinRegularWidth = 652, /* same two-column floor as FeedSplit */
-    ApolloDuoRailWideSingleScreen = 800, /* inner canvas without a cover */
+    ApolloDuoRailEdgeGutter = 4, /* hug the trailing edge */
+    ApolloDuoRailStatusGap = 4,  /* just under the time/Wi-Fi pill */
+    ApolloDuoRailMinRegularWidth = 652,
+    ApolloDuoRailWideSingleScreen = 800,
+    ApolloDuoCoverPillWidth = 56,  /* cover system pill; Compact only */
+    ApolloDuoCoverPillBottom = 48, /* lift FABs above the cover gear */
 };
 
 typedef struct {
@@ -43,47 +36,45 @@ static inline double ApolloDuoRailMax(double a, double b) {
     return a > b ? a : b;
 }
 
-// How far the rail's trailing edge sits in from bounds.maxX.
-// max(safe.right + hinge extra, gutter) so a 0-inset first layout
-// still leaves a sliver, and the status pill's right inset wins.
-static inline double ApolloDuoRailTrailingChrome(double safeRight, double marginRight) {
-    if (safeRight < 0.0) safeRight = 0.0;
-    double extra = ApolloDeviceChromeExtra(safeRight, marginRight);
-    return ApolloDuoRailMax(safeRight + extra, (double)ApolloDuoRailEdgeGutter);
+// Tiny hug only. Do not add window safe.right — that created the
+// floating white gutter to the right of the rail.
+static inline double ApolloDuoRailTrailingChrome(void) {
+    return (double)ApolloDuoRailEdgeGutter;
 }
 
-// additionalSafeAreaInsets.right for tab children. System safe.right is
-// already applied by UIKit — only add the rail strip + a small gap.
 static inline double ApolloDuoRailContentRightInset(void) {
     return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
 }
 
-// First rail button must start fully below the Duo status pill's
-// vertical band. safeTop is the *content* inset (nav view, includes
-// the bar) — not window.safe.top. chromeMaxY is the live nav/status
-// bottom. StatusBandMin wins when those read 0 on Duo.
-static inline double ApolloDuoRailTopInset(double safeTop, double chromeMaxY) {
+// y = pillMaxY + gap when the status cluster is known; otherwise
+// safe.top + modest padding. No arbitrary 120pt floor.
+static inline double ApolloDuoRailTopInset(double safeTop, double pillMaxY) {
+    if (pillMaxY > 0.5) {
+        return pillMaxY + (double)ApolloDuoRailStatusGap;
+    }
     if (safeTop < 0.0) safeTop = 0.0;
-    if (chromeMaxY < 0.0) chromeMaxY = 0.0;
-    double band = ApolloDuoRailMax(safeTop, chromeMaxY);
-    band = ApolloDuoRailMax(band, (double)ApolloDuoRailStatusBandMin);
-    return band + (double)ApolloDuoRailEdgeGutter;
+    return safeTop + (double)ApolloDuoRailStatusGap;
 }
 
-// From table.bounds.maxX, how far left the A–Z index must sit so it
-// stays on the list (left of the rail) and out of the status gutter.
-static inline double ApolloDuoRailSectionIndexTrailing(double windowSafeRight) {
-    if (windowSafeRight < 0.0) windowSafeRight = 0.0;
-    return ApolloDuoRailContentRightInset() + windowSafeRight;
+// A–Z sits on the list, immediately leading the rail. Do not add
+// window safe.right or it becomes a third column in a gutter.
+static inline double ApolloDuoRailSectionIndexTrailing(void) {
+    return ApolloDuoRailContentRightInset();
+}
+
+// Cover / Compact + dual screens: extra trailing/bottom so FABs clear
+// Duo's system pill. Regular (open inner) never uses this — the Apollo
+// rail is the chrome there. Ordinary single-screen Compact is 0.
+static inline int ApolloDuoCoverChromeShouldApply(int regularSizeClass,
+                                                 int dualDisplay) {
+    return !regularSizeClass && dualDisplay;
 }
 
 static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
                                                           double boundsHeight,
                                                           double safeTop,
-                                                          double safeRight,
                                                           double safeBottom,
-                                                          double marginRight,
-                                                          double navBarMaxY) {
+                                                          double pillMaxY) {
     ApolloDuoRailRect rect;
     rect.x = 0.0;
     rect.y = 0.0;
@@ -93,8 +84,8 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
         return rect;
     }
     if (safeBottom < 0.0) safeBottom = 0.0;
-    double top = ApolloDuoRailTopInset(safeTop, navBarMaxY);
-    double trailing = ApolloDuoRailTrailingChrome(safeRight, marginRight);
+    double top = ApolloDuoRailTopInset(safeTop, pillMaxY);
+    double trailing = ApolloDuoRailTrailingChrome();
     rect.width = (double)ApolloDuoRailWidth;
     rect.height = boundsHeight - top - safeBottom;
     if (rect.height < 0.0) rect.height = 0.0;

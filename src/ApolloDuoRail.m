@@ -14,12 +14,11 @@
 
 // Open-inner trailing rail. Regular + (dual screens or a wide inner canvas)
 // replaces the stock tab bar with My Subreddits / Home / Popular / All /
-// Profile / Settings on the far right — the same edge as Duo's cover
-// system pill, inset by the window safe area and starting below the
-// inner display's time/Wi-Fi status band. The cover/front
-// already has that pill; this rail is inner-only (Compact / cover-sized
-// canvases never install it). Compact and ordinary Plus landscape keep
-// the tab bar.
+// Profile / Settings hugging the far right — same edge as Duo's cover
+// system pill, starting just under the inner time/Wi-Fi cluster. The
+// cover/front already has that pill; this rail is inner-only. Compact
+// and ordinary Plus landscape keep the tab bar. On cover, extra trailing
+// / bottom safe-area insets lift FABs off Duo's system gear.
 //
 // First show defaults to Subs: stock popToRoot onto RedditList (no
 // blank tiled half). Navigation reuses Apollo's own tab selectors and
@@ -401,7 +400,7 @@ static void ApolloDuoRailOpenDefaultDirectory(UITabBarController *tabs) {
 }
 
 // Window/scene chrome only. The tab view's safeAreaInsets include our
-// additionalSafeAreaInsets.right and would walk the rail left every pass.
+// additionalSafeAreaInsets and would walk the rail if used for x.
 static UIEdgeInsets ApolloDuoRailSystemSafeInsets(UITabBarController *tabs) {
     UIWindow *window = tabs.view.window;
     if (window) return window.safeAreaInsets;
@@ -413,59 +412,23 @@ static UIEdgeInsets ApolloDuoRailSystemSafeInsets(UITabBarController *tabs) {
                             MAX(0.0, viewSafe.right - extra.right));
 }
 
-static UIEdgeInsets ApolloDuoRailSystemMargins(UITabBarController *tabs) {
-    UIWindow *window = tabs.view.window;
-    if (window) return window.layoutMargins;
-    return tabs.view.layoutMargins;
-}
-
-// Content top (status + nav bar). Window.safe.top is the wrong signal
-// on Duo — the time/Wi-Fi pill is trailing chrome, so top is often 0.
-static CGFloat ApolloDuoRailContentTop(UITabBarController *tabs) {
-    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
-    if (nav.isViewLoaded && nav.view.safeAreaInsets.top > 1.0) {
-        return nav.view.safeAreaInsets.top;
-    }
-    UIViewController *visible = nav.visibleViewController;
-    if (visible.isViewLoaded && visible.view.safeAreaInsets.top > 1.0) {
-        return visible.view.safeAreaInsets.top;
-    }
-    return 0.0;
-}
-
-static CGFloat ApolloDuoRailChromeMaxY(UITabBarController *tabs) {
-    CGFloat maxY = 0.0;
+// Live time/Wi-Fi cluster only. Do not use the nav bar — that dropped
+// the rail halfway down the canvas.
+static CGFloat ApolloDuoRailStatusPillMaxY(UITabBarController *tabs) {
     UIWindow *window = tabs.view.window;
     UIWindowScene *scene = window.windowScene;
-    if (scene.statusBarManager) {
-        CGRect status = scene.statusBarManager.statusBarFrame;
-        // Duo may report a tall right-edge strip; only honor a pill-sized band.
-        if (!CGRectIsNull(status) && status.size.height > 0.0 && status.size.height <= 160.0) {
-            CGRect inTabs = [tabs.view convertRect:status fromView:nil];
-            maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(inTabs));
-        }
+    if (!scene.statusBarManager) return 0.0;
+    CGRect status = scene.statusBarManager.statusBarFrame;
+    if (CGRectIsNull(status) || status.size.height <= 0.0 || status.size.height > 160.0) {
+        return 0.0;
     }
-    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
-    UINavigationBar *bar = nav.navigationBar;
-    if (bar && !bar.hidden && bar.window) {
-        CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
-        if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame) && CGRectGetHeight(frame) <= 160.0) {
-            maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(frame));
-        }
-    }
-    return maxY;
+    CGRect inTabs = [tabs.view convertRect:status fromView:nil];
+    return (CGFloat)MAX(0.0, CGRectGetMaxY(inTabs));
 }
 
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
     if (!ApolloDuoRailIsActive() || !tableView) return 0.0;
-    UIWindow *window = tableView.window;
-    CGFloat systemRight = 0.0;
-    if (window) {
-        systemRight = window.safeAreaInsets.right;
-    } else {
-        systemRight = tableView.safeAreaInsets.right;
-    }
-    return (CGFloat)ApolloDuoRailSectionIndexTrailing(systemRight);
+    return (CGFloat)ApolloDuoRailSectionIndexTrailing();
 }
 
 void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
@@ -485,21 +448,57 @@ void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
     }
 }
 
-static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
-    // Stock nav: inset everyone from the trailing rail + gutter. System
-    // safe.right (status pill) is already in the window safe area — do
-    // not add it again or Edit/list collapse inward twice.
-    CGFloat wantRight = show ? (CGFloat)ApolloDuoRailContentRightInset() : 0.0;
+static void ApolloDuoApplyChromeInsets(UITabBarController *tabs, CGFloat wantRight, CGFloat wantBottom) {
     UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
-    if (fabs(tabInsets.left) > 0.5 || fabs(tabInsets.right - wantRight) > 0.5) {
-        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, tabInsets.bottom, wantRight);
+    if (fabs(tabInsets.left) > 0.5
+        || fabs(tabInsets.right - wantRight) > 0.5
+        || fabs(tabInsets.bottom - wantBottom) > 0.5) {
+        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, 0.0, wantBottom, wantRight);
     }
     for (UIViewController *child in tabs.viewControllers) {
         if (!child) continue;
         UIEdgeInsets current = child.additionalSafeAreaInsets;
-        if (fabs(current.left) < 0.5 && fabs(current.right - wantRight) < 0.5) continue;
-        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, 0.0, current.bottom, wantRight);
+        if (fabs(current.left) < 0.5
+            && fabs(current.right - wantRight) < 0.5
+            && fabs(current.bottom - wantBottom) < 0.5) {
+            continue;
+        }
+        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, 0.0, wantBottom, wantRight);
     }
+}
+
+static BOOL ApolloDuoCoverShouldApplyForTabs(UITabBarController *tabs) {
+    if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return NO;
+    if (tabs.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular) return NO;
+    return ApolloDuoCoverChromeShouldApply(0, ApolloDuoRailDualDisplays() ? 1 : 0);
+}
+
+BOOL ApolloDuoCoverChromeIsActive(void) {
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    return ApolloDuoCoverShouldApplyForTabs(tabs);
+}
+
+void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
+    if (!ApolloDuoCoverChromeIsActive() || !comments.isViewLoaded) return;
+    Ivar ivar = class_getInstanceVariable(comments.class, "commentJumpButton");
+    UIView *button = ivar ? object_getIvar(comments, ivar) : nil;
+    if (![button isKindOfClass:[UIView class]] || !button.superview) return;
+    UIView *container = button.superview;
+    CGRect frame = button.frame;
+    CGFloat limitX = CGRectGetWidth(container.bounds) - (CGFloat)ApolloDuoCoverPillWidth;
+    CGFloat limitY = CGRectGetHeight(container.bounds) - (CGFloat)ApolloDuoCoverPillBottom;
+    BOOL moved = NO;
+    if (CGRectGetMaxX(frame) > limitX + 0.5) {
+        frame.origin.x -= (CGRectGetMaxX(frame) - limitX);
+        moved = YES;
+    }
+    if (CGRectGetMaxY(frame) > limitY + 0.5) {
+        frame.origin.y -= (CGRectGetMaxY(frame) - limitY);
+        moved = YES;
+    }
+    if (frame.origin.x < 0.0) frame.origin.x = 0.0;
+    if (frame.origin.y < 0.0) frame.origin.y = 0.0;
+    if (moved) button.frame = frame;
 }
 
 BOOL ApolloDuoRailIsActive(void) {
@@ -517,7 +516,13 @@ void ApolloDuoRailSync(void) {
 
     if (!show) {
         if (rail.superview) [rail removeFromSuperview];
-        ApolloDuoRailApplyInsets(tabs, NO);
+        if (ApolloDuoCoverShouldApplyForTabs(tabs)) {
+            ApolloDuoApplyChromeInsets(tabs,
+                                       (CGFloat)ApolloDuoCoverPillWidth,
+                                       (CGFloat)ApolloDuoCoverPillBottom);
+        } else {
+            ApolloDuoApplyChromeInsets(tabs, 0.0, 0.0);
+        }
         if (wasActive) {
             ApolloDuoRailSetTabBarHidden(tabs, NO);
             objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -532,14 +537,11 @@ void ApolloDuoRailSync(void) {
     }
     CGRect bounds = tabs.view.bounds;
     UIEdgeInsets safe = ApolloDuoRailSystemSafeInsets(tabs);
-    UIEdgeInsets margins = ApolloDuoRailSystemMargins(tabs);
     ApolloDuoRailRect frame = ApolloDuoRailFrameInBounds(bounds.size.width,
                                                          bounds.size.height,
-                                                         ApolloDuoRailContentTop(tabs),
-                                                         safe.right,
+                                                         safe.top,
                                                          safe.bottom,
-                                                         margins.right,
-                                                         ApolloDuoRailChromeMaxY(tabs));
+                                                         ApolloDuoRailStatusPillMaxY(tabs));
     rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
     rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
     if (rail.superview != tabs.view) {
@@ -554,12 +556,12 @@ void ApolloDuoRailSync(void) {
     }
     [rail apollo_applyTheme];
 
-    ApolloDuoRailApplyInsets(tabs, YES);
+    ApolloDuoApplyChromeInsets(tabs, (CGFloat)ApolloDuoRailContentRightInset(), 0.0);
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f contentT=%.0f below pill band)",
-                  frame.x, frame.y, frame.width, frame.height, safe.right, ApolloDuoRailContentTop(tabs));
+        ApolloLog(@"[DuoRail] shown hugging trailing (%.0f,%.0f %.0fx%.0f pillMaxY=%.0f)",
+                  frame.x, frame.y, frame.width, frame.height, ApolloDuoRailStatusPillMaxY(tabs));
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;
             ApolloDuoRailOpenDefaultDirectory(tabs);
