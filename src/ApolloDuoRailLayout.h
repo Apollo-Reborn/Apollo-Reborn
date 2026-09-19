@@ -89,12 +89,13 @@ static inline int ApolloDuoRailContentNeedsLeadingClearance(double contentX,
     return ApolloDuoRailContentIsLetterboxed(contentWidth, containerWidth);
 }
 
-// How far a full-bleed row still sits under the leading rail in window
-// space. 0 when the row (or its content view) already starts at/after
-// the content inset. Used after scroll resets a one-shot table shift.
-static inline double ApolloDuoRailRowLeadingOverlap(double contentWindowX) {
-    double overlap = ApolloDuoRailContentLeftInset() - contentWindowX;
-    return overlap > 0.0 ? overlap : 0.0;
+// Extra x to add to a *title* that is still under the rail. 0 when the
+// title's window minX is already at/after the content inset. Do not use
+// the cell contentView's window x — that view is full-bleed at 0 even
+// when safe-area margins have already cleared the text.
+static inline double ApolloDuoRailRowTitleBump(double titleWindowX) {
+    if (titleWindowX + 0.5 >= ApolloDuoRailContentLeftInset()) return 0.0;
+    return ApolloDuoRailContentLeftInset() - titleWindowX;
 }
 
 // Extra trailing margin so title↔star is not a 700pt void on Duo.

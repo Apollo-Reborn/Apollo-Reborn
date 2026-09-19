@@ -680,42 +680,31 @@ static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     if (!cell || !ApolloDuoRailIsActive()) return;
 
-    // After scroll, UITableView puts cells back to x=0 of a full-bleed
-    // table. Headers keep their own inset path; rows must be re-cleared
-    // from the content view's *window* position every layout.
-    UIView *content = cell.contentView ?: cell;
-    CGFloat overlap = (CGFloat)ApolloDuoRailRowLeadingOverlap(ApolloDuoRailWindowMinX(content));
-    if (overlap > 0.5) {
-        CGRect frame = content.frame;
-        if (CGRectGetMinX(frame) + 0.5 < overlap) {
-            CGFloat bump = overlap - CGRectGetMinX(frame);
+    UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
+    // One clearance path: only bump when the *title* is still under the
+    // rail. The contentView is full-bleed at window x=0 even after
+    // additionalSafeAreaInsets has already inset the text — treating
+    // that as overlap stacked 80pt on the safe-area 80pt (mid-column
+    // titles, stars sitting on the first letter).
+    if (title) {
+        CGFloat titleWindowX = ApolloDuoRailWindowMinX(title);
+        CGFloat bump = (CGFloat)ApolloDuoRailRowTitleBump(titleWindowX);
+        if (bump > 0.5) {
+            CGRect frame = title.frame;
             frame.origin.x += bump;
-            frame.size.width = MAX(0.0, frame.size.width - bump);
-            content.frame = frame;
-        }
-        UIEdgeInsets margins = cell.layoutMargins;
-        if (margins.left < overlap - 0.5) {
-            margins.left = overlap;
-            cell.layoutMargins = margins;
-        }
-        UIEdgeInsets contentMargins = content.layoutMargins;
-        if (contentMargins.left < overlap - 0.5) {
-            contentMargins.left = overlap;
-            content.layoutMargins = contentMargins;
+            title.frame = frame;
         }
     }
 
     CGFloat cellWidth = CGRectGetWidth(cell.bounds);
-    if (cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
-
-    UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
-    if (!title) return;
-    // Do not pull stars toward a title that is still under the rail.
+    if (!title || cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
     if (ApolloDuoRailWindowMinX(title) + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset()) return;
+
     CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
     CGFloat wantStarX = CGRectGetMaxX(titleInCell) + (CGFloat)ApolloDuoRailRowStarGap;
     CGFloat maxStarX = (CGFloat)ApolloDuoRailRowMaxContentWidth - (CGFloat)ApolloDuoRailRowStarGap;
     if (wantStarX > maxStarX) wantStarX = maxStarX;
+    if (wantStarX + 0.5 < CGRectGetMaxX(titleInCell)) return;
 
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
     NSInteger inspected = 0;
@@ -734,6 +723,7 @@ void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
         if (w < 16.0 || w > 72.0 || h < 16.0 || h > 72.0) continue;
         CGRect inCell = [cell convertRect:view.bounds fromView:view];
         if (CGRectGetMidX(inCell) < cellWidth * 0.45) continue;
+        if (CGRectGetMinX(inCell) + 0.5 < CGRectGetMaxX(titleInCell)) continue;
         if (CGRectGetMinX(inCell) <= wantStarX + 0.5) continue;
         CGFloat shift = CGRectGetMinX(inCell) - wantStarX;
         frame.origin.x -= shift;

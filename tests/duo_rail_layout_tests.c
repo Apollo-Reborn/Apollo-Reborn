@@ -99,12 +99,14 @@ int main(void) {
           "a header under the rail shifts FAVORITES from x=18 to x=98");
     Check(ApolloDuoRailHeaderTitleMinX(80.0, 18.0) == 18.0,
           "a header already past the rail keeps the stock 18pt title");
-    Check(ApolloDuoRailRowLeadingOverlap(0.0) == 80.0,
-          "a full-bleed row after scroll still needs the 80pt rail gap");
-    Check(ApolloDuoRailRowLeadingOverlap(40.0) == 40.0,
-          "a half-shifted row keeps the remaining overlap");
-    Check(ApolloDuoRailRowLeadingOverlap(80.0) == 0.0,
-          "a row already past the rail has no leading overlap");
+    Check(ApolloDuoRailRowTitleBump(0.0) == 80.0,
+          "a title under the rail is bumped by the full 80pt inset");
+    Check(ApolloDuoRailRowTitleBump(18.0) == 62.0,
+          "a stock-18 title under the rail is bumped to the inset");
+    Check(ApolloDuoRailRowTitleBump(80.0) == 0.0,
+          "a title already at the inset is not bumped again");
+    Check(ApolloDuoRailRowTitleBump(98.0) == 0.0,
+          "a safe-area-inset title is not double-shifted");
     printf("OK: %u checks\n", checks);
     return 0;
 }
