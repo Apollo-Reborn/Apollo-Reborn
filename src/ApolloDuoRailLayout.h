@@ -25,7 +25,7 @@ extern "C" {
 enum {
     ApolloDuoRailWidth = 64,
     ApolloDuoRailEdgeGutter = 8, /* min gap from display edge / chrome */
-    ApolloDuoRailStatusBandExtra = 44, /* nav-bar height; clears time+Wi-Fi band */
+    ApolloDuoRailStatusBandExtra = 72, /* stacked time+Wi-Fi pill; not just a 44pt bar */
     ApolloDuoRailMinRegularWidth = 652, /* same two-column floor as FeedSplit */
     ApolloDuoRailWideSingleScreen = 800, /* inner canvas without a cover */
 };
@@ -56,12 +56,13 @@ static inline double ApolloDuoRailContentRightInset(void) {
     return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
 }
 
-// First rail button / A–Z index must start below the Duo status pill's
-// vertical band. Live nav-bar maxY wins; otherwise safe.top + 44pt.
-static inline double ApolloDuoRailTopInset(double safeTop, double navBarMaxY) {
+// First rail button must start fully below the Duo status pill's
+// vertical band. chromeMaxY is max(nav-bar bottom, status-bar frame
+// bottom); otherwise safe.top + 72pt (stacked time+Wi-Fi).
+static inline double ApolloDuoRailTopInset(double safeTop, double chromeMaxY) {
     if (safeTop < 0.0) safeTop = 0.0;
-    if (navBarMaxY < 0.0) navBarMaxY = 0.0;
-    double band = ApolloDuoRailMax(safeTop + (double)ApolloDuoRailStatusBandExtra, navBarMaxY);
+    if (chromeMaxY < 0.0) chromeMaxY = 0.0;
+    double band = ApolloDuoRailMax(safeTop + (double)ApolloDuoRailStatusBandExtra, chromeMaxY);
     return band + (double)ApolloDuoRailEdgeGutter;
 }
 

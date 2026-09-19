@@ -419,13 +419,26 @@ static UIEdgeInsets ApolloDuoRailSystemMargins(UITabBarController *tabs) {
     return tabs.view.layoutMargins;
 }
 
-static CGFloat ApolloDuoRailNavBarMaxY(UITabBarController *tabs) {
+static CGFloat ApolloDuoRailChromeMaxY(UITabBarController *tabs) {
+    CGFloat maxY = 0.0;
+    UIWindow *window = tabs.view.window;
+    UIWindowScene *scene = window.windowScene;
+    if (scene.statusBarManager) {
+        CGRect status = scene.statusBarManager.statusBarFrame;
+        if (!CGRectIsNull(status) && !CGRectIsEmpty(status)) {
+            CGRect inTabs = [tabs.view convertRect:status fromView:nil];
+            maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(inTabs));
+        }
+    }
     UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
     UINavigationBar *bar = nav.navigationBar;
-    if (!bar || bar.hidden || !bar.window) return 0.0;
-    CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
-    if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) return 0.0;
-    return (CGFloat)MAX(0.0, CGRectGetMaxY(frame));
+    if (bar && !bar.hidden && bar.window) {
+        CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
+        if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame)) {
+            maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(frame));
+        }
+    }
+    return maxY;
 }
 
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
@@ -512,7 +525,7 @@ void ApolloDuoRailSync(void) {
                                                          safe.right,
                                                          safe.bottom,
                                                          margins.right,
-                                                         ApolloDuoRailNavBarMaxY(tabs));
+                                                         ApolloDuoRailChromeMaxY(tabs));
     rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
     rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
     if (rail.superview != tabs.view) {
