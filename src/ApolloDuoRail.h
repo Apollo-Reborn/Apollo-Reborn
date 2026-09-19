@@ -34,12 +34,11 @@ void ApolloDuoRailClearOpenContent(void);
 void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 
 /// Portrait organization on open Duo: one leading column. Favorite /
-/// A–Z titles share the Home / Popular shortcut-row leading (stock
-/// RedditList + rail safe-area only). Disables wide-Regular
-/// readable/centerX indent, pins the stack to layout-margin leading,
-/// and does not stack a second +80 on title.frame. Stars hug the
-/// drawn text. Shortcut rows are left alone. Restores stock
-/// constraints when the rail hides (portrait / Compact).
+/// A–Z titles share the Home / Popular shortcut-row leading via a
+/// single idempotent stack-frame nudge (no layoutMargins / constraint
+/// writes — those re-entered layoutSubviews and hung 25f8a7b). Stars
+/// hug the drawn text. Shortcut rows are left alone. No-op when the
+/// rail is hidden or the title is already on the lead.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.

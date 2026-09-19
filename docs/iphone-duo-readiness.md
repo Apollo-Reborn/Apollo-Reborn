@@ -85,9 +85,9 @@ or an SDK bump.
   width right of the rail (letterboxed phone column → fill). RedditList
   headers that ignore safe-area are shifted so they do not clip under
   Subs; favorite / A–Z titles use portrait organization: one
-  leading column with Home / Popular (stock RedditList + rail
-  safe-area only). Wide-Regular readable/centerX indent is off;
-  no second +80 on `title.frame`. No midX Apply loops and no
+  leading column with Home / Popular via an idempotent stack-frame
+  nudge (no layoutMargins / constraint writes from layoutSubviews
+  — those hung the Duo sim). No midX Apply loops and no
   `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
@@ -247,8 +247,9 @@ Confirm feed size-class layout (step 3 + open Duo):
   `additionalSafeAreaInsets.left` is 0 on the whole tree — no 68pt
   white bar beside the feed. Section headers and favorite / A–Z
   titles share the Home / Popular shortcut-row leading (stock +
-  rail safe-area, ≈96) — one column, like portrait, not a second
-  indented strip under the headers.
+  rail safe-area, ≈96) via a frame nudge that no-ops when already
+  aligned — one column, like portrait. Do not write layoutMargins
+  or toggle constraints from layoutSubviews.
 - Overscrolling comments must not reveal a second copy of the post
   (tiling is off, so there is no leftover detail host).
 - Swipe-up-for-comments media pane is unchanged (sheet).

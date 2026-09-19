@@ -297,6 +297,14 @@ static inline double ApolloDuoRailRowWastedLeading(double titleMinX,
     return gap > 0.0 ? gap : 0.0;
 }
 
+// Frame-only stack nudge. 0 when already on the shortcut lead so
+// layoutSubviews is a no-op. Constraint / margin writes are not a
+// tool here — they re-entered layout on 25f8a7b and hung the sim.
+static inline int ApolloDuoRailRowShouldNudgeStack(double titleMinX,
+                                                   double shortcutLead) {
+    return !ApolloDuoRailRowIsPortraitOrganized(titleMinX, shortcutLead);
+}
+
 // Show the rail when Regular *and landscape*, wide enough, and either
 // two screens look like inner+cover or the single canvas is clearly
 // larger than Plus landscape (~736pt). Compact (cover/front, phone

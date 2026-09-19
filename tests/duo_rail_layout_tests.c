@@ -224,6 +224,14 @@ int main(void) {
           "Image 1 wastes 82pt left of the shortcut lead");
     Check(ApolloDuoRailRowWastedLeading(96.0, 96.0) == 0.0,
           "portrait organization has no wasted leading");
+    Check(!ApolloDuoRailRowShouldNudgeStack(96.0, 96.0),
+          "an already-organized row must not write frames again");
+    Check(!ApolloDuoRailRowShouldNudgeStack(98.0, 96.0),
+          "a 2pt header slop is already organized; do not nudge");
+    Check(ApolloDuoRailRowShouldNudgeStack(178.0, 96.0),
+          "Image 1 leftover 178 still needs one stack nudge");
+    Check(ApolloDuoRailRowShouldNudgeStack(18.0 + ApolloDuoRailReadableLeading(920.0, 672.0), 96.0),
+          "readable-centered landscape still needs one stack nudge");
     printf("OK: %u checks\n", checks);
     return 0;
 }
