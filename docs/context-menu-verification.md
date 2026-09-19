@@ -165,8 +165,13 @@ UIKit icon renderer was stubbed for the host build.
   (`ApolloActionMenuEditorViewController initWithContext:`). Each editor is
   also a settings route (`action-menus-<context>`) so settings search still
   indexes every action and opens the right editor; the hub keeps the
-  `action-menus` route. The hub rebuilds its rows on every return so the
-  summaries track the editors.
+  `action-menus` route. On every return the hub refreshes the rows' summaries
+  IN PLACE (`cellForRowID:` → detail text), never by reloading: a
+  `rebuildForm` there reset the footers to UIKit's estimates and the form
+  base's footer re-measure animated them back while the interactive pop was
+  still running — rows and footers visibly collapsed into each other during a
+  swipe back from All Menus (device recording + log, 2026-09-18:
+  `[SettingsForm] footer 0 is 23.0pt tall but its view fits 52.0pt`).
 - Hub rows are disclosure rows with the form layer's new opt-in
   `detailAsSubtitle` (Subtitle-style cell, own reuse pool, detail wraps):
   as a trailing value "Custom order · 1 hidden" truncated beside

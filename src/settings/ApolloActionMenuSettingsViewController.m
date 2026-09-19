@@ -874,9 +874,21 @@ static NSString *ApolloAMModeratorShortTitle(ApolloActionMenuContext context) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Back from an editor: the rows' summaries may have changed.
-    if (_appeared) [self rebuildForm];
+    // Back from an editor: the rows' summaries may have changed. Refreshed IN
+    // PLACE, never by reloading: a reloadData here reset the footers to
+    // UIKit's estimates and the form base's footer re-measure then animated
+    // them back while the interactive pop was still under way, so the rows'
+    // text visibly collapsed during a swipe back (device recording,
+    // 2026-09-18).
+    if (_appeared) [self refreshSummaries];
     _appeared = YES;
+}
+
+- (void)refreshSummaries {
+    for (NSString *context in [@[ ApolloActionMenuEditorAllMenus ] arrayByAddingObjectsFromArray:ApolloActionMenuAllContexts()]) {
+        UITableViewCell *cell = [self cellForRowID:[@"menu." stringByAppendingString:context]];
+        if (cell) cell.detailTextLabel.text = ApolloAMMenuSummary(context);
+    }
 }
 
 // One menu: its glyph (••• or the shield — the button it opens from), its
