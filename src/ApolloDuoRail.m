@@ -15,9 +15,11 @@
 // Open-inner trailing rail. Regular + (dual screens or a wide inner canvas)
 // replaces the stock tab bar with My Subreddits / Home / Popular / All /
 // Profile / Settings on the far right — the same edge as Duo's cover
-// system pill. The cover/front display already has that pill; this rail
-// is inner-only (Compact / cover-sized canvases never install it).
-// Compact and ordinary Plus landscape keep the tab bar.
+// system pill, inset by the window safe area so the selected Subs button
+// is not under the inner display's time/Wi-Fi status pill. The cover/front
+// already has that pill; this rail is inner-only (Compact / cover-sized
+// canvases never install it). Compact and ordinary Plus landscape keep
+// the tab bar.
 //
 // First show defaults to Subs: stock popToRoot onto RedditList (no
 // blank tiled half). Navigation reuses Apollo's own tab selectors and
@@ -471,8 +473,7 @@ void ApolloDuoRailSync(void) {
                                                          safe.right,
                                                          safe.bottom,
                                                          margins.right);
-    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin
-        | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+    rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
     rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
     if (rail.superview != tabs.view) {
         [tabs.view addSubview:rail];
