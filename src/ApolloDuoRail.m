@@ -13,12 +13,13 @@
 #import "ApolloThemeRuntime.h"
 
 // One Duo chrome path. Open Duo (wide landscape UIWindow) is a
-// reserved leading 112pt sidebar. Closed Duo (portrait-sized Duo
-// window) is a narrow trailing overlay — the list stays nearly full
-// width. Regular iPhone stays on the stock tab bar. Both Duo modes
-// hide UITabBar. Selected item uses the theme accent (blue on stock)
-// as a rounded pill. FeedSplit tiling stays off. Per-cell RedditList
-// Tighten is a no-op except a hang-safe Closed star frame nudge.
+// reserved leading 112pt sidebar and hides UITabBar. Closed Duo
+// (portrait-sized Duo window) is Phone-like: stock bottom tab bar,
+// no Apollo side rail. Regular iPhone stays on the stock tab bar.
+// Selected item uses the theme accent (blue on stock) as a rounded
+// pill. FeedSplit tiling stays off. Per-cell RedditList Tighten is
+// a no-op except a hang-safe Closed star frame nudge (unused while
+// Closed has no rail).
 //
 // Mode keys off UIWindow.bounds (never UIScreen.mainScreen). First
 // show defaults to Subs: stock popToRoot onto RedditList. Navigation
@@ -1170,7 +1171,7 @@ void ApolloDuoRailSync(void) {
     if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return;
 
     int mode = ApolloDuoRailModeForTabs(tabs);
-    BOOL show = mode != ApolloDuoModePhone;
+    BOOL show = mode == ApolloDuoModeOpen;
     ApolloDuoRailView *rail = objc_getAssociatedObject(tabs, &kApolloDuoRailViewKey);
     BOOL wasActive = [objc_getAssociatedObject(tabs, &kApolloDuoRailActiveKey) boolValue];
     int previousMode = [objc_getAssociatedObject(tabs, &kApolloDuoRailModeKey) intValue];
@@ -1180,11 +1181,11 @@ void ApolloDuoRailSync(void) {
         ApolloDuoClearLeadingChromeInsets(tabs, 0.0, 0.0);
         ApolloDuoRailClearOpenContent();
         ApolloDuoRailSetTabBarHidden(tabs, NO);
-        objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(ApolloDuoModePhone),
+        objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(mode),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (wasActive) {
             objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloLog(@"[DuoRail] hidden; stock tab bar restored (regular iPhone)");
+            ApolloLog(@"[DuoRail] hidden; stock tab bar restored (mode=%d)", mode);
         }
         return;
     }

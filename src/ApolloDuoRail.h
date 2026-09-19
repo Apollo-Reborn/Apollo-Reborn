@@ -6,9 +6,9 @@
 
 __BEGIN_DECLS
 
-/// YES while a Duo sidebar is installed and the stock tab bar is
-/// hidden. Open = leading rail, Closed = trailing rail. Regular
-/// iPhone is NO. Gated on ApolloDuoModeFromWindow (UIWindow.bounds).
+/// YES while the Open Duo leading sidebar is installed and the stock
+/// tab bar is hidden. Closed portrait Duo and regular iPhone are NO
+/// (stock bottom UITabBar, no side rail).
 BOOL ApolloDuoRailIsActive(void);
 
 /// YES while My Subreddits is the selected rail item (stock RedditList
@@ -21,8 +21,8 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 void ApolloDuoRailSync(void);
 
 /// Expand a letterboxed stock-nav column to the usable width. Open
-/// reserves the leading 120pt column; Closed stays full-bleed with the
-/// rail overlaid. No midX clamp and no dual-VC hosting.
+/// reserves the leading 120pt column. Closed has no rail (stock tab
+/// bar). No midX clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
 
 /// Restore full-bleed frames / insets when the rail hides. Walks every
@@ -39,12 +39,11 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 /// constraint claim. Expanded Duo rows are a later patch.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
-/// Open: 0 (stock A–Z). Closed: overlay-rail width so A–Z sits
-/// immediately left of the trailing rail.
+/// Open: 0 (stock A–Z). Closed has no rail, so this is also 0 at
+/// runtime (IsActive is NO).
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
 
-/// Open: no-op (stock A–Z). Closed: pin A–Z immediately beside the
-/// overlay rail.
+/// Open: no-op (stock A–Z). Closed: no-op (stock tab bar, no rail).
 void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 
 /// YES on Compact + dual displays (cover/front). Never YES when the

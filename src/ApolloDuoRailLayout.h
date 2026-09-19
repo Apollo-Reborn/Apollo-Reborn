@@ -8,16 +8,14 @@ extern "C" {
 #include "ApolloDuoCompatibility.h"
 
 // One Duo chrome path. Open Duo (wide landscape UIWindow) is a
-// reserved leading 112pt sidebar (content starts at 120). Closed Duo
-// (portrait-sized Duo window) is a narrow trailing overlay — the
-// table stays nearly full width; the rail does NOT reserve a column.
-// Regular iPhone is Phone mode — stock tab bar, no rail. Hide
-// UITabBar in both Duo modes. C-only so host tests compile without
-// UIKit.
+// reserved leading 112pt sidebar (content starts at 120); the bottom
+// tab bar is hidden. Closed Duo (portrait-sized Duo window) is
+// Phone-like chrome: stock bottom UITabBar, no Apollo side rail, no
+// reserved or overlayed trailing column. Regular iPhone is Phone —
+// stock tab bar, no rail. C-only so host tests compile without UIKit.
 //
 // Top is safe.top + 8 only. Open content inset is rail + 8pt
-// (112+8=120) on the leading side. Closed A–Z pins immediately left
-// of the overlay rail.
+// (112+8=120) on the leading side.
 
 enum {
     ApolloDuoRailWidth = 112,      /* Open reserved sidebar, 100–120pt */
@@ -400,16 +398,16 @@ static inline int ApolloDuoRailRowShouldNudgeStack(double titleMinX,
     return !ApolloDuoRailRowIsPortraitOrganized(titleMinX, shortcutLead);
 }
 
-// Rail whenever the window is Duo Open or Closed. Regular iPhone
-// (not dual, not wide) is Phone — stock tab bar. Compact + dual +
-// portrait is Closed (right rail). Wide landscape is Open (left rail).
+// Rail only for Open (wide landscape). Closed portrait Duo and
+// regular iPhone keep the stock bottom UITabBar — Aaron does not
+// want Posts/Subs/Home/… moved to a side rail in portrait.
 static inline int ApolloDuoRailShouldShow(int regularSizeClass,
                                           int dualDisplay,
                                           double usableWidth,
                                           double usableHeight) {
     (void)regularSizeClass;
     return ApolloDuoModeFromBounds(dualDisplay, usableWidth, usableHeight)
-        != ApolloDuoModePhone;
+        == ApolloDuoModeOpen;
 }
 
 #ifdef __cplusplus

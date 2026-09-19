@@ -2,9 +2,9 @@
 #import "ApolloCommon.h"
 
 // Keep the rail attached to Apollo's tab controller across scene activate,
-// rotation, and size-class changes. Compact hides it and restores the tab bar.
-// Open-inner rail is leading; stock A–Z stays on the list. Cover Compact
-// nudges the jump FAB off Duo's right system gear.
+// rotation, and size-class changes. Open-inner rail is leading and hides
+// the tab bar. Closed portrait Duo and Compact restore the stock tab bar
+// (no side rail). Cover Compact nudges the jump FAB off Duo's system gear.
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
 @end
@@ -127,5 +127,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (112pt sidebar: Open left / Closed right; Phone tab bar)");
+    ApolloLog(@"[DuoRail] hook installed (Open left 112pt rail; Closed/Phone stock tab bar)");
 }

@@ -26,7 +26,7 @@ int main(void) {
     Check(ApolloDuoModeFromBounds(1, 390.0, 844.0) == ApolloDuoModeClosed,
           "dual + leftover phone column is Closed until fill");
     Check(ApolloDuoModeFromBounds(0, 744.0, 1133.0) == ApolloDuoModeClosed,
-          "wide portrait window is Closed (right rail)");
+          "wide portrait window is Closed (stock tab bar, no rail)");
     Check(ApolloDuoModeFromBounds(1, 1133.0, 744.0) == ApolloDuoModeOpen,
           "dual + wide landscape is Open");
     Check(ApolloDuoModeFromBounds(0, 1133.0, 744.0) == ApolloDuoModeOpen,
@@ -37,10 +37,10 @@ int main(void) {
           "Open rail is leading");
     Check(!ApolloDuoModeIsLeading(ApolloDuoModeClosed),
           "Closed rail is trailing");
-    Check(ApolloDuoRailShouldShow(0, 1, 400.0, 900.0),
-          "Closed cover/front Compact shows the right rail");
-    Check(ApolloDuoRailShouldShow(1, 1, 390.0, 844.0),
-          "Closed leftover portrait Duo window still gets a rail");
+    Check(!ApolloDuoRailShouldShow(0, 1, 400.0, 900.0),
+          "Closed cover/front Compact keeps the stock tab bar");
+    Check(!ApolloDuoRailShouldShow(1, 1, 390.0, 844.0),
+          "Closed leftover portrait Duo window keeps the stock tab bar");
     Check(!ApolloDuoRailShouldShow(1, 0, 736.0, 400.0),
           "Plus landscape (single screen, ~736pt) keeps the tab bar");
     Check(!ApolloDuoRailShouldShow(1, 0, 800.0, 500.0),
@@ -49,8 +49,8 @@ int main(void) {
           "regular iPhone portrait keeps the tab bar");
     Check(ApolloDuoRailShouldShow(1, 1, 1133.0, 744.0),
           "Open inner landscape shows the left rail");
-    Check(ApolloDuoRailShouldShow(1, 0, 744.0, 1133.0),
-          "wide inner portrait is Closed (right rail)");
+    Check(!ApolloDuoRailShouldShow(1, 0, 744.0, 1133.0),
+          "wide inner portrait is Closed: stock tab bar, no Apollo rail");
     Check(ApolloDuoIsWideBounds(1133.0, 744.0),
           "wide-window math keys off UIWindow-sized bounds");
     Check(!ApolloDuoIsWideBounds(390.0, 844.0),
