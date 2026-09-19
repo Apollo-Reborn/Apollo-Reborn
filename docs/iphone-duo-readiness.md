@@ -73,8 +73,11 @@ or an SDK bump.
   not adopted — wrapping a tab nav would break settings, floating tabs,
   swipe-up comments, and URL routing.
 - The rail frame is inset by the window/scene safe area (and any
-  hinge-sized layout-margin extra): `x = width - 64 - max(safe.right, 8)`,
-  `y`/`height` honor `safe.top`/`safe.bottom`. Tab children get
+  hinge-sized layout-margin extra): `x = width - 64 - max(safe.right, 8)`.
+  Top is `max(safe.top + 44, navBar.maxY) + 8` so Subs starts fully
+  **below** the time/Wi-Fi pill, not beside it. The A–Z section index
+  stays on the list (left of the rail); it is not drawn in the
+  far-right status gutter. Tab children get
   `additionalSafeAreaInsets.right` = rail width + gutter while the rail
   is shown, cleared on Compact. No `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
@@ -331,8 +334,10 @@ the sim stubs.
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
 - The slim rail is painted on the **trailing** edge of the tab
-  controller, inset from the window safe area so it does not sit under
-  Duo’s top-right time/Wi-Fi pill. Tab children get
+  controller, inset from the window safe area and **below** Duo’s
+  top-right time/Wi-Fi pill (no app chrome in that vertical band).
+  The Subreddits A–Z index is pinned to the list, left of the rail —
+  never in the status gutter beside the pill. Tab children get
   `additionalSafeAreaInsets.right` = `ApolloDuoRailWidth` + gutter
   while the rail is shown (cleared on Compact). Read window/scene
   insets, not the tab view’s — those include the additional inset and

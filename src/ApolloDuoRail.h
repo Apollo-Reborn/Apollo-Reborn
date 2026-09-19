@@ -19,4 +19,12 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 /// iOS 14 (missing tab-hide selectors are skipped).
 void ApolloDuoRailSync(void);
 
+/// How far the A–Z index must sit in from table.bounds.maxX while the
+/// rail is shown (rail + gutter + window safe.right). 0 when hidden.
+CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
+
+/// Keep UITableView's native A–Z index on the list, left of the rail —
+/// never in the far-right status gutter beside the time/Wi-Fi pill.
+void ApolloDuoRailPinSectionIndex(UITableView *tableView);
+
 __END_DECLS

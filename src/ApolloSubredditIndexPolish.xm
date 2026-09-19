@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -1847,6 +1848,13 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
     CGRect tableFrame = [container convertRect:tableView.bounds fromView:tableView];
     CGFloat width = ApolloSubredditIndexTouchWidth;
     CGFloat rightPadding = 1.0;
+    // Open Duo: do not park the A–Z overlay in the far-right status
+    // gutter beside the time/Wi-Fi pill. Sit it on the list, left of
+    // the rail (rail + gutter + window safe.right).
+    if (ApolloDuoRailIsActive()) {
+        CGFloat railTrailing = ApolloDuoRailSectionIndexTrailingForTable(tableView);
+        if (railTrailing > rightPadding) rightPadding = railTrailing;
+    }
     CGFloat visibleTop = CGRectGetMinY(tableFrame) + tableView.adjustedContentInset.top + 4.0;
     CGFloat visibleHeight = MAX(CGRectGetHeight(tableFrame) - tableView.adjustedContentInset.top - tableView.adjustedContentInset.bottom - 8.0, 44.0);
     CGFloat desiredHeight = MIN(MAX(titles.count * ApolloSubredditIndexSlotHeight + 8.0, 240.0), visibleHeight);
@@ -2707,6 +2715,7 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
     ApolloSubredditIndexRaiseNativeIndexAboveHeaders((UITableView *)self);
+    ApolloDuoRailPinSectionIndex((UITableView *)self);
 }
 
 - (void)reloadData {

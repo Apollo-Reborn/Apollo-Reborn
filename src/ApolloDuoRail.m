@@ -15,8 +15,8 @@
 // Open-inner trailing rail. Regular + (dual screens or a wide inner canvas)
 // replaces the stock tab bar with My Subreddits / Home / Popular / All /
 // Profile / Settings on the far right — the same edge as Duo's cover
-// system pill, inset by the window safe area so the selected Subs button
-// is not under the inner display's time/Wi-Fi status pill. The cover/front
+// system pill, inset by the window safe area and starting below the
+// inner display's time/Wi-Fi status band. The cover/front
 // already has that pill; this rail is inner-only (Compact / cover-sized
 // canvases never install it). Compact and ordinary Plus landscape keep
 // the tab bar.
@@ -419,6 +419,45 @@ static UIEdgeInsets ApolloDuoRailSystemMargins(UITabBarController *tabs) {
     return tabs.view.layoutMargins;
 }
 
+static CGFloat ApolloDuoRailNavBarMaxY(UITabBarController *tabs) {
+    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
+    UINavigationBar *bar = nav.navigationBar;
+    if (!bar || bar.hidden || !bar.window) return 0.0;
+    CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
+    if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) return 0.0;
+    return (CGFloat)MAX(0.0, CGRectGetMaxY(frame));
+}
+
+CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
+    if (!ApolloDuoRailIsActive() || !tableView) return 0.0;
+    UIWindow *window = tableView.window;
+    CGFloat systemRight = 0.0;
+    if (window) {
+        systemRight = window.safeAreaInsets.right;
+    } else {
+        UIEdgeInsets extra = tableView.additionalSafeAreaInsets;
+        systemRight = MAX(0.0, tableView.safeAreaInsets.right - extra.right);
+    }
+    return (CGFloat)ApolloDuoRailSectionIndexTrailing(systemRight);
+}
+
+void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
+    if (!ApolloDuoRailIsActive() || !tableView) return;
+    CGFloat trailing = ApolloDuoRailSectionIndexTrailingForTable(tableView);
+    if (trailing < 1.0) return;
+    CGFloat wantMaxX = CGRectGetWidth(tableView.bounds) - trailing;
+    for (UIView *subview in tableView.subviews) {
+        const char *name = class_getName(subview.class);
+        if (!name || !strstr(name, "TableViewIndex")) continue;
+        CGRect frame = subview.frame;
+        CGFloat maxX = CGRectGetMaxX(frame);
+        if (fabs(maxX - wantMaxX) < 0.5) continue;
+        frame.origin.x = wantMaxX - CGRectGetWidth(frame);
+        if (frame.origin.x < 0.0) frame.origin.x = 0.0;
+        subview.frame = frame;
+    }
+}
+
 static void ApolloDuoRailApplyInsets(UITabBarController *tabs, BOOL show) {
     // Stock nav: inset everyone from the trailing rail + gutter. System
     // safe.right (status pill) is already in the window safe area — do
@@ -472,7 +511,8 @@ void ApolloDuoRailSync(void) {
                                                          safe.top,
                                                          safe.right,
                                                          safe.bottom,
-                                                         margins.right);
+                                                         margins.right,
+                                                         ApolloDuoRailNavBarMaxY(tabs));
     rail.autoresizingMask = UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleLeftMargin;
     rail.frame = CGRectMake(frame.x, frame.y, frame.width, frame.height);
     if (rail.superview != tabs.view) {
@@ -491,7 +531,7 @@ void ApolloDuoRailSync(void) {
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f T=%.0f)",
+        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f T=%.0f below status band)",
                   frame.x, frame.y, frame.width, frame.height, safe.right, safe.top);
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;

@@ -19,10 +19,13 @@ extern "C" {
 // The rail frame is inset by the *window/scene* safe area (plus any
 // hinge-sized layout-margin extra). Flush-to-bounds painting sits under
 // Duo's top-right time/Wi-Fi pill and clips the selected Subs button.
+// Top is safe.top + a status-band extra (or the live nav-bar bottom)
+// so the first rail button starts fully *below* that pill, not beside it.
 
 enum {
     ApolloDuoRailWidth = 64,
     ApolloDuoRailEdgeGutter = 8, /* min gap from display edge / chrome */
+    ApolloDuoRailStatusBandExtra = 44, /* nav-bar height; clears time+Wi-Fi band */
     ApolloDuoRailMinRegularWidth = 652, /* same two-column floor as FeedSplit */
     ApolloDuoRailWideSingleScreen = 800, /* inner canvas without a cover */
 };
@@ -53,12 +56,29 @@ static inline double ApolloDuoRailContentRightInset(void) {
     return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
 }
 
+// First rail button / A–Z index must start below the Duo status pill's
+// vertical band. Live nav-bar maxY wins; otherwise safe.top + 44pt.
+static inline double ApolloDuoRailTopInset(double safeTop, double navBarMaxY) {
+    if (safeTop < 0.0) safeTop = 0.0;
+    if (navBarMaxY < 0.0) navBarMaxY = 0.0;
+    double band = ApolloDuoRailMax(safeTop + (double)ApolloDuoRailStatusBandExtra, navBarMaxY);
+    return band + (double)ApolloDuoRailEdgeGutter;
+}
+
+// From table.bounds.maxX, how far left the A–Z index must sit so it
+// stays on the list (left of the rail) and out of the status gutter.
+static inline double ApolloDuoRailSectionIndexTrailing(double windowSafeRight) {
+    if (windowSafeRight < 0.0) windowSafeRight = 0.0;
+    return ApolloDuoRailContentRightInset() + windowSafeRight;
+}
+
 static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
                                                           double boundsHeight,
                                                           double safeTop,
                                                           double safeRight,
                                                           double safeBottom,
-                                                          double marginRight) {
+                                                          double marginRight,
+                                                          double navBarMaxY) {
     ApolloDuoRailRect rect;
     rect.x = 0.0;
     rect.y = 0.0;
@@ -67,15 +87,15 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
     if (boundsWidth <= 0.0 || boundsHeight <= 0.0) {
         return rect;
     }
-    if (safeTop < 0.0) safeTop = 0.0;
     if (safeBottom < 0.0) safeBottom = 0.0;
+    double top = ApolloDuoRailTopInset(safeTop, navBarMaxY);
     double trailing = ApolloDuoRailTrailingChrome(safeRight, marginRight);
     rect.width = (double)ApolloDuoRailWidth;
-    rect.height = boundsHeight - safeTop - safeBottom;
+    rect.height = boundsHeight - top - safeBottom;
     if (rect.height < 0.0) rect.height = 0.0;
     rect.x = boundsWidth - rect.width - trailing;
     if (rect.x < 0.0) rect.x = 0.0;
-    rect.y = safeTop;
+    rect.y = top;
     return rect;
 }
 
