@@ -23,6 +23,9 @@ NSArray<NSString *> *ApolloSubredditSectionsResolvedOrder(void);
 // Display name for a token ("Favorites", "Multireddits", …).
 NSString *ApolloSubredditSectionDisplayName(NSString *token);
 
+// Animate the next confirmed removal. Complex model changes use a full reload.
+void ApolloFollowingAnimateNextRemoval(UITableView *tableView, NSIndexPath *visiblePath);
+
 // Remap-awareness bridge for the other subreddit-list modules
 // (ApolloHideModSubreddits / ApolloMultiredditEdit): those modules identify a
 // row's section by reading the on-screen header title for indexPath.section.

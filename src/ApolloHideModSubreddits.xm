@@ -522,21 +522,40 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     return cell;
 }
 
-// Entering Edit mode: bypass the display filter so hidden rows reappear, and
-// reload so the rows (and their hide/unhide buttons) update immediately.
-// Leaving Edit mode: re-enable the filter and reload so hidden rows vanish.
-// No network refetch is needed — the rows are driven by the now-complete
-// moderatedSubreddits property through the scoped getter.
+// Show hidden moderator rows while editing without rebuilding the other sections.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
-    %orig;
-    if (wasEditing == editing) return;
-
-    sShowHiddenForEditing = editing;
-    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
+    if (wasEditing == editing) {
+        %orig;
+        return;
+    }
 
     UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
-    [tableView reloadData];
+    sShowHiddenForEditing = editing;
+    if (ApolloHideModHiddenList().count) {
+        NSMutableIndexSet *changedSections = [NSMutableIndexSet new];
+        for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
+            NSInteger displayed = [tableView numberOfRowsInSection:section];
+            NSInteger updated = [tableView.dataSource tableView:tableView numberOfRowsInSection:section];
+            if (displayed != updated) [changedSections addIndex:section];
+        }
+        // Only moderator visibility changes. Keep all other cells and their
+        // loaded icons intact, including when the hidden list belongs to another account.
+        if (changedSections.count) {
+            [UIView performWithoutAnimation:^{
+                [tableView reloadSections:changedSections withRowAnimation:UITableViewRowAnimationNone];
+                [tableView layoutIfNeeded];
+            }];
+        }
+    }
+    %orig;
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        NSIndexPath *path = [tableView indexPathForCell:cell];
+        BOOL moderator = [ApolloHideModSectionTitle(self, tableView, path.section) isEqualToString:@"MODERATOR"];
+        NSString *name = moderator ? ApolloHideModLeftmostLabelText(cell.contentView) : nil;
+        ApolloHideModDecorateCell((UIViewController *)self, cell, moderator, editing, name);
+    }
+    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
 }
 
 %new
