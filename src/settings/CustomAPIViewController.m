@@ -419,6 +419,9 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController ()
 @property (nonatomic) BOOL resolvingRestoreFolder;
+// Hub only: whether the Setup section last rendered its "add a Reddit key"
+// footer, so viewWillAppear reloads that section only when the answer flips.
+@property (nonatomic) BOOL setupFooterShowsKeyNudge;
 @end
 
 @implementation CustomAPIViewController
@@ -878,6 +881,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     self.title = [self apollo_screenTitle];
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     if (![self apollo_isHub]) return;
+    // What the first table load renders; viewWillAppear compares against it.
+    self.setupFooterShowsKeyNudge = sRedditClientId.length == 0;
 
     [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
         (void)info;
@@ -916,9 +921,21 @@ typedef NS_ENUM(NSInteger, Tag) {
     // The Setup section footer (onboarding nudge) collapses once a Reddit key
     // exists, which may have just been entered on the pushed API Keys screen.
     // Section 0 is Setup on the hub; reloading it re-evaluates the footer.
-    if ([self apollo_isHub] && self.tableView.numberOfSections > 0) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                      withRowAnimation:UITableViewRowAnimationNone];
+    // Only when the nudge actually flips, though: a section reload re-measures
+    // that section's header and footer, and this runs inside the pop transition
+    // on every return to the hub, so an unconditional reload left a settle for
+    // the transition to animate (the list came back a few points high and slid
+    // down into place). Same suppression as -reloadRowWithID: for the rare
+    // reload that is still needed.
+    BOOL showsKeyNudge = sRedditClientId.length == 0;
+    if ([self apollo_isHub] && self.tableView.numberOfSections > 0 &&
+        showsKeyNudge != self.setupFooterShowsKeyNudge) {
+        self.setupFooterShowsKeyNudge = showsKeyNudge;
+        [UIView performWithoutAnimation:^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                          withRowAnimation:UITableViewRowAnimationNone];
+            [self.tableView layoutIfNeeded];
+        }];
     }
 }
 
@@ -3522,12 +3539,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) {
         // No attributed footer for this section. If the form model supplies a
-        // plain string footer, let UIKit's default footer label self-size to it
-        // (a hard-coded small height would clip multi-line hint text — the very
-        // regression this screen had). Otherwise return a small inter-section
-        // spacer so back-to-back sections don't crowd.
+        // plain string footer, the form base sizes it from the footer's own
+        // view (a hard-coded small height would clip multi-line hint text — the
+        // very regression this screen had). Otherwise return a small
+        // inter-section spacer so back-to-back sections don't crowd.
         NSString *plainFooter = [self tableView:tableView titleForFooterInSection:section];
-        return plainFooter.length > 0 ? UITableViewAutomaticDimension : 12.0;
+        return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
     CGFloat tableWidth = tableView.bounds.size.width;

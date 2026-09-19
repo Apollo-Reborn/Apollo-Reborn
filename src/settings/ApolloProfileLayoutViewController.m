@@ -421,7 +421,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
     if (tableView != self.tableView) return UITableViewAutomaticDimension;
     NSString *footer = [self tableView:tableView titleForFooterInSection:section];
-    return footer.length > 0 ? UITableViewAutomaticDimension : 12.0;
+    return footer.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
 }
 
 - (void)apollo_applyTheme {
