@@ -38,27 +38,27 @@ int main(void) {
           "hinge-sized layout-margin extra adds to the right chrome");
     Check(ApolloDuoRailContentRightInset() == 72.0,
           "content additional right inset is rail + gutter");
-    Check(ApolloDuoRailStatusBandExtra == 72,
-          "status-band extra clears a stacked time+Wi-Fi pill");
-    Check(ApolloDuoRailTopInset(0.0, 0.0) == 80.0,
-          "zero chrome still clears a 72pt status band plus gutter");
-    Check(ApolloDuoRailTopInset(59.0, 0.0) == 139.0,
-          "safe.top plus status-band extra sits below the pill, not beside it");
-    Check(ApolloDuoRailTopInset(59.0, 103.0) == 139.0,
-          "safe.top+72 wins over a shorter nav-bar bottom");
+    Check(ApolloDuoRailStatusBandMin == 120,
+          "status-band floor clears the nav/pill row even when safe.top is 0");
+    Check(ApolloDuoRailTopInset(0.0, 0.0) == 128.0,
+          "zero chrome still starts below the 120pt status/nav band");
+    Check(ApolloDuoRailTopInset(59.0, 0.0) == 128.0,
+          "a small island inset does not leave Subs beside the pill");
+    Check(ApolloDuoRailTopInset(103.0, 0.0) == 128.0,
+          "content safe top below the floor still uses the 120pt band");
     Check(ApolloDuoRailTopInset(59.0, 150.0) == 158.0,
-          "a taller status/nav chrome band wins the top inset");
+          "a taller live nav/status band wins the top inset");
     Check(ApolloDuoRailSectionIndexTrailing(48.0) == 120.0,
           "A–Z index trailing is rail+gutter plus the status gutter");
 
     ApolloDuoRailRect flush = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0, 16.0, 0.0);
-    Check(flush.x == 1000.0 - 64.0 - 8.0 && flush.y == 80.0
-              && flush.width == 64.0 && flush.height == 800.0 - 80.0,
+    Check(flush.x == 1000.0 - 64.0 - 8.0 && flush.y == 128.0
+              && flush.width == 64.0 && flush.height == 800.0 - 128.0,
           "zero-safe frame uses the min gutter and starts below the status band");
 
     ApolloDuoRailRect pill = ApolloDuoRailFrameInBounds(1000.0, 800.0, 59.0, 48.0, 34.0, 64.0, 0.0);
-    Check(pill.x == 1000.0 - 64.0 - 48.0 && pill.y == 139.0
-              && pill.width == 64.0 && pill.height == 800.0 - 139.0 - 34.0,
+    Check(pill.x == 1000.0 - 64.0 - 48.0 && pill.y == 128.0
+              && pill.width == 64.0 && pill.height == 800.0 - 128.0 - 34.0,
           "rail starts below the status band and left of the trailing gutter");
     printf("OK: %u checks\n", checks);
     return 0;

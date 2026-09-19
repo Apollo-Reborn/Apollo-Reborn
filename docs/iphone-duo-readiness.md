@@ -74,7 +74,7 @@ or an SDK bump.
   swipe-up comments, and URL routing.
 - The rail frame is inset by the window/scene safe area (and any
   hinge-sized layout-margin extra): `x = width - 64 - max(safe.right, 8)`.
-  Top is `max(safe.top + 72, statusBar.maxY, navBar.maxY) + 8` so Subs starts fully
+  Top is `max(contentSafeTop, status/nav maxY, 120) + 8` so Subs starts fully
   **below** the time/Wi-Fi pill, not beside it. The A–Z section index
   stays on the list (left of the rail); it is not drawn in the
   far-right status gutter. Tab children get

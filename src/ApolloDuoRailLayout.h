@@ -19,13 +19,15 @@ extern "C" {
 // The rail frame is inset by the *window/scene* safe area (plus any
 // hinge-sized layout-margin extra). Flush-to-bounds painting sits under
 // Duo's top-right time/Wi-Fi pill and clips the selected Subs button.
-// Top is safe.top + a status-band extra (or the live nav-bar bottom)
-// so the first rail button starts fully *below* that pill, not beside it.
+//
+// Duo's pill is trailing chrome: window.safe.top is often 0, so a
+// safe.top+N extra still leaves Subs in the nav/pill row. Top is an
+// absolute floor (status+nav band) plus the live content/nav bottom.
 
 enum {
     ApolloDuoRailWidth = 64,
     ApolloDuoRailEdgeGutter = 8, /* min gap from display edge / chrome */
-    ApolloDuoRailStatusBandExtra = 72, /* stacked time+Wi-Fi pill; not just a 44pt bar */
+    ApolloDuoRailStatusBandMin = 120, /* floor so Subs is never beside 8:08+Wi-Fi */
     ApolloDuoRailMinRegularWidth = 652, /* same two-column floor as FeedSplit */
     ApolloDuoRailWideSingleScreen = 800, /* inner canvas without a cover */
 };
@@ -57,12 +59,14 @@ static inline double ApolloDuoRailContentRightInset(void) {
 }
 
 // First rail button must start fully below the Duo status pill's
-// vertical band. chromeMaxY is max(nav-bar bottom, status-bar frame
-// bottom); otherwise safe.top + 72pt (stacked time+Wi-Fi).
+// vertical band. safeTop is the *content* inset (nav view, includes
+// the bar) — not window.safe.top. chromeMaxY is the live nav/status
+// bottom. StatusBandMin wins when those read 0 on Duo.
 static inline double ApolloDuoRailTopInset(double safeTop, double chromeMaxY) {
     if (safeTop < 0.0) safeTop = 0.0;
     if (chromeMaxY < 0.0) chromeMaxY = 0.0;
-    double band = ApolloDuoRailMax(safeTop + (double)ApolloDuoRailStatusBandExtra, chromeMaxY);
+    double band = ApolloDuoRailMax(safeTop, chromeMaxY);
+    band = ApolloDuoRailMax(band, (double)ApolloDuoRailStatusBandMin);
     return band + (double)ApolloDuoRailEdgeGutter;
 }
 

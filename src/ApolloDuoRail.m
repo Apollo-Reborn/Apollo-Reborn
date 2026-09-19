@@ -309,12 +309,12 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // Frame is already window-safe inset. Keep a small gutter; if Sync
-    // has not applied yet, inherited safe.top still clears the pill.
-    UIEdgeInsets safe = self.safeAreaInsets;
+    // Frame owns the status-band inset. Duo window.safe.top is often 0
+    // (pill is trailing), so do not use inherited safe.top as the Subs
+    // origin — that parks the first button beside 8:08.
     CGFloat gutter = (CGFloat)ApolloDuoRailEdgeGutter;
-    CGFloat top = MAX(safe.top, gutter);
-    CGFloat bottom = MAX(safe.bottom, gutter);
+    CGFloat top = gutter;
+    CGFloat bottom = gutter;
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
     CGFloat usable = height - top - bottom;
@@ -419,13 +419,28 @@ static UIEdgeInsets ApolloDuoRailSystemMargins(UITabBarController *tabs) {
     return tabs.view.layoutMargins;
 }
 
+// Content top (status + nav bar). Window.safe.top is the wrong signal
+// on Duo — the time/Wi-Fi pill is trailing chrome, so top is often 0.
+static CGFloat ApolloDuoRailContentTop(UITabBarController *tabs) {
+    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
+    if (nav.isViewLoaded && nav.view.safeAreaInsets.top > 1.0) {
+        return nav.view.safeAreaInsets.top;
+    }
+    UIViewController *visible = nav.visibleViewController;
+    if (visible.isViewLoaded && visible.view.safeAreaInsets.top > 1.0) {
+        return visible.view.safeAreaInsets.top;
+    }
+    return 0.0;
+}
+
 static CGFloat ApolloDuoRailChromeMaxY(UITabBarController *tabs) {
     CGFloat maxY = 0.0;
     UIWindow *window = tabs.view.window;
     UIWindowScene *scene = window.windowScene;
     if (scene.statusBarManager) {
         CGRect status = scene.statusBarManager.statusBarFrame;
-        if (!CGRectIsNull(status) && !CGRectIsEmpty(status)) {
+        // Duo may report a tall right-edge strip; only honor a pill-sized band.
+        if (!CGRectIsNull(status) && status.size.height > 0.0 && status.size.height <= 160.0) {
             CGRect inTabs = [tabs.view convertRect:status fromView:nil];
             maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(inTabs));
         }
@@ -434,7 +449,7 @@ static CGFloat ApolloDuoRailChromeMaxY(UITabBarController *tabs) {
     UINavigationBar *bar = nav.navigationBar;
     if (bar && !bar.hidden && bar.window) {
         CGRect frame = [bar convertRect:bar.bounds toView:tabs.view];
-        if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame)) {
+        if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame) && CGRectGetHeight(frame) <= 160.0) {
             maxY = (CGFloat)MAX(maxY, CGRectGetMaxY(frame));
         }
     }
@@ -521,7 +536,7 @@ void ApolloDuoRailSync(void) {
     UIEdgeInsets margins = ApolloDuoRailSystemMargins(tabs);
     ApolloDuoRailRect frame = ApolloDuoRailFrameInBounds(bounds.size.width,
                                                          bounds.size.height,
-                                                         safe.top,
+                                                         ApolloDuoRailContentTop(tabs),
                                                          safe.right,
                                                          safe.bottom,
                                                          margins.right,
@@ -544,8 +559,8 @@ void ApolloDuoRailSync(void) {
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!wasActive) {
-        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f T=%.0f below status band)",
-                  frame.x, frame.y, frame.width, frame.height, safe.right, safe.top);
+        ApolloLog(@"[DuoRail] shown trailing inset (%.0f,%.0f %.0fx%.0f safe R=%.0f contentT=%.0f below pill band)",
+                  frame.x, frame.y, frame.width, frame.height, safe.right, ApolloDuoRailContentTop(tabs));
         if (!sApolloDuoRailOpenedDefaultDirectory) {
             sApolloDuoRailOpenedDefaultDirectory = YES;
             ApolloDuoRailOpenDefaultDirectory(tabs);
