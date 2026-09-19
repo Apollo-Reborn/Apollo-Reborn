@@ -463,8 +463,7 @@ CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
     if (window) {
         systemRight = window.safeAreaInsets.right;
     } else {
-        UIEdgeInsets extra = tableView.additionalSafeAreaInsets;
-        systemRight = MAX(0.0, tableView.safeAreaInsets.right - extra.right);
+        systemRight = tableView.safeAreaInsets.right;
     }
     return (CGFloat)ApolloDuoRailSectionIndexTrailing(systemRight);
 }
