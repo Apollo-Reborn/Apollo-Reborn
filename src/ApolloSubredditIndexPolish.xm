@@ -4,6 +4,8 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoRailLayout.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -1847,6 +1849,7 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
     CGRect tableFrame = [container convertRect:tableView.bounds fromView:tableView];
     CGFloat width = ApolloSubredditIndexTouchWidth;
     CGFloat rightPadding = 1.0;
+    // Open Duo rail is leading; A–Z stays stock on the list trailing edge.
     CGFloat visibleTop = CGRectGetMinY(tableFrame) + tableView.adjustedContentInset.top + 4.0;
     CGFloat visibleHeight = MAX(CGRectGetHeight(tableFrame) - tableView.adjustedContentInset.top - tableView.adjustedContentInset.bottom - 8.0, 44.0);
     CGFloat desiredHeight = MIN(MAX(titles.count * ApolloSubredditIndexSlotHeight + 8.0, 240.0), visibleHeight);
@@ -2368,7 +2371,21 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     label.alpha = 0.9;
     label.backgroundColor = [UIColor clearColor];
     label.layer.backgroundColor = UIColor.clearColor.CGColor;
-    label.frame = CGRectMake(18.0, 0.0, MAX(CGRectGetWidth(header.bounds) - 72.0, 0.0), CGRectGetHeight(header.bounds));
+    CGFloat headerX = 18.0;
+    // Full-bleed RedditList headers ignore additionalSafeAreaInsets and
+    // draw under the leading Duo rail. Use window coordinates so a
+    // table that was already shifted past the rail is not double-inset.
+    if (ApolloDuoRailIsActive()) {
+        CGFloat windowX = 0.0;
+        if (header.window) {
+            windowX = CGRectGetMinX([header convertRect:header.bounds toView:nil]);
+        } else if (tableView.window) {
+            CGRect inTable = [tableView convertRect:header.bounds fromView:header];
+            windowX = CGRectGetMinX([tableView convertRect:inTable toView:nil]);
+        }
+        headerX = (CGFloat)ApolloDuoRailHeaderTitleMinX(windowX, (double)ApolloDuoRailRowStockLead);
+    }
+    label.frame = CGRectMake(headerX, 0.0, MAX(CGRectGetWidth(header.bounds) - headerX - 54.0, 0.0), CGRectGetHeight(header.bounds));
 
     if (!separator) {
         separator = [[UIView alloc] initWithFrame:CGRectZero];
@@ -2699,6 +2716,7 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
     ApolloSubredditIndexRaiseNativeIndexAboveHeaders((UITableView *)self);
+    ApolloDuoRailPinSectionIndex((UITableView *)self);
 }
 
 - (void)reloadData {

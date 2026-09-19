@@ -101,6 +101,10 @@ jobs:
           path: theos
           submodules: recursive
 
+      # Makefile prefers iPhoneOS27.1.sdk when that folder exists; this
+      # runner only has Xcode 26.0.1, so the device pin stays 26.0:14.0.
+      # Do not invent a 27.1 SDK here. A later runner that already ships
+      # iPhoneOS27.1.sdk will pick it up without a workflow change.
       - name: Select Xcode 26.0.1
         if: inputs.inject_tweak
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app

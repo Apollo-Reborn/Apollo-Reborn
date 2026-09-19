@@ -10,6 +10,8 @@
 
 #import "fishhook.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
+#import "ApolloDeviceIdentity.h"
 #import "ApolloRedditMediaUpload.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloImageUploadHost.h"
@@ -1527,54 +1529,40 @@ static OSStatus SecItemDelete_replacement(CFDictionaryRef query) {
 }
 
 // --- Device detection (for Pixel Pals and Dynamic Island behaviour) ---
-// Apollo's device model mapper (sub_1007a3cdc) only recognizes models up to iPhone 14 Pro Max.
-// Newer models return "unknown" (0x3f) and get no Pixel Pals.
-// Remap newer machine identifiers to "iPhone15,2" (iPhone 14 Pro) so Apollo
-// treats them as Dynamic Island devices and enables full Pixel Pals + FauxCutOutView.
+// Apollo's device model mapper (sub_1007a3cdc) only recognizes models up to
+// iPhone 14 Pro Max. Newer models return "unknown" (0x3f) and get no Pixel
+// Pals. Remap unrecognized iPhone* identifiers to a model Apollo already
+// understands (14 Pro = island, 14 = notch). See ApolloDeviceIdentity.h —
+// unknown future phones (Duo / 19+) default to island; only known
+// notch-only models stay on the notch identity. Per-window chrome uses live
+// cutout geometry (ApolloDeviceGeometry), not this process-wide string.
 static void *uname_orig;
 static int uname_replacement(struct utsname *buf) {
     int ret = ((int (*)(struct utsname *))uname_orig)(buf);
     if (ret != 0) return ret;
 
-    // iPhone15,4+ are all unrecognized by Apollo's mapper.
-    // Map Dynamic Island models to iPhone15,2 (iPhone 14 Pro) and notch models to iPhone14,7 (iPhone 14)
-    static NSDictionary *modelRemap;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *di    = @"iPhone15,2";  // iPhone 14 Pro (Dynamic Island)
-        NSString *notch = @"iPhone14,7";  // iPhone 14 (notch)
-
-        modelRemap = @{
-            @"iPhone15,4": di,    // iPhone 15
-            @"iPhone15,5": di,    // iPhone 15 Plus
-            @"iPhone16,1": di,    // iPhone 15 Pro
-            @"iPhone16,2": di,    // iPhone 15 Pro Max
-            @"iPhone17,1": di,    // iPhone 16 Pro
-            @"iPhone17,2": di,    // iPhone 16 Pro Max
-            @"iPhone17,3": di,    // iPhone 16
-            @"iPhone17,4": di,    // iPhone 16 Plus
-            @"iPhone17,5": notch, // iPhone 16e
-            @"iPhone18,1": di,    // iPhone 17 Pro
-            @"iPhone18,2": di,    // iPhone 17 Pro Max
-            @"iPhone18,3": di,    // iPhone 17
-            @"iPhone18,4": di,    // iPhone Air
-            @"iPhone18,5": notch, // iPhone 17e
-        };
-    });
-
     NSString *machine = @(buf->machine);
 #if APOLLO_SIM_BUILD
     // The simulator's uname reports the host arch ("arm64"), so Apollo's
     // device mapper sees "unknown" and hides Pixel Pals. Substitute the
-    // simulated device's identifier so the same remap table below applies.
+    // simulated device's identifier so the same classification applies.
     if (![machine hasPrefix:@"iPhone"]) {
         const char *simModel = getenv("SIMULATOR_MODEL_IDENTIFIER");
         if (simModel) machine = @(simModel);
     }
 #endif
-    NSString *remap = modelRemap[machine];
+
+    // Classification only — uname is called from arbitrary threads before
+    // UIKit is up. A live cutout is applied later per window.
+    ApolloDeviceIdentityKind kind =
+        ApolloDeviceIdentityKindForMachine(machine.UTF8String, false, false);
+    const char *remap = ApolloDeviceIdentityModelForKind(kind);
     if (remap) {
-        strlcpy(buf->machine, remap.UTF8String, sizeof(buf->machine));
+        strlcpy(buf->machine, remap, sizeof(buf->machine));
+        static dispatch_once_t logOnce;
+        dispatch_once(&logOnce, ^{
+            ApolloLog(@"[DeviceIdentity] %@ → %s", machine, remap);
+        });
     }
 #if APOLLO_SIM_BUILD
     else if (![@(buf->machine) isEqualToString:machine]) {
@@ -3178,7 +3166,7 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 %end
 
 // --- Dynamic Island frame correction for newer devices ---
-// All DI element positions are hardcoded for iPhone 14 Pro (safeAreaInsets.top=59):
+// Apollo hardcodes every DI element for iPhone 14 Pro (safeAreaInsets.top=59):
 //   sub_10030afa0: FauxCutOutView y=11.5, w=125, h=37
 //   sub_10030c880: PixelPalView y=-2.0
 //   sub_10030d6c4: tap overlay y=11.0, w=125, h=37, cornerRadius=18.5
@@ -3186,12 +3174,10 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 // safe-area top is not a reliable proxy for it (issue #826: iPhone Air on
 // iOS 27 reports a taller safe area while the physical island stayed put, so
 // the old proportional model over-shifted the whole pal cluster down behind
-// the island pill). Instead, read the physical cutout rect the same way
-// UIKit's own status bar does when laying out around the island
-// (-[_UIStatusBarVisualProvider_DynamicSplit sensorAreaRect], iOS 16+):
-// -[UIScreen _exclusionArea].rect, converted into the current coordinate
-// space with nativeScale/scale. The old proportional model stays as the
-// fallback if the private API ever disappears.
+// the island pill). ApolloDeviceGeometry reads the physical cutout the same
+// way UIKit's status bar does (-[UIScreen _exclusionArea] on the window
+// scene's screen). There is no 59pt fallback — if the current screen has
+// no pill-shaped cutout, hide the faux chrome instead of guessing.
 //
 // --- Pixel Pals freeze guard (issue #305) ---
 // Tapping the Dynamic Island Pixel Pals area (pixelPalTappedWithTapGestureRecognizer:)
@@ -3211,75 +3197,33 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 // ("preventing the pixel pal menu from opening with any media or website open
 // should fix everything") and is a strict superset of Apollo's intended
 // behaviour (the menu is already meant to be unreachable while media is open).
-// Reads the physical Dynamic Island cutout rect in the app's logical
-// coordinate space via -[UIScreen _exclusionArea] (private, island devices
-// only — nil on notch/older hardware). This is the exact source and
-// conversion UIKit's status bar uses, so it tracks new devices and iOS
-// releases without a per-device table, and is correct under Display Zoom
-// (nativeScale != scale), which the proportional fallback has to bail on.
-static BOOL ApolloDynamicIslandRect(CGRect *outRect) {
-    UIScreen *screen = [UIScreen mainScreen];
-    SEL exclusionSel = NSSelectorFromString(@"_exclusionArea");
-    if (![screen respondsToSelector:exclusionSel]) return NO;
-    id area = ((id (*)(id, SEL))objc_msgSend)(screen, exclusionSel);
-    SEL rectSel = NSSelectorFromString(@"rect");
-    if (!area || ![area respondsToSelector:rectSel]) return NO;
-    CGRect rect = ((CGRect (*)(id, SEL))objc_msgSend)(area, rectSel);
-    // Mirror -[_UIStatusBarVisualProvider_DynamicSplit sensorAreaRect]'s
-    // conversion into the current (Display Zoom) coordinate space.
-    CGFloat nativeScale = screen.nativeScale;
-    CGFloat scale = screen.scale;
-    if (nativeScale > 0 && scale > 0 && nativeScale != scale) {
-        CGFloat zoom = nativeScale / scale;
-        rect.origin.x *= zoom;
-        rect.origin.y *= zoom;
-        rect.size.width *= zoom;
-        rect.size.height *= zoom;
-    }
-    // Sanity: a small pill near the top of the screen, or the API changed.
-    if (CGRectIsEmpty(rect) ||
-        rect.origin.y < 0.0 || rect.origin.y > 40.0 ||
-        rect.size.height < 20.0 || rect.size.height > 60.0 ||
-        rect.size.width < 60.0 || rect.size.width > CGRectGetWidth(screen.bounds) * 0.6) {
-        return NO;
-    }
-    *outRect = rect;
-    return YES;
+static char kApolloHidIslandChromeKey;
+
+static BOOL ApolloIsPixelPalTapOverlay(UIView *view) {
+    if (![view isMemberOfClass:[UIView class]]) return NO;
+    CGRect frame = view.frame;
+    if (fabs(frame.size.width - 125.0) > 0.5 || fabs(frame.size.height - 37.0) > 0.5) return NO;
+    return view.clipsToBounds && view.layer.cornerRadius >= 18.0;
 }
 
-// Vertical shift to add to Apollo's hardcoded 14 Pro DI element positions so
-// they line up with this device's actual island. 0 when no correction applies.
-static CGFloat ApolloPixelPalShift(UIWindow *window) {
-    CGFloat nativeScale = [UIScreen mainScreen].nativeScale;
-    CGFloat halfPx = 0.5 / (nativeScale > 0 ? nativeScale : 3.0);
-
-    CGRect island;
-    if (ApolloDynamicIslandRect(&island)) {
-        // Center Apollo's 37pt faux pill on the real cutout; floor to the
-        // nearest half-pixel to match the baseline's sub-pixel alignment.
-        CGFloat correctY = floor((CGRectGetMidY(island) - 37.0 / 2.0) / halfPx) * halfPx;
-        CGFloat shift = correctY - 11.5;
-        static dispatch_once_t logOnce;
-        dispatch_once(&logOnce, ^{
-            ApolloLog(@"[PixelPals] island cutout {%.2f, %.2f, %.2f, %.2f} safeTop=%.1f → shift %.3f",
-                      island.origin.x, island.origin.y, island.size.width, island.size.height,
-                      window.safeAreaInsets.top, shift);
-        });
-        // Baseline devices land within a half-point of Apollo's own 11.5;
-        // leave them untouched.
-        return fabs(shift) < 0.75 ? 0.0 : shift;
+// Hide tweak-owned island chrome when this window's screen has no pill cutout
+// (Duo inner panel). Only restore views we hid, so Apollo's own hidden state
+// (Pixel Pals off, etc.) is left alone.
+static void ApolloApplyIslandChromeHidden(UIView *view, BOOL showChrome) {
+    if (!view) return;
+    if (!showChrome) {
+        if (!view.hidden) {
+            objc_setAssociatedObject(view, &kApolloHidIslandChromeKey, @YES,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            view.hidden = YES;
+        }
+        return;
     }
-
-    // Fallback (pre-iOS-16 UIKit internals changed): proportional model —
-    // gap between DI bottom and safe area scales with safeTop. Wrong on
-    // devices where the safe area moved independently of the island (#826),
-    // but better than nothing.
-    if (nativeScale != [UIScreen mainScreen].scale) return 0.0;
-    CGFloat safeTop = window.safeAreaInsets.top;
-    if (safeTop < 50.0 || fabs(safeTop - 59.0) < 0.5) return 0.0;
-    CGFloat scaledGap = 10.5 * safeTop / 59.0;
-    CGFloat correctY = floor((safeTop - 37.0 - scaledGap) / halfPx) * halfPx;
-    return correctY - 11.5;
+    if (objc_getAssociatedObject(view, &kApolloHidIslandChromeKey)) {
+        view.hidden = NO;
+        objc_setAssociatedObject(view, &kApolloHidIslandChromeKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
@@ -3314,41 +3258,52 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
     %orig;
 
     UIWindow *window = (UIWindow *)self;
-    CGFloat shift = ApolloPixelPalShift(window);
-    if (shift == 0.0) return;
+    BOOL showChrome = ApolloShouldShowDynamicIslandChromeInWindow(window);
+    CGFloat shift = showChrome ? ApolloPixelPalShiftForWindow(window) : 0.0;
     CGFloat correctY = 11.5 + shift;
 
     // Shift FauxCutOutView — %orig sets y=11.5 via sub_10030afa0
     Ivar fauxIvar = class_getInstanceVariable(object_getClass(self), "fauxCutOutView");
-    if (!fauxIvar) return;
-    UIView *fauxView = object_getIvar(self, fauxIvar);
-    if (!fauxView || CGRectIsEmpty(fauxView.frame)) return;
+    UIView *fauxView = fauxIvar ? object_getIvar(self, fauxIvar) : nil;
+    ApolloApplyIslandChromeHidden(fauxView, showChrome);
+    if (showChrome && fauxView && !CGRectIsEmpty(fauxView.frame) && shift != 0.0) {
+        CGRect fauxFrame = fauxView.frame;
+        if (fabs(fauxFrame.origin.y - 11.5) < 0.5) {
+            fauxFrame.origin.y = correctY;
+            fauxView.frame = fauxFrame;
 
-    CGRect fauxFrame = fauxView.frame;
-    if (fabs(fauxFrame.origin.y - 11.5) < 0.5) {
-        fauxFrame.origin.y = correctY;
-        fauxView.frame = fauxFrame;
+            // Clip to continuous (squircle) corners to match hardware DI shape
+            fauxView.clipsToBounds = YES;
+            fauxView.layer.cornerRadius = CGRectGetHeight(fauxView.bounds) * 0.5;
+            fauxView.layer.cornerCurve = kCACornerCurveContinuous;
 
-        // Clip to continuous (squircle) corners to match hardware DI shape
-        fauxView.clipsToBounds = YES;
-        fauxView.layer.cornerRadius = CGRectGetHeight(fauxView.bounds) * 0.5;
-        fauxView.layer.cornerCurve = kCACornerCurveContinuous;
-
-        ApolloLog(@"[PixelPals] FauxCutOutView y: 11.5 → %.3f (safeTop=%.1f, shift=%.3f)",
-                  correctY, window.safeAreaInsets.top, shift);
+            ApolloLog(@"[PixelPals] FauxCutOutView y: 11.5 → %.3f (safeTop=%.1f, shift=%.3f)",
+                      correctY, window.safeAreaInsets.top, shift);
+        }
     }
 
     // Shift PixelPalView — %orig sets y=-2.0 via sub_10030c880
     Ivar palIvar = class_getInstanceVariable(object_getClass(self), "pixelPalView");
-    if (!palIvar) return;
-    UIView *palView = object_getIvar(self, palIvar);
-    if (!palView || CGRectIsEmpty(palView.frame)) return;
+    UIView *palView = palIvar ? object_getIvar(self, palIvar) : nil;
+    ApolloApplyIslandChromeHidden(palView, showChrome);
+    if (showChrome && palView && shift != 0.0 && !CGRectIsEmpty(palView.frame)) {
+        CGRect palFrame = palView.frame;
+        if (fabs(palFrame.origin.y - (-2.0)) < 0.5) {
+            palFrame.origin.y = -2.0 + shift;
+            palView.frame = palFrame;
+            ApolloLog(@"[PixelPals] PixelPalView y: -2.0 → %.3f", palFrame.origin.y);
+        }
+    }
 
-    CGRect palFrame = palView.frame;
-    if (fabs(palFrame.origin.y - (-2.0)) < 0.5) {
-        palFrame.origin.y = -2.0 + shift;
-        palView.frame = palFrame;
-        ApolloLog(@"[PixelPals] PixelPalView y: -2.0 → %.3f", palFrame.origin.y);
+    for (UIView *subview in window.subviews) {
+        if (!ApolloIsPixelPalTapOverlay(subview)) continue;
+        ApolloApplyIslandChromeHidden(subview, showChrome);
+        if (!showChrome || shift == 0.0) continue;
+        CGRect overlayFrame = subview.frame;
+        if (fabs(overlayFrame.origin.y - 11.0) < 0.5) {
+            overlayFrame.origin.y += shift;
+            subview.frame = overlayFrame;
+        }
     }
 }
 
@@ -3356,18 +3311,21 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 - (void)addSubview:(UIView *)view {
     %orig;
 
+    if (!ApolloIsPixelPalTapOverlay(view)) return;
+
     UIWindow *window = (UIWindow *)self;
-    CGFloat shift = ApolloPixelPalShift(window);
+    if (!ApolloShouldShowDynamicIslandChromeInWindow(window)) {
+        ApolloApplyIslandChromeHidden(view, NO);
+        return;
+    }
+
+    CGFloat shift = ApolloPixelPalShiftForWindow(window);
     if (shift == 0.0) return;
 
-    if (![view isMemberOfClass:[UIView class]]) return;
-    CGRect f = view.frame;
-    if (fabs(f.size.width - 125.0) > 0.5 || fabs(f.size.height - 37.0) > 0.5) return;
-    if (!view.clipsToBounds || view.layer.cornerRadius < 18.0) return;
-
-    ApolloLog(@"[PixelPals] Tap overlay y: %.1f → %.3f", f.origin.y, f.origin.y + shift);
-    f.origin.y += shift;
-    view.frame = f;
+    CGRect overlayFrame = view.frame;
+    ApolloLog(@"[PixelPals] Tap overlay y: %.1f → %.3f", overlayFrame.origin.y, overlayFrame.origin.y + shift);
+    overlayFrame.origin.y += shift;
+    view.frame = overlayFrame;
 }
 
 // Suppress the Pixel Pals menu while media / a website / any modal is open or

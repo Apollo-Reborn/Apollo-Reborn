@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloListLayoutSupport.h"
 #import "ApolloState.h"
@@ -1255,6 +1256,7 @@ static CGFloat ApolloTabBarSlideDistance(UITabBar *tabBar) {
 
 static void ApolloShowTabBar(UITabBarController *tbc, BOOL animated) {
     if (!tbc) return;
+    if (ApolloDuoRailIsActive()) return;
     UITabBar *tabBar = tbc.tabBar;
     if (!ApolloTabBarLooksHidden(tabBar)) return;
 

@@ -72,7 +72,19 @@ static void ApolloAHCollectVisibleLeaves(UIViewController *vc,
         return;
     }
     if ([vc isKindOfClass:[UINavigationController class]]) {
-        ApolloAHCollectVisibleLeaves([(UINavigationController *)vc visibleViewController], leaves, depth + 1);
+        UINavigationController *nav = (UINavigationController *)vc;
+        UIViewController *visible = nav.visibleViewController;
+        if (visible) {
+            ApolloAHCollectVisibleLeaves(visible, leaves, depth + 1);
+        }
+        // Regular-width feed|comments tile (and any real split) keeps the
+        // primary controller's view in the window beside the top of the stack.
+        for (UIViewController *child in nav.viewControllers) {
+            if (child == visible || !child.isViewLoaded) continue;
+            UIView *view = child.view;
+            if (!view.window || !view.superview) continue;
+            ApolloAHCollectVisibleLeaves(child, leaves, depth + 1);
+        }
         return;
     }
     if ([vc isKindOfClass:[UITabBarController class]]) {

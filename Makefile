@@ -1,7 +1,47 @@
 export ARCHS = arm64
 export libFLEX_ARCHS = arm64
 
-TARGET := iphone:clang:26.0:14.0
+# Device Theos pin. `scripts/run-in-sim.sh` passes
+# TARGET=simulator:clang:latest:15.0 on the command line; GNU make will not
+# let this block override a command-line TARGET, so APOLLO_SIM_BUILD stays
+# on `latest` / the sim script's 15.0 floor.
+#
+# Prefer a real iPhoneOS27.1.sdk. Theos matches the folder name
+# `iPhoneOS<version>.sdk` from $THEOS/sdks (THEOS_SDKS_PATH) and the active
+# Xcode Platforms/iPhoneOS.platform/Developer/SDKs (darwin_head.mk). Fall
+# back to 26.0 so GitHub Actions (Xcode 26.0.1) and Macs that only have a
+# 26.x device SDK still build. An iOS 27.1 *simulator* runtime
+# (com.apple.CoreSimulator.SimRuntime.iOS-27-1) is not this SDK — do not
+# rename Xcode 26.x's iPhoneOS.sdk to iPhoneOS27.1.sdk.
+#
+# Override: APOLLO_DEVICE_SDK=27.1 make package
+#           APOLLO_DEVICE_SDK=26.0 make package
+APOLLO_DEVICE_SDK_PREFERRED := 27.1
+APOLLO_DEVICE_SDK_FALLBACK := 26.0
+APOLLO_DEVICE_DEPLOY := 14.0
+
+ifeq ($(filter command line,$(origin TARGET)),)
+  _APOLLO_THEOS_SDKS := $(or $(THEOS_SDKS_PATH),$(THEOS)/sdks)
+  _APOLLO_XCODE_DEVELOPER := $(shell xcode-select -p 2>/dev/null)
+  _APOLLO_XCODE_SDKS := $(_APOLLO_XCODE_DEVELOPER)/Platforms/iPhoneOS.platform/Developer/SDKs
+  _APOLLO_SDK_27_1 := $(wildcard $(_APOLLO_THEOS_SDKS)/iPhoneOS$(APOLLO_DEVICE_SDK_PREFERRED).sdk) \
+                      $(wildcard $(_APOLLO_XCODE_SDKS)/iPhoneOS$(APOLLO_DEVICE_SDK_PREFERRED).sdk)
+  ifndef APOLLO_DEVICE_SDK
+    ifneq ($(strip $(_APOLLO_SDK_27_1)),)
+      APOLLO_DEVICE_SDK := $(APOLLO_DEVICE_SDK_PREFERRED)
+    else
+      APOLLO_DEVICE_SDK := $(APOLLO_DEVICE_SDK_FALLBACK)
+    endif
+  endif
+  TARGET := iphone:clang:$(APOLLO_DEVICE_SDK):$(APOLLO_DEVICE_DEPLOY)
+  $(info [ApolloReborn] Device Theos SDK pin $(APOLLO_DEVICE_SDK) (TARGET=$(TARGET)))
+  ifeq ($(APOLLO_DEVICE_SDK),$(APOLLO_DEVICE_SDK_FALLBACK))
+    ifeq ($(strip $(_APOLLO_SDK_27_1)),)
+      $(info [ApolloReborn] iPhoneOS27.1.sdk not in $(_APOLLO_THEOS_SDKS) or $(_APOLLO_XCODE_SDKS); using $(APOLLO_DEVICE_SDK_FALLBACK). A 27.1 Simulator runtime is not a device SDK.)
+    endif
+  endif
+endif
+
 INSTALL_TARGET_PROCESSES = Apollo
 THEOS_LEAN_AND_MEAN = 1
 
@@ -50,6 +90,17 @@ ApolloReborn_FILES = \
     $(WHATS_NEW_GEN_M) \
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
+    $(SRC_DIR)/ApolloDeviceGeometry.m \
+    $(SRC_DIR)/ApolloDeviceDisplay.m \
+    $(SRC_DIR)/ApolloDeviceDisplay.xm \
+    $(SRC_DIR)/ApolloDuoCompatibility.xm \
+    $(SRC_DIR)/ApolloDeviceReservedRegions.m \
+    $(SRC_DIR)/ApolloFeedSplit.xm \
+    $(SRC_DIR)/ApolloDuoRail.m \
+    $(SRC_DIR)/ApolloDuoRail.xm \
+    $(SRC_DIR)/ApolloDuoSubsChrome.m \
+    $(SRC_DIR)/ApolloDuoSubsChrome.xm \
+    $(SRC_DIR)/ApolloMediaHinge.xm \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
