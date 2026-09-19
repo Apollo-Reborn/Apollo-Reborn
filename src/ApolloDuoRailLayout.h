@@ -11,18 +11,21 @@ extern "C" {
 // second Apollo rail there. Compact and ordinary Plus landscape keep
 // Apollo's stock tab bar. C-only so host tests compile without UIKit.
 //
-// Open-inner rail hugs the trailing edge (tiny 4pt gutter only). A
-// safe.right inset floated it in a white strip. Top is the live status
-// pill's maxY plus a small gap — not a 120pt floor.
+// Open-inner rail hugs the trailing edge (tiny 4pt gutter only). Top is
+// at least MinTopClearance (104) so Subs cannot climb into the time/Wi-Fi
+// band when the status-bar probe is short or missing. Live pill maxY +
+// gap wins when it is taller than that floor.
 
 enum {
     ApolloDuoRailWidth = 64,
     ApolloDuoRailEdgeGutter = 4, /* hug the trailing edge */
     ApolloDuoRailStatusGap = 4,  /* just under the time/Wi-Fi pill */
+    ApolloDuoRailMinTopClearance = 104, /* always fully under the status band */
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
-    ApolloDuoCoverPillWidth = 56,  /* cover system pill; Compact only */
-    ApolloDuoCoverPillBottom = 48, /* lift FABs above the cover gear */
+    ApolloDuoRailLetterboxGap = 40, /* phone-width column vs usable fill */
+    ApolloDuoCoverPillWidth = 80,   /* cover system pill; Compact only */
+    ApolloDuoCoverPillBottom = 120, /* lift FABs above the cover gear */
 };
 
 typedef struct {
@@ -46,14 +49,33 @@ static inline double ApolloDuoRailContentRightInset(void) {
     return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
 }
 
-// y = pillMaxY + gap when the status cluster is known; otherwise
-// safe.top + modest padding. No arbitrary 120pt floor.
+// Usable width left of the rail. Stock nav letterboxes to a phone
+// column on the wide inner canvas; fill targets this width.
+static inline double ApolloDuoRailContentFillWidth(double containerWidth) {
+    if (containerWidth <= 0.0) return 0.0;
+    double fill = containerWidth - ApolloDuoRailContentRightInset();
+    return fill > 0.0 ? fill : 0.0;
+}
+
+static inline int ApolloDuoRailContentIsLetterboxed(double contentWidth,
+                                                    double containerWidth) {
+    return contentWidth + (double)ApolloDuoRailLetterboxGap
+        < ApolloDuoRailContentFillWidth(containerWidth);
+}
+
+// y is the larger of MinTopClearance, safe.top+gap, and pillMaxY+gap.
+// The 104pt floor keeps the rail fully under the status band when the
+// live probe is 0 or only the short pill height.
 static inline double ApolloDuoRailTopInset(double safeTop, double pillMaxY) {
-    if (pillMaxY > 0.5) {
-        return pillMaxY + (double)ApolloDuoRailStatusGap;
-    }
     if (safeTop < 0.0) safeTop = 0.0;
-    return safeTop + (double)ApolloDuoRailStatusGap;
+    double top = (double)ApolloDuoRailMinTopClearance;
+    double fromSafe = safeTop + (double)ApolloDuoRailStatusGap;
+    if (fromSafe > top) top = fromSafe;
+    if (pillMaxY > 0.5) {
+        double fromPill = pillMaxY + (double)ApolloDuoRailStatusGap;
+        if (fromPill > top) top = fromPill;
+    }
+    return top;
 }
 
 // A–Z sits on the list, immediately leading the rail. Do not add

@@ -5,6 +5,8 @@
 // rotation, and size-class changes. Compact hides it and restores the tab bar.
 // UITableView: native A–Z index sits on bounds.maxX and would land in the
 // Duo status gutter beside the time/Wi-Fi pill — pin it onto the list.
+// Comments: cover Compact nudges the jump FAB off Duo's system gear from
+// every CommentsViewController-named class, not only the primary one.
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
 @end
@@ -55,11 +57,36 @@
 
 %end
 
-%hook _TtC6Apollo22CommentsViewController
+%hook UIViewController
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+    if (ApolloDuoCoverChromeIsActive()) {
+        ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+    }
+    if (ApolloDuoRailIsActive()) {
+        const char *name = class_getName(self.class);
+        if (name && strstr(name, "ApolloNavigationController")) {
+            ApolloDuoRailFillOpenContent();
+        }
+    }
+}
+
+- (void)viewWillLayoutSubviews {
+    %orig;
+    if (ApolloDuoCoverChromeIsActive()) {
+        ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    if (ApolloDuoCoverChromeIsActive()) {
+        ApolloDuoCoverAdjustJumpButton((UIViewController *)self);
+    }
+    if (ApolloDuoRailIsActive()) {
+        ApolloDuoRailFillOpenContent();
+    }
 }
 
 %end
@@ -78,5 +105,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (inner rail hug; cover FABs clear system pill)");
+    ApolloLog(@"[DuoRail] hook installed (inner rail under status; cover FABs; fill letterbox)");
 }

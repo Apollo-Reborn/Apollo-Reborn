@@ -15,10 +15,12 @@
 // Open-inner trailing rail. Regular + (dual screens or a wide inner canvas)
 // replaces the stock tab bar with My Subreddits / Home / Popular / All /
 // Profile / Settings hugging the far right — same edge as Duo's cover
-// system pill, starting just under the inner time/Wi-Fi cluster. The
-// cover/front already has that pill; this rail is inner-only. Compact
-// and ordinary Plus landscape keep the tab bar. On cover, extra trailing
-// / bottom safe-area insets lift FABs off Duo's system gear.
+// system pill, starting fully under the inner time/Wi-Fi cluster (live
+// pill maxY, floored at 104pt). The cover/front already has that pill;
+// this rail is inner-only. Compact and ordinary Plus landscape keep the
+// tab bar. On cover, extra trailing / bottom safe-area insets lift FABs
+// off Duo's system gear. Open-Duo content is expanded to the usable
+// width left of the rail so stock nav does not stay a phone column.
 //
 // First show defaults to Subs: stock popToRoot onto RedditList (no
 // blank tiled half). Navigation reuses Apollo's own tab selectors and
@@ -412,18 +414,62 @@ static UIEdgeInsets ApolloDuoRailSystemSafeInsets(UITabBarController *tabs) {
                             MAX(0.0, viewSafe.right - extra.right));
 }
 
-// Live time/Wi-Fi cluster only. Do not use the nav bar — that dropped
-// the rail halfway down the canvas.
+// Status-bar chrome in the top band only. A full-height right-edge
+// strip (height > 160) is treated as its top cluster, not maxY.
+static CGFloat ApolloDuoRailStatusRectMaxY(CGRect status, UIView *tabsView) {
+    if (CGRectIsNull(status) || status.size.height <= 0.0) return 0.0;
+    CGRect inTabs = [tabsView convertRect:status fromView:nil];
+    if (CGRectGetMinY(inTabs) > 160.0) return 0.0;
+    if (status.size.height <= 160.0) {
+        return (CGFloat)MAX(0.0, CGRectGetMaxY(inTabs));
+    }
+    if (status.size.width > 220.0) return 0.0;
+    return (CGFloat)MAX(0.0, CGRectGetMinY(inTabs) + (CGFloat)ApolloDuoRailMinTopClearance);
+}
+
+static CGFloat ApolloDuoRailStatusBarViewMaxY(UIView *root, UIView *tabsView) {
+    if (!root || !tabsView) return 0.0;
+    CGFloat best = 0.0;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 80) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        const char *name = class_getName(view.class);
+        if (name && (strstr(name, "StatusBar") || strstr(name, "StatusPill")
+                     || strstr(name, "_UIStatus"))) {
+            CGFloat maxY = ApolloDuoRailStatusRectMaxY(
+                [view convertRect:view.bounds toView:nil], tabsView);
+            if (maxY > best) best = maxY;
+        }
+        if (inspected < 40) {
+            for (UIView *subview in view.subviews) {
+                [stack addObject:subview];
+            }
+        }
+    }
+    return best;
+}
+
+// Live time/Wi-Fi cluster. Do not use the nav bar — that dropped the
+// rail halfway down the canvas. Probe statusBarFrame plus on-screen
+// StatusBar views; ignore tall right-edge strips except their top band.
 static CGFloat ApolloDuoRailStatusPillMaxY(UITabBarController *tabs) {
     UIWindow *window = tabs.view.window;
     UIWindowScene *scene = window.windowScene;
-    if (!scene.statusBarManager) return 0.0;
-    CGRect status = scene.statusBarManager.statusBarFrame;
-    if (CGRectIsNull(status) || status.size.height <= 0.0 || status.size.height > 160.0) {
-        return 0.0;
+    CGFloat best = 0.0;
+    if (scene.statusBarManager) {
+        CGRect status = scene.statusBarManager.statusBarFrame;
+        CGFloat maxY = ApolloDuoRailStatusRectMaxY(status, tabs.view);
+        if (maxY > best) best = maxY;
     }
-    CGRect inTabs = [tabs.view convertRect:status fromView:nil];
-    return (CGFloat)MAX(0.0, CGRectGetMaxY(inTabs));
+    for (UIWindow *probe in ApolloAllWindows()) {
+        if (!probe || (probe != window && probe.windowScene != scene)) continue;
+        CGFloat maxY = ApolloDuoRailStatusBarViewMaxY(probe, tabs.view);
+        if (maxY > best) best = maxY;
+    }
+    if (best > 160.0) best = 160.0;
+    return best;
 }
 
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
@@ -433,6 +479,9 @@ CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
 
 void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
     if (!ApolloDuoRailIsActive() || !tableView) return;
+    if (tableView.cellLayoutMarginsFollowReadableWidth) {
+        tableView.cellLayoutMarginsFollowReadableWidth = NO;
+    }
     CGFloat trailing = ApolloDuoRailSectionIndexTrailingForTable(tableView);
     if (trailing < 1.0) return;
     CGFloat wantMaxX = CGRectGetWidth(tableView.bounds) - trailing;
@@ -478,10 +527,60 @@ BOOL ApolloDuoCoverChromeIsActive(void) {
     return ApolloDuoCoverShouldApplyForTabs(tabs);
 }
 
-void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
-    if (!ApolloDuoCoverChromeIsActive() || !comments.isViewLoaded) return;
+static BOOL ApolloDuoCoverClassLooksLikeComments(Class cls) {
+    const char *name = class_getName(cls);
+    return name && strstr(name, "CommentsViewController");
+}
+
+static UIView *ApolloDuoCoverFindJumpButton(UIViewController *comments) {
     Ivar ivar = class_getInstanceVariable(comments.class, "commentJumpButton");
     UIView *button = ivar ? object_getIvar(comments, ivar) : nil;
+    if ([button isKindOfClass:[UIView class]]) return button;
+
+    UIView *root = comments.view;
+    if (!root) return nil;
+    CGFloat rootW = CGRectGetWidth(root.bounds);
+    CGFloat rootH = CGRectGetHeight(root.bounds);
+    UIView *best = nil;
+    CGFloat bestScore = 0.0;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 120) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+        if (![view isKindOfClass:[UIControl class]]) continue;
+        CGFloat w = CGRectGetWidth(view.bounds);
+        CGFloat h = CGRectGetHeight(view.bounds);
+        if (w < 36.0 || w > 72.0 || h < 36.0 || h > 72.0) continue;
+        if (fabs(w - h) > 8.0) continue;
+        CGRect inRoot = [root convertRect:view.bounds fromView:view];
+        if (CGRectGetMidX(inRoot) < rootW * 0.55) continue;
+        if (CGRectGetMidY(inRoot) < rootH * 0.55) continue;
+        CGFloat score = CGRectGetMaxX(inRoot) + CGRectGetMaxY(inRoot);
+        if (score > bestScore) {
+            bestScore = score;
+            best = view;
+        }
+    }
+    return best;
+}
+
+void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
+    if (!comments || !ApolloDuoCoverClassLooksLikeComments(comments.class)) return;
+    if (!ApolloDuoCoverChromeIsActive() || !comments.isViewLoaded) return;
+
+    UIEdgeInsets current = comments.additionalSafeAreaInsets;
+    CGFloat wantRight = (CGFloat)ApolloDuoCoverPillWidth;
+    CGFloat wantBottom = (CGFloat)ApolloDuoCoverPillBottom;
+    if (fabs(current.right - wantRight) > 0.5 || fabs(current.bottom - wantBottom) > 0.5) {
+        comments.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, current.left,
+                                                             wantBottom, wantRight);
+    }
+
+    UIView *button = ApolloDuoCoverFindJumpButton(comments);
     if (![button isKindOfClass:[UIView class]] || !button.superview) return;
     UIView *container = button.superview;
     CGRect frame = button.frame;
@@ -499,6 +598,108 @@ void ApolloDuoCoverAdjustJumpButton(UIViewController *comments) {
     if (frame.origin.x < 0.0) frame.origin.x = 0.0;
     if (frame.origin.y < 0.0) frame.origin.y = 0.0;
     if (moved) button.frame = frame;
+}
+
+static UIView *ApolloDuoRailLayoutView(UIViewController *controller, UIView *container) {
+    if (!controller.isViewLoaded || !container) return nil;
+    UIView *view = controller.view;
+    UIView *parent = view.superview;
+    if (parent && parent != container && parent.superview == container) {
+        return parent;
+    }
+    return view;
+}
+
+static void ApolloDuoRailExpandView(UIView *view, CGRect frame) {
+    if (!view || CGRectGetWidth(frame) < 1.0 || CGRectGetHeight(frame) < 1.0) return;
+    if (CGRectGetWidth(view.frame) + 0.5 >= CGRectGetWidth(frame)
+        && fabs(CGRectGetMinX(view.frame) - CGRectGetMinX(frame)) < 1.0
+        && fabs(CGRectGetHeight(view.frame) - CGRectGetHeight(frame)) < 1.0) {
+        return;
+    }
+    view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    view.frame = frame;
+}
+
+static void ApolloDuoRailFillController(UIViewController *controller, UIView *container) {
+    if (!controller || !container || CGRectGetWidth(container.bounds) < 1.0) return;
+    if (!controller.isViewLoaded) return;
+    CGFloat containerWidth = CGRectGetWidth(container.bounds);
+    BOOL expanded = NO;
+    UIView *layout = ApolloDuoRailLayoutView(controller, container);
+    if (layout && ApolloDuoRailContentIsLetterboxed(layout.frame.size.width, containerWidth)) {
+        ApolloLog(@"[DuoRail] filled letterboxed %@ %.0f → %.0f",
+                  NSStringFromClass(controller.class),
+                  layout.frame.size.width, containerWidth);
+        ApolloDuoRailExpandView(layout, container.bounds);
+        expanded = YES;
+    }
+    UIView *view = controller.view;
+    if (view && view != layout
+        && ApolloDuoRailContentIsLetterboxed(view.frame.size.width, containerWidth)) {
+        ApolloDuoRailExpandView(view, layout ? layout.bounds : container.bounds);
+        expanded = YES;
+    }
+    if (view) {
+        view.preservesSuperviewLayoutMargins = NO;
+        UIEdgeInsets margins = view.layoutMargins;
+        if (margins.left > 16.5 || margins.right > 16.5) {
+            view.layoutMargins = UIEdgeInsetsMake(margins.top, 16.0, margins.bottom, 16.0);
+        }
+        CGSize preferred = controller.preferredContentSize;
+        CGFloat fill = (CGFloat)ApolloDuoRailContentFillWidth(containerWidth);
+        if (fill > 0.5 && preferred.width + (CGFloat)ApolloDuoRailLetterboxGap < fill) {
+            controller.preferredContentSize = CGSizeMake(fill, preferred.height);
+        }
+    }
+    if ([controller respondsToSelector:@selector(tableView)]) {
+        UIView *table = nil;
+        @try {
+            table = ((UIView *(*)(id, SEL))objc_msgSend)(controller, @selector(tableView));
+        } @catch (__unused NSException *exception) {
+            table = nil;
+        }
+        if ([table isKindOfClass:[UITableView class]]) {
+            UITableView *tableView = (UITableView *)table;
+            tableView.cellLayoutMarginsFollowReadableWidth = NO;
+            if (view && table.superview == view
+                && ApolloDuoRailContentIsLetterboxed(table.frame.size.width, view.bounds.size.width)) {
+                table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                table.frame = view.bounds;
+                expanded = YES;
+            }
+        }
+    }
+    id tableNode = nil;
+    Ivar nodeIvar = class_getInstanceVariable(controller.class, "tableNode");
+    if (nodeIvar) tableNode = object_getIvar(controller, nodeIvar);
+    if (expanded && tableNode) {
+        if ([tableNode respondsToSelector:@selector(setNeedsLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(setNeedsLayout));
+        }
+        if ([tableNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(invalidateCalculatedLayout));
+        }
+        if ([tableNode respondsToSelector:@selector(relayoutItems)]) {
+            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
+        }
+    }
+}
+
+void ApolloDuoRailFillOpenContent(void) {
+    if (!ApolloDuoRailIsActive()) return;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return;
+    UIView *tabView = tabs.view;
+    UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
+    if (!nav) nav = ApolloDuoRailFindPostsNav(tabs, NO);
+    if (!nav.isViewLoaded) return;
+    if (ApolloDuoRailContentIsLetterboxed(nav.view.frame.size.width, tabView.bounds.size.width)) {
+        ApolloDuoRailExpandView(nav.view, tabView.bounds);
+    }
+    UIView *container = nav.view ?: tabView;
+    UIViewController *top = nav.topViewController;
+    if (top) ApolloDuoRailFillController(top, container);
 }
 
 BOOL ApolloDuoRailIsActive(void) {
@@ -559,6 +760,7 @@ void ApolloDuoRailSync(void) {
     ApolloDuoApplyChromeInsets(tabs, (CGFloat)ApolloDuoRailContentRightInset(), 0.0);
     ApolloDuoRailSetTabBarHidden(tabs, YES);
     objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloDuoRailFillOpenContent();
     if (!wasActive) {
         ApolloLog(@"[DuoRail] shown hugging trailing (%.0f,%.0f %.0fx%.0f pillMaxY=%.0f)",
                   frame.x, frame.y, frame.width, frame.height, ApolloDuoRailStatusPillMaxY(tabs));

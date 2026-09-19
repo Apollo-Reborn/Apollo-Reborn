@@ -73,11 +73,14 @@ or an SDK bump.
   not adopted — wrapping a tab nav would break settings, floating tabs,
   swipe-up comments, and URL routing.
 - Open-inner rail hugs the trailing edge (`x = width - 64 - 4`). Top is
-  the live status-pill `maxY + 4` (or `safe.top + 4`), not a 120pt
-  floor. A–Z stays on the list immediately leading the rail. Cover /
-  Compact never gets an Apollo rail; dual-display Compact adds trailing
-  + bottom safe-area extras so the comment-jump FAB clears Duo’s system
-  gear. No `UIView` `layoutSubviews` frame-lock.
+  `max(104, live status-pill maxY + 4, safe.top + 4)` so the rail sits
+  fully under the time/Wi-Fi band. A–Z stays on the list immediately
+  leading the rail. Cover / Compact never gets an Apollo rail;
+  dual-display Compact adds 80×120 trailing/bottom safe-area extras so
+  the comment-jump FAB clears Duo’s system gear. Open-Duo content is
+  expanded to the usable width left of the rail (letterboxed phone
+  column → fill). No midX Apply loops and no `UIView` `layoutSubviews`
+  frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -182,9 +185,11 @@ scripts/run-in-sim.sh --glass --fresh-app --logs
 ```
 
 Expect `[DeviceDisplay] canvas fill hook installed`, `[DuoRail]
-shown trailing`, and `[FeedSplit] tiling disabled`. The UI must
-span the **inner** display (not a phone column) with the slim rail
-on the **trailing** edge. Launch is Subs / stock RedditList.
+shown hugging trailing`, and `[FeedSplit] tiling disabled`. The UI
+must span the **inner** display (not a phone column) with the slim
+rail on the **trailing** edge, fully under the status pill. Launch
+is Subs / stock RedditList. RedditList / feeds fill the width left
+of the rail.
 Opening a post is a stock push. Compact / cover stay stock (no rail,
 no column pin).
 `vtool -show-build .sim/Payload/Apollo.app/Apollo` should report `sdk 27.1`.
@@ -331,9 +336,12 @@ the sim stubs.
   is no list|feed or feed|comments tile, no PairOnStack, and no
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
-- The slim rail **hugs** the trailing edge (4pt). It starts just under
-  the live time/Wi-Fi cluster. A–Z is on the list, immediately leading
-  the rail. Cover Compact never gets an Apollo rail; dual-display
-  Compact insets FABs off Duo’s system pill. Tab children get
-  `additionalSafeAreaInsets.right` = rail + 4pt while the rail is
-  shown. Subs must not call `goToHomeTab` — that pops/resets the stack.
+- The slim rail **hugs** the trailing edge (4pt). It starts fully under
+  the live time/Wi-Fi cluster (104pt floor). A–Z is on the list,
+  immediately leading the rail. Cover Compact never gets an Apollo
+  rail; dual-display Compact insets FABs 80×120 off Duo’s system pill.
+  Open-Duo RedditList / feeds / posts fill the width left of the rail
+  (stock nav letterbox is expanded; no SetPrimaryAlongside). Tab
+  children get `additionalSafeAreaInsets.right` = rail + 4pt while the
+  rail is shown. Subs must not call `goToHomeTab` — that pops/resets
+  the stack.

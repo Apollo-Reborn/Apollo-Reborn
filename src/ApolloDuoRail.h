@@ -19,6 +19,10 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 /// iOS 14 (missing tab-hide selectors are skipped).
 void ApolloDuoRailSync(void);
 
+/// Expand a letterboxed stock-nav column to the usable width left of
+/// the rail. No midX clamp and no dual-VC hosting.
+void ApolloDuoRailFillOpenContent(void);
+
 /// How far the A–Z index must sit in from table.bounds.maxX while the
 /// rail is shown (rail + tiny gutter). 0 when hidden.
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
@@ -31,7 +35,8 @@ void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 /// open-inner rail is shown. Ordinary single-screen iPhone is NO.
 BOOL ApolloDuoCoverChromeIsActive(void);
 
-/// Nudge CommentsViewController.commentJumpButton off Duo's cover pill.
+/// Nudge the comments jump FAB off Duo's cover pill. Safe for any
+/// CommentsViewController-named class; no-ops when cover chrome is off.
 void ApolloDuoCoverAdjustJumpButton(UIViewController *comments);
 
 __END_DECLS
