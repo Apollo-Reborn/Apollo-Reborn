@@ -23,7 +23,7 @@ letterbox: the *guest* Apollo binary still advertised SDK 19.0 / 26.
 | Floating tabs (`ApolloFloatingTabs.xm`) | **Step 2:** overlay is created on `ApolloDevicePreferredWindowScene()` (never `UIScreen.mainScreen.bounds`). It rebinds on `UISceneDidActivate` and relayouts on safe-area / size-class / bounds changes. Dock, tuck, close target, fan-out, and hold-to-preview use `ApolloDeviceChromeInsetsForView` (safe area + hinge-sized layout-margin extra, not the everyday 16pt). | Overlay is still one window / one scene. A hinge that UIKit does not report as safe area or extra margin is covered for **media/PiP** in step 4; floating-tab bubbles still rely on chrome insets only. |
 | Liquid Glass (`ApolloLiquidGlass.xm`) | **Step 2:** nav-title left/right limits use the same chrome insets, so a hinge-adjacent strip shrinks the title/capsule. Pixel snapping uses the window scene's scale. iPad floating-tab placement stays idiom-gated (`ApolloIPadTabBarBottom.xm`). | Inner Duo is still an iPhone idiom with Regular width. Do not turn on the iPad tab-bar-to-bottom path. Action-pill internals are local to the bar-button view (UIKit places the item). |
 | Gallery / media (`ApolloGalleryViewController.m`, `ApolloGalleryImageViewer.m`, `ApolloPictureInPicture.xm`) | **Step 4:** chrome / footer / PiP clamp use `ApolloDeviceMediaInsetsForView` (safe area + hinge-sized layout-margin extra). C geometry helpers stay; the reserved-rect list is always empty. `UIArrangementViewController` is detected but unused — media is full-bleed, not a primary/secondary pair. | Do **not** call UIKit `reservedRegions` — it SIGSEGVs on Duo even with window+scene during first CA commit (x0=NULL at +0x10). A hinge UIKit never reports as layoutMargins / safe area still cannot be guessed from `_exclusionArea`. |
-| Feed / posts | **Architecture reset:** FeedSplit column pinning is off. Open Duo is a slim **trailing** rail (Subs, Home, Popular, All, Profile, Settings) plus stock `UINavigationController` push/pop. Subs / first show is `popToRoot` onto RedditList. Compact / cover / portrait stay the stock tab bar + single column. Do **not** wrap tabs in `UISplitViewController`. | Cover display has no companion UI and no second Apollo rail. Inbox is not a rail item. |
+| Feed / posts | **Architecture reset:** FeedSplit column pinning is off. Open Duo is a slim **leading** rail (Subs, Home, Popular, All, Profile, Settings) plus stock `UINavigationController` push/pop. Subs / first show is `popToRoot` onto RedditList. Compact / cover / portrait stay the stock tab bar + single column. Do **not** wrap tabs in `UISplitViewController`. | Cover display has no companion UI and no second Apollo rail. Inbox is not a rail item. |
 | Toolchain | **Step 5:** device `make package` pins `iphone:clang:27.1:14.0` when `iPhoneOS27.1.sdk` exists; otherwise `26.0:14.0`. Sim: unchanged `latest` / 15.0. **Screen-fill:** `--liquid-glass` now sets the *guest* `LC_BUILD_VERSION` sdk to **27.1** (still min 15.0) so Duo grants a full canvas; `IsLiquidGlass()` remains major >= 19. | A 27.1 Simulator runtime is not a device SDK. Cached `.sim/glass-base.ipa` at 19.0 must be regenerated. Classic (no glass) guests stay letterboxed. CI (Xcode 26.0.1) stays on the tweak 26.0 fallback. |
 
 ## Phased work
@@ -67,20 +67,18 @@ or an SDK bump.
   `UINavigationController` (Apply / midX clamps / SetPrimaryAlongside /
   stack surgery) is off. Compact / cover / portrait are stock push/pop
   with no column pinning.
-- Open Duo: slim trailing rail only. Subs / first show is stock
+- Open Duo: slim **leading** rail only. Subs / first show is stock
   `popToRoot` onto RedditList. Home / Popular / All are stock feed
   pushes. `UISplitViewController` / `UIArrangementViewController` are
   not adopted — wrapping a tab nav would break settings, floating tabs,
   swipe-up comments, and URL routing.
-- Open-inner rail hugs the trailing edge (`x = width - 64 - 4`). Top is
-  `max(104, live status-pill maxY + 4, safe.top + 4)` so the rail sits
-  fully under the time/Wi-Fi band. A–Z stays on the list immediately
-  leading the rail. Cover / Compact never gets an Apollo rail;
-  dual-display Compact adds 80×120 trailing/bottom safe-area extras so
-  the comment-jump FAB clears Duo’s system gear. Open-Duo content is
-  expanded to the usable width left of the rail (letterboxed phone
-  column → fill). No midX Apply loops and no `UIView` `layoutSubviews`
-  frame-lock.
+- Open-inner rail hugs the leading edge (`x = 4`). Top is `safe.top +
+  8` only — ignore the trailing time/Wi-Fi pill. A–Z stays stock.
+  Cover / Compact never gets an Apollo rail; dual-display Compact adds
+  80×120 trailing/bottom safe-area extras so the comment-jump FAB
+  clears Duo’s system gear. Open-Duo content is expanded to the usable
+  width right of the rail (letterboxed phone column → fill). No midX
+  Apply loops and no `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -165,11 +163,11 @@ Runtime belt (`src/ApolloDeviceDisplay.{h,m,xm}`):
   sit on the unused chrome and eat hits. `canBecomeKeyWindow` stays NO.
 - Do **not** wrap the app in `UISplitViewController`. FeedSplit
   runtime tiling is **disabled**; open Duo is rail + stock nav.
-- Slim rail on the **far right** (same edge as Duo’s cover system
-  pill), top → bottom: **My Subreddits**, Home, Popular, All, then
-  Profile and Settings. Launch selects Subs and `popToRoot`s onto
-  RedditList. Home / Popular / All are stock feed pushes. Compact
-  and ordinary Plus landscape keep the stock tab bar.
+- Slim rail on the **far left** (away from Duo’s trailing status pill
+  and cover system chrome), top → bottom: **My Subreddits**, Home,
+  Popular, All, then Profile and Settings. Launch selects Subs and
+  `popToRoot`s onto RedditList. Home / Popular / All are stock feed
+  pushes. Compact and ordinary Plus landscape keep the stock tab bar.
 
 Cover / outer display: no second Apollo UI. The cover is left alone
 aside from not stealing the key window or overlay. Dual `simctl io`
@@ -185,11 +183,10 @@ scripts/run-in-sim.sh --glass --fresh-app --logs
 ```
 
 Expect `[DeviceDisplay] canvas fill hook installed`, `[DuoRail]
-shown hugging trailing`, and `[FeedSplit] tiling disabled`. The UI
+shown hugging leading`, and `[FeedSplit] tiling disabled`. The UI
 must span the **inner** display (not a phone column) with the slim
-rail on the **trailing** edge, fully under the status pill. Launch
-is Subs / stock RedditList. RedditList / feeds fill the width left
-of the rail.
+rail on the **leading** edge. Launch is Subs / stock RedditList.
+RedditList / feeds fill the width right of the rail.
 Opening a post is a stock push. Compact / cover stay stock (no rail,
 no column pin).
 `vtool -show-build .sim/Payload/Apollo.app/Apollo` should report `sdk 27.1`.
@@ -233,7 +230,7 @@ Confirm feed size-class layout (step 3 + open Duo):
 - Compact portrait (any phone) and the cover/front: stock tab bar;
   opening a subreddit or post covers the previous screen. No rail,
   no column pin, no ghost layers.
-- Regular / Duo inner open: slim **trailing** rail. Launch selects
+- Regular / Duo inner open: slim **leading** rail. Launch selects
   Subs and shows stock RedditList. Home / Popular / All push those
   feeds. A post is a stock push/pop. Rotate to portrait: rail hides,
   insets clear, layout is stock again.
@@ -336,12 +333,12 @@ the sim stubs.
   is no list|feed or feed|comments tile, no PairOnStack, and no
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
-- The slim rail **hugs** the trailing edge (4pt). It starts fully under
-  the live time/Wi-Fi cluster (104pt floor). A–Z is on the list,
-  immediately leading the rail. Cover Compact never gets an Apollo
-  rail; dual-display Compact insets FABs 80×120 off Duo’s system pill.
-  Open-Duo RedditList / feeds / posts fill the width left of the rail
-  (stock nav letterbox is expanded; no SetPrimaryAlongside). Tab
-  children get `additionalSafeAreaInsets.right` = rail + 4pt while the
-  rail is shown. Subs must not call `goToHomeTab` — that pops/resets
-  the stack.
+- The slim rail **hugs** the leading edge (4pt). Top is `safe.top + 8`
+  (ignore the trailing status pill). A–Z stays stock. Cover Compact
+  never gets an Apollo rail; dual-display Compact insets FABs 80×120
+  off Duo’s system pill. Open-Duo RedditList / feeds / posts fill the
+  width right of the rail (stock nav letterbox is expanded; no
+  SetPrimaryAlongside). Tab children get
+  `additionalSafeAreaInsets.left` = rail + 4pt while the rail is
+  shown (right stays 0). Subs must not call `goToHomeTab` — that
+  pops/resets the stack.

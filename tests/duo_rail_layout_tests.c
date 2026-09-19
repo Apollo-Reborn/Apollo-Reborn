@@ -29,29 +29,29 @@ int main(void) {
     Check(ApolloDuoRailWidth == 64,
           "rail width is the slim mock strip");
     Check(ApolloDuoRailEdgeGutter == 4,
-          "trailing hug is a 4pt gutter");
-    Check(ApolloDuoRailMinTopClearance == 104,
-          "rail top floor is 104pt so it stays under the status band");
-    Check(ApolloDuoRailTrailingChrome() == 4.0,
-          "trailing chrome is the tiny hug, not safe.right");
-    Check(ApolloDuoRailContentRightInset() == 68.0,
-          "content additional right inset is rail + tiny gutter");
+          "leading hug is a 4pt gutter");
+    Check(ApolloDuoRailLeadingChrome() == 4.0,
+          "leading chrome is the tiny hug");
+    Check(ApolloDuoRailContentLeftInset() == 68.0,
+          "content additional left inset is rail + tiny gutter");
+    Check(ApolloDuoRailContentRightInset() == 0.0,
+          "open-inner content has no extra trailing inset");
     Check(ApolloDuoRailContentFillWidth(1000.0) == 932.0,
-          "open-Duo fill width is container minus rail and gutter");
+          "open-Duo fill width is container minus leading rail and gutter");
     Check(ApolloDuoRailContentIsLetterboxed(390.0, 1000.0),
           "a phone-width column on the inner canvas is letterboxed");
     Check(!ApolloDuoRailContentIsLetterboxed(932.0, 1000.0),
-          "content already filling left of the rail is not letterboxed");
-    Check(ApolloDuoRailTopInset(0.0, 0.0) == 104.0,
-          "missing pill still uses the 104pt status-band floor");
-    Check(ApolloDuoRailTopInset(20.0, 0.0) == 104.0,
-          "a short safe.top does not climb into the status band");
-    Check(ApolloDuoRailTopInset(20.0, 72.0) == 104.0,
-          "a short status-pill maxY is still floored at 104pt");
-    Check(ApolloDuoRailTopInset(20.0, 110.0) == 114.0,
-          "a taller live pill starts the rail just under that band");
-    Check(ApolloDuoRailSectionIndexTrailing() == 68.0,
-          "A–Z index sits on the list immediately leading the rail");
+          "content already filling right of the rail is not letterboxed");
+    Check(ApolloDuoRailTopInset(0.0, 0.0) == 8.0,
+          "top is safe.top + 8 when the safe area is 0");
+    Check(ApolloDuoRailTopInset(20.0, 0.0) == 28.0,
+          "top follows safe.top + 8");
+    Check(ApolloDuoRailTopInset(20.0, 72.0) == 28.0,
+          "trailing status-pill maxY is ignored on the leading rail");
+    Check(ApolloDuoRailTopInset(20.0, 110.0) == 28.0,
+          "a tall trailing pill still does not move the leading rail");
+    Check(ApolloDuoRailSectionIndexTrailing() == 0.0,
+          "A–Z stays stock; no extra trailing pin");
     Check(ApolloDuoCoverPillWidth == 80 && ApolloDuoCoverPillBottom == 120,
           "cover pill clearance is 80 trailing x 120 bottom");
     Check(ApolloDuoCoverChromeShouldApply(0, 1),
@@ -62,19 +62,14 @@ int main(void) {
           "ordinary single-screen Compact does not apply cover clearance");
 
     ApolloDuoRailRect hug = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 0.0, 0.0);
-    Check(hug.x == 1000.0 - 64.0 - 4.0 && hug.y == 104.0
-              && hug.width == 64.0 && hug.height == 800.0 - 104.0,
-          "rail hugs the trailing edge and starts at the 104pt floor");
+    Check(hug.x == 4.0 && hug.y == 8.0
+              && hug.width == 64.0 && hug.height == 800.0 - 8.0,
+          "rail hugs the leading edge with only a 4pt gutter");
 
-    ApolloDuoRailRect under = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 34.0, 72.0);
-    Check(under.x == 1000.0 - 64.0 - 4.0 && under.y == 104.0
-              && under.width == 64.0 && under.height == 800.0 - 104.0 - 34.0,
-          "short pill still uses the 104pt floor and hugs the edge");
-
-    ApolloDuoRailRect tall = ApolloDuoRailFrameInBounds(1000.0, 800.0, 0.0, 34.0, 120.0);
-    Check(tall.x == 1000.0 - 64.0 - 4.0 && tall.y == 124.0
-              && tall.width == 64.0 && tall.height == 800.0 - 124.0 - 34.0,
-          "taller live pill starts the rail just under that band");
+    ApolloDuoRailRect under = ApolloDuoRailFrameInBounds(1000.0, 800.0, 20.0, 34.0, 72.0);
+    Check(under.x == 4.0 && under.y == 28.0
+              && under.width == 64.0 && under.height == 800.0 - 28.0 - 34.0,
+          "leading rail uses safe.top + 8 and ignores the trailing pill");
     printf("OK: %u checks\n", checks);
     return 0;
 }

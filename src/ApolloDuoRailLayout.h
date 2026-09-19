@@ -5,22 +5,20 @@
 extern "C" {
 #endif
 
-// Slim trailing rail on the *open inner* Duo canvas / very wide Regular.
+// Slim *leading* rail on the open inner Duo canvas / very wide Regular.
 // Duo's cover/front already owns a vertical system pill on the far right
 // (back, feed, messages, profile, search, settings) — do not install a
 // second Apollo rail there. Compact and ordinary Plus landscape keep
 // Apollo's stock tab bar. C-only so host tests compile without UIKit.
 //
-// Open-inner rail hugs the trailing edge (tiny 4pt gutter only). Top is
-// at least MinTopClearance (104) so Subs cannot climb into the time/Wi-Fi
-// band when the status-bar probe is short or missing. Live pill maxY +
-// gap wins when it is taller than that floor.
+// Open-inner rail hugs the leading edge (4pt gutter). Top is safe.top +
+// 8 only — ignore the trailing time/Wi-Fi status pill. Content inset is
+// leading 68 / trailing 0. A–Z stays stock (no extra trailing pin).
 
 enum {
     ApolloDuoRailWidth = 64,
-    ApolloDuoRailEdgeGutter = 4, /* hug the trailing edge */
-    ApolloDuoRailStatusGap = 4,  /* just under the time/Wi-Fi pill */
-    ApolloDuoRailMinTopClearance = 104, /* always fully under the status band */
+    ApolloDuoRailEdgeGutter = 4, /* hug the leading edge */
+    ApolloDuoRailStatusGap = 8,  /* safe.top padding; ignore trailing pill */
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
     ApolloDuoRailLetterboxGap = 40, /* phone-width column vs usable fill */
@@ -39,21 +37,23 @@ static inline double ApolloDuoRailMax(double a, double b) {
     return a > b ? a : b;
 }
 
-// Tiny hug only. Do not add window safe.right — that created the
-// floating white gutter to the right of the rail.
-static inline double ApolloDuoRailTrailingChrome(void) {
+static inline double ApolloDuoRailLeadingChrome(void) {
     return (double)ApolloDuoRailEdgeGutter;
 }
 
-static inline double ApolloDuoRailContentRightInset(void) {
+static inline double ApolloDuoRailContentLeftInset(void) {
     return (double)ApolloDuoRailWidth + (double)ApolloDuoRailEdgeGutter;
 }
 
-// Usable width left of the rail. Stock nav letterboxes to a phone
-// column on the wide inner canvas; fill targets this width.
+static inline double ApolloDuoRailContentRightInset(void) {
+    return 0.0;
+}
+
+// Usable width right of the leading rail. Stock nav letterboxes to a
+// phone column on the wide inner canvas; fill targets this width.
 static inline double ApolloDuoRailContentFillWidth(double containerWidth) {
     if (containerWidth <= 0.0) return 0.0;
-    double fill = containerWidth - ApolloDuoRailContentRightInset();
+    double fill = containerWidth - ApolloDuoRailContentLeftInset();
     return fill > 0.0 ? fill : 0.0;
 }
 
@@ -63,25 +63,17 @@ static inline int ApolloDuoRailContentIsLetterboxed(double contentWidth,
         < ApolloDuoRailContentFillWidth(containerWidth);
 }
 
-// y is the larger of MinTopClearance, safe.top+gap, and pillMaxY+gap.
-// The 104pt floor keeps the rail fully under the status band when the
-// live probe is 0 or only the short pill height.
+// Leading rail is away from Duo's trailing status pill. Only safe.top
+// plus a modest pad — do not honor pillMaxY.
 static inline double ApolloDuoRailTopInset(double safeTop, double pillMaxY) {
+    (void)pillMaxY;
     if (safeTop < 0.0) safeTop = 0.0;
-    double top = (double)ApolloDuoRailMinTopClearance;
-    double fromSafe = safeTop + (double)ApolloDuoRailStatusGap;
-    if (fromSafe > top) top = fromSafe;
-    if (pillMaxY > 0.5) {
-        double fromPill = pillMaxY + (double)ApolloDuoRailStatusGap;
-        if (fromPill > top) top = fromPill;
-    }
-    return top;
+    return safeTop + (double)ApolloDuoRailStatusGap;
 }
 
-// A–Z sits on the list, immediately leading the rail. Do not add
-// window safe.right or it becomes a third column in a gutter.
+// Rail is leading; stock A–Z stays on the list trailing edge.
 static inline double ApolloDuoRailSectionIndexTrailing(void) {
-    return ApolloDuoRailContentRightInset();
+    return 0.0;
 }
 
 // Cover / Compact + dual screens: extra trailing/bottom so FABs clear
@@ -107,12 +99,10 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
     }
     if (safeBottom < 0.0) safeBottom = 0.0;
     double top = ApolloDuoRailTopInset(safeTop, pillMaxY);
-    double trailing = ApolloDuoRailTrailingChrome();
     rect.width = (double)ApolloDuoRailWidth;
     rect.height = boundsHeight - top - safeBottom;
     if (rect.height < 0.0) rect.height = 0.0;
-    rect.x = boundsWidth - rect.width - trailing;
-    if (rect.x < 0.0) rect.x = 0.0;
+    rect.x = ApolloDuoRailLeadingChrome();
     rect.y = top;
     return rect;
 }

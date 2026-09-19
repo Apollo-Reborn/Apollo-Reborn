@@ -6,7 +6,7 @@
 
 __BEGIN_DECLS
 
-/// YES while the open-Duo trailing rail is installed and the stock tab bar
+/// YES while the open-Duo leading rail is installed and the stock tab bar
 /// should stay hidden. Compact / ordinary iPhone keep the tab bar.
 BOOL ApolloDuoRailIsActive(void);
 
@@ -19,16 +19,15 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 /// iOS 14 (missing tab-hide selectors are skipped).
 void ApolloDuoRailSync(void);
 
-/// Expand a letterboxed stock-nav column to the usable width left of
-/// the rail. No midX clamp and no dual-VC hosting.
+/// Expand a letterboxed stock-nav column to the usable width right of
+/// the leading rail. No midX clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
 
-/// How far the A–Z index must sit in from table.bounds.maxX while the
-/// rail is shown (rail + tiny gutter). 0 when hidden.
+/// Always 0 while the rail is leading — stock A–Z stays on the list.
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
 
-/// Keep UITableView's native A–Z index on the list, immediately leading
-/// the rail — not a third column in a trailing gutter.
+/// No-op pin while the rail is leading (stock A–Z). Kept so callers
+/// do not need a cover/inner branch.
 void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 
 /// YES on Compact + dual displays (cover/front). Never YES when the

@@ -3,10 +3,8 @@
 
 // Keep the rail attached to Apollo's tab controller across scene activate,
 // rotation, and size-class changes. Compact hides it and restores the tab bar.
-// UITableView: native A–Z index sits on bounds.maxX and would land in the
-// Duo status gutter beside the time/Wi-Fi pill — pin it onto the list.
-// Comments: cover Compact nudges the jump FAB off Duo's system gear from
-// every CommentsViewController-named class, not only the primary one.
+// Open-inner rail is leading; stock A–Z stays on the list. Cover Compact
+// nudges the jump FAB off Duo's right system gear.
 
 @interface _TtC6Apollo22ApolloTabBarController : UITabBarController
 @end
@@ -105,5 +103,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (inner rail under status; cover FABs; fill letterbox)");
+    ApolloLog(@"[DuoRail] hook installed (leading inner rail; cover FABs; fill letterbox)");
 }
