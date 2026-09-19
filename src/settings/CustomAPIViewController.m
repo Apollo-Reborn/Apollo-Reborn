@@ -3539,12 +3539,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) {
         // No attributed footer for this section. If the form model supplies a
-        // plain string footer, let UIKit's default footer label self-size to it
-        // (a hard-coded small height would clip multi-line hint text — the very
-        // regression this screen had). Otherwise return a small inter-section
-        // spacer so back-to-back sections don't crowd.
+        // plain string footer, the form base sizes it from the footer's own
+        // view (a hard-coded small height would clip multi-line hint text — the
+        // very regression this screen had). Otherwise return a small
+        // inter-section spacer so back-to-back sections don't crowd.
         NSString *plainFooter = [self tableView:tableView titleForFooterInSection:section];
-        return plainFooter.length > 0 ? UITableViewAutomaticDimension : 12.0;
+        return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
     CGFloat tableWidth = tableView.bounds.size.width;
