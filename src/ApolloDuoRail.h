@@ -20,8 +20,22 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 void ApolloDuoRailSync(void);
 
 /// Expand a letterboxed stock-nav column to the usable width right of
-/// the leading rail. No midX clamp and no dual-VC hosting.
+/// the leading rail, starting at x = 68 so headers cannot sit under Subs.
+/// No midX clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
+
+/// Restore full-bleed frames / insets when the rail hides. Walks every
+/// tab nav stack so a leftover 68pt leading strip cannot survive Compact
+/// / portrait. Also restores preferredContentSize fill hacks.
+void ApolloDuoRailClearOpenContent(void);
+
+/// Inset RedditList / ASTableView content so it starts after the rail,
+/// and pull favorite stars in toward titles on a wide canvas.
+void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
+
+/// Pull a Subreddits-row favorite star toward the title on open Duo.
+/// No-op when the rail is hidden. Safe to call from cell layoutSubviews.
+void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
 /// Always 0 while the rail is leading — stock A–Z stays on the list.
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);

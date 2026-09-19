@@ -14,6 +14,7 @@ extern "C" {
 // Open-inner rail hugs the leading edge (4pt gutter). Top is safe.top +
 // 8 only — ignore the trailing time/Wi-Fi status pill. Content inset is
 // leading 68 / trailing 0. A–Z stays stock (no extra trailing pin).
+// Compact and any portrait / vertical canvas hide the rail.
 
 enum {
     ApolloDuoRailWidth = 64,
@@ -22,6 +23,8 @@ enum {
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
     ApolloDuoRailLetterboxGap = 40, /* phone-width column vs usable fill */
+    ApolloDuoRailRowMaxContentWidth = 480, /* titles+stars; avoid a sparse wide row */
+    ApolloDuoRailRowStarGap = 28,          /* title.maxX → star.minX */
     ApolloDuoCoverPillWidth = 80,   /* cover system pill; Compact only */
     ApolloDuoCoverPillBottom = 120, /* lift FABs above the cover gear */
 };
@@ -61,6 +64,33 @@ static inline int ApolloDuoRailContentIsLetterboxed(double contentWidth,
                                                     double containerWidth) {
     return contentWidth + (double)ApolloDuoRailLetterboxGap
         < ApolloDuoRailContentFillWidth(containerWidth);
+}
+
+// Table/content frame that starts after the leading rail. Headers in a
+// full-bleed table ignore additionalSafeAreaInsets and draw under Subs.
+static inline ApolloDuoRailRect ApolloDuoRailContentFrameInBounds(double boundsWidth,
+                                                                 double boundsHeight) {
+    ApolloDuoRailRect rect;
+    rect.x = ApolloDuoRailContentLeftInset();
+    rect.y = 0.0;
+    rect.width = ApolloDuoRailContentFillWidth(boundsWidth);
+    rect.height = boundsHeight > 0.0 ? boundsHeight : 0.0;
+    if (rect.width < 0.0) rect.width = 0.0;
+    return rect;
+}
+
+static inline int ApolloDuoRailContentNeedsLeadingClearance(double contentX,
+                                                           double contentWidth,
+                                                           double containerWidth) {
+    if (containerWidth <= 0.0) return 0;
+    if (contentX + 0.5 < ApolloDuoRailContentLeftInset()) return 1;
+    return ApolloDuoRailContentIsLetterboxed(contentWidth, containerWidth);
+}
+
+// Extra trailing margin so title↔star is not a 700pt void on Duo.
+static inline double ApolloDuoRailRowTrailingExtra(double cellWidth) {
+    if (cellWidth <= (double)ApolloDuoRailRowMaxContentWidth) return 0.0;
+    return cellWidth - (double)ApolloDuoRailRowMaxContentWidth;
 }
 
 // Leading rail is away from Duo's trailing status pill. Only safe.top
@@ -107,14 +137,29 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBounds(double boundsWidth,
     return rect;
 }
 
-// Show the rail when Regular and wide enough, and either two screens look
-// like inner+cover or the single canvas is clearly larger than Plus
-// landscape (~736pt). Compact (cover/front, phone column) always returns 0
-// so Duo's own cover pill is not doubled.
+// Modern RedditList headers are painted at a hardcoded stockTitleX
+// (18pt). When the header still sits under the leading rail in window
+// space, shift the title by the overlap so "FAVORITES" is not clipped
+// to "ES". A header that already starts at x >= 68 is left alone.
+static inline double ApolloDuoRailHeaderTitleMinX(double headerWindowX,
+                                                  double stockTitleX) {
+    if (stockTitleX < 0.0) stockTitleX = 0.0;
+    double overlap = ApolloDuoRailContentLeftInset() - headerWindowX;
+    if (overlap < 0.0) overlap = 0.0;
+    return stockTitleX + overlap;
+}
+
+// Show the rail when Regular *and landscape*, wide enough, and either
+// two screens look like inner+cover or the single canvas is clearly
+// larger than Plus landscape (~736pt). Compact (cover/front, phone
+// column) and any portrait / vertical canvas always return 0 so the
+// stock tab bar comes back and no 68pt leading strip is left behind.
 static inline int ApolloDuoRailShouldShow(int regularSizeClass,
                                           int dualDisplay,
-                                          double usableWidth) {
+                                          double usableWidth,
+                                          double usableHeight) {
     if (!regularSizeClass) return 0;
+    if (usableHeight > usableWidth + 0.5) return 0;
     if (usableWidth + 0.5 < (double)ApolloDuoRailMinRegularWidth) return 0;
     return dualDisplay || (usableWidth + 0.5 >= (double)ApolloDuoRailWideSingleScreen);
 }

@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloDuoRail.h"
+#import "ApolloDuoRailLayout.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -2378,7 +2379,21 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     label.alpha = 0.9;
     label.backgroundColor = [UIColor clearColor];
     label.layer.backgroundColor = UIColor.clearColor.CGColor;
-    label.frame = CGRectMake(18.0, 0.0, MAX(CGRectGetWidth(header.bounds) - 72.0, 0.0), CGRectGetHeight(header.bounds));
+    CGFloat headerX = 18.0;
+    // Full-bleed RedditList headers ignore additionalSafeAreaInsets and
+    // draw under the leading Duo rail. Use window coordinates so a
+    // table that was already shifted to x=68 is not double-inset.
+    if (ApolloDuoRailIsActive()) {
+        CGFloat windowX = 0.0;
+        if (header.window) {
+            windowX = CGRectGetMinX([header convertRect:header.bounds toView:nil]);
+        } else if (tableView.window) {
+            CGRect inTable = [tableView convertRect:header.bounds fromView:header];
+            windowX = CGRectGetMinX([tableView convertRect:inTable toView:nil]);
+        }
+        headerX = (CGFloat)ApolloDuoRailHeaderTitleMinX(windowX, 18.0);
+    }
+    label.frame = CGRectMake(headerX, 0.0, MAX(CGRectGetWidth(header.bounds) - headerX - 54.0, 0.0), CGRectGetHeight(header.bounds));
 
     if (!separator) {
         separator = [[UIView alloc] initWithFrame:CGRectZero];
@@ -3170,6 +3185,7 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
     }
     // Star proxy + multireddit child styling are enhancement-only.
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
+        ApolloDuoRailTightenSubredditRow((UITableViewCell *)self);
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
         ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(tableView, (UITableViewCell *)self, [tableView indexPathForCell:(UITableViewCell *)self]);
     }

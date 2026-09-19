@@ -14,18 +14,22 @@ static void Check(int condition, const char *message) {
 }
 
 int main(void) {
-    Check(!ApolloDuoRailShouldShow(0, 1, 900.0),
+    Check(!ApolloDuoRailShouldShow(0, 1, 900.0, 400.0),
           "Compact never shows the rail");
-    Check(!ApolloDuoRailShouldShow(0, 1, 400.0),
+    Check(!ApolloDuoRailShouldShow(0, 1, 400.0, 900.0),
           "cover/front Compact canvas never gets a second Apollo rail");
-    Check(!ApolloDuoRailShouldShow(1, 1, 500.0),
+    Check(!ApolloDuoRailShouldShow(1, 1, 500.0, 400.0),
           "Regular below the two-column floor stays on the tab bar");
-    Check(ApolloDuoRailShouldShow(1, 1, 652.0),
+    Check(ApolloDuoRailShouldShow(1, 1, 652.0, 500.0),
           "Regular + dual screens at the floor shows the rail");
-    Check(!ApolloDuoRailShouldShow(1, 0, 736.0),
+    Check(!ApolloDuoRailShouldShow(1, 1, 652.0, 900.0),
+          "Regular portrait / vertical hides the rail");
+    Check(!ApolloDuoRailShouldShow(1, 0, 736.0, 400.0),
           "Plus landscape (single screen, ~736pt) keeps the tab bar");
-    Check(ApolloDuoRailShouldShow(1, 0, 800.0),
+    Check(ApolloDuoRailShouldShow(1, 0, 800.0, 500.0),
           "A single wide inner canvas shows the rail");
+    Check(!ApolloDuoRailShouldShow(1, 0, 800.0, 1000.0),
+          "a tall portrait canvas never installs the rail");
     Check(ApolloDuoRailWidth == 64,
           "rail width is the slim mock strip");
     Check(ApolloDuoRailEdgeGutter == 4,
@@ -70,6 +74,27 @@ int main(void) {
     Check(under.x == 4.0 && under.y == 28.0
               && under.width == 64.0 && under.height == 800.0 - 28.0 - 34.0,
           "leading rail uses safe.top + 8 and ignores the trailing pill");
+
+    ApolloDuoRailRect content = ApolloDuoRailContentFrameInBounds(1000.0, 800.0);
+    Check(content.x == 68.0 && content.y == 0.0
+              && content.width == 932.0 && content.height == 800.0,
+          "open content starts at x=68 so headers cannot sit under Subs");
+    Check(ApolloDuoRailContentNeedsLeadingClearance(0.0, 1000.0, 1000.0),
+          "a full-bleed view under the rail needs leading clearance");
+    Check(!ApolloDuoRailContentNeedsLeadingClearance(68.0, 932.0, 1000.0),
+          "a view already starting at 68 and filling the rest does not");
+    Check(ApolloDuoRailContentNeedsLeadingClearance(0.0, 390.0, 1000.0),
+          "a letterboxed phone column needs leading clearance");
+    Check(ApolloDuoRailRowTrailingExtra(480.0) == 0.0,
+          "a 480pt row needs no extra trailing cluster");
+    Check(ApolloDuoRailRowTrailingExtra(932.0) == 452.0,
+          "a wide Duo row pulls stars toward a 480pt title cluster");
+    Check(ApolloDuoRailRowMaxContentWidth == 480 && ApolloDuoRailRowStarGap == 28,
+          "title+star cluster is 480pt with a 28pt star gap");
+    Check(ApolloDuoRailHeaderTitleMinX(0.0, 18.0) == 86.0,
+          "a header under the rail shifts FAVORITES from x=18 to x=86");
+    Check(ApolloDuoRailHeaderTitleMinX(68.0, 18.0) == 18.0,
+          "a header already past the rail keeps the stock 18pt title");
     printf("OK: %u checks\n", checks);
     return 0;
 }

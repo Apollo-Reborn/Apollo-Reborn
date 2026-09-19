@@ -67,18 +67,25 @@ or an SDK bump.
   `UINavigationController` (Apply / midX clamps / SetPrimaryAlongside /
   stack surgery) is off. Compact / cover / portrait are stock push/pop
   with no column pinning.
-- Open Duo: slim **leading** rail only. Subs / first show is stock
-  `popToRoot` onto RedditList. Home / Popular / All are stock feed
-  pushes. `UISplitViewController` / `UIArrangementViewController` are
-  not adopted — wrapping a tab nav would break settings, floating tabs,
-  swipe-up comments, and URL routing.
+- Open Duo: slim **leading** rail only, and **only while landscape
+  Regular**. Compact, cover, and any portrait / vertical canvas
+  (`height > width`) hide the rail, restore the tab bar, and zero
+  `additionalSafeAreaInsets.left` on the tab controller and every
+  child so a leftover 68pt white strip cannot sit beside the feed.
+  Subs / first show is stock `popToRoot` onto RedditList. Home /
+  Popular / All are stock feed pushes. `UISplitViewController` /
+  `UIArrangementViewController` are not adopted — wrapping a tab nav
+  would break settings, floating tabs, swipe-up comments, and URL
+  routing.
 - Open-inner rail hugs the leading edge (`x = 4`). Top is `safe.top +
   8` only — ignore the trailing time/Wi-Fi pill. A–Z stays stock.
   Cover / Compact never gets an Apollo rail; dual-display Compact adds
   80×120 trailing/bottom safe-area extras so the comment-jump FAB
   clears Duo’s system gear. Open-Duo content is expanded to the usable
-  width right of the rail (letterboxed phone column → fill). No midX
-  Apply loops and no `UIView` `layoutSubviews` frame-lock.
+  width right of the rail (letterboxed phone column → fill). RedditList
+  headers that ignore safe-area are shifted so they do not clip under
+  Subs; favorite stars sit ~28pt after titles. No midX Apply loops and
+  no `UIView` `layoutSubviews` frame-lock.
 - Do **not** turn on `ApolloIPadTabBarBottom` on iPhone idiom Regular.
 
 Do **not** expand this step into ArrangementView / reservedRegions or an
@@ -230,10 +237,13 @@ Confirm feed size-class layout (step 3 + open Duo):
 - Compact portrait (any phone) and the cover/front: stock tab bar;
   opening a subreddit or post covers the previous screen. No rail,
   no column pin, no ghost layers.
-- Regular / Duo inner open: slim **leading** rail. Launch selects
-  Subs and shows stock RedditList. Home / Popular / All push those
-  feeds. A post is a stock push/pop. Rotate to portrait: rail hides,
-  insets clear, layout is stock again.
+- Regular / Duo inner open **landscape**: slim **leading** rail.
+  Launch selects Subs and shows stock RedditList. Home / Popular /
+  All push those feeds. A post is a stock push/pop. Rotate to
+  portrait or fold to Compact: rail is removed, tab bar returns,
+  `additionalSafeAreaInsets.left` is 0 on the whole tree — no 68pt
+  white bar beside the feed. Section headers (FAVORITES / MODERATOR)
+  start after the rail; stars sit near titles.
 - Overscrolling comments must not reveal a second copy of the post
   (tiling is off, so there is no leftover detail host).
 - Swipe-up-for-comments media pane is unchanged (sheet).
@@ -333,12 +343,14 @@ the sim stubs.
   is no list|feed or feed|comments tile, no PairOnStack, and no
   Mail-replace of a right pane. Do **not** add UIView `layoutSubviews`
   frame-lock hooks (they freeze scroll and buttons).
-- The slim rail **hugs** the leading edge (4pt). Top is `safe.top + 8`
-  (ignore the trailing status pill). A–Z stays stock. Cover Compact
-  never gets an Apollo rail; dual-display Compact insets FABs 80×120
-  off Duo’s system pill. Open-Duo RedditList / feeds / posts fill the
-  width right of the rail (stock nav letterbox is expanded; no
-  SetPrimaryAlongside). Tab children get
-  `additionalSafeAreaInsets.left` = rail + 4pt while the rail is
-  shown (right stays 0). Subs must not call `goToHomeTab` — that
-  pops/resets the stack.
+- The slim rail **hugs** the leading edge (4pt) on **landscape Regular
+  only**. Portrait / Compact / `ShouldShow == NO` tear the rail down
+  and zero every leftover leading inset (and preferredContentSize fill
+  hacks). Top is `safe.top + 8` (ignore the trailing status pill).
+  A–Z stays stock. Cover Compact never gets an Apollo rail;
+  dual-display Compact insets FABs 80×120 off Duo’s system pill.
+  Open-Duo RedditList / feeds / posts fill the width right of the rail
+  (stock nav letterbox is expanded; no SetPrimaryAlongside). Tab
+  children get `additionalSafeAreaInsets.left` = rail + 4pt while the
+  rail is shown (right stays 0). Subs must not call `goToHomeTab` —
+  that pops/resets the stack.

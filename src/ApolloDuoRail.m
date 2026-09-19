@@ -46,6 +46,9 @@ static const char *kApolloDuoRailSymbols[] = {
 static char kApolloDuoRailViewKey;
 static char kApolloDuoRailActiveKey;
 static char kApolloDuoRailSelectedKey;
+static char kApolloDuoRailSavedContentInsetLeftKey;
+static char kApolloDuoRailSavedPreferredSizeKey;
+static char kApolloDuoRailSavedAdditionalLeftKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
 static BOOL sApolloDuoRailOpenedDefaultDirectory = NO;
 
@@ -218,17 +221,20 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     self.iconView = [[UIImageView alloc] initWithFrame:CGRectZero];
     self.iconView.contentMode = UIViewContentModeScaleAspectFit;
     if (@available(iOS 13.0, *)) {
-        self.iconView.image = [UIImage systemImageNamed:[NSString stringWithUTF8String:kApolloDuoRailSymbols[item]]];
+        UIImageSymbolConfiguration *config =
+            [UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightMedium];
+        self.iconView.image = [UIImage systemImageNamed:[NSString stringWithUTF8String:kApolloDuoRailSymbols[item]]
+                                      withConfiguration:config];
     }
     [self addSubview:self.iconView];
 
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.titleLabel.text = title;
-    self.titleLabel.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightMedium];
+    self.titleLabel.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold];
     self.titleLabel.textAlignment = NSTextAlignmentCenter;
     self.titleLabel.numberOfLines = 2;
     self.titleLabel.adjustsFontSizeToFitWidth = YES;
-    self.titleLabel.minimumScaleFactor = 0.7;
+    self.titleLabel.minimumScaleFactor = 0.72;
     [self addSubview:self.titleLabel];
     return self;
 }
@@ -237,16 +243,20 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     [super layoutSubviews];
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
-    CGFloat icon = 22.0;
-    self.iconView.frame = CGRectMake((width - icon) * 0.5, 8.0, icon, icon);
-    self.titleLabel.frame = CGRectMake(2.0, 32.0, width - 4.0, MAX(14.0, height - 36.0));
+    CGFloat icon = 20.0;
+    CGFloat iconY = 8.0;
+    self.iconView.frame = CGRectMake((width - icon) * 0.5, iconY, icon, icon);
+    self.titleLabel.frame = CGRectMake(3.0, iconY + icon + 4.0, width - 6.0, MAX(13.0, height - iconY - icon - 8.0));
 }
 
 - (void)apollo_applyForeground:(UIColor *)color selected:(BOOL)selected fill:(UIColor *)fill {
     self.backgroundColor = selected ? fill : UIColor.clearColor;
     self.iconView.tintColor = color;
     self.titleLabel.textColor = color;
-    self.layer.cornerRadius = 10.0;
+    self.titleLabel.font = selected
+        ? [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold]
+        : [UIFont systemFontOfSize:11.0 weight:UIFontWeightMedium];
+    self.layer.cornerRadius = 16.0;
     if (@available(iOS 13.0, *)) {
         self.layer.cornerCurve = kCACornerCurveContinuous;
     }
@@ -259,6 +269,7 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
 @interface ApolloDuoRailView : UIView
 @property (nonatomic, copy) NSArray<ApolloDuoRailButton *> *buttons;
+@property (nonatomic, strong) UIView *separatorView;
 @property (nonatomic, assign) ApolloDuoRailItem selectedItem;
 - (void)apollo_applyTheme;
 - (void)apollo_setSelectedItem:(ApolloDuoRailItem)item;
@@ -280,6 +291,9 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
         [buttons addObject:button];
     }
     self.buttons = buttons;
+    self.separatorView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.separatorView.userInteractionEnabled = NO;
+    [self addSubview:self.separatorView];
     self.selectedItem = ApolloDuoRailItemSubreddits;
     [self apollo_applyTheme];
     return self;
@@ -301,6 +315,8 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
     UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
     UIColor *muted = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel) ?: UIColor.secondaryLabelColor;
     self.backgroundColor = page;
+    self.separatorView.backgroundColor = ApolloThemeSeparatorColor()
+        ?: (UIColor.separatorColor ?: [UIColor colorWithWhite:0.0 alpha:0.08]);
     UIColor *onAccent = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
     for (ApolloDuoRailButton *button in self.buttons) {
         BOOL selected = button.tag == (NSInteger)self.selectedItem;
@@ -310,18 +326,17 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // Frame already starts at safe.top + 8. Buttons use a small inner
-    // gutter — the leading rail is away from the trailing status pill.
-    CGFloat gutter = (CGFloat)ApolloDuoRailEdgeGutter;
-    CGFloat top = gutter;
-    CGFloat bottom = gutter;
+    // Frame already starts at safe.top + 8. Keep Profile / Settings
+    // docked to the bottom; the four feed items stay a compact stack.
+    CGFloat top = 10.0;
+    CGFloat bottom = 10.0;
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat height = CGRectGetHeight(self.bounds);
     CGFloat usable = height - top - bottom;
     if (usable < 1.0) return;
 
     NSInteger count = (NSInteger)self.buttons.count;
-    CGFloat itemHeight = MIN(72.0, usable / (CGFloat)count);
+    CGFloat itemHeight = MIN(62.0, usable / (CGFloat)count);
     CGFloat y = top;
     for (NSInteger i = 0; i < count; i++) {
         UIView *button = self.buttons[(NSUInteger)i];
@@ -329,9 +344,11 @@ static void ApolloDuoRailPerformItem(ApolloDuoRailItem item) {
             CGFloat remaining = height - bottom - (itemHeight * 2.0);
             if (remaining > y) y = remaining;
         }
-        button.frame = CGRectMake(6.0, y, width - 12.0, itemHeight - 4.0);
+        button.frame = CGRectMake(7.0, y, width - 14.0, itemHeight - 6.0);
         y += itemHeight;
     }
+    CGFloat hairline = 1.0 / MAX(self.window.screen.scale, 1.0);
+    self.separatorView.frame = CGRectMake(width - hairline, 0.0, hairline, height);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
@@ -364,13 +381,16 @@ static BOOL ApolloDuoRailDualDisplays(void) {
 
 static BOOL ApolloDuoRailShouldShowForTabs(UITabBarController *tabs) {
     if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return NO;
-    if (tabs.traitCollection.horizontalSizeClass != UIUserInterfaceSizeClassRegular) return NO;
+    int regular = tabs.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular ? 1 : 0;
     UIEdgeInsets safe = tabs.view.safeAreaInsets;
     UIEdgeInsets margins = tabs.view.layoutMargins;
     double extraLeft = ApolloDeviceChromeExtra(safe.left, margins.left);
     double extraRight = ApolloDeviceChromeExtra(safe.right, margins.right);
     double usable = ApolloFeedSplitUsableWidth(tabs.view.bounds.size.width, extraLeft, extraRight);
-    return ApolloDuoRailShouldShow(1, ApolloDuoRailDualDisplays() ? 1 : 0, usable);
+    return ApolloDuoRailShouldShow(regular,
+                                   ApolloDuoRailDualDisplays() ? 1 : 0,
+                                   usable,
+                                   tabs.view.bounds.size.height);
 }
 
 static void ApolloDuoRailSetTabBarHidden(UITabBarController *tabs, BOOL hidden) {
@@ -438,26 +458,56 @@ void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
     }
 }
 
+static void ApolloDuoWalkViewControllers(UIViewController *root, void (^block)(UIViewController *controller)) {
+    if (!root || !block) return;
+    block(root);
+    for (UIViewController *child in root.childViewControllers) {
+        ApolloDuoWalkViewControllers(child, block);
+    }
+    UIViewController *presented = root.presentedViewController;
+    if (presented && presented.presentingViewController == root) {
+        ApolloDuoWalkViewControllers(presented, block);
+    }
+}
+
+static void ApolloDuoApplyInsetsToController(UIViewController *controller,
+                                             CGFloat wantLeft,
+                                             CGFloat wantBottom,
+                                             CGFloat wantRight) {
+    if (!controller) return;
+    UIEdgeInsets current = controller.additionalSafeAreaInsets;
+    if (fabs(current.left - wantLeft) < 0.5
+        && fabs(current.right - wantRight) < 0.5
+        && fabs(current.bottom - wantBottom) < 0.5) {
+        return;
+    }
+    controller.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, wantLeft, wantBottom, wantRight);
+}
+
+// Show: only the tab controller and its tab-root navs get the leading
+// 68pt. Pushed content is frame-shifted instead so headers clear the
+// rail without stacking another 68pt on cells.
 static void ApolloDuoApplyChromeInsets(UITabBarController *tabs,
                                        CGFloat wantLeft,
                                        CGFloat wantBottom,
                                        CGFloat wantRight) {
-    UIEdgeInsets tabInsets = tabs.additionalSafeAreaInsets;
-    if (fabs(tabInsets.left - wantLeft) > 0.5
-        || fabs(tabInsets.right - wantRight) > 0.5
-        || fabs(tabInsets.bottom - wantBottom) > 0.5) {
-        tabs.additionalSafeAreaInsets = UIEdgeInsetsMake(tabInsets.top, wantLeft, wantBottom, wantRight);
-    }
+    ApolloDuoApplyInsetsToController(tabs, wantLeft, wantBottom, wantRight);
     for (UIViewController *child in tabs.viewControllers) {
-        if (!child) continue;
-        UIEdgeInsets current = child.additionalSafeAreaInsets;
-        if (fabs(current.left - wantLeft) < 0.5
-            && fabs(current.right - wantRight) < 0.5
-            && fabs(current.bottom - wantBottom) < 0.5) {
-            continue;
-        }
-        child.additionalSafeAreaInsets = UIEdgeInsetsMake(current.top, wantLeft, wantBottom, wantRight);
+        ApolloDuoApplyInsetsToController(child, wantLeft, wantBottom, wantRight);
     }
+}
+
+// Hide / Compact / portrait: zero the leading inset on the whole
+// presented tree so a leftover 68pt (or a -68 cancel) cannot leave a
+// white strip beside the ActionFigures feed.
+static void ApolloDuoClearLeadingChromeInsets(UITabBarController *tabs,
+                                              CGFloat wantBottom,
+                                              CGFloat wantRight) {
+    ApolloDuoWalkViewControllers(tabs, ^(UIViewController *controller) {
+        ApolloDuoApplyInsetsToController(controller, 0.0, wantBottom, wantRight);
+        objc_setAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
 }
 
 static BOOL ApolloDuoCoverShouldApplyForTabs(UITabBarController *tabs) {
@@ -556,44 +606,226 @@ static UIView *ApolloDuoRailLayoutView(UIViewController *controller, UIView *con
 
 static void ApolloDuoRailExpandView(UIView *view, CGRect frame) {
     if (!view || CGRectGetWidth(frame) < 1.0 || CGRectGetHeight(frame) < 1.0) return;
-    if (CGRectGetWidth(view.frame) + 0.5 >= CGRectGetWidth(frame)
-        && fabs(CGRectGetMinX(view.frame) - CGRectGetMinX(frame)) < 1.0
-        && fabs(CGRectGetHeight(view.frame) - CGRectGetHeight(frame)) < 1.0) {
+    if (fabs(CGRectGetMinX(view.frame) - CGRectGetMinX(frame)) < 0.5
+        && fabs(CGRectGetWidth(view.frame) - CGRectGetWidth(frame)) < 0.5
+        && fabs(CGRectGetHeight(view.frame) - CGRectGetHeight(frame)) < 0.5) {
         return;
     }
     view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     view.frame = frame;
 }
 
+static void ApolloDuoRailInsetHeaderView(UIView *header, CGFloat left) {
+    if (!header || left < 1.0) return;
+    if ([header isKindOfClass:[UITableViewHeaderFooterView class]]) {
+        UITableViewHeaderFooterView *hf = (UITableViewHeaderFooterView *)header;
+        UIEdgeInsets margins = hf.contentView.layoutMargins;
+        if (margins.left < left - 0.5) {
+            margins.left = left;
+            hf.contentView.layoutMargins = margins;
+        }
+    }
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:header];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 40) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+        if (![view isKindOfClass:[UILabel class]]) continue;
+        UILabel *label = (UILabel *)view;
+        NSString *text = [label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (text.length == 0) continue;
+        CGRect frame = label.frame;
+        if (CGRectGetMinX(frame) + 0.5 >= left) continue;
+        frame.origin.x = left;
+        frame.size.width = MAX(0.0, CGRectGetWidth(header.bounds) - left - 8.0);
+        label.frame = frame;
+    }
+}
+
+static UILabel *ApolloDuoRailPrimaryLabelInCell(UITableViewCell *cell) {
+    if (cell.textLabel.text.length > 0) return cell.textLabel;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell.contentView];
+    UILabel *best = nil;
+    CGFloat bestWidth = 0.0;
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 40) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+        if (![view isKindOfClass:[UILabel class]] || view.hidden) continue;
+        UILabel *label = (UILabel *)view;
+        if (label.text.length == 0) continue;
+        CGFloat width = CGRectGetWidth(label.bounds);
+        if (width > bestWidth) {
+            bestWidth = width;
+            best = label;
+        }
+    }
+    return best;
+}
+
+void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
+    if (!cell || !ApolloDuoRailIsActive()) return;
+    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
+    if (cellWidth + 0.5 < (CGFloat)ApolloDuoRailRowMaxContentWidth) return;
+
+    UILabel *title = ApolloDuoRailPrimaryLabelInCell(cell);
+    if (!title) return;
+    CGRect titleInCell = [cell convertRect:title.bounds fromView:title];
+    CGFloat wantStarX = CGRectGetMaxX(titleInCell) + (CGFloat)ApolloDuoRailRowStarGap;
+    CGFloat maxStarX = (CGFloat)ApolloDuoRailRowMaxContentWidth - (CGFloat)ApolloDuoRailRowStarGap;
+    if (wantStarX > maxStarX) wantStarX = maxStarX;
+
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 50) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+        if (![view isKindOfClass:[UIControl class]]) continue;
+        const char *name = class_getName(view.class);
+        if (name && strstr(name, "StarHitProxy")) continue;
+        CGRect frame = view.frame;
+        CGFloat w = CGRectGetWidth(frame);
+        CGFloat h = CGRectGetHeight(frame);
+        if (w < 16.0 || w > 72.0 || h < 16.0 || h > 72.0) continue;
+        CGRect inCell = [cell convertRect:view.bounds fromView:view];
+        if (CGRectGetMidX(inCell) < cellWidth * 0.45) continue;
+        if (CGRectGetMinX(inCell) <= wantStarX + 0.5) continue;
+        CGFloat shift = CGRectGetMinX(inCell) - wantStarX;
+        frame.origin.x -= shift;
+        if (frame.origin.x < 0.0) frame.origin.x = 0.0;
+        view.frame = frame;
+    }
+}
+
+static void ApolloDuoRailApplyScrollInsetLeft(UIScrollView *scrollView, CGFloat left) {
+    if (!scrollView) return;
+    UIEdgeInsets inset = scrollView.contentInset;
+    NSNumber *saved = objc_getAssociatedObject(scrollView, &kApolloDuoRailSavedContentInsetLeftKey);
+    if (left > 0.5) {
+        if (!saved) {
+            objc_setAssociatedObject(scrollView, &kApolloDuoRailSavedContentInsetLeftKey,
+                                     @(inset.left), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (fabs(inset.left - left) > 0.5) {
+            inset.left = left;
+            scrollView.contentInset = inset;
+        }
+    } else if (saved) {
+        inset.left = saved.doubleValue;
+        scrollView.contentInset = inset;
+        objc_setAssociatedObject(scrollView, &kApolloDuoRailSavedContentInsetLeftKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
+    if (!view) return 0.0;
+    if (view.window) {
+        return CGRectGetMinX([view convertRect:view.bounds toView:nil]);
+    }
+    return CGRectGetMinX(view.frame);
+}
+
+void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
+    if (!scrollView) return;
+    BOOL active = ApolloDuoRailIsActive();
+    CGFloat windowX = ApolloDuoRailWindowMinX(scrollView);
+    BOOL underRail = active && (windowX + 0.5 < (CGFloat)ApolloDuoRailContentLeftInset());
+    // Do not stack contentInset.left on top of the nav's
+    // additionalSafeAreaInsets.left = 68 — that leftover 68pt is the
+    // white strip Aaron sees. Headers ignore both; shift their labels.
+    ApolloDuoRailApplyScrollInsetLeft(scrollView, 0.0);
+
+    if (![scrollView isKindOfClass:[UITableView class]]) return;
+    UITableView *tableView = (UITableView *)scrollView;
+    if (!active) return;
+
+    if (tableView.cellLayoutMarginsFollowReadableWidth) {
+        tableView.cellLayoutMarginsFollowReadableWidth = NO;
+    }
+    CGFloat headerLeft = underRail
+        ? ((CGFloat)ApolloDuoRailContentLeftInset() - MAX(windowX, 0.0))
+        : 0.0;
+    if (headerLeft > 0.5) {
+        NSInteger sections = tableView.numberOfSections;
+        for (NSInteger section = 0; section < sections && section < 24; section++) {
+            UIView *header = [tableView headerViewForSection:section];
+            if (header) ApolloDuoRailInsetHeaderView(header, headerLeft);
+        }
+        for (UIView *subview in tableView.subviews) {
+            const char *name = class_getName(subview.class);
+            if (name && strstr(name, "Header")) {
+                ApolloDuoRailInsetHeaderView(subview, headerLeft);
+            }
+        }
+    }
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        ApolloDuoRailTightenSubredditRow(cell);
+    }
+}
+
 static void ApolloDuoRailFillController(UIViewController *controller, UIView *container) {
     if (!controller || !container || CGRectGetWidth(container.bounds) < 1.0) return;
     if (!controller.isViewLoaded) return;
     CGFloat containerWidth = CGRectGetWidth(container.bounds);
+    CGFloat containerHeight = CGRectGetHeight(container.bounds);
+    ApolloDuoRailRect want = ApolloDuoRailContentFrameInBounds(containerWidth, containerHeight);
+    CGRect wantFrame = CGRectMake(want.x, want.y, want.width, want.height);
     BOOL expanded = NO;
     UIView *layout = ApolloDuoRailLayoutView(controller, container);
-    if (layout && ApolloDuoRailContentIsLetterboxed(layout.frame.size.width, containerWidth)) {
-        ApolloLog(@"[DuoRail] filled letterboxed %@ %.0f → %.0f",
+    if (layout && layout != container
+        && ApolloDuoRailContentNeedsLeadingClearance(layout.frame.origin.x,
+                                                     layout.frame.size.width,
+                                                     containerWidth)) {
+        ApolloLog(@"[DuoRail] filled %@ x=%.0f w=%.0f → x=%.0f w=%.0f",
                   NSStringFromClass(controller.class),
-                  layout.frame.size.width, containerWidth);
-        ApolloDuoRailExpandView(layout, container.bounds);
+                  layout.frame.origin.x, layout.frame.size.width, want.x, want.width);
+        ApolloDuoRailExpandView(layout, wantFrame);
         expanded = YES;
     }
     UIView *view = controller.view;
-    if (view && view != layout
-        && ApolloDuoRailContentIsLetterboxed(view.frame.size.width, containerWidth)) {
-        ApolloDuoRailExpandView(view, layout ? layout.bounds : container.bounds);
+    if (view && view != layout && view != container
+        && ApolloDuoRailContentNeedsLeadingClearance(view.frame.origin.x,
+                                                     view.frame.size.width,
+                                                     containerWidth)) {
+        ApolloDuoRailExpandView(view, layout && layout != view ? layout.bounds : wantFrame);
         expanded = YES;
     }
     if (view) {
-        view.preservesSuperviewLayoutMargins = NO;
-        UIEdgeInsets margins = view.layoutMargins;
-        if (margins.left > 16.5 || margins.right > 16.5) {
-            view.layoutMargins = UIEdgeInsetsMake(margins.top, 16.0, margins.bottom, 16.0);
-        }
         CGSize preferred = controller.preferredContentSize;
-        CGFloat fill = (CGFloat)ApolloDuoRailContentFillWidth(containerWidth);
-        if (fill > 0.5 && preferred.width + (CGFloat)ApolloDuoRailLetterboxGap < fill) {
-            controller.preferredContentSize = CGSizeMake(fill, preferred.height);
+        if (want.width > 0.5 && preferred.width + (CGFloat)ApolloDuoRailLetterboxGap < want.width) {
+            if (!objc_getAssociatedObject(controller, &kApolloDuoRailSavedPreferredSizeKey)) {
+                objc_setAssociatedObject(controller, &kApolloDuoRailSavedPreferredSizeKey,
+                                         [NSValue valueWithCGSize:preferred],
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            controller.preferredContentSize = CGSizeMake((CGFloat)want.width, preferred.height);
+        }
+    }
+    if (expanded && controller.isViewLoaded) {
+        // Frame already starts at x=68. Cancel the inherited +68 from the
+        // nav so cells are not double-inset (the portrait white bar).
+        UIEdgeInsets extra = controller.additionalSafeAreaInsets;
+        CGFloat inherited = controller.view.safeAreaInsets.left - extra.left;
+        if (inherited > 1.0) {
+            if (!objc_getAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey)) {
+                objc_setAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey,
+                                         @(extra.left), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            CGFloat wantLeft = -inherited;
+            if (fabs(extra.left - wantLeft) > 0.5) {
+                extra.left = wantLeft;
+                controller.additionalSafeAreaInsets = extra;
+            }
         }
     }
     if ([controller respondsToSelector:@selector(tableView)]) {
@@ -603,29 +835,46 @@ static void ApolloDuoRailFillController(UIViewController *controller, UIView *co
         } @catch (__unused NSException *exception) {
             table = nil;
         }
-        if ([table isKindOfClass:[UITableView class]]) {
-            UITableView *tableView = (UITableView *)table;
-            tableView.cellLayoutMarginsFollowReadableWidth = NO;
-            if (view && table.superview == view
-                && ApolloDuoRailContentIsLetterboxed(table.frame.size.width, view.bounds.size.width)) {
+        if ([table isKindOfClass:[UIScrollView class]]) {
+            UIView *tableParent = table.superview ?: view;
+            CGFloat parentWidth = tableParent ? CGRectGetWidth(tableParent.bounds) : containerWidth;
+            CGFloat parentHeight = tableParent ? CGRectGetHeight(tableParent.bounds) : containerHeight;
+            if (tableParent == container
+                && ApolloDuoRailContentNeedsLeadingClearance(table.frame.origin.x,
+                                                             table.frame.size.width,
+                                                             parentWidth)) {
+                ApolloDuoRailExpandView(table, wantFrame);
+                expanded = YES;
+            } else if (tableParent != container
+                       && ApolloDuoRailContentIsLetterboxed(table.frame.size.width, parentWidth)) {
                 table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                table.frame = view.bounds;
+                table.frame = CGRectMake(0.0, 0.0, parentWidth, parentHeight);
                 expanded = YES;
             }
+            ApolloDuoRailApplyListInsets((UIScrollView *)table);
         }
     }
     id tableNode = nil;
     Ivar nodeIvar = class_getInstanceVariable(controller.class, "tableNode");
     if (nodeIvar) tableNode = object_getIvar(controller, nodeIvar);
-    if (expanded && tableNode) {
-        if ([tableNode respondsToSelector:@selector(setNeedsLayout)]) {
-            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(setNeedsLayout));
+    if (tableNode) {
+        UIView *nodeView = nil;
+        if ([tableNode respondsToSelector:@selector(view)]) {
+            nodeView = ((UIView *(*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
         }
-        if ([tableNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
-            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(invalidateCalculatedLayout));
+        if ([nodeView isKindOfClass:[UIScrollView class]]) {
+            ApolloDuoRailApplyListInsets((UIScrollView *)nodeView);
         }
-        if ([tableNode respondsToSelector:@selector(relayoutItems)]) {
-            ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
+        if (expanded) {
+            if ([tableNode respondsToSelector:@selector(setNeedsLayout)]) {
+                ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(setNeedsLayout));
+            }
+            if ([tableNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
+                ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(invalidateCalculatedLayout));
+            }
+            if ([tableNode respondsToSelector:@selector(relayoutItems)]) {
+                ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
+            }
         }
     }
 }
@@ -634,16 +883,73 @@ void ApolloDuoRailFillOpenContent(void) {
     if (!ApolloDuoRailIsActive()) return;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return;
-    UIView *tabView = tabs.view;
     UINavigationController *nav = ApolloDuoRailNavFromController(tabs.selectedViewController);
     if (!nav) nav = ApolloDuoRailFindPostsNav(tabs, NO);
     if (!nav.isViewLoaded) return;
-    if (ApolloDuoRailContentIsLetterboxed(nav.view.frame.size.width, tabView.bounds.size.width)) {
-        ApolloDuoRailExpandView(nav.view, tabView.bounds);
-    }
-    UIView *container = nav.view ?: tabView;
+    // Keep the nav (and its bar) full-width so "Subreddits" stays centered.
+    UIView *container = nav.view ?: tabs.view;
     UIViewController *top = nav.topViewController;
     if (top) ApolloDuoRailFillController(top, container);
+}
+
+static void ApolloDuoRailRestoreController(UIViewController *controller, UIView *container) {
+    if (!controller) return;
+    NSValue *savedSize = objc_getAssociatedObject(controller, &kApolloDuoRailSavedPreferredSizeKey);
+    if (savedSize) {
+        controller.preferredContentSize = savedSize.CGSizeValue;
+        objc_setAssociatedObject(controller, &kApolloDuoRailSavedPreferredSizeKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSNumber *savedLeft = objc_getAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey);
+    if (savedLeft) {
+        UIEdgeInsets extra = controller.additionalSafeAreaInsets;
+        extra.left = savedLeft.doubleValue;
+        controller.additionalSafeAreaInsets = extra;
+        objc_setAssociatedObject(controller, &kApolloDuoRailSavedAdditionalLeftKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!controller.isViewLoaded) return;
+    UIView *layout = ApolloDuoRailLayoutView(controller, container ?: controller.view.superview);
+    if (layout && layout.superview) {
+        ApolloDuoRailExpandView(layout, layout.superview.bounds);
+    }
+    if (controller.view != layout && controller.view.superview) {
+        ApolloDuoRailExpandView(controller.view, controller.view.superview.bounds);
+    }
+    if ([controller respondsToSelector:@selector(tableView)]) {
+        UIView *table = nil;
+        @try {
+            table = ((UIView *(*)(id, SEL))objc_msgSend)(controller, @selector(tableView));
+        } @catch (__unused NSException *exception) {
+            table = nil;
+        }
+        if ([table isKindOfClass:[UIScrollView class]]) {
+            ApolloDuoRailApplyScrollInsetLeft((UIScrollView *)table, 0.0);
+            if (table.superview) {
+                table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                if (fabs(CGRectGetMinX(table.frame)) > 0.5
+                    || fabs(CGRectGetWidth(table.frame) - CGRectGetWidth(table.superview.bounds)) > 0.5) {
+                    table.frame = table.superview.bounds;
+                }
+            }
+        }
+    }
+}
+
+void ApolloDuoRailClearOpenContent(void) {
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:[UITabBarController class]] || !tabs.isViewLoaded) return;
+    for (UIViewController *child in tabs.viewControllers) {
+        UINavigationController *nav = ApolloDuoRailNavFromController(child);
+        if (!nav) {
+            ApolloDuoRailRestoreController(child, child.view.superview);
+            continue;
+        }
+        UIView *container = nav.isViewLoaded ? nav.view : nil;
+        for (UIViewController *controller in nav.viewControllers) {
+            ApolloDuoRailRestoreController(controller, container);
+        }
+    }
 }
 
 BOOL ApolloDuoRailIsActive(void) {
@@ -661,15 +967,18 @@ void ApolloDuoRailSync(void) {
 
     if (!show) {
         if (rail.superview) [rail removeFromSuperview];
+        CGFloat coverBottom = 0.0;
+        CGFloat coverRight = 0.0;
         if (ApolloDuoCoverShouldApplyForTabs(tabs)) {
-            ApolloDuoApplyChromeInsets(tabs, 0.0,
-                                       (CGFloat)ApolloDuoCoverPillBottom,
-                                       (CGFloat)ApolloDuoCoverPillWidth);
-        } else {
-            ApolloDuoApplyChromeInsets(tabs, 0.0, 0.0, 0.0);
+            coverBottom = (CGFloat)ApolloDuoCoverPillBottom;
+            coverRight = (CGFloat)ApolloDuoCoverPillWidth;
         }
+        // Always zero leading insets on the whole tree — Compact / portrait
+        // must not keep a 68pt white strip after the rail is gone.
+        ApolloDuoClearLeadingChromeInsets(tabs, coverBottom, coverRight);
+        ApolloDuoRailClearOpenContent();
+        ApolloDuoRailSetTabBarHidden(tabs, NO);
         if (wasActive) {
-            ApolloDuoRailSetTabBarHidden(tabs, NO);
             objc_setAssociatedObject(tabs, &kApolloDuoRailActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[DuoRail] hidden; stock tab bar restored");
         }

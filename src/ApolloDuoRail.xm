@@ -49,6 +49,7 @@
 - (void)layoutSubviews {
     %orig;
     if (ApolloDuoRailIsActive()) {
+        ApolloDuoRailApplyListInsets((UIScrollView *)self);
         ApolloDuoRailPinSectionIndex((UITableView *)self);
     }
 }
@@ -103,5 +104,5 @@
                                                   usingBlock:^(__unused NSNotification *notification) {
         ApolloDuoRailSync();
     }];
-    ApolloLog(@"[DuoRail] hook installed (leading inner rail; cover FABs; fill letterbox)");
+    ApolloLog(@"[DuoRail] hook installed (leading landscape rail; portrait clears insets; cover FABs)");
 }
