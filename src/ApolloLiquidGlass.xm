@@ -927,6 +927,12 @@ static void ApolloCollectNavigationTitleContent(UIView *root,
         if (subview == excluded || subview.hidden ||
             (!childIncludesTransparent && subview.alpha < 0.01)) continue;
 
+        // A segmented title is one content surface. Measuring its transient
+        // selection images/labels makes the capsule jump while it animates.
+        if ([subview isKindOfClass:UISegmentedControl.class]) {
+            [content addObject:subview];
+            continue;
+        }
         if ([subview isKindOfClass:UILabel.class] ||
             [subview isKindOfClass:UIImageView.class] ||
             [subview isKindOfClass:UITextField.class]) {
@@ -1172,6 +1178,12 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 }
 
 - (CGRect)glassFrameForHostView:(UIView *)hostView candidateViews:(NSArray<UIView *> *)candidateViews {
+    // Segmented titles already include their own padding. Use their stable
+    // bounds while sharing every title-glass visibility and lifecycle rule.
+    if (candidateViews.count == 1 && [candidateViews.firstObject isKindOfClass:UISegmentedControl.class]) {
+        UIView *control = candidateViews.firstObject;
+        return [control convertRect:control.bounds toView:hostView];
+    }
     const CGFloat kVerticalPadding = 8.0;
     CGRect frame;
 
@@ -1735,8 +1747,15 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     UIViewController *topVC = ApolloOwningTopViewController(titleControl);
     id<UIViewControllerTransitionCoordinator> transition = topVC.transitionCoordinator;
+    NSArray<UIView *> *titleCandidates = [controller titleContentViews];
+    BOOL segmentedTitle = titleCandidates.count == 1 &&
+        [titleCandidates.firstObject isKindOfClass:UISegmentedControl.class];
+    // Segmented titles already supply their full intrinsic geometry. During
+    // navigation the outgoing profile's Accounts/actions platters are still
+    // visible; fitting against those temporary edges clips the capsule ends.
+    // Keep UIKit's supplied size until the completion/cancellation refresh.
     if (transition.isAnimated && transition != controller.completedTransition &&
-        !ApolloNavigationTitlePresentationOwnsControl(titleControl)) {
+        (segmentedTitle || !ApolloNavigationTitlePresentationOwnsControl(titleControl))) {
         // UIKit may animate only nested hosts. Retry explicitly on transition
         // completion/cancellation instead of relying on another layout pass.
         if (controller.pendingTransition != transition) {

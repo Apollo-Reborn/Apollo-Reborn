@@ -60,6 +60,10 @@ UIColor *ApolloThemePageBackgroundColor(void);
 // Mode aware). nil only if neither can be determined — callers supply their
 // own last-resort (typically UIColor.separatorColor).
 UIColor *ApolloThemeSeparatorColor(void);
+UIColor *ApolloThemeSubredditListBackgroundColor(void);
+UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void);
+UIColor *ApolloThemeSubredditListTextColor(void);
+UIColor *ApolloThemeSubredditListSecondaryTextColor(void);
 
 // Native settings text colors, including custom themes and Pure Black.
 UIColor *ApolloThemeSettingsTextColor(void);

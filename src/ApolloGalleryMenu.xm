@@ -49,17 +49,11 @@ extern NSString *ApolloSpecialFeedSlugFromViewController(UIViewController *viewC
 // Defined in ApolloUserAvatars.xm — the username a profile screen is showing,
 // nil while it can't be determined yet.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
-// Defined in ApolloHiddenContentMenu.xm — presents the Hidden & Deleted
-// browser for whichever user the profile screen is showing.
-extern void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewController);
+
 
 static NSString *const kApolloGalleryMenuTitle = @"Gallery View";
 static NSString *const kApolloGalleryMenuSymbol = @"square.grid.2x2";
-// Profile menus carry a second injected row: the Hidden & Deleted browser
-// (#633), which used to be its own eye-slash bar button in the profile's
-// navigation bar.
-static NSString *const kApolloGalleryMenuHiddenTitle = @"View Hidden/Deleted Content";
-static NSString *const kApolloGalleryMenuHiddenSymbol = @"eye.slash";
+
 
 // How long after the "..." tap an ActionController may still claim the arm.
 static const CFTimeInterval kApolloGalleryMenuArmGraceSeconds = 1.5;
@@ -292,26 +286,6 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
     openGallery();
 }
 
-// The Hidden/Deleted row only exists on profile menus, so the owner here is
-// always a ProfileViewController; the presenter re-resolves the username at
-// open time and shows its own "not loaded yet" alert if that somehow fails.
-static void ApolloGalleryMenuOpenHiddenContentForController(id actionController) {
-    UIViewController *owner = ApolloGalleryMenuOwnerForController(actionController);
-    if (!owner) {
-        ApolloLog(@"[GalleryMenu] Hidden/Deleted tapped but the profile could not be resolved");
-        return;
-    }
-
-    dispatch_block_t openHidden = ^{
-        ApolloHiddenContentPresentFromProfile(owner);
-    };
-    if (ApolloNativeActionMenuPerformAfterDismissal(actionController, openHidden)) {
-        ApolloLog(@"[GalleryMenu] Waiting for the glass menu to dismiss before opening Hidden/Deleted");
-        return;
-    }
-    openHidden();
-}
-
 #pragma mark - Arming
 
 %hook _TtC6Apollo19PostsViewController
@@ -400,11 +374,7 @@ static NSUInteger ApolloGalleryMenuInsertionIndex(NSArray<UIMenuElement *> *chil
     spec.perform = ^(id actionController) {
         ApolloGalleryMenuOpenForController(actionController);
     };
-    // Glass path builds one shared inline section carrying Gallery View plus,
-    // on profiles, the Hidden/Deleted row — matching #904's single-group look.
-    // (Two declarative inlineSection specs would render as two separated
-    // groups.) The legacy sheet has no grouping, so the hidden spec below
-    // still supplies its own legacy row.
+    // Keep Gallery View in its own inline group.
     spec.buildElement = ^(id actionController, NSMutableArray<UIMenuElement *> *children) {
         NSString *listingIdentifier = ApolloGalleryMenuListingIdentifierForController(actionController);
         if (listingIdentifier.length == 0) return;
@@ -422,19 +392,6 @@ static NSUInteger ApolloGalleryMenuInsertionIndex(NSArray<UIMenuElement *> *chil
         }];
         NSMutableArray<UIMenuElement *> *sectionChildren = [NSMutableArray arrayWithObject:galleryAction];
 
-        // Profiles carry the Hidden & Deleted browser in the same group.
-        if ([listingIdentifier hasPrefix:@"u/"]) {
-            UIImage *hiddenIcon = ApolloActionMenuSymbolIcon(kApolloGalleryMenuHiddenSymbol)
-                ?: [UIImage systemImageNamed:kApolloGalleryMenuHiddenSymbol];
-            UIAction *hidden = [UIAction actionWithTitle:kApolloGalleryMenuHiddenTitle
-                                                   image:hiddenIcon
-                                              identifier:nil
-                                                 handler:^(__unused __kindof UIAction *sender) {
-                ApolloGalleryMenuOpenHiddenContentForController(weakController);
-            }];
-            [sectionChildren addObject:hidden];
-        }
-
         UIMenu *section = [UIMenu menuWithTitle:@""
                                           image:nil
                                      identifier:nil
@@ -450,34 +407,5 @@ static NSUInteger ApolloGalleryMenuInsertionIndex(NSArray<UIMenuElement *> *chil
 
     ApolloActionMenuRegister(spec);
 
-    // Second row, profiles only: the Hidden & Deleted browser. On the glass
-    // path it's rendered inside the Gallery spec's combined section above, so
-    // this spec's glass builder is a deliberate no-op; the legacy sheet renders
-    // one appended row per matched spec, which is exactly what we want there.
-    ApolloActionMenuSpec *hiddenSpec = [ApolloActionMenuSpec new];
-    hiddenSpec.identifier = @"HiddenDeletedContent";
-    hiddenSpec.order = 1;
-    hiddenSpec.legacyDismissesSheet = YES;
-    hiddenSpec.matches = ^BOOL(id actionController, NSString *menuTitle) {
-        (void)menuTitle;
-        return [ApolloGalleryMenuListingIdentifierForController(actionController) hasPrefix:@"u/"];
-    };
-    hiddenSpec.title = ^NSString *(id actionController, UITableViewCell *donor) {
-        (void)actionController; (void)donor;
-        return kApolloGalleryMenuHiddenTitle;
-    };
-    hiddenSpec.image = ^UIImage *(id actionController, UITableViewCell *donor) {
-        (void)actionController; (void)donor;
-        return ApolloActionMenuSymbolIcon(kApolloGalleryMenuHiddenSymbol)
-            ?: [UIImage systemImageNamed:kApolloGalleryMenuHiddenSymbol];
-    };
-    hiddenSpec.perform = ^(id actionController) {
-        ApolloGalleryMenuOpenHiddenContentForController(actionController);
-    };
-    hiddenSpec.buildElement = ^(id actionController, NSMutableArray<UIMenuElement *> *children) {
-        (void)actionController; (void)children; // glass row lives in the Gallery section
-    };
-    ApolloActionMenuRegister(hiddenSpec);
-
-    ApolloLog(@"[GalleryMenu] Gallery View menu specs registered (subreddit/multireddit/profile + profile Hidden/Deleted)");
+    ApolloLog(@"[GalleryMenu] Gallery View menu specs registered");
 }
