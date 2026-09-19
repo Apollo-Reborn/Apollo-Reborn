@@ -1,0 +1,226 @@
+name: Send IPA to Telegram
+
+on:
+  workflow_run:
+    workflows:
+      - Build IPA
+    types:
+      - completed
+
+  workflow_dispatch:
+
+env:
+  PAGES_URL: https://acornelf.github.io/Apollo-Reborn
+
+permissions:
+  actions: read
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  notify:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Determine Build IPA run
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RUN_ID=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPOSITORY/actions/workflows/build-ipa.yml/runs?status=success&per_page=1" \
+              --jq '.workflow_runs[0].id')
+
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+              echo "No successful Build IPA workflow run found."
+              exit 1
+            fi
+
+            COMMIT_SHA=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPOSITORY/actions/runs/$RUN_ID" \
+              --jq '.head_sha')
+
+            echo "Using latest successful Build IPA run: $RUN_ID"
+          else
+            RUN_ID="${{ github.event.workflow_run.id }}"
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+
+            echo "Using completed Build IPA run: $RUN_ID"
+          fi
+
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          RELEASE_TAG="build-$SHORT_SHA"
+
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Find IPA artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ steps.run.outputs.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          ARTIFACT=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | endswith(".ipa")) | .id' \
+            | head -n 1)
+
+          if [ -z "$ARTIFACT" ]; then
+            echo "No IPA artifact found."
+            exit 1
+          fi
+
+          echo "Found IPA artifact: $ARTIFACT"
+          echo "artifact_id=$ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Download IPA artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+        run: |
+          mkdir -p artifact
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/$REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > artifact.zip
+
+          unzip -q artifact.zip -d artifact
+
+          IPA_FILE=$(find artifact -type f -name "*.ipa" -print -quit)
+
+          if [ -z "$IPA_FILE" ]; then
+            echo "No IPA file found inside the artifact."
+            exit 1
+          fi
+
+          echo "Found IPA: $IPA_FILE"
+          cp "$IPA_FILE" com.christianselig.Apollo.ipa
+
+      - name: Create or update build release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.run.outputs.release_tag }}
+          SHORT_SHA: ${{ steps.run.outputs.short_sha }}
+          COMMIT_SHA: ${{ steps.run.outputs.commit_sha }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+          else
+            echo "Creating release $RELEASE_TAG."
+
+            gh release create "$RELEASE_TAG" \
+              --repo "$REPOSITORY" \
+              --target "$COMMIT_SHA" \
+              --title "Apollo Reborn $SHORT_SHA" \
+              --notes "Apollo Reborn build for commit $COMMIT_SHA." \
+              --latest=false
+          fi
+
+          echo "Removing existing IPA asset if present..."
+
+          gh release delete-asset "$RELEASE_TAG" \
+            "com.christianselig.Apollo.ipa" \
+            --repo "$REPOSITORY" \
+            --yes || true
+
+          echo "Uploading IPA..."
+
+          gh release upload "$RELEASE_TAG" \
+            com.christianselig.Apollo.ipa \
+            --repo "$REPOSITORY"
+
+      - name: Keep only the five newest builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "Finding old build releases..."
+
+          OLD_RELEASES=$(gh release list \
+            --repo "$REPOSITORY" \
+            --limit 100 \
+            --json tagName,createdAt \
+            --jq '
+              [.[] |
+                select(.tagName | startswith("build-"))
+              ]
+              | sort_by(.createdAt)
+              | reverse
+              | .[5:]
+              | .[].tagName
+            ')
+
+          if [ -z "$OLD_RELEASES" ]; then
+            echo "No old releases to remove."
+          else
+            while IFS= read -r TAG; do
+              if [ -n "$TAG" ]; then
+                echo "Deleting old release: $TAG"
+
+                gh release delete "$TAG" \
+                  --repo "$REPOSITORY" \
+                  --yes \
+                  --cleanup-tag
+              fi
+            done <<< "$OLD_RELEASES"
+          fi
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Create Pages for retained builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PAGES_URL: ${{ env.PAGES_URL }}
+        run: |
+          rm -rf pages
+          mkdir -p pages
+
+          RELEASE_TAGS=$(gh release list \
+            --repo "$REPOSITORY" \
+            --limit 100 \
+            --json tagName,createdAt \
+            --jq '
+              [.[] |
+                select(.tagName | startswith("build-"))
+              ]
+              | sort_by(.createdAt)
+              | reverse
+              | .[0:5]
+              | .[].tagName
+            ')
+
+          if [ -z "$RELEASE_TAGS" ]; then
+            echo "No build releases found."
+            exit 1
+          fi
+
+          LATEST_TAG=$(echo "$RELEASE_TAGS" | head -n 1)
+
+          while IFS= read -r TAG; do
+            if [ -z "$TAG" ]; then
+              continue
+            fi
+
+            SHORT_SHA="${TAG#build-}"
+
+            RELEASE_URL="https://github.com/$RE
