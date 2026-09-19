@@ -20,9 +20,9 @@ void ApolloDuoRailSetPickingSubreddits(BOOL picking);
 /// iOS 14 (missing tab-hide selectors are skipped).
 void ApolloDuoRailSync(void);
 
-/// Expand a letterboxed stock-nav column to the usable width beside
-/// the sidebar (left inset on Open, right inset on Closed). No midX
-/// clamp and no dual-VC hosting.
+/// Expand a letterboxed stock-nav column to the usable width. Open
+/// reserves the leading 120pt column; Closed stays full-bleed with the
+/// rail overlaid. No midX clamp and no dual-VC hosting.
 void ApolloDuoRailFillOpenContent(void);
 
 /// Restore full-bleed frames / insets when the rail hides. Walks every
@@ -39,11 +39,12 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView);
 /// constraint claim. Expanded Duo rows are a later patch.
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell);
 
-/// Always 0 while the rail is leading — stock A–Z stays on the list.
+/// Open: 0 (stock A–Z). Closed: overlay-rail width so A–Z sits
+/// immediately left of the trailing rail.
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView);
 
-/// No-op pin while the rail is leading (stock A–Z). Kept so callers
-/// do not need a cover/inner branch.
+/// Open: no-op (stock A–Z). Closed: pin A–Z immediately beside the
+/// overlay rail.
 void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 
 /// YES on Compact + dual displays (cover/front). Never YES when the

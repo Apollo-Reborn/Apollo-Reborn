@@ -12,12 +12,13 @@
 #import "ApolloFeedSplitLayout.h"
 #import "ApolloThemeRuntime.h"
 
-// One Duo chrome path: a 112pt vertical sidebar. Open Duo (wide
-// landscape UIWindow) is leading; Closed Duo (portrait-sized Duo
-// window) is trailing. Regular iPhone stays on the stock tab bar.
-// Both Duo modes hide UITabBar. Selected item uses the theme accent
-// (blue on stock) as a rounded pill. FeedSplit tiling stays off.
-// Per-cell RedditList Tighten is a no-op.
+// One Duo chrome path. Open Duo (wide landscape UIWindow) is a
+// reserved leading 112pt sidebar. Closed Duo (portrait-sized Duo
+// window) is a narrow trailing overlay — the list stays nearly full
+// width. Regular iPhone stays on the stock tab bar. Both Duo modes
+// hide UITabBar. Selected item uses the theme accent (blue on stock)
+// as a rounded pill. FeedSplit tiling stays off. Per-cell RedditList
+// Tighten is a no-op except a hang-safe Closed star frame nudge.
 //
 // Mode keys off UIWindow.bounds (never UIScreen.mainScreen). First
 // show defaults to Subs: stock popToRoot onto RedditList. Navigation
@@ -48,6 +49,7 @@ static char kApolloDuoRailSelectedKey;
 static char kApolloDuoRailSavedContentInsetLeftKey;
 static char kApolloDuoRailSavedPreferredSizeKey;
 static char kApolloDuoRailSavedAdditionalLeftKey;
+static char kApolloDuoRailSavedSeparatorRightKey;
 static char kApolloDuoRailRowLeadingClaimedKey;
 static char kApolloDuoRailRowDisabledConstraintsKey;
 static BOOL sApolloDuoRailPickingSubreddits = NO;
@@ -447,7 +449,7 @@ static UIEdgeInsets ApolloDuoRailSystemSafeInsets(UITabBarController *tabs) {
 
 CGFloat ApolloDuoRailSectionIndexTrailingForTable(UITableView *tableView) {
     if (!ApolloDuoRailIsActive() || !tableView) return 0.0;
-    return (CGFloat)ApolloDuoRailSectionIndexTrailing();
+    return (CGFloat)ApolloDuoRailSectionIndexTrailingForMode(ApolloDuoRailCurrentMode());
 }
 
 void ApolloDuoRailPinSectionIndex(UITableView *tableView) {
@@ -657,6 +659,123 @@ static void ApolloDuoRailInsetHeaderView(UIView *header, CGFloat left) {
     }
 }
 
+// Closed overlay: stop header titles / hairlines before the rail so
+// FAVORITES / MODERATOR / A do not clip. Frame-only; no constraint writes.
+static void ApolloDuoRailInsetHeaderViewTrailing(UIView *header, CGFloat trailing) {
+    if (!header || trailing < 1.0) return;
+    CGFloat limit = CGRectGetWidth(header.bounds) - trailing;
+    if (limit < 1.0) return;
+    if ([header isKindOfClass:[UITableViewHeaderFooterView class]]) {
+        UITableViewHeaderFooterView *hf = (UITableViewHeaderFooterView *)header;
+        UIEdgeInsets margins = hf.contentView.layoutMargins;
+        if (margins.right < trailing - 0.5) {
+            margins.right = trailing;
+            hf.contentView.layoutMargins = margins;
+        }
+    }
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:header];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 40) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in view.subviews) {
+            [stack addObject:subview];
+        }
+        CGRect frame = view.frame;
+        if (CGRectGetMaxX(frame) <= limit + 0.5) continue;
+        BOOL hairline = CGRectGetHeight(frame) <= 2.0 && CGRectGetWidth(frame) + 0.5 >= CGRectGetWidth(header.bounds) * 0.5;
+        if (![view isKindOfClass:[UILabel class]] && !hairline) continue;
+        frame.size.width = MAX(0.0, limit - CGRectGetMinX(frame));
+        if (fabs(frame.size.width - view.frame.size.width) < 0.5) continue;
+        view.frame = frame;
+    }
+}
+
+static void ApolloDuoRailApplySeparatorTrailing(UITableView *tableView, CGFloat trailing) {
+    if (!tableView) return;
+    UIEdgeInsets inset = tableView.separatorInset;
+    NSNumber *saved = objc_getAssociatedObject(tableView, &kApolloDuoRailSavedSeparatorRightKey);
+    if (trailing > 0.5) {
+        if (!saved) {
+            objc_setAssociatedObject(tableView, &kApolloDuoRailSavedSeparatorRightKey,
+                                     @(inset.right), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (fabs(inset.right - trailing) > 0.5) {
+            inset.right = trailing;
+            tableView.separatorInset = inset;
+        }
+    } else if (saved) {
+        inset.right = saved.doubleValue;
+        tableView.separatorInset = inset;
+        objc_setAssociatedObject(tableView, &kApolloDuoRailSavedSeparatorRightKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static UIView *ApolloDuoRailFindStarInCell(UITableViewCell *cell) {
+    if (!cell) return nil;
+    if (cell.accessoryView && !cell.accessoryView.hidden && cell.accessoryView.alpha > 0.05) {
+        return cell.accessoryView;
+    }
+    Class listCell = NSClassFromString(@"_TtC6Apollo23RedditListTableViewCell");
+    if (listCell && [cell isMemberOfClass:listCell]) {
+        Ivar ivar = class_getInstanceVariable(listCell, "accessoryButton");
+        id value = ivar ? object_getIvar(cell, ivar) : nil;
+        if ([value isKindOfClass:[UIView class]]) {
+            UIView *view = (UIView *)value;
+            if (!view.hidden && view.alpha > 0.05) return view;
+        }
+    }
+    UIView *best = nil;
+    CGFloat bestX = -CGFLOAT_MAX;
+    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
+    CGFloat searchMinX = cellWidth * 0.40;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:cell];
+    NSInteger inspected = 0;
+    while (stack.count > 0 && inspected++ < 48) {
+        UIView *candidate = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *subview in candidate.subviews) {
+            [stack addObject:subview];
+        }
+        if (![candidate isKindOfClass:[UIControl class]] || candidate.hidden || candidate.alpha <= 0.05) {
+            continue;
+        }
+        CGRect inCell = [cell convertRect:candidate.bounds fromView:candidate];
+        if (CGRectGetWidth(inCell) > 96.0 || CGRectGetHeight(inCell) > 96.0) continue;
+        if (CGRectGetMidX(inCell) < searchMinX) continue;
+        if (CGRectGetMidX(inCell) > bestX) {
+            best = candidate;
+            bestX = CGRectGetMidX(inCell);
+        }
+    }
+    return best;
+}
+
+// Hang-safe: one frame write, skip when already at the visible trailing
+// edge. No constraint disable, no layoutIfNeeded (25f8a7b hang).
+static void ApolloDuoRailAnchorClosedStarInCell(UITableViewCell *cell) {
+    if (!cell) return;
+    UIView *star = ApolloDuoRailFindStarInCell(cell);
+    if (!star || !star.superview) return;
+    CGFloat cellWidth = CGRectGetWidth(cell.bounds);
+    CGFloat wantMaxX = (CGFloat)ApolloDuoRailClosedStarMaxX(cellWidth);
+    CGRect inCell = [cell convertRect:star.bounds fromView:star];
+    if (!ApolloDuoRailClosedShouldNudgeStar(CGRectGetMaxX(inCell), wantMaxX)) return;
+    CGRect inSuperview = [star.superview convertRect:inCell fromView:cell];
+    CGFloat delta = wantMaxX - CGRectGetMaxX(inCell);
+    inSuperview.origin.x += delta;
+    if (inSuperview.origin.x < 0.0) inSuperview.origin.x = 0.0;
+    star.frame = inSuperview;
+}
+
+static void ApolloDuoRailAnchorClosedStars(UITableView *tableView) {
+    if (!tableView || ApolloDuoRailCurrentMode() != ApolloDuoModeClosed) return;
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        ApolloDuoRailAnchorClosedStarInCell(cell);
+    }
+}
+
 static CGFloat ApolloDuoRailWindowMinX(UIView *view) {
     if (!view) return 0.0;
     if (view.window) {
@@ -680,11 +799,15 @@ static void ApolloDuoRailReleaseLeadingView(UITableViewCell *cell) {
 
 void ApolloDuoRailTightenSubredditRow(UITableViewCell *cell) {
     // Aaron reset: per-cell readable / centerX / lead-delta writes hung
-    // once (25f8a7b) and still left the wrong layout. Row expansion is
-    // a later patch. Release any leftover claim so a recycled cell
-    // cannot keep 25f8a7b/c7f33e0 constraint surgery alive.
+    // once (25f8a7b) and still left the wrong layout. Release any
+    // leftover claim so a recycled cell cannot keep 25f8a7b/c7f33e0
+    // constraint surgery alive. Closed-only: hang-safe star frame
+    // nudge to the visible row trailing edge (left of A–Z / overlay).
     if (!cell) return;
     ApolloDuoRailReleaseLeadingView(cell);
+    if (ApolloDuoRailIsActive() && ApolloDuoRailCurrentMode() == ApolloDuoModeClosed) {
+        ApolloDuoRailAnchorClosedStarInCell(cell);
+    }
 }
 
 static void ApolloDuoRailApplyScrollInsetLeft(UIScrollView *scrollView, CGFloat left) {
@@ -745,13 +868,9 @@ static BOOL ApolloDuoRailShiftScrollViewOffRail(UIScrollView *scrollView) {
         want.origin.x += bump;
         want.size.width = MAX(0.0, want.size.width - bump);
     } else {
-        UIWindow *window = scrollView.window;
-        CGFloat windowMaxX = ApolloDuoRailWindowMinX(scrollView) + CGRectGetWidth(frame);
-        CGFloat limit = window
-            ? (CGRectGetWidth(window.bounds) - inset)
-            : (CGRectGetMaxX(scrollView.superview.bounds) - inset);
-        if (windowMaxX <= limit + 0.5) return NO;
-        want.size.width = MAX(0.0, want.size.width - (windowMaxX - limit));
+        // Closed overlays the rail. Shrinking the table by ~120pt is
+        // the Image 1 crush — leave the scroll view full-bleed.
+        return NO;
     }
     if (fabs(want.origin.x - frame.origin.x) < 0.5
         && fabs(want.size.width - frame.size.width) < 0.5) {
@@ -780,26 +899,39 @@ void ApolloDuoRailApplyListInsets(UIScrollView *scrollView) {
 
     if (![scrollView isKindOfClass:[UITableView class]]) return;
     UITableView *tableView = (UITableView *)scrollView;
-    if (!active) return;
+    if (!active) {
+        ApolloDuoRailApplySeparatorTrailing(tableView, 0.0);
+        return;
+    }
 
     if (tableView.cellLayoutMarginsFollowReadableWidth) {
         tableView.cellLayoutMarginsFollowReadableWidth = NO;
     }
+    int mode = ApolloDuoRailCurrentMode();
     CGFloat headerLeft = underRail
         ? ((CGFloat)ApolloDuoRailContentLeftInset() - MAX(windowX, 0.0))
         : 0.0;
-    if (headerLeft > 0.5) {
+    CGFloat headerTrailing = (mode == ApolloDuoModeClosed)
+        ? (CGFloat)ApolloDuoRailClosedOverlayClearance()
+        : 0.0;
+    ApolloDuoRailApplySeparatorTrailing(tableView, headerTrailing);
+    if (headerLeft > 0.5 || headerTrailing > 0.5) {
         NSInteger sections = tableView.numberOfSections;
         for (NSInteger section = 0; section < sections && section < 24; section++) {
             UIView *header = [tableView headerViewForSection:section];
-            if (header) ApolloDuoRailInsetHeaderView(header, headerLeft);
+            if (header && headerLeft > 0.5) ApolloDuoRailInsetHeaderView(header, headerLeft);
+            if (header && headerTrailing > 0.5) ApolloDuoRailInsetHeaderViewTrailing(header, headerTrailing);
         }
         for (UIView *subview in tableView.subviews) {
             const char *name = class_getName(subview.class);
             if (name && strstr(name, "Header")) {
-                ApolloDuoRailInsetHeaderView(subview, headerLeft);
+                if (headerLeft > 0.5) ApolloDuoRailInsetHeaderView(subview, headerLeft);
+                if (headerTrailing > 0.5) ApolloDuoRailInsetHeaderViewTrailing(subview, headerTrailing);
             }
         }
+    }
+    if (mode == ApolloDuoModeClosed) {
+        ApolloDuoRailAnchorClosedStars(tableView);
     }
 }
 
@@ -993,6 +1125,9 @@ static void ApolloDuoRailRestoreController(UIViewController *controller, UIView 
         }
         if ([table isKindOfClass:[UIScrollView class]]) {
             ApolloDuoRailApplyScrollInsetLeft((UIScrollView *)table, 0.0);
+            if ([table isKindOfClass:[UITableView class]]) {
+                ApolloDuoRailApplySeparatorTrailing((UITableView *)table, 0.0);
+            }
             if (table.superview) {
                 ApolloDuoRailExpandView(table, table.superview.bounds);
             }
@@ -1002,6 +1137,9 @@ static void ApolloDuoRailRestoreController(UIViewController *controller, UIView 
         ? ApolloDuoRailFindPrimaryTable(controller.view, 5) : nil;
     if (found && found.superview) {
         ApolloDuoRailApplyScrollInsetLeft(found, 0.0);
+        if ([found isKindOfClass:[UITableView class]]) {
+            ApolloDuoRailApplySeparatorTrailing((UITableView *)found, 0.0);
+        }
         ApolloDuoRailExpandView(found, found.superview.bounds);
     }
 }

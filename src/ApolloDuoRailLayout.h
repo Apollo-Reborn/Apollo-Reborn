@@ -7,19 +7,24 @@ extern "C" {
 
 #include "ApolloDuoCompatibility.h"
 
-// One Duo chrome path: a 100–120pt vertical sidebar. Open Duo
-// (wide landscape UIWindow) is leading; Closed Duo (portrait-sized
-// Duo window) is trailing. Regular iPhone is Phone mode — stock
-// tab bar, no rail. Hide UITabBar in both Duo modes. C-only so
-// host tests compile without UIKit.
+// One Duo chrome path. Open Duo (wide landscape UIWindow) is a
+// reserved leading 112pt sidebar (content starts at 120). Closed Duo
+// (portrait-sized Duo window) is a narrow trailing overlay — the
+// table stays nearly full width; the rail does NOT reserve a column.
+// Regular iPhone is Phone mode — stock tab bar, no rail. Hide
+// UITabBar in both Duo modes. C-only so host tests compile without
+// UIKit.
 //
-// Top is safe.top + 8 only. Content inset is rail + 8pt (112+8=120)
-// on the rail side. A–Z overlay is a later patch.
+// Top is safe.top + 8 only. Open content inset is rail + 8pt
+// (112+8=120) on the leading side. Closed A–Z pins immediately left
+// of the overlay rail.
 
 enum {
-    ApolloDuoRailWidth = 112,      /* 100–120pt sidebar, not the old 64pt strip */
+    ApolloDuoRailWidth = 112,      /* Open reserved sidebar, 100–120pt */
+    ApolloDuoRailWidthClosed = 72, /* Closed overlay only — not a reserved column */
+    ApolloDuoRailClosedIndexWidth = 16, /* typical UITableViewIndex; sits beside the rail */
     ApolloDuoRailEdgeGutter = 0,   /* flush leading sidebar */
-    ApolloDuoRailContentGutter = 8, /* content gap after the rail hairline */
+    ApolloDuoRailContentGutter = 8, /* content gap after the Open rail hairline */
     ApolloDuoRailStatusGap = 8,  /* safe.top padding; ignore trailing pill */
     ApolloDuoRailMinRegularWidth = 652,
     ApolloDuoRailWideSingleScreen = 800,
@@ -65,16 +70,45 @@ static inline double ApolloDuoRailChromeLeftForMode(int mode) {
     return mode == ApolloDuoModeOpen ? ApolloDuoRailContentLeftInset() : 0.0;
 }
 
+// Closed overlays the rail — never reserve ~120pt trailing. That
+// reservation crushed the portrait list by ~20–25% (Image 1).
 static inline double ApolloDuoRailChromeRightForMode(int mode) {
-    return mode == ApolloDuoModeClosed ? ApolloDuoRailContentLeftInset() : 0.0;
+    (void)mode;
+    return 0.0;
+}
+
+static inline double ApolloDuoRailWidthForMode(int mode) {
+    return mode == ApolloDuoModeClosed ? (double)ApolloDuoRailWidthClosed
+                                       : (double)ApolloDuoRailWidth;
+}
+
+static inline double ApolloDuoRailWidthOnSide(int leading) {
+    return leading ? (double)ApolloDuoRailWidth : (double)ApolloDuoRailWidthClosed;
+}
+
+// Usable width after reserved chrome only. Open subtracts the leading
+// 120pt column. Closed is full-bleed (overlay rail).
+static inline double ApolloDuoRailContentFillWidthForMode(double containerWidth,
+                                                         int mode) {
+    if (containerWidth <= 0.0) return 0.0;
+    double fill = containerWidth
+        - ApolloDuoRailChromeLeftForMode(mode)
+        - ApolloDuoRailChromeRightForMode(mode);
+    return fill > 0.0 ? fill : 0.0;
 }
 
 // Usable width right of the leading rail. Stock nav letterboxes to a
 // phone column on the wide inner canvas; fill targets this width.
 static inline double ApolloDuoRailContentFillWidth(double containerWidth) {
-    if (containerWidth <= 0.0) return 0.0;
-    double fill = containerWidth - ApolloDuoRailContentLeftInset();
-    return fill > 0.0 ? fill : 0.0;
+    return ApolloDuoRailContentFillWidthForMode(containerWidth, ApolloDuoModeOpen);
+}
+
+// Portrait Closed list is crushed when a reserved column eats ~20%+.
+// Overlay + full-bleed content must fail this (acceptance test).
+static inline int ApolloDuoRailClosedContentIsCrushed(double contentWidth,
+                                                     double containerWidth) {
+    if (containerWidth <= 0.0) return 0;
+    return contentWidth + containerWidth * 0.20 < containerWidth;
 }
 
 static inline int ApolloDuoRailContentIsLetterboxed(double contentWidth,
@@ -91,7 +125,7 @@ static inline ApolloDuoRailRect ApolloDuoRailContentFrameInBoundsForMode(double 
     ApolloDuoRailRect rect;
     rect.x = ApolloDuoRailChromeLeftForMode(mode);
     rect.y = 0.0;
-    rect.width = ApolloDuoRailContentFillWidth(boundsWidth);
+    rect.width = ApolloDuoRailContentFillWidthForMode(boundsWidth, mode);
     rect.height = boundsHeight > 0.0 ? boundsHeight : 0.0;
     if (rect.width < 0.0) rect.width = 0.0;
     return rect;
@@ -137,9 +171,38 @@ static inline double ApolloDuoRailTopInset(double safeTop, double pillMaxY) {
     return safeTop + (double)ApolloDuoRailStatusGap;
 }
 
-// Rail is leading; stock A–Z stays on the list trailing edge.
+// Open: stock A–Z on the list trailing edge (0 extra). Closed: pin
+// the index immediately left of the overlay rail.
+static inline double ApolloDuoRailSectionIndexTrailingForMode(int mode) {
+    return mode == ApolloDuoModeClosed ? (double)ApolloDuoRailWidthClosed : 0.0;
+}
+
 static inline double ApolloDuoRailSectionIndexTrailing(void) {
-    return 0.0;
+    return ApolloDuoRailSectionIndexTrailingForMode(ApolloDuoModeOpen);
+}
+
+// Visible trailing chrome on a full-bleed Closed row: overlay rail +
+// the A–Z that sits beside it. Stars / header lines stop here.
+static inline double ApolloDuoRailClosedOverlayClearance(void) {
+    return (double)ApolloDuoRailWidthClosed + (double)ApolloDuoRailClosedIndexWidth;
+}
+
+static inline double ApolloDuoRailClosedStarMaxX(double cellWidth) {
+    if (cellWidth <= 0.0) return 0.0;
+    double maxX = cellWidth - ApolloDuoRailClosedOverlayClearance();
+    return maxX > 0.0 ? maxX : 0.0;
+}
+
+static inline double ApolloDuoRailClosedStarMinX(double cellWidth, double starWidth) {
+    if (starWidth < 0.0) starWidth = 0.0;
+    double minX = ApolloDuoRailClosedStarMaxX(cellWidth) - starWidth;
+    return minX > 0.0 ? minX : 0.0;
+}
+
+static inline int ApolloDuoRailClosedShouldNudgeStar(double starMaxX, double wantMaxX) {
+    double gap = wantMaxX - starMaxX;
+    if (gap < 0.0) gap = -gap;
+    return gap > 0.5;
 }
 
 // Cover / Compact + dual screens: extra trailing/bottom so FABs clear
@@ -166,11 +229,11 @@ static inline ApolloDuoRailRect ApolloDuoRailFrameInBoundsOnSide(double boundsWi
     }
     if (safeBottom < 0.0) safeBottom = 0.0;
     double top = ApolloDuoRailTopInset(safeTop, pillMaxY);
-    rect.width = (double)ApolloDuoRailWidth;
+    rect.width = ApolloDuoRailWidthOnSide(leading);
     rect.height = boundsHeight - top - safeBottom;
     if (rect.height < 0.0) rect.height = 0.0;
     rect.x = leading ? ApolloDuoRailLeadingChrome()
-                     : boundsWidth - (double)ApolloDuoRailWidth;
+                     : boundsWidth - rect.width;
     if (rect.x < 0.0) rect.x = 0.0;
     rect.y = top;
     return rect;

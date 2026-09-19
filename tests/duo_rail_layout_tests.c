@@ -73,8 +73,8 @@ int main(void) {
           "Open chrome does not inset the trailing edge");
     Check(ApolloDuoRailChromeLeftForMode(ApolloDuoModeClosed) == 0.0,
           "Closed chrome does not inset the leading edge");
-    Check(ApolloDuoRailChromeRightForMode(ApolloDuoModeClosed) == 120.0,
-          "Closed chrome insets the trailing edge");
+    Check(ApolloDuoRailChromeRightForMode(ApolloDuoModeClosed) == 0.0,
+          "Closed chrome does not reserve a trailing column");
     Check(ApolloDuoRailChromeLeftForMode(ApolloDuoModePhone) == 0.0
               && ApolloDuoRailChromeRightForMode(ApolloDuoModePhone) == 0.0,
           "Phone chrome has no rail insets");
@@ -93,7 +93,36 @@ int main(void) {
     Check(ApolloDuoRailTopInset(20.0, 110.0) == 28.0,
           "a tall trailing pill still does not move the leading rail");
     Check(ApolloDuoRailSectionIndexTrailing() == 0.0,
-          "A–Z stays stock; no extra trailing pin");
+          "Open A–Z stays stock; no extra trailing pin");
+    Check(ApolloDuoRailSectionIndexTrailingForMode(ApolloDuoModeOpen) == 0.0,
+          "Open section-index trailing is 0");
+    Check(ApolloDuoRailSectionIndexTrailingForMode(ApolloDuoModeClosed)
+              == (double)ApolloDuoRailWidthClosed,
+          "Closed A–Z pins immediately left of the overlay rail");
+    Check(ApolloDuoRailWidthClosed == 72,
+          "Closed overlay rail is a narrow 72pt strip");
+    Check(ApolloDuoRailWidthForMode(ApolloDuoModeOpen) == 112.0,
+          "Open rail width stays the 112pt reserved sidebar");
+    Check(ApolloDuoRailWidthForMode(ApolloDuoModeClosed) == 72.0,
+          "Closed rail width is the overlay strip");
+    Check(ApolloDuoRailContentFillWidthForMode(400.0, ApolloDuoModeClosed) == 400.0,
+          "Closed fill width is the full container (no reserved column)");
+    Check(ApolloDuoRailContentFillWidthForMode(1000.0, ApolloDuoModeOpen) == 880.0,
+          "Open fill width still subtracts the leading 120pt column");
+    Check(!ApolloDuoRailClosedContentIsCrushed(400.0, 400.0),
+          "a full-bleed Closed list is not crushed");
+    Check(ApolloDuoRailClosedContentIsCrushed(280.0, 400.0),
+          "reserving ~120pt on a 400pt Closed list is the 20–25% crush");
+    Check(ApolloDuoRailClosedOverlayClearance() == 88.0,
+          "Closed visible trailing chrome is rail + A–Z");
+    Check(ApolloDuoRailClosedStarMaxX(400.0) == 312.0,
+          "Closed star sits at the visible row trailing edge");
+    Check(ApolloDuoRailClosedStarMinX(400.0, 28.0) == 284.0,
+          "Closed star origin is just left of A–Z");
+    Check(ApolloDuoRailClosedShouldNudgeStar(250.0, 312.0),
+          "a mid-column Closed star must be nudged to the row edge");
+    Check(!ApolloDuoRailClosedShouldNudgeStar(312.0, 312.0),
+          "an already-anchored Closed star is a no-op");
     Check(ApolloDuoCoverPillWidth == 80 && ApolloDuoCoverPillBottom == 120,
           "cover pill clearance is 80 trailing x 120 bottom");
     Check(ApolloDuoCoverChromeShouldApply(0, 1),
@@ -114,14 +143,14 @@ int main(void) {
           "leading rail uses safe.top + 8 and ignores the trailing pill");
 
     ApolloDuoRailRect closed = ApolloDuoRailFrameInBoundsOnSide(400.0, 900.0, 20.0, 34.0, 0.0, 0);
-    Check(closed.x == 400.0 - 112.0 && closed.y == 28.0
-              && closed.width == 112.0 && closed.height == 900.0 - 28.0 - 34.0,
-          "Closed rail is flush to the trailing edge");
+    Check(closed.x == 400.0 - 72.0 && closed.y == 28.0
+              && closed.width == 72.0 && closed.height == 900.0 - 28.0 - 34.0,
+          "Closed overlay rail is flush to the trailing edge");
 
     ApolloDuoRailRect closedContent = ApolloDuoRailContentFrameInBoundsForMode(400.0, 900.0,
                                                                               ApolloDuoModeClosed);
-    Check(closedContent.x == 0.0 && closedContent.width == 280.0,
-          "Closed content starts at x=0 and stops before the right rail");
+    Check(closedContent.x == 0.0 && closedContent.width == 400.0,
+          "Closed content is full-bleed; the rail overlays");
 
     ApolloDuoRailRect content = ApolloDuoRailContentFrameInBounds(1000.0, 800.0);
     Check(content.x == 120.0 && content.y == 0.0
