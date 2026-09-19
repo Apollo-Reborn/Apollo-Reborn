@@ -331,6 +331,8 @@ extern NSInteger sSubredditFeedLayout;
 extern BOOL sPerAccountFavoritesEnabled;
 // Effective sorting preference for the materialized favorites scope.
 extern BOOL sSortFavoritesAlphabetically;
+// Opt-in confirm sheet before the Subreddits-list star mutates favorites.
+extern BOOL sConfirmFavoriteToggle;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;

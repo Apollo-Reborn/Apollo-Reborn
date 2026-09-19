@@ -4146,6 +4146,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     }
     sPerAccountFavoritesEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPerAccountFavoritesEnabled];
     sSortFavoritesAlphabetically = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySortFavoritesAlphabetically];
+    sConfirmFavoriteToggle = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyConfirmFavoriteToggle];
     sHideSubredditListDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideSubredditListDescriptions];
     sHideMultiredditDescriptions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideMultiredditDescriptions];
     sEnableFlairColors = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFlairColors];
