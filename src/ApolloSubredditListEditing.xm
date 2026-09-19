@@ -4,7 +4,7 @@
 #import "ApolloFollowingSection.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
-static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities;
+static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities, kEditingSelection;
 
 static UITableView *ApolloEditingTable(UIView *view) {
     for (UIView *v = view; v; v = v.superview) {
@@ -262,7 +262,21 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %hook UITableView
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     [(ApolloListEditConfirmation *)objc_getAssociatedObject(self, &kListConfirmation) dismiss];
+    BOOL list = ApolloEditingIsList(self);
+    if (list && editing && !objc_getAssociatedObject(self, &kEditingSelection)) {
+        objc_setAssociatedObject(self, &kEditingSelection, @(self.allowsSelectionDuringEditing), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        self.allowsSelectionDuringEditing = NO;
+    }
     %orig;
+    if (list) {
+        for (NSIndexPath *path in self.indexPathsForSelectedRows.copy) [self deselectRowAtIndexPath:path animated:NO];
+        for (UITableViewCell *cell in self.visibleCells) [cell setHighlighted:NO animated:NO];
+        if (!editing) {
+            NSNumber *previous = objc_getAssociatedObject(self, &kEditingSelection);
+            if (previous) self.allowsSelectionDuringEditing = previous.boolValue;
+            objc_setAssociatedObject(self, &kEditingSelection, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
 }
 - (void)reloadData {
     [(ApolloListEditConfirmation *)objc_getAssociatedObject(self, &kListConfirmation) dismiss];
@@ -271,6 +285,16 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %end
 
 %hook UITableViewCell
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
+    UITableView *table = ApolloEditingTable(self);
+    if (table.editing && ApolloEditingIsList(table)) highlighted = NO;
+    %orig(highlighted, animated);
+}
+- (void)setSelected:(BOOL)selected animated:(BOOL)animated {
+    UITableView *table = ApolloEditingTable(self);
+    if (table.editing && ApolloEditingIsList(table)) selected = NO;
+    %orig(selected, animated);
+}
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     ApolloEditingAlignStar(self, editing);
     %orig;
@@ -285,6 +309,52 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     ApolloEditingAlignStar(self, NO);
     %orig;
 }
+%end
+
+static UITableView *ApolloEditingFindListTable(UIView *view) {
+    if ([view isKindOfClass:UITableView.class] && ApolloEditingIsList((UITableView *)view)) return (UITableView *)view;
+    for (UIView *child in view.subviews) {
+        UITableView *table = ApolloEditingFindListTable(child);
+        if (table) return table;
+    }
+    return nil;
+}
+
+static void ApolloEditingMatchListBackground(UIViewController *controller) {
+    UITableView *table = ApolloEditingFindListTable(controller.view);
+    UIColor *color = nil;
+    for (UITableViewCell *cell in table.visibleCells) {
+        for (UIColor *candidate in @[cell.contentView.backgroundColor ?: UIColor.clearColor,
+                                     cell.backgroundColor ?: UIColor.clearColor]) {
+            if (CGColorGetAlpha([candidate resolvedColorWithTraitCollection:table.traitCollection].CGColor) > 0.99) {
+                color = candidate;
+                break;
+            }
+        }
+        if (color) break;
+    }
+    if (!color) return;
+    // The top inset and scroll-edge effect draw from the table's background.
+    table.backgroundColor = color;
+    controller.view.backgroundColor = color;
+}
+
+@interface ApolloEditListController : UIViewController @end
+%group ApolloListEditingController
+%hook ApolloEditListController
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ApolloEditingMatchListBackground(self);
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    ApolloEditingMatchListBackground(self);
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    %orig;
+    dispatch_async(dispatch_get_main_queue(), ^{ ApolloEditingMatchListBackground(self); });
+}
+%end
 %end
 
 // The Swift cell skips super.prepareForReuse, so hook both implementations.
@@ -302,6 +372,10 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 
 %ctor {
     %init;
+    Class listClass = NSClassFromString(@"Apollo.RedditListViewController");
+    if (listClass) {
+        %init(ApolloListEditingController, ApolloEditListController = listClass);
+    }
     Class cellClass = NSClassFromString(@"Apollo.RedditListTableViewCell");
     if (cellClass) {
         %init(ApolloListEditingCells, ApolloEditListCell = cellClass);
