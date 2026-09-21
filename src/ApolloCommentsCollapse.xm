@@ -78,6 +78,29 @@ static UITableView *GetCommentsTableView(UIViewController *viewController) {
     return FindFirstTableViewInView(viewController.view);
 }
 
+// Apollo's tap handler updates CollapsedCommentsTracker directly, then Texture
+// commits the deleted child rows asynchronously through UITableView. That path
+// requests UITableViewRowAnimationAutomatic (100): on newer UIKit the outgoing
+// children can travel down while the surviving rows close the gap upwards.
+// Choose Top at the UIKit commit boundary, where Texture can no longer replace
+// the animation. A setCollapsed: hook or a flag around the tap misses this path.
+static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
+                                            UITableViewRowAnimation animation) {
+    // Preserve explicitly non-animated updates, including the media pane's
+    // transparent rows, and any direction the caller deliberately supplied.
+    if (animation != UITableViewRowAnimationAutomatic) return NO;
+
+    Class commentsClass = objc_getClass("_TtC6Apollo22CommentsViewController");
+    if (!commentsClass) return NO;
+    for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
+        if (![responder isKindOfClass:commentsClass]) continue;
+        UIViewController *controller = (UIViewController *)responder;
+        return !ApolloSwipeCommentsIsPaneCommentsController(controller) &&
+               GetCommentsTableView(controller) == tableView;
+    }
+    return NO;
+}
+
 static CGFloat GetNavigationBarBottom(UIViewController *viewController) {
     UIView *rootView = viewController.view;
     if (!rootView) return 0.0;
@@ -423,6 +446,20 @@ static void ShowCommentsCollapseCover(NSString *reason) {
 - (void)viewDidLayoutSubviews {
     %orig;
     LayoutCommentsCollapseCover((UIViewController *)self);
+}
+
+%end
+
+%hook UITableView
+
+- (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
+              withRowAnimation:(UITableViewRowAnimation)animation {
+    if (CommentsTableNeedsUpwardDeletion(self, animation)) {
+        ApolloLog(@"[CommentsCollapse] Delete %lu rows upwards", (unsigned long)indexPaths.count);
+        animation = UITableViewRowAnimationTop;
+    }
+    // Logos' bare %orig would forward the originally captured animation.
+    %orig(indexPaths, animation);
 }
 
 %end
