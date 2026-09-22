@@ -1232,19 +1232,15 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     ApolloHiddenContentItem *item = [self apollo_itemsForTable:tableView][indexPath.row];
 
-    // Deleted and Removed items have no useful live reddit.com page (it's just
-    // Reddit's own tombstone) -- show the archived copy instead. Only a
-    // genuinely Hidden item (still fully intact, just excluded from the
-    // account's own listing) is worth opening live.
-    if (item.reason != ApolloHiddenContentReasonHidden) {
+    // A deleted body can still have a useful live thread and surrounding
+    // discussion. Prefer its permalink regardless of archive classification.
+    if (item.permalink.length == 0) {
         ApolloHiddenContentDetailViewController *detail = [ApolloHiddenContentDetailViewController new];
         detail.item = item;
         [self.navigationController pushViewController:detail animated:YES];
         return;
     }
 
-    // Open intact items through Apollo's native URL router.
-    if (item.permalink.length == 0) return;
     // NSURLComponents.path percent-encodes on assignment; +URLWithString: does
     // not, and silently returns nil for a permalink with unencoded non-ASCII
     // characters (e.g. an accented slug).
