@@ -255,6 +255,68 @@ static void ApolloFullScreenMediaHoldFeedback(UIGestureRecognizer *recognizer) {
     }
 }
 
+// The actions-only video/GIF menu has no preview platter to drag. Give its
+// own background a pan recognizer; never attach it to the viewer or window,
+// where the same swipe could also dismiss the underlying full-screen media.
+static char kApolloMediaMenuDismissalKey;
+static id ApolloMediaMenuObject(id object, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+@interface ApolloMediaMenuDismissal : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) UIContextMenuInteraction *interaction;
+@property (nonatomic, weak) UIView *background;
+@property (nonatomic, weak) UIView *menuView;
+@property (nonatomic, strong) UIPanGestureRecognizer *pan;
+@property (nonatomic) BOOL ended;
+- (void)install;
+- (void)invalidate;
+@end
+@implementation ApolloMediaMenuDismissal
+- (void)install {
+    if (self.ended || self.pan) return;
+    id presentations = ApolloMediaMenuObject(self.interaction, @"presentationsByIdentifier");
+    if (![presentations isKindOfClass:NSDictionary.class] || [presentations count] != 1) return;
+    id controller = ApolloMediaMenuObject([presentations allValues].firstObject, @"uiController");
+    UIView *menu = ApolloMediaMenuObject(controller, @"menuView");
+    if (![menu isKindOfClass:UIView.class]) return;
+    Class containerClass = NSClassFromString(@"_UIContextMenuContainerView");
+    UIView *background = menu.superview;
+    while (background && ![background isKindOfClass:containerClass]) background = background.superview;
+    if (!background.window) return;
+    self.background = background;
+    self.menuView = menu;
+    self.pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(swiped:)];
+    self.pan.maximumNumberOfTouches = 1;
+    self.pan.delegate = self;
+    [background addGestureRecognizer:self.pan];
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    // Keep menu-row selection, submenu navigation and scrolling native.
+    return !self.ended && self.interaction && touch.view && self.menuView &&
+        [touch.view isDescendantOfView:self.background] && ![touch.view isDescendantOfView:self.menuView];
+}
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // UIKit's platter pan can recognize even when it cannot dismiss an
+    // actions-only menu. Let this background-only dismissal complete too.
+    return !self.ended && other.view && [other.view isDescendantOfView:self.background];
+}
+- (void)swiped:(UIPanGestureRecognizer *)recognizer {
+    if (!self.ended && recognizer.state == UIGestureRecognizerStateBegan) {
+        [self.interaction dismissMenu];
+    }
+}
+- (void)invalidate {
+    self.ended = YES;
+    [self.pan.view removeGestureRecognizer:self.pan];
+    self.pan = nil;
+}
+- (void)dealloc {
+    [_pan.view removeGestureRecognizer:_pan];
+}
+@end
+
 @interface ApolloFullScreenImageMenu : NSObject
 @property (nonatomic, weak) UIViewController *page;
 @property (nonatomic, weak) UIViewController *viewer;
@@ -475,11 +537,25 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
     return configuration;
 }
 
+// Install after UIKit creates the overlay, and cancel installation if the
+// menu closes before its presentation animation finishes.
+%new
+- (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willDisplayMenuForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
+    ApolloMediaMenuDismissal *dismissal = [ApolloMediaMenuDismissal new];
+    dismissal.interaction = interaction;
+    objc_setAssociatedObject(configuration, &kApolloMediaMenuDismissalKey, dismissal, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [dismissal install];
+    if (animator) [animator addCompletion:^{ [dismissal install]; }];
+}
+
 // Apollo has no implementation of this optional delegate method. Read the
 // deferred action IN the animator completion: UIKit may call willEnd before
 // the selected UIAction's handler has run.
 %new
 - (void)contextMenuInteraction:(UIContextMenuInteraction *)interaction willEndForConfiguration:(UIContextMenuConfiguration *)configuration animator:(id<UIContextMenuInteractionAnimating>)animator {
+    ApolloMediaMenuDismissal *dismissal = objc_getAssociatedObject(configuration, &kApolloMediaMenuDismissalKey);
+    [dismissal invalidate];
+    objc_setAssociatedObject(configuration, &kApolloMediaMenuDismissalKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloFullScreenImageMenu *image = objc_getAssociatedObject(configuration, &kApolloFullScreenImageMenuKey);
     if (image) {
         dispatch_block_t finish = ^{
