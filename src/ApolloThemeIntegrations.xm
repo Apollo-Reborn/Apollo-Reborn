@@ -44,7 +44,7 @@ static inline BOOL ApolloThemeStateUnchanged(id object, const void *key, uint64_
 }
 
 static inline UIColor *AccentToken(void)    { return ApolloThemeRuntimeColor(ApolloThemeTokenAccent); }
-static inline UIColor *SelectionToken(void) { return ApolloThemeRuntimeColor(ApolloThemeTokenSelection); }
+static inline UIColor *SelectionToken(void) { return ApolloThemeRuntimeColor(ApolloThemeTokenRowHighlight); }
 static inline UIColor *CardToken(void)      { return ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryBackground); }
 
 static id ObjectIvar(id object, const char *name) {
