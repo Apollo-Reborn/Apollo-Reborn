@@ -399,6 +399,20 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
 
 %hook _TtC6Apollo21MediaViewerController
 - (void)scrollViewLongPressed:(UIGestureRecognizer *)recognizer {
+    // Feed context menus get recognition feedback from UIKit. This legacy
+    // long-press path opens its menu programmatically, so supply that feedback
+    // once, including when GIF/video media uses Apollo's original handler.
+    // Leave real UIContextMenuInteraction gestures to UIKit to avoid two pulses.
+    if (recognizer.state == UIGestureRecognizerStateBegan && recognizer.view.window) {
+        UIImpactFeedbackGenerator *feedback;
+        if (@available(iOS 17.5, *)) {
+            feedback = [UIImpactFeedbackGenerator feedbackGeneratorWithStyle:UIImpactFeedbackStyleMedium
+                                                                 forView:recognizer.view];
+        } else {
+            feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        }
+        [feedback impactOccurred];
+    }
     UIViewController *page = ApolloSaveAllPageForController((UIViewController *)self);
     ApolloFullScreenImageMenu *context = ApolloFullScreenImageContext(page, recognizer.view);
     if (!context) {
