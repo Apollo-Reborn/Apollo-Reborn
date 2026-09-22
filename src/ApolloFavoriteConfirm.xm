@@ -5,28 +5,28 @@
 // an action sheet before Apollo mutates FavoriteSubreddits. Confirm re-fires
 // the control so every other favoriteSubredditButtonTapped: hook still wraps
 // the real mutation; Cancel leaves the list untouched.
+//
+// Link-order constraint: this file MUST appear AFTER ApolloSubredditIndexPolish.xm
+// and ApolloFollowingSection.xm in ApolloReborn_FILES so its
+// favoriteSubredditButtonTapped: hook is the OUTERMOST one. The gate only works
+// when it can intercept the tap before the polish / Following hooks run, and
+// then re-enter them (with the bypass depth raised) after the user confirms.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
 #import "ApolloFavoriteConfirm.h"
 #import "ApolloCommon.h"
+#import "ApolloFollowingSection.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
-static BOOL sApolloFavoriteConfirmSuppressed = NO;
+// Depth of nested ApolloFavoriteConfirmRun perform scopes. When > 0 the hook
+// skips the prompt so the confirmed re-send reaches the real mutation.
+static NSInteger sApolloFavoriteConfirmBypassDepth = 0;
 
 BOOL ApolloFavoriteConfirmShouldPrompt(void) {
-    return sConfirmFavoriteToggle && !sApolloFavoriteConfirmSuppressed;
-}
-
-void ApolloFavoriteConfirmSuppressNextTap(void) {
-    sApolloFavoriteConfirmSuppressed = YES;
-    // Clear on the next turn even if the re-send never arrives (control gone,
-    // list dismissed, etc.) so the gate cannot stick open forever.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        sApolloFavoriteConfirmSuppressed = NO;
-    });
+    return sConfirmFavoriteToggle && sApolloFavoriteConfirmBypassDepth == 0;
 }
 
 #pragma mark - Helpers
@@ -36,6 +36,17 @@ static UITableViewCell *ApolloFavoriteConfirmCellForView(UIView *view) {
     while (cursor) {
         if ([cursor isKindOfClass:[UITableViewCell class]]) {
             return (UITableViewCell *)cursor;
+        }
+        cursor = cursor.superview;
+    }
+    return nil;
+}
+
+static UITableView *ApolloFavoriteConfirmTableForCell(UITableViewCell *cell) {
+    UIView *cursor = cell.superview;
+    while (cursor) {
+        if ([cursor isKindOfClass:[UITableView class]]) {
+            return (UITableView *)cursor;
         }
         cursor = cursor.superview;
     }
@@ -53,53 +64,6 @@ static UIViewController *ApolloFavoriteConfirmHostForView(UIView *view) {
     return nil;
 }
 
-static BOOL ApolloFavoriteConfirmStringLooksLikeName(NSString *string) {
-    NSString *trimmed = [string stringByTrimmingCharactersInSet:
-                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (trimmed.length == 0) return NO;
-
-    static NSSet<NSString *> *blocked;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        blocked = [NSSet setWithArray:@[
-            @"Home",
-            @"Popular Posts",
-            @"All Posts",
-            @"Moderator Posts",
-            @"Posts from subscriptions",
-            @"Most popular posts across Reddit",
-            @"Posts across all subreddits",
-            @"Posts from moderated subreddits",
-        ]];
-    });
-    return ![blocked containsObject:trimmed];
-}
-
-static NSString *ApolloFavoriteConfirmNameFromCell(UITableViewCell *cell) {
-    if (!cell) return nil;
-
-    NSString *title = [cell.textLabel.text stringByTrimmingCharactersInSet:
-                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (ApolloFavoriteConfirmStringLooksLikeName(title)) return title;
-
-    UIView *root = cell.contentView ?: cell;
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:root];
-    while (stack.count > 0) {
-        UIView *candidate = stack.lastObject;
-        [stack removeLastObject];
-        if ([candidate isKindOfClass:[UILabel class]]) {
-            UILabel *label = (UILabel *)candidate;
-            NSString *text = [label.text stringByTrimmingCharactersInSet:
-                              [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            if (ApolloFavoriteConfirmStringLooksLikeName(text)) return text;
-        }
-        for (UIView *subview in candidate.subviews) {
-            [stack addObject:subview];
-        }
-    }
-    return title.length > 0 ? title : nil;
-}
-
 static BOOL ApolloFavoriteConfirmIsFavorited(NSString *name) {
     if (name.length == 0) return NO;
     NSArray<NSString *> *favorites =
@@ -111,10 +75,81 @@ static BOOL ApolloFavoriteConfirmIsFavorited(NSString *name) {
     return NO;
 }
 
-#pragma mark - Sheet
+static BOOL ApolloFavoriteConfirmNamesMatch(NSString *a, NSString *b) {
+    if (a.length == 0 && b.length == 0) return YES;
+    if (a.length == 0 || b.length == 0) return NO;
+    return [a caseInsensitiveCompare:b] == NSOrderedSame;
+}
 
-void ApolloFavoriteConfirmPresentForView(UIView *sourceView, dispatch_block_t confirmed) {
-    if (!sourceView || !confirmed) return;
+static void ApolloFavoriteConfirmPerformAfterDismiss(UIViewController *host,
+                                                     NSString *promptedName,
+                                                     NSString *(^nameProvider)(void),
+                                                     dispatch_block_t perform) {
+    NSString *freshName = nameProvider ? nameProvider() : nil;
+    if (!ApolloFavoriteConfirmNamesMatch(promptedName, freshName)) {
+        ApolloLog(@"[FavoriteConfirm] abort stale name prompted=%@ now=%@ presented=%@",
+                  promptedName ?: @"(nil)",
+                  freshName ?: @"(nil)",
+                  NSStringFromClass([host.presentedViewController class]) ?: @"(none)");
+        return;
+    }
+
+    ApolloLog(@"[FavoriteConfirm] perform name=%@ presented=%@",
+              freshName ?: @"(unknown)",
+              NSStringFromClass([host.presentedViewController class]) ?: @"(none)");
+
+    sApolloFavoriteConfirmBypassDepth++;
+    @try {
+        perform();
+    } @finally {
+        sApolloFavoriteConfirmBypassDepth--;
+    }
+}
+
+static void ApolloFavoriteConfirmWaitForDismissal(UIAlertController *sheet,
+                                                  UIViewController *host,
+                                                  NSString *promptedName,
+                                                  NSString *(^nameProvider)(void),
+                                                  dispatch_block_t perform,
+                                                  CFAbsoluteTime deadline) {
+    // An alert action handler may run before UIKit finishes dismissing the
+    // sheet. A missing transition coordinator does not mean dismissal is done,
+    // so also wait until the sheet has left the window and the host no longer
+    // presents it. The short retry covers the gap before UIKit starts the
+    // dismissal transition (and popovers with no coordinator).
+    if (sheet.isBeingDismissed || sheet.view.window || host.presentedViewController == sheet) {
+        if (CFAbsoluteTimeGetCurrent() >= deadline) {
+            ApolloLog(@"[FavoriteConfirm] abort: sheet did not dismiss");
+            return;
+        }
+        id<UIViewControllerTransitionCoordinator> coordinator = sheet.transitionCoordinator;
+        if (coordinator) {
+            [coordinator animateAlongsideTransition:nil
+                                         completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ApolloFavoriteConfirmWaitForDismissal(sheet, host, promptedName,
+                                                          nameProvider, perform, deadline);
+                });
+            }];
+        } else {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC),
+                           dispatch_get_main_queue(), ^{
+                ApolloFavoriteConfirmWaitForDismissal(sheet, host, promptedName,
+                                                      nameProvider, perform, deadline);
+            });
+        }
+        return;
+    }
+
+    ApolloFavoriteConfirmPerformAfterDismiss(host, promptedName, nameProvider, perform);
+}
+
+#pragma mark - Shared flow
+
+void ApolloFavoriteConfirmRun(UIView *sourceView,
+                              NSString *(^nameProvider)(void),
+                              dispatch_block_t perform) {
+    if (!sourceView || !perform) return;
 
     UIViewController *host = ApolloFavoriteConfirmHostForView(sourceView);
     if (!host) {
@@ -123,8 +158,13 @@ void ApolloFavoriteConfirmPresentForView(UIView *sourceView, dispatch_block_t co
         return;
     }
 
-    UITableViewCell *cell = ApolloFavoriteConfirmCellForView(sourceView);
-    NSString *name = ApolloFavoriteConfirmNameFromCell(cell);
+    if (host.presentedViewController) {
+        ApolloLog(@"[FavoriteConfirm] skip — already presenting %@",
+                  NSStringFromClass([host.presentedViewController class]));
+        return;
+    }
+
+    NSString *name = nameProvider ? nameProvider() : nil;
     BOOL isFavorited = ApolloFavoriteConfirmIsFavorited(name);
 
     NSString *title = nil;
@@ -147,14 +187,28 @@ void ApolloFavoriteConfirmPresentForView(UIView *sourceView, dispatch_block_t co
     ApolloLog(@"[FavoriteConfirm] prompt name=%@ favorited=%d",
               name ?: @"(unknown)", isFavorited ? 1 : 0);
 
+    NSString *promptedName = [name copy];
+    NSString *(^providerCopy)(void) = [nameProvider copy];
+    dispatch_block_t performCopy = [perform copy];
+    __weak UIViewController *weakHost = host;
+
     UIAlertController *sheet =
         [UIAlertController alertControllerWithTitle:title
                                             message:nil
                                      preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak UIAlertController *weakSheet = sheet;
     [sheet addAction:[UIAlertAction actionWithTitle:actionTitle
                                               style:actionStyle
                                             handler:^(__unused UIAlertAction *action) {
-        confirmed();
+        // Wait until the sheet has fully dismissed before mutating — running
+        // while UIKit is still tearing the sheet down can glitch presentation
+        // / layout of the list underneath.
+        UIViewController *strongHost = weakHost;
+        UIAlertController *strongSheet = weakSheet;
+        if (!strongHost || !strongSheet) return;
+        ApolloFavoriteConfirmWaitForDismissal(strongSheet, strongHost,
+                                              promptedName, providerCopy, performCopy,
+                                              CFAbsoluteTimeGetCurrent() + 10.0);
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                               style:UIAlertActionStyleCancel
@@ -180,10 +234,17 @@ void ApolloFavoriteConfirmPresentForView(UIView *sourceView, dispatch_block_t co
     }
 
     __weak UIControl *weakControl = control;
-    ApolloFavoriteConfirmPresentForView(control, ^{
+    ApolloFavoriteConfirmRun(control, ^NSString * {
+        UIControl *strongControl = weakControl;
+        if (!strongControl) return nil;
+        UITableViewCell *cell = ApolloFavoriteConfirmCellForView(strongControl);
+        UITableView *tableView = ApolloFavoriteConfirmTableForCell(cell);
+        if (!cell || !tableView) return nil;
+        NSIndexPath *path = [tableView indexPathForCell:cell];
+        return ApolloSubredditListNameAtIndexPath(tableView, path);
+    }, ^{
         UIControl *strongControl = weakControl;
         if (!strongControl) return;
-        ApolloFavoriteConfirmSuppressNextTap();
         [strongControl sendActionsForControlEvents:UIControlEventTouchUpInside];
     });
 }

@@ -1316,8 +1316,9 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
         return;
     }
     __weak typeof(self) weakSelf = self;
-    ApolloFavoriteConfirmPresentForView(self, ^{
-        ApolloFavoriteConfirmSuppressNextTap();
+    ApolloFavoriteConfirmRun(self, ^NSString * {
+        return weakSelf.subredditName;
+    }, ^{
         [weakSelf apollo_performStarTap];
     });
 }
@@ -1766,13 +1767,33 @@ static void ApolloSubredditIndexRefreshFavorites(UITableView *tableView, NSStrin
 }
 
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl) {
-    if (!sSubredditListEnhancements) return;
+    NSTimeInterval delay = 0.30;
+    if (!sSubredditListEnhancements) {
+        if (!sConfirmFavoriteToggle) return;
+        // Apollo can leave the native favorites row visible after a confirmed
+        // tap is re-sent following the sheet's dismissal. Refresh from its
+        // already-mutated model without applying any enhanced star chrome.
+        __weak UITableView *weakTable = tableView;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UITableView *strongTable = weakTable;
+            if (!strongTable || !strongTable.window) return;
+            NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(strongTable);
+            [UIView performWithoutAnimation:^{
+                [strongTable reloadData];
+                [strongTable layoutIfNeeded];
+                ApolloSubredditIndexRestoreScrollAnchor(strongTable, anchor);
+            }];
+            ApolloLog(@"[SubredditIndex] confirmed native favorite refresh subreddit=%@",
+                      subredditName ?: @"(unknown)");
+        });
+        return;
+    }
     __weak UITableView *weakTable = tableView;
     __weak UIControl *weakControl = nativeControl;
     NSString *name = [subredditName copy];
     BOOL tappedFavoritesRow = ApolloSubredditIndexCellIsInFavoritesSection(cell, tableView);
 
-    NSTimeInterval delay = 0.30;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UITableView *strongTable = weakTable;
         if (!strongTable) return;
