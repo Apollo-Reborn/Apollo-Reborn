@@ -851,6 +851,24 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
+// UIKit may report a compressed intrinsic width after a navigation handoff.
+// Measure both full titles independently of the current frame/selected state.
+@interface ApolloArchiveTabs : UISegmentedControl
+@end
+@implementation ApolloArchiveTabs
+- (CGSize)intrinsicContentSize {
+    CGSize size = [super intrinsicContentSize];
+    UIFont *font = [self titleTextAttributesForState:UIControlStateNormal][NSFontAttributeName]
+        ?: [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    CGFloat widest = 0;
+    for (NSUInteger i = 0; i < self.numberOfSegments; i++) {
+        widest = MAX(widest, [[self titleForSegmentAtIndex:i] sizeWithAttributes:@{NSFontAttributeName:font}].width);
+    }
+    size.width = ceil(widest + 24) * self.numberOfSegments;
+    return size;
+}
+@end
+
 @interface ApolloHiddenContentViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic) BOOL loading;
@@ -903,7 +921,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         [controllers addObject:controller];
     }
     self.tabControllers = controllers;
-    self.contentTabs = [[UISegmentedControl alloc] initWithItems:@[@"Posts", @"Comments"]];
+    self.contentTabs = [[ApolloArchiveTabs alloc] initWithItems:@[@"Posts", @"Comments"]];
     self.contentTabs.selectedSegmentIndex = 0;
     // UIKit owns the complete interactive-glass animation timeline.
     self.contentTabs.accessibilityLabel = @"Hidden and deleted content";
@@ -1235,9 +1253,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     // A deleted body can still have a useful live thread and surrounding
     // discussion. Prefer its permalink regardless of archive classification.
     if (item.permalink.length == 0) {
-        ApolloHiddenContentDetailViewController *detail = [ApolloHiddenContentDetailViewController new];
-        detail.item = item;
-        [self.navigationController pushViewController:detail animated:YES];
+        [self apollo_showError:@"The archive did not retain a link to this thread."];
         return;
     }
 
@@ -1254,7 +1270,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     // This list stays on the navigation stack, retaining its results and
     // scroll position when the user comes back from the live destination.
     if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+        [self apollo_showError:@"Apollo couldn't open this thread."];
     }
 
 }
