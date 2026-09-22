@@ -211,6 +211,50 @@ static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
 static NSUInteger sApolloFullScreenNativeMenuBuild;
 static char kApolloFullScreenImageMenuKey;
 
+// UIKit's _UIClickPresentationInteraction uses this generator's preview event
+// when a context-menu hold is recognized. It is a distinct pattern, not a
+// UIImpactFeedbackStyle. Verified in UIKit 26.5 disassembly and 27.1 runtime:
+// the platform metrics and this generator use the same previewedPattern.
+@protocol ApolloMediaMenuFeedback <NSObject>
+- (instancetype)initWithView:(UIView *)view;
+- (void)userInteractionStarted;
+- (void)previewedAtLocation:(CGPoint)location;
+- (void)userInteractionEnded;
+- (void)userInteractionCancelled;
+@end
+
+static char kApolloFullScreenHoldFeedbackKey;
+static void ApolloFullScreenMediaHoldFeedback(UIGestureRecognizer *recognizer) {
+    id<ApolloMediaMenuFeedback> feedback = objc_getAssociatedObject(recognizer, &kApolloFullScreenHoldFeedbackKey);
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        if (feedback || !recognizer.view.window) return;
+        Class generator = NSClassFromString(@"_UIClickPresentationFeedbackGenerator");
+        if ([generator instancesRespondToSelector:@selector(initWithView:)] &&
+            [generator instancesRespondToSelector:@selector(userInteractionStarted)] &&
+            [generator instancesRespondToSelector:@selector(previewedAtLocation:)] &&
+            [generator instancesRespondToSelector:@selector(userInteractionEnded)] &&
+            [generator instancesRespondToSelector:@selector(userInteractionCancelled)]) {
+            feedback = [(id<ApolloMediaMenuFeedback>)[generator alloc] initWithView:recognizer.view];
+        }
+        if (feedback) {
+            // Keep the generator active for the hold, as UIKit does. Releasing
+            // it immediately can cut short asynchronously delivered feedback.
+            objc_setAssociatedObject(recognizer, &kApolloFullScreenHoldFeedbackKey, feedback, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [feedback userInteractionStarted];
+            [feedback previewedAtLocation:[recognizer locationInView:recognizer.view]];
+        } else {
+            // Older/future UIKit versions may not expose the native generator.
+            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy] impactOccurred];
+        }
+    } else if (recognizer.state == UIGestureRecognizerStateEnded ||
+               recognizer.state == UIGestureRecognizerStateCancelled ||
+               recognizer.state == UIGestureRecognizerStateFailed) {
+        if (recognizer.state == UIGestureRecognizerStateEnded) [feedback userInteractionEnded];
+        else [feedback userInteractionCancelled];
+        objc_setAssociatedObject(recognizer, &kApolloFullScreenHoldFeedbackKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
 @interface ApolloFullScreenImageMenu : NSObject
 @property (nonatomic, weak) UIViewController *page;
 @property (nonatomic, weak) UIViewController *viewer;
@@ -399,20 +443,9 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
 
 %hook _TtC6Apollo21MediaViewerController
 - (void)scrollViewLongPressed:(UIGestureRecognizer *)recognizer {
-    // Feed context menus get recognition feedback from UIKit. This legacy
-    // long-press path opens its menu programmatically, so supply that feedback
-    // once, including when GIF/video media uses Apollo's original handler.
-    // Leave real UIContextMenuInteraction gestures to UIKit to avoid two pulses.
-    if (recognizer.state == UIGestureRecognizerStateBegan && recognizer.view.window) {
-        UIImpactFeedbackGenerator *feedback;
-        if (@available(iOS 17.5, *)) {
-            feedback = [UIImpactFeedbackGenerator feedbackGeneratorWithStyle:UIImpactFeedbackStyleHeavy
-                                                                 forView:recognizer.view];
-        } else {
-            feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
-        }
-        [feedback impactOccurred];
-    }
+    // Only the legacy gesture needs explicit feedback. Real context-menu
+    // interactions already play UIKit's native pattern themselves.
+    ApolloFullScreenMediaHoldFeedback(recognizer);
     UIViewController *page = ApolloSaveAllPageForController((UIViewController *)self);
     ApolloFullScreenImageMenu *context = ApolloFullScreenImageContext(page, recognizer.view);
     if (!context) {
