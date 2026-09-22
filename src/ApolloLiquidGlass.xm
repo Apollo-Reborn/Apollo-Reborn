@@ -1210,6 +1210,14 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 }
 
 - (void)updateGlassForHostView:(UIView *)hostView candidateViews:(NSArray<UIView *> *)candidateViews {
+    // Native segmented controls already supply their own capsule material.
+    // Keep shared title placement, but do not put a second glass pill behind it.
+    if (candidateViews.count == 1 && [candidateViews.firstObject isKindOfClass:UISegmentedControl.class]) {
+        [self.glassView removeFromSuperview];
+        self.glassView = nil;
+        self.glassHostView = nil;
+        return;
+    }
     // The capsule exists for title contrast, so it follows the header's
     // material: Hard paints a real band behind the title (a capsule on top
     // double-stacks into a button look — #836), while Soft's subtle clarity
