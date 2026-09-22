@@ -345,7 +345,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     ApolloSaveAllMediaItem *item = self.items[self.nextIndex];
     if (item.isVideo) {
         self.savingVideo = YES;
-        ApolloGallerySaveVideoToPhotos(item.URL, ^(NSString *text) {
+        ApolloGallerySaveVideoToPhotosStrict(item.URL, ^(NSString *text) {
             [self updateProgress:text];
         }, ^(BOOL success, NSString *message) {
             self.savingVideo = NO;

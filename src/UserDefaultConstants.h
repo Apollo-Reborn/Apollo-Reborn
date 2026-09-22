@@ -17,6 +17,14 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
+// days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
+// Folder permission, installation identity and last-run state live separately
+// in Application Support, so exporting/restoring settings cannot transfer them.
+static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled";
+static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
+// Legacy destination value retained for compatibility with older builds.
+static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -287,6 +295,10 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
+// default OFF via registerDefaults. See ApolloLiquidGlass.xm.
+static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill
@@ -639,6 +651,14 @@ static NSString *const ApolloFeedGalleryCarouselChangedNotification = @"ApolloFe
 // is needed (same reasoning as UDKeySwipeUpForComments below). See
 // ApolloFeedGalleryCarousel.xm.
 static NSString *const UDKeyFeedGalleryEdgeSwipeNav = @"FeedGalleryEdgeSwipeNavigation";
+// Gallery View grid: video tiles play, and GIF tiles animate, silently while
+// they are on screen (tap a tile for the fullscreen viewer, which has sound).
+// One switch per kind so either can be left still; both default YES. Low
+// Power Mode pauses both. Either switch posts the notification so an open
+// gallery reacts at once. See ApolloGalleryViewController.m.
+static NSString *const UDKeyGalleryAutoplayVideos = @"GalleryAutoplayVideos";
+static NSString *const UDKeyGalleryAutoplayGIFs = @"GalleryAutoplayGIFs";
+static NSString *const ApolloGalleryAutoplayMediaChangedNotification = @"ApolloGalleryAutoplayMediaChangedNotification";
 // Apollo's forward-swipe (right edge, plus the gallery edge-swipe hand-off)
 // re-opens the screen you last swiped back from, and that memory natively
 // survives unlimited feed scrolling. With this on, scrolling the feed a few
@@ -651,7 +671,7 @@ static NSString *const UDKeyForwardSwipeForgetAfterScrolling = @"ForwardSwipeFor
 // In the fullscreen viewer for post-backed images, galleries, GIFs, and video,
 // an upward vertical flick or comments-button tap opens a media-owned comments
 // pane. The normal downward flick still dismisses when the pane is closed.
-// Default YES. See ApolloSwipeUpComments.xm. No change notification: the flag
+// Default NO (opt-in). See ApolloSwipeUpComments.xm. No change notification: the flag
 // is read live at gesture/tap time, so a toggle applies immediately without
 // any cached state to invalidate (unlike the carousel above).
 static NSString *const UDKeySwipeUpForComments = @"SwipeUpForComments";

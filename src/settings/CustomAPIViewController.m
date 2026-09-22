@@ -46,6 +46,10 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloBackupDocument.h"
+#import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloLocalBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -411,6 +415,10 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
+@end
+
+@interface CustomAPIViewController ()
+@property (nonatomic) BOOL resolvingRestoreFolder;
 @end
 
 @implementation CustomAPIViewController
@@ -901,6 +909,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
     [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
+    [self reloadRowWithID:@"interface.avatarShape"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
     [self reloadRowWithID:@"feat.profileLayout"];
@@ -1203,7 +1212,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *backup =
         [ApolloSettingsRow buttonRowWithID:@"data.backup"
                                      title:@"Backup Settings"
-                                    action:^{ [weakSelf backupSettings]; }];
+                                    action:^{
+            ApolloAutomaticBackupViewController *controller = [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    backup.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -1903,14 +1918,25 @@ typedef NS_ENUM(NSInteger, Tag) {
         return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass();
     };
 
+    // See ApolloLiquidGlass.xm — either/or with drag-to-switch-tab.
+    ApolloSettingsRow *tabBarSwipeNavigation =
+        [ApolloSettingsRow switchRowWithID:@"gen.tabBarSwipeNavigation"
+                                     title:@"Swipe Tab Bar to Navigate"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation]; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
+    tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
+
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
         ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
+    if (IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
-                                                      iPadTabBarBottom ]];
+                                                      iPadTabBarBottom, tabBarSwipeNavigation ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -1921,6 +1947,18 @@ typedef NS_ENUM(NSInteger, Tag) {
                                      title:@"Show User Profile Pictures"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf userAvatarsSwitchToggled:sender]; }];
+
+    ApolloSettingsRow *avatarShape =
+        [ApolloSettingsRow valueRowWithID:@"interface.avatarShape"
+                                    title:@"Profile Picture Shape"
+                                   detail:^NSString * { return [weakSelf profilePictureShapeText]; }
+                                 onSelect:^{
+            [weakSelf presentProfilePictureShapePickerFromSourceView:
+                [weakSelf cellForRowID:@"interface.avatarShape"]];
+        }];
+    avatarShape.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
@@ -1989,7 +2027,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2228,9 +2266,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       isOn:^BOOL { return sSwipeUpForComments; }
                                   onToggle:^(UISwitch *sender) { [weakSelf swipeUpCommentsSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *galleryAutoplayVideos =
+        [ApolloSettingsRow switchRowWithID:@"media.galleryAutoplayVideos"
+                                     title:@"Play Videos in Gallery View"
+                                      isOn:^BOOL { return sGalleryAutoplayVideos; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayVideosSwitchToggled:sender]; }];
+
+    ApolloSettingsRow *galleryAutoplayGIFs =
+        [ApolloSettingsRow switchRowWithID:@"media.galleryAutoplayGIFs"
+                                     title:@"Play GIFs in Gallery View"
+                                      isOn:^BOOL { return sGalleryAutoplayGIFs; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf galleryAutoplayGIFsSwitchToggled:sender]; }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Browsing"
-                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media."
-                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments ]];
+                                            footer:@"Swipe Through Feed Galleries: page through a gallery post's images without leaving the feed.\n\nSwipe Past Gallery to Navigate: keep swiping at the first or last image to go back or forward a page instead of bouncing. Off by default.\n\nSwipe Up for Comments: in the fullscreen media viewer, swipe up or tap the comments button to open comments over the media. Off by default.\n\nPlay Videos / GIFs in Gallery View: video and GIF tiles play silently while they're on screen; tap one for the full-size viewer with sound. Paused in Low Power Mode."
+                                              rows:@[ feedGalleries, edgeSwipeNav, swipeComments, galleryAutoplayVideos, galleryAutoplayGIFs ]];
 }
 
 // NSFW Media. Lives here rather than in Apollo's native Filters & Blocks screen:
@@ -2434,6 +2484,34 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
     }
     return [parts componentsJoinedByString:@" · "];
+}
+
+- (NSString *)profilePictureShapeText {
+    switch (sProfileAvatarStyle) {
+        case 1:  return @"Circle";
+        case 2:  return @"Square";
+        default: return @"Full";
+    }
+}
+
+- (void)presentProfilePictureShapePickerFromSourceView:(UIView *)sourceView {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, sourceView, @"Profile Picture Shape",
+                                @[@"Full", @"Circle", @"Square"],
+                                sProfileAvatarStyle, ^(NSInteger pickedIndex) {
+        if (pickedIndex < 0 || pickedIndex > 2) return;
+        sProfileAvatarStyle = pickedIndex;
+        [[NSUserDefaults standardUserDefaults] setInteger:pickedIndex
+                                                   forKey:UDKeyProfileAvatarStyle];
+        [weakSelf reloadRowWithID:@"interface.avatarShape"];
+        [weakSelf reloadRowWithID:@"feat.profileLayout"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
+                          object:@"ApolloProfileAvatarStyleChanged"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloProfileTabAvatarIconChangedNotification"
+                          object:nil];
+    });
 }
 
 // Subreddits group screen (ApolloSubredditsSettingsViewController), two
@@ -3345,7 +3423,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 // not position) so a buildForm reorder can never misfile a footer.
 - (NSAttributedString *)footerAttributedTextForSection:(NSInteger)section {
     NSString *sectionTitle = [self tableView:self.tableView titleForHeaderInSection:section];
-    NSDictionary *plainAttrs = @{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [UIColor secondaryLabelColor]};
+    NSDictionary *plainAttrs = @{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [UIColor secondaryLabelColor]};
     NSMutableAttributedString *text;
 
     if ([sectionTitle isEqualToString:@"Setup"]) {
@@ -3360,14 +3438,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Data"]) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup .zip contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
+            initWithString:@"Restore also signs you back into the accounts saved in the backup. The backup file contains your login credentials — anyone with the file can sign in as you, so keep it private. It also includes an accounts.txt listing the saved usernames."
             attributes:plainAttrs];
     } else if ([sectionTitle isEqualToString:@"Default API Keys"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. Image Chest is optional and improves album metadata when a personal token is configured. You may be able to use credentials from another 3rd-party app ("
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"more info"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"). The Reddit API Key/Secret/Redirect URI above are the default, used by any signed-in account that doesn't have its own key — set a different key per account from the account switcher."
             attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Sources"]) {
@@ -3375,11 +3453,11 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             initWithString:@"Configure custom subreddit sources by providing a URL to a plaintext file with line-separated subreddit names (without /r/). "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"Example file"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://jeffreyca.github.io/subreddits/popular.txt"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://jeffreyca.github.io/subreddits/popular.txt"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" ("
             attributes:plainAttrs]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"GitHub repo"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/JeffreyCA/subreddits"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/JeffreyCA/subreddits"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@")"
             attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Uploads"]) {
@@ -3395,7 +3473,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             initWithString:@"For users running their own "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"forked apollo-backend"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/nickclyde/apollo-backend"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/nickclyde/apollo-backend"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" instance. APNs delivery requires a paid Apple Developer account on the signing side. Leave empty to disable."
             attributes:plainAttrs]];
         NSString *barkLead = ApolloPushNotificationsSupported()
@@ -3407,14 +3485,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         barkTail = [barkTail stringByAppendingString:@" Notifications show your selected app icon automatically; to also hear Apollo's notification sounds, import the matching .caf from the project's assets/bark-sounds via the Bark app's Service tab → Alert Sound → view all sounds → Upload Sound."];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkLead attributes:plainAttrs]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"Bark app"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSLinkAttributeName: [NSURL URLWithString:@"https://apps.apple.com/us/app/bark-custom-notifications/id1403753865"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSLinkAttributeName: [NSURL URLWithString:@"https://apps.apple.com/us/app/bark-custom-notifications/id1403753865"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkTail attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Privacy"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"privacy policy"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"."
             attributes:plainAttrs]];
     } else {
@@ -4184,6 +4262,22 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloIPadTabBarBottomChangedNotification object:nil];
 }
 
+// Takes effect on next relaunch — see ApolloLiquidGlass.xm.
+- (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
+    sTabBarSwipeNavigation = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sTabBarSwipeNavigation forKey:UDKeyTabBarSwipeNavigation];
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Restart Required"
+                         message:@"Quit and reopen Apollo for this change to take effect."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Quit & Reopen"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {
     sProxyImgurDDG = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sProxyImgurDDG forKey:UDKeyProxyImgurDDG];
@@ -4206,6 +4300,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloFeedGalleryCarouselChangedNotification object:nil];
     // The edge-swipe navigation row is only shown while the carousel is on.
     [self visibilityDidChange];
+}
+
+- (void)galleryAutoplayVideosSwitchToggled:(UISwitch *)sender {
+    sGalleryAutoplayVideos = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayVideos forKey:UDKeyGalleryAutoplayVideos];
+    // A gallery already sitting in the nav stack stops or starts its tiles
+    // right away rather than on its next open.
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloGalleryAutoplayMediaChangedNotification object:nil];
+}
+
+- (void)galleryAutoplayGIFsSwitchToggled:(UISwitch *)sender {
+    sGalleryAutoplayGIFs = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sGalleryAutoplayGIFs forKey:UDKeyGalleryAutoplayGIFs];
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloGalleryAutoplayMediaChangedNotification object:nil];
 }
 
 - (void)feedGalleryEdgeSwipeNavSwitchToggled:(UISwitch *)sender {
@@ -4395,11 +4503,43 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)restoreSettings {
+    if (self.resolvingRestoreFolder || self.presentedViewController) return;
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
+        message:@"Choose where the backup is stored."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloLocalBackupsViewController *controller =
+                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentRestorePickerAtDirectory:nil];
+            });
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *source = [self cellForRowID:@"data.restore"];
+    sheet.popoverPresentationController.sourceView = source ?: self.view;
+    sheet.popoverPresentationController.sourceRect = source ? source.bounds
+        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
-    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
+    // The custom extension carries the Files icon; old ZIP backups remain importable.
+    // Resolve by extension too, so a tweak-only installation without the IPA's
+    // exported declaration can still select a dynamically identified backup.
+    UTType *backupType = [UTType typeWithFilenameExtension:@"apollobackup"];
+    NSArray<UTType *> *types = backupType ? @[backupType, UTTypeZIP] : @[UTTypeZIP];
+    UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;
+    documentPicker.directoryURL = folderURL;
     [self presentViewController:documentPicker animated:YES completion:nil];
 }
 
@@ -4422,42 +4562,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)confirmRestoreWithURL:(NSURL *)zipURL {
-    UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"Confirm Restore"
-        message:@"This will replace all existing settings and logged-in accounts with the backup. This cannot be undone."
-        preferredStyle:UIAlertControllerStyleAlert];
-
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil];
-    UIAlertAction *restoreAction = [UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
-        [self restoreFromZipURL:zipURL];
-    }];
-
-    [confirmAlert addAction:cancelAction];
-    [confirmAlert addAction:restoreAction];
-    [self presentViewController:confirmAlert animated:YES completion:nil];
-}
-
-- (void)restoreFromZipURL:(NSURL *)zipURL {
-    NSString *errorTitle = nil;
-    NSString *errorMessage = nil;
-    if (!ApolloBackupRestoreRestoreFromZipURL(zipURL, &errorTitle, &errorMessage)) {
-        [self showAlertWithTitle:(errorTitle ?: @"Restore Failed") message:(errorMessage ?: @"Could not restore backup.")];
-        return;
-    }
-
-    [self showRestoreCompleteAlert];
-}
-
-- (void)showRestoreCompleteAlert {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Restore Complete"
-        message:@"Settings successfully restored. Apollo needs to restart to apply changes."
-        preferredStyle:UIAlertControllerStyleAlert];
-
-    UIAlertAction *quitAction = [UIAlertAction actionWithTitle:@"Close App" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }];
-
-    [alert addAction:quitAction];
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloBackupPresentRestoreConfirmation(self, zipURL, nil);
 }
 
 #pragma mark - Thanks To VC

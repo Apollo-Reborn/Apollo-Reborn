@@ -33,6 +33,9 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sAutomaticBackupsEnabled;
+extern NSInteger sAutomaticBackupIntervalDays;
+extern NSInteger sAutomaticBackupDestination; // 0 = local, 1 = selected Files folder
 extern BOOL sShowDeletedComments;
 extern BOOL sTapToRevealDeletedComments;
 extern BOOL sPassiveDeletedComments;
@@ -43,6 +46,10 @@ extern BOOL sFeedGalleryCarousel;
 // Default-on: at the carousel's first/last image, swiping past the edge hands
 // the drag to Apollo's swipe-back/forward navigation instead of rubber-banding.
 extern BOOL sFeedGalleryEdgeSwipeNav;
+// Default-on: Gallery View's grid plays video tiles / animates GIF tiles
+// silently while they are on screen (ApolloGalleryViewController.m).
+extern BOOL sGalleryAutoplayVideos;
+extern BOOL sGalleryAutoplayGIFs;
 // Default-on: scrolling the feed a few posts past where you swiped back drops
 // Apollo's forward-swipe memory (ApolloForwardSwipeExpiry.xm).
 extern BOOL sForwardSwipeForgetAfterScrolling;
@@ -194,6 +201,9 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
 // bottom (classic) instead of the top-center pill. Opt-in; default OFF via
 // registerDefaults. Temporary stopgap for issue #387. See ApolloIPadTabBarBottom.xm.
 extern BOOL sIPadTabBarBottom;
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
+extern BOOL sTabBarSwipeNavigation;
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.

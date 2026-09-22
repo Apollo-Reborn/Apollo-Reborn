@@ -263,6 +263,7 @@ cyan -i "$IPA_PATH" -f "$DEB_PATH" -o "$STANDARD_IPA" -c 0
 # below and inherit all of it; the no-extensions variants have no appex and
 # omit the extension/widget modules.
 apply_patches_in_place "$STANDARD_IPA" \
+    --module backup-document \
     --module enable-promotion \
     --module strip-substrate-arm64e \
     --module fix-safari-extension \
@@ -279,6 +280,7 @@ echo "[2/${TOTAL_STEPS}] Building no-extensions injected IPA..."
 # and injects the default URL schemes in one unpack/repack.
 cyan -i "$IPA_PATH" -f "$DEB_PATH" -o "$NOEXT_IPA" -e -c 0
 apply_patches_in_place "$NOEXT_IPA" \
+    --module backup-document \
     --module enable-promotion \
     --module strip-substrate-arm64e \
     --module "$VERSIONS_MODULE" \

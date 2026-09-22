@@ -900,6 +900,9 @@ static CGFloat const kApolloGalleryThumbnailTargetWidth = 640.0;
         ApolloGalleryItem *item = [[ApolloGalleryItem alloc] init];
         item.imageURL = full;
         item.kind = animated ? ApolloGalleryMediaKindGIF : ApolloGalleryMediaKindPhoto;
+        // Reddit transcodes every animated gallery entry to an mp4 alongside
+        // the .gif; the grid tile plays that instead of decoding the GIF.
+        if (animated) item.gifMP4URL = ApolloGalleryURL(source[@"mp4"]);
         item.pixelSize = CGSizeMake(ApolloGalleryNumber(source[@"x"]), ApolloGalleryNumber(source[@"y"]));
         // `p` holds the still previews; use one even for animated entries so the
         // grid doesn't pull a multi-megabyte GIF per tile.
@@ -1053,7 +1056,9 @@ static NSURL *ApolloGalleryDirectVideoURL(NSURL *url) {
 - (ApolloGalleryItem *)singleImageItemFromPost:(NSDictionary *)post {
     NSDictionary *previewImage = ApolloGalleryDict(ApolloGalleryArray(ApolloGalleryDict(post[@"preview"])[@"images"]).firstObject);
     NSDictionary *previewSource = ApolloGalleryDict(previewImage[@"source"]);
-    NSDictionary *gifVariantSource = ApolloGalleryDict(ApolloGalleryDict(ApolloGalleryDict(previewImage[@"variants"])[@"gif"])[@"source"]);
+    NSDictionary *variants = ApolloGalleryDict(previewImage[@"variants"]);
+    NSDictionary *gifVariantSource = ApolloGalleryDict(ApolloGalleryDict(variants[@"gif"])[@"source"]);
+    NSDictionary *mp4Variant = ApolloGalleryDict(variants[@"mp4"]);
 
     NSURL *direct = ApolloGalleryURL(post[@"url_overridden_by_dest"]) ?: ApolloGalleryURL(post[@"url"]);
     NSString *hint = ApolloGalleryString(post[@"post_hint"]);
@@ -1078,6 +1083,14 @@ static NSURL *ApolloGalleryDirectVideoURL(NSURL *url) {
     ApolloGalleryItem *item = [[ApolloGalleryItem alloc] init];
     item.imageURL = full;
     item.kind = animated ? ApolloGalleryMediaKindGIF : ApolloGalleryMediaKindPhoto;
+    if (animated && mp4Variant) {
+        // Reddit's mp4 rendition of the GIF, for the grid tile. `resolutions`
+        // mirrors the still previews (108…1080px wide), so the tile gets a
+        // stream near its own size rather than the full-size source.
+        item.gifMP4URL = ApolloGalleryBestThumbnail(ApolloGalleryArray(mp4Variant[@"resolutions"]), @"url",
+                                                    kApolloGalleryThumbnailTargetWidth)
+                         ?: ApolloGalleryURL(ApolloGalleryDict(mp4Variant[@"source"])[@"url"]);
+    }
     if (previewSource) {
         item.pixelSize = CGSizeMake(ApolloGalleryNumber(previewSource[@"width"]),
                                     ApolloGalleryNumber(previewSource[@"height"]));

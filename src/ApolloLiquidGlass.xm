@@ -346,15 +346,46 @@ static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureReco
     }
 }
 
-// Cancel Liquid Lens gesture recognizer to prevent it interfering with our long-press gesture
-static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
+static UIGestureRecognizer *ApolloFindLiquidLensGesture(UITabBar *tabBar) {
     for (UIGestureRecognizer *gesture in tabBar.gestureRecognizers) {
         if ([gesture isKindOfClass:NSClassFromString(@"_UIContinuousSelectionGestureRecognizer")]) {
-            gesture.enabled = NO;
-            gesture.enabled = YES;
-            return;
+            return gesture;
         }
     }
+    return nil;
+}
+
+// Cancel Liquid Lens gesture recognizer to prevent it interfering with our long-press gesture
+static void ApolloCancelLiquidLensGesture(UITabBar *tabBar) {
+    UIGestureRecognizer *liquidLens = ApolloFindLiquidLensGesture(tabBar);
+    if (!liquidLens) return;
+    liquidLens.enabled = NO;
+    liquidLens.enabled = YES;
+}
+
+// Opt-in (sTabBarSwipeNavigation): Apollo's tab-bar swipe-to-navigate and
+// Liquid Glass's native "Liquid Lens" drag-to-switch-tab both arm on the same
+// touch-down + horizontal drag, and Liquid Lens wins by default, silencing
+// Apollo's gesture. Requiring Liquid Lens to fail against Apollo's pan first
+// flips that priority. No public API undoes a `requireGestureRecognizerToFail:`
+// and wiring only happens once per launch, so the setting needs a relaunch.
+static char kApolloTabBarSwipePriorityWiredKey;
+
+static void ApolloPrioritizeSwipeNavigationOverLiquidLens(UITabBarController *tabBarController) {
+    if (!IsLiquidGlass() || !sTabBarSwipeNavigation || !tabBarController) return;
+
+    UITabBar *tabBar = tabBarController.tabBar;
+    if (!tabBar || objc_getAssociatedObject(tabBar, &kApolloTabBarSwipePriorityWiredKey)) return;
+
+    UIGestureRecognizer *liquidLens = ApolloFindLiquidLensGesture(tabBar);
+    if (!liquidLens) return; // not laid out yet; retry on the next viewWillAppear:
+
+    id panGesture = ApolloObjectIvar(tabBarController, "tabBarPanGestureRecognizer");
+    if (![panGesture isKindOfClass:[UIPanGestureRecognizer class]]) return;
+
+    [liquidLens requireGestureRecognizerToFail:panGesture];
+    objc_setAssociatedObject(tabBar, &kApolloTabBarSwipePriorityWiredKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[LiquidGlassTabBar] Wired Liquid Lens to require Apollo's swipe-nav pan to fail first (opt-in)");
 }
 
 @interface _UITabButton : UIView
@@ -455,11 +486,13 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 - (void)viewDidLoad {
     %orig;
     ApolloApplyAdaptiveTabBarAppearance(self.tabBar, @"tabBarController viewDidLoad");
+    ApolloPrioritizeSwipeNavigationOverLiquidLens(self);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
     ApolloApplyAdaptiveTabBarAppearance(self.tabBar, @"tabBarController viewWillAppear:");
+    ApolloPrioritizeSwipeNavigationOverLiquidLens(self);
 }
 
 %end
