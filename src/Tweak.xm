@@ -3745,6 +3745,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                     UDKeyUnmuteFeedVideos: @0,
                                     UDKeyFeedVideosUnmutedMemory: @NO,
                                     UDKeyFeedVideoScrubber: @NO,
+                                    UDKeyFeedVideoScrollSmoothing: @YES,
                                     UDKeyVideoHoldSpeedEnabled: @YES,
                                     UDKeyVideoHoldSpeed: @2.0,
                                     UDKeyProxyImgurDDG: @NO,
@@ -3902,6 +3903,7 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
     sUnmuteCommentsVideos = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyUnmuteCommentsVideos];
     sUnmuteFeedVideos = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyUnmuteFeedVideos];
     sFeedVideoScrubber = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedVideoScrubber];
+    sFeedVideoScrollSmoothing = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFeedVideoScrollSmoothing];
     sVideoHoldSpeedEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyVideoHoldSpeedEnabled];
     sVideoHoldSpeed = ApolloSanitizedHoldSpeed([[NSUserDefaults standardUserDefaults] floatForKey:UDKeyVideoHoldSpeed]);
     sProxyImgurDDG = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProxyImgurDDG];
