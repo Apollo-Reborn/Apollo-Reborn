@@ -406,10 +406,10 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
     if (recognizer.state == UIGestureRecognizerStateBegan && recognizer.view.window) {
         UIImpactFeedbackGenerator *feedback;
         if (@available(iOS 17.5, *)) {
-            feedback = [UIImpactFeedbackGenerator feedbackGeneratorWithStyle:UIImpactFeedbackStyleMedium
+            feedback = [UIImpactFeedbackGenerator feedbackGeneratorWithStyle:UIImpactFeedbackStyleHeavy
                                                                  forView:recognizer.view];
         } else {
-            feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+            feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
         }
         [feedback impactOccurred];
     }
