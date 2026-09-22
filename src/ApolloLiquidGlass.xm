@@ -1084,7 +1084,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
             // Stacked title lines use the widest intrinsic line, not their sum.
             CGFloat width = ((UILabel *)view).intrinsicContentSize.width;
             if (isfinite(width) && width > 0) textWidth = MAX(textWidth, width);
-        } else if ([view isKindOfClass:UITextField.class]) {
+        } else if ([view isKindOfClass:UITextField.class] || [view isKindOfClass:UISegmentedControl.class]) {
+            // Composite titles publish one intrinsic size; do not measure the
+            // transient selector labels or images individually.
             CGFloat width = view.intrinsicContentSize.width;
             if (isfinite(width) && width > 0) textWidth = MAX(textWidth, width);
         } else if ([view isKindOfClass:UIImageView.class]) {
@@ -1145,12 +1147,6 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 }
 
 - (CGRect)glassFrameForHostView:(UIView *)hostView candidateViews:(NSArray<UIView *> *)candidateViews {
-    // Segmented titles already include their own padding. Use their stable
-    // bounds while sharing every title-glass visibility and lifecycle rule.
-    if (candidateViews.count == 1 && [candidateViews.firstObject isKindOfClass:UISegmentedControl.class]) {
-        UIView *control = candidateViews.firstObject;
-        return [control convertRect:control.bounds toView:hostView];
-    }
     const CGFloat kVerticalPadding = 8.0;
     CGRect frame;
 
