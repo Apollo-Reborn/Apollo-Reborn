@@ -176,16 +176,79 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)indexPath {
     NSString *identifier = [self rowAtIndexPath:indexPath].rowID;
     if (!identifier || (style == UITableViewCellEditingStyleInsert && self.included.count >= ApolloSettingsShortcutLimit)) return;
+    // Capture stable row identities before rebuilding the declarative form.
+    // This matches the subreddit editor's removal spring without animating a
+    // native swipe container or changing the row's left edge.
+    NSMutableDictionary *frames = [NSMutableDictionary dictionary];
+    for (NSIndexPath *visible in tableView.indexPathsForVisibleRows) {
+        NSString *rowID = [self rowAtIndexPath:visible].rowID;
+        if (rowID) frames[rowID] = [NSValue valueWithCGRect:[tableView rectForRowAtIndexPath:visible]];
+    }
+    UIView *departing = style == UITableViewCellEditingStyleDelete
+        ? [[tableView cellForRowAtIndexPath:indexPath] snapshotViewAfterScreenUpdates:NO] : nil;
+    CGRect departingFrame = [tableView rectForRowAtIndexPath:indexPath];
+    NSMutableArray *sectionViews = [NSMutableArray array];
+    for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
+        for (UIView *view in @[[tableView headerViewForSection:section] ?: [NSNull null],
+                              [tableView footerViewForSection:section] ?: [NSNull null]]) {
+            if ([view isKindOfClass:UIView.class]) [sectionViews addObject:@[view, [NSValue valueWithCGRect:view.frame]]];
+        }
+    }
+    CGPoint offset = tableView.contentOffset;
     if (style == UITableViewCellEditingStyleDelete) [self.included removeObject:identifier];
     else if (style == UITableViewCellEditingStyleInsert && ![self.included containsObject:identifier]) [self.included addObject:identifier];
     [self save];
-    // Let UIKit finish the delete confirmation / reorder transaction before
-    // replacing its snapshot. Keep the editor active for the next change.
+    // Finish UIKit's edit-control action before replacing its snapshot.
+    tableView.userInteractionEnabled = NO;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self rebuildForm];
-        [self.tableView setEditing:self.editing animated:NO];
+        [UIView performWithoutAnimation:^{
+            [self rebuildForm];
+            [tableView setEditing:self.editing animated:NO];
+            [tableView layoutIfNeeded];
+        }];
+        CGFloat offsetDelta = tableView.contentOffset.y - offset.y;
+        CGRect adjustedFrame = departingFrame;
+        adjustedFrame.origin.y += offsetDelta;
+        departing.frame = adjustedFrame;
+        if (departing) [tableView addSubview:departing];
+        NSMutableArray<UIView *> *animatedViews = [NSMutableArray array];
+        for (NSIndexPath *visible in tableView.indexPathsForVisibleRows) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:visible];
+            NSString *rowID = [self rowAtIndexPath:visible].rowID;
+            NSValue *old = frames[rowID];
+            if (old && ![rowID isEqualToString:identifier]) {
+                cell.transform = CGAffineTransformMakeTranslation(0,
+                    CGRectGetMidY(old.CGRectValue) - CGRectGetMidY(cell.frame) + offsetDelta);
+            } else {
+                cell.alpha = 0;
+                cell.transform = CGAffineTransformMakeScale(0.88, 0.88);
+            }
+            [animatedViews addObject:cell];
+        }
+        // Headers and footers move with the rows instead of jumping ahead.
+        for (NSArray *entry in sectionViews) {
+            UIView *view = entry[0];
+            if (!view.superview) continue;
+            view.transform = CGAffineTransformMakeTranslation(0,
+                CGRectGetMidY([entry[1] CGRectValue]) - CGRectGetMidY(view.frame) + offsetDelta);
+            [animatedViews addObject:view];
+        }
+        [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.34 delay:0
+            usingSpringWithDamping:0.88 initialSpringVelocity:0
+            options:UIViewAnimationOptionBeginFromCurrentState animations:^{
+                for (UIView *view in animatedViews) {
+                    view.transform = CGAffineTransformIdentity;
+                    view.alpha = 1;
+                }
+                departing.alpha = 0;
+                departing.transform = CGAffineTransformMakeScale(0.88, 0.88);
+            } completion:^(__unused BOOL finished) {
+                [departing removeFromSuperview];
+                tableView.userInteractionEnabled = YES;
+            }];
     });
 }
+
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
     return [self.included containsObject:[self rowAtIndexPath:indexPath].rowID];
 }
