@@ -45,6 +45,9 @@ UIColor *ApolloThemeAccentColor(void);
 // own last-resort (typically secondarySystemGroupedBackgroundColor).
 UIColor *ApolloThemeCardBackgroundColor(void);
 
+// Current subreddit row surface, including both Pure Black modes.
+UIColor *ApolloThemeSubredditListBackgroundColor(void);
+
 // The EFFECTIVE page background for tweak-drawn UI: the custom theme's page
 // color when one is active, else the stock theme's (Pure Black Dark Mode
 // aware). nil only if neither can be determined — callers supply their own

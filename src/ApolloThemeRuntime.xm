@@ -1558,6 +1558,25 @@ UIColor *ApolloThemePageBackgroundColor(void) {
     return custom ?: ApolloThemeStockPageBackgroundColor();
 }
 
+UIColor *ApolloThemeSubredditListBackgroundColor(void) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryBackground);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    UIColor *surface = ApolloThemeCardBackgroundColor();
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        uint32_t black = 0;
+        BOOL pure = traits.userInterfaceStyle == UIUserInterfaceStyleDark &&
+            !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        if (!pure) return [surface resolvedColorWithTraitCollection:traits];
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(black);
+        sBypassHook--;
+        return color;
+    }];
+}
+
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).

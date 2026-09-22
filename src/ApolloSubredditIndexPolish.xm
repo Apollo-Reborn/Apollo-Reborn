@@ -2313,7 +2313,9 @@ static void ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(UIView *header,
         header.backgroundColor = [UIColor clearColor];
         return;
     }
-    UIColor *surfaceColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
+    // Use a dynamic theme color; cached row colors can belong to the previous appearance.
+    UIColor *surfaceColor = ApolloThemeSubredditListBackgroundColor()
+        ?: ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
     header.backgroundColor = ApolloSubredditIndexColorIsVisible(surfaceColor) ? surfaceColor : tableView.backgroundColor;
 }
 
@@ -2707,6 +2709,17 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
     ApolloSubredditIndexRaiseNativeIndexAboveHeaders((UITableView *)self);
+    UITableView *table = (UITableView *)self;
+    if (sSubredditListEnhancements && sModernSubredditDividers &&
+        [sApolloSubredditKnownTables containsObject:table]) {
+        for (NSInteger section = 0; section < table.numberOfSections; section++) {
+            UIView *header = [table headerViewForSection:section];
+            if (header && objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey)) {
+                ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(header, table,
+                    ApolloSubredditIndexHeaderIsPinned(header, table));
+            }
+        }
+    }
 }
 
 - (void)reloadData {
