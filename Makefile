@@ -186,6 +186,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloBoldPostTitles.xm \
     $(SRC_DIR)/ApolloNativeActionMenus.xm \
     $(SRC_DIR)/ApolloContextMenuPreviewTheme.xm \
+    $(SRC_DIR)/ApolloPostPreviewWindowGuard.xm \
     $(SRC_DIR)/ApolloActionMenu.xm \
     $(SRC_DIR)/ApolloHostedVideo.m \
     $(SRC_DIR)/ApolloSportsClipResolver.m \
