@@ -15,6 +15,7 @@
 //      the real Messages row as a legacy fallback.
 //   4. In that fallback, filter the IGListKit objects to chat-subject messages.
 
+#import "ApolloAccountCredentials.h"
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
@@ -2832,6 +2833,16 @@ static id ApolloInboxSectionControllerForCellNode(id node) {
 // observes to swap its own model. The broadcast alone updates the counts but
 // leaves the tapped row's cell painted unread — its cell is rebuilt through
 // Apollo's own cell builder by reloading the row.
+//
+// The read mark must reach Reddit through the SIGNED-IN account's client.
+// RDKClient.sharedClient is Apollo's application-only bootstrap client (see
+// ApolloAccountCredentials.h): its /api/read_message POST carries no user, so
+// Reddit answered it with nothing done while the local copy above still
+// flipped — the row and the Inbox badge cleared on the way back, and the next
+// refresh painted the mirror unread again. Same trap the subreddit Join
+// button hit with /api/subscribe (ApolloSubredditHeaders.xm). Main thread
+// only: ApolloActiveAccountClient() walks AccountManager's live array, and
+// the room-directory completion that calls this already runs on main.
 static void ApolloInboxMarkMessageRead(id message, id cellNode, id tableNode, NSIndexPath *indexPath) {
     if (![message respondsToSelector:@selector(isUnread)] ||
         !((BOOL (*)(id, SEL))objc_msgSend)(message, @selector(isUnread))) return;
@@ -2839,11 +2850,27 @@ static void ApolloInboxMarkMessageRead(id message, id cellNode, id tableNode, NS
     id updated = [message copy];
     if (![updated respondsToSelector:@selector(setUnread:)]) return;
     ((void (*)(id, SEL, BOOL))objc_msgSend)(updated, @selector(setUnread:), NO);
-    Class clientClass = objc_getClass("RDKClient");
-    id client = clientClass && [clientClass respondsToSelector:@selector(sharedClient)]
-        ? ((id (*)(id, SEL))objc_msgSend)(clientClass, @selector(sharedClient)) : nil;
+    NSString *fullName = ApolloInboxStringProp(message, @selector(fullName));
+    id client = ApolloActiveAccountClient();
     if ([client respondsToSelector:@selector(markMessageAsRead:completion:)]) {
-        ((id (*)(id, SEL, id, id))objc_msgSend)(client, @selector(markMessageAsRead:completion:), updated, nil);
+        // RDKClient mutation completions are `^(NSError *error)` (forwarded to
+        // basicPostTaskWithPath:'s wrappers — verified for subscribe in
+        // ApolloSubredditHeaders.xm; read_message takes the same path).
+        void (^completion)(NSError *) = ^(NSError *error) {
+            if (error) {
+                ApolloLog(@"[ChatsFilter] chat mirror %@ read mark failed on Reddit: %@",
+                          fullName ?: @"(no fullname)", error.localizedDescription ?: error);
+            } else {
+                ApolloLog(@"[ChatsFilter] chat mirror %@ marked read on Reddit", fullName ?: @"(no fullname)");
+            }
+        };
+        ((id (*)(id, SEL, id, id))objc_msgSend)(client, @selector(markMessageAsRead:completion:), updated, completion);
+    } else {
+        // No signed-in account client (signed out mid-tap, or off-main): keep
+        // the local flip — the user did read it — but say why Reddit was not
+        // told, so a mirror that comes back unread on refresh is explainable.
+        ApolloLog(@"[ChatsFilter] chat mirror %@ read locally only; no active account client to tell Reddit",
+                  fullName ?: @"(no fullname)");
     }
     id sectionController = ApolloInboxSectionControllerForCellNode(cellNode);
     BOOL swapped = ApolloInboxSwapObjectIvar(sectionController, "message", updated);
