@@ -3994,10 +3994,37 @@ static void ApolloLPTriggerPlaceholderContextRelayout(ASDisplayNode *node, NSStr
 // because the LinkButtonNode is still detached (supernode == nil) while the
 // cell is measured off-tree, so no owning cell can be found at refresh time.
 // Instead of trusting the triggers, verify geometry after the fact: if the
-// card's rendered content sticks out the bottom of its row's cell view,
-// reload that row. Pure geometry — healthy rows are never reloaded.
+// card overflows the cell or overlaps its footer, reload that row.
+static CGFloat ApolloLPFeedFooterOverlap(ASDisplayNode *node, UIView *cellView, CGRect cardFrame) {
+    ASDisplayNode *cellNode = ApolloLPFindOwningCellNode(node);
+    Class largePostClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
+    if (!largePostClass || ![cellNode isKindOfClass:largePostClass]) return 0;
+
+    CGFloat overlap = 0;
+    // These are ObjC node ivars; compact posts use a different layout.
+    const char *footerIvars[] = { "postInfoNode", "optionButtonsNode" };
+    for (const char *ivarName : footerIvars) {
+        ASDisplayNode *footer = ApolloLPModelFromNodeIvar(cellNode, ivarName);
+        if (![footer respondsToSelector:@selector(isNodeLoaded)] || !footer.isNodeLoaded || footer.hidden) continue;
+        UIView *footerView = ApolloLPViewForNode(footer);
+        if (!footerView || footerView.hidden || footerView.alpha <= 0 ||
+            ![footerView isDescendantOfView:cellView] || CGRectIsEmpty(footerView.bounds)) continue;
+        CGRect footerFrame = [footerView convertRect:footerView.bounds toView:cellView];
+        // Metadata may be positioned above the card.
+        if (CGRectGetMinY(footerFrame) <= CGRectGetMinY(cardFrame)) continue;
+        CGRect intersection = CGRectIntersection(cardFrame, footerFrame);
+        if (!CGRectIsNull(intersection) && !CGRectIsEmpty(intersection)) {
+            overlap = MAX(overlap, CGRectGetHeight(intersection));
+        }
+    }
+    return overlap;
+}
+
+static char kApolloLPOverflowReloadRequestedKey;
 static void ApolloLPRunOverflowHeightCheck(ASDisplayNode *node, NSString *host, NSInteger remainingAttempts) {
     if (!node) return;
+    // Submit once per node; deferred reload bookkeeping handles retries.
+    if ([objc_getAssociatedObject(node, &kApolloLPOverflowReloadRequestedKey) boolValue]) return;
     @try {
         // V26: only police rows whose height this module actually owns.
         // A LinkButtonNode for an inline-media URL (i.imgur.com/*.jpeg etc.) is
@@ -4052,23 +4079,33 @@ static void ApolloLPRunOverflowHeightCheck(ASDisplayNode *node, NSString *host, 
         }
         CGRect frameInCell = [nodeView convertRect:content toView:cellView];
         CGFloat overflow = CGRectGetMaxY(frameInCell) - CGRectGetHeight(cellView.bounds);
-        if (overflow > 8.0) {
-            ApolloLog(@"[LinkPreviews] V18-stale-row-height host=%@ overflow=%.0fpt -> reloading row",
-                      host ?: @"?", overflow);
-            ApolloLPInvokeRowReloadIfPossible(node, node, host);
+        CGFloat footerOverlap = ApolloLPFeedFooterOverlap(node, cellView, frameInCell);
+        if (overflow > 8.0 || footerOverlap > 8.0) {
+            ApolloLog(@"[LinkPreviews] V18-stale-row-height host=%@ overflow=%.0fpt footerOverlap=%.0fpt -> reloading row",
+                      host ?: @"?", overflow, footerOverlap);
+            if (ApolloLPInvokeRowReloadIfPossible(node, node, host)) {
+                objc_setAssociatedObject(node, &kApolloLPOverflowReloadRequestedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         }
-    } @catch (__unused NSException *exception) {}
+    } @catch (NSException *exception) {
+        ApolloLog(@"[LinkPreviews] overflow check failed (%@)", exception.name);
+    }
 }
 
 // Let layout settle before measuring; runs on main.
+static char kApolloLPOverflowCheckPendingKey;
 static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *host) {
     if (!node) return;
+    if ([objc_getAssociatedObject(node, &kApolloLPOverflowCheckPendingKey) boolValue]) return;
+    objc_setAssociatedObject(node, &kApolloLPOverflowCheckPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak ASDisplayNode *weakNode = node;
     NSString *hostCopy = [host copy];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
                    dispatch_get_main_queue(), ^{
         ASDisplayNode *strongNode = weakNode;
-        if (strongNode) ApolloLPRunOverflowHeightCheck(strongNode, hostCopy, 1);
+        if (!strongNode) return;
+        objc_setAssociatedObject(strongNode, &kApolloLPOverflowCheckPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLPRunOverflowHeightCheck(strongNode, hostCopy, 1);
     });
 }
 
@@ -5054,6 +5091,13 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     }
 }
 
+- (void)layoutDidFinish {
+    %orig;
+    // Fetch callbacks can precede final child frames. Check the applied layout
+    // asynchronously so recovery stays outside Texture's layout stack.
+    ApolloLPScheduleOverflowHeightCheck((ASDisplayNode *)self, @"layout-finished");
+}
+
 // V18: cards whose final content rendered while the node was detached could
 // never fix their row height (no owning cell at refresh time). Verify the
 // geometry whenever the card scrolls on screen; only broken rows reload.
@@ -5138,6 +5182,15 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
 %ctor {
     sApolloLPRegisteredLinkNodes = [NSHashTable weakObjectsHashTable];
     sApolloLPRegisteredLinkNodesLock = [NSObject new];
+
+    // Texture's +initialize replaces inherited lifecycle callbacks with stubs.
+    // Initialize first so it cannot overwrite our visibility and layout hooks.
+    Class linkButtonClass = objc_getClass("_TtC6Apollo14LinkButtonNode");
+    Class tweetInfoClass = objc_getClass("_TtC6Apollo23LinkButtonTweetInfoNode");
+    (void)[linkButtonClass class];
+    (void)[tweetInfoClass class];
+    %init;
+    ApolloLog(@"[LinkPreviews] lifecycle hooks installed after Texture class initialization");
 
     // One-time, off-thread: derive host verdicts from previews we have already
     // fetched, so an existing install knows on its first launch which of ITS
