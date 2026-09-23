@@ -12,12 +12,6 @@
 //
 //   • Gallery View                — the same grid the subreddit/profile
 //                                   menus open, pointed at your own posts
-//   • View Hidden/Deleted Content — the Hidden & Deleted browser (#633),
-//                                   which used to be its own eye-slash bar
-//                                   button (retired in
-//                                   ApolloHiddenContentMenu.xm; other
-//                                   profiles get this row via
-//                                   ApolloGalleryMenu.xm's injection)
 //   • Edit Profile                — what the header's Edit pill used to do
 //                                   (the pill itself is deleted from
 //                                   ApolloUserAvatars.xm)
@@ -41,7 +35,7 @@
 // Rules, re-checked on every normalization pass:
 //   • Apollo's own moreOptionsBarButtonItem installed → someone else's
 //     profile; keep our button out (ApolloGalleryMenu.xm handles injecting
-//     Gallery View and Hidden/Deleted into Apollo's menu there).
+//     Gallery View into Apollo's menu there).
 //   • The screen clearly shows a different user than the active account →
 //     leave it alone even if Apollo's "..." hasn't landed yet.
 //   • PUSHED profiles (not the tab root) must positively resolve to the
@@ -65,9 +59,6 @@ extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewC
 extern void ApolloProfileOpenRedditProfileEditor(void);
 // Defined in ApolloRecentlyRead.xm.
 extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
-// Defined in ApolloHiddenContentMenu.xm — presents the Hidden & Deleted
-// browser for whichever user the profile screen is showing.
-extern void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewController);
 
 // Our bar button, associated to the profile view controller that owns it.
 static char kApolloProfileMoreMenuItemKey;
@@ -161,22 +152,10 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
         if (vc) ApolloProfileMoreMenuOpenGallery(vc);
     }];
 
-    // Hidden & Deleted (#633) rides with Gallery View — it used to be its own
-    // eye-slash bar button, but it's a browse action like the gallery and
-    // doesn't need a permanent spot in the bar.
-    UIAction *hiddenContent = [UIAction actionWithTitle:@"View Hidden/Deleted Content"
-                                                  image:[UIImage systemImageNamed:@"eye.slash"]
-                                             identifier:nil
-                                                handler:^(__unused __kindof UIAction *action) {
-        UIViewController *vc = weakVC;
-        if (vc) ApolloHiddenContentPresentFromProfile(vc);
-    }];
-
-    // Their own separated group, mirroring the injected section in other
-    // profiles' menus.
+    // Keep Gallery View in its own section, matching other profile menus.
     UIMenu *gallerySection = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                            options:UIMenuOptionsDisplayInline
-                                          children:@[gallery, hiddenContent]];
+                                          children:@[gallery]];
 
     UIAction *edit = [UIAction actionWithTitle:@"Edit Profile"
                                          image:[UIImage systemImageNamed:@"pencil"]

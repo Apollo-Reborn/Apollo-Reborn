@@ -18,6 +18,14 @@ typedef NS_ENUM(NSInteger, ApolloHiddenContentReason) {
 };
 
 @interface ApolloHiddenContentItem : NSObject
+@property (nonatomic, copy, nullable) NSString *author;
+@property (nonatomic, strong, nullable) NSNumber *score;
+@property (nonatomic, copy, nullable) NSString *parentPostTitle;
+@property (nonatomic, strong, nullable) NSURL *previewURL;
+@property (nonatomic, copy) NSArray<NSURL *> *mediaURLs;
+// Width divided by height for the first media item. Zero when the archive
+// did not retain dimensions.
+@property (nonatomic) CGFloat previewAspectRatio;
 @property (nonatomic, copy) NSString *fullName;   // e.g. t3_abc123 / t1_abc123
 @property (nonatomic, assign) ApolloHiddenContentKind kind;
 @property (nonatomic, assign) ApolloHiddenContentReason reason;
@@ -31,6 +39,8 @@ typedef NS_ENUM(NSInteger, ApolloHiddenContentReason) {
 @property (nonatomic, strong, nullable) NSDate *createdDate;
 @end
 
+typedef void (^ApolloHiddenContentProgress)(double fraction, NSString *stage);
+
 typedef void (^ApolloHiddenContentFetchCompletion)(NSArray<ApolloHiddenContentItem *> * _Nullable items, NSString * _Nullable errorMessage);
 
 // Diffs `username`'s Arctic Shift archive against their live /submitted or
@@ -40,5 +50,8 @@ typedef void (^ApolloHiddenContentFetchCompletion)(NSArray<ApolloHiddenContentIt
 // concurrently occasionally trips a transient error on one of the two. Cached
 // per username+kind; pass forceRefresh:YES to bypass (e.g. pull-to-refresh).
 void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentFetchCompletion completion);
+
+// Main-thread progress measures completed work within three bounded phases.
+void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress _Nullable progress, ApolloHiddenContentFetchCompletion completion);
 
 NS_ASSUME_NONNULL_END

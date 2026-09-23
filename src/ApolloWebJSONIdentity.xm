@@ -895,6 +895,14 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
         @catch (NSException *e) { ApolloLog(@"[WebJSON] listing-media fixup failed: %@", e); }
     }
     id obj = %orig(response, serializerData, error);
+    // A listing body whose JSON root isn't a dictionary (array / string / bare
+    // null via AllowFragments) crashes RedditKit's completions on
+    // -objectForKeyedSubscript: — #1135 was a launch crash loop on the
+    // moderated-subreddits fetch. Runs in EVERY auth mode and is a no-op for
+    // the dictionary root every valid listing has; see
+    // ApolloWebJSONGuardListingResponseObject.
+    @try { obj = ApolloWebJSONGuardListingResponseObject(response, obj, (NSError **)error); }
+    @catch (NSException *e) { ApolloLog(@"[WebJSON] listing-shape guard failed: %@", e); }
     // The write fixup runs in EVERY auth mode, not just Web JSON: since 2026-08
     // oauth.reddit.com has intermittently returned the legacy old-reddit
     // write-response shape to API-key (OAuth) clients too (also hit Narwhal),

@@ -47,6 +47,10 @@ extern BOOL sFeedGalleryCarousel;
 // Default-on: at the carousel's first/last image, swiping past the edge hands
 // the drag to Apollo's swipe-back/forward navigation instead of rubber-banding.
 extern BOOL sFeedGalleryEdgeSwipeNav;
+// Default-on: Gallery View's grid plays video tiles / animates GIF tiles
+// silently while they are on screen (ApolloGalleryViewController.m).
+extern BOOL sGalleryAutoplayVideos;
+extern BOOL sGalleryAutoplayGIFs;
 // Default-on: scrolling the feed a few posts past where you swiped back drops
 // Apollo's forward-swipe memory (ApolloForwardSwipeExpiry.xm).
 extern BOOL sForwardSwipeForgetAfterScrolling;

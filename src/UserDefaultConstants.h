@@ -1,3 +1,7 @@
+// Ordered Settings hold-menu route IDs. Missing value uses the default five;
+// an empty array intentionally disables the menu. Included in settings backups.
+static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
+
 // UserDefaults keys
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
@@ -651,6 +655,14 @@ static NSString *const ApolloFeedGalleryCarouselChangedNotification = @"ApolloFe
 // is needed (same reasoning as UDKeySwipeUpForComments below). See
 // ApolloFeedGalleryCarousel.xm.
 static NSString *const UDKeyFeedGalleryEdgeSwipeNav = @"FeedGalleryEdgeSwipeNavigation";
+// Gallery View grid: video tiles play, and GIF tiles animate, silently while
+// they are on screen (tap a tile for the fullscreen viewer, which has sound).
+// One switch per kind so either can be left still; both default YES. Low
+// Power Mode pauses both. Either switch posts the notification so an open
+// gallery reacts at once. See ApolloGalleryViewController.m.
+static NSString *const UDKeyGalleryAutoplayVideos = @"GalleryAutoplayVideos";
+static NSString *const UDKeyGalleryAutoplayGIFs = @"GalleryAutoplayGIFs";
+static NSString *const ApolloGalleryAutoplayMediaChangedNotification = @"ApolloGalleryAutoplayMediaChangedNotification";
 // Apollo's forward-swipe (right edge, plus the gallery edge-swipe hand-off)
 // re-opens the screen you last swiped back from, and that memory natively
 // survives unlimited feed scrolling. With this on, scrolling the feed a few
@@ -663,7 +675,7 @@ static NSString *const UDKeyForwardSwipeForgetAfterScrolling = @"ForwardSwipeFor
 // In the fullscreen viewer for post-backed images, galleries, GIFs, and video,
 // an upward vertical flick or comments-button tap opens a media-owned comments
 // pane. The normal downward flick still dismisses when the pane is closed.
-// Default YES. See ApolloSwipeUpComments.xm. No change notification: the flag
+// Default NO (opt-in). See ApolloSwipeUpComments.xm. No change notification: the flag
 // is read live at gesture/tap time, so a toggle applies immediately without
 // any cached state to invalidate (unlike the carousel above).
 static NSString *const UDKeySwipeUpForComments = @"SwipeUpForComments";

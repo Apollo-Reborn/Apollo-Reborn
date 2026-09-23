@@ -162,6 +162,7 @@ jobs:
           if [ "${{ github.event.inputs.no_extensions }}" == "true" ]; then
             echo "Injecting tweak (no extensions) with cyan..."
             cyan -i Apollo.ipa -f "$DEB" -o injected.ipa -e
+            python3 scripts/register-backup-document.py injected.ipa
           else
             echo "Injecting tweak with build-ipa.sh..."
             chmod +x ./build-ipa.sh

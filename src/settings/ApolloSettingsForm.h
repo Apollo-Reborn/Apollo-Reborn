@@ -128,10 +128,16 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 - (nullable UITableViewCell *)cellForRowID:(NSString *)rowID;
 
 - (nullable ApolloSettingsRow *)rowWithID:(NSString *)rowID;
+// Resolve native editing callbacks against the form's current snapshot.
+- (nullable ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath;
 - (nullable NSIndexPath *)indexPathForRowID:(NSString *)rowID;
 
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
+
+// After UIKit has moved a row, update only the model snapshot. The caller's
+// buildForm must preserve section membership/counts and only reorder rows.
+- (void)refreshFormAfterRowMove;
 
 // Rebuild the model but reload only the section containing rowID — for dynamic
 // sections whose rows are generated inside -buildForm (a full reloadData would
@@ -163,6 +169,9 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName,
                                      UIColor *_Nullable tileColor,
                                      UITraitCollection *_Nullable traits);
+
+// Shared branding for Theme Manager shortcuts.
+UIColor *ApolloThemeManagerIconColor(void);
 
 #ifdef __cplusplus
 }

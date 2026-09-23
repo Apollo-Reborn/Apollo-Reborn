@@ -13,6 +13,7 @@
 #import "ApolloThemeManagerViewController.h"
 #import "ApolloBoldPostTitles.h"
 #import "ApolloCommon.h"
+#import "settings/ApolloSettingsForm.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -302,7 +303,29 @@ static BOOL OpenNativeThemeScreenFromHub(UIViewController *hub,
         });
         return YES;
     }
-    return NO;
+    // Use Apollo's own screen factory without putting Appearance in the
+    // visible back stack. Its selection handler initializes Swift-only state.
+    UIViewController *appearance = [(UIViewController *)[appearanceClass alloc] initWithNibName:nil bundle:nil];
+    if (!appearance) return NO;
+    UINavigationController *staging = [[UINavigationController alloc] initWithRootViewController:appearance];
+    [appearance loadViewIfNeeded];
+    UITableView *table = [appearance respondsToSelector:@selector(tableView)]
+        ? ((UITableView *(*)(id, SEL))objc_msgSend)(appearance, @selector(tableView)) : nil;
+    if (!table) return NO;
+    sPendingNativeScreenMode = mode;
+    [UIView performWithoutAnimation:^{
+        sSelectOrig(appearance, @selector(tableView:didSelectRowAtIndexPath:), table,
+            [NSIndexPath indexPathForRow:0 inSection:0]);
+    }];
+    UIViewController *native = staging.topViewController;
+    sPendingNativeScreenMode = ApolloNativeThemeScreenFull;
+    if (native == appearance || ![native isMemberOfClass:objc_getClass("_TtC6Apollo27SettingsThemeViewController")]) return NO;
+    [staging setViewControllers:@[appearance] animated:NO];
+    objc_setAssociatedObject(native, kNativeScreenModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [native loadViewIfNeeded];
+    native.title = title;
+    [hub.navigationController pushViewController:native animated:YES];
+    return YES;
 }
 
 extern "C" BOOL ApolloThemeOpenNativeThemePickerFromHub(UIViewController *hub) {
@@ -373,9 +396,12 @@ static void RewriteThemesRowLabel(UITableViewCell *cell) {
         objc_setAssociatedObject(cell, kThemesRowCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         InstallThemesCellTintHook(object_getClass(cell));
     }
+    UIImage *themeIcon = ApolloSettingsIconTileImage(@"paintbrush.fill", ApolloThemeManagerIconColor(), cell.traitCollection);
+    cell.imageView.image = themeIcon;
     if ([cell.contentConfiguration isKindOfClass:[UIListContentConfiguration class]]) {
         UIListContentConfiguration *config = [(UIListContentConfiguration *)cell.contentConfiguration copy];
         config.text = @"Theme Manager";
+        config.image = themeIcon;
         cell.contentConfiguration = config;
     }
     cell.textLabel.text = @"Theme Manager";

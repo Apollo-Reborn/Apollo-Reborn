@@ -49,8 +49,9 @@ static NSURL *ApolloAutomaticBackupDirectoryURL(void) {
     return [documents URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
 }
 
+// Include legacy ZIPs in listing, sequence allocation, and automatic retention.
 static BOOL ApolloAutomaticBackupIsArchiveName(NSString *name) {
-    return [name rangeOfString:@"^Apollo_(Auto|Manual)_Backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{3,}\\.zip$"
+    return [name rangeOfString:@"^Apollo_(Auto|Manual)_Backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{3,}\\.(zip|apollobackup)$"
         options:NSRegularExpressionSearch].location != NSNotFound;
 }
 
@@ -132,7 +133,7 @@ static NSURL *ApolloAutomaticBackupPublish(NSURL *zip, BOOL automatic, NSDate *d
         ApolloAutomaticBackupDayString(date));
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSUInteger attempt = 0; sequence && attempt < 128 && !job.isCancelled; attempt++, sequence++) {
-        NSString *name = [NSString stringWithFormat:@"Apollo_%@_Backup_%@_%03lu.zip",
+        NSString *name = [NSString stringWithFormat:@"Apollo_%@_Backup_%@_%03lu.apollobackup",
             automatic ? @"Auto" : @"Manual", ApolloAutomaticBackupDayString(date), (unsigned long)sequence];
         NSURL *destination = [directory URLByAppendingPathComponent:name isDirectory:NO];
         NSURL *pending = [directory URLByAppendingPathComponent:

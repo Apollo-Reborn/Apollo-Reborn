@@ -125,6 +125,8 @@ static BOOL sNSBGuardRefreshControl = NO;
 // included) does not move during the cancel — so correct every re-park write
 // INLINE to the captured target. Without this the reload renders at the wrong
 // rest and the settle timers hop it into place a visible beat later.
+// The window assumes the feed stays parked at the top; the first drag by the
+// user ends it early (NSBReleaseDismissWindowForUserScroll).
 static BOOL    sNSBDismissWindow    = NO;
 static BOOL    sNSBDismissScrolling = NO;  // YES while the retargeted scroll-back animates
 // YES between the cancel tap and Apollo's scroll-back actually running. The
@@ -581,6 +583,7 @@ static void NSBScrollBackAfterClear(UIViewController *vc, BOOL animated,
 
 static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc);
 static void NSBApolloDismissNow(UIViewController *vc);
+static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *why);
 
 
 static void NSBApolloDismiss(UIViewController *vc) {
@@ -717,6 +720,65 @@ static void NSBApolloDismissNow(UIViewController *vc) {
         }
         settle();
     });
+}
+
+// MARK: - The user takes over during the dismiss window
+//
+// Everything in the dismiss window assumes the feed is parked at its resting
+// top while Apollo's teardown re-parks around it: the search bar is held
+// expanded so the rest is a constant, the offset pins hold that rest, and the
+// settle timers snap any drift back to it. The user grabbing the feed ends
+// that premise — their scroll position is the truth from then on — so every
+// remaining piece of the window stands down at once:
+//
+// - the policy hold, or the bar stays pinned while rows scroll under it until
+//   the 1.40s timer flips it back and UIKit snaps it away in one frame.
+//   Measured on cancel + drag 1.5s later: 335pt of scrolling under a 60pt bar,
+//   then a 60 -> 0 snap at exactly the timer. That is the lingering bar this
+//   exists for;
+// - the settle timers, or a short drag that stops inside the window is yanked
+//   back to the top by the next one to fire;
+// - the offset pin, for the same reason the moment the drag ends.
+//
+// WHEN the policy is restored is the whole point. UIKit caches the nav bar's
+// collapsible height range as the interactive scroll begins
+// (-[UINavigationController _observeScrollViewWillBeginDragging:] ->
+// _setInteractiveScrollActive: -> _reloadCachedInteractiveScrollMeasurements),
+// and a range computed with the hold still up has no room to collapse into.
+// The scroll view posts _UIScrollViewWillBeginDraggingNotification just before
+// it walks those observers, so a release from that notification lands the
+// policy before the range is cached, and the bar compresses with the drag from
+// its very first frame — indistinguishable from a plain scroll. The geometry
+// setters carry the same release as a fallback for a drag that arrives without
+// the notification: a policy change resizes the bar, and
+// _navigationBarChangedSize: reloads the cached range mid-scroll, so the bar
+// still goes — as the snap the timer used to produce, only without the wait.
+//
+// A scroll-back still in flight when the finger lands ends here as well. Its
+// completion is what runs Apollo's dismiss, so it is finished (not dropped)
+// before the window it re-opens is retired; the tween's own step already
+// bails on a tracking touch, so this is normally a no-op by the time the pan
+// begins and only matters when both land inside one frame.
+static void NSBReleaseDismissWindowForUserScroll(UIScrollView *sv, const char *why) {
+    if (!sv || sv != sNSBSessionTable) return;
+    if (!sNSBDismissWindow && !sNSBAwaitingScroll) return;
+    if (sNSBSessionTyped) return; // a live query owns the geometry, not the window
+    UIViewController *vc = sNSBSessionVC ?: NSBFeedVCForView(sv);
+    NSBFinishScrollBack();
+    sNSBDismissWindow    = NO;
+    sNSBDismissScrolling = NO;
+    sNSBAwaitingScroll   = NO;
+    ++sNSBDismissGen; // retires the settle timers and the 1.40s policy restore
+    UINavigationItem *item = vc.navigationItem;
+    if (item.searchController && !item.hidesSearchBarWhenScrolling &&
+        objc_getAssociatedObject(vc, kNSBAppearedKey) != nil) {
+        item.hidesSearchBarWhenScrolling = YES;
+    }
+    if (NSBTraceEnabled()) {
+        ApolloLog(@"[NSBTrace] dismiss window released on %s: y=%.1f adjTop=%.1f bar=%.1f",
+                  why, sv.contentOffset.y, sv.adjustedContentInset.top,
+                  CGRectGetHeight(item.searchController.searchBar.bounds));
+    }
 }
 
 // MARK: - Results surfacing (subreddit chrome)
@@ -1585,60 +1647,6 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
 
 %end
 
-// MARK: - Posts tab re-selection
-//
-// Apollo's native top check ignores the inset UIKit adds for native search.
-// Use adjustedContentInset for both the check and scroll destination,
-// preserving Apollo's one-level back navigation when already at the top.
-// A followed user's profile opened directly from the subreddit list needs the
-// same behavior in both appearances: Apollo only handles PostsViewController
-// and RedditListViewController here, so [RedditList, Profile] does nothing.
-// Deeper profile stacks keep Apollo's native return-to-feed behavior.
-%hook _TtC6Apollo13SceneDelegate
-
-- (BOOL)tabBarController:(UITabBarController *)tabBarController
- shouldSelectViewController:(UIViewController *)viewController {
-    if (tabBarController.selectedIndex == 0 &&
-        viewController == tabBarController.selectedViewController &&
-        [viewController isKindOfClass:objc_getClass("_TtC6Apollo26ApolloNavigationController")]) {
-        UINavigationController *nav = (UINavigationController *)viewController;
-        UIViewController *feed = nav.topViewController;
-        BOOL managedPostsFeed = ApolloNativeFeedSearchEnabled() &&
-            [feed isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")];
-        BOOL profileFromSubredditList = nav.viewControllers.count == 2 &&
-            [nav.viewControllers.firstObject isKindOfClass:objc_getClass("_TtC6Apollo24RedditListViewController")] &&
-            [feed isKindOfClass:objc_getClass("_TtC6Apollo21ProfileViewController")];
-        if (managedPostsFeed || profileFromSubredditList) {
-            UIScrollView *table = NSBTableForVC(feed);
-            if (table && (profileFromSubredditList || objc_getAssociatedObject(table, kNSBFeedTableKey) != nil)) {
-                CGFloat topInset = table.adjustedContentInset.top;
-                BOOL atTop = round(table.contentOffset.y) == -round(topInset);
-                if (NSBTraceEnabled()) {
-                    ApolloLog(@"[NSBTrace] Posts re-tap (%@) -> %@ (y=%.1f inTop=%.1f adjTop=%.1f)",
-                              NSStringFromClass(feed.class), atTop ? @"pop" : @"scroll", table.contentOffset.y,
-                              table.contentInset.top, topInset);
-                }
-                if (atTop) {
-                    [nav popViewControllerAnimated:YES];
-                } else {
-                    // Use Apollo's table-node entry point, as its native handler
-                    // does, with the same full inset used by the predicate.
-                    // The user asked for the top of the feed: the bar comes
-                    // with it (NSBArmReveal).
-                    NSBArmReveal(table, "Posts re-tap");
-                    id tableNode = ApolloNSBObjectIvar(feed, "tableNode");
-                    ((void (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(tableNode,
-                        @selector(setContentOffset:animated:), CGPointMake(0.0, -topInset), YES);
-                }
-                return NO;
-            }
-        }
-    }
-    return %orig(tabBarController, viewController);
-}
-
-%end
-
 // MARK: - Apollo's field must never take focus
 //
 // Apollo re-focuses its own field when restoring a search on return-to-feed
@@ -1748,6 +1756,12 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
                       offset.y, sv.contentInset.top, sv.adjustedContentInset.top);
         }
     }
+    // The user grabbing the feed ends the dismiss window (fallback for a drag
+    // the will-begin-dragging notification did not announce).
+    if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
+        sv == sNSBSessionTable && sv.isDragging) {
+        NSBReleaseDismissWindowForUserScroll(sv, "drag (offset)");
+    }
     if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
         !sNSBDismissScrolling && !sNSBAwaitingScroll &&
         sv == sNSBSessionTable && !sv.isDragging && !sv.isTracking && !sv.isDecelerating &&
@@ -1814,6 +1828,10 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
             ApolloLog(@"[NSBTrace] retarget bounds -> %.1f (inTop=%.1f adjTop=%.1f)",
                       bounds.origin.y, sv.contentInset.top, sv.adjustedContentInset.top);
         }
+    }
+    if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
+        sv == sNSBSessionTable && sv.isDragging) {
+        NSBReleaseDismissWindowForUserScroll(sv, "drag (bounds)");
     }
     if (ApolloNativeFeedSearchEnabled() && sNSBDismissWindow &&
         !sNSBDismissScrolling && !sNSBAwaitingScroll &&
@@ -2198,4 +2216,22 @@ static __attribute__((constructor)) void NSBPaletteSnapInstall(void) {
 
 %ctor {
     %init;
+    // Release the dismiss window the instant a drag begins on the session's
+    // feed — before UINavigationController caches the bar's collapsible range
+    // for the interactive scroll (see NSBReleaseDismissWindowForUserScroll).
+    // One pointer compare per drag start app-wide; the name has been posted
+    // by -[UIScrollView _scrollViewWillBeginDragging] for many releases, and
+    // if it ever stops arriving the geometry-setter fallback still releases.
+    if (ApolloNativeFeedSearchEnabled()) {
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:@"_UIScrollViewWillBeginDraggingNotification"
+                        object:nil
+                         queue:nil
+                    usingBlock:^(NSNotification *note) {
+            UIScrollView *sv = note.object;
+            if (sv && sv == sNSBSessionTable) {
+                NSBReleaseDismissWindowForUserScroll(sv, "will begin dragging");
+            }
+        }];
+    }
 }

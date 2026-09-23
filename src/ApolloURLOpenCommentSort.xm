@@ -19,6 +19,11 @@
 // "Remember Post Sort" (ApolloPerPostCommentSort.xm) has the matching gap — its viewDidLoad
 // write needs `link` to look the post up — so it never applied to URL opens either.
 //
+// Floating Tabs (ApolloFloatingTabs.xm) reopen relaunch-restored tabs through the same router;
+// such a tab remembers the sort its screen was last on and publishes it for the few seconds the
+// open takes (ApolloFloatingTabsPendingCommentSortForPost). It sits at the very top of the chain
+// below and is written before viewDidLoad's %orig, so that open fetches once, on the right sort.
+//
 // THE FIX
 // The first comments fetch of a link-less CommentsViewController is
 // -[RDKClient linkAndCommentsForLinkWithIdentifier:commentSort:pagination:completion:] with
@@ -55,6 +60,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFloatingTabs.h"
 #import "ApolloPerPostCommentSort.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
@@ -109,9 +115,15 @@ static NSString *UCSStringProperty(id object, SEL selector) {
 }
 
 // The sort init(link:) would have picked for this link, with "Remember Post Sort" on top the
-// way its pre-viewDidLoad write beats the chain on feed opens. `reason` names the winning rule.
+// way its pre-viewDidLoad write beats the chain on feed opens, and a floating tab reopening
+// its post above even that (the screen's own last sort). `reason` names the winning rule.
 static int64_t UCSDesiredSort(id link, NSString *postID, NSString **reason) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    int64_t tabSort = ApolloFloatingTabsPendingCommentSortForPost(postID);
+    if (UCSIsRealSort(tabSort)) {
+        *reason = @"Floating Tab";
+        return tabSort;
+    }
     if (sPerPostCommentSort) {
         int64_t saved = ApolloPerPostCommentSortSavedSort(postID);
         if (saved >= UCSSortTop && saved <= UCSSortRandom) {   // Live is never stored
@@ -270,6 +282,25 @@ static NSString *UCSBarePostID(NSString *identifier) {
             if (sUCSArmedPostID) ApolloLog(@"[URLOpenSort] replacing the arm for %@ (it never fetched)", sUCSArmedPostID);
             sUCSArmedVC = self;
             sUCSArmedPostID = [postID copy];
+            // A floating tab reopening this post asks for the sort its screen was last on. Written
+            // before %orig so the first fetch (and the icon %orig draws, Live's pulse included) already
+            // use it — no second round-trip; the completion still corrects a fetch that went out on
+            // something else. Live goes to the network as New, exactly as loadComments sends it, and
+            // the fetch completion starts Apollo's live timer when it finds currentSort on Live.
+            int64_t tabSort = ApolloFloatingTabsPendingCommentSortForPost(postID);
+            if (UCSIsRealSort(tabSort)) {
+                int64_t cur = 0;
+                BOOL curSet = ApolloCommentsVCReadCurrentSort(self, &cur);
+                if (curSet && cur == tabSort) {
+                    ApolloLog(@"[URLOpenSort] %@: already on %@ (Floating Tab)", postID, ApolloCommentSortName(tabSort));
+                } else if (ApolloCommentsVCWriteCurrentSort(self, tabSort)) {
+                    ApolloLog(@"[URLOpenSort] %@: opening on %@ (Floating Tab; was %@)", postID,
+                              ApolloCommentSortName(tabSort), curSet ? ApolloCommentSortName(cur) : @"(nil)");
+                } else {
+                    ApolloLog(@"[URLOpenSort] %@: could not pre-write %@ (Floating Tab); the fetch completion will correct it",
+                              postID, ApolloCommentSortName(tabSort));
+                }
+            }
         } else {
             ApolloLog(@"[URLOpenSort] link-less open without a post id; leaving it to Apollo");
         }

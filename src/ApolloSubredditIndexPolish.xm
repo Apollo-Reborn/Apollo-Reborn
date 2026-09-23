@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -1974,20 +1975,12 @@ static UIView *ApolloSubredditIndexModernPressOverlay(UITableView *tableView, UI
         [container insertSubview:overlay atIndex:0];
     }
 
-    // Highlight tint (issue #743): stock Apollo themes get the muted iOS-grey
-    // tap feedback they always had — the accent-derived tint only ever
-    // belonged to custom themes, and even there 0.16 read stronger than
-    // Apollo's original feedback, so it's dialled down to 0.10.
-    UIColor *overlayColor;
-    if (ApolloThemeRuntimeIsActive()) {
-        UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, cell);
-        overlayColor = [accentColor colorWithAlphaComponent:0.10];
-    } else {
-        overlayColor = [UIColor systemGray4Color]; // what UIKit's default selection paints
-    }
-    // Resolve against the cell's own traits before the .CGColor write —
-    // systemGray4 is dynamic and ambient resolution can pick the wrong
-    // light/dark variant when Apollo overrides the window style.
+    // Share the independent row-highlight color with the theme editor and
+    // native custom-theme rows. Stock colors must not depend on the accent
+    // or UIKit's systemGray4, which differs from Apollo's original feedback.
+    UIColor *overlayColor = ApolloThemeRowHighlightColor();
+    // Resolve against the cell before writing CGColor (window appearance can
+    // differ from the ambient trait collection).
     overlayColor = [overlayColor resolvedColorWithTraitCollection:container.traitCollection];
     overlay.frame = container.bounds;
     overlay.backgroundColor = overlayColor;
@@ -2312,7 +2305,9 @@ static void ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(UIView *header,
         header.backgroundColor = [UIColor clearColor];
         return;
     }
-    UIColor *surfaceColor = ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
+    // Use a dynamic theme color; cached row colors can belong to the previous appearance.
+    UIColor *surfaceColor = ApolloThemeSubredditListBackgroundColor()
+        ?: ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
     header.backgroundColor = ApolloSubredditIndexColorIsVisible(surfaceColor) ? surfaceColor : tableView.backgroundColor;
 }
 
@@ -2706,6 +2701,17 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
     ApolloSubredditIndexRaiseNativeIndexAboveHeaders((UITableView *)self);
+    UITableView *table = (UITableView *)self;
+    if (sSubredditListEnhancements && sModernSubredditDividers &&
+        [sApolloSubredditKnownTables containsObject:table]) {
+        for (NSInteger section = 0; section < table.numberOfSections; section++) {
+            UIView *header = [table headerViewForSection:section];
+            if (header && objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey)) {
+                ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(header, table,
+                    ApolloSubredditIndexHeaderIsPinned(header, table));
+            }
+        }
+    }
 }
 
 - (void)reloadData {
@@ -3110,6 +3116,9 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *recovery = ApolloMetaFeedRecoverStaleRow((id<UITableViewDataSource>)self,
+                                                            tableView, indexPath);
+    if (recovery) return recovery;
     UITableViewCell *cell = %orig;
     if (tableView) {
         if (!sApolloSubredditKnownTables) sApolloSubredditKnownTables = [NSHashTable weakObjectsHashTable];

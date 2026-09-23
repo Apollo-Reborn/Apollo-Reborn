@@ -57,6 +57,13 @@ static ApolloGalleryMediaKind const ApolloGalleryMediaKindAll =
 // ApolloGalleryVideoExport recognises and re-unites with the separate DASH
 // audio before writing to Photos; everywhere else it's already self-contained.
 @property (nonatomic, copy, nullable) NSURL *videoDownloadURL;
+// Reddit's silent mp4 rendition of an animated .gif file (the listing's
+// preview `variants.mp4`, or `s.mp4` in a gallery post's media_metadata),
+// for the GRID ONLY: a tile plays it through the hardware decoder instead of
+// animating the GIF frame by frame on the CPU. nil when Reddit offers none.
+// The viewer and Save/Share never read it — they keep the real .gif
+// (imageURL) so what you open and save stays a GIF.
+@property (nonatomic, copy, nullable) NSURL *gifMP4URL;
 // External video page (currently Redgifs / Streamable / supported sports
 // hosts). Reddit commonly supplies a convenient but silent re-encoded preview
 // for these posts; Gallery keeps that preview as a fallback, then resolves the
