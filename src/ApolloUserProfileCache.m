@@ -1113,8 +1113,20 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
     return NO;
 }
 
+// Reddit's banner_img often names a server-cropped 1280:384 thumbnail.
+// Immersive headers need the original vertical composition: enlarging that
+// thumbnail cannot recover the helmet/sky already removed by the server.
+// Only normalize Reddit style assets; other hosts may require their query.
+static NSURL *ApolloOriginalBannerURL(NSURL *url) {
+    if (![url.host.lowercaseString isEqualToString:@"styles.redditmedia.com"] ||
+        ![url.path containsString:@"/styles/profileBanner_"]) return url;
+    NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+    components.query = nil;
+    return components.URL ?: url;
+}
+
 - (NSString *)bannerKeyForURL:(NSURL *)url {
-    return [@"banner:" stringByAppendingString:url.absoluteString ?: @""];
+    return [@"banner:" stringByAppendingString:ApolloOriginalBannerURL(url).absoluteString ?: @""];
 }
 
 - (UIImage *)cachedBannerImageForURL:(NSURL *)url {
@@ -1147,6 +1159,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
         return;
     }
+    url = ApolloOriginalBannerURL(url);
     NSString *key = [self bannerKeyForURL:url];
     UIImage *cached = [self.bannerCache objectForKey:key];
     if (cached) {

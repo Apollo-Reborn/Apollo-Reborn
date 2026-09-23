@@ -1,15 +1,14 @@
 #import <UIKit/UIKit.h>
 
-// Draws a profile or subreddit banner through the table's adjusted top inset
-// so the artwork continues behind the navigation bar without changing the
-// existing header's layout. Two layers: a blurred continuation owns the
-// chrome + identity region, while the sharp image uses the actual banner strip
-// inside `regionHeight` (below `topInset`) and dissolves into the blur. The blur
-// resolves to the theme page color exactly at `extendedHeight` (the bottom of
-// the identity header), where the first opaque cells begin.
+// Shared immersive backdrop. Subreddits use the original sharp banner strip
+// below the chrome with an ambient continuation. Profiles opt into the
+// full-height artwork and appearance-specific fades via usesProfileHero.
 @interface ApolloImmersiveHeaderBackgroundView : UIView
 
 @property(nonatomic, assign) CGFloat contentTranslation;
+@property(nonatomic, assign) BOOL usesProfileHero;
+// Unscrolled height of the sharp artwork after viewport/region clipping.
+@property(nonatomic, readonly) CGFloat sharpArtworkHeight;
 
 - (void)applyBanner:(UIImage *)banner
           pageColor:(UIColor *)pageColor

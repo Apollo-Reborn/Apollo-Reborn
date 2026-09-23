@@ -220,6 +220,8 @@ static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL 
 static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh);
 static void ApolloProfileRemoveHeader(id viewControllerObject, UITableView *tableView);
 static void ApolloProfileRefreshControllersForUsername(NSString *username);
+// Apollo can switch between themes with identical UIKit light/dark traits.
+static NSUInteger sApolloProfileThemeGeneration;
 static void ApolloProfileApplyTabAvatarForController(UITabBarController *tabBarController);
 static void ApolloProfileApplyTabAvatarForVisibleWindows(void);
 static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason);
@@ -273,19 +275,6 @@ static NSString *ApolloProfileFormatAge(NSTimeInterval createdUTC) {
     return @"New";
 }
 
-// Best translucent effect for the stat cards: real Liquid Glass on iOS 26 when the app
-// is in that mode, otherwise a thin material that still reads as glass on any theme.
-static UIVisualEffect *ApolloProfileCardEffect(void) {
-    if (IsLiquidGlass()) {
-        Class glassClass = NSClassFromString(@"UIGlassEffect");
-        if (glassClass) {
-            UIVisualEffect *effect = [[glassClass alloc] init];
-            if (effect) return effect;
-        }
-    }
-    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
-}
-
 // Fill an SF Symbol's shape with an exact solid colour by compositing (source-in).
 // UIKit's tint APIs (template + tintColor, imageWithTintColor:, hierarchical-colour
 // symbol configs) all failed to colour the Message envelope over the accent glass —
@@ -331,7 +320,7 @@ static UIImage *ApolloProfileTintedSymbol(NSString *name, CGFloat pointSize, UIC
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    _effectView = [[UIVisualEffectView alloc] initWithEffect:ApolloProfileCardEffect()];
+    _effectView = [[UIVisualEffectView alloc] initWithEffect:nil];
     _effectView.clipsToBounds = YES;
     _effectView.layer.cornerRadius = 18.0;
     _effectView.layer.cornerCurve = kCACornerCurveContinuous;
@@ -365,18 +354,28 @@ static UIImage *ApolloProfileTintedSymbol(NSString *name, CGFloat pointSize, UIC
     return self;
 }
 
-// Mode-dependent chrome. Dark (and real Liquid Glass, which adapts on its own)
-// keeps the translucent glass card: material + faint white rim + a lifted
-// shadow. Light mode on non-glass builds goes FLAT instead — solid (theme)
-// card background, no rim, whisper of a shadow — because the grey blur
-// material plus a white rim plus a 0.12 black halo read as a smudged outline
-// on a white page and matched nothing else on the screen (issue #852; also the
-// "Liquid Glass UI on Standard" half of #797). The flat card matches the
-// native inset-grouped rows directly below it.
+// Native glass owns its rim, lighting, and shadow. Legacy dark builds retain
+// thin material; legacy light builds use the theme's flat grouped-card fill.
 - (void)apollo_applyCardStyle {
     BOOL dark = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
-    if (dark || IsLiquidGlass()) {
-        self.effectView.effect = ApolloProfileCardEffect();
+    UIVisualEffect *glass = nil;
+    if (@available(iOS 26.0, *)) {
+        if (IsLiquidGlass()) {
+            // Clear glass keeps UIKit's refraction and highlights without
+            // regular glass's gray material fill. No custom tint or shading.
+            UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleClear];
+            effect.interactive = YES;
+            glass = effect;
+        }
+    }
+    if (glass) {
+        self.effectView.effect = glass;
+        self.effectView.backgroundColor = UIColor.clearColor;
+        self.effectView.layer.borderWidth = 0.0;
+        self.effectView.layer.borderColor = nil;
+        self.layer.shadowOpacity = 0.0;
+    } else if (dark) {
+        self.effectView.effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
         self.effectView.backgroundColor = [UIColor clearColor];
         // Faint white rim — reads as a glass edge on dark. The hard separator
         // stroke it replaces looked like an empty outlined box on the pale melt.
@@ -779,6 +778,8 @@ static UIFont *ApolloProfileClassicNameFont(void) {
 // (avatar/name/body positions) cascades from it via the identity layout.
 - (CGFloat)apollo_bannerHeight {
     if (!sProfileShowBanner) return 0.0;
+    // Keep the original immersive identity position. The artwork's crop and
+    // fade are independent of the space reserved above the avatar.
     return sProfileHeaderImmersive ? ApolloIdentityHeaderBannerHeight() : 104.0;
 }
 
@@ -3295,12 +3296,18 @@ static void ApolloProfileSyncAmbient(ApolloProfileHeaderView *header) {
     CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
         : UIScreen.mainScreen.bounds.size.width;
     CGFloat regionHeight = chromeHeight + [header apollo_bannerHeight];
+    if (sProfileShowBanner) {
+        // Carry the art behind the avatar, then fade before the identity text.
+        regionHeight += ApolloIdentityHeaderAvatarOverlap() + 8.0;
+    }
     CGFloat extendedHeight = chromeHeight + [header preferredHeightForWidth:width];
+    ambient.usesProfileHero = YES;
     [ambient applyBanner:header.bannerImageView.image
                pageColor:pageColor
             regionHeight:regionHeight
           extendedHeight:extendedHeight
                 topInset:chromeHeight];
+    ApolloProfileUpdateAmbientScroll(viewController, tableView);
 }
 
 static void ApolloProfileInstallAmbient(UIViewController *viewController, UITableView *tableView,
@@ -3334,14 +3341,25 @@ static void ApolloProfileInstallAmbient(UIViewController *viewController, UITabl
 }
 
 static void ApolloProfileRemoveAmbient(UIViewController *viewController, UITableView *tableView) {
+    ApolloSetProfileHeroVisible(viewController, NO);
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloProfileAmbientViewKey);
     UIView *originalBackgroundView = objc_getAssociatedObject(viewController, kApolloProfileOriginalTableBackgroundViewKey);
+    UIColor *savedBackground = objc_getAssociatedObject(viewController, kApolloProfileOriginalTableBackgroundKey);
+    BOOL ownedSurface = ambient || originalBackgroundView || savedBackground;
     if (tableView.backgroundView == ambient) tableView.backgroundView = originalBackgroundView;
     [ambient removeFromSuperview];
     objc_setAssociatedObject(viewController, kApolloProfileAmbientViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(viewController, kApolloProfileOriginalTableBackgroundViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIColor *pageColor = objc_getAssociatedObject(viewController, kApolloProfileOriginalTableBackgroundKey);
-    if (pageColor) tableView.backgroundColor = pageColor;
+    if (ownedSurface) {
+        // The saved native color may have been resolved in light mode before
+        // the immersive view took over. Restore today's theme surface, not
+        // that snapshot: a density switch doesn't trigger UIKit trait callbacks.
+        UIColor *pageColor = ApolloImmersiveResolvedPageColor(savedBackground, viewController.traitCollection);
+        tableView.backgroundColor = pageColor;
+        viewController.view.backgroundColor = pageColor;
+        ApolloLog(@"[ImmersiveHeader] restored current profile surface style=%ld",
+                  (long)viewController.traitCollection.userInterfaceStyle);
+    }
     objc_setAssociatedObject(viewController, kApolloProfileOriginalTableBackgroundKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloProfileHeaderView *header = objc_getAssociatedObject(viewController, kApolloProfileHeaderViewKey);
     header.bannerImageView.alpha = 1.0;
@@ -3417,6 +3435,12 @@ static void ApolloProfileUpdateAmbientScroll(id viewControllerObject, UIScrollVi
     if (!ambient) return;
     CGFloat restingOffset = -scrollView.adjustedContentInset.top;
     ambient.contentTranslation = MAX(0.0, scrollView.contentOffset.y - restingOffset);
+    ApolloProfileHeaderView *header = objc_getAssociatedObject(viewControllerObject, kApolloProfileHeaderViewKey);
+    // Use the rendered clip, not the larger image canvas: in landscape the
+    // region/viewport can cut off the artwork well before the canvas ends.
+    BOOL heroVisible = sProfileShowBanner && header.bannerImageView.image != nil &&
+        ambient.contentTranslation < ambient.sharpArtworkHeight;
+    ApolloSetProfileHeroVisible((UIViewController *)viewControllerObject, heroVisible);
 }
 
 // Tear down the custom profile header and restore Apollo's native table header.
@@ -3540,11 +3564,18 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
 
     CGFloat chromeHeight = tableView.adjustedContentInset.top;
     NSString *(^currentInstallSignature)(void) = ^NSString *{
-        return [NSString stringWithFormat:@"%@|%.2f|%.2f|%.2f|%p|%lu|%d%d%d%d%d|%ld|%ld",
+        // Stock Apollo theme changes do not always emit the custom-runtime
+        // notification. Compare actual resolved surfaces on appear/layout too.
+        UIColor *pageColor = [ApolloImmersiveResolvedPageColor(nil, viewController.traitCollection)
+            resolvedColorWithTraitCollection:viewController.traitCollection];
+        UIColor *cardColor = [(ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor)
+            resolvedColorWithTraitCollection:viewController.traitCollection];
+        return [NSString stringWithFormat:@"%@|%.2f|%.2f|%.2f|%p|%lu|%d%d%d%d%d|%ld|%ld|%lu|%@|%@",
         username, width, [header preferredHeightForWidth:width], chromeHeight, header.bannerImageView.image,
         (unsigned long)header.contentGeneration, sProfileHeaderImmersive, sProfileShowBanner,
         sProfileShowStatCards, sProfileShowSocialLinks, sProfileShowActions,
-        (long)sProfileAvatarStyle, (long)viewController.traitCollection.userInterfaceStyle];
+        (long)sProfileAvatarStyle, (long)viewController.traitCollection.userInterfaceStyle,
+        (unsigned long)sApolloProfileThemeGeneration, pageColor, cardColor];
     };
     NSString *installSignature = currentInstallSignature();
     NSString *previousInstallSignature = objc_getAssociatedObject(viewControllerObject, kApolloProfileInstallSignatureKey);
@@ -3554,6 +3585,9 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         return;
     }
     [header apollo_updateActionButtonColors];
+    for (ApolloProfileStatCard *card in @[header.postKarmaCard, header.commentKarmaCard, header.ageCard]) {
+        [card apollo_applyCardStyle];
+    }
     __weak UIViewController *weakProfileController = viewController;
     header.heightInvalidationBlock = ^{
         UIViewController *strongProfileController = weakProfileController;
@@ -5126,6 +5160,10 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
+        // Invalidate the appearance signature even for dark-to-dark changes.
+        // The coalesced refresh runs after native theme notification handlers.
+        sApolloProfileThemeGeneration++;
+        ApolloProfileRefreshControllersForUsername(nil);
         ApolloProfileScheduleTabAvatarRefresh(@"Apollo theme change");
     }];
 }

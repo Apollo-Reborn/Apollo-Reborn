@@ -37,6 +37,8 @@ static char kApolloScrollEdgeEffectForcedHiddenKey;
 // the next apply pass (didMoveToWindow / style-change notification) stamps it
 // and applies the mode directly.
 static char kApolloScrollEdgeEffectIsTopKey;
+static char kApolloProfileHeroVisibleKey;
+static char kApolloEdgeHasVisibleProfileHeroKey;
 
 // Debug-only introspection for the sim bridge's "headerdump" command.
 const void *ApolloScrollEdgeEffectTopStampKey(void) { return &kApolloScrollEdgeEffectIsTopKey; }
@@ -112,6 +114,21 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
     if (!effect) return;
 
     objc_setAssociatedObject(effect, &kApolloScrollEdgeEffectIsTopKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // The profile table and Apollo's intercepting scroll view both participate
+    // in the top effect. Inherit the override from their controller's root.
+    BOOL heroVisible = NO;
+    for (UIView *view = scrollView; view; view = view.superview) {
+        if ([objc_getAssociatedObject(view, &kApolloProfileHeroVisibleKey) boolValue]) {
+            heroVisible = YES;
+            break;
+        }
+    }
+    objc_setAssociatedObject(effect, &kApolloEdgeHasVisibleProfileHeroKey,
+                             heroVisible ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (heroVisible && mode == ApolloScrollEdgeEffectStyleHard) {
+        mode = ApolloScrollEdgeEffectStyleHidden;
+    }
 
     SEL setHiddenSelector = NSSelectorFromString(@"setHidden:");
     BOOL hasSetHidden = [effect respondsToSelector:setHiddenSelector];
@@ -194,6 +211,18 @@ static void ApolloApplyAndNudgeViewTree(UIView *view) {
     }
 }
 
+void ApolloSetProfileHeroVisible(UIViewController *viewController, BOOL visible) {
+    if (!viewController.isViewLoaded) return;
+    UIView *root = viewController.view;
+    if ([objc_getAssociatedObject(root, &kApolloProfileHeroVisibleKey) boolValue] == visible) return;
+    objc_setAssociatedObject(root, &kApolloProfileHeroVisibleKey,
+                             visible ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!IsLiquidGlass()) return;
+    ApolloApplyAndNudgeViewTree(root);
+    ApolloLog(@"[HeaderStyle] profile hero visible=%d mode=%ld", visible,
+              (long)ApolloResolvedScrollEdgeEffectStyle());
+}
+
 static void ApolloNudgeViewTree(UIView *view) {
     if ([view isKindOfClass:[UIScrollView class]]) {
         ApolloNudgeEdgeEffectRebuild((UIScrollView *)view);
@@ -246,8 +275,11 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 }
 
 - (void)setHidden:(BOOL)hidden {
+    NSInteger mode = ApolloResolvedScrollEdgeEffectStyle();
+    BOOL hideForHero = mode == ApolloScrollEdgeEffectStyleHard &&
+        [objc_getAssociatedObject(self, &kApolloEdgeHasVisibleProfileHeroKey) boolValue];
     if (IsLiquidGlass() &&
-        ApolloHeaderStyleHidesNativeEffect(ApolloResolvedScrollEdgeEffectStyle()) &&
+        (ApolloHeaderStyleHidesNativeEffect(mode) || hideForHero) &&
         objc_getAssociatedObject(self, &kApolloScrollEdgeEffectIsTopKey)) {
         if (!hidden) {
             // The caller wanted it visible and we are overriding — exactly the
