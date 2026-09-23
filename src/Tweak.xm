@@ -1526,11 +1526,13 @@ static OSStatus SecItemDelete_replacement(CFDictionaryRef query) {
     return status;
 }
 
-// --- Device detection (for Pixel Pals and Dynamic Island behaviour) ---
+// --- Device detection (for media chrome, Pixel Pals and Dynamic Island behaviour) ---
 // Apollo's device model mapper (sub_1007a3cdc) only recognizes models up to iPhone 14 Pro Max.
 // Newer models return "unknown" (0x3f) and get no Pixel Pals.
 // Remap newer machine identifiers to "iPhone15,2" (iPhone 14 Pro) so Apollo
 // treats them as Dynamic Island devices and enables full Pixel Pals + FauxCutOutView.
+// This also keeps the portrait gallery counter at the top right;
+// unknown devices get the centered "1 of 5" layout.
 static void *uname_orig;
 static int uname_replacement(struct utsname *buf) {
     int ret = ((int (*)(struct utsname *))uname_orig)(buf);
@@ -1559,6 +1561,8 @@ static int uname_replacement(struct utsname *buf) {
             @"iPhone18,3": di,    // iPhone 17
             @"iPhone18,4": di,    // iPhone Air
             @"iPhone18,5": notch, // iPhone 17e
+            @"iPhone19,2": di,    // iPhone 18 Pro
+            @"iPhone19,3": di,    // iPhone 18 Pro Max
         };
     });
 
