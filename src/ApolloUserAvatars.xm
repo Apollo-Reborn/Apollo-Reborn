@@ -130,8 +130,9 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 
 @end
 
-@interface ApolloProfileHeaderView : UIView
+@interface ApolloProfileHeaderView : UIView <UIGestureRecognizerDelegate, UIPopoverPresentationControllerDelegate>
 @property(nonatomic, strong) UIImageView *bannerImageView;
+@property(nonatomic, strong) id bannerPreviewFeedback;
 @property(nonatomic, strong) UIView *detailsBackgroundView;
 @property(nonatomic, strong) UIImageView *avatarImageView;
 @property(nonatomic, strong) UIView *avatarBorderView;
@@ -492,6 +493,13 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         _bannerImageView.clipsToBounds = YES;
         [self addSubview:_bannerImageView];
 
+        // The immersive banner image is alpha-zero: recognize on the header
+        // instead, restricting touches to its banner region below the chrome.
+        UILongPressGestureRecognizer *bannerHold = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self action:@selector(apollo_bannerLongPressed:)];
+        bannerHold.delegate = self;
+        [self addGestureRecognizer:bannerHold];
+
         _detailsBackgroundView = [[UIView alloc] init];
         _detailsBackgroundView.backgroundColor = [UIColor clearColor];
         [self addSubview:_detailsBackgroundView];
@@ -629,6 +637,66 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         _aboutLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     }
     return self;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    if (!sProfileShowBanner || !self.currentBannerURL || !self.bannerImageView.image) return NO;
+    CGPoint point = [touch locationInView:self];
+    return CGRectContainsPoint(self.bannerImageView.frame, point) &&
+        !CGRectContainsPoint(self.avatarBorderView.frame, point);
+}
+
+// UIKit's preview-state pattern (the same semantic feedback as opening a
+// preview), rather than approximating it with an impact weight. Resolve the
+// private API dynamically so unavailable implementations simply omit feedback.
+- (void)apollo_playBannerPreviewFeedback {
+    self.bannerPreviewFeedback = ApolloPlayPreviewOpenedFeedback(self);
+}
+
+// Keep the banner menu anchored on iPhone instead of adapting to a bottom sheet.
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller {
+    return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller
+                                                                             traitCollection:(UITraitCollection *)traits {
+    return UIModalPresentationNone;
+}
+
+- (void)apollo_bannerLongPressed:(UILongPressGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    UIViewController *host = self.hostViewController;
+    NSURL *url = self.currentBannerURL;
+    if (!host || host.presentedViewController || !sProfileShowBanner || !url) return;
+    // Match the original-image URL used by the profile cache, preserving the
+    // full artwork in the viewer and saved image rather than Reddit's crop.
+    if ([url.host.lowercaseString isEqualToString:@"styles.redditmedia.com"] &&
+        [url.path containsString:@"/styles/profileBanner_"]) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        components.query = nil;
+        url = components.URL ?: url;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"View Banner" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            ApolloProfileHeaderView *header = weakSelf;
+            if (header.window && ApolloPresentProfileBanner(url, header)) {
+                UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                [feedback impactOccurred];
+            }
+        }]];
+    sheet.modalPresentationStyle = UIModalPresentationPopover;
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    popover.delegate = self;
+    // Point upward into the banner while keeping the menu above the avatar.
+    popover.sourceView = self;
+    CGFloat menuAnchorY = MAX(0.0, CGRectGetMinY(self.avatarBorderView.frame) - 72.0);
+    popover.sourceRect = CGRectMake(CGRectGetMidX(self.avatarBorderView.frame), menuAnchorY, 1.0, 1.0);
+    popover.permittedArrowDirections = UIPopoverArrowDirectionUp;
+    [self apollo_playBannerPreviewFeedback];
+    [host presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {

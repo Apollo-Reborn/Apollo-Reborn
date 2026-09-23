@@ -1414,3 +1414,23 @@ BOOL ApolloTextNodeIsTweakUI(id node) {
     if (!node) return NO;
     return [objc_getAssociatedObject(node, &kApolloTweakUITextNodeKey) boolValue];
 }
+
+// Runtime-checked UIKit preview feedback shared by profile menus and their viewer.
+id ApolloPlayPreviewOpenedFeedback(UIView *sourceView) {
+    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
+    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
+    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
+    SEL stateSelector = NSSelectorFromString(@"previewState");
+    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
+    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
+    if (![configurationClass respondsToSelector:configurationSelector] ||
+        ![configurationClass respondsToSelector:stateSelector] ||
+        ![generatorClass instancesRespondToSelector:initializer] ||
+        ![generatorClass instancesRespondToSelector:transition]) return nil;
+    id configuration = ((id (*)(id, SEL))objc_msgSend)(configurationClass, configurationSelector);
+    id state = ((id (*)(id, SEL))objc_msgSend)(configurationClass, stateSelector);
+    if (!configuration || !state) return nil;
+    id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, sourceView);
+    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
+    return generator;
+}
