@@ -1954,14 +1954,14 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
     }
     // An animated scroll aimed EXACTLY at the top rest of a managed list is
     // code asking for the top — the status-bar tap, a scroll-to-top of
-    // Apollo's own (its tab-bar one is armed at the source, above) — so arm
-    // the reveal to bring the bar with it; it resolves once the animation has
-    // settled. Exactly, not "within reach": Apollo's comment collapse keeps
-    // the thread in place with an animated scroll whose target is the content
-    // clamp, and on a short thread that clamp lands a couple of points shy of
-    // the rest — a content correction, not a request for the top (#1138's
-    // second symptom). Never for a gesture in flight: UIKit routes its own
-    // palette settle through here too.
+    // Apollo's own (the Posts tab's is armed at its source, in
+    // ApolloScrollToTop.xm) — so arm the reveal to bring the bar with it; it
+    // resolves once the animation has settled. Exactly, not "within reach":
+    // Apollo's comment collapse keeps the thread in place with an animated
+    // scroll whose target is the content clamp, and on a short thread that
+    // clamp lands a couple of points shy of the rest — a content correction,
+    // not a request for the top (#1138's second symptom). Never for a gesture
+    // in flight: UIKit routes its own palette settle through here too.
     if (ApolloNativeFeedSearchEnabled() && animated &&
         objc_getAssociatedObject(self, kNSBFeedTableKey) != nil &&
         !NSBUserIsScrolling((UIScrollView *)self) &&
