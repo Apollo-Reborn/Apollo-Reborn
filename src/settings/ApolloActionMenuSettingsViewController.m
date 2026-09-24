@@ -779,23 +779,25 @@ static const CGFloat kApolloAMAccessoryHeight = 28.0;
     [order insertObject:moved atIndex:(NSUInteger)toIndexPath.row];
     ApolloActionMenuSetOrder(self.context, order);
 
-    // Re-sync the form model with the moved rows (UIKit already animated the
-    // move; rebuilding on the next runloop turn keeps the drop animation
-    // intact) and show the reset row. The reset row comes FIRST: an untouched
-    // menu's first drag makes it appear, and rebuildSectionContainingRowID
-    // re-snapshots every section's visibility while reloading only the items
-    // section — with the reset row not yet inserted, UIKit's batch-update
-    // check trips on that section's count. Diffing the visibility in first
-    // inserts the row, so the rebuild's snapshot matches.
+    // UIKit has already moved the cell: bring the form model in line WITHOUT
+    // any table update. Reloading the items section here (even a turn later,
+    // without animation) replaced the cells under the still-settling drop
+    // preview — the moved row drawn twice, its neighbours re-laid out
+    // mid-animation (device recording, 2026-09-24). The reset row and the
+    // preview button follow once the drop session has ended.
+    [self noteRowMovedFromIndexPath:fromIndexPath toIndexPath:toIndexPath];
+    ApolloLog(@"[ActionMenuSettings] row %ld -> %ld noted in the model, no reload", (long)fromIndexPath.row, (long)toIndexPath.row);
+}
+
+- (void)tableView:(UITableView *)tableView dropSessionDidEnd:(id<UIDropSession>)session {
+    // The drop is over (animation included): now the reset row may appear (an
+    // untouched menu's first drag) and the preview reflects the new order.
+    // Kept off the drop's own turn so the insert never overlaps the settle.
     __weak __typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         __strong __typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         [strongSelf visibilityDidChange];
-        NSString *firstItemRowID = [strongSelf firstItemRowID];
-        if (firstItemRowID) {
-            [strongSelf rebuildSectionContainingRowID:firstItemRowID withRowAnimation:UITableViewRowAnimationNone];
-        }
         [strongSelf refreshPreviewButton];
     });
 }

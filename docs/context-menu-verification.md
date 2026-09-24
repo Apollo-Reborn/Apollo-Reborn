@@ -105,6 +105,14 @@ UIKit icon renderer was stubbed for the host build.
   2026-09-14 (KSCrash report, `_Bug_Detected_In_Client_Of_UITableView_Invalid_
   Number_Of_Rows_In_Section`) and fixed; the visibility-tap path was never
   affected (`reloadRowWithID:` does not re-snapshot).
+- A drag's completion never reloads the items section: UIKit has already
+  moved the cell, so the editor brings the form model in line with the new
+  form-layer `noteRowMovedFromIndexPath:toIndexPath:` (model only, no table
+  update) and defers the reset-row diff + preview refresh to
+  `tableView:dropSessionDidEnd:` (a turn later). The earlier
+  `rebuildSectionContainingRowID:` a runloop turn after the move replaced the
+  cells under the still-settling drop preview — the moved row drawn twice and
+  its neighbours re-laid out mid-animation (device recording, 2026-09-24).
 - Rows are tap-to-check (checkmark in the accent, drag grip to its right,
   both in one accessory view; the All overview drops the grip). A tap restyles
   the tapped cell IN PLACE (`styleItemCell:forItem:hidden:`, checkmark fading

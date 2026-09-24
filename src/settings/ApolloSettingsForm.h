@@ -136,6 +136,12 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 - (nullable ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath;
 - (nullable NSIndexPath *)indexPathForRowID:(NSString *)rowID;
 
+// After UITableView moved a row ITSELF (a drag-and-drop reorder committed via
+// tableView:moveRowAtIndexPath:toIndexPath:): bring the model in line without
+// touching the table — no reload, so the drop animation is left alone. Both
+// paths are in the table's (visible) coordinate space and must share a section.
+- (void)noteRowMovedFromIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath;
+
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
 
