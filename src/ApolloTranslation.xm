@@ -2580,6 +2580,34 @@ static BOOL ApolloNodeIsInsideLinkPreviewCard(id node) {
     return NO;
 }
 
+// YES when the node lives inside the post's metadata row (Apollo.PostInfoNode).
+// Hopper: -[PostInfoNode layoutSpecThatFits:] stacks only the subreddit icon/
+// button, author byline button, cake-day icon, author flair, points, liked %,
+// comments, age, edited, awards and mod controls. The feed selftext preview is
+// RichMediaNode.selfPostPreviewNode, so nothing in this row is ever the body.
+// The feed picker has no readable RDKLink to drop the byline by author, and the
+// inline user avatar (U+FFFC + space before the name) makes "by <20-char name>"
+// exactly 25 characters, the picker's length floor. On a post with no selftext
+// preview the byline won the election; translating it rebuilt it from its plain
+// string (the avatar attachment went, its U+FFFC + space stayed), the avatar
+// hook prepended a new avatar, the longer byline re-qualified on the next pass,
+// and each round pushed the name one space further right.
+static BOOL ApolloNodeIsInsidePostInfoRow(id node) {
+    Class postInfoClass = objc_getClass("_TtC6Apollo12PostInfoNode");
+    if (!postInfoClass) return NO;
+    id current = node;
+    for (int hop = 0; hop < 8 && current; hop++) {
+        if ([current isKindOfClass:postInfoClass]) return YES;
+        if (![current respondsToSelector:NSSelectorFromString(@"supernode")]) return NO;
+        @try {
+            current = ((id (*)(id, SEL))objc_msgSend)(current, NSSelectorFromString(@"supernode"));
+        } @catch (__unused NSException *e) {
+            return NO;
+        }
+    }
+    return NO;
+}
+
 static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewController, UITableView *tableView, RDKLink *link) {
     if (!viewController.view) return nil;
     NSMutableArray *candidates = [NSMutableArray array];
@@ -2650,6 +2678,9 @@ static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewC
             if (ApolloTextNodeIsTweakUI(candidate)) { dbgMetadata++; continue; }
             // Rich-link-card scraped text belongs to the rich-preview pipeline.
             if (ApolloNodeIsInsideLinkPreviewCard(candidate)) { dbgMetadata++; continue; }
+            // The byline row is metadata. With no readable RDKLink (the case this
+            // scan exists for) the author filter below can't drop it by name.
+            if (ApolloNodeIsInsidePostInfoRow(candidate)) { dbgMetadata++; continue; }
             NSString *text = ApolloVisibleTextFromNode(candidate);
             if (text.length == 0 || ApolloPostTextLooksLikeMetadata(text, link)) { dbgMetadata++; continue; }
 
@@ -2720,6 +2751,7 @@ static id ApolloBestPostBodyTextNode(id headerCellNode, RDKLink *link, NSString 
         if ([objc_getAssociatedObject(n, kApolloTitleOwnedTextNodeKey) boolValue]) continue;
         if (ApolloTextNodeIsTweakUI(n)) continue;
         if (ApolloNodeIsInsideLinkPreviewCard(n)) continue;
+        if (ApolloNodeIsInsidePostInfoRow(n)) continue;
         NSAttributedString *attr = nil;
         @try { attr = ((id (*)(id, SEL))objc_msgSend)(n, @selector(attributedText)); }
         @catch (__unused NSException *e) { continue; }
@@ -9146,9 +9178,9 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
 // cell's runtime class varies and its RDKLink ivar is NOT reliably readable
 // (object_getIvar never returns it for LargePostCellNode — confirmed on device), so we
 // locate the body preview node WITHOUT the link: walk the cell's text nodes and take the
-// longest that isn't the title (excludeTitleNode) and isn't short metadata (author /
-// score / timestamp / flair / source label). We translate the *displayed* (truncated)
-// preview text, so the cell layout is unchanged.
+// longest that isn't the title (excludeTitleNode), isn't in the metadata row (PostInfoNode:
+// byline / flair / score / age) and isn't other short metadata (source label). We translate
+// the *displayed* (truncated) preview text, so the cell layout is unchanged.
 static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitleNode) {
     if (!feedCellNode) return;
     if (!sEnableBulkTranslation || !sTranslatePostTitles) return;
@@ -9161,8 +9193,9 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
     NSUInteger bestLen = 0;
     for (id n in candidates) {
         if (excludeTitleNode && n == excludeTitleNode) continue;   // never the title node
+        if (ApolloNodeIsInsidePostInfoRow(n)) continue;            // byline row (see the helper)
         NSString *t = ApolloVisibleTextFromNode(n);
-        if (t.length < 25) continue;                               // metadata / author / score are short
+        if (t.length < 25) continue;                               // metadata / source label are short
         if (ApolloPostTextLooksLikeMetadata(t, nil)) continue;
         if (t.length > bestLen) { bestLen = t.length; textNode = n; }
     }
