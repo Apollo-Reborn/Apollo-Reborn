@@ -20,6 +20,7 @@ THEME_GALLERY_GEN_M := $(THEOS_PROJECT_DIR)/$(THEME_GALLERY_DIR)/generated/Apoll
 WHATS_NEW_DIR := whats-new
 WHATS_NEW_GEN_H := $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/generated/ApolloWhatsNewCatalog.gen.h
 WHATS_NEW_GEN_M := $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/generated/ApolloWhatsNewCatalog.gen.m
+BARK_ICON_NAMES_H := $(THEOS_PROJECT_DIR)/$(SRC_DIR)/generated/ApolloBarkIconNames.gen.h
 
 SSZIPARCHIVE_FILES = $(wildcard $(SSZIPARCHIVE_DIR)/*.m) \
     $(wildcard $(SSZIPARCHIVE_DIR)/minizip/*.c) \
@@ -76,6 +77,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloToast.m \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
     $(SRC_DIR)/ApolloNotificationBackend.m \
+    $(SRC_DIR)/ApolloBarkIconResolver.m \
     $(SRC_DIR)/ApolloUsageHeartbeat.m \
     $(SRC_DIR)/ApolloPushNotifications.m \
     $(SRC_DIR)/ApolloLiquidGlassIconIDs.m \
@@ -433,8 +435,8 @@ endif
 
 CONTROL_FILE = $(THEOS_PROJECT_DIR)/control
 
-# Generate Version.h, the theme gallery catalog, and the What's New catalog.
-before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog
+# Generate Version.h and the checked-in catalogs/asset manifests.
+before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog generate_bark_icon_names
 
 generate_version_h:
 	@echo "Generating Version.h from control file"
@@ -463,6 +465,15 @@ $(WHATS_NEW_GEN_H) $(WHATS_NEW_GEN_M): $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/scr
 		$(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/releases \
 		$(WHATS_NEW_GEN_H) \
 		$(WHATS_NEW_GEN_M)
+
+BARK_ICON_PNGS := $(wildcard $(THEOS_PROJECT_DIR)/assets/bark-icons/*.png)
+
+generate_bark_icon_names: $(BARK_ICON_NAMES_H)
+
+$(BARK_ICON_NAMES_H): $(THEOS_PROJECT_DIR)/scripts/generate-bark-icon-names.py $(BARK_ICON_PNGS)
+	@python3 $(THEOS_PROJECT_DIR)/scripts/generate-bark-icon-names.py \
+		$(THEOS_PROJECT_DIR)/assets/bark-icons \
+		$(BARK_ICON_NAMES_H)
 
 # Liquid Glass icon metadata header is generated explicitly by running 'make lg-previews'
 LG_DIR = $(THEOS_PROJECT_DIR)/liquid-glass
