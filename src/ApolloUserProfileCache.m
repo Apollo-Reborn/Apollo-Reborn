@@ -1,3 +1,4 @@
+#import "ApolloProfileBannerURL.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — follow-state account scoping
 #import "ApolloBannedProfile.h"
@@ -1114,7 +1115,8 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
 }
 
 - (NSString *)bannerKeyForURL:(NSURL *)url {
-    return [@"banner:" stringByAppendingString:url.absoluteString ?: @""];
+    // Preserve the supplied query in the key: signed/versioned URLs must not collide.
+    return [@"banner-v2:" stringByAppendingString:url.absoluteString ?: @""];
 }
 
 - (UIImage *)cachedBannerImageForURL:(NSURL *)url {
@@ -1191,43 +1193,56 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
                 }
             }
 
-            NSURLSessionDataTask *task = [self.imageSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-                UIImage *image = nil;
-                BOOL sourceHasAlpha = NO;
-                if (!error && data.length > 0) {
-                    @autoreleasepool {
-                        UIImage *sourceImage = [UIImage imageWithData:data];
-                        sourceHasAlpha = ApolloImageHasAlphaChannel(sourceImage);
-                        image = ApolloDownscaledBannerImage(sourceImage);
-                    }
-                }
-                if (!image && error) {
-                    ApolloLog(@"[UserAvatars] Failed to load banner %@: %@", key, error.localizedDescription);
-                }
-                if (!image) {
-                    NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-                    NSInteger statusCode = http ? http.statusCode : 0;
-                    BOOL transient = (error && ApolloUserProfileErrorIsTransient(error)) ||
-                        statusCode == 429 || statusCode >= 500;
-                    if (!transient) {
-                        dispatch_async(self.queue, ^{ self.imageNotFoundDates[key] = [NSDate date]; });
-                    }
-                } else {
-                    // JPEG flattens transparency. Preserve alpha-bearing banner
-                    // sources as PNG so their cold-cache rendering matches the
-                    // in-memory result from the download that created the file.
-                    NSData *persistData = sourceHasAlpha
-                        ? UIImagePNGRepresentation(image)
-                        : UIImageJPEGRepresentation(image, 0.85);
-                    if (persistData) {
-                        dispatch_barrier_async(self.imageIOQueue, ^{ [self persistImageData:persistData forKey:key]; });
-                    }
-                }
-                [self finishBannerImageRequestForKey:key image:image];
-            }];
-            [task resume];
+            NSURL *candidate = ApolloProfileBannerOriginalCandidate(url);
+            [self downloadBannerImageForURL:candidate
+                               fallbackURL:[candidate isEqual:url] ? nil : url key:key];
         });
     });
+}
+// At most two attempts; finish/cache only after the selected URL succeeds or both fail.
+- (void)downloadBannerImageForURL:(NSURL *)url fallbackURL:(NSURL *)fallbackURL key:(NSString *)key {
+    NSURLSessionDataTask *task = [self.imageSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = nil;
+        BOOL sourceHasAlpha = NO;
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (id)response : nil;
+        BOOL successfulResponse = !http || (http.statusCode >= 200 && http.statusCode < 300);
+        if (!error && successfulResponse && data.length > 0) {
+            @autoreleasepool {
+                UIImage *sourceImage = [UIImage imageWithData:data];
+                sourceHasAlpha = ApolloImageHasAlphaChannel(sourceImage);
+                image = ApolloDownscaledBannerImage(sourceImage);
+            }
+        }
+        BOOL cancelled = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
+        if (!image && fallbackURL && !cancelled) {
+            ApolloLog(@"[UserAvatars] Original banner unavailable; retrying supplied URL");
+            [self downloadBannerImageForURL:fallbackURL fallbackURL:nil key:key];
+            return;
+        }
+        if (!image && error) {
+            ApolloLog(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
+        }
+        if (!image) {
+            NSInteger statusCode = http ? http.statusCode : 0;
+            BOOL transient = (error && ApolloUserProfileErrorIsTransient(error)) ||
+                statusCode == 429 || statusCode >= 500;
+            if (!transient) {
+                dispatch_async(self.queue, ^{ self.imageNotFoundDates[key] = [NSDate date]; });
+            }
+        } else {
+            // JPEG flattens transparency. Preserve alpha-bearing banner
+            // sources as PNG so their cold-cache rendering matches the
+            // in-memory result from the download that created the file.
+            NSData *persistData = sourceHasAlpha
+                ? UIImagePNGRepresentation(image)
+                : UIImageJPEGRepresentation(image, 0.85);
+            if (persistData) {
+                dispatch_barrier_async(self.imageIOQueue, ^{ [self persistImageData:persistData forKey:key]; });
+            }
+        }
+        [self finishBannerImageRequestForKey:key image:image];
+    }];
+    [task resume];
 }
 
 - (void)clearAllCaches {

@@ -3,6 +3,7 @@
 #import "ApolloThemeCompiler.h"
 #import "ApolloThemeGalleryCatalog.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import <CoreText/CoreText.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -1466,6 +1467,16 @@ UIColor *ApolloThemeAccentColor(void) {
     return custom ?: ApolloThemeStockAccentColor();
 }
 
+// Stock tap feedback is independent of the selected accent (#743).
+UIColor *ApolloThemeRowHighlightColor(void) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenRowHighlight);
+    if (custom) return custom;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return ApolloThemeUIColorFromRGB(traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? 0x34373F : 0xF0F1F3);
+    }];
+}
+
 // Dark-mode card override for a non-tinted stock theme, per Apollo's Pure
 // Black tier. PURER is only consulted when Pure Black is also on — Apollo
 // hides its toggle (and ignores the stored value) once Pure Black is off,
@@ -1558,9 +1569,64 @@ UIColor *ApolloThemePageBackgroundColor(void) {
     return custom ?: ApolloThemeStockPageBackgroundColor();
 }
 
+// Settings labels share Apollo's stock text palette. Keep this in the theme
+// runtime so custom themes and both Pure Black modes follow the same rules as
+// native rows, without copying a possibly stale on-screen label color.
+static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
+    UIColor *custom = ApolloThemeRuntimeColor(secondary ? ApolloThemeTokenSecondaryLabel : ApolloThemeTokenLabel);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+        uint32_t black = 0;
+        BOOL pure = dark && !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        uint32_t rgb = secondary ? (dark ? 0x94969D : 0x666666)
+            : (dark ? (pure ? 0xD0D1D6 : 0xEEEFF5) : 0x000000);
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
+UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
+
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).
+static UIColor *ApolloThemeSubredditListColor(NSUInteger role) {
+    ApolloThemeToken token = role == 0 ? ApolloThemeTokenSecondaryBackground
+        : role == 1 ? ApolloThemeTokenBackground
+        : role == 2 ? ApolloThemeTokenLabel : ApolloThemeTokenSecondaryLabel;
+    UIColor *custom = ApolloThemeRuntimeColor(token);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    UIColor *surface = role == 0 ? ApolloThemeCardBackgroundColor() : ApolloThemePageBackgroundColor();
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+        uint32_t black = 0;
+        BOOL pure = dark && !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        if (role < 2 && !pure) return [surface resolvedColorWithTraitCollection:traits];
+        uint32_t rgb = role == 0 ? black : role == 1 ? 0x1A1A1A
+            : role == 2 ? (dark ? (pure ? 0xD0D1D6 : 0xEEEFF5) : 0x000000)
+            : (dark ? 0x94969D : 0x666666);
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+UIColor *ApolloThemeSubredditListBackgroundColor(void) { return ApolloThemeSubredditListColor(0); }
+UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void) { return ApolloThemeSubredditListColor(1); }
+UIColor *ApolloThemeSubredditListTextColor(void) { return ApolloThemeSubredditListColor(2); }
+UIColor *ApolloThemeSubredditListSecondaryTextColor(void) { return ApolloThemeSubredditListColor(3); }
+
 static BOOL ApolloStockNonTintedDarkSeparatorRGB(uint32_t *outRGB) {
     NSUserDefaults *d = GroupDefaults();
     if (![d boolForKey:kUsePureBlackDarkModeKey]) return NO;
@@ -2390,6 +2456,9 @@ static void ApolloThemeRestoreOverlayPillText(id node) {
 - (void)didMoveToWindow {
     %orig;
     ApplyThemeSearchFieldBackground(self);
+    // Header Style (ApolloScrollEdgeEffect.xm) shares this hook rather than
+    // adding a second UISearchBar didMoveToWindow.
+    ApolloHeaderStyleSearchBarDidMoveToWindow(self);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {

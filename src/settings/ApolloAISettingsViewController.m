@@ -201,6 +201,7 @@ static UIView *ApolloAIModelAccessory(NSString *badge, BOOL selected, UIColor *f
     search.searchResultsUpdater = self;
     search.searchBar.placeholder = @"Search models";
     self.modelSearchController = search;
+    ApolloHeaderStyleRegisterSearchBar(search.searchBar);
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;

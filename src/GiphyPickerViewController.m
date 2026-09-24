@@ -1,6 +1,7 @@
 #import "GiphyPickerViewController.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 
 #import <ImageIO/ImageIO.h>
@@ -293,6 +294,7 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
     self.searchController.searchResultsUpdater = self;
     self.searchController.searchBar.placeholder = @"Search GIFs";
     self.searchController.searchBar.delegate = self;
+    ApolloHeaderStyleRegisterSearchBar(self.searchController.searchBar);
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;

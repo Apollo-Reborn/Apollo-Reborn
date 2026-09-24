@@ -139,6 +139,51 @@ static UIView *ApolloNavMakeShadowView(CGRect frame, UITraitCollection *traits) 
     return shadow;
 }
 
+// The glass search field draws its pill through an intermediate layer UIKit wraps around
+// the field's own layer (a _UIMultiLayer between the field and its container). When an
+// interactive transition run through this animator is cancelled, UIKit leaves the outgoing
+// item's field UNWRAPPED: the view hierarchy, the material bookkeeping
+// (_resolvedBackgroundMaterial, _wantsDynamicBackgroundMaterial) and the background-
+// suppression count all read as before, but the pill is gone. Apollo's own animator keeps
+// it, so this is the interruptible path's to repair — measured on iOS 26.5 and 27.0, on the
+// comments screen and Home. The wrapper is still present right after completeTransition:
+// and gone by the next main-queue turn. Re-running the field's dynamic-material application
+// puts it back; a layout pass, a backdrop-style re-evaluation or toggling the flag without
+// the update does not.
+@interface UITextField (ApolloNavSearchFieldMaterial)
+- (BOOL)_wantsDynamicBackgroundMaterial;
+- (void)_setWantsDynamicBackgroundMaterial:(BOOL)wants;
+- (void)_updateBackgroundMaterial;
+@end
+
+static UITextField *ApolloNavSearchFieldForItem(UINavigationItem *item) {
+    UISearchBar *bar = item.searchController.searchBar;
+    if (!bar) return nil;
+    if (@available(iOS 13.0, *)) return bar.searchTextField;
+    return nil;
+}
+
+static BOOL ApolloNavSearchFieldHasMaterialLayer(UITextField *field) {
+    CALayer *superlayer = field.layer.superlayer;
+    return field.superview != nil && superlayer != nil && superlayer != field.superview.layer;
+}
+
+static void ApolloNavRestoreSearchFieldMaterial(UITextField *field, const char *when) {
+    if (!field || !field.window || ApolloNavSearchFieldHasMaterialLayer(field)) return;
+    if (![field respondsToSelector:@selector(_wantsDynamicBackgroundMaterial)] ||
+        ![field respondsToSelector:@selector(_setWantsDynamicBackgroundMaterial:)] ||
+        ![field respondsToSelector:@selector(_updateBackgroundMaterial)] ||
+        ![field _wantsDynamicBackgroundMaterial]) {
+        return;
+    }
+    [field _setWantsDynamicBackgroundMaterial:NO];
+    [field _updateBackgroundMaterial];
+    [field _setWantsDynamicBackgroundMaterial:YES];
+    [field _updateBackgroundMaterial];
+    ApolloLog(@"[InterruptibleNav] cancelled transition dropped the search field's glass; re-applied %s (restored=%d)",
+              when, (int)ApolloNavSearchFieldHasMaterialLayer(field));
+}
+
 static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
                                                        id<UIViewControllerContextTransitioning> ctx) {
     BOOL interactive = ctx.isInteractive;
@@ -154,6 +199,10 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     UINavigationItem *fromItem = fromVC.navigationItem;
     UISearchController *fromSearch = fromItem.searchController;
     UINavigationController *navigationController = fromVC.navigationController;
+    // Noted before the transition can touch it: whether the outgoing item's search field
+    // draws its glass pill, so a cancelled transition can be checked against it.
+    UITextField *fromField = interactive ? ApolloNavSearchFieldForItem(fromItem) : nil;
+    BOOL fromFieldHadMaterial = ApolloNavSearchFieldHasMaterialLayer(fromField);
     BOOL hadRevealedSearch = ApolloNativeFeedSearchEnabled() && interactive && !push && fromSearch && !fromSearch.active &&
         fromItem.hidesSearchBarWhenScrolling && CGRectGetHeight(fromSearch.searchBar.bounds) > 1.0;
     __block BOOL holdsRevealedInset = NO;
@@ -269,6 +318,18 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
                 fromItem.hidesSearchBarWhenScrolling = YES;
             }
             if (cancelled && interactive) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
+            if (cancelled && interactive && fromFieldHadMaterial) {
+                // Only a field that drew its pill before the transition is checked. The
+                // wrapper goes missing between completeTransition: and the next main-queue
+                // turn (10 ms later on both 26.5 and 27.0); a second look a quarter second
+                // on is the backstop for a slower pass. Both are no-ops once it is back.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ApolloNavRestoreSearchFieldMaterial(fromField, "on the next turn");
+                });
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    ApolloNavRestoreSearchFieldMaterial(fromField, "250 ms on");
+                });
+            }
         };
         // The reversed animator has already returned the page to its rest frame.
         // Item, inset and title restoration must not start a second animation.

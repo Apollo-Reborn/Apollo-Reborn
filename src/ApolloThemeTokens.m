@@ -68,6 +68,7 @@ static NSString * const kTokenKeys[ApolloThemeTokenCount] = {
     [ApolloThemeTokenAccentText]          = @"accentText",
     [ApolloThemeTokenLink]                = @"link",
     [ApolloThemeTokenSelection]           = @"selection",
+    [ApolloThemeTokenRowHighlight]        = @"rowHighlight",
     [ApolloThemeTokenDisabled]            = @"disabled",
 };
 

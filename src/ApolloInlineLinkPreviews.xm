@@ -159,7 +159,8 @@ typedef struct {
 } ApolloLPRegisteredRecolorResult;
 
 static void ApolloLPTriggerRelayoutForHost(ASDisplayNode *node, NSString *host);
-static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDisplayNode *originNode, NSString *host);
+static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDisplayNode *originNode, NSString *host,
+                                             BOOL (^validate)(UIView *) = nil, void (^completion)(void) = nil);
 static ASDisplayNode *ApolloLPFindOwningCellNode(ASDisplayNode *node);
 static void ApolloLPNoteRowReloadMissForNode(ASDisplayNode *node, NSString *host);
 static BOOL ApolloLPIsRedditUserProfileURL(NSURL *url);
@@ -2360,7 +2361,8 @@ static void ApolloLPClearHostShell(ASDisplayNode *node) {
 
     node.backgroundColor = [UIColor clearColor];
     node.cornerRadius = 0.0;
-    node.clipsToBounds = NO;
+    // Contain newly loaded children until the row commits their measured height.
+    node.clipsToBounds = YES;
     node.borderWidth = 0.0;
     node.borderColor = nil;
     node.shadowOpacity = 0.0;
@@ -3673,25 +3675,29 @@ static BOOL ApolloLPScrollViewIsInteracting(UIScrollView *scrollView) {
 static void ApolloLPScheduleTableRowReloadWhenIdle(UITableView *tableView,
                                                     NSIndexPath *indexPath,
                                                     ASDisplayNode *originNode,
-                                                    NSString *host) {
+                                                    NSString *host, BOOL (^validate)(UIView *), void (^completion)(void)) {
     __weak ASDisplayNode *weakOriginNode = originNode;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         ASDisplayNode *strongOriginNode = weakOriginNode;
         if (!tableView.window) {
-            ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.row);
+            if (!validate) ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.row);
+            if (completion) completion();
             return;
         }
         if (ApolloLPScrollViewIsInteracting(tableView)) {
-            ApolloLPScheduleTableRowReloadWhenIdle(tableView, indexPath, strongOriginNode, host);
+            ApolloLPScheduleTableRowReloadWhenIdle(tableView, indexPath, strongOriginNode, host, validate, completion);
             return;
         }
         @try {
             if (![[tableView indexPathsForVisibleRows] containsObject:indexPath]) {
-                ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.row);
+                if (!validate) ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.row);
                 return;
             }
+            if (validate && !validate([tableView cellForRowAtIndexPath:indexPath])) return;
             [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
         } @catch (__unused NSException *exception) {
+        } @finally {
+            if (completion) completion();
         }
     });
 }
@@ -3699,32 +3705,43 @@ static void ApolloLPScheduleTableRowReloadWhenIdle(UITableView *tableView,
 static void ApolloLPScheduleCollectionItemReloadWhenIdle(UICollectionView *collectionView,
                                                           NSIndexPath *indexPath,
                                                           ASDisplayNode *originNode,
-                                                          NSString *host) {
+                                                          NSString *host, BOOL (^validate)(UIView *), void (^completion)(void)) {
     __weak ASDisplayNode *weakOriginNode = originNode;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         ASDisplayNode *strongOriginNode = weakOriginNode;
         if (!collectionView.window) {
-            ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.item);
+            if (!validate) ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.item);
+            if (completion) completion();
             return;
         }
         if (ApolloLPScrollViewIsInteracting(collectionView)) {
-            ApolloLPScheduleCollectionItemReloadWhenIdle(collectionView, indexPath, strongOriginNode, host);
+            ApolloLPScheduleCollectionItemReloadWhenIdle(collectionView, indexPath, strongOriginNode, host, validate, completion);
             return;
         }
         @try {
             if (![[collectionView indexPathsForVisibleItems] containsObject:indexPath]) {
-                ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.item);
+                if (!validate) ApolloLPRenoteDroppedRowReload(strongOriginNode, host, indexPath.item);
+                if (completion) completion();
+                return;
+            }
+            if (validate && !validate([collectionView cellForItemAtIndexPath:indexPath])) {
+                if (completion) completion();
                 return;
             }
             [collectionView performBatchUpdates:^{
                 [collectionView reloadItemsAtIndexPaths:@[indexPath]];
-            } completion:nil];
+            } completion:^(__unused BOOL finished) {
+                if (completion) completion();
+            }];
+            return;
         } @catch (__unused NSException *exception) {
+            if (completion) completion();
         }
     });
 }
 
-static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDisplayNode *originNode, NSString *host) {
+static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDisplayNode *originNode, NSString *host,
+                                             BOOL (^validate)(UIView *), void (^completion)(void)) {
     // No table geometry (indexPathForCell: below) while a row-height pass is on
     // the stack — that nests a full row-data re-validation per row and
     // overflows the main stack (#831/#833 geometry). Report "not handled":
@@ -3756,6 +3773,7 @@ static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDispla
             [ApolloLPPendingCrossNodeRowReloads() removeObjectForKey:budgetURL.absoluteString];
         }
         // Report handled: a renote here would just re-arm the healers we drained.
+        if (completion) completion();
         return YES;
     }
 
@@ -3785,7 +3803,7 @@ static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDispla
             // Reload ONLY the affected row, after active scrolling settles. A
             // reload during tracking/deceleration steals the frame budget and can
             // perturb touch handling; cached metadata lets the row wait safely.
-            ApolloLPScheduleTableRowReloadWhenIdle(tableView, indexPathCopy, originNode, hostCopy);
+            ApolloLPScheduleTableRowReloadWhenIdle(tableView, indexPathCopy, originNode, hostCopy, validate, completion);
             return YES;
         }
 
@@ -3797,7 +3815,7 @@ static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *startNode, ASDispla
             [attempts addObject:@(now)]; // burn budget only for a SCHEDULED reload
             NSString *hostCopy = [host copy];
             NSIndexPath *indexPathCopy = [indexPath copy];
-            ApolloLPScheduleCollectionItemReloadWhenIdle(collectionView, indexPathCopy, originNode, hostCopy);
+            ApolloLPScheduleCollectionItemReloadWhenIdle(collectionView, indexPathCopy, originNode, hostCopy, validate, completion);
             return YES;
         }
     }
@@ -3916,8 +3934,46 @@ static void ApolloLPArmRelayoutClimb(ASDisplayNode *node, ASDisplayNode *cellNod
     });
 }
 
+static ASDisplayNode *ApolloLPHostedCellForSizeUpdate(ASDisplayNode *node) {
+    ASDisplayNode *cell = ApolloLPFindOwningCellNode(node);
+    Class cellClass = objc_getClass("ASCellNode");
+    SEL interactionDelegate = NSSelectorFromString(@"interactionDelegate");
+    if (!cellClass || ![cell isKindOfClass:cellClass] ||
+        ![cell respondsToSelector:interactionDelegate] ||
+        ![cell respondsToSelector:NSSelectorFromString(@"_rootNodeDidInvalidateSize")]) return nil;
+
+    // Unhosted cells measure synchronously; only use Texture's queued container path.
+    id container = ((id (*)(id, SEL))objc_msgSend)(cell, interactionDelegate);
+    Class tableClass = objc_getClass("ASTableView");
+    Class collectionClass = objc_getClass("ASCollectionView");
+    if (!((tableClass && [container isKindOfClass:tableClass]) ||
+          (collectionClass && [container isKindOfClass:collectionClass]))) return nil;
+    if (![container respondsToSelector:NSSelectorFromString(@"indexPathForNode:")] ||
+        ![container respondsToSelector:NSSelectorFromString(@"nodeDidInvalidateSize:")]) return nil;
+    return cell;
+}
+
+static BOOL ApolloLPInvalidateHostedCell(ASDisplayNode *node) {
+    ASDisplayNode *cell = ApolloLPHostedCellForSizeUpdate(node);
+    if (!cell) return NO;
+    id __attribute__((objc_precise_lifetime)) container =
+        ((id (*)(id, SEL))objc_msgSend)(cell, NSSelectorFromString(@"interactionDelegate"));
+    // Table membership queries may touch UIKit row data; keep them outside layout callbacks.
+    if (!((id (*)(id, SEL, id))objc_msgSend)(container, NSSelectorFromString(@"indexPathForNode:"), cell)) return NO;
+
+    // Texture batches these invalidations and remeasures the row before laying out its children.
+    NSUInteger depth = 0;
+    for (ASDisplayNode *current = node; current && depth < 32; current = current.supernode, depth++) {
+        ((void (*)(id, SEL))objc_msgSend)(current, @selector(invalidateCalculatedLayout));
+        if (current == cell) break;
+    }
+    ((void (*)(id, SEL))objc_msgSend)(cell, NSSelectorFromString(@"_rootNodeDidInvalidateSize"));
+    return YES;
+}
+
 static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDelayed, NSString *host) {
     if (!node) return;
+    if (ApolloLPInvalidateHostedCell(node)) return;
     ASDisplayNode *cellNode = ApolloLPFindOwningCellNode(node);
     ApolloLPInvalidateAncestorChain(node);
 
@@ -3994,82 +4050,202 @@ static void ApolloLPTriggerPlaceholderContextRelayout(ASDisplayNode *node, NSStr
 // because the LinkButtonNode is still detached (supernode == nil) while the
 // cell is measured off-tree, so no owning cell can be found at refresh time.
 // Instead of trusting the triggers, verify geometry after the fact: if the
-// card's rendered content sticks out the bottom of its row's cell view,
-// reload that row. Pure geometry — healthy rows are never reloaded.
-static void ApolloLPRunOverflowHeightCheck(ASDisplayNode *node, NSString *host, NSInteger remainingAttempts) {
-    if (!node) return;
-    @try {
-        // V26: only police rows whose height this module actually owns.
-        // A LinkButtonNode for an inline-media URL (i.imgur.com/*.jpeg etc.) is
-        // collapsed to a zero-size spec by ApolloInlineImages — its row height
-        // belongs to that module's aspect-ratio pipeline. But Apollo's native
-        // pill layout can still leave ~47pt of stale subview frames on the
-        // collapsed stub, and the union below would read them as a phantom
-        // "overflow=47pt" that a row reload can never fix (the reload rebuilds
-        // the same stub) — on a vote this looped reload → rebuild → reload
-        // forever, visibly flickering the comment. Bail by URL
-        // ownership, which is deterministic; genuine V18 subjects (twitter/
-        // bsky/site cards) are never inline-media URLs.
-        {
-            NSURL *ownURL = objc_getAssociatedObject(node, &kApolloLinkPreviewURLKey);
-            if (!ownURL) {
-                NSString *ownURLString = ApolloGetLinkButtonNodeURLString(node);
-                if (ownURLString.length > 0) ownURL = [NSURL URLWithString:ownURLString];
-            }
-            if (ownURL && ApolloLPShouldDeferToInlineMedia(ownURL)) return;
-        }
-        BOOL loaded = [node respondsToSelector:@selector(isNodeLoaded)] && [node isNodeLoaded];
-        UIView *nodeView = loaded ? ApolloLPViewForNode(node) : nil;
-        UIView *cellView = nil;
-        if (nodeView.window) {
-            for (UIView *current = nodeView; current; current = current.superview) {
-                if ([current isKindOfClass:[UITableViewCell class]] ||
-                    [current isKindOfClass:[UICollectionViewCell class]]) {
-                    cellView = current;
-                    break;
-                }
-            }
-        }
-        if (!cellView) {
-            // Node not on screen (yet) — retry briefly in case it is mid-attach.
-            if (remainingAttempts > 0) {
-                __weak ASDisplayNode *weakNode = node;
-                NSString *hostCopy = [host copy];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)),
-                               dispatch_get_main_queue(), ^{
-                    ASDisplayNode *strongNode = weakNode;
-                    if (strongNode) ApolloLPRunOverflowHeightCheck(strongNode, hostCopy, remainingAttempts - 1);
-                });
-            }
-            return;
-        }
+// card overflows the cell or overlaps its footer, reload that row.
+static CGFloat ApolloLPFeedFooterOverlap(ASDisplayNode *node, UIView *cellView, CGRect cardFrame) {
+    ASDisplayNode *cellNode = ApolloLPFindOwningCellNode(node);
+    Class largePostClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
+    if (!largePostClass || ![cellNode isKindOfClass:largePostClass]) return 0;
 
-        // Views don't clip by default, so a stale row shows content drawn
-        // beyond the node's frame — include one level of subview frames.
-        CGRect content = nodeView.bounds;
-        for (UIView *subview in nodeView.subviews) {
-            content = CGRectUnion(content, subview.frame);
+    CGFloat overlap = 0;
+    // These are ObjC node ivars; compact posts use a different layout.
+    const char *footerIvars[] = { "postInfoNode", "optionButtonsNode" };
+    for (const char *ivarName : footerIvars) {
+        ASDisplayNode *footer = ApolloLPModelFromNodeIvar(cellNode, ivarName);
+        if (![footer respondsToSelector:@selector(isNodeLoaded)] || !footer.isNodeLoaded || footer.hidden) continue;
+        UIView *footerView = ApolloLPViewForNode(footer);
+        if (!footerView || footerView.hidden || footerView.alpha <= 0 ||
+            ![footerView isDescendantOfView:cellView] || CGRectIsEmpty(footerView.bounds)) continue;
+        CGRect footerFrame = [footerView convertRect:footerView.bounds toView:cellView];
+        // Metadata may be positioned above the card.
+        if (CGRectGetMinY(footerFrame) <= CGRectGetMinY(cardFrame)) continue;
+        CGRect intersection = CGRectIntersection(cardFrame, footerFrame);
+        if (!CGRectIsNull(intersection) && !CGRectIsEmpty(intersection)) {
+            overlap = MAX(overlap, CGRectGetHeight(intersection));
         }
-        CGRect frameInCell = [nodeView convertRect:content toView:cellView];
-        CGFloat overflow = CGRectGetMaxY(frameInCell) - CGRectGetHeight(cellView.bounds);
-        if (overflow > 8.0) {
-            ApolloLog(@"[LinkPreviews] V18-stale-row-height host=%@ overflow=%.0fpt -> reloading row",
-                      host ?: @"?", overflow);
-            ApolloLPInvokeRowReloadIfPossible(node, node, host);
-        }
-    } @catch (__unused NSException *exception) {}
+    }
+    return overlap;
 }
 
-// Let layout settle before measuring; runs on main.
-static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *host) {
-    if (!node) return;
+// Main-thread state follows an outstanding check/reload, not the node's lifetime.
+@interface ApolloLPOverflowState : NSObject
+@property CGRect frame;
+@property CGRect content;
+@property BOOL hasGeometry;
+@property BOOL checkPending;
+@property BOOL reloadPending;
+@property NSTimeInterval changedAt;
+@property CGSize requestedContentSize;
+@property BOOL sizeUpdatePending;
+@end
+@implementation ApolloLPOverflowState
+@end
+
+static char kApolloLPOverflowStateKey;
+static ApolloLPOverflowState *ApolloLPOverflowStateForNode(ASDisplayNode *node) {
+    ApolloLPOverflowState *state = objc_getAssociatedObject(node, &kApolloLPOverflowStateKey);
+    if (!state) {
+        state = [ApolloLPOverflowState new];
+        objc_setAssociatedObject(node, &kApolloLPOverflowStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return state;
+}
+
+static BOOL ApolloLPObserveOverflowGeometry(UIView *view, ApolloLPOverflowState *state) {
+    // Child content can grow while the host keeps its placeholder height.
+    CGRect content = view.bounds;
+    for (UIView *child in view.subviews) {
+        if (!child.hidden && child.alpha > 0) content = CGRectUnion(content, child.frame);
+    }
+    if (state.hasGeometry && CGRectEqualToRect(state.frame, view.frame) &&
+        CGRectEqualToRect(state.content, content)) return NO;
+    state.frame = view.frame;
+    state.content = content;
+    state.hasGeometry = YES;
+    state.changedAt = CACurrentMediaTime();
+    return YES;
+}
+
+static UIView *ApolloLPOverflowCellView(UIView *view) {
+    for (UIView *current = view; current; current = current.superview) {
+        if ([current isKindOfClass:UITableViewCell.class] ||
+            [current isKindOfClass:UICollectionViewCell.class]) return current;
+    }
+    return nil;
+}
+
+static BOOL ApolloLPOverflowLayoutIsBusy(UIView *view) {
+    if (ApolloRowMeasureInProgress()) return YES;
+    for (UIView *current = view; current; current = current.superview) {
+        if (current.layer.animationKeys.count > 0) return YES;
+        if ([current isKindOfClass:UIScrollView.class] && ApolloLPScrollViewIsInteracting((id)current)) return YES;
+    }
+    return NO;
+}
+
+static BOOL ApolloLPHasOverflow(ASDisplayNode *node, UIView *view, UIView *cell, CGRect content) {
+    if (!cell || ![view isDescendantOfView:cell]) return NO;
+    CGRect frame = [view convertRect:content toView:cell];
+    return CGRectGetMaxY(frame) - CGRectGetHeight(cell.bounds) > 8.0 ||
+           ApolloLPFeedFooterOverlap(node, cell, frame) > 8.0;
+}
+
+static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *host, BOOL layoutOnly = NO);
+static void ApolloLPDeferOverflowHeightCheck(ASDisplayNode *node, NSString *host) {
     __weak ASDisplayNode *weakNode = node;
-    NSString *hostCopy = [host copy];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
-                   dispatch_get_main_queue(), ^{
-        ASDisplayNode *strongNode = weakNode;
-        if (strongNode) ApolloLPRunOverflowHeightCheck(strongNode, hostCopy, 1);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        ASDisplayNode *node = weakNode;
+        if (!node) return;
+        ApolloLPOverflowState *state = ApolloLPOverflowStateForNode(node);
+        @try {
+            UIView *view = node.isNodeLoaded ? ApolloLPViewForNode(node) : nil;
+            if (!view.window) {
+                state.checkPending = NO;
+                state.hasGeometry = NO;
+                return;
+            }
+            // Keep one pending check while scrolling; do no rectangle conversion.
+            if (ApolloLPOverflowLayoutIsBusy(view)) {
+                ApolloLPDeferOverflowHeightCheck(node, host);
+                return;
+            }
+            ApolloLPObserveOverflowGeometry(view, state);
+            if (CACurrentMediaTime() - state.changedAt < 0.15) {
+                ApolloLPDeferOverflowHeightCheck(node, host);
+                return;
+            }
+            state.checkPending = NO;
+            if (state.reloadPending || !ApolloLPHasOverflow(node, view, ApolloLPOverflowCellView(view), state.content)) return;
+            state.reloadPending = YES;
+            __block CGRect requestedFrame = state.frame;
+            __block CGRect requestedContent = state.content;
+            BOOL handled = ApolloLPInvokeRowReloadIfPossible(node, node, host, ^BOOL(UIView *cell) {
+                ASDisplayNode *liveNode = weakNode;
+                if (!liveNode || !liveNode.isNodeLoaded) return NO;
+                UIView *liveView = ApolloLPViewForNode(liveNode);
+                if (!liveView.window || ![liveView isDescendantOfView:cell]) return NO;
+                BOOL changed = ApolloLPObserveOverflowGeometry(liveView, state);
+                if (changed || ApolloLPOverflowLayoutIsBusy(liveView) || CACurrentMediaTime() - state.changedAt < 0.15) {
+                    state.hasGeometry = NO;
+                    return NO;
+                }
+                requestedFrame = state.frame;
+                requestedContent = state.content;
+                return ApolloLPHasOverflow(liveNode, liveView, cell, state.content);
+            }, ^{
+                state.reloadPending = NO;
+                // A retained node remains eligible for subsequent content growth.
+                ASDisplayNode *liveNode = weakNode;
+                if (liveNode && (!state.hasGeometry || !CGRectEqualToRect(requestedFrame, state.frame) ||
+                                 !CGRectEqualToRect(requestedContent, state.content))) {
+                    ApolloLPScheduleOverflowHeightCheck(liveNode, host);
+                }
+            });
+            if (!handled) {
+                state.reloadPending = NO;
+                state.hasGeometry = NO;
+            }
+            ApolloLog(@"[LinkPreviews] overflow recovery requested host=%@ handled=%d", host ?: @"?", handled);
+        } @catch (NSException *exception) {
+            state.checkPending = NO;
+            state.reloadPending = NO;
+            state.hasGeometry = NO;
+            ApolloLog(@"[LinkPreviews] overflow check failed (%@)", exception.name);
+        }
     });
+}
+
+static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *host, BOOL layoutOnly) {
+    if (!node || !node.isNodeLoaded) return;
+    UIView *view = ApolloLPViewForNode(node);
+    if (!view.window) return;
+    NSURL *url = objc_getAssociatedObject(node, &kApolloLinkPreviewURLKey);
+    if (!url) {
+        NSString *string = ApolloGetLinkButtonNodeURLString(node);
+        if (string.length) url = [NSURL URLWithString:string];
+    }
+    if (!url || ApolloLPShouldDeferToInlineMedia(url)) return;
+    ApolloLPOverflowState *state = ApolloLPOverflowStateForNode(node);
+    BOOL changed = ApolloLPObserveOverflowGeometry(view, state);
+    if (CGRectGetMaxY(state.content) <= CGRectGetHeight(view.bounds) + 8.0 && !state.sizeUpdatePending) {
+        state.requestedContentSize = CGSizeZero;
+    }
+    if (CGRectGetMaxY(state.content) > CGRectGetHeight(view.bounds) + 8.0 &&
+        !state.sizeUpdatePending && !CGSizeEqualToSize(state.requestedContentSize, state.content.size) &&
+        ApolloLPHostedCellForSizeUpdate(node)) {
+        // A child has outgrown its allocated height. Repair on the next main turn,
+        // outside Texture's layout stack, without waiting for scrolling to stop.
+        state.requestedContentSize = state.content.size;
+        state.sizeUpdatePending = YES;
+        __weak ASDisplayNode *weakNode = node;
+        __weak ASDisplayNode *weakCell = ApolloLPFindOwningCellNode(node);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            state.sizeUpdatePending = NO;
+            ASDisplayNode *liveNode = weakNode;
+            UIView *liveView = liveNode.isNodeLoaded ? ApolloLPViewForNode(liveNode) : nil;
+            if (liveView.window && weakCell && ApolloLPFindOwningCellNode(liveNode) == weakCell) {
+                ApolloLPObserveOverflowGeometry(liveView, state);
+                if (CGRectGetMaxY(state.content) > CGRectGetHeight(liveView.bounds) + 8.0 &&
+                    ApolloLPInvalidateHostedCell(liveNode)) {
+                    state.requestedContentSize = state.content.size;
+                    return;
+                }
+            }
+            state.requestedContentSize = CGSizeZero;
+        });
+    }
+    if ((layoutOnly && !changed) || state.checkPending || state.reloadPending) return;
+    state.checkPending = YES;
+    ApolloLPDeferOverflowHeightCheck(node, [host copy]);
 }
 
 static ASDisplayNode *ApolloLPNodeForViewIfPossible(UIView *view) {
@@ -5054,6 +5230,13 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     }
 }
 
+- (void)layoutDidFinish {
+    %orig;
+    // Fetch callbacks can precede final child frames. Check the applied layout
+    // asynchronously so recovery stays outside Texture's layout stack.
+    ApolloLPScheduleOverflowHeightCheck((ASDisplayNode *)self, @"layout-finished", YES);
+}
+
 // V18: cards whose final content rendered while the node was detached could
 // never fix their row height (no owning cell at refresh time). Verify the
 // geometry whenever the card scrolls on screen; only broken rows reload.
@@ -5138,6 +5321,15 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
 %ctor {
     sApolloLPRegisteredLinkNodes = [NSHashTable weakObjectsHashTable];
     sApolloLPRegisteredLinkNodesLock = [NSObject new];
+
+    // Texture adds inherited lifecycle methods in +initialize. They must exist
+    // before the simulator's internal Logos generator searches for them to hook.
+    Class linkButtonClass = objc_getClass("_TtC6Apollo14LinkButtonNode");
+    Class tweetInfoClass = objc_getClass("_TtC6Apollo23LinkButtonTweetInfoNode");
+    (void)[linkButtonClass class];
+    (void)[tweetInfoClass class];
+    %init;
+    ApolloLog(@"[LinkPreviews] lifecycle hooks installed after Texture class initialization");
 
     // One-time, off-thread: derive host verdicts from previews we have already
     // fetched, so an existing install knows on its first launch which of ITS

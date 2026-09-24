@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 @class UIScrollView;
+@class UISearchBar;
 @class UITabBar;
 @class UITabBarController;
 @class UINavigationItem;
@@ -283,16 +284,33 @@ extern NSString *const ApolloScrollEdgeEffectStyleChangedNotification;
 // didMoveToWindow hook in ApolloAutoHideTabBar.xm — kept here to avoid a
 // second %hook UIScrollView didMoveToWindow, which the Logos internal
 // generator silently drops as a duplicate symbol.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
+// Registers a search bar hosted in a navigation bar (feed / comments / settings
+// and the other tweak-owned screens) with the Header Style feature, which keeps
+// its field clear of the Hard style's band edge; re-applied on style changes.
+// No-op off Liquid Glass. Defined in ApolloScrollEdgeEffect.xm; C linkage so
+// the .m screens can call it.
+#ifdef __cplusplus
+extern "C" {
+#endif
+void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar);
+// Called from ApolloThemeRuntime.xm's UISearchBar didMoveToWindow hook (the one
+// hook that class gets); applies the Hard-style insets to registered bars.
+void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
+#ifdef __cplusplus
+}
+#endif
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
-#ifdef __cplusplus
-extern "C" {
-#endif
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
+// Temporarily suppress Hard header while immersive profile artwork is visible.
+void ApolloSetProfileHeroVisible(UIViewController *viewController, BOOL visible);
 #ifdef __cplusplus
 }
 #endif
@@ -331,6 +349,8 @@ extern NSInteger sSubredditFeedLayout;
 extern BOOL sPerAccountFavoritesEnabled;
 // Effective sorting preference for the materialized favorites scope.
 extern BOOL sSortFavoritesAlphabetically;
+// Opt-in confirm sheet before the Subreddits-list star mutates favorites.
+extern BOOL sConfirmFavoriteToggle;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;

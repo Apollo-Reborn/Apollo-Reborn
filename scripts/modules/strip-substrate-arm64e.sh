@@ -20,12 +20,27 @@ strip_substrate_arm64e_in_app() {
     fi
 
     echo "Stripping arm64e slice from CydiaSubstrate (iOS 26 dyld fix)..."
-    if ! lipo -remove arm64e "$framework_bin" -output "$framework_bin.new" 2>&1; then
-        echo "Warning: lipo -remove arm64e failed; IPA may crash on iOS 26."
-        return 0
+    # The bundled substrate's arm64e slice is the legacy pre-iOS-14 ABI
+    # (cpusubtype arm64e, ptrauth version 0). Xcode 27's lipo stopped matching
+    # that slice under the plain "arm64e" name and only accepts "arm64e.old"
+    # for it, while older lipo only knows "arm64e". Try both, and as a last
+    # resort thin to the arm64 slice outright (the only slice a 64-bit iOS
+    # device loads anyway). `lipo -info` above still reports the slice as
+    # "arm64e" on every version, so that guard is fine as-is.
+    if lipo -remove arm64e "$framework_bin" -output "$framework_bin.new" 2>/dev/null \
+        || lipo -remove arm64e.old "$framework_bin" -output "$framework_bin.new" 2>/dev/null \
+        || lipo -thin arm64 "$framework_bin" -output "$framework_bin.new" 2>&1; then
+        :
+    else
+        # Shipping the slice is a guaranteed launch abort on arm64e iOS 26
+        # devices, so this is a build failure, not a warning.
+        echo "Error: could not strip the arm64e slice from CydiaSubstrate (lipo -remove arm64e, -remove arm64e.old and -thin arm64 all failed)." >&2
+        rm -f "$framework_bin.new"
+        return 1
     fi
     mv -f "$framework_bin.new" "$framework_bin"
     rm -rf "$(dirname "$framework_bin")/_CodeSignature"
+    echo "CydiaSubstrate slices now: $(lipo -archs "$framework_bin" 2>/dev/null)"
 }
 
 # Thin IPA wrapper: unpack → strip → repack. Used by callers that operate on a
@@ -44,7 +59,10 @@ strip_substrate_arm64e_in_ipa() {
     local app_bundle
     app_bundle="$(find "$work/Payload" -maxdepth 1 -name '*.app' -type d | head -1)"
     if [[ -n "$app_bundle" ]]; then
-        strip_substrate_arm64e_in_app "$app_bundle"
+        if ! strip_substrate_arm64e_in_app "$app_bundle"; then
+            rm -rf "$work"
+            return 1
+        fi
     fi
 
     rm -f "$ipa"

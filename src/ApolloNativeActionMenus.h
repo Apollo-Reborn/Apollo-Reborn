@@ -1,9 +1,20 @@
 #import <Foundation/Foundation.h>
 @class UIView;
 @class UIViewController;
+@class UIMenu;
 
 NS_ASSUME_NONNULL_BEGIN
 __BEGIN_DECLS
+
+// Capture a synchronously built native action sheet without presenting it.
+// Media menus reuse its original action handlers rather than reconstructing
+// Apollo's saving/sharing pipeline. The controller owns the captured handlers.
+id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build);
+BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
+void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
+UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
+BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller,
+                                           dispatch_block_t _Nullable didEnd);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
 // from `actionController` has completely dismissed. Returns NO when the

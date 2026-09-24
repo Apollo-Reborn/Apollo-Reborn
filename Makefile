@@ -20,6 +20,7 @@ THEME_GALLERY_GEN_M := $(THEOS_PROJECT_DIR)/$(THEME_GALLERY_DIR)/generated/Apoll
 WHATS_NEW_DIR := whats-new
 WHATS_NEW_GEN_H := $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/generated/ApolloWhatsNewCatalog.gen.h
 WHATS_NEW_GEN_M := $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/generated/ApolloWhatsNewCatalog.gen.m
+BARK_ICON_NAMES_H := $(THEOS_PROJECT_DIR)/$(SRC_DIR)/generated/ApolloBarkIconNames.gen.h
 
 SSZIPARCHIVE_FILES = $(wildcard $(SSZIPARCHIVE_DIR)/*.m) \
     $(wildcard $(SSZIPARCHIVE_DIR)/minizip/*.c) \
@@ -40,6 +41,8 @@ KSCRASH_FILES := \
     $(shell find $(KSCRASH_CORE_DIR) $(KSCRASH_RECORDING_CORE_DIR) $(KSCRASH_RECORDING_DIR) \
         -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' -o -name '*.cpp' \) | sort)
 
+# ApolloFavoriteConfirm.xm must stay after ApolloSubredditIndexPolish.xm and
+# ApolloFollowingSection.xm so its favoriteSubredditButtonTapped: hook is outermost.
 ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFoundationModels.swift \
     $(SRC_DIR)/ApolloAISummary.xm \
@@ -55,9 +58,11 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
     $(SRC_DIR)/settings/ApolloSettingsTableViewController.m \
     $(SRC_DIR)/settings/ApolloSettingsForm.m \
+    $(SRC_DIR)/settings/ApolloSettingsShortcutsViewController.m \
     $(SRC_DIR)/settings/ApolloSettingsPinnedPreview.m \
     $(SRC_DIR)/settings/ApolloContributors.m \
     $(SRC_DIR)/settings/ApolloBackupRestore.m \
+    $(SRC_DIR)/settings/ApolloBackupDocument.m \
     $(SRC_DIR)/settings/ApolloAutomaticBackup.m \
     $(SRC_DIR)/settings/ApolloAutomaticBackupViewController.m \
     $(SRC_DIR)/settings/ApolloLocalBackupsViewController.m \
@@ -72,6 +77,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloToast.m \
     $(SRC_DIR)/ApolloRedditMediaUpload.m \
     $(SRC_DIR)/ApolloNotificationBackend.m \
+    $(SRC_DIR)/ApolloBarkIconResolver.m \
     $(SRC_DIR)/ApolloUsageHeartbeat.m \
     $(SRC_DIR)/ApolloPushNotifications.m \
     $(SRC_DIR)/ApolloLiquidGlassIconIDs.m \
@@ -102,6 +108,14 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
     $(SRC_DIR)/ApolloGalleryVideoExport.xm \
+    $(SRC_DIR)/ApolloSaveAllMediaItems.m \
+    $(SRC_DIR)/ApolloSaveAllMedia.xm \
+    $(SRC_DIR)/ApolloSaveAllMediaBridge.swift \
+    $(SRC_DIR)/ApolloSaveAllMediaMenus.xm \
+    $(SRC_DIR)/ApolloGIFSaveActivity.xm \
+    $(SRC_DIR)/ApolloMediaDownloadActions.xm \
+    $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
+    $(SRC_DIR)/ApolloFeedAlbumMenus.xm \
     $(SRC_DIR)/ApolloGalleryMenu.xm \
     $(SRC_DIR)/ApolloGalleryOrientation.xm \
     $(SRC_DIR)/ApolloBannedProfile.xm \
@@ -127,11 +141,13 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloMediaMetadata.m \
     $(SRC_DIR)/ApolloMediaAutoplay.m \
     $(SRC_DIR)/ApolloCommentsCollapse.xm \
+    $(SRC_DIR)/ApolloCommentHeaderLayout.xm \
     $(SRC_DIR)/ApolloInboxCommentScroll.xm \
     $(SRC_DIR)/ApolloFindInComments.xm \
     $(SRC_DIR)/ApolloFindInCommentsGlass.xm \
     $(SRC_DIR)/ApolloStatsRowTouch.xm \
     $(SRC_DIR)/ApolloCommentVoteFlicker.xm \
+    $(SRC_DIR)/ApolloPostedCommentInsert.xm \
     $(SRC_DIR)/ApolloLiveCommentsFollow.xm \
     $(SRC_DIR)/settings/ApolloSettingsGeneralTable.xm \
     $(SRC_DIR)/settings/ApolloSettingsNativeInjections.xm \
@@ -154,10 +170,16 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloScrollEdgeEffect.xm \
     $(SRC_DIR)/ApolloProgressiveBlur.xm \
     $(SRC_DIR)/settings/ApolloSettings.xm \
+    $(SRC_DIR)/settings/ApolloSettingsTabMenu.xm \
+    $(SRC_DIR)/settings/ApolloShortcutListEditing.xm \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
+    $(SRC_DIR)/ApolloSaveAllMediaItems.m \
+    $(SRC_DIR)/ApolloSaveAllMedia.xm \
     $(SRC_DIR)/ApolloHiddenContentData.m \
     $(SRC_DIR)/ApolloHiddenContentViewController.m \
+    $(SRC_DIR)/ApolloHiddenContentMedia.m \
+    $(SRC_DIR)/ApolloHiddenContentMediaBridge.swift \
     $(SRC_DIR)/ApolloHiddenContentMenu.xm \
     $(SRC_DIR)/ApolloHideLinksBatchFix.xm \
     $(SRC_DIR)/ApolloSavedItemsDeduplicator.m \
@@ -169,6 +191,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloBoldPostTitles.xm \
     $(SRC_DIR)/ApolloNativeActionMenus.xm \
     $(SRC_DIR)/ApolloContextMenuPreviewTheme.xm \
+    $(SRC_DIR)/ApolloPostPreviewWindowGuard.xm \
     $(SRC_DIR)/ApolloActionMenu.xm \
     $(SRC_DIR)/ApolloActionMenuLayout.m \
     $(SRC_DIR)/ApolloHostedVideo.m \
@@ -197,11 +220,13 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloMediaPreviewErrorFix.xm \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
+    $(SRC_DIR)/ApolloSubredditListEditing.xm \
     $(SRC_DIR)/ApolloSubredditListLaunchSettle.xm \
     $(SRC_DIR)/ApolloQuickActions.xm \
     $(SRC_DIR)/ApolloHideModSubreddits.xm \
     $(SRC_DIR)/ApolloMultiredditEdit.xm \
     $(SRC_DIR)/ApolloFollowingSection.xm \
+    $(SRC_DIR)/ApolloFavoriteConfirm.xm \
     $(SRC_DIR)/ApolloSubredditSidebar.xm \
     $(SRC_DIR)/ApolloTagFilters.xm \
     $(SRC_DIR)/ApolloThemeTokens.m \
@@ -388,6 +413,12 @@ ApolloReborn_CFLAGS += -Wno-deprecated-declarations
 # screenshots. Only ever compiled into the simulator build, never the device/
 # release build (this branch is under the APOLLO_SIM_BUILD ifeq).
 ApolloReborn_FILES += $(SRC_DIR)/ApolloSimOpenRoute.m
+# Sim-only: runs +[ASDisplayNode initialize] from +load, ahead of every Logos
+# %init, so the internal generator can find the Texture lifecycle callbacks a
+# node class inherits (didEnterVisibleState etc.) and those %hooks install.
+# Device builds hook through Substrate, which runs +initialize on its own. See
+# src/ApolloSimTextureInit.m.
+ApolloReborn_FILES += $(SRC_DIR)/ApolloSimTextureInit.m
 # Opt-in /api/comment write diagnostics + legacy-response-shape simulator
 # (APOLLO_COMMENT_DEBUG=1 scripts/run-in-sim.sh). Used to reproduce Reddit's
 # 2026-08 legacy write-response regression against the OAuth path on demand —
@@ -408,8 +439,8 @@ endif
 
 CONTROL_FILE = $(THEOS_PROJECT_DIR)/control
 
-# Generate Version.h, the theme gallery catalog, and the What's New catalog.
-before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog
+# Generate Version.h and the checked-in catalogs/asset manifests.
+before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog generate_bark_icon_names
 
 generate_version_h:
 	@echo "Generating Version.h from control file"
@@ -438,6 +469,15 @@ $(WHATS_NEW_GEN_H) $(WHATS_NEW_GEN_M): $(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/scr
 		$(THEOS_PROJECT_DIR)/$(WHATS_NEW_DIR)/releases \
 		$(WHATS_NEW_GEN_H) \
 		$(WHATS_NEW_GEN_M)
+
+BARK_ICON_PNGS := $(wildcard $(THEOS_PROJECT_DIR)/assets/bark-icons/*.png)
+
+generate_bark_icon_names: $(BARK_ICON_NAMES_H)
+
+$(BARK_ICON_NAMES_H): $(THEOS_PROJECT_DIR)/scripts/generate-bark-icon-names.py $(BARK_ICON_PNGS)
+	@python3 $(THEOS_PROJECT_DIR)/scripts/generate-bark-icon-names.py \
+		$(THEOS_PROJECT_DIR)/assets/bark-icons \
+		$(BARK_ICON_NAMES_H)
 
 # Liquid Glass icon metadata header is generated explicitly by running 'make lg-previews'
 LG_DIR = $(THEOS_PROJECT_DIR)/liquid-glass

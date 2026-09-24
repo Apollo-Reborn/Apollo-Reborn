@@ -353,6 +353,34 @@ BOOL ApolloFindInCommentsGlassOwnsRightItems(UINavigationItem *navItem) {
     return bridge != nil && bridge.navigatorInstalled;
 }
 
+// UIKit's platter wraps a custom view with about 9pt a side (a 94pt platter around the
+// 76pt navigator, iOS 26.5 and 27.0); used only until the real platter exists.
+static const CGFloat kFGPlatterInset = 9.0;
+
+CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView *view) {
+    ApolloFindInCommentsGlassBridge *bridge = FGBridgeOwningNavItem(navItem);
+    if (!bridge || !bridge.navigatorInstalled || !view) return CGRectNull;
+    UIView *navigator = bridge.navigatorView;
+    CGFloat width = navigator.intrinsicContentSize.width + 2.0 * kFGPlatterInset;
+    if (navigator.window && navigator.window == view.window) {
+        UIView *platter = navigator.superview;
+        while (platter && ![NSStringFromClass(platter.class) containsString:@"NavigationBarPlatterView"]) {
+            platter = platter.superview;
+        }
+        UIView *edge = platter ?: navigator;
+        CGRect frame = [edge.superview convertRect:edge.frame toView:view];
+        // iOS 26.5 hands the navigator the outgoing pill's platter and animates it down
+        // to the navigator's size (120 → 84pt over ~0.3s), its model frame following at
+        // the end; until it has the navigator's width it is still the outgoing edge.
+        if (CGRectGetWidth(frame) >= 1.0 && CGRectGetWidth(frame) <= width + 1.0) return frame;
+    }
+    // Not laid out at the navigator's size yet: the slot it takes, from the trailing
+    // margin in.
+    CGFloat margin = MAX(16.0, view.layoutMargins.right);
+    return CGRectMake(CGRectGetMaxX(view.bounds) - margin - width, CGRectGetMinY(view.bounds),
+                      width, CGRectGetHeight(view.bounds));
+}
+
 static UIScrollView *FGTableForVC(UIViewController *vc) {
     id tableNode = FGObjectIvar(vc, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
@@ -409,6 +437,51 @@ static UIColor *FGAccent(UIViewController *vc) {
     self.navigatorView.previousButton.tintColor = accent;
 }
 
+// The modern bar cross-fades an animated trailing-item change on iOS 26, but
+// on iOS 27 an animated change made while the search presentation (or its
+// dismissal) is running is deferred until well after it — measured at over a
+// second before the chevrons, the cancel button and, on cancel, Apollo's items
+// showed up. The non-animated swap lands at once there; the navigator's own
+// fades below run either way.
+static BOOL FGAnimatedItemSwap(void) {
+    if (@available(iOS 27.0, *)) return NO;
+    return YES;
+}
+
+// Where the swap cannot animate, the outgoing views are cross-faded by hand:
+// snapshots of them are laid over the navigation bar at their current frames
+// before the swap, then faded out and removed. The swap itself still lands at
+// once — an item change made while the bar's search transition is in flight
+// is only applied when that transition ends, so it cannot wait for a fade.
+static NSArray<UIView *> *FGSnapshotsOverBar(NSArray<UIView *> *views) {
+    NSMutableArray<UIView *> *snapshots = [NSMutableArray array];
+    for (UIView *view in views) {
+        UIView *host = view.superview;
+        while (host && ![host isKindOfClass:UINavigationBar.class]) host = host.superview;
+        if (!host || !view.window || view.alpha < 0.01) continue;
+        UIView *snapshot = [view snapshotViewAfterScreenUpdates:NO];
+        if (!snapshot) continue;
+        snapshot.frame = [view.superview convertRect:view.frame toView:host];
+        snapshot.userInteractionEnabled = NO;
+        [host addSubview:snapshot];
+        [snapshots addObject:snapshot];
+    }
+    return snapshots;
+}
+
+static void FGFadeOutAndRemove(NSArray<UIView *> *snapshots) {
+    if (snapshots.count == 0) return;
+    [UIView animateWithDuration:0.15 delay:0 options:UIViewAnimationOptionCurveEaseIn
+                     animations:^{ for (UIView *view in snapshots) view.alpha = 0.0; }
+                     completion:^(BOOL finished) { for (UIView *view in snapshots) [view removeFromSuperview]; }];
+}
+
+static NSArray<UIView *> *FGCustomViews(NSArray<UIBarButtonItem *> *items) {
+    NSMutableArray<UIView *> *views = [NSMutableArray array];
+    for (UIBarButtonItem *item in items) if (item.customView) [views addObject:item.customView];
+    return views;
+}
+
 - (void)installNavigator {
     UIViewController *vc = self.commentsVC;
     UINavigationItem *navItem = vc.navigationItem;
@@ -431,9 +504,19 @@ static UIColor *FGAccent(UIViewController *vc) {
     // ApolloTranslation.xm (which runs from the setter hook) stands down.
     self.navigatorInstalled = YES;
     FGEnsureCountLabel(vc.navigationItem.searchController.searchBar.searchTextField);
+    // The modern bar fades Apollo's outgoing items (where the swap animates)
+    // but drops a custom view in without a transition, so the navigator fades
+    // itself in behind the swap.
+    ApolloFindGlassNavigatorView *navigator = self.navigatorView;
+    [UIView performWithoutAnimation:^{ navigator.alpha = 0.0; }];
+    BOOL animated = FGAnimatedItemSwap();
+    NSArray<UIView *> *outgoing = animated ? @[] : FGSnapshotsOverBar(FGCustomViews(current));
     self.applyingItems = YES;
-    navItem.rightBarButtonItems = [self navigatorItems];
+    [navItem setRightBarButtonItems:[self navigatorItems] animated:animated];
     self.applyingItems = NO;
+    FGFadeOutAndRemove(outgoing);
+    [UIView animateWithDuration:0.25 delay:0.05 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{ navigator.alpha = 1.0; } completion:nil];
 
     // Apollo hides its floating comment-jump button for the length of a search
     // (its presentation sets alpha 0, the dismiss restores it); it would
@@ -460,9 +543,47 @@ static UIColor *FGAccent(UIViewController *vc) {
     if (!self.navigatorInstalled) return;
     self.navigatorInstalled = NO;
     if (navItem) {
-        self.applyingItems = YES;
-        navItem.rightBarButtonItems = self.savedRightItems;
-        self.applyingItems = NO;
+        // The reverse of the install: a custom view is removed without a
+        // transition, so fade the navigator out first, then let the bar fade
+        // Apollo's items back in. The restore is skipped if something else has
+        // replaced the trailing items meanwhile.
+        NSArray<UIBarButtonItem *> *restore = self.savedRightItems;
+        ApolloFindGlassNavigatorView *navigator = self.navigatorView;
+        BOOL animated = FGAnimatedItemSwap();
+        if (animated) {
+            // The bar cross-fades the standard items back; the navigator, a
+            // custom view it would drop without a transition, fades out first.
+            // The restore is skipped if the search was re-entered during the
+            // fade or something else replaced the trailing items meanwhile.
+            __weak typeof(self) weakSelf = self;
+            void (^swap)(void) = ^{
+                typeof(self) strongSelf = weakSelf;
+                if (!strongSelf || strongSelf.navigatorInstalled || ![strongSelf itemsAreOurs:navItem.rightBarButtonItems]) return;
+                strongSelf.applyingItems = YES;
+                [navItem setRightBarButtonItems:restore animated:YES];
+                strongSelf.applyingItems = NO;
+                [UIView performWithoutAnimation:^{ navigator.alpha = 1.0; }];
+            };
+            if (navigator.window) {
+                [UIView animateWithDuration:0.15 delay:0 options:UIViewAnimationOptionCurveEaseIn | UIViewAnimationOptionBeginFromCurrentState
+                                 animations:^{ navigator.alpha = 0.0; }
+                                 completion:^(BOOL finished) { swap(); }];
+            } else {
+                swap();
+            }
+        } else {
+            // Immediate swap, cross-faded by hand: a snapshot of the navigator
+            // fades out over the returning items, which fade in themselves.
+            NSArray<UIView *> *outgoing = FGSnapshotsOverBar(@[navigator]);
+            NSArray<UIView *> *incoming = FGCustomViews(restore);
+            for (UIView *view in incoming) view.alpha = 0.0;
+            self.applyingItems = YES;
+            [navItem setRightBarButtonItems:restore animated:NO];
+            self.applyingItems = NO;
+            FGFadeOutAndRemove(outgoing);
+            [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                             animations:^{ for (UIView *view in incoming) view.alpha = 1.0; } completion:nil];
+        }
     }
     self.savedRightItems = nil;
     FGRemoveCountLabel(vc.navigationItem.searchController.searchBar.searchTextField);

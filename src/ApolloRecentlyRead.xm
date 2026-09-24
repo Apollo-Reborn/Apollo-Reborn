@@ -471,6 +471,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"Search Recently Read";
+    ApolloHeaderStyleRegisterSearchBar(self.searchController.searchBar);
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
     self.definesPresentationContext = YES;
