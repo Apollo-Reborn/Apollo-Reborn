@@ -3590,24 +3590,43 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 // under, for the "with account" widget setup code. Nil when nobody is signed
 // in, when the active account is a web-session (keyless) one — those carry a
 // synthetic bearer and no refresh token — or when the credential is missing.
+// Each nil path logs why (never the token or the name), so an exported log
+// answers "why is there no Copy with Account?".
 static NSDictionary *ApolloWidgetAccountCredentials(void) {
     id client = ApolloActiveAccountClient();
-    if (!client) return nil;
-    NSString *username = ApolloActiveAccountUsername();
-    if (username.length > 0 && ApolloWebSessionFor(username) != nil) return nil;
+    if (!client) {
+        ApolloLog(@"[WidgetSetup] No account option: no signed-in account");
+        return nil;
+    }
 
-    id refreshToken = nil, accessToken = nil, credentialClientId = nil;
+    id refreshToken = nil, accessToken = nil, credentialClientId = nil, clientUsername = nil;
     @try {
         id credential = [client valueForKey:@"authorizationCredential"];
         id token = [credential valueForKey:@"accessToken"];
         refreshToken = [token valueForKey:@"refreshToken"];
         accessToken = [token valueForKey:@"accessToken"];
         credentialClientId = [credential valueForKey:@"clientIdentifier"];
+        clientUsername = [client valueForKeyPath:@"currentUser.username"];
     } @catch (__unused NSException *e) {
+        ApolloLog(@"[WidgetSetup] No account option: couldn't read the account's credential");
         return nil;
     }
-    if (![refreshToken isKindOfClass:[NSString class]] || [refreshToken length] == 0) return nil;
-    if ([accessToken isKindOfClass:[NSString class]] && ApolloWebJSONBearerIsSynthetic(accessToken)) return nil;
+    // Name the account from the same live client the token comes from; the
+    // persisted account index is a separate read, so it's only the fallback.
+    NSString *username = ([clientUsername isKindOfClass:[NSString class]] && [clientUsername length] > 0)
+        ? clientUsername : ApolloActiveAccountUsername();
+    if (username.length > 0 && ApolloWebSessionFor(username) != nil) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account signs in with a web session (API-key-free)");
+        return nil;
+    }
+    if (![refreshToken isKindOfClass:[NSString class]] || [refreshToken length] == 0) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account has no refresh token");
+        return nil;
+    }
+    if ([accessToken isKindOfClass:[NSString class]] && ApolloWebJSONBearerIsSynthetic(accessToken)) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account has a web-session credential");
+        return nil;
+    }
 
     // Reddit binds a refresh token to the client id that issued it, and the
     // credential's own id is what RedditKit presents on every refresh — so
@@ -3615,16 +3634,22 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     // (per-account, then global) key only when the credential carries none.
     NSString *clientId = ([credentialClientId isKindOfClass:[NSString class]] && [credentialClientId length] > 0)
         ? credentialClientId : (ApolloEffectiveRedditClientId() ?: sRedditClientId);
-    if (clientId.length == 0) return nil;
+    if (clientId.length == 0) {
+        ApolloLog(@"[WidgetSetup] No account option: no client id for the account's credential");
+        return nil;
+    }
 
     NSMutableDictionary *account = [@{ @"clientID": clientId, @"refreshToken": refreshToken } mutableCopy];
     if (username.length > 0) account[@"username"] = username;
+    ApolloLog(@"[WidgetSetup] Offering Copy with Account (credential client id %@ the global key)",
+              [clientId isEqualToString:(sRedditClientId ?: @"")] ? @"matches" : @"differs from");
     return account;
 }
 
 - (void)copyWidgetSetupCode {
     NSString *clientID = sRedditClientId ?: @"";
     if (clientID.length == 0) {
+        ApolloLog(@"[WidgetSetup] No API key set, so no setup code to copy");
         [self showAlertWithTitle:@"No API Key"
                          message:@"Enter your Reddit API Key above first, then copy the widget setup code."];
         return;
@@ -3695,6 +3720,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
         UIPasteboardOptionExpirationDate: [NSDate dateWithTimeIntervalSinceNow:10 * 60],
     };
     [[UIPasteboard generalPasteboard] setItems:@[item] options:options];
+    ApolloLog(@"[WidgetSetup] Copied a v%@ setup code %@", payload[@"v"], account ? @"with account" : @"without account");
 
     NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget";
     [self showAlertWithTitle:@"Copied"
