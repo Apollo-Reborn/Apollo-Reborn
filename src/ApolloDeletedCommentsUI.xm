@@ -280,6 +280,19 @@ static UIFont *ApolloDeletedCommentsRecoveredBodyFont(void) {
     return [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
 }
 
+// Recovered bodies must use Apollo's semantic primary-label color, not the
+// foreground color of the deleted placeholder that was measured before the
+// recovery. The placeholder is dark in Apollo's dark-mode deleted-row style;
+// carrying that color into the recovered body makes it disappear under the
+// red highlight (issue #1065). ApolloThemeRuntimeColor supplies custom-theme
+// values and a dynamic UIColor, while labelColor preserves stock theme traits.
+static UIColor *ApolloDeletedCommentsBodyTextColor(void) {
+    UIColor *color = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
+    if ([color isKindOfClass:[UIColor class]]) return color;
+    if (@available(iOS 13.0, *)) return [UIColor labelColor];
+    return [UIColor blackColor];
+}
+
 static NSString *ApolloDeletedCommentsNormalizeCommentFullName(NSString *value) {
     if (![value isKindOfClass:[NSString class]] || value.length == 0) return nil;
     if ([value hasPrefix:@"t1_"]) return value;
@@ -1053,14 +1066,12 @@ static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(NSAttr
 static NSMutableDictionary *ApolloDeletedCommentsDefaultBodyAttributes(void) {
     NSDictionary *tmpl = ApolloDeletedCommentsBodyTemplateGet();
     if ([tmpl isKindOfClass:[NSDictionary class]] && tmpl.count > 0) {
-        return [tmpl mutableCopy];
+        NSMutableDictionary *attributes = [tmpl mutableCopy];
+        attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
+        return attributes;
     }
 
-    UIColor *textColor = nil;
-    if (@available(iOS 13.0, *)) {
-        textColor = [UIColor labelColor];
-    }
-    if (!textColor) textColor = [UIColor blackColor];
+    UIColor *textColor = ApolloDeletedCommentsBodyTextColor();
     return [@{
         NSFontAttributeName: ApolloDeletedCommentsRecoveredBodyFont(),
         NSForegroundColorAttributeName: textColor,
@@ -1174,15 +1185,8 @@ static NSDictionary *ApolloDeletedCommentsAppBodyAttributesForNode(id node) {
     UIFont *font = ApolloDeletedCommentsAppCommentBodyFontForNode(node);
     if (![font isKindOfClass:[UIFont class]]) return nil;
 
-    NSDictionary *tmpl = ApolloDeletedCommentsBodyTemplateGet();
-    NSDictionary *base = [tmpl isKindOfClass:[NSDictionary class]] && tmpl.count > 0 ? tmpl : nil;
     NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
-    UIColor *color = base[NSForegroundColorAttributeName];
-    if (![color isKindOfClass:[UIColor class]]) {
-        if (@available(iOS 13.0, *)) color = [UIColor labelColor];
-        if (![color isKindOfClass:[UIColor class]]) color = [UIColor blackColor];
-    }
-    attributes[NSForegroundColorAttributeName] = color;
+    attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
     attributes[NSFontAttributeName] = font;
     return attributes;
 }
@@ -1197,6 +1201,9 @@ static NSMutableDictionary *ApolloDeletedCommentsSanitizedBodyAttributes(NSDicti
     [attributes removeObjectForKey:NSLinkAttributeName];
     [attributes removeObjectForKey:ApolloDeletedCommentsRevealAttributeName];
     [attributes removeObjectForKey:ApolloDeletedCommentsReasonPrefixAttributeName];
+    // Native placeholder nodes can carry the deleted-row's dark foreground;
+    // never promote that color into a recovered body.
+    attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
     return attributes;
 }
 
@@ -3416,9 +3423,12 @@ static void ApolloDeletedCommentsApplyCellHighlight(id cellNode) {
     highlight.frame = cellView.bounds;
     if (highlight.superview != cellView) {
         [highlight removeFromSuperview];
-        [cellView addSubview:highlight];
+        [cellView insertSubview:highlight atIndex:0];
     } else {
-        [cellView bringSubviewToFront:highlight];
+        // Keep the tint behind Apollo's author/body nodes. Bringing this view to
+        // the front composites its red fill over the text, which makes dark-mode
+        // deleted comments effectively unreadable (issue #1065).
+        [cellView sendSubviewToBack:highlight];
     }
 }
 
