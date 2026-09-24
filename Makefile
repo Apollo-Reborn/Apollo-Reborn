@@ -407,6 +407,12 @@ ApolloReborn_CFLAGS += -Wno-deprecated-declarations
 # screenshots. Only ever compiled into the simulator build, never the device/
 # release build (this branch is under the APOLLO_SIM_BUILD ifeq).
 ApolloReborn_FILES += $(SRC_DIR)/ApolloSimOpenRoute.m
+# Sim-only: runs +[ASDisplayNode initialize] from +load, ahead of every Logos
+# %init, so the internal generator can find the Texture lifecycle callbacks a
+# node class inherits (didEnterVisibleState etc.) and those %hooks install.
+# Device builds hook through Substrate, which runs +initialize on its own. See
+# src/ApolloSimTextureInit.m.
+ApolloReborn_FILES += $(SRC_DIR)/ApolloSimTextureInit.m
 # Opt-in /api/comment write diagnostics + legacy-response-shape simulator
 # (APOLLO_COMMENT_DEBUG=1 scripts/run-in-sim.sh). Used to reproduce Reddit's
 # 2026-08 legacy write-response regression against the OAuth path on demand —
