@@ -668,14 +668,7 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
     UIViewController *host = self.hostViewController;
     NSURL *url = self.currentBannerURL;
     if (!host || host.presentedViewController || !sProfileShowBanner || !url) return;
-    // Match the original-image URL used by the profile cache, preserving the
-    // full artwork in the viewer and saved image rather than Reddit's crop.
-    if ([url.host.lowercaseString isEqualToString:@"styles.redditmedia.com"] &&
-        [url.path containsString:@"/styles/profileBanner_"]) {
-        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-        components.query = nil;
-        url = components.URL ?: url;
-    }
+    // The viewer chooses the original candidate and retains this supplied URL for fallback.
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;

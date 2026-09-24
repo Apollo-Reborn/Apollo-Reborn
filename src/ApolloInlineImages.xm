@@ -1,3 +1,4 @@
+#import "ApolloProfileBannerURL.h"
 // ApolloInlineImages.xm
 //
 // Renders image URLs inside Apollo's selftext / comment markdown bodies as
@@ -1900,6 +1901,16 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = YES;
                     [owner apollo_displayFileForPageIfActive:page decodedImage:nil];
                 } else if (!cancelled && !owner.tearingDown) {
+                    NSURL *fallback = owner.profileBannerPresentation ? owner.items[page][@"bannerFallbackURL"] : nil;
+                    if (fallback) {
+                        // Consume the fallback before retrying, so failure cannot loop.
+                        NSMutableArray *items = [owner.items mutableCopy];
+                        items[page] = @{@"url": fallback};
+                        owner.items = items;
+                        [owner.pendingImageIndexes insertObject:index atIndex:0];
+                        [owner apollo_pumpImageDownloads];
+                        return;
+                    }
                     [owner.failedImageIndexes addObject:index];
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = NO;
                     ApolloLog(@"[InlineImages] viewer download failed page=%ld status=%ld err=%@",
@@ -2267,8 +2278,11 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                         owner.photoLibrarySavesInFlight--;
                     }
                     if (success) {
-                        // Reuse Apollo's successful image-save callback: it owns
-                        // the checkmark, Saved! banner, and native success haptic.
+                        // Apollo 1.15.11: the ObjC thunk at 0x1004b13e8 ignores
+                        // context and only retains/releases image. Its helper
+                        // (0x1004bfab0) branches on error; nil selects Saved! when
+                        // a fresh manager has no wallpaperSavingViewController.
+                        // This reports the confirmed Photos result; it performs no save.
                         id manager = owner.profileBannerPresentation
                             ? [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init] : nil;
                         SEL saved = NSSelectorFromString(@"image:didFinishSavingWithError:contextInfo:");
@@ -2582,8 +2596,11 @@ BOOL ApolloPresentProfileBanner(NSURL *url, UIView *sourceView) {
     if (!url) return NO;
     UIViewController *top = ApolloTopVCFromView(sourceView);
     if (!top) return NO;
+    NSURL *candidate = ApolloProfileBannerOriginalCandidate(url);
+    NSDictionary *item = [candidate isEqual:url] ? @{@"url": url}
+        : @{@"url": candidate, @"bannerFallbackURL": url};
     ApolloImageChestAlbumViewController *viewer = [[ApolloImageChestAlbumViewController alloc]
-        initWithItems:@[@{@"url": url}] initialIndex:0];
+        initWithItems:@[item] initialIndex:0];
     viewer.profileBannerPresentation = YES;
     [top presentViewController:viewer animated:YES completion:nil];
     return YES;
