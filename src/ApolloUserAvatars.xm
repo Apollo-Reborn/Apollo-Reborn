@@ -2367,6 +2367,7 @@ static NSUInteger sApolloInlineAvatarActiveInfoRequests = 0;
 static NSUInteger sApolloInlineAvatarNoTextLogCount = 0;
 static NSUInteger sApolloInlineAvatarQueuedLogCount = 0;
 static NSUInteger sApolloInlineAvatarAppliedLogCount = 0;
+static NSUInteger sApolloInlineAvatarMeasureBindLogCount = 0;
 static NSUInteger sApolloInlineAvatarGaveUpLogCount = 0;
 static NSUInteger sApolloInlineAvatarLateReapplyLogCount = 0;
 static NSUInteger sApolloInlineAvatarRewriteLogCount = 0;
@@ -2741,6 +2742,70 @@ static void ApolloApplyAvatarToCellWithDiameter(id cell, NSString *username, CGF
     }
     if (cachedInfo.iconURL && canBindTextNode) ApolloApplyInlineAvatarInfoToCell(cell, username, cachedInfo);
     else ApolloScheduleInlineAvatarInfoFetchForCell(cell, username);
+}
+
+
+// ---- Measure-time binding -------------------------------------------------------------
+// The byline avatar is bound from -didLoad, but a freshly created CommentCellNode reaches
+// -didLoad with its pending layout not applied yet: the author button (ApolloButtonNode, an
+// ASButtonNode) has not laid out, so its title text node is not in `subnodes` and the subtree
+// scan above finds nothing. The binding then lands on the 50 ms retry — after the row is
+// already on screen and already measured WITHOUT the attachment, so the avatar pops in and
+// the byline grows a few points, shifting every row below it. That is what a freshly posted
+// comment looks like (its row is inserted while visible, and Apollo reloads the row that used
+// to be first alongside it), and more subtly what every comment cell does as it scrolls in.
+//
+// Bind before the FIRST measurement instead: -layoutSpecThatFits: runs on Texture's layout
+// thread before the row height is taken, the author button already carries its title, and
+// ASButtonNode's `titleNode` getter hands over that text node directly. Everything touched
+// here is safe off the main thread (Texture text-node setters and layout invalidation, NSCache
+// reads, UIGraphicsImageRenderer, associated objects); nothing walks views. The -didLoad path
+// is unchanged and becomes a same-token no-op for these cells — it still owns the metadata /
+// image fetches, the placeholder → image swap (layout-neutral: same attachment bounds), and
+// the late re-applies.
+static id ApolloAuthorTitleTextNodeForCell(id cell, NSString *username) {
+    id authorSubtree = ApolloResolveAuthorNodeSubtree(cell);
+    if (!authorSubtree) return nil;
+    id titleNode = authorSubtree;
+    if ([authorSubtree respondsToSelector:@selector(titleNode)]) {
+        id (*msgSend)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
+        titleNode = msgSend(authorSubtree, @selector(titleNode));
+    }
+    return ApolloTextNodeContainsUsername(titleNode, username) ? titleNode : nil;
+}
+
+static void ApolloBindAvatarAtMeasureForCell(id cell, NSString *username, CGFloat diameter) {
+    if (!sShowUserAvatars || !cell) return;
+    username = ApolloAvatarNormalizedUsername(username);
+    if (username.length == 0) return;
+
+    // A re-measure of an already bound cell: nothing to do.
+    id boundNode = objc_getAssociatedObject(cell, kApolloAvatarTextNodeKey);
+    if (boundNode && ApolloTextLooksAvatarPrepended(ApolloAttributedTextForNode(boundNode))) return;
+
+    id textNode = ApolloAuthorTitleTextNodeForCell(cell, username);
+    if (!textNode) return;   // -didLoad's scan and retry ladder keep handling this cell
+
+    ApolloSetInlineAvatarDiameterForObject(cell, diameter);
+    objc_setAssociatedObject(cell, kApolloAvatarUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(cell, kApolloAvatarTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloSetInlineAvatarDiameterForObject(textNode, diameter);
+
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    ApolloUserProfileInfo *info = [cache cachedInfoForUsername:username];
+    UIImage *image = info.iconURL ? [cache cachedImageForURL:info.iconURL] : nil;
+    BOOL applied;
+    if (image) {
+        UIImage *decorator = info.decoratorURL ? [cache cachedImageForURL:info.decoratorURL] : nil;
+        applied = ApolloApplyAvatarRenderToCell(cell, username, info, image, decorator);
+    } else {
+        // Same placeholder -didLoad would draw; it reserves the attachment's bounds so the
+        // later image swap changes pixels, not layout.
+        applied = ApolloApplyAvatarRenderToCell(cell, username, nil, nil, nil);
+    }
+    if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarMeasureBindLogCount)) {
+        ApolloLogDebug(@"[UserAvatars] Inline avatar bound at measure u/%@ cell=%p image=%d", username, cell, image != nil);
+    }
 }
 
 static UIView *ApolloFindSubviewOfClass(UIView *root, Class cls) {
@@ -4348,6 +4413,10 @@ static void ApolloInlineAvatarBatchEnqueueFromCommentCell(id cell) {
     ApolloInlineAvatarEnqueueFullNameForBatch(fullName);
 }
 
+// ASSizeRange { CGSize min; CGSize max; } — same -layoutSpecThatFits: ABI
+// name the rest of the repo uses (see ApolloShareAsImageGallery.xm).
+struct CDStruct_90e057aa { CGSize min; CGSize max; };
+
 %hook _TtC6Apollo15CommentCellNode
 
 // didEnterPreloadState fires while a cell is still in Texture's preload range (AHEAD of
@@ -4365,6 +4434,14 @@ static void ApolloInlineAvatarBatchEnqueueFromCommentCell(id cell) {
     if (!sShowUserAvatars) return;
     ApolloInlineAvatarBatchEnqueueFromCommentCell(self);
     ApolloApplyAvatarToCellWithDiameter(self, ApolloUsernameFromCell(self, @"comment"), ApolloCommentInlineAvatarDiameter);
+}
+
+// Texture's layout thread, before the row height is taken — see ApolloBindAvatarAtMeasureForCell.
+- (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
+    if (sShowUserAvatars) {
+        ApolloBindAvatarAtMeasureForCell(self, ApolloUsernameFromCell(self, @"comment"), ApolloCommentInlineAvatarDiameter);
+    }
+    return %orig;
 }
 
 %end
@@ -4417,10 +4494,6 @@ static BOOL ApolloAvatarIvarBool(id obj, const char *name) {
     const uint8_t *base = (const uint8_t *)(__bridge const void *)obj;
     return base[ivar_getOffset(ivar)] != 0;
 }
-
-// ASSizeRange { CGSize min; CGSize max; } — same -layoutSpecThatFits: ABI
-// name the rest of the repo uses (see ApolloShareAsImageGallery.xm).
-struct CDStruct_90e057aa { CGSize min; CGSize max; };
 
 static char kApolloAvatarSharePreviewAppliedKey;
 
