@@ -2581,10 +2581,11 @@ static BOOL ApolloNodeIsInsideLinkPreviewCard(id node) {
 }
 
 // YES when the node lives inside the post's metadata row (Apollo.PostInfoNode).
-// Hopper: -[PostInfoNode layoutSpecThatFits:] stacks only the subreddit icon/
-// button, author byline button, cake-day icon, author flair, points, liked %,
-// comments, age, edited, awards and mod controls. The feed selftext preview is
-// RichMediaNode.selfPostPreviewNode, so nothing in this row is ever the body.
+// Hopper: -[PostInfoNode layoutSpecThatFits:] stacks only metadata: the pinned
+// indicator, subreddit icon/button, author byline button, cake-day icon, author
+// flair, points, liked %, comments, age, edited, awards, and the mod / more /
+// approved buttons. The feed selftext preview is RichMediaNode's
+// selfPostPreviewNode, so nothing in this row is ever the body.
 // The feed picker has no readable RDKLink to drop the byline by author, and the
 // inline user avatar (U+FFFC + space before the name) makes "by <20-char name>"
 // exactly 25 characters, the picker's length floor. On a post with no selftext
