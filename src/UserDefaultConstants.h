@@ -69,6 +69,9 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
 // Alphabetize shared favorites and disable manual reordering. Default NO.
 static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Ask before adding or removing a favorite via the Subreddits-list star.
+// Opt-in; default OFF. See ApolloFavoriteConfirm.xm.
+static NSString *const UDKeyConfirmFavoriteToggle = @"ConfirmFavoriteToggle";
 // Per-account sorting preferences, keyed by the per-account favorites identity
 // (u:name / anonymous). Missing entries default OFF; shared preference is above.
 static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";

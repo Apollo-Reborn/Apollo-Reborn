@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFavoriteConfirm.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -174,6 +175,7 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, weak) UITableViewCell *cell;
 @property (nonatomic, weak) UIControl *nativeControl;
 @property (nonatomic, copy) NSString *subredditName;
+- (void)apollo_performStarTap;
 @end
 
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl);
@@ -1305,6 +1307,23 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 }
 
 - (void)apollo_starTapped {
+    // When Confirm Favorite Changes is on, defer the mutation (and its
+    // scroll-anchor compensation) until the user confirms — otherwise the
+    // anchor restore would run against an unchanged table and the later
+    // confirmed mutation would shift rows with no compensation.
+    if (!ApolloFavoriteConfirmShouldPrompt()) {
+        [self apollo_performStarTap];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    ApolloFavoriteConfirmRun(self, ^NSString * {
+        return weakSelf.subredditName;
+    }, ^{
+        [weakSelf apollo_performStarTap];
+    });
+}
+
+- (void)apollo_performStarTap {
     UIControl *nativeControl = self.nativeControl;
     UITableView *tableView = self.tableView;
     NSString *subredditName = self.subredditName;
@@ -1748,13 +1767,33 @@ static void ApolloSubredditIndexRefreshFavorites(UITableView *tableView, NSStrin
 }
 
 static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView, UITableViewCell *cell, NSString *subredditName, UIControl *nativeControl) {
-    if (!sSubredditListEnhancements) return;
+    NSTimeInterval delay = 0.30;
+    if (!sSubredditListEnhancements) {
+        if (!sConfirmFavoriteToggle) return;
+        // Apollo can leave the native favorites row visible after a confirmed
+        // tap is re-sent following the sheet's dismissal. Refresh from its
+        // already-mutated model without applying any enhanced star chrome.
+        __weak UITableView *weakTable = tableView;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            UITableView *strongTable = weakTable;
+            if (!strongTable || !strongTable.window) return;
+            NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(strongTable);
+            [UIView performWithoutAnimation:^{
+                [strongTable reloadData];
+                [strongTable layoutIfNeeded];
+                ApolloSubredditIndexRestoreScrollAnchor(strongTable, anchor);
+            }];
+            ApolloLog(@"[SubredditIndex] confirmed native favorite refresh subreddit=%@",
+                      subredditName ?: @"(unknown)");
+        });
+        return;
+    }
     __weak UITableView *weakTable = tableView;
     __weak UIControl *weakControl = nativeControl;
     NSString *name = [subredditName copy];
     BOOL tappedFavoritesRow = ApolloSubredditIndexCellIsInFavoritesSection(cell, tableView);
 
-    NSTimeInterval delay = 0.30;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UITableView *strongTable = weakTable;
         if (!strongTable) return;

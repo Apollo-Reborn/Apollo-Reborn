@@ -40,6 +40,8 @@ KSCRASH_FILES := \
     $(shell find $(KSCRASH_CORE_DIR) $(KSCRASH_RECORDING_CORE_DIR) $(KSCRASH_RECORDING_DIR) \
         -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' -o -name '*.cpp' \) | sort)
 
+# ApolloFavoriteConfirm.xm must stay after ApolloSubredditIndexPolish.xm and
+# ApolloFollowingSection.xm so its favoriteSubredditButtonTapped: hook is outermost.
 ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFoundationModels.swift \
     $(SRC_DIR)/ApolloAISummary.xm \
@@ -219,6 +221,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloHideModSubreddits.xm \
     $(SRC_DIR)/ApolloMultiredditEdit.xm \
     $(SRC_DIR)/ApolloFollowingSection.xm \
+    $(SRC_DIR)/ApolloFavoriteConfirm.xm \
     $(SRC_DIR)/ApolloSubredditSidebar.xm \
     $(SRC_DIR)/ApolloTagFilters.xm \
     $(SRC_DIR)/ApolloThemeTokens.m \

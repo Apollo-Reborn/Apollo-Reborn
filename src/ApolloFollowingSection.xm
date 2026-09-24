@@ -810,6 +810,58 @@ NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, 
     }
 }
 
+// Subreddit name for a VISIBLE Subreddits-list row — see ApolloFollowingSection.h.
+// Walks FavoriteSubreddits for native section 1 and sectionedSubreddits for the
+// A–Z collation sections. Returns nil for feed / multireddit / moderator rows.
+NSString *ApolloSubredditListNameAtIndexPath(UITableView *tableView, NSIndexPath *visiblePath) {
+    if (!tableView || !visiblePath) return nil;
+    if (!ApolloFollowingTableIsList(tableView)) return nil;
+
+    UIViewController *vc = (UIViewController *)tableView.dataSource;
+    ApolloFollowingMap *map = ApolloFollowingActiveMapForTable(tableView);
+    NSIndexPath *nativePath = visiblePath;
+    if (map) {
+        nativePath = ApolloFollowingNativePathForVisible(map, visiblePath);
+        if (!nativePath) return nil;
+    }
+
+    NSInteger section = nativePath.section;
+    NSInteger row = nativePath.row;
+    if (section == kApolloNativeSectionFavorites) {
+        NSArray *favorites = [[NSUserDefaults standardUserDefaults] stringArrayForKey:@"FavoriteSubreddits"];
+        if (![favorites isKindOfClass:[NSArray class]]) return nil;
+        if (row < 0 || row >= (NSInteger)favorites.count) return nil;
+        NSString *name = favorites[(NSUInteger)row];
+        return [name isKindOfClass:[NSString class]] ? name : nil;
+    }
+    if (section < kApolloNativeSectionCollation) {
+        // 0 = feed shortcuts, 2 = multireddits, 3 = moderator — no name.
+        return nil;
+    }
+
+    NSInteger collationIdx = section - kApolloNativeSectionCollation;
+    NSArray<NSArray<NSString *> *> *sections = nil;
+    if (map.sectionNames.count > 0) {
+        sections = map.sectionNames;
+    } else {
+        // Remap off, or remap-without-separation (sectionNames stays empty):
+        // walk the live sectionedSubreddits ivar the same way the map builder does.
+        sections = ApolloFollowingReadSectionedSubreddits(vc);
+        NSInteger collationCount =
+            (NSInteger)[[[UILocalizedIndexedCollation currentCollation] sectionTitles] count];
+        if (sections && (NSInteger)sections.count != collationCount) {
+            ApolloLog(@"[FollowingSection] name-at-path walked %lu sections but collation has %ld — ignoring",
+                      (unsigned long)sections.count, (long)collationCount);
+            sections = nil;
+        }
+    }
+    if (!sections) return nil;
+    if (collationIdx < 0 || collationIdx >= (NSInteger)sections.count) return nil;
+    NSArray<NSString *> *names = sections[(NSUInteger)collationIdx];
+    if (row < 0 || row >= (NSInteger)names.count) return nil;
+    return names[(NSUInteger)row];
+}
+
 static ApolloFollowingMap *ApolloFollowingActiveMapForTable(UITableView *tableView) {
     if (!ApolloFollowingTableIsList(tableView)) return nil;
     UIViewController *vc = (UIViewController *)tableView.dataSource;

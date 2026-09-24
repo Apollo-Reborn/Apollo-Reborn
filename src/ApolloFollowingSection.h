@@ -38,6 +38,12 @@ void ApolloFollowingAnimateNextRemoval(UITableView *tableView, NSIndexPath *visi
 // "MULTIREDDITS" / "MODERATOR") or @"" for any other native section.
 NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, NSInteger nativeSection);
 
+// Subreddit name backing a VISIBLE row of the Subreddits list, from Apollo's
+// model (FavoriteSubreddits / sectionedSubreddits). Translates through the
+// Following remap when that remap is engaged. nil for rows without a
+// favoritable name (feed shortcuts, multireddits, moderator) or on failure.
+NSString *ApolloSubredditListNameAtIndexPath(UITableView *tableView, NSIndexPath *visiblePath);
+
 #ifdef __cplusplus
 }
 #endif
