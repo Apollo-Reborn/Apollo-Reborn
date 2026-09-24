@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.8.0] - 2026-09-??
+
+### Features
+
+- Add **Save All Media** to save every image, GIF, and video in a Reddit gallery, Imgur album, or ImageChest post at once, from the fullscreen viewer's menus or an album's long-press menu, with a progress ring and Cancel (#1048: @IllIIllIllIllII)
+  - Fullscreen images offer Save Image next to Share, and holding an image in the viewer or a feed gallery offers Copy Image and Save Image for that image instead of jumping straight to the share sheet
+  - Also fixes **Download Video** when only Reddit's copy is available, **Save GIF** in the share sheet, and missing post controls on albums opened from a link in a post
+- Add **Action Menus** (Interface → Menus) to reorder and hide the actions in Apollo's ••• menus and, for moderators, its moderator menus, one menu at a time with a live preview (#1131: @icpryde)
+- Redesign the **Account Switcher** as a themed bottom sheet with larger avatars, Add Account and Edit at the top, and drag-to-reorder that no longer refreshes your feed (#1077: @IllIIllIllIllII)
+  - Also fixes a crash when switching accounts
+- Add **Automatic Backups** (Data → Backup Settings) — pick a folder in Files and your settings are backed up there every day, three days, or seven days, keeping the ten most recent automatic backups (#1060, #1148, #1152: @IllIIllIllIllII)
+  - Backups now save as `.apollobackup` files with the Apollo icon, and opening one from Files asks before restoring; existing `.zip` backups still restore
+- Add **Settings Shortcuts** — press and hold the Settings tab to jump straight to up to 15 settings pages, chosen and reordered under Interface → Tab Bar → Settings Shortcuts (#1150: @IllIIllIllIllII)
+- Add a **Return Button** that appears beside Back after a status-bar tap takes you to the top; tap it, or the status bar again, to jump back to where you were reading, now on Liquid Glass too (#1116: @icpryde, @IllIIllIllIllII)
+  - Turn the button off under Interface → Display & Navigation; the second status-bar tap keeps working either way
+- Rework **Hidden & Deleted** into a profile row that opens one combined feed of archived posts and comments, labeled Hidden, Removed, or Deleted, with inline images and swipeable albums (#1137: @IllIIllIllIllII)
+- Add **Profile Picture Shape** (Interface → Display & Navigation) to show profile pictures as Full, Circle, or rounded Square across posts, comments, messages, the profile tab, and the Account Switcher (#1136: @IllIIllIllIllII)
+- Extend **Immersive** profile artwork behind the status and navigation bars with a wider crop and smoother fade, and long-press a profile banner to view it fullscreen and save it (#1186: @IllIIllIllIllII)
+- Play GIF and video tiles silently in **Gallery View**'s grid while they're on screen, with separate **Play Videos in Gallery View** and **Play GIFs in Gallery View** switches (Media → Browsing, on by default) (#1142: @icpryde)
+- Speed up opening and closing **images and albums** — albums zoom straight out of the feed thumbnail like single images, the background fades as you swipe media away, and closing an album returns the feed carousel to the last image you viewed (#1143: @IllIIllIllIllII)
+- Smooth out scrolling through **video-heavy feeds** — playing videos take far less of the app's time, and the new **Smoother Video Scrolling** switch (Posts & Feeds → Feed, on by default) prepares players in the background and lets video posts draw without stalling the scroll (#1168: @icpryde)
+- Keep unsent **Chat** drafts in modern Direct Chat, saved per account and conversation and restored when you come back (#1207: @Thetromboneman1)
+- Add **Swipe Tab Bar to Navigate** (Interface → Tab Bar, Liquid Glass, off by default) to swipe the tab bar back and forward again in place of the native drag-to-switch-tabs gesture; takes effect after relaunching (#1075: @DeltAndy123)
+- Add **Confirm Favorite Changes** (Subreddits → Favorites, off by default) so the star on the Subreddits list asks before adding or removing a favorite (#1173: @nunoo)
+
+### Fixes
+
+- Fix a **startup crash loop** after adding an account while Reddit is rate-limiting; an unexpected listing response now fails like any other load (#1147: @icpryde)
+- Fix a crash on launch or when switching accounts after changing your **Reddit password**; Apollo now tries to recover the expired session and asks you to sign in again if it can't (#1200: @IllIIllIllIllII)
+- Fix crashes loading older comments in **Live Update** mode and choosing Open in Safari on a shared GIF or other downloaded media (#1171: @IllIIllIllIllII)
+- Fix a crash when touching and holding a post while the feed scrolls (#1193: @icpryde)
+- Fix a crash tapping **Cancel** on a subreddit search with results on non-Liquid-Glass builds (#1133: @icpryde)
+- Bring back **Copy with Account** in Copy Widget Setup Code, lost in 3.7.1, so Home and multireddit widgets can use your account again (#1195: @icpryde)
+- Fix **Gallery View** hiding its first row of tiles under the navigation bar since 3.7.1, and its spinner staying up after changing the filter while it loads (#1140, #1194: @icpryde)
+  - Holding a video in the viewer opens Save/Share without letting go, and dragging down with that sheet open no longer leaves the viewer black and unresponsive
+- Fix the Liquid Glass **feed search bar** springing back open after you scroll it away, staying pinned when you scroll right after cancelling a search, and the Hard header style cutting off the top of the field (#1130, #1146: @icpryde)
+  - Collapsing a comment no longer jumps the thread or flashes a band across the top, Find in Comments swaps its buttons smoothly, and a cancelled swipe-back keeps the search field's glass
+- Keep the **Settings** search field below the title while searching on Liquid Glass instead of sliding up over it (#1156: @icpryde)
+- Make **Apollo Reborn settings** follow Apollo's Text Size and match the native rows' font weight and text colors, including the softer gray in Pure Black mode (#1165: @IllIIllIllIllII)
+- Fix Apollo Reborn settings screens stuttering or refusing to scroll back up, footer text drawing over the rows above it, and the list shifting after a swipe back (#1170: @icpryde)
+- Soften the **row highlight** when you tap a row — stock themes use Apollo's original gray again and custom themes a lighter tint of their accent (#1166: @IllIIllIllIllII)
+- Fix **subreddit list editing** — favorite stars stay aligned, long names stop short of the star, confirmation buttons stay tappable, rows no longer stay highlighted, and removals animate smoothly (#1174: @IllIIllIllIllII)
+- Keep the header visible while editing the subreddit list with **Hide Header on Scroll** on, and bring the header and tab bar back as soon as you tap the status bar (#1120: @IllIIllIllIllII)
+- Fix a brief stall when scrolling back down right after reaching the top of a post, and a stutter where Hide Header on Scroll kept hiding and revealing the header (#1119: @IllIIllIllIllII)
+- Make the **Posts** tab scroll to the top and then go back on profiles, trophies, multireddits, and posts opened from a profile, like it does on feeds (#1153: @IllIIllIllIllII)
+- Fix a cancelled forward swipe erasing your navigation history, so swiping forward again reopens the page (#1128: @IllIIllIllIllII)
+- Reopen **Floating Post Tabs** on the comment sort you left them on, Live Update included, instead of the default sort (#1125: @icpryde)
+- Fade a newly **posted comment** into the thread with its avatar and flair already in place, instead of the thread jumping and the avatar popping in afterwards (#1196: @icpryde)
+- Fix collapsing a comment thread sliding its replies down before the comments below move up (#1180: @IllIIllIllIllII)
+- Keep the **comment age** visible next to long usernames, which now truncate instead (#1162: @IllIIllIllIllII)
+- Keep recovered **deleted comments** readable when Apollo switches between light and dark mode while the thread is open (#1206: @Thetromboneman1)
+- Fix feed usernames drifting right, leaving a growing gap after "by", each time you came back to the feed from a post with Translate Post Titles on (#1208: @icpryde)
+- Fix **rich link cards** overlapping a post's details and vote buttons once they finish loading, in feeds and comment threads, including while you scroll (#1191: @IllIIllIllIllII)
+- Fix the composer's **GIF** button staying over username and subreddit suggestions, and the formatting toolbar sitting partly behind the keyboard on iOS 27, on non-Liquid-Glass builds (#1164: @IllIIllIllIllII)
+- Fix a **Chat** conversation you opened from the Inbox turning unread again, badge included, after a refresh when Use Modern Reddit Chat is on (#1141: @icpryde)
+- Fix double-tapping the **Search** tab sometimes not opening the keyboard (#1190: @IllIIllIllIllII)
+- Show the gallery counter in its usual top-right spot on the **iPhone 18 Pro** and Pro Max instead of centered (#1189: @IllIIllIllIllII)
+- Fix **Bark Notifications** showing Bark's own icon when your app icon has no Bark artwork; they fall back to the default Apollo icon instead (#1204: @Thetromboneman1)
+- Turn **Swipe Up for Comments** off by default (Media → Browsing); if you already switched it on or off, your choice is kept (#1134: @icpryde)
+
 ## [v3.7.1] - 2026-09-13
 
 ### Features
@@ -880,6 +940,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.8.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.1...v1.15.11_3.8.0
 [v3.7.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.0...v1.15.11_3.7.1
 [v3.7.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.6.0...v1.15.11_3.7.0
 [v3.6.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.5.1...v1.15.11_3.6.0
