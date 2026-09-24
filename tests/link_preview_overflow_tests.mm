@@ -6,13 +6,24 @@
 // Exercise the shipping scheduling and reload code with deterministic time and
 // UIKit doubles. Reloads intentionally retain the original node.
 static double now;
-static NSMutableArray *jobs;
+static NSMutableArray *jobs, *immediateJobs;
+static NSUInteger feedSizeUpdates;
 static NSUInteger conversions, reloads, notes;
 static BOOL measuring, throwReload;
 static void Later(dispatch_time_t delay, dispatch_queue_t queue, dispatch_block_t block) {
     [jobs addObject:@{@"at" : @(now + 0.15), @"block" : [block copy]}];
 }
 #define dispatch_after Later
+static void NextTurn(dispatch_queue_t queue, dispatch_block_t block) {
+    [immediateJobs addObject:[block copy]];
+}
+#define dispatch_async NextTurn
+static void RunImmediate(void) {
+    NSArray *ready = [immediateJobs copy];
+    [immediateJobs removeAllObjects];
+    for (dispatch_block_t block in ready)
+        block();
+}
 static double TestTime(void) {
     return now;
 }
@@ -184,6 +195,10 @@ static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *u) {
 }
 static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *, ASDisplayNode *, NSString *,
                                               BOOL (^)(UIView *) = nil, void (^)(void) = nil);
+static BOOL ApolloLPInvalidateFeedRow(ASDisplayNode *node) {
+    feedSizeUpdates++;
+    return YES;
+}
 #import "Overflow.inc"
 
 static NSUInteger checks;
@@ -195,6 +210,7 @@ static void Check(BOOL ok, NSString *why) {
     }
 }
 static void Tick(void) {
+    RunImmediate();
     now += 0.151;
     NSArray *ready = [jobs copy];
     [jobs removeAllObjects];
@@ -237,6 +253,7 @@ static void Grow(ASDisplayNode *n, CGFloat height) {
 int main(void) {
     @autoreleasepool {
         jobs = [NSMutableArray new];
+        immediateJobs = [NSMutableArray new];
         UITableView *t;
         ASDisplayNode *n = Fixture(&t);
         ApolloLPScheduleOverflowHeightCheck(n, @"visible");
@@ -388,6 +405,47 @@ int main(void) {
         Check(!ApolloLPOverflowStateForNode(n).reloadPending,
               @"collection completion releases retained node");
         Check(jobs.count == 0, @"no callbacks left after completion");
+        n = Fixture(&t);
+        n.owner = [LargePost new];
+        t.dragging = YES;
+        NSUInteger feedBefore = feedSizeUpdates;
+        NSUInteger conversionsBefore = conversions;
+        before = reloads;
+        Grow(n, 320);
+        Check(feedSizeUpdates == feedBefore && immediateJobs.count == 1,
+              @"feed correction waits until outside the layout stack");
+        for (int i = 0; i < 1000; i++)
+            Grow(n, 320);
+        Check(immediateJobs.count == 1, @"repeated feed layouts coalesce before correction");
+        RunImmediate();
+        Check(feedSizeUpdates == feedBefore + 1 && reloads == before && conversions == conversionsBefore,
+              @"feed size correction runs during scrolling without row reload or rectangle conversion");
+        for (int i = 0; i < 1000; i++)
+            Grow(n, 320);
+        Check(immediateJobs.count == 0, @"unchanged broken geometry cannot loop native size updates");
+        Grow(n, 360);
+        RunImmediate();
+        Check(feedSizeUpdates == feedBefore + 2, @"later content growth remains eligible for correction");
+        Grow(n, 400);
+        n.view.window = nil;
+        RunImmediate();
+        Check(feedSizeUpdates == feedBefore + 2, @"detached card cancels queued size correction");
+        Tick();
+        Check(jobs.count == 0 && immediateJobs.count == 0,
+              @"feed correction leaves no callbacks after detach");
+        n.view.window = @YES;
+        Grow(n, 400);
+        RunImmediate();
+        Check(feedSizeUpdates == feedBefore + 3, @"reattached card can retry cancelled size correction");
+        n.view.bounds = CGRectMake(0, 0, 300, 400);
+        Grow(n, 400);
+        n.view.bounds = CGRectMake(0, 0, 300, 100);
+        Grow(n, 400);
+        RunImmediate();
+        Check(feedSizeUpdates == feedBefore + 4,
+              @"a corrected card can repair the same size after later shrink");
+        n.view.window = nil;
+        Tick();
         printf("PASS: %lu overflow lifecycle checks\n", (unsigned long)checks);
     }
 }

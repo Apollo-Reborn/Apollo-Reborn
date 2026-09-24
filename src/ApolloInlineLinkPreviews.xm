@@ -2361,7 +2361,8 @@ static void ApolloLPClearHostShell(ASDisplayNode *node) {
 
     node.backgroundColor = [UIColor clearColor];
     node.cornerRadius = 0.0;
-    node.clipsToBounds = NO;
+    // Contain newly loaded children until the row commits their measured height.
+    node.clipsToBounds = YES;
     node.borderWidth = 0.0;
     node.borderColor = nil;
     node.shadowOpacity = 0.0;
@@ -3933,8 +3934,25 @@ static void ApolloLPArmRelayoutClimb(ASDisplayNode *node, ASDisplayNode *cellNod
     });
 }
 
+static BOOL ApolloLPInvalidateFeedRow(ASDisplayNode *node) {
+    ASDisplayNode *cell = ApolloLPFindOwningCellNode(node);
+    Class largePost = objc_getClass("_TtC6Apollo17LargePostCellNode");
+    SEL invalidateSize = NSSelectorFromString(@"_rootNodeDidInvalidateSize");
+    if (!largePost || ![cell isKindOfClass:largePost] || ![cell respondsToSelector:invalidateSize]) return NO;
+
+    // Texture batches these invalidations and remeasures the row before laying out its children.
+    NSUInteger depth = 0;
+    for (ASDisplayNode *current = node; current && depth < 32; current = current.supernode, depth++) {
+        ((void (*)(id, SEL))objc_msgSend)(current, @selector(invalidateCalculatedLayout));
+        if (current == cell) break;
+    }
+    ((void (*)(id, SEL))objc_msgSend)(cell, invalidateSize);
+    return YES;
+}
+
 static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDelayed, NSString *host) {
     if (!node) return;
+    if (ApolloLPInvalidateFeedRow(node)) return;
     ASDisplayNode *cellNode = ApolloLPFindOwningCellNode(node);
     ApolloLPInvalidateAncestorChain(node);
 
@@ -4045,6 +4063,8 @@ static CGFloat ApolloLPFeedFooterOverlap(ASDisplayNode *node, UIView *cellView, 
 @property BOOL checkPending;
 @property BOOL reloadPending;
 @property NSTimeInterval changedAt;
+@property CGSize requestedFeedContentSize;
+@property BOOL feedSizeUpdatePending;
 @end
 @implementation ApolloLPOverflowState
 @end
@@ -4175,6 +4195,28 @@ static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *h
     if (!url || ApolloLPShouldDeferToInlineMedia(url)) return;
     ApolloLPOverflowState *state = ApolloLPOverflowStateForNode(node);
     BOOL changed = ApolloLPObserveOverflowGeometry(view, state);
+    Class largePost = objc_getClass("_TtC6Apollo17LargePostCellNode");
+    if (CGRectGetMaxY(state.content) <= CGRectGetHeight(view.bounds) + 8.0 && !state.feedSizeUpdatePending) {
+        state.requestedFeedContentSize = CGSizeZero;
+    }
+    if (CGRectGetMaxY(state.content) > CGRectGetHeight(view.bounds) + 8.0 &&
+        !state.feedSizeUpdatePending && !CGSizeEqualToSize(state.requestedFeedContentSize, state.content.size) &&
+        largePost && [ApolloLPFindOwningCellNode(node) isKindOfClass:largePost]) {
+        // A child has outgrown its allocated height. Repair on the next main turn,
+        // outside Texture's layout stack, without waiting for scrolling to stop.
+        state.requestedFeedContentSize = state.content.size;
+        state.feedSizeUpdatePending = YES;
+        __weak ASDisplayNode *weakNode = node;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            state.feedSizeUpdatePending = NO;
+            ASDisplayNode *liveNode = weakNode;
+            if (liveNode.isNodeLoaded && ApolloLPViewForNode(liveNode).window) {
+                ApolloLPInvalidateFeedRow(liveNode);
+            } else {
+                state.requestedFeedContentSize = CGSizeZero;
+            }
+        });
+    }
     if ((layoutOnly && !changed) || state.checkPending || state.reloadPending) return;
     state.checkPending = YES;
     ApolloLPDeferOverflowHeightCheck(node, [host copy]);
