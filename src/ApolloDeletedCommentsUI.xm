@@ -280,17 +280,40 @@ static UIFont *ApolloDeletedCommentsRecoveredBodyFont(void) {
     return [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
 }
 
-// Recovered bodies must use Apollo's semantic primary-label color, not the
-// foreground color of the deleted placeholder that was measured before the
-// recovery. The placeholder is dark in Apollo's dark-mode deleted-row style;
-// carrying that color into the recovered body makes it disappear under the
-// red highlight (issue #1065). ApolloThemeRuntimeColor supplies custom-theme
-// values and a dynamic UIColor, while labelColor preserves stock theme traits.
+// Apollo's current light/dark style, read from its key window on the main
+// thread at launch, on foreground and after every Apollo theme switch.
+// Recovered bodies are built on Texture's layout threads, and on non-glass
+// builds an existing node's traits don't follow Apollo's runtime light/dark
+// toggle, so a dynamic color keeps resolving for the mode the thread was
+// opened in.
+static _Atomic NSInteger sApolloDeletedCommentsAppStyle = 0; // UIUserInterfaceStyleUnspecified
+
+static void ApolloDeletedCommentsCaptureAppStyle(void) {
+    UIWindow *window = nil;
+    for (UIWindow *candidate in ApolloAllWindows()) {
+        if (candidate.isKeyWindow) { window = candidate; break; }
+    }
+    if (!window) window = ApolloAllWindows().firstObject;
+    if (!window) return;
+    sApolloDeletedCommentsAppStyle = window.traitCollection.userInterfaceStyle;
+}
+
+// Recovered bodies use the text color Apollo draws comments with (the custom
+// theme's label token, else stock D0D1D6 Pure Black / EEEFF5 dark / black
+// light), resolved for Apollo's current style. A color carried over from the
+// mode the body was built in is what made them unreadable after a light/dark
+// switch (issue #1065). The resolved color also compares equal by value, which
+// keeps SetTextNodeAttributedText's no-op guard working for custom themes (#514).
 static UIColor *ApolloDeletedCommentsBodyTextColor(void) {
-    UIColor *color = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
-    if ([color isKindOfClass:[UIColor class]]) return color;
-    if (@available(iOS 13.0, *)) return [UIColor labelColor];
-    return [UIColor blackColor];
+    UIColor *color = ApolloThemeSettingsTextColor();
+    if (![color isKindOfClass:[UIColor class]]) {
+        if (@available(iOS 13.0, *)) color = [UIColor labelColor];
+        else return [UIColor blackColor];
+    }
+    NSInteger style = sApolloDeletedCommentsAppStyle;
+    if (style == UIUserInterfaceStyleUnspecified) return color;
+    return [color resolvedColorWithTraitCollection:
+        [UITraitCollection traitCollectionWithUserInterfaceStyle:(UIUserInterfaceStyle)style]];
 }
 
 static NSString *ApolloDeletedCommentsNormalizeCommentFullName(NSString *value) {
@@ -1178,9 +1201,9 @@ static UIFont *ApolloDeletedCommentsAppCommentBodyFontForNode(id node) {
     return [font isKindOfClass:[UIFont class]] ? font : nil;
 }
 
-// Body attributes using the deterministic app font (above) for size/weight, while
-// keeping Apollo's body text color/paragraph from whatever we last saw (or sane
-// defaults). This is the primary source for revealed comment bodies.
+// Body attributes using the deterministic app font (above) for size/weight and
+// Apollo's current theme text color. This is the primary source for revealed
+// comment bodies.
 static NSDictionary *ApolloDeletedCommentsAppBodyAttributesForNode(id node) {
     UIFont *font = ApolloDeletedCommentsAppCommentBodyFontForNode(node);
     if (![font isKindOfClass:[UIFont class]]) return nil;
@@ -3643,15 +3666,11 @@ static id __attribute__((unused)) ApolloDeletedCommentsDeletedMarkdownLayoutSpec
     // guessing, or hardcoded point sizes:
     //   "Use System Text Size" ON  -> the live system Dynamic Type size
     //   "Use System Text Size" OFF -> Apollo's in-app slider (ApolloCustomTextSize)
-    // SIZE/WEIGHT come from that resolver; body COLOR comes from the comment's own
-    // native attributes when available (so it matches the active theme).
+    // SIZE/WEIGHT come from that resolver; body COLOR comes from
+    // ApolloDeletedCommentsBodyTextColor so runtime theme changes cannot retain
+    // the style in which this node was first built.
     NSDictionary *nativeAttributes = ApolloDeletedCommentsNativeBodyAttributesForMarkdownNode(markdownNode);
     NSDictionary *appAttributes = ApolloDeletedCommentsAppBodyAttributesForNode(markdownNode);
-    if (appAttributes && [nativeAttributes[NSForegroundColorAttributeName] isKindOfClass:[UIColor class]]) {
-        NSMutableDictionary *merged = [appAttributes mutableCopy];
-        merged[NSForegroundColorAttributeName] = nativeAttributes[NSForegroundColorAttributeName];
-        appAttributes = merged;
-    }
 
     // Promote the resolved app font to the single authoritative body template so
     // EVERY body path (this layout, tap reveal, redecoration) and the unify
@@ -4508,7 +4527,46 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
 
 %end
 
+static void ApolloDeletedCommentsRebuildVisibleRecoveredBodies(void) {
+    ApolloDeletedCommentsBodyTemplateSet(nil);
+    if (!ApolloDeletedCommentsFeatureActive()) return;
+    for (id cellNode in ApolloDeletedCommentsAllTrackedVisibleCells()) {
+        id markdownNode = objc_getAssociatedObject(cellNode, kApolloDeletedCommentsCellMarkdownNodeKey);
+        if (markdownNode) ApolloDeletedCommentsRelayoutCellAndTextNode(cellNode, markdownNode);
+    }
+    ApolloDeletedCommentsScheduleBodyAttributesRefresh();
+}
+
+// Apollo posts its theme-changed notification before it has flipped the
+// window's style, so re-read the style over a short window and rebuild the
+// visible recovered bodies when it actually changes.
+static void ApolloDeletedCommentsHandleAppThemeChanged(void) {
+    NSArray<NSNumber *> *delays = @[@0.0, @0.15, @0.4, @0.8];
+    for (NSNumber *delay in delays) {
+        BOOL first = delay.doubleValue == 0.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSInteger previous = sApolloDeletedCommentsAppStyle;
+            ApolloDeletedCommentsCaptureAppStyle();
+            if (first || previous != sApolloDeletedCommentsAppStyle) ApolloDeletedCommentsRebuildVisibleRecoveredBodies();
+        });
+    }
+}
+
 %ctor {
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDeletedCommentsHandleAppThemeChanged();
+        });
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        ApolloDeletedCommentsCaptureAppStyle();
+    }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloDeletedCommentsArcticCacheUpdatedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
@@ -4525,6 +4583,7 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *notification) {
+        ApolloDeletedCommentsCaptureAppStyle();
         NSArray<NSNumber *> *delays = @[@0.0, @0.08, @0.25, @0.60];
         for (NSNumber *delayNumber in delays) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayNumber.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{

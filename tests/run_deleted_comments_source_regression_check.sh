@@ -16,15 +16,24 @@ require_source() {
 # A deleted-comment tint is a background treatment. It must never be promoted
 # above Apollo's text nodes, and recovered bodies must not inherit the dark
 # foreground used by the native deleted placeholder.
+# This source regression check does not render UI or verify runtime contrast.
 require_source '[cellView insertSubview:highlight atIndex:0];' \
     'deleted-comment tint is inserted behind cell content'
 require_source '[cellView sendSubviewToBack:highlight];' \
     'reused deleted-comment tint stays behind cell content'
 require_source 'static UIColor *ApolloDeletedCommentsBodyTextColor(void)' \
     'recovered bodies have a dedicated semantic text-color resolver'
-require_source 'ApolloThemeRuntimeColor(ApolloThemeTokenLabel)' \
-    'body text color follows the active Apollo theme label token'
+require_source 'UIColor *color = ApolloThemeSettingsTextColor();' \
+    'body text color follows the effective Apollo theme settings'
 require_source 'attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();' \
     'native placeholder foreground is replaced before body rendering'
+require_source 'addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"' \
+    'runtime Apollo theme changes are observed'
+require_source 'static void ApolloDeletedCommentsCaptureAppStyle(void)' \
+    'the active app interface style has a dedicated capture path'
+require_source 'static void ApolloDeletedCommentsRebuildVisibleRecoveredBodies(void)' \
+    'visible recovered bodies have a dedicated rebuild path'
+require_source 'if (first || previous != sApolloDeletedCommentsAppStyle) ApolloDeletedCommentsRebuildVisibleRecoveredBodies();' \
+    'runtime theme changes rebuild bodies after the app style is captured'
 
-echo 'deleted_comments_visual_test passed'
+echo 'deleted_comments_source_regression_check passed'
