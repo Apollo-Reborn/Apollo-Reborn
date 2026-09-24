@@ -143,6 +143,11 @@ static NSString *const UDKeyFeedVideosUnmutedMemory = @"FeedVideosUnmutedMemory"
 // the video (bar included) still opens it fullscreen as stock. Default NO.
 // See ApolloFeedVideoScrubber.xm.
 static NSString *const UDKeyFeedVideoScrubber = @"FeedVideoScrubber";
+// "Smoother Video Scrolling": build feed video players on a background queue
+// and let video posts finish drawing asynchronously after they scroll in
+// instead of holding the frame for them. Default YES. See
+// ApolloFeedVideoScrolling.xm.
+static NSString *const UDKeyFeedVideoScrollSmoothing = @"FeedVideoScrollSmoothing";
 // "Hold for Video Speed": press-and-hold the right side of a fullscreen video to
 // play at a chosen speed while held. Master toggle (default YES via
 // registerDefaults — preserves the original always-on behaviour) and the speed
