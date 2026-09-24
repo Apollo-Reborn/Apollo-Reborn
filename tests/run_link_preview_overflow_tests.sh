@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 s=Path('src/ApolloInlineLinkPreviews.xm').read_text()
 pieces=[]
-for a,b in [('static BOOL ApolloLPScrollViewIsInteracting(', 'static void ApolloLPInvokeContainerRelayoutIfPossible('), ('static CGFloat ApolloLPFeedFooterOverlap(', 'static ASDisplayNode *ApolloLPNodeForViewIfPossible(')]:
+for a,b in [('static BOOL ApolloLPScrollViewIsInteracting(', 'static void ApolloLPInvokeContainerRelayoutIfPossible('), ('static ASDisplayNode *ApolloLPHostedCellForSizeUpdate(', 'static void ApolloLPTriggerRelayoutInternal('), ('static CGFloat ApolloLPFeedFooterOverlap(', 'static ASDisplayNode *ApolloLPNodeForViewIfPossible(')]:
  pieces.append(s[s.index(a):s.index(b)])
 Path(sys.argv[1],'Overflow.inc').write_text('\n'.join(pieces))
 PY

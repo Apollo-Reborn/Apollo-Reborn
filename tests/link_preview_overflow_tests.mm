@@ -2,12 +2,14 @@
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 // Exercise the shipping scheduling and reload code with deterministic time and
-// UIKit doubles. Reloads intentionally retain the original node.
+// UIKit/Texture doubles. Reloads intentionally retain the original node.
+// Container queuing is modeled here; real layout and scroll performance need simulator/device checks.
 static double now;
 static NSMutableArray *jobs, *immediateJobs;
-static NSUInteger feedSizeUpdates;
+static NSUInteger nativeSizeUpdates, membershipQueries;
 static NSUInteger conversions, reloads, notes;
 static BOOL measuring, throwReload;
 static void Later(dispatch_time_t delay, dispatch_queue_t queue, dispatch_block_t block) {
@@ -154,14 +156,96 @@ static NSInteger UITableViewRowAnimationNone;
 @interface ASDisplayNode : NSObject
 @property BOOL isNodeLoaded, hidden;
 @property UIView *view;
-@property ASDisplayNode *owner;
+@property ASDisplayNode *owner, *supernode;
 @property NSDictionary *footers;
+@property NSUInteger layoutInvalidations;
+- (void)invalidateCalculatedLayout;
 @end
 @implementation ASDisplayNode
+- (void)invalidateCalculatedLayout {
+    self.layoutInvalidations++;
+}
 @end
-@interface LargePost : ASDisplayNode
+@protocol NodeSizeDelegate <NSObject>
+- (NSIndexPath *)indexPathForNode:(ASDisplayNode *)node;
+- (void)nodeDidInvalidateSize:(ASDisplayNode *)node;
+@end
+@interface ASCellNode : ASDisplayNode
+@property id<NodeSizeDelegate> interactionDelegate;
+@property SEL unavailableSelector;
+- (void)_rootNodeDidInvalidateSize;
+@end
+@implementation ASCellNode
+- (BOOL)respondsToSelector:(SEL)selector {
+    return selector != self.unavailableSelector && [super respondsToSelector:selector];
+}
+- (void)_rootNodeDidInvalidateSize {
+    nativeSizeUpdates++;
+    [self.interactionDelegate nodeDidInvalidateSize:self];
+}
+@end
+@interface ASTableView : UITableView <NodeSizeDelegate>
+@property SEL unavailableSelector;
+@property NSMutableSet *hostedNodes, *sizeQueue;
+@end
+@implementation ASTableView
+- (BOOL)respondsToSelector:(SEL)selector {
+    return selector != self.unavailableSelector && [super respondsToSelector:selector];
+}
+- (instancetype)init {
+    if ((self = [super init])) {
+        _hostedNodes = [NSMutableSet new];
+        _sizeQueue = [NSMutableSet new];
+    }
+    return self;
+}
+- (NSIndexPath *)indexPathForNode:(ASDisplayNode *)node {
+    membershipQueries++;
+    return [self.hostedNodes containsObject:node] ? self.path : nil;
+}
+- (void)nodeDidInvalidateSize:(ASDisplayNode *)node {
+    [self.sizeQueue addObject:node];
+}
+@end
+@interface ASCollectionView : UICollectionView <NodeSizeDelegate>
+@property NSMutableSet *hostedNodes, *sizeQueue;
+@end
+@implementation ASCollectionView
+- (instancetype)init {
+    if ((self = [super init])) {
+        _hostedNodes = [NSMutableSet new];
+        _sizeQueue = [NSMutableSet new];
+    }
+    return self;
+}
+- (NSIndexPath *)indexPathForNode:(ASDisplayNode *)node {
+    membershipQueries++;
+    return [self.hostedNodes containsObject:node] ? self.path : nil;
+}
+- (void)nodeDidInvalidateSize:(ASDisplayNode *)node {
+    [self.sizeQueue addObject:node];
+}
+@end
+// Matching selectors alone must not qualify a non-Texture owner.
+@interface OtherSizeDelegate : NSObject <NodeSizeDelegate>
+@end
+@implementation OtherSizeDelegate
+- (NSIndexPath *)indexPathForNode:(ASDisplayNode *)node {
+    return [NSIndexPath indexPathWithIndex:0];
+}
+- (void)nodeDidInvalidateSize:(ASDisplayNode *)node {}
+@end
+@interface LargePost : ASCellNode
 @end
 @implementation LargePost
+@end
+@interface CommentCellNode : ASCellNode
+@end
+@implementation CommentCellNode
+@end
+@interface CommentsHeaderCellNode : ASCellNode
+@end
+@implementation CommentsHeaderCellNode
 @end
 static Class GetClass(const char *name) {
     return strcmp(name, "_TtC6Apollo17LargePostCellNode") == 0 ? LargePost.class : objc_getClass(name);
@@ -195,10 +279,6 @@ static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *u) {
 }
 static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *, ASDisplayNode *, NSString *,
                                               BOOL (^)(UIView *) = nil, void (^)(void) = nil);
-static BOOL ApolloLPInvalidateFeedRow(ASDisplayNode *node) {
-    feedSizeUpdates++;
-    return YES;
-}
 #import "Overflow.inc"
 
 static NSUInteger checks;
@@ -220,7 +300,7 @@ static void Tick(void) {
     }
 }
 static ASDisplayNode *Fixture(UITableView **out) {
-    UITableView *t = [UITableView new];
+    UITableView *t = [ASTableView new];
     t.window = @YES;
     t.visible = YES;
     t.path = [NSIndexPath indexPathWithIndex:0];
@@ -250,6 +330,223 @@ static void Grow(ASDisplayNode *n, CGFloat height) {
     n.view.subviews[0].frame = CGRectMake(0, 0, 300, height);
     ApolloLPScheduleOverflowHeightCheck(n, @"test", YES);
 }
+static ASDisplayNode *HostedFixture(Class cellClass, BOOL collection, UIScrollView **out) {
+    UITableView *table;
+    ASDisplayNode *node = Fixture(&table);
+    ASCellNode *cell = [cellClass new];
+    ASDisplayNode *container = [ASDisplayNode new];
+    node.owner = cell;
+    node.supernode = container;
+    container.supernode = cell;
+    cell.supernode = [ASDisplayNode new];
+    if (collection) {
+        ASCollectionView *host = [ASCollectionView new];
+        host.window = @YES;
+        host.path = table.path;
+        host.visible = YES;
+        UICollectionViewCell *view = [UICollectionViewCell new];
+        view.bounds = table.cell.bounds;
+        view.superview = host;
+        view.window = @YES;
+        host.cell = view;
+        node.view.superview = view;
+        cell.view = view;
+        cell.interactionDelegate = host;
+        [host.hostedNodes addObject:cell];
+        *out = host;
+    } else {
+        ASTableView *host = (ASTableView *)table;
+        cell.view = table.cell;
+        cell.interactionDelegate = host;
+        [host.hostedNodes addObject:cell];
+        *out = host;
+    }
+    return node;
+}
+static void FinishFixture(ASDisplayNode *node) {
+    node.view.window = nil;
+    Tick();
+}
+static void RunHostedSizeTests(void) {
+    UIScrollView *host;
+    for (Class cellClass in @[ LargePost.class, CommentCellNode.class, CommentsHeaderCellNode.class ]) {
+        for (int hostKind = 0; hostKind < 2; hostKind++) {
+            BOOL collection = hostKind != 0;
+            ASDisplayNode *node = HostedFixture(cellClass, collection, &host);
+            ASCellNode *cell = (ASCellNode *)node.owner;
+            NSString *context = [NSString stringWithFormat:@"%@ in %@", NSStringFromClass(cellClass),
+                                 collection ? @"collection" : @"table"];
+            Check(ApolloLPHostedCellForSizeUpdate(node) == cell,
+                  [context stringByAppendingString:@": hosted cell qualifies"]);
+            host.dragging = YES;
+            NSUInteger sizeBefore = nativeSizeUpdates, reloadBefore = reloads, geometryBefore = conversions;
+            NSUInteger membershipBefore = membershipQueries;
+            Grow(node, 320);
+            for (int i = 0; i < 1000; i++)
+                Grow(node, 320);
+            Check(nativeSizeUpdates == sizeBefore && immediateJobs.count == 1 && membershipQueries == membershipBefore,
+                  [context stringByAppendingString:@": layouts coalesce without querying container membership"]);
+            RunImmediate();
+            Check(nativeSizeUpdates == sizeBefore + 1 && reloads == reloadBefore && conversions == geometryBefore &&
+                  membershipQueries == membershipBefore + 1,
+                  [context stringByAppendingString:@": resize while scrolling avoids reload and rectangle conversion"]);
+            Check(node.layoutInvalidations == 1 && node.supernode.layoutInvalidations == 1 &&
+                  cell.layoutInvalidations == 1 && cell.supernode.layoutInvalidations == 0,
+                  [context stringByAppendingString:@": invalidation stops at the owning cell"]);
+            for (int i = 0; i < 1000; i++)
+                Grow(node, 320);
+            Check(immediateJobs.count == 0,
+                  [context stringByAppendingString:@": unchanged overflow cannot loop size updates"]);
+            FinishFixture(node);
+        }
+    }
+
+    ASDisplayNode *node = HostedFixture(CommentCellNode.class, NO, &host);
+    ASCellNode *cell = (ASCellNode *)node.owner;
+    id<NodeSizeDelegate> delegate = cell.interactionDelegate;
+    NSUInteger before = nativeSizeUpdates;
+    cell.interactionDelegate = nil;
+    Check(!ApolloLPHostedCellForSizeUpdate(node) && !ApolloLPInvalidateHostedCell(node) &&
+          nativeSizeUpdates == before && node.layoutInvalidations == 0,
+          @"unhosted cells never enter ASCellNode's immediate measurement fallback");
+    cell.interactionDelegate = [OtherSizeDelegate new];
+    Check(!ApolloLPHostedCellForSizeUpdate(node) && !ApolloLPInvalidateHostedCell(node),
+          @"matching delegate selectors do not qualify a non-Texture container");
+    cell.interactionDelegate = delegate;
+    cell.unavailableSelector = @selector(interactionDelegate);
+    Check(!ApolloLPHostedCellForSizeUpdate(node), @"missing interaction delegate accessor is rejected");
+    cell.unavailableSelector = @selector(_rootNodeDidInvalidateSize);
+    Check(!ApolloLPHostedCellForSizeUpdate(node), @"missing cell size invalidation method is rejected");
+    cell.unavailableSelector = NULL;
+    ((ASTableView *)host).unavailableSelector = @selector(indexPathForNode:);
+    Check(!ApolloLPHostedCellForSizeUpdate(node), @"container without node lookup is rejected");
+    ((ASTableView *)host).unavailableSelector = @selector(nodeDidInvalidateSize:);
+    Check(!ApolloLPHostedCellForSizeUpdate(node), @"container without queued invalidation is rejected");
+    ((ASTableView *)host).unavailableSelector = NULL;
+    [[(ASTableView *)host hostedNodes] removeAllObjects];
+    Check(!ApolloLPInvalidateHostedCell(node) && nativeSizeUpdates == before,
+          @"delegate must still own an index path before invalidation");
+    [[(ASTableView *)host hostedNodes] addObject:cell];
+    ASDisplayNode *nonCell = [ASDisplayNode new];
+    node.owner = nonCell;
+    Check(!ApolloLPHostedCellForSizeUpdate(node) && !ApolloLPInvalidateHostedCell(node),
+          @"an ordinary display node cannot qualify as a hosted cell");
+    node.owner = cell;
+    FinishFixture(node);
+
+    node = HostedFixture(CommentCellNode.class, NO, &host);
+    cell = (ASCellNode *)node.owner;
+    host.dragging = YES;
+    before = nativeSizeUpdates;
+    Grow(node, 320);
+    node.view.window = nil;
+    RunImmediate();
+    Check(nativeSizeUpdates == before && !ApolloLPOverflowStateForNode(node).sizeUpdatePending,
+          @"detaching before the callback cancels the native update");
+    Tick();
+    Check(jobs.count == 0 && immediateJobs.count == 0,
+          @"detachment leaves no queued callbacks");
+    node.view.window = @YES;
+    Grow(node, 320);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1, @"reattachment can retry the same content size");
+    Grow(node, 360);
+    delegate = cell.interactionDelegate;
+    cell.interactionDelegate = nil;
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1, @"losing the delegate cancels a queued update");
+    cell.interactionDelegate = delegate;
+    Grow(node, 360);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 2, @"restoring the delegate rearms cancelled growth");
+    Grow(node, 400);
+    [[(ASTableView *)host hostedNodes] removeObject:cell];
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 2, @"losing membership cancels a queued update");
+    [[(ASTableView *)host hostedNodes] addObject:cell];
+    Grow(node, 400);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 3, @"restoring membership rearms cancelled growth");
+    FinishFixture(node);
+
+    node = HostedFixture(CommentsHeaderCellNode.class, YES, &host);
+    cell = (ASCellNode *)node.owner;
+    before = nativeSizeUpdates;
+    Grow(node, 320);
+    ASCellNode *replacement = [CommentsHeaderCellNode new];
+    replacement.interactionDelegate = cell.interactionDelegate;
+    replacement.view = cell.view;
+    [[(ASCollectionView *)host hostedNodes] removeObject:cell];
+    [[(ASCollectionView *)host hostedNodes] addObject:replacement];
+    node.owner = replacement;
+    node.supernode = replacement;
+    RunImmediate();
+    Check(nativeSizeUpdates == before && replacement.layoutInvalidations == 0,
+          @"reparenting cannot apply the queued request to a different cell");
+    Grow(node, 320);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1 && replacement.layoutInvalidations == 1,
+          @"reparented card can schedule a fresh request for its current cell");
+    FinishFixture(node);
+
+    node = HostedFixture(CommentCellNode.class, NO, &host);
+    before = nativeSizeUpdates;
+    Grow(node, 320);
+    node.view.subviews[0].frame = CGRectMake(0, 0, 300, 100);
+    RunImmediate();
+    Check(nativeSizeUpdates == before && CGSizeEqualToSize(ApolloLPOverflowStateForNode(node).requestedContentSize, CGSizeZero),
+          @"collapse before callback cancels obsolete growth and clears its request");
+    Grow(node, 320);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1, @"expansion after cancelled collapse remains eligible");
+    Grow(node, 360);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 2, @"later content growth remains eligible");
+    node.view.bounds = CGRectMake(0, 0, 300, 360);
+    Grow(node, 360);
+    node.view.bounds = CGRectMake(0, 0, 300, 100);
+    Grow(node, 360);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 3,
+          @"a corrected card can repair the same size after its allocation shrinks");
+    FinishFixture(node);
+
+    node = HostedFixture(CommentCellNode.class, NO, &host);
+    before = nativeSizeUpdates;
+    Grow(node, 320);
+    Grow(node, 360);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 1 &&
+          CGSizeEqualToSize(ApolloLPOverflowStateForNode(node).requestedContentSize, CGSizeMake(300, 360)),
+          @"growth during a pending request uses fresh content geometry");
+    Grow(node, 360);
+    Check(immediateJobs.count == 0, @"the pending request does not re-request its updated content size");
+    FinishFixture(node);
+
+    node = HostedFixture(CommentCellNode.class, NO, &host);
+    ASDisplayNode *second = HostedFixture(CommentCellNode.class, NO, &host);
+    ASCellNode *sharedCell = (ASCellNode *)second.owner;
+    node.owner = sharedCell;
+    node.supernode.supernode = sharedCell;
+    node.view.superview = second.view.superview;
+    host.dragging = YES;
+    before = nativeSizeUpdates;
+    Grow(node, 320);
+    Grow(second, 360);
+    RunImmediate();
+    Check(nativeSizeUpdates == before + 2 && node.layoutInvalidations == 1 && second.layoutInvalidations == 1 &&
+          [(ASTableView *)host sizeQueue].count == 1,
+          @"multiple links dirty both paths and notify the same queued cell");
+    for (int i = 0; i < 1000; i++) {
+        Grow(node, 320);
+        Grow(second, 360);
+    }
+    Check(immediateJobs.count == 0 && nativeSizeUpdates == before + 2,
+          @"repeated multi-link layouts do not generate another size update");
+    node.view.window = nil;
+    FinishFixture(second);
+}
+
 int main(void) {
     @autoreleasepool {
         jobs = [NSMutableArray new];
@@ -405,47 +702,7 @@ int main(void) {
         Check(!ApolloLPOverflowStateForNode(n).reloadPending,
               @"collection completion releases retained node");
         Check(jobs.count == 0, @"no callbacks left after completion");
-        n = Fixture(&t);
-        n.owner = [LargePost new];
-        t.dragging = YES;
-        NSUInteger feedBefore = feedSizeUpdates;
-        NSUInteger conversionsBefore = conversions;
-        before = reloads;
-        Grow(n, 320);
-        Check(feedSizeUpdates == feedBefore && immediateJobs.count == 1,
-              @"feed correction waits until outside the layout stack");
-        for (int i = 0; i < 1000; i++)
-            Grow(n, 320);
-        Check(immediateJobs.count == 1, @"repeated feed layouts coalesce before correction");
-        RunImmediate();
-        Check(feedSizeUpdates == feedBefore + 1 && reloads == before && conversions == conversionsBefore,
-              @"feed size correction runs during scrolling without row reload or rectangle conversion");
-        for (int i = 0; i < 1000; i++)
-            Grow(n, 320);
-        Check(immediateJobs.count == 0, @"unchanged broken geometry cannot loop native size updates");
-        Grow(n, 360);
-        RunImmediate();
-        Check(feedSizeUpdates == feedBefore + 2, @"later content growth remains eligible for correction");
-        Grow(n, 400);
-        n.view.window = nil;
-        RunImmediate();
-        Check(feedSizeUpdates == feedBefore + 2, @"detached card cancels queued size correction");
-        Tick();
-        Check(jobs.count == 0 && immediateJobs.count == 0,
-              @"feed correction leaves no callbacks after detach");
-        n.view.window = @YES;
-        Grow(n, 400);
-        RunImmediate();
-        Check(feedSizeUpdates == feedBefore + 3, @"reattached card can retry cancelled size correction");
-        n.view.bounds = CGRectMake(0, 0, 300, 400);
-        Grow(n, 400);
-        n.view.bounds = CGRectMake(0, 0, 300, 100);
-        Grow(n, 400);
-        RunImmediate();
-        Check(feedSizeUpdates == feedBefore + 4,
-              @"a corrected card can repair the same size after later shrink");
-        n.view.window = nil;
-        Tick();
+        RunHostedSizeTests();
         printf("PASS: %lu overflow lifecycle checks\n", (unsigned long)checks);
     }
 }

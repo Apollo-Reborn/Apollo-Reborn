@@ -3934,11 +3934,32 @@ static void ApolloLPArmRelayoutClimb(ASDisplayNode *node, ASDisplayNode *cellNod
     });
 }
 
-static BOOL ApolloLPInvalidateFeedRow(ASDisplayNode *node) {
+static ASDisplayNode *ApolloLPHostedCellForSizeUpdate(ASDisplayNode *node) {
     ASDisplayNode *cell = ApolloLPFindOwningCellNode(node);
-    Class largePost = objc_getClass("_TtC6Apollo17LargePostCellNode");
-    SEL invalidateSize = NSSelectorFromString(@"_rootNodeDidInvalidateSize");
-    if (!largePost || ![cell isKindOfClass:largePost] || ![cell respondsToSelector:invalidateSize]) return NO;
+    Class cellClass = objc_getClass("ASCellNode");
+    SEL interactionDelegate = NSSelectorFromString(@"interactionDelegate");
+    if (!cellClass || ![cell isKindOfClass:cellClass] ||
+        ![cell respondsToSelector:interactionDelegate] ||
+        ![cell respondsToSelector:NSSelectorFromString(@"_rootNodeDidInvalidateSize")]) return nil;
+
+    // Unhosted cells measure synchronously; only use Texture's queued container path.
+    id container = ((id (*)(id, SEL))objc_msgSend)(cell, interactionDelegate);
+    Class tableClass = objc_getClass("ASTableView");
+    Class collectionClass = objc_getClass("ASCollectionView");
+    if (!((tableClass && [container isKindOfClass:tableClass]) ||
+          (collectionClass && [container isKindOfClass:collectionClass]))) return nil;
+    if (![container respondsToSelector:NSSelectorFromString(@"indexPathForNode:")] ||
+        ![container respondsToSelector:NSSelectorFromString(@"nodeDidInvalidateSize:")]) return nil;
+    return cell;
+}
+
+static BOOL ApolloLPInvalidateHostedCell(ASDisplayNode *node) {
+    ASDisplayNode *cell = ApolloLPHostedCellForSizeUpdate(node);
+    if (!cell) return NO;
+    id __attribute__((objc_precise_lifetime)) container =
+        ((id (*)(id, SEL))objc_msgSend)(cell, NSSelectorFromString(@"interactionDelegate"));
+    // Table membership queries may touch UIKit row data; keep them outside layout callbacks.
+    if (!((id (*)(id, SEL, id))objc_msgSend)(container, NSSelectorFromString(@"indexPathForNode:"), cell)) return NO;
 
     // Texture batches these invalidations and remeasures the row before laying out its children.
     NSUInteger depth = 0;
@@ -3946,13 +3967,13 @@ static BOOL ApolloLPInvalidateFeedRow(ASDisplayNode *node) {
         ((void (*)(id, SEL))objc_msgSend)(current, @selector(invalidateCalculatedLayout));
         if (current == cell) break;
     }
-    ((void (*)(id, SEL))objc_msgSend)(cell, invalidateSize);
+    ((void (*)(id, SEL))objc_msgSend)(cell, NSSelectorFromString(@"_rootNodeDidInvalidateSize"));
     return YES;
 }
 
 static void ApolloLPTriggerRelayoutInternal(ASDisplayNode *node, BOOL scheduleDelayed, NSString *host) {
     if (!node) return;
-    if (ApolloLPInvalidateFeedRow(node)) return;
+    if (ApolloLPInvalidateHostedCell(node)) return;
     ASDisplayNode *cellNode = ApolloLPFindOwningCellNode(node);
     ApolloLPInvalidateAncestorChain(node);
 
@@ -4063,8 +4084,8 @@ static CGFloat ApolloLPFeedFooterOverlap(ASDisplayNode *node, UIView *cellView, 
 @property BOOL checkPending;
 @property BOOL reloadPending;
 @property NSTimeInterval changedAt;
-@property CGSize requestedFeedContentSize;
-@property BOOL feedSizeUpdatePending;
+@property CGSize requestedContentSize;
+@property BOOL sizeUpdatePending;
 @end
 @implementation ApolloLPOverflowState
 @end
@@ -4195,26 +4216,31 @@ static void ApolloLPScheduleOverflowHeightCheck(ASDisplayNode *node, NSString *h
     if (!url || ApolloLPShouldDeferToInlineMedia(url)) return;
     ApolloLPOverflowState *state = ApolloLPOverflowStateForNode(node);
     BOOL changed = ApolloLPObserveOverflowGeometry(view, state);
-    Class largePost = objc_getClass("_TtC6Apollo17LargePostCellNode");
-    if (CGRectGetMaxY(state.content) <= CGRectGetHeight(view.bounds) + 8.0 && !state.feedSizeUpdatePending) {
-        state.requestedFeedContentSize = CGSizeZero;
+    if (CGRectGetMaxY(state.content) <= CGRectGetHeight(view.bounds) + 8.0 && !state.sizeUpdatePending) {
+        state.requestedContentSize = CGSizeZero;
     }
     if (CGRectGetMaxY(state.content) > CGRectGetHeight(view.bounds) + 8.0 &&
-        !state.feedSizeUpdatePending && !CGSizeEqualToSize(state.requestedFeedContentSize, state.content.size) &&
-        largePost && [ApolloLPFindOwningCellNode(node) isKindOfClass:largePost]) {
+        !state.sizeUpdatePending && !CGSizeEqualToSize(state.requestedContentSize, state.content.size) &&
+        ApolloLPHostedCellForSizeUpdate(node)) {
         // A child has outgrown its allocated height. Repair on the next main turn,
         // outside Texture's layout stack, without waiting for scrolling to stop.
-        state.requestedFeedContentSize = state.content.size;
-        state.feedSizeUpdatePending = YES;
+        state.requestedContentSize = state.content.size;
+        state.sizeUpdatePending = YES;
         __weak ASDisplayNode *weakNode = node;
+        __weak ASDisplayNode *weakCell = ApolloLPFindOwningCellNode(node);
         dispatch_async(dispatch_get_main_queue(), ^{
-            state.feedSizeUpdatePending = NO;
+            state.sizeUpdatePending = NO;
             ASDisplayNode *liveNode = weakNode;
-            if (liveNode.isNodeLoaded && ApolloLPViewForNode(liveNode).window) {
-                ApolloLPInvalidateFeedRow(liveNode);
-            } else {
-                state.requestedFeedContentSize = CGSizeZero;
+            UIView *liveView = liveNode.isNodeLoaded ? ApolloLPViewForNode(liveNode) : nil;
+            if (liveView.window && weakCell && ApolloLPFindOwningCellNode(liveNode) == weakCell) {
+                ApolloLPObserveOverflowGeometry(liveView, state);
+                if (CGRectGetMaxY(state.content) > CGRectGetHeight(liveView.bounds) + 8.0 &&
+                    ApolloLPInvalidateHostedCell(liveNode)) {
+                    state.requestedContentSize = state.content.size;
+                    return;
+                }
             }
+            state.requestedContentSize = CGSizeZero;
         });
     }
     if ((layoutOnly && !changed) || state.checkPending || state.reloadPending) return;
@@ -5296,8 +5322,8 @@ static void ApolloLPKickWeakCachedPreviewRefetch(NSURL *url, ApolloLinkPreview *
     sApolloLPRegisteredLinkNodes = [NSHashTable weakObjectsHashTable];
     sApolloLPRegisteredLinkNodesLock = [NSObject new];
 
-    // Texture's +initialize replaces inherited lifecycle callbacks with stubs.
-    // Initialize first so it cannot overwrite our visibility and layout hooks.
+    // Texture adds inherited lifecycle methods in +initialize. They must exist
+    // before the simulator's internal Logos generator searches for them to hook.
     Class linkButtonClass = objc_getClass("_TtC6Apollo14LinkButtonNode");
     Class tweetInfoClass = objc_getClass("_TtC6Apollo23LinkButtonTweetInfoNode");
     (void)[linkButtonClass class];
