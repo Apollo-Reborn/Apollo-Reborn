@@ -38,11 +38,13 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     self = [super init];
     if (self) {
         _ioQueue = dispatch_queue_create("com.apollofix.subredditCustomIconCache.io", DISPATCH_QUEUE_SERIAL);
-        // List icons render at ~40pt and every icon is stored on disk, so a
-        // few hundred KB of decoded icons covers a whole subreddit list.
+        // Entries are the stored icons themselves (up to 512px, 1MB or more
+        // decoded), not ~40pt thumbnails. Inbox and multireddit rows treat a
+        // miss as "no custom icon" and don't repaint when the disk copy lands,
+        // so this has to hold every custom icon on screen at once.
         _imageCache = [[NSCache alloc] init];
         _imageCache.countLimit = 120;
-        _imageCache.totalCostLimit = 8 * 1024 * 1024;
+        _imageCache.totalCostLimit = 20 * 1024 * 1024;
         ApolloMemoryRegisterPurgableCache(@"subreddit-icons", _imageCache);
         _storedKeysLock = [NSObject new];
         _storedKeys = [NSSet set];
