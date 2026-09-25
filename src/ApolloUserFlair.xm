@@ -54,10 +54,10 @@ static void ApolloUserFlairInitializeSharedState(void) {
     sApolloUserFlairCapturedOptionsLock = [NSObject new];
     sApolloUserFlairSpriteCacheLock = [NSObject new];
     sApolloUserFlairSheetCache = [NSCache new];
-    // A sheet is one arbitrarily-large PNG off the CDN, so a count limit on
-    // its own bounds nothing.
+    // Sheets must stay resident while the flair selector crops rows out of
+    // them lazily, and one sheet can be arbitrarily large, so this is bounded
+    // by count and emptied on a memory warning rather than by bytes.
     sApolloUserFlairSheetCache.countLimit = 6;
-    sApolloUserFlairSheetCache.totalCostLimit = 4 * 1024 * 1024;
     ApolloMemoryRegisterPurgableCache(@"flair-sprite-sheets", sApolloUserFlairSheetCache);
     sApolloUserFlairSpriteFileCache = [NSMutableDictionary new];
     sApolloUserFlairSpriteImageByPath = [NSMutableDictionary new];
