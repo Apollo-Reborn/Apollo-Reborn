@@ -40,9 +40,7 @@ static NSMutableSet<NSString *> *sApolloUserFlairPartialEmojiCacheKeys;
 static NSMutableDictionary<NSString *, id> *sApolloUserFlairWebEmojiFetches;
 static NSObject *sApolloUserFlairSpriteCacheLock;
 static NSCache<NSString *, UIImage *> *sApolloUserFlairSheetCache;
-static NSMutableDictionary<NSString *, NSString *> *sApolloUserFlairSpriteFileCache;
-static NSMutableDictionary<NSString *, UIImage *> *sApolloUserFlairSpriteImageByPath;
-static NSMutableArray<NSString *> *sApolloUserFlairSpriteCacheOrder;
+static NSMapTable<NSString *, UIImage *> *sApolloUserFlairSpriteImageByPath;
 
 __attribute__((constructor))
 static void ApolloUserFlairInitializeSharedState(void) {
@@ -54,9 +52,7 @@ static void ApolloUserFlairInitializeSharedState(void) {
     sApolloUserFlairSpriteCacheLock = [NSObject new];
     sApolloUserFlairSheetCache = [NSCache new];
     sApolloUserFlairSheetCache.countLimit = 8;
-    sApolloUserFlairSpriteFileCache = [NSMutableDictionary new];
-    sApolloUserFlairSpriteImageByPath = [NSMutableDictionary new];
-    sApolloUserFlairSpriteCacheOrder = [NSMutableArray new];
+    sApolloUserFlairSpriteImageByPath = [NSMapTable strongToWeakObjectsMapTable];
 }
 
 // The flair selector's flair options live in section 1 of its table.
