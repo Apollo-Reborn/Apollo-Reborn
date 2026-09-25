@@ -198,6 +198,13 @@ void ApolloWebJSONNoteSessionReauthenticationDeferred(NSString *username);
 // listens to offer re-login for that specific account.
 extern NSString *const ApolloWebJSONSessionExpiredNotification;
 
+// Posted (on the main thread) when Reddit starts refusing the ACTIVE web-session
+// account's requests with HTTP 429, so a feed that won't load gets an
+// explanation instead of an endless spinner. userInfo[@"username"] is the
+// lowercased account, userInfo[@"seconds"] the expected wait (see
+// ApolloWebJSONOptionalReadBackoff). Tweak.xm shows it as a toast.
+extern NSString *const ApolloWebJSONSessionRateLimitedNotification;
+
 // Sentinel access-token string the identity layer (ApolloWebJSONIdentity.xm)
 // installs as a synthetic OAuth credential so Apollo proceeds to issue requests
 // without real API keys. It's never sent to Reddit (the chokepoint strips

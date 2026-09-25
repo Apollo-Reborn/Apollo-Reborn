@@ -12,6 +12,7 @@
 #import <Security/Security.h>
 
 NSString *const ApolloWebJSONSessionExpiredNotification = @"ApolloWebJSONSessionExpiredNotification";
+NSString *const ApolloWebJSONSessionRateLimitedNotification = @"ApolloWebJSONSessionRateLimitedNotification";
 NSString *const ApolloWebJSONEnabledDidChangeNotification = @"ApolloWebJSONEnabledDidChangeNotification";
 NSString *const ApolloWebJSONSyntheticBearerToken = @"apollo-webjson-cookie-session";
 
@@ -574,6 +575,7 @@ static const NSTimeInterval kProbeBackoffDelays[] = {30.0, 120.0, 480.0, 900.0};
 static const NSUInteger kProbeBackoffDelayCount = sizeof(kProbeBackoffDelays) / sizeof(kProbeBackoffDelays[0]);
 
 static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPURLResponse *http);
+static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *http);
 
 static void ApolloWebJSONResetBlockStreak(NSString *username) {
     @synchronized (ApolloWebJSONExpiryLock()) {
@@ -647,6 +649,10 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
             return;
         }
         ApolloWebJSONProbeVerdict verdict = ApolloWebJSONIdentityVerdict(username, data, http, error);
+        // The probe skips ApolloWebJSONNoteResponse (probe fragment), but its
+        // 429 limits the session all the same, and at launch it's often the
+        // first request out, so start the hold (and the notice) from it too.
+        if (http.statusCode == 429) ApolloWebJSONRecordRateLimit(username, req, http);
         BOOL malformedAccountResponse;
         @synchronized (ApolloWebJSONExpiryLock()) {
             malformedAccountResponse = [sMalformedAccountResponseUsers containsObject:username];
@@ -888,10 +894,17 @@ static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *reque
         newlyLimited = until <= now;
         sRateLimitedUntilByUser[key] = @(MAX(until, now + wait));
     }
-    if (newlyLimited) {
-        ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
-                  key, request.HTTPMethod ?: @"GET", request.URL.path ?: @"/", wait);
-    }
+    if (!newlyLimited) return;
+    ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
+              key, request.HTTPMethod ?: @"GET", request.URL.path ?: @"/", wait);
+    // Only the active account's limit changes what's on screen; a background
+    // account's poll being refused shouldn't interrupt anyone.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (![ApolloActiveWebSessionUsername().lowercaseString isEqualToString:key]) return;
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionRateLimitedNotification
+                                                            object:nil
+                                                          userInfo:@{@"username": key, @"seconds": @(wait)}];
+    });
 }
 
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
