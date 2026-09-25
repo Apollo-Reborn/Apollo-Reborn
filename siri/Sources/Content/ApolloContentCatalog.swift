@@ -34,9 +34,11 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
     }
 
     static func parse(_ json: [String: Any], now: Date) -> Self? {
-        guard let id = identifier(json), json["subreddit_type"] as? String == "public",
-              let over18 = json["over_18"] as? Bool, !over18 else { return nil }
+        // Reddit uses different NSFW keys for post (t3) and community (t5)
+        // records. Require the appropriate flag; missing is not equivalent to safe.
         let isPost = json["kind"] as? String == "t3"
+        guard let id = identifier(json), json["subreddit_type"] as? String == "public",
+              let over18 = json[isPost ? "over_18" : "over18"] as? Bool, !over18 else { return nil }
         let subreddit = json[isPost ? "subreddit" : "display_name"] as? String ?? ""
         guard validName(subreddit) else { return nil }
         let title = json["title"] as? String ?? ""

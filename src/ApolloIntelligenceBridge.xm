@@ -90,7 +90,7 @@ static NSData *ApolloSiriListingData(id response) {
     // Forward only the explicit content allowlist, never the original response,
     // credentials, private messages or arbitrary server dictionaries.
     NSArray *keys = @[@"name", @"title", @"subreddit", @"author", @"selftext", @"permalink",
-                      @"created_utc", @"over_18", @"hidden", @"subreddit_type", @"removed_by_category",
+                      @"created_utc", @"over_18", @"over18", @"hidden", @"subreddit_type", @"removed_by_category",
                       @"display_name", @"public_description", @"user_is_subscriber"];
     NSMutableArray *records = [NSMutableArray array];
     for (id child in children) {

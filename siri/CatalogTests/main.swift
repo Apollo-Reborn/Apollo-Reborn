@@ -54,9 +54,24 @@ do {
     try store.expire(now: now.addingTimeInterval(101))
     check(store.state.records.isEmpty, "Expiry wasn't persisted")
     var subreddit: [String: Any] = ["kind": "t5", "display_name": "Apple", "title": "Apple",
-                                    "subreddit_type": "public", "over_18": false, "user_is_subscriber": true]
+                                    "subreddit_type": "public", "over18": false, "user_is_subscriber": true]
     try store.ingest(data([subreddit]), account: account, now: now)
     check(store.records(now: now).first?.id == "reddit:subreddit:apple", "Community ID unstable")
+    check(store.records(kind: .subreddit, query: "apple", now: now).count == 1, "Native community payload wasn't searchable")
+    var nsfwCommunity = subreddit
+    nsfwCommunity["over18"] = true
+    nsfwCommunity["over_18"] = false // The post flag must not override the community flag.
+    try store.ingest(data([nsfwCommunity]), account: account, now: now)
+    check(store.records(kind: .subreddit, now: now).isEmpty, "NSFW community wasn't removed")
+    var missingCommunityFlag = subreddit
+    missingCommunityFlag.removeValue(forKey: "over18")
+    missingCommunityFlag["over_18"] = false
+    check(ApolloContentRecord.parse(missingCommunityFlag, now: now) == nil, "Post flag incorrectly accepted for community")
+    var missingPostFlag = post("a")
+    missingPostFlag.removeValue(forKey: "over_18")
+    missingPostFlag["over18"] = false
+    check(ApolloContentRecord.parse(missingPostFlag, now: now) == nil, "Community flag incorrectly accepted for post")
+    try store.ingest(data([subreddit]), account: account, now: now)
     subreddit["user_is_subscriber"] = false
     try store.ingest(data([subreddit]), account: account, now: now)
     check(store.records(now: now).isEmpty, "Unsubscribed community retained")

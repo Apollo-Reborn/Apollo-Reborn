@@ -10,6 +10,23 @@ matrix, subscription-index design, performance gaps, and prioritized next work.
 The implementation/evidence checkboxes below remain historical; the assessment
 does not mark unverified Siri behavior as complete.
 
+2026-09-25 device feedback and acceptance target:
+
+- User confirmed a real indexed post appears in Spotlight and opens correctly.
+- Subreddit Spotlight lookup returned nothing. Reproduced locally with Reddit's
+  native community `over18` field: the bridge omitted it and the catalogue
+  incorrectly required the post field `over_18`. Corrected both and replaced the
+  inaccurate community fixture; all 41 catalogue assertions, the device Siri
+  framework build, and `make package` pass. Package: `3.8.0-2+debug`. This fix
+  has not yet been installed on the phone.
+- The intended Siri experience is a natural-language request producing an
+  interactive card inside Siri, like the supplied Things example. A successful
+  Shortcuts execution only validates the action/card implementation; it is not
+  acceptance of conversational Siri integration. The user reported a prompt to
+  enable shortcuts; its exact wording/context is still needed for diagnosis.
+- Finish the current device baseline before reworking collection for unread/new
+  posts from subscriptions, as agreed with the user.
+
 ## Approach
 
 Persist a bounded catalogue of Reddit content, expose stable post/subreddit
