@@ -6,11 +6,11 @@
 // scripts/badgebook-data/, downloads each collectible's 1024px source PNG,
 // downscales it to an icon-sized PNG (~200px) and optimizes it, then writes:
 //
-//   resources/BadgeBook/a_<id>.png     one achievement icon per catalogue entry
-//   resources/BadgeBook/t_<id>.png     one trophy icon per catalogue entry
-//   resources/BadgeBook/badgebook-catalog.json   compact runtime metadata
+//   Resources/BadgeBook/a_<id>.png     one achievement icon per catalogue entry
+//   Resources/BadgeBook/t_<id>.png     one trophy icon per catalogue entry
+//   Resources/BadgeBook/badgebook-catalog.json   compact runtime metadata
 //
-// The whole resources/ tree ships inside ApolloReborn.bundle, so at runtime the
+// The whole Resources/ tree ships inside ApolloReborn.bundle, so at runtime the
 // achievements book renders instantly and fully offline. Live / uncatalogued
 // trophies fall back to their remote image_url (kept in the catalogue) via the
 // app's async image pipeline.
@@ -34,7 +34,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..");
 const DATA_DIR = join(__dirname, "badgebook-data");
-const OUT_DIR = join(REPO_ROOT, "resources", "BadgeBook");
+const OUT_DIR = join(REPO_ROOT, "Resources", "BadgeBook");
 
 const argv = new Map();
 for (let i = 2; i < process.argv.length; i++) {
