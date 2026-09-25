@@ -95,9 +95,27 @@ if [[ -e "$DESTINATION" ]]; then
 fi
 ditto "$PRODUCT" "$DESTINATION"
 
+# Remove phrase-training assets from earlier proof builds, including incremental
+# Xcode products. Both bundles are checked above as belonging to this integration.
+# Host metadata is regenerated below; never leave its former five shortcuts on disk.
+remove_phrase_assets() {
+    local bundle="$1"
+    rm -rf -- "$bundle/Metadata.appintents/nlu"
+    rm -f -- "$bundle/Metadata.appintents/root.ssu.yaml"
+    local asset
+    for asset in "$bundle"/*.lproj/nlu.appintents; do
+        [[ ! -d "$asset" ]] || rm -rf -- "$asset"
+    done
+}
+remove_phrase_assets "$DESTINATION"
+if [[ "$($PB -c 'Print :ApolloSiriProofVersion' "$APP/Info.plist" 2>/dev/null || true)" == 1 ]]; then
+    remove_phrase_assets "$APP"
+    rm -rf -- "$APP/Metadata.appintents"
+fi
+
 # Extract again for the REAL host bundle. Copying framework metadata verbatim
-# leaves the framework's bundle ID in the NLU corpus and is not a discovery test
-# for Apollo. Keep the module name: the Swift types actually live in ApolloSiri.
+# does not establish host discovery. Keep the module name: the Swift types
+# actually live in ApolloSiri. This build intentionally supplies no phrase assets.
 SDK_ROOT="$(xcrun --sdk "$SDK" --show-sdk-path)"
 TOOLCHAIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
 XCODE_BUILD="$(xcodebuild -version | awk '/Build version/{print $3}')"
@@ -111,21 +129,25 @@ xcrun appintentsmetadataprocessor \
     --binary-file "$DESTINATION/ApolloSiri" \
     --source-file-list "$OBJECTS/ApolloSiri.SwiftFileList" \
     --swift-const-vals-list "$OBJECTS/ApolloSiri.SwiftConstValuesFileList" \
-    --stringsdata-file "$OBJECTS/ExtractedAppShortcutsMetadata.stringsdata" \
     --metadata-file-list "$INTERMEDIATES/ApolloSiri.DependencyMetadataFileList" \
     --static-metadata-file-list "$INTERMEDIATES/ApolloSiri.DependencyStaticMetadataFileList" \
     --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
 
 [[ -s "$APP/Metadata.appintents/extract.actionsdata" ]] || die "Host metadata missing."
-# Xcode runs a second tool after extraction. Generate the spoken-phrase assets
-# using Apollo's real Info.plist, not the framework's display name or bundle ID.
-xcrun appintentsnltrainingprocessor \
-    --infoplist-path "$APP/Info.plist" --temp-dir-path "$BUILD_DIR/host-ssu" \
-    --bundle-id "$BUNDLE_ID" --product-path "$APP" \
-    --extracted-metadata-path "$APP/Metadata.appintents" \
-    --metadata-file-list "$INTERMEDIATES/ApolloSiri.DependencyMetadataFileList" \
-    --source-file "$APP/Info.plist" --archive-ssu-assets
-[[ -d "$APP/Metadata.appintents/nlu" ]] || die "Host shortcut phrase assets missing."
+# No appintentsnltrainingprocessor: the schema-only discovery experiment has no
+# App Shortcut phrases. Fail packaging if any are accidentally reintroduced.
+python3 - "$APP/Metadata.appintents/extract.actionsdata" "$DESTINATION/Metadata.appintents/extract.actionsdata" <<'PY'
+import json
+import sys
+for path in sys.argv[1:]:
+    with open(path) as source:
+        metadata = json.load(source)
+    if metadata.get("autoShortcuts"):
+        raise SystemExit(f"Unexpected App Shortcut registrations in {path}")
+    if not metadata.get("actions") or not metadata.get("entities"):
+        raise SystemExit(f"App Intents or entity metadata missing from {path}")
+print("Verified: no App Shortcut registrations; App Intents and entities retained.")
+PY
 python3 "$SCRIPT_DIR/macho_add_load_dylib.py" "$APP/Apollo" \
     '@executable_path/Frameworks/ApolloSiri.framework/ApolloSiri'
 

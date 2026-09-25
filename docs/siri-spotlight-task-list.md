@@ -27,6 +27,16 @@ does not mark unverified Siri behavior as complete.
 - Finish the current device baseline before reworking collection for unread/new
   posts from subscriptions, as agreed with the user.
 
+2026-09-25 follow-up: at the user's request, disabled all five App Shortcut phrase
+registrations to isolate schema-based Siri discovery. The provider remains with
+an empty catalogue for refresh; underlying App Intents, entity IDs, schemas and
+snippet implementations remain. The packager removes old proof phrase assets,
+skips phrase training, and requires zero registered App Shortcuts in the host
+and framework metadata. Existing user-authored shortcuts remain intact.
+Verified the device framework build and repackaging of the previously installed
+IPA: five registrations became zero, all 12 action and six entity identifiers
+and action schemas were preserved, and the old phrase assets were removed.
+
 ## Approach
 
 Persist a bounded catalogue of Reddit content, expose stable post/subreddit

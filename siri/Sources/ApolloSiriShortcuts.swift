@@ -1,21 +1,11 @@
 import AppIntents
 
 public struct ApolloSiriShortcuts: AppShortcutsProvider {
+    // Publish an empty catalogue while testing schema-based Siri discovery.
+    // Keep the provider identity so launch-time refresh advertises the removal
+    // of the previous five phrase shortcuts. The AppIntent types remain intact
+    // for schema invocation, snippets, and existing user-authored workflows.
     public static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: ShowApolloSiriProofIntent(),
-                    phrases: ["Show the community in \(.applicationName)"],
-                    shortTitle: "Show Community", systemImageName: "bubble.left.and.bubble.right")
-        AppShortcut(intent: OpenApolloProofSubredditIntent(target: .community),
-                    phrases: ["Open the community in \(.applicationName)"],
-                    shortTitle: "Open Community", systemImageName: "arrow.up.forward.app")
-        AppShortcut(intent: SearchApolloProofIntent(),
-                    phrases: ["Search \(.applicationName)"],
-                    shortTitle: "Search", systemImageName: "magnifyingglass")
-        AppShortcut(intent: FindApolloIndexedPostsIntent(),
-                    phrases: ["Find indexed posts in \(.applicationName)"],
-                    shortTitle: "Find Indexed Posts", systemImageName: "text.magnifyingglass")
-        AppShortcut(intent: SearchApolloPostsIntent(),
-                    phrases: ["Find posts in \(.applicationName)"],
-                    shortTitle: "Search Posts", systemImageName: "text.bubble")
+        return []
     }
 }

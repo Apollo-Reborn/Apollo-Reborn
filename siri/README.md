@@ -7,6 +7,15 @@ The normal Theos build and its iOS 14 deployment target are unchanged.
 For the 2026-09-25 review against shipping Siri AI and the merged upstream code,
 see the [gap assessment and implementation sequence](../docs/siri-ai-gap-assessment.md).
 
+**Current discovery test (2026-09-25):** the five App Shortcut phrase registrations
+are disabled at the user's request. The provider publishes an empty catalogue;
+App Intent type names, schema conformances, entity IDs, and snippet implementations
+are retained. Packaging removes this proof's old phrase assets and verifies zero
+`autoShortcuts` in both host and framework metadata. The next device test is natural
+Siri invocation and Spotlight, not triggering a registered shortcut phrase.
+Ordinary intent actions can still appear in the Shortcuts editor; this does not
+mean the removed phrase registrations have returned.
+
 ## Current implementation (2026-09-19)
 
 The integration now has a bounded persistent content catalogue, native search,
@@ -70,8 +79,8 @@ and live Reddit search validation is pending an unlocked phone.
   instead of the previously browser-bound URL handler.
 - **Show Apollo Community**: returns the fixed entity, dialog, and static SwiftUI
   snippet. Running it explicitly indexes that one public entity in Spotlight.
-- Three original App Shortcuts with phrases using the host application's name,
-  plus Find Indexed Posts and Search Posts. No per-post shortcuts are donated.
+- The five former App Shortcut phrase registrations are disabled. Underlying
+  intents remain available; existing user-authored shortcuts are not deleted.
 
 The fixed proof remains available independently of content indexing.
 Search requires Apollo's normal API/account setup. The fixed snippet does not.
@@ -90,13 +99,14 @@ scripts/inject-siri-proof.sh --ipa /path/to/Apollo-Reborn.ipa -o packages/Apollo
 
 The output must not already exist. The input IPA is preserved. The script builds
 `ApolloSiri.framework`, embeds it in Apollo, adds its Mach-O load command, and
-extracts host-level App Intents metadata and spoken-phrase assets using Apollo's
-actual bundle identifier and name. This is more than copying framework metadata.
+extracts host-level App Intents metadata using Apollo's actual bundle identifier.
+It removes old proof phrase assets and skips phrase training. This is more than
+copying framework metadata.
 The resulting **unsigned proof IPA requires iOS 27**. Sign it through the usual
 Apollo sideloading workflow, including the embedded framework.
 
 Use the final intended bundle ID before running the script. A signer that changes
-Apollo's bundle ID afterward may invalidate the generated phrase metadata; that
+Apollo's bundle ID afterward may invalidate the generated host metadata; that
 signing workflow still needs verification. Do not assume a successful framework
 load proves system discovery or that arbitrary sideloaders preserve all metadata.
 
@@ -155,18 +165,17 @@ task-list evidence rather than treating this historical harness failure as final
 
 1. Sign/install the proof as Apollo, launch it once, and verify normal browsing.
    Check the `apollofix` / `SiriProof` logs for framework loading.
-2. Find Apollo in Shortcuts. Confirm the three original proof shortcuts plus
-   Find Indexed Posts and Search Posts. Merely seeing legacy actions does not pass.
-3. Run **Show Apollo Community**. Verify the returned entity, dialog, and snippet.
-   Run it again and search Spotlight for `ApolloReborn`; check for one result.
-4. Run **Open Apollo Subreddit**, then **Search Apollo** with a known term.
-   Confirm navigation stays inside this Apollo installation and the query is
-   preserved. Test both warm execution and after force-quitting Apollo.
-5. Ask Siri “Show the community in Apollo”, “Open the community in Apollo”, and
-   “Search Apollo”. Check entity/dialog results; Siri may choose not to display
-   a custom snippet in every presentation or Apple Intelligence configuration.
-6. Tap the Spotlight entity and verify it opens the subreddit in Apollo.
-   Repeat after a reboot. Record OS version, signer, and final bundle identifier.
+2. Enable content indexing, browse public posts, and refresh subscribed communities.
+   Confirm the catalogue contains real posts and communities.
+3. Find a real post and community in Spotlight and open each. Repeat after
+   terminating Apollo. Record OS version, signer, and final bundle identifier.
+4. Ask Siri naturally to search in the installed app and to open indexed content.
+   Record whether it invokes a schema intent, presents results, or fails. Do not
+   treat an existing user-authored shortcut being invoked as schema discovery.
+5. With an indexed post visible, ask about that post. Test follow-up references
+   and compare the optional Notes projection separately with the same content.
+6. The target is a natural request returning actionable results inside Siri.
+   Rendering an intent's card through diagnostic tooling alone does not pass.
 
 Continue recording actual device evidence in the task list. Real-content and
 Siri AI behaviour remain separate acceptance gates from the fixed proof.

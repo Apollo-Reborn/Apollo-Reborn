@@ -7,6 +7,6 @@ import Foundation
         ApolloSiriLog.event("Framework loaded in Apollo")
         ApolloContentBridge.start()
         ApolloSiriShortcuts.updateAppShortcutParameters()
-        ApolloSiriLog.event("Requested shortcut parameter refresh")
+        ApolloSiriLog.event("Refreshed empty App Shortcut catalogue; phrase shortcuts disabled")
     }
 }
