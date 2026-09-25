@@ -23,7 +23,6 @@ static NSSet<NSString *> *ApolloLegacyBackendHosts(void) {
             @"apollopushserver.xyz",
             @"apollonotifications.com",
             @"beta.apollonotifications.com",
-            @"apolloreq.com",
         ]];
     });
     return hosts;

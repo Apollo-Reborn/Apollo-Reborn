@@ -123,7 +123,7 @@ Finally, **don't copy these examples verbatim**. If everyone adopts the same "sa
 
 ### Self-hosted notifications (advanced)
 
-The legacy Apollo push backends went dark in June 2023 and are otherwise blocked by the tweak. If you run your own instance of [apollo-backend](https://github.com/Apollo-Reborn/apollo-backend), you can set the URL under **Settings > Custom API > Notification Backend** and the tweak will route all `apollopushserver.xyz`, `beta.apollonotifications.com`, and `apolloreq.com` traffic to that host instead. Leave the field empty to keep the current "silently dropped" behavior.
+The legacy Apollo push backends went dark in June 2023 and are otherwise blocked by the tweak. If you run your own instance of [apollo-backend](https://github.com/Apollo-Reborn/apollo-backend), you can set the URL under **Settings > Custom API > Notification Backend** and the tweak will route all `apollopushserver.xyz`, `apollonotifications.com`, and `beta.apollonotifications.com` traffic to that host instead. Leave the field empty to keep the current "silently dropped" behavior.
 
 Notifications can be delivered two ways — pick the one that matches your Apple account:
 
