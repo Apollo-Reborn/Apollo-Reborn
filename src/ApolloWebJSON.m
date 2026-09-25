@@ -844,6 +844,67 @@ static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPU
     }
 }
 
+#pragma mark - Session rate limit
+
+// Reddit meters each web session per ten-minute window but never says how much
+// is left: cookie-authenticated www.reddit.com JSON responses carry no
+// x-ratelimit headers. Once the budget is spent it answers HTTP 429 to
+// everything until the window resets, Apollo's own feed and comment loads
+// included, which shows up as a feed that keeps spinning (issue #1163). The
+// tweak's optional reads (author avatars, subreddit header info) go out on the
+// same cookie, so after a 429 they stand down until the reset instead of piling
+// on. Lowercased username -> epoch seconds the hold lasts until, guarded by the
+// expiry lock like the rest of the per-account state.
+static NSMutableDictionary<NSString *, NSNumber *> *sRateLimitedUntilByUser;
+
+// Seconds from a header Reddit sends as a decimal string ("412", "412.0").
+// NAN when absent or not a number (an HTTP-date Retry-After, say).
+static double ApolloWebJSONHeaderSeconds(NSHTTPURLResponse *http, NSString *name) {
+    NSString *value = [http valueForHTTPHeaderField:name];
+    if (value.length == 0) return NAN;
+    NSScanner *scanner = [NSScanner scannerWithString:value];
+    double seconds = 0;
+    return ([scanner scanDouble:&seconds] && scanner.isAtEnd) ? seconds : NAN;
+}
+
+static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *http) {
+    if (http.statusCode != 429) return;
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return;
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    // Use a reset time the response states; otherwise hold until the next
+    // ten-minute mark, where Reddit's windows end. Never less than half a
+    // minute, so a 429 just before a mark doesn't send everything straight
+    // back in, and never more than one window.
+    double wait = ApolloWebJSONHeaderSeconds(http, @"x-ratelimit-reset");
+    if (isnan(wait) || wait <= 0) wait = ApolloWebJSONHeaderSeconds(http, @"Retry-After");
+    if (isnan(wait) || wait <= 0) wait = 600.0 - fmod(now, 600.0);
+    wait = MIN(MAX(wait, 30.0), 600.0);
+
+    BOOL newlyLimited;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sRateLimitedUntilByUser) sRateLimitedUntilByUser = [NSMutableDictionary dictionary];
+        NSTimeInterval until = sRateLimitedUntilByUser[key].doubleValue;
+        newlyLimited = until <= now;
+        sRateLimitedUntilByUser[key] = @(MAX(until, now + wait));
+    }
+    if (newlyLimited) {
+        ApolloLog(@"[WebJSON] Reddit rate-limited u/%@ (HTTP 429 on %@ %@); pausing optional lookups for %.0fs",
+                  key, request.HTTPMethod ?: @"GET", request.URL.path ?: @"/", wait);
+    }
+}
+
+NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
+    if (!sWebJSONEnabled) return 0;
+    NSString *key = username.lowercaseString;
+    if (key.length == 0) return 0;
+    NSTimeInterval until;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        until = sRateLimitedUntilByUser[key].doubleValue;
+    }
+    return MAX(0.0, until - [[NSDate date] timeIntervalSince1970]);
+}
+
 void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     if (!sWebJSONEnabled) return;
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return;
@@ -865,6 +926,10 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // the active account changed since.
     NSString *username = ApolloWebJSONAccountFromURL(url);
     if (username.length == 0) return;
+
+    // Ahead of the expiry bookkeeping's early returns: a 429 limits the session
+    // whatever it says (or doesn't) about the cookie still being valid.
+    ApolloWebJSONRecordRateLimit(username, request, (NSHTTPURLResponse *)response);
 
     // Public successes can carry anonymous cookies. Only verified identity
     // probes may persist those rotations.

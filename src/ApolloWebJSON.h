@@ -284,6 +284,18 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 
+// Seconds the tweak's optional reads (author avatars, subreddit header info)
+// for `username`'s web session should wait, or 0 when they may go ahead.
+// Reddit doesn't report a web session's remaining request budget (cookie
+// responses carry no x-ratelimit headers); the only signal is the HTTP 429 it
+// sends once the budget is spent, and that 429 also stops Apollo's own feed and
+// comment loads until the window resets. After one, this returns the time left
+// until the reset so the optional reads stop adding to it. Fed by
+// ApolloWebJSONNoteResponse from every cookie-authenticated response. 0 for
+// API-key accounts, when Web JSON is off, or when no 429 has been seen. Any
+// thread.
+NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
+
 // Verify the requesting web account independently of public HTTP successes.
 void ApolloWebJSONCheckAccountSession(NSString *username);
 void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path);
