@@ -6130,6 +6130,17 @@ static BOOL ApolloAttributedStringEndsWithMarker(NSAttributedString *attr) {
     return [attr attribute:ApolloTranslationMarkerAttributeName atIndex:attr.length - 1 effectiveRange:NULL] != nil;
 }
 
+// See ApolloTranslation.h. The appended line is one run tagged with the marker
+// attribute, leading newline included, so cutting that run restores the body.
+NSAttributedString *ApolloTranslationTextByRemovingTrailingMarker(NSAttributedString *text) {
+    if (!ApolloAttributedStringEndsWithMarker(text)) return nil;
+    NSRange markerRange = NSMakeRange(NSNotFound, 0);
+    [text attribute:ApolloTranslationMarkerAttributeName atIndex:text.length - 1
+        longestEffectiveRange:&markerRange inRange:NSMakeRange(0, text.length)];
+    if (markerRange.location == NSNotFound) return nil;
+    return [text attributedSubstringFromRange:NSMakeRange(0, markerRange.location)];
+}
+
 // Tap-to-translate: append the "🌐 Translate" affordance under a comment that is
 // still showing its ORIGINAL text (a translation exists and is cached; the swap
 // is held until the user taps). No ownership is taken — the text stays original.

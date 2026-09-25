@@ -1222,6 +1222,23 @@ void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *u
     NSURL *normalizedURL = ApolloNormalizedWebURL(url);
     if (!normalizedURL) return;
 
+    // The in-app browser is an SFSafariViewController, which throws
+    // NSInvalidArgumentException for any scheme but http(s) (#1179: a
+    // recovered comment's apollo-translation://toggle marker crashed here).
+    // Hand other schemes (mailto:, tel:, app links) to the system; a URL with
+    // no scheme at all has nowhere to go.
+    // Only the scheme is logged: a mailto:/tel: URL is an address or number.
+    NSString *scheme = normalizedURL.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        if (scheme.length == 0) {
+            ApolloLog(@"[Browser] skip present: URL has no scheme");
+            return;
+        }
+        ApolloLog(@"[Browser] %@: is not a web scheme, handing it to the system", scheme);
+        [[UIApplication sharedApplication] openURL:normalizedURL options:@{} completionHandler:nil];
+        return;
+    }
+
     if (ApolloShouldSkipDuplicateBrowserPresent(normalizedURL)) {
         ApolloLog(@"[Browser] skip duplicate present url=%@", normalizedURL.absoluteString);
         return;
