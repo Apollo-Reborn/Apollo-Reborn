@@ -113,6 +113,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSaveAllMediaBridge.swift \
     $(SRC_DIR)/ApolloSaveAllMediaMenus.xm \
     $(SRC_DIR)/ApolloGIFSaveActivity.xm \
+    $(SRC_DIR)/ApolloShareMediaHandoff.xm \
     $(SRC_DIR)/ApolloMediaDownloadActions.xm \
     $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
     $(SRC_DIR)/ApolloFeedAlbumMenus.xm \
