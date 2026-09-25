@@ -263,6 +263,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInlineLinkPreviews.xm \
     $(SRC_DIR)/ApolloChatInlineImages.xm \
     $(SRC_DIR)/ApolloChatComposer.xm \
+    $(SRC_DIR)/ApolloMessageDraftStore.m \
     $(SRC_DIR)/ApolloChatsFilter.xm \
     $(SRC_DIR)/ApolloDirectChatWeb.xm \
     $(SRC_DIR)/ApolloLinkCardTitleFallback.xm \
