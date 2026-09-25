@@ -19,8 +19,12 @@
 // sharpness — a separate call from bounding memory.
 static NSUInteger const kApolloGalleryImageCacheCostLimit = 96 * 1024 * 1024;
 // Original-bytes cache. Smaller: it only has to survive long enough for the
-// user to hit Save/Share on something they're looking at.
-static NSUInteger const kApolloGalleryDataCacheCostLimit = 8 * 1024 * 1024;
+// user to hit Save/Share on something they're looking at, but it has to fit
+// that one original whole. An entry over the limit is evicted on insertion,
+// and without the bytes Save writes a PNG of the frame on screen (a GIF stops
+// animating) and Share hands over the URL instead of the file; one GIF or large
+// PNG original is often bigger than 8MB on its own.
+static NSUInteger const kApolloGalleryDataCacheCostLimit = 32 * 1024 * 1024;
 
 static NSTimeInterval const kApolloGalleryImageTimeout = 30.0;
 
