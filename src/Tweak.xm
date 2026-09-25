@@ -1974,8 +1974,9 @@ void ApolloPrepareRandomNSFWSubredditSource(
         });
 }
 // Replace Reddit API client ID. Resolved per-account (see
-// ApolloAccountCredentials.{h,m}): a pending add-account choice, else the
-// active account's stored override, else the global default — instead of
+// ApolloAccountCredentials.{h,m}): the active account's stored override, else
+// the global default — also for a new sign-in started while that account is
+// active (ApolloWebAuthViewController explains a rejected key) — instead of
 // unconditionally forcing the single global client id/redirect URI onto every
 // account, which broke a second account's login/refresh under a different key.
 %hook RDKOAuthCredential

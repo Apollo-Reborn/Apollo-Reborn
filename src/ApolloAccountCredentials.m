@@ -56,6 +56,13 @@ ApolloAccountCredentialEntry *ApolloAccountCredentialsFor(NSString *username) {
 void ApolloAccountCredentialsSet(NSString *username, NSString *clientId, NSString *clientSecret, NSString *redirectURI) {
     NSString *key = ApolloNormalizeUsername(username);
     if (key.length == 0) return;
+    // A pasted key with a stray space or newline no longer matches the Reddit
+    // app, and Reddit only says so after Accept (HTTP 400, see
+    // ApolloWebAuthViewController). The Settings fields already trim.
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    clientId = [clientId stringByTrimmingCharactersInSet:ws];
+    clientSecret = [clientSecret stringByTrimmingCharactersInSet:ws];
+    redirectURI = [redirectURI stringByTrimmingCharactersInSet:ws];
     NSMutableDictionary<NSString *, NSDictionary *> *all = [ApolloLoadRawAccountCredentials() mutableCopy];
     all[key] = @{
         @"clientId": clientId ?: @"",
