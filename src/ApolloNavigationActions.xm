@@ -643,8 +643,10 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 }
             }
         }
+        NSString *editingControllerClass = NSStringFromClass(controllerBox.controller.class);
         BOOL blueDone = controllerBox.controller.isEditing &&
-            [NSStringFromClass(controllerBox.controller.class) isEqualToString:@"Apollo.RedditListViewController"];
+            ([editingControllerClass isEqualToString:@"Apollo.RedditListViewController"] ||
+             [editingControllerClass isEqualToString:@"ApolloSettingsShortcutsViewController"]);
         objc_setAssociatedObject(item, &kActionsBlueDoneKey, @(blueDone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloActionsPinChrome(item);
         UIImage *image = ApolloActionsTemplateImage(item.image);

@@ -940,6 +940,24 @@ static void LCFReconcileActiveSession(UIViewController *vc) {
 
 %end
 
+// Live Update is a UI-only sort (8). Apollo's request sort-string converter
+// at 0x1000276c0 handles only 1...7; moreComments: constructs a dictionary
+// with that result at 0x10003efb4, so loading an older/expanded comment in
+// live mode inserts nil and raises NSInvalidArgumentException. Native live
+// polling already uses New (3). Normalize only the request, not currentSort,
+// and apply this even when the optional follow-the-live-edge UI is disabled.
+%hook RDKClient
+
+- (id)moreComments:(id)comments forLink:(id)link sort:(long long)sort completion:(id)completion {
+    if (sort == 8) {
+        ApolloLog(@"[LiveFollow] loading previous comments with New request sort");
+        return %orig(comments, link, 3, completion);
+    }
+    return %orig;
+}
+
+%end
+
 %ctor {
     ApolloLog(@"[LiveFollow] module loaded");
 }

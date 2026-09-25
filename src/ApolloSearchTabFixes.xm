@@ -597,6 +597,51 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
 
 %end
 
+// Apollo requires an exact top-offset match before focusing Search (0x10008907c).
+// Handle Search-root re-selection here so subpixel offsets cannot block focus.
+%hook ApolloSearchTabSceneDelegate
+
+- (BOOL)tabBarController:(UITabBarController *)tabs
+ shouldSelectViewController:(UIViewController *)page {
+    if (page != tabs.selectedViewController ||
+        ![page isKindOfClass:UINavigationController.class]) {
+        return %orig(tabs, page);
+    }
+    UINavigationController *nav = (UINavigationController *)page;
+    UIViewController *root = nav.viewControllers.firstObject;
+    if (nav.viewControllers.count != 1 ||
+        ![root isKindOfClass:NSClassFromString(@"_TtC6Apollo20SearchViewController")]) {
+        return %orig(tabs, page);
+    }
+    if (tabs.presentedViewController || nav.presentedViewController ||
+        root.presentedViewController || nav.transitionCoordinator ||
+        !root.viewIfLoaded.window) return NO;
+
+    UITableView *table = ApolloSearchTabTableView(root);
+    UISearchBar *bar = ApolloSearchTabSearchBar(root);
+    if (!table || !bar.window) return %orig(tabs, page);
+    if (table.isDragging || table.isDecelerating) return NO;
+
+    // Allow one point for rounding; scroll to the top before focusing on the next tap.
+    CGFloat top = -table.adjustedContentInset.top;
+    CGFloat offset = table.contentOffset.y;
+    if (offset > top + 1.0) {
+        [table setContentOffset:CGPointMake(table.contentOffset.x, top)
+                       animated:!UIAccessibilityIsReduceMotionEnabled()];
+        ApolloLog(@"[SearchTabFixes] reselect scroll-to-top offset=%.3f top=%.3f",
+                  offset, top);
+    } else {
+        BOOL focused = [bar becomeFirstResponder];
+        ApolloLog(@"[SearchTabFixes] reselect focus=%d offset=%.3f top=%.3f nativeTop=%.3f",
+                  focused, offset, top,
+                  -root.view.safeAreaInsets.top - table.contentInset.top);
+    }
+    // Prevent UIKit from handling the same re-selection again.
+    return NO;
+}
+
+%end
+
 %ctor {
-    %init;
+    %init(ApolloSearchTabSceneDelegate = objc_getClass("_TtC6Apollo13SceneDelegate"));
 }

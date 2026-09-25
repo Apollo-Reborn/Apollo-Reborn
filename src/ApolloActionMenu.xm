@@ -38,6 +38,8 @@
 // and DeletedComments' outer-frame-only growth was correct all along.
 
 #import "ApolloActionMenu.h"
+#import <dlfcn.h>
+#import "ApolloActionMenuLayout.h"
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
@@ -159,10 +161,263 @@ UIImage *ApolloActionMenuSymbolIcon(NSString *symbolName) {
     return image;
 }
 
+#pragma mark - Customised layouts (Settings → Interface → Action Menus)
+
+// The user's saved order/hidden set for a menu context is applied in two
+// places, both driven from the memoised slot state so each sheet is touched
+// exactly once:
+//   • Apollo's NATIVE rows: the controller's Swift `actions` array is permuted
+//     (and hidden rows dropped) IN PLACE before either path reads it — the
+//     legacy table and the glass UIMenu builder both walk that buffer, and
+//     Apollo's own didSelect finds a row's handler by a key built from the
+//     row's title + kind (a dictionary, not a parallel array — verified in
+//     Hopper: sub_10079f330 ← tableView:didSelectRowAtIndexPath:), so moving
+//     an element can never mismatch it with another row's handler. Same
+//     technique ApolloTranslation.xm and ApolloNativeActionMenus.xm's saved-
+//     category sort already rely on.
+//   • Apollo Reborn's rows (specs): hidden ones are not matched; the rest sort
+//     by their rank in the saved order. On the glass path a ranked spec is
+//     then spliced among the native elements at its rank (see
+//     ApolloActionMenuInjectMenuElements); on the legacy sheet injected rows
+//     always follow the native ones (header note), so only their relative
+//     order applies there.
+//
+// Native rows the catalogue doesn't know (a moderator-only row, a kind added
+// by a future Apollo build) are never dropped: they keep Apollo's relative
+// order after every catalogued item. A context with no saved layout is left
+// exactly as Apollo built it.
+
+// Apollo flags its moderator sheets (the shield buttons' and the Moderator
+// row's) on the controller itself.
+static BOOL ApolloActionMenuControllerIsModeratorOnly(id controller) {
+    if (!controller) return NO;
+    Ivar ivar = class_getInstanceVariable(object_getClass(controller), "isShowingOnlyModeratorActions");
+    if (!ivar) return NO;
+    return *(BOOL *)((uint8_t *)(__bridge void *)controller + ivar_getOffset(ivar));
+}
+
+static char kApolloActionMenuControllerContextKey;
+
+void ApolloActionMenuCaptureContextForController(id controller) {
+    if (![controller isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
+    if (objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey)) return;
+    ApolloActionMenuContext context = ApolloActionMenuTakeArmedContext();
+    if (!context) return;
+    // A moderator context fits only a sheet Apollo flagged moderator-only, and
+    // such a sheet takes only a moderator context. The Moderator row arms its
+    // follow-up while the ••• sheet is still dismissing, so a sheet that isn't
+    // the mod sheet leaves the context armed for the one that is (within the
+    // arm window); a ••• context landing on a mod sheet is dropped, never
+    // misapplied.
+    BOOL moderatorSheet = ApolloActionMenuControllerIsModeratorOnly(controller);
+    if (ApolloActionMenuContextIsModerator(context) != moderatorSheet) {
+        ApolloLog(@"[ActionMenu] armed context %@ does not fit a %@ sheet — %@", context,
+                  moderatorSheet ? @"moderator" : @"regular", moderatorSheet ? @"dropped" : @"left armed");
+        if (!moderatorSheet) ApolloActionMenuArmContext(context);
+        return;
+    }
+    objc_setAssociatedObject(controller, &kApolloActionMenuControllerContextKey, context, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+// The Moderator row of a ••• sheet opens that object's moderator sheet once
+// the ••• sheet has dismissed — too late for the tap hooks' synchronous arm —
+// so the row's handlers (the glass action, the legacy willSelect) arm it
+// here; the capture above lets only a moderator-flagged sheet claim it.
+void ApolloActionMenuArmModeratorFollowUp(id actionController) {
+    ApolloActionMenuContext context = objc_getAssociatedObject(actionController, &kApolloActionMenuControllerContextKey);
+    ApolloActionMenuContext moderator = ApolloActionMenuModeratorContextFollowing(context);
+    if (!moderator) return;
+    ApolloLog(@"[ActionMenu] Moderator row of the %@ sheet — arming %@ for the sheet it opens", context, moderator);
+    ApolloActionMenuArmContext(moderator);
+}
+
+static char kApolloActionMenuElementKindKey;
+static char kApolloActionMenuElementSpecKey;
+
+void ApolloActionMenuTagElementWithNativeKind(UIMenuElement *element, NSUInteger kind) {
+    if (!element) return;
+    objc_setAssociatedObject(element, &kApolloActionMenuElementKindKey, @(kind), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloActionMenuTagElementWithSpec(UIMenuElement *element, NSString *specIdentifier) {
+    if (!element || specIdentifier.length == 0) return;
+    objc_setAssociatedObject(element, &kApolloActionMenuElementSpecKey, [specIdentifier copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
+// Rank of a glass element in the context's saved order; NSNotFound for an
+// element that carries no tag or whose item isn't catalogued for the context.
+static NSUInteger ApolloActionMenuRankForElement(UIMenuElement *element, ApolloActionMenuContext context) {
+    if (!context) return NSNotFound;
+    NSNumber *kind = objc_getAssociatedObject(element, &kApolloActionMenuElementKindKey);
+    if (kind) {
+        return ApolloActionMenuRankForItemID(context, ApolloActionMenuItemIDForKind(context, kind.unsignedIntegerValue));
+    }
+    NSString *specIdentifier = objc_getAssociatedObject(element, &kApolloActionMenuElementSpecKey);
+    if (specIdentifier) {
+        return ApolloActionMenuRankForItemID(context, ApolloActionMenuItemIDForSpec(specIdentifier));
+    }
+    return NSNotFound;
+}
+
+static NSUInteger ApolloActionMenuRankForSpec(ApolloActionMenuSpec *spec, ApolloActionMenuContext context) {
+    if (!context || !ApolloActionMenuContextIsCustomized(context)) return NSNotFound;
+    return ApolloActionMenuRankForItemID(context, ApolloActionMenuItemIDForSpec(spec.identifier));
+}
+
+// Element layout of Apollo's `[Action]` buffer (verified in Hopper against
+// -[ActionController tableView:cellForRowAtIndexPath:] → sub_1007985fc):
+// Swift array header (isa, refcount, count @+0x10, capacity @+0x18), then
+// 0x30-byte elements from +0x20 — kind (UInt16) @+0, title (String) @+0x08,
+// subtitle (String?) @+0x18, accessory (UInt8) @+0x28.
+static const NSUInteger kApolloActionMenuNativeElementsOffset = 0x20;
+static const NSUInteger kApolloActionMenuNativeElementStride = 0x30;
+
+typedef struct {
+    int64_t index;
+    uint16_t kind;
+    NSUInteger rank;
+} ApolloActionMenuNativeEntry;
+
+static NSString *ApolloActionMenuDescribeKinds(const ApolloActionMenuNativeEntry *entries, NSUInteger count) {
+    NSMutableArray<NSString *> *kinds = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger i = 0; i < count; i++) [kinds addObject:[NSString stringWithFormat:@"%u", entries[i].kind]];
+    return [kinds componentsJoinedByString:@","];
+}
+
+// Fills `entries` with every native row (index, kind, rank in the saved
+// order; unknown kinds rank after every catalogued item), skipping hidden
+// items when `applyHidden`. Returns how many were kept.
+static NSUInteger ApolloActionMenuCollectNativeEntries(uint8_t *elements, int64_t count,
+                                                       ApolloActionMenuContext context,
+                                                       NSArray<NSString *> *order, NSSet<NSString *> *hidden,
+                                                       BOOL applyHidden,
+                                                       ApolloActionMenuNativeEntry *entries,
+                                                       NSMutableArray<NSString *> *droppedKinds) {
+    NSUInteger kept = 0;
+    NSUInteger unknownRank = order.count;
+    for (int64_t i = 0; i < count; i++) {
+        uint16_t kind = *(uint16_t *)(elements + (NSUInteger)i * kApolloActionMenuNativeElementStride);
+        NSString *itemID = ApolloActionMenuItemIDForKind(context, kind);
+        if (applyHidden && itemID && [hidden containsObject:itemID]) {
+            [droppedKinds addObject:[NSString stringWithFormat:@"%u", kind]];
+            continue;
+        }
+        NSUInteger rank = itemID ? [order indexOfObject:itemID] : NSNotFound;
+        entries[kept++] = (ApolloActionMenuNativeEntry){ .index = i, .kind = kind,
+                                                          .rank = rank == NSNotFound ? unknownRank : rank };
+    }
+    return kept;
+}
+
+// Permutes/compacts the controller's native actions to the context's saved
+// layout. Returns YES when the buffer changed.
+static BOOL ApolloActionMenuApplyNativeLayout(id controller, ApolloActionMenuContext context) {
+    if (!controller || !context) return NO;
+    void *buffer = ApolloReadRawIvar(controller, "actions");
+    int64_t count = ApolloSwiftArrayCount(buffer);
+    if (count <= 0 || count > 512) return NO;
+
+    // Swift arrays may share storage. Never mutate another owner's copy.
+    // These runtime entry points also handle tagged/inline String words.
+    typedef bool (*UniqueFn)(void *);
+    typedef void (*ReleaseFn)(void *);
+    static UniqueFn isUnique;
+    static ReleaseFn releaseBridge;
+    static dispatch_once_t runtimeOnce;
+    dispatch_once(&runtimeOnce, ^{
+        isUnique = (UniqueFn)dlsym(RTLD_DEFAULT, "swift_isUniquelyReferenced_nonNull_native");
+        releaseBridge = (ReleaseFn)dlsym(RTLD_DEFAULT, "swift_bridgeObjectRelease");
+    });
+    if (!isUnique || !releaseBridge || !isUnique(buffer)) {
+        ApolloLog(@"[ActionMenu] %@ left unchanged: native actions storage is shared or Swift runtime is unavailable", context);
+        return NO;
+    }
+
+    NSArray<NSString *> *order = ApolloActionMenuHasCustomOrder(context) ? ApolloActionMenuResolvedOrder(context) : @[];
+    NSSet<NSString *> *hidden = ApolloActionMenuHiddenItemIDs(context);
+    uint8_t *elements = (uint8_t *)buffer + kApolloActionMenuNativeElementsOffset;
+
+    ApolloActionMenuNativeEntry *entries = (ApolloActionMenuNativeEntry *)calloc((size_t)count, sizeof(ApolloActionMenuNativeEntry));
+    if (!entries) return NO;
+    NSMutableArray<NSString *> *droppedKinds = [NSMutableArray array];
+    NSUInteger kept = ApolloActionMenuCollectNativeEntries(elements, count, context, order, hidden, YES, entries, droppedKinds);
+    // Never present an empty sheet: if every native row is hidden, show them
+    // all (in the saved order) rather than nothing.
+    if (kept == 0) {
+        [droppedKinds removeAllObjects];
+        kept = ApolloActionMenuCollectNativeEntries(elements, count, context, order, hidden, NO, entries, droppedKinds);
+    }
+    // Stable insertion sort by rank (a sheet has a few dozen rows at most), so
+    // rows sharing an item — or unknown to it — keep Apollo's relative order.
+    for (NSUInteger i = 1; i < kept; i++) {
+        ApolloActionMenuNativeEntry moving = entries[i];
+        NSUInteger j = i;
+        while (j > 0 && entries[j - 1].rank > moving.rank) {
+            entries[j] = entries[j - 1];
+            j--;
+        }
+        entries[j] = moving;
+    }
+
+    BOOL identity = (kept == (NSUInteger)count);
+    for (NSUInteger i = 0; identity && i < kept; i++) {
+        if (entries[i].index != (int64_t)i) identity = NO;
+    }
+    if (identity) {
+        free(entries);
+        return NO;
+    }
+
+    NSMutableArray<NSString *> *beforeKinds = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
+    for (int64_t i = 0; i < count; i++) {
+        [beforeKinds addObject:[NSString stringWithFormat:@"%u",
+                                *(uint16_t *)(elements + (NSUInteger)i * kApolloActionMenuNativeElementStride)]];
+    }
+
+    // Transfer surviving elements through scratch storage without retaining
+    // them. Release both String bridge words of every removed Action before
+    // overwriting its slot; lowering count alone leaks heap-backed titles.
+    uint8_t *scratch = (uint8_t *)malloc(kept * kApolloActionMenuNativeElementStride);
+    if (!scratch) {
+        free(entries);
+        return NO;
+    }
+    for (NSUInteger i = 0; i < kept; i++) {
+        memcpy(scratch + i * kApolloActionMenuNativeElementStride,
+               elements + (NSUInteger)entries[i].index * kApolloActionMenuNativeElementStride,
+               kApolloActionMenuNativeElementStride);
+    }
+    for (int64_t i = 0; i < count; i++) {
+        BOOL survives = NO;
+        for (NSUInteger j = 0; j < kept; j++) {
+            if (entries[j].index == i) { survives = YES; break; }
+        }
+        if (!survives) {
+            uint8_t *removed = elements + (NSUInteger)i * kApolloActionMenuNativeElementStride;
+            releaseBridge(*(void **)(removed + 0x10)); // title String's bridge word
+            releaseBridge(*(void **)(removed + 0x20)); // optional subtitle (nil is safe)
+        }
+    }
+    memcpy(elements, scratch, kept * kApolloActionMenuNativeElementStride);
+    memset(elements + kept * kApolloActionMenuNativeElementStride, 0,
+           ((NSUInteger)count - kept) * kApolloActionMenuNativeElementStride);
+    *(int64_t *)((uint8_t *)buffer + 0x10) = (int64_t)kept;
+    free(scratch);
+
+    ApolloLog(@"[ActionMenu] %@ layout applied: kinds %@ -> %@%@", context,
+              [beforeKinds componentsJoinedByString:@","], ApolloActionMenuDescribeKinds(entries, kept),
+              droppedKinds.count ? [NSString stringWithFormat:@" (hidden %@)", [droppedKinds componentsJoinedByString:@","]] : @"");
+    free(entries);
+    return YES;
+}
+
 #pragma mark - Per-controller slot memoization
 
 @interface ApolloActionMenuSlotState : NSObject
 @property (nonatomic, copy) NSArray<ApolloActionMenuSpec *> *specs; // matched, ordered
+// Which ••• menu this sheet is (ApolloActionMenuLayout.h), nil when it was not
+// opened from one of the customisable entry points.
+@property (nonatomic, copy) ApolloActionMenuContext context;
 @property (nonatomic, assign) NSInteger nativeRowCount; // -1 until numberOfRows(section 0) has run
 // A standalone (never dequeued, never added to any table) snapshot cell
 // carrying row 0's captured text/font/color/frame, rebuilt every time row 0
@@ -210,29 +465,96 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
 
     NSString *menuTitle = menuTitleHint.length > 0 ? menuTitleHint : ApolloActionMenuTitleForController(controller);
 
+    // Which ••• menu is this? Armed by the tap hooks at the bottom of this
+    // file moments before Apollo built the sheet. Resolved here — the first
+    // time anything asks about the controller — so the native permutation
+    // below lands before either rendering path reads the actions.
+    ApolloActionMenuCaptureContextForController(controller);
+    ApolloActionMenuContext context = objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey);
+    BOOL customized = context && ApolloActionMenuContextIsCustomized(context);
+    // What Apollo put in this sheet, for the settings preview — read before
+    // the saved layout drops anything.
+    NSMutableArray<NSString *> *presentedItemIDs = context ? [NSMutableArray array] : nil;
+    if (context) {
+        void *buffer = ApolloReadRawIvar(controller, "actions");
+        int64_t count = ApolloSwiftArrayCount(buffer);
+        for (int64_t i = 0; i < count && i < 512; i++) {
+            uint16_t kind = *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
+                                          + (NSUInteger)i * kApolloActionMenuNativeElementStride);
+            NSString *itemID = ApolloActionMenuItemIDForKind(context, kind);
+            if (itemID && ![presentedItemIDs containsObject:itemID]) [presentedItemIDs addObject:itemID];
+        }
+    }
     NSMutableArray<ApolloActionMenuSpec *> *matched = [NSMutableArray array];
     for (ApolloActionMenuSpec *spec in sApolloActionMenuRegistry) {
         BOOL (^matches)(id, NSString *) = spec.matches;
         if (!matches) continue;
+        BOOL specMatches = NO;
         @try {
-            if (matches(controller, menuTitle)) [matched addObject:spec];
+            specMatches = matches(controller, menuTitle);
         } @catch (NSException *exception) {
             ApolloLog(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
         }
+        if (!specMatches) continue;
+        NSString *specItemID = ApolloActionMenuItemIDForSpec(spec.identifier);
+        if (presentedItemIDs && ![presentedItemIDs containsObject:specItemID]) {
+            NSUInteger index = presentedItemIDs.count;
+            if (IsLiquidGlass() && spec.placement == ApolloActionMenuPlacementAfterLeadingSubmitAffordance) {
+                NSUInteger submit = [presentedItemIDs indexOfObject:@"submit"];
+                index = submit == NSNotFound ? 0 : submit + 1;
+            }
+            [presentedItemIDs insertObject:specItemID atIndex:index];
+        }
+        if (customized && ApolloActionMenuIsItemHidden(context, specItemID)) {
+            ApolloLog(@"[ActionMenu] spec '%@' hidden by the %@ layout", spec.identifier, context);
+            continue;
+        }
+        [matched addObject:spec];
     }
+    if (context) ApolloActionMenuRecordPresentedItemIDs(context, presentedItemIDs);
+    // Match tweak rows against Apollo’s original actions; hiding a native
+    // affordance must not change whether an independent feature belongs here.
+    if (customized) ApolloActionMenuApplyNativeLayout(controller, context);
     [matched sortUsingComparator:^NSComparisonResult(ApolloActionMenuSpec *a, ApolloActionMenuSpec *b) {
+        // Saved layout first (ranked rows before unranked), then the specs'
+        // own order/identifier tiebreak.
+        NSUInteger rankA = ApolloActionMenuRankForSpec(a, context);
+        NSUInteger rankB = ApolloActionMenuRankForSpec(b, context);
+        if (rankA != rankB) return rankA < rankB ? NSOrderedAscending : NSOrderedDescending;
         if (a.order != b.order) return a.order < b.order ? NSOrderedAscending : NSOrderedDescending;
         return [a.identifier compare:b.identifier];
     }];
 
     state = [ApolloActionMenuSlotState new];
     state.specs = matched;
+    state.context = context;
     objc_setAssociatedObject(controller, kApolloActionMenuSlotStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (matched.count > 0) {
         ApolloLog(@"[ActionMenu] %lu spec(s) matched '%@': %@", (unsigned long)matched.count, menuTitle,
                   [matched valueForKey:@"identifier"]);
     }
+    {
+        // Diagnostic for the Action Menus catalogue: the kinds EVERY sheet
+        // presents (no titles — those can carry user/subreddit names), the
+        // context it resolved to (none = left untouched) and whether Apollo
+        // flagged it as one of its moderator sheets.
+        void *buffer = ApolloReadRawIvar(controller, "actions");
+        int64_t count = ApolloSwiftArrayCount(buffer);
+        NSMutableArray<NSString *> *kinds = [NSMutableArray arrayWithCapacity:(NSUInteger)MAX(count, 0)];
+        for (int64_t i = 0; i < count && i < 512; i++) {
+            uint16_t kind = *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
+                                          + (NSUInteger)i * kApolloActionMenuNativeElementStride);
+            [kinds addObject:[NSString stringWithFormat:@"%u", kind]];
+        }
+        ApolloLog(@"[ActionMenu] context=%@ customized=%d moderatorOnly=%d kinds=[%@] specs=%@", context ?: @"(none)", customized,
+                  ApolloActionMenuControllerIsModeratorOnly(controller),
+                  [kinds componentsJoinedByString:@","], [matched valueForKey:@"identifier"]);
+    }
     return state;
+}
+
+void ApolloActionMenuPrepareController(id actionController, NSString *menuTitleHint) {
+    (void)ApolloActionMenuSlotsForController(actionController, menuTitleHint);
 }
 
 static CGFloat ApolloActionMenuNativeRowHeight(id controller) {
@@ -452,6 +774,19 @@ static NSUInteger ApolloActionMenuLeadingSubmitAffordanceIndex(NSArray<UIMenuEle
     return index;
 }
 
+// Under a saved layout: the slot right after the last element that ranks
+// before `rank` (untagged elements — text actions, report sections — don't
+// take part and stay where they are).
+static NSUInteger ApolloActionMenuRankedInsertionIndex(NSArray<UIMenuElement *> *children, NSUInteger rank,
+                                                       ApolloActionMenuContext context) {
+    NSUInteger index = 0;
+    for (NSUInteger i = 0; i < children.count; i++) {
+        NSUInteger childRank = ApolloActionMenuRankForElement(children[i], context);
+        if (childRank != NSNotFound && childRank < rank) index = i + 1;
+    }
+    return index;
+}
+
 void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *children,
                                         NSString *menuTitle,
                                         id actionController) {
@@ -462,8 +797,32 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
 
     for (ApolloActionMenuSpec *spec in state.specs) {
         @try {
+            NSUInteger rank = ApolloActionMenuRankForSpec(spec, state.context);
             if (spec.buildElement) {
+                // A custom builder places its own element(s) — Gallery View's
+                // combined section lands after the leading Submit affordance.
+                // Under a saved layout, re-home whatever it inserted at the
+                // spec's rank, tagged, so it reorders like a declarative row
+                // and later specs' rank scans see it. Without a rank the
+                // builder's own placement stands.
+                NSArray<UIMenuElement *> *before = [children copy];
                 spec.buildElement(actionController, children);
+                NSMutableArray<UIMenuElement *> *inserted = [NSMutableArray array];
+                for (UIMenuElement *element in children) {
+                    if ([before indexOfObjectIdenticalTo:element] == NSNotFound) [inserted addObject:element];
+                }
+                for (UIMenuElement *element in inserted) ApolloActionMenuTagElementWithSpec(element, spec.identifier);
+                if (rank != NSNotFound && inserted.count > 0) {
+                    for (UIMenuElement *element in inserted) {
+                        NSUInteger at = [children indexOfObjectIdenticalTo:element];
+                        if (at != NSNotFound) [children removeObjectAtIndex:at];
+                    }
+                    NSUInteger index = ApolloActionMenuRankedInsertionIndex(children, rank, state.context);
+                    [children insertObjects:inserted
+                                  atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(index, inserted.count)]];
+                    ApolloLog(@"[ActionMenu] spec '%@' re-homed by the %@ layout: rank %lu -> index %lu",
+                              spec.identifier, state.context, (unsigned long)rank, (unsigned long)index);
+                }
                 continue;
             }
 
@@ -484,10 +843,16 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
                 element = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                         options:UIMenuOptionsDisplayInline children:@[action]];
             }
+            ApolloActionMenuTagElementWithSpec(element, spec.identifier);
 
-            NSUInteger index = (spec.placement == ApolloActionMenuPlacementAfterLeadingSubmitAffordance)
-                ? ApolloActionMenuLeadingSubmitAffordanceIndex(children)
-                : children.count;
+            NSUInteger index;
+            if (rank != NSNotFound) {
+                index = ApolloActionMenuRankedInsertionIndex(children, rank, state.context);
+            } else {
+                index = (spec.placement == ApolloActionMenuPlacementAfterLeadingSubmitAffordance)
+                    ? ApolloActionMenuLeadingSubmitAffordanceIndex(children)
+                    : children.count;
+            }
             [children insertObject:element atIndex:MIN(index, children.count)];
         } @catch (NSException *exception) {
             ApolloLog(@"[ActionMenu] spec '%@' build threw: %@", spec.identifier, exception);
@@ -562,9 +927,23 @@ static void ApolloActionMenuPerformSpec(id controller, UITableView *tableView,
 typedef NSIndexPath *(*ApolloActionMenuWillSelectIMP)(id, SEL, UITableView *, NSIndexPath *);
 static ApolloActionMenuWillSelectIMP sApolloActionMenuOrigWillSelect = NULL;
 
+// The native kind at a row of the (already permuted) actions buffer.
+static uint16_t ApolloActionMenuNativeKindAtRow(id controller, NSInteger row) {
+    void *buffer = ApolloReadRawIvar(controller, "actions");
+    int64_t count = buffer ? ApolloSwiftArrayCount(buffer) : 0;
+    if (row < 0 || row >= count) return UINT16_MAX;
+    return *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
+                         + (NSUInteger)row * kApolloActionMenuNativeElementStride);
+}
+
 static NSIndexPath *ApolloActionMenuWillSelectRow(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
     ApolloActionMenuSpec *spec = ApolloActionMenuSpecAtIndexPath(self, indexPath);
     if (!spec) {
+        // A native row. The Moderator row (kind 124) opens the moderator sheet
+        // after this sheet dismisses: arm that sheet's context now.
+        if (indexPath.section == 0 && ApolloActionMenuNativeKindAtRow(self, indexPath.row) == 124) {
+            ApolloActionMenuArmModeratorFollowUp(self);
+        }
         if (sApolloActionMenuOrigWillSelect) return sApolloActionMenuOrigWillSelect(self, _cmd, tableView, indexPath);
         return indexPath;
     }
@@ -599,10 +978,9 @@ static void ApolloActionMenuInstallWillSelect(void) {
 %hook _TtC6Apollo16ActionController
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    ApolloActionMenuSlotState *state = section == 0 ? ApolloActionMenuSlotsForController(self, nil) : nil;
     NSInteger nativeCount = %orig;
     if (section != 0) return nativeCount;
-
-    ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(self, nil);
     state.nativeRowCount = nativeCount;
     if (state.specs.count == 0) return nativeCount;
     return nativeCount + (NSInteger)state.specs.count;
@@ -688,11 +1066,11 @@ static void ApolloActionMenuInstallWillSelect(void) {
 %hook _TtC6Apollo38ActionControllerPresentationController
 
 - (CGRect)frameOfPresentedViewInContainerView {
-    CGRect frame = %orig;
     UIViewController *presented = [(UIPresentationController *)self presentedViewController];
+    ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(presented, nil);
+    CGRect frame = %orig;
     if (frame.size.height <= 0.0 || !presented) return frame;
 
-    ApolloActionMenuSlotState *state = ApolloActionMenuSlotsForController(presented, nil);
     if (state.specs.count == 0) return frame;
 
     CGFloat rowHeight = ApolloActionMenuNativeRowHeight(presented);
@@ -705,6 +1083,31 @@ static void ApolloActionMenuInstallWillSelect(void) {
 }
 
 %end
+
+#pragma mark - Which ••• menu is opening (customised layouts)
+
+// The customisable menus are identified by where they are opened FROM, not by
+// what they contain (a moderator, the post's author and a logged-out user all
+// see different rows from the same button). Each entry point arms its context
+// (ApolloActionMenuArmContext) just before Apollo builds the sheet and disarms
+// it in @finally; the slot state claims it (ApolloActionMenuSlotsForController).
+// Entry points confirmed in Hopper: the feed cells and the comments header's
+// media node all route through PostCellActionTaker's post-options builder
+// (sub_100325e84), the comments nav-bar ••• through CommentsViewController's
+// own (sub_100727984), the feed nav-bar ••• through PostsViewController's
+// (sub_1005c06d4), and a comment's ••• through CommentSectionController's
+// (sub_1005ee890).
+//
+// The arm/disarm calls live in ApolloNativeActionMenus.xm, inside the hooks it
+// already has on those six tap selectors (source-view capture for the glass
+// morph) — one hook per selector, no second module wrapping the same method.
+// Likewise the legacy sheet's prepare: that module's existing
+// -[ActionController viewWillAppear:] hook calls ApolloActionMenuPrepareController
+// first thing, so the native actions are permuted before Apollo's own
+// appearance work sizes the table from actions.count (the presentation
+// controller's frame reads the live count on every pass). On the glass path the
+// controller is never presented — ApolloNativeActionMenuBuildMenu calls the same
+// memoised prepare — so that hook is a no-op there.
 
 %ctor {
     %init;

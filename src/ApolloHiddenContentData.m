@@ -89,7 +89,7 @@ static NSString *ApolloHiddenContentFullNamePrefix(ApolloHiddenContentKind kind)
 // cutoff below which a later-page failure leaves no live coverage at all.
 static void ApolloHiddenContentFetchLiveListingPage(NSString *username, NSString *listingKind, NSString *bearerToken,
                                                      NSString * _Nullable after, NSMutableSet<NSString *> *fullNames,
-                                                     NSNumber * _Nullable oldestCreatedUTCSeen,
+                                                     NSNumber * _Nullable oldestCreatedUTCSeen, ApolloHiddenContentProgress progress,
                                                      void (^completion)(BOOL fatalError, BOOL incomplete, NSNumber * _Nullable oldestCreatedUTCSeen)) {
     if (fullNames.count >= kApolloHiddenContentLiveListingCap) {
         ApolloLog(@"[HiddenContent] Live %@ listing capped at %lu items for u/%@", listingKind, (unsigned long)kApolloHiddenContentLiveListingCap, username);
@@ -148,8 +148,9 @@ static void ApolloHiddenContentFetchLiveListingPage(NSString *username, NSString
 
         NSString *nextAfter = [listingData[@"after"] isKindOfClass:[NSString class]] ? listingData[@"after"] : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (progress) progress(0.35 * MIN(1.0, (double)fullNames.count / kApolloHiddenContentLiveListingCap), @"Checking current content");
             if (nextAfter.length > 0 && children.count > 0) {
-                ApolloHiddenContentFetchLiveListingPage(username, listingKind, bearerToken, nextAfter, fullNames, newOldestCreatedUTCSeen, completion);
+                ApolloHiddenContentFetchLiveListingPage(username, listingKind, bearerToken, nextAfter, fullNames, newOldestCreatedUTCSeen, progress, completion);
             } else {
                 completion(NO, NO, newOldestCreatedUTCSeen);
             }
@@ -158,10 +159,10 @@ static void ApolloHiddenContentFetchLiveListingPage(NSString *username, NSString
     [task resume];
 }
 
-static void ApolloHiddenContentFetchLiveFullNames(NSString *username, ApolloHiddenContentKind kind, NSString *bearerToken,
+static void ApolloHiddenContentFetchLiveFullNames(NSString *username, ApolloHiddenContentKind kind, NSString *bearerToken, ApolloHiddenContentProgress progress,
                                                    void (^completion)(NSSet<NSString *> *fullNames, BOOL fatalError, BOOL incomplete, NSNumber * _Nullable oldestCreatedUTCSeen)) {
     NSMutableSet<NSString *> *fullNames = [NSMutableSet set];
-    ApolloHiddenContentFetchLiveListingPage(username, ApolloHiddenContentLiveListingKind(kind), bearerToken, nil, fullNames, nil, ^(BOOL fatalError, BOOL incomplete, NSNumber * _Nullable oldestCreatedUTCSeen) {
+    ApolloHiddenContentFetchLiveListingPage(username, ApolloHiddenContentLiveListingKind(kind), bearerToken, nil, fullNames, nil, progress, ^(BOOL fatalError, BOOL incomplete, NSNumber * _Nullable oldestCreatedUTCSeen) {
         completion(fullNames, fatalError, incomplete, oldestCreatedUTCSeen);
     });
 }
@@ -177,7 +178,7 @@ static NSString *ApolloHiddenContentArcticSearchPath(ApolloHiddenContentKind kin
 // Mirrors the live listing's fatal/incomplete split: a page-1 error is fatal,
 // a later-page error just marks the pass incomplete.
 static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenContentKind kind, NSNumber * _Nullable before,
-                                                NSMutableArray<NSDictionary *> *items, void (^completion)(BOOL fatalError, BOOL incomplete)) {
+                                                NSMutableArray<NSDictionary *> *items, ApolloHiddenContentProgress progress, void (^completion)(BOOL fatalError, BOOL incomplete)) {
     if (items.count >= kApolloHiddenContentArcticCap) {
         ApolloLog(@"[HiddenContent] Arctic %@ search capped at %lu items for u/%@", ApolloHiddenContentArcticSearchPath(kind), (unsigned long)kApolloHiddenContentArcticCap, username);
         completion(NO, NO);
@@ -225,8 +226,9 @@ static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenC
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (progress) progress(0.35 + 0.40 * MIN(1.0, (double)items.count / kApolloHiddenContentArcticCap), @"Searching the archive");
             if (page.count >= kApolloHiddenContentPageSize && oldestSeen) {
-                ApolloHiddenContentFetchArcticPage(username, kind, oldestSeen, items, completion);
+                ApolloHiddenContentFetchArcticPage(username, kind, oldestSeen, items, progress, completion);
             } else {
                 completion(NO, NO);
             }
@@ -235,10 +237,10 @@ static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenC
     [task resume];
 }
 
-static void ApolloHiddenContentFetchArcticItems(NSString *username, ApolloHiddenContentKind kind,
+static void ApolloHiddenContentFetchArcticItems(NSString *username, ApolloHiddenContentKind kind, ApolloHiddenContentProgress progress,
                                                  void (^completion)(NSArray<NSDictionary *> *items, BOOL fatalError, BOOL incomplete)) {
     NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-    ApolloHiddenContentFetchArcticPage(username, kind, nil, items, ^(BOOL fatalError, BOOL incomplete) {
+    ApolloHiddenContentFetchArcticPage(username, kind, nil, items, progress, ^(BOOL fatalError, BOOL incomplete) {
         completion(items, fatalError, incomplete);
     });
 }
@@ -250,7 +252,7 @@ static void ApolloHiddenContentFetchArcticItems(NSString *username, ApolloHidden
 // author/selftext/body, not just presence. A chunk whose request itself failed
 // is reported in `unresolvableFullNames` so the caller can drop those rather
 // than guessing.
-static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames, NSString *bearerToken,
+static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames, NSString *bearerToken, ApolloHiddenContentProgress progress,
                                          void (^completion)(NSDictionary<NSString *, NSDictionary *> *liveChildrenByFullName, NSSet<NSString *> *unresolvableFullNames)) {
     if (candidateFullNames.count == 0) {
         completion(@{}, [NSSet set]);
@@ -268,6 +270,7 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
     dispatch_group_t group = dispatch_group_create();
     NSObject *lock = [NSObject new];
 
+    __block NSUInteger completedChunks = 0;
     for (NSArray<NSString *> *chunk in chunks) {
         dispatch_group_enter(group);
         NSURLComponents *components = [NSURLComponents componentsWithString:@"https://oauth.reddit.com/api/info.json"];
@@ -297,7 +300,11 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
                     }
                 }
             }
-            dispatch_group_leave(group);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completedChunks++;
+                if (progress) progress(0.75 + 0.24 * completedChunks / chunks.count, @"Checking archived items");
+                dispatch_group_leave(group);
+            });
         }];
         [task resume];
     }
@@ -387,6 +394,61 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
     }
     if (name.length == 0) return nil;
 
+    item.author = [raw[@"author"] isKindOfClass:NSString.class] ? raw[@"author"] : nil;
+    item.score = [raw[@"score"] isKindOfClass:NSNumber.class] ? raw[@"score"] : nil;
+    item.parentPostTitle = [raw[@"link_title"] isKindOfClass:NSString.class] ? raw[@"link_title"] : nil;
+    NSMutableArray<NSURL *> *mediaURLs = [NSMutableArray array];
+    __block CGFloat previewAspectRatio = 0;
+    void (^captureDimensions)(NSDictionary *) = ^(NSDictionary *source) {
+        if (previewAspectRatio > 0 || ![source isKindOfClass:NSDictionary.class]) return;
+        NSNumber *width = [source[@"x"] isKindOfClass:NSNumber.class] ? source[@"x"] : nil;
+        NSNumber *height = [source[@"y"] isKindOfClass:NSNumber.class] ? source[@"y"] : nil;
+        if (width.doubleValue > 0 && height.doubleValue > 0) {
+            previewAspectRatio = width.doubleValue / height.doubleValue;
+        }
+    };
+    void (^appendImage)(id, NSDictionary *) = ^(id value, NSDictionary *source) {
+        if (![value isKindOfClass:NSString.class]) return;
+        NSURL *url = [NSURL URLWithString:[value stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"]];
+        if ([@[@"http", @"https"] containsObject:url.scheme.lowercaseString] && ![mediaURLs containsObject:url]) {
+            if (!mediaURLs.count) captureDimensions(source);
+            [mediaURLs addObject:url];
+        }
+    };
+    NSDictionary *metadata = [raw[@"media_metadata"] isKindOfClass:NSDictionary.class] ? raw[@"media_metadata"] : nil;
+    NSDictionary *gallery = [raw[@"gallery_data"] isKindOfClass:NSDictionary.class] ? raw[@"gallery_data"] : nil;
+    NSArray *galleryItems = [gallery[@"items"] isKindOfClass:NSArray.class] ? gallery[@"items"] : nil;
+    NSMutableArray *keys = [NSMutableArray array];
+    for (id entry in galleryItems) {
+        if ([entry isKindOfClass:NSDictionary.class] && [entry[@"media_id"] isKindOfClass:NSString.class]) [keys addObject:entry[@"media_id"]];
+    }
+    if (!keys.count) [keys addObjectsFromArray:[metadata.allKeys sortedArrayUsingSelector:@selector(compare:)]];
+    for (NSString *key in keys) {
+        NSDictionary *entry = [metadata[key] isKindOfClass:NSDictionary.class] ? metadata[key] : nil;
+        NSDictionary *source = [entry[@"s"] isKindOfClass:NSDictionary.class] ? entry[@"s"] : nil;
+        appendImage(source[@"gif"] ?: source[@"u"], source);
+    }
+    if (!mediaURLs.count) {
+        NSString *direct = [raw[@"url_overridden_by_dest"] isKindOfClass:NSString.class] ? raw[@"url_overridden_by_dest"] : raw[@"url"];
+        NSString *ext = [direct isKindOfClass:NSString.class] ? [NSURL URLWithString:direct].pathExtension.lowercaseString : nil;
+        if ([@[@"jpg", @"jpeg", @"png", @"gif", @"webp"] containsObject:ext]) appendImage(direct, nil);
+    }
+    NSDictionary *preview = [raw[@"preview"] isKindOfClass:NSDictionary.class] ? raw[@"preview"] : nil;
+    NSArray *images = [preview[@"images"] isKindOfClass:NSArray.class] ? preview[@"images"] : nil;
+    for (id image in images) {
+        if (![image isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *source = [image[@"source"] isKindOfClass:NSDictionary.class] ? image[@"source"] : nil;
+        if (!mediaURLs.count) appendImage(source[@"url"], source);
+        else captureDimensions(source);
+        break;
+    }
+    item.mediaURLs = mediaURLs;
+    item.previewURL = mediaURLs.firstObject;
+    item.previewAspectRatio = previewAspectRatio;
+    if (!item.previewURL && [raw[@"thumbnail"] isKindOfClass:NSString.class]) {
+        NSURL *thumbnail = [NSURL URLWithString:raw[@"thumbnail"]];
+        if ([@[@"http", @"https"] containsObject:thumbnail.scheme.lowercaseString]) item.previewURL = thumbnail;
+    }
     item.fullName = name;
     item.kind = kind;
     item.reason = reason;
@@ -404,7 +466,12 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
 #pragma mark - Public entry point
 
 void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentFetchCompletion completion) {
+    ApolloHiddenContentFetchWithProgress(username, kind, forceRefresh, nil, completion);
+}
+
+void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress progress, ApolloHiddenContentFetchCompletion completion) {
     if (!completion) return;
+    if (progress) progress(0, @"Checking current content");
     if (username.length == 0) {
         completion(nil, @"No username to look up.");
         return;
@@ -415,6 +482,7 @@ void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, 
         NSArray<ApolloHiddenContentItem *> *cached = ApolloHiddenContentCachedResult(cacheKey);
         if (cached) {
             ApolloLog(@"[HiddenContent] u/%@ (%@): serving %lu cached result(s)", username, ApolloHiddenContentArcticSearchPath(kind), (unsigned long)cached.count);
+            if (progress) progress(1, @"Ready");
             completion(cached, nil);
             return;
         }
@@ -426,20 +494,22 @@ void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, 
         return;
     }
 
-    ApolloHiddenContentFetchLiveFullNames(username, kind, bearerToken, ^(NSSet<NSString *> *liveFullNames, BOOL liveFatalError, BOOL liveIncomplete, NSNumber * _Nullable liveOldestCreatedUTCSeen) {
+    ApolloHiddenContentFetchLiveFullNames(username, kind, bearerToken, progress, ^(NSSet<NSString *> *liveFullNames, BOOL liveFatalError, BOOL liveIncomplete, NSNumber * _Nullable liveOldestCreatedUTCSeen) {
         if (liveFatalError) {
             completion(nil, @"Couldn't verify this account's current posts/comments (network or session error). Try again.");
             return;
         }
 
+        if (progress) progress(0.35, @"Searching the archive");
         // Only caches a complete result -- a failed/partial pass would otherwise
         // stick around wrong for kApolloHiddenContentCacheTTL.
         void (^finish)(NSArray<ApolloHiddenContentItem *> *, BOOL) = ^(NSArray<ApolloHiddenContentItem *> *results, BOOL complete) {
             if (complete) ApolloHiddenContentStoreResult(cacheKey, results);
+            if (progress) progress(1, @"Ready");
             completion(results, nil);
         };
 
-        ApolloHiddenContentFetchArcticItems(username, kind, ^(NSArray<NSDictionary *> *arcticItems, BOOL arcticFatalError, BOOL arcticIncomplete) {
+        ApolloHiddenContentFetchArcticItems(username, kind, progress, ^(NSArray<NSDictionary *> *arcticItems, BOOL arcticFatalError, BOOL arcticIncomplete) {
             if (arcticFatalError) {
                 completion(nil, @"Couldn't search the archive for older posts/comments (network error). Try again.");
                 return;
@@ -449,6 +519,7 @@ void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, 
                 return;
             }
 
+            if (progress) progress(0.75, @"Checking archived items");
             // Candidates: archived items missing from the live listing, deduped
             // by fullname (Arctic Shift's cursor can repeat items sharing a
             // created_utc second across pages). If the live listing stopped
@@ -490,7 +561,16 @@ void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, 
                 return;
             }
 
-            ApolloHiddenContentClassify(candidateFullNames, bearerToken, ^(NSDictionary<NSString *, NSDictionary *> *liveChildrenByFullName, NSSet<NSString *> *unresolvableFullNames) {
+            // Parent-post metadata provides the same context card as a profile
+            // overview. Batch it with classification, never one request per cell.
+            NSMutableOrderedSet *lookupNames = [NSMutableOrderedSet orderedSetWithArray:candidateFullNames];
+            if (kind == ApolloHiddenContentKindComment) {
+                for (NSDictionary *raw in candidates) {
+                    NSString *linkID = [raw[@"link_id"] isKindOfClass:NSString.class] ? raw[@"link_id"] : nil;
+                    if ([linkID hasPrefix:@"t3_"]) [lookupNames addObject:linkID];
+                }
+            }
+            ApolloHiddenContentClassify(lookupNames.array, bearerToken, progress, ^(NSDictionary<NSString *, NSDictionary *> *liveChildrenByFullName, NSSet<NSString *> *unresolvableFullNames) {
                 NSMutableArray<ApolloHiddenContentItem *> *results = [NSMutableArray array];
                 for (NSDictionary *raw in candidates) {
                     NSString *rawID = [raw[@"id"] isKindOfClass:[NSString class]] ? raw[@"id"] : nil;
@@ -502,7 +582,14 @@ void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, 
                     ApolloHiddenContentResolveReason(raw, kind, liveChildrenByFullName[name], &reason, &removalDetail);
 
                     ApolloHiddenContentItem *item = ApolloHiddenContentItemFromArcticDict(raw, kind, reason, removalDetail);
-                    if (item) [results addObject:item];
+                    if (item) {
+                        NSString *linkID = [raw[@"link_id"] isKindOfClass:NSString.class] ? raw[@"link_id"] : nil;
+                        NSDictionary *parent = linkID ? liveChildrenByFullName[linkID] : nil;
+                        if (!item.parentPostTitle.length && [parent[@"title"] isKindOfClass:NSString.class]) {
+                            item.parentPostTitle = parent[@"title"];
+                        }
+                        [results addObject:item];
+                    }
                 }
 
                 [results sortUsingComparator:^NSComparisonResult(ApolloHiddenContentItem *a, ApolloHiddenContentItem *b) {

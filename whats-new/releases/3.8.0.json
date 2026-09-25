@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "version": "3.8.0",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "square.and.arrow.down.on.square.fill", "title": "Save All Media", "subtitle": "Save every image, GIF, and video in a gallery or album at once, with a progress ring and Cancel." },
+    { "icon": "ellipsis.circle.fill", "title": "Action Menus", "subtitle": "Reorder or hide the actions in each ••• and moderator menu, with a live preview as you go." },
+    { "icon": "person.2.circle.fill", "title": "New Account Switcher", "subtitle": "A themed bottom sheet with bigger avatars, Add Account and Edit up top, and smoother reordering." },
+    { "icon": "clock.arrow.circlepath", "title": "Automatic Backups", "subtitle": "Back up your settings to a folder in Files on a schedule, and restore one by opening it from Files." },
+    { "icon": "gearshape.fill", "title": "Settings Shortcuts", "subtitle": "Press and hold the Settings tab to jump straight to the settings pages you use most." },
+    { "icon": "arrow.uturn.backward.circle.fill", "title": "Back to Where You Were", "subtitle": "After a status-bar tap takes you to the top, tap the Return Button or the status bar again to jump back." },
+    { "icon": "person.crop.circle.fill", "title": "Profiles, Refreshed", "subtitle": "Pick a profile picture shape, see Immersive profile art behind the bars, and browse Hidden & Deleted as one feed." },
+    { "icon": "checkmark.shield.fill", "title": "Smoother and Steadier", "subtitle": "Video-heavy feeds scroll smoother and albums zoom open, plus fixes for crashes, widget sign-in, and glass search." }
+  ]
+}

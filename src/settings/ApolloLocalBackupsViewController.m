@@ -4,7 +4,7 @@
 
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloBackupActionsCell.h"
-#import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloBackupDocument.h"
 
 static NSString *const kLocalBackupsEmptyRowID = @"localBackups.empty";
 
@@ -239,29 +239,7 @@ static NSString *ApolloLocalBackupRowID(NSString *filename) {
 }
 
 - (void)confirmRestoreURL:(NSURL *)url {
-    if (self.presentedViewController) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Confirm Restore"
-        message:[NSString stringWithFormat:@"%@\n\nThis will replace all existing settings and logged-in accounts with the backup. This cannot be undone.", url.lastPathComponent]
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive
-        handler:^(__unused UIAlertAction *action) { [weakSelf restoreURL:url]; }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)restoreURL:(NSURL *)url {
-    NSString *errorTitle = nil, *errorMessage = nil;
-    if (!ApolloBackupRestoreRestoreFromZipURL(url, &errorTitle, &errorMessage)) {
-        [self showAlertWithTitle:errorTitle ?: @"Restore Failed" message:errorMessage ?: @"Could not restore backup."];
-        return;
-    }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Restore Complete"
-        message:@"Settings successfully restored. Apollo needs to restart to apply changes."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Close App" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) { exit(0); }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloBackupPresentRestoreConfirmation(self, url, nil);
 }
 
 - (void)exportURL:(NSURL *)url {

@@ -1,6 +1,7 @@
 #import "ApolloAccountSwitcherViewController.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloMessageDraftStore.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -766,6 +767,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
         self.accountRemovalRefreshScheduled = YES;
         [self.pendingAccountRemovals removeAllObjects];
         ApolloAccountCredentialsRemove(username);
+        ApolloMessageDraftStoreMarkAccountPendingDelete(username);
         ApolloWebSessionRemove(username);
         NSMutableArray *updated = [self.rows mutableCopy];
         [updated removeObjectAtIndex:index];

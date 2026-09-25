@@ -188,8 +188,9 @@ static UIViewController *ApolloPollComposeVisibleViewController(void) {
 // Symbols custom-symbol exports compiled into ApolloPollSymbols.bundle
 // (Assets.car), staged inside ApolloReborn.bundle. Resolved once and cached;
 // returns nil when the bundle is unavailable so callers fall back to a stock
-// SF Symbol.
-static UIImage *ApolloPollComposeSymbol(NSString *symbolName) {
+// SF Symbol. Exported (ApolloCommon.h) for the Action Menus settings preview,
+// whose mock of the quick new-post buttons draws the same glyphs.
+UIImage *ApolloPollComposeSymbol(NSString *symbolName) {
     static NSBundle *symbols = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{

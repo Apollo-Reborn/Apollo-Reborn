@@ -6,6 +6,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloImmersiveHeaderBackground.h"
+#import "ApolloIdentityHeaderLayout.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
@@ -241,6 +242,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
         [self addSubview:_renderContainerView];
 
         _ambientView = [[ApolloImmersiveHeaderBackgroundView alloc] initWithFrame:CGRectZero];
+        _ambientView.usesProfileHero = YES;
         _ambientView.userInteractionEnabled = NO;
         _ambientView.accessibilityElementsHidden = YES;
         [_renderContainerView addSubview:_ambientView];
@@ -338,6 +340,9 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
         self.ambientView.hidden = NO;
         self.ambientView.frame = self.renderContainerView.bounds;
         CGFloat bannerHeight = CGRectGetHeight(self.productionHeaderView.bannerImageView.frame);
+        // Match the real profile's continuation behind the avatar. The preview
+        // omits navigation chrome, but must retain this part of the fade region.
+        if (sProfileShowBanner) bannerHeight += ApolloIdentityHeaderAvatarOverlap() + 8.0;
         [self.ambientView applyBanner:self.productionHeaderView.bannerImageView.image
                            pageColor:pageColor
                         regionHeight:bannerHeight
@@ -421,7 +426,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
     if (tableView != self.tableView) return UITableViewAutomaticDimension;
     NSString *footer = [self tableView:tableView titleForFooterInSection:section];
-    return footer.length > 0 ? UITableViewAutomaticDimension : 12.0;
+    return footer.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
 }
 
 - (void)apollo_applyTheme {

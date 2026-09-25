@@ -430,8 +430,10 @@ enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, E
     // secondaryLabelColor.
     switch (token) {
         case ApolloThemeTokenBackground: {
-            UITableView *source = ApolloInheritedSettingsThemeSourceTableView(self);
-            return source.backgroundColor ?: fallback;
+            // A subreddit/post table can be clear over an immersive backdrop.
+            // Use the same opaque surface as other pushed settings screens so
+            // its content cannot show through this page during navigation.
+            return ApolloInheritedSettingsBackgroundColor(self);
         }
         case ApolloThemeTokenSecondaryBackground:
         case ApolloThemeTokenTertiaryBackground:
@@ -1298,7 +1300,7 @@ static NSString *SpacedThemeName(NSString *raw) {
     cell.textLabel.textColor = label;
     cell.detailTextLabel.textColor = secondary;
     UIView *selBG = [[UIView alloc] init];
-    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
     cell.selectedBackgroundView = selBG;
     switch (row) {
         case 0:
@@ -1320,7 +1322,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         default:
             cell.textLabel.text = @"Selected / tapped row";
             cell.detailTextLabel.text = nil;
-            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
             cell.imageView.image = SwatchImage(sep, 22);
             break;
     }

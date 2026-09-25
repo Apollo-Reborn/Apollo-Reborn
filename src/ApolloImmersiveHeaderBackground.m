@@ -379,11 +379,9 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     [_contentContainer.layer addSublayer:_veilLayer];
 
     // Top layer: the sharp banner, alpha-feathered at its bottom edge so it
-    // melts into the blur instead of a hard seam. The clip spans the chrome +
-    // banner region, but layout sizes the image itself to the real banner
-    // strip; the chrome above shows the blurred continuation. Aspect-filling
-    // one tall chrome+banner rectangle made the crop depend on the search-bar
-    // inset and visibly jumped whenever that inset changed (#766).
+    // melts into the blur instead of a hard seam. Sharp artwork reaches behind
+    // the status/navigation bars too, fading directly into the page behind
+    // the avatar. Its shallow canvas is based on width, not chrome height.
     _sharpClip = [[UIView alloc] init];
     _sharpClip.clipsToBounds = YES;
     _sharpClip.userInteractionEnabled = NO;
@@ -395,8 +393,9 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     [_sharpClip addSubview:_sharpView];
 
     _sharpFeatherMask = [CAGradientLayer layer];
-    _sharpFeatherMask.colors = @[(id)UIColor.whiteColor.CGColor,
-                                 (id)UIColor.clearColor.CGColor];
+    // Keep the upper artwork fully visible, then darken progressively through
+    // the lower subject into the page instead of dimming the entire banner.
+    _sharpFeatherMask.locations = @[@0.0, @0.40, @0.55, @0.64, @0.72, @0.84, @0.98, @1.0];
     _sharpClip.layer.mask = _sharpFeatherMask;
 
     // Theme-colored scrim under the status bar / nav chrome so titles and the
@@ -467,6 +466,20 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     self.contentContainer.transform = desired;
 }
 
+- (void)setUsesProfileHero:(BOOL)usesProfileHero {
+    if (_usesProfileHero == usesProfileHero) return;
+    _usesProfileHero = usesProfileHero;
+    self.cachedGradientColorKey = nil;
+    [self setNeedsLayout];
+}
+
+- (CGFloat)sharpArtworkHeight {
+    CGFloat regionHeight = MIN(self.regionHeight, MAX(1.0, self.bounds.size.height));
+    return self.usesProfileHero
+        ? MIN(regionHeight, MAX(1.0, self.bounds.size.width * 0.64))
+        : regionHeight;
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = self.bounds.size.width;
@@ -474,6 +487,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     CGFloat regionHeight = MIN(self.regionHeight, totalHeight);
     CGFloat extendedHeight = MIN(self.extendedHeight, totalHeight);
     UIColor *pageColor = [self.pageColor resolvedColorWithTraitCollection:self.traitCollection];
+    BOOL lightPage = ApolloColorIsLight(pageColor);
     self.backgroundColor = pageColor;
 
     CGAffineTransform transform = self.contentContainer.transform;
@@ -499,12 +513,33 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
     self.backdropView.frame = CGRectMake(0.0, 0.0, width, extendedHeight);
 
-    self.sharpClip.frame = CGRectMake(0.0, 0.0, width, regionHeight);
-    CGFloat bannerHeight = MAX(1.0, regionHeight - bannerTop);
-    self.sharpView.frame = CGRectMake(0.0, bannerTop, width, bannerHeight);
-    CGFloat featherStart = MAX(0.0, 1.0 - ApolloImmersiveSharpFeatherHeight / MAX(1.0, regionHeight));
+    // Use a shallow, width-derived hero rather than filling chrome + the
+    // entire identity header. This keeps the crop independent of collapsing
+    // navigation chrome and avoids both a tiny top strip and excessive zoom.
+    // Dark pages fade directly into the page. Light pages retain the blurred
+    // artwork underneath, so the image dissolves into its own colors first.
+    // A 0.64-width canvas matches the reference's original-image framing:
+    // the subject stays fully inside the trailing edge with sky above it.
+    CGFloat canvasHeight = MAX(1.0, width * 0.64);
+    CGFloat sharpHeight = self.sharpArtworkHeight;
+    self.backdropView.hidden = (hasSharpBanner && !lightPage) || !hasArtwork;
+    self.sharpClip.frame = CGRectMake(0.0, 0.0, width, sharpHeight);
+    self.sharpView.frame = CGRectMake(0.0, 0.0, width, canvasHeight);
+    // Anchor the fade to the image, so moving the identity content does not
+    // change where features in the artwork darken.
+    if (!self.usesProfileHero) {
+        // Original subreddit rendering: crop only the banner strip; the
+        // blurred continuation owns the navigation chrome and identity.
+        self.backdropView.hidden = !hasArtwork;
+        self.sharpClip.frame = CGRectMake(0.0, 0.0, width, regionHeight);
+        CGFloat bannerHeight = MAX(1.0, regionHeight - bannerTop);
+        self.sharpView.frame = CGRectMake(0.0, bannerTop, width, bannerHeight);
+        CGFloat featherStart = MAX(0.0, 1.0 - ApolloImmersiveSharpFeatherHeight / MAX(1.0, regionHeight));
+        self.sharpFeatherMask.locations = @[@(featherStart), @1.0];
+    } else {
+        self.sharpFeatherMask.locations = @[@0.0, @0.40, @0.55, @0.64, @0.72, @0.84, @0.98, @1.0];
+    }
     self.sharpFeatherMask.frame = self.sharpClip.bounds;
-    self.sharpFeatherMask.locations = @[@(featherStart), @1.0];
 
     // The veil starts fully clear beneath the sharp banner, reaches a strong
     // wash where the name/bio text sits, and hits solid page color at the
@@ -515,6 +550,11 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     // deep/end collapsing onto the same clamped point; each location is then
     // clamped into ascending [0,1] order for the gradient layer.
     CGFloat rawRegionHeight = MAX(0.0, self.regionHeight);
+    if (self.usesProfileHero && lightPage && hasSharpBanner) {
+        // Resolve the colored continuation gradually beneath the identity,
+        // starting from the actual image end rather than the lower row layout.
+        rawRegionHeight = MIN(rawRegionHeight, canvasHeight);
+    }
     CGFloat rawExtendedHeight = MAX(rawRegionHeight, self.extendedHeight);
     CGFloat meltSpan = MAX(1.0, rawExtendedHeight - rawRegionHeight);
     CGFloat seam = (rawRegionHeight - ApolloImmersiveSharpFeatherHeight) / totalHeight;
@@ -529,14 +569,28 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     // changed (theme flip / trait change) — not on every scroll-animation frame.
     if (![self.cachedGradientColorKey isEqual:pageColor]) {
         self.cachedGradientColorKey = pageColor;
+        // Light surfaces dissolve into the colored backdrop first; the veil
+        // underneath brings that continuation back to the theme page color.
+        self.sharpFeatherMask.colors = @[(id)UIColor.whiteColor.CGColor,
+                                         (id)UIColor.whiteColor.CGColor,
+                                         (id)[UIColor.whiteColor colorWithAlphaComponent:lightPage ? 0.92 : 0.65].CGColor,
+                                         (id)[UIColor.whiteColor colorWithAlphaComponent:lightPage ? 0.80 : 0.45].CGColor,
+                                         (id)[UIColor.whiteColor colorWithAlphaComponent:lightPage ? 0.65 : 0.35].CGColor,
+                                         (id)[UIColor.whiteColor colorWithAlphaComponent:lightPage ? 0.32 : 0.18].CGColor,
+                                         (id)UIColor.clearColor.CGColor,
+                                         (id)UIColor.clearColor.CGColor];
+        if (!self.usesProfileHero) {
+            self.sharpFeatherMask.colors = @[(id)UIColor.whiteColor.CGColor,
+                                             (id)UIColor.clearColor.CGColor];
+        }
         self.cachedVeilColors = @[(id)[pageColor colorWithAlphaComponent:0.0].CGColor,
                                   (id)[pageColor colorWithAlphaComponent:0.0].CGColor,
                                   (id)[pageColor colorWithAlphaComponent:0.60].CGColor,
                                   (id)[pageColor colorWithAlphaComponent:0.88].CGColor,
                                   (id)pageColor.CGColor,
                                   (id)pageColor.CGColor];
-        self.cachedScrimColors = @[(id)[pageColor colorWithAlphaComponent:0.70].CGColor,
-                                   (id)[pageColor colorWithAlphaComponent:0.38].CGColor,
+        self.cachedScrimColors = @[(id)[pageColor colorWithAlphaComponent:self.usesProfileHero ? 0.16 : 0.70].CGColor,
+                                   (id)[pageColor colorWithAlphaComponent:self.usesProfileHero ? 0.06 : 0.38].CGColor,
                                    (id)[pageColor colorWithAlphaComponent:0.0].CGColor];
     }
     self.veilLayer.frame = self.contentContainer.bounds;

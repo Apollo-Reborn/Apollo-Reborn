@@ -333,6 +333,133 @@ static UIImage *ApolloHideModGlyph(BOOL hidden) {
     return *slot;
 }
 
+@interface ApolloModeratorToggleButton : UIButton
+@end
+
+@implementation ApolloModeratorToggleButton
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    // Expand sideways only, so adjacent rows keep independent tap targets.
+    return CGRectContainsPoint(CGRectInset(self.bounds, -24.0, 0.0), point);
+}
+@end
+
+static void ApolloHideModAnimateControl(UIButton *button, UITableView *table, BOOL appearing) {
+    for (UITableViewCell *peer in table.visibleCells) {
+        for (UIView *control in peer.subviews) {
+            if (![NSStringFromClass(control.class) isEqualToString:@"UITableViewCellEditControl"]) continue;
+            CABasicAnimation *position = (id)[control.layer animationForKey:@"position"];
+            if (![position isKindOfClass:CABasicAnimation.class] || !position.fromValue || !position.toValue) continue;
+            // Preserve UIKit's spring, duration and start time; offset only the
+            // horizontal coordinates because the controls occupy different rows.
+            CABasicAnimation *move = [position copy];
+            CGPoint from = [position.fromValue CGPointValue];
+            CGPoint to = [position.toValue CGPointValue];
+            CGPoint start = button.layer.position;
+            CGPoint end = start;
+            if (appearing) start.x += from.x - to.x;
+            else end.x += to.x - from.x;
+            move.additive = NO; // Coordinates below are absolute, not UIKit’s relative offsets.
+            move.fromValue = [NSValue valueWithCGPoint:start];
+            move.toValue = [NSValue valueWithCGPoint:end];
+            CAAnimation *fade = [[control.layer animationForKey:@"opacity"] copy];
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            if (!appearing) [CATransaction setCompletionBlock:^{ [button removeFromSuperview]; }];
+            button.layer.position = end;
+            button.alpha = appearing ? 1.0 : 0.0;
+            [button.layer addAnimation:move forKey:@"position"];
+            if (fade) [button.layer addAnimation:fade forKey:@"opacity"];
+            [CATransaction commit];
+            return;
+        }
+    }
+    if (!appearing) [button removeFromSuperview];
+}
+
+static char kApolloHideModTransitionKey;
+
+static NSString *ApolloHideModRowKey(UITableView *table, UITableViewCell *cell) {
+    NSIndexPath *path = [table indexPathForCell:cell];
+    return [NSString stringWithFormat:@"%ld:%@", (long)path.section,
+            ApolloHideModLeftmostLabelText(cell.contentView) ?: @""];
+}
+
+static void ApolloHideModReloadSections(UITableView *table, NSIndexSet *sections, BOOL animated) {
+    NSMutableDictionary *before = [NSMutableDictionary new];
+    NSMutableDictionary *headers = [NSMutableDictionary new];
+    CGPoint offset = table.contentOffset;
+    if (animated) {
+        for (UITableViewCell *cell in table.visibleCells) {
+            UIView *snapshot = [cell snapshotViewAfterScreenUpdates:NO];
+            before[ApolloHideModRowKey(table, cell)] = @[[NSValue valueWithCGRect:cell.frame], snapshot ?: [UIView new]];
+        }
+        for (NSInteger section = 0; section < table.numberOfSections; section++) {
+            headers[@(section)] = [NSValue valueWithCGRect:[table rectForHeaderInSection:section]];
+        }
+    }
+    [UIView performWithoutAnimation:^{
+        [table reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
+        [table layoutIfNeeded];
+    }];
+    if (!animated) return;
+
+    NSMutableArray *rows = [NSMutableArray new];
+    CGFloat offsetDelta = table.contentOffset.y - offset.y;
+    for (UITableViewCell *cell in table.visibleCells) {
+        NSString *key = ApolloHideModRowKey(table, cell);
+        NSArray *old = before[key];
+        [rows addObject:@[cell, [NSValue valueWithCGAffineTransform:cell.transform], @(cell.alpha)]];
+        if (old) {
+            CGFloat delta = CGRectGetMidY([old[0] CGRectValue]) - CGRectGetMidY(cell.frame) + offsetDelta;
+            cell.transform = CGAffineTransformTranslate(cell.transform, 0, delta);
+            [before removeObjectForKey:key];
+        } else {
+            cell.transform = CGAffineTransformScale(cell.transform, 0.88, 0.88);
+            cell.alpha = 0;
+        }
+    }
+    for (NSNumber *section in headers) {
+        UIView *header = [table headerViewForSection:section.integerValue];
+        if (!header) continue;
+        [rows addObject:@[header, [NSValue valueWithCGAffineTransform:header.transform], @(header.alpha)]];
+        CGFloat delta = CGRectGetMidY([headers[section] CGRectValue]) - CGRectGetMidY([table rectForHeaderInSection:section.integerValue]) + offsetDelta;
+        header.transform = CGAffineTransformTranslate(header.transform, 0, delta);
+    }
+    NSMutableArray *departing = [NSMutableArray new];
+    for (NSArray *old in before.allValues) {
+        UIView *snapshot = old[1];
+        CGRect frame = [old[0] CGRectValue];
+        frame.origin.y += offsetDelta;
+        snapshot.frame = frame;
+        snapshot.userInteractionEnabled = NO;
+        [table addSubview:snapshot];
+        [departing addObject:snapshot];
+    }
+    UIViewPropertyAnimator *animator = [[UIViewPropertyAnimator alloc] initWithDuration:0.34
+        timingParameters:[[UISpringTimingParameters alloc] initWithDampingRatio:0.88]];
+    animator.userInteractionEnabled = YES;
+    objc_setAssociatedObject(table, &kApolloHideModTransitionKey, animator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [animator addAnimations:^{
+        for (NSArray *row in rows) {
+            UIView *view = row[0];
+            view.transform = [row[1] CGAffineTransformValue];
+            view.alpha = [row[2] doubleValue];
+        }
+        for (UIView *snapshot in departing) {
+            snapshot.alpha = 0;
+            snapshot.transform = CGAffineTransformMakeScale(0.88, 0.88);
+        }
+    }];
+    [animator addCompletion:^(__unused UIViewAnimatingPosition position) {
+        for (UIView *snapshot in departing) [snapshot removeFromSuperview];
+        objc_setAssociatedObject(table, &kApolloHideModTransitionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }];
+    // Start after the edit controls have been configured, outside disabled-animation scopes.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (objc_getAssociatedObject(table, &kApolloHideModTransitionKey) == animator) [animator startAnimation];
+    });
+}
+
 // Applies (or strips) the hide/unhide control and faded look on one cell.
 // Called from cellForRowAtIndexPath for every row, so reused cells always
 // end up in a consistent state without a prepareForReuse hook.
@@ -342,29 +469,43 @@ static UIImage *ApolloHideModGlyph(BOOL hidden) {
 // right exactly like the delete-circle rows, and the button occupies the
 // gutter that indent exposes — matching the native edit-control position.
 static void ApolloHideModDecorateCell(UIViewController *viewController, UITableViewCell *cell,
-                                      BOOL isModeratorRow, BOOL editing, NSString *name) {
+                                      BOOL isModeratorRow, BOOL editing, NSString *name, BOOL animated) {
     UIButton *button = (UIButton *)[cell viewWithTag:kApolloHideModButtonTag];
 
     if (!isModeratorRow || !editing || name.length == 0) {
-        if (button) [button removeFromSuperview];
+        if (button && animated && isModeratorRow) {
+            button.tag = 0;
+            button.userInteractionEnabled = NO;
+            ApolloHideModAnimateControl(button, ApolloHideModTableView(viewController), NO);
+        } else {
+            [button removeFromSuperview];
+        }
         cell.contentView.alpha = 1.0;
         return;
     }
 
     BOOL hidden = ApolloHideModNameIsHidden(name);
+    BOOL created = button == nil;
     if (!button) {
-        button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button = [ApolloModeratorToggleButton buttonWithType:UIButtonTypeSystem];
         button.tag = kApolloHideModButtonTag;
-        // The tap target spans the whole left gutter and full row height so
-        // the control is as easy to hit as the native red delete circle;
-        // the 22pt glyph centers within it, landing at the native position.
-        // Newly created cells may not have real bounds yet; assume Apollo's
-        // standard 58pt row and let autoresizing track the real height.
         CGFloat rowHeight = cell.bounds.size.height >= 30.0 ? cell.bounds.size.height : 58.0;
-        // Tap target: the entire gutter from the screen edge to the subreddit
-        // icon, full row height. The glyph centers itself at x=30, right where
-        // the native red circle sits.
-        button.frame = CGRectMake(0.0, 0.0, 60.0, rowHeight);
+        CGFloat centerX = 32.0;
+        UITableView *table = ApolloHideModTableView(viewController);
+        // Match UIKit's actual edit-control column, including safe-area insets.
+        for (UITableViewCell *peer in table.visibleCells) {
+            BOOL found = NO;
+            for (UIView *control in peer.subviews) {
+                if ([NSStringFromClass(control.class) isEqualToString:@"UITableViewCellEditControl"]) {
+                    CGRect frame = [control convertRect:control.bounds toView:cell];
+                    if (peer.isEditing && CGRectGetWidth(frame) > 0 && CGRectGetMidX(frame) >= 32.0) {
+                        centerX = CGRectGetMidX(frame); found = YES; break;
+                    }
+                }
+            }
+            if (found) break;
+        }
+        button.frame = CGRectMake(0.0, 0.0, centerX * 2.0, rowHeight);
         button.autoresizingMask = UIViewAutoresizingFlexibleHeight;
         [cell addSubview:button];
     }
@@ -385,6 +526,10 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     // Hidden rows render faded so it's obvious they won't appear outside
     // Edit mode. The button sits outside contentView, so it stays opaque.
     cell.contentView.alpha = hidden ? 0.4 : 1.0;
+    if (created && animated) {
+        ApolloHideModAnimateControl(button, ApolloHideModTableView(viewController), YES);
+    }
+
 
     ApolloLog(@"[HideModSubs] decorated moderator row '%@' hidden=%d", name, (int)hidden);
 }
@@ -518,25 +663,48 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
     NSString *name = isModeratorRow ? ApolloHideModLeftmostLabelText(cell.contentView ?: cell) : nil;
 
-    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, tableView.isEditing, name);
+    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, tableView.isEditing, name, NO);
     return cell;
 }
 
-// Entering Edit mode: bypass the display filter so hidden rows reappear, and
-// reload so the rows (and their hide/unhide buttons) update immediately.
-// Leaving Edit mode: re-enable the filter and reload so hidden rows vanish.
-// No network refetch is needed — the rows are driven by the now-complete
-// moderatedSubreddits property through the scoped getter.
+// Show hidden moderator rows while editing without rebuilding the other sections.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
-    %orig;
-    if (wasEditing == editing) return;
-
-    sShowHiddenForEditing = editing;
-    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
+    if (wasEditing == editing) {
+        %orig;
+        return;
+    }
 
     UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
-    [tableView reloadData];
+    UIViewPropertyAnimator *transition = objc_getAssociatedObject(tableView, &kApolloHideModTransitionKey);
+    if (transition) {
+        [transition startAnimation];
+        [transition stopAnimation:NO];
+        [transition finishAnimationAtPosition:UIViewAnimatingPositionEnd];
+    }
+    sShowHiddenForEditing = editing;
+    if (ApolloHideModHiddenList().count) {
+        NSMutableIndexSet *changedSections = [NSMutableIndexSet new];
+        for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
+            NSInteger displayed = [tableView numberOfRowsInSection:section];
+            NSInteger updated = [tableView.dataSource tableView:tableView numberOfRowsInSection:section];
+            if (displayed != updated) [changedSections addIndex:section];
+        }
+        // Only moderator visibility changes. Keep all other cells and their
+        // loaded icons intact, including when the hidden list belongs to another account.
+        if (changedSections.count) {
+            ApolloHideModReloadSections(tableView, changedSections,
+                                        animated && !UIAccessibilityIsReduceMotionEnabled());
+        }
+    }
+    %orig;
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        NSIndexPath *path = [tableView indexPathForCell:cell];
+        BOOL moderator = [ApolloHideModSectionTitle(self, tableView, path.section) isEqualToString:@"MODERATOR"];
+        NSString *name = moderator ? ApolloHideModLeftmostLabelText(cell.contentView) : nil;
+        ApolloHideModDecorateCell((UIViewController *)self, cell, moderator, editing, name, animated && !UIAccessibilityIsReduceMotionEnabled());
+    }
+    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
 }
 
 %new
@@ -556,9 +724,25 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     UIView *view = sender;
     while (view && ![view isKindOfClass:[UITableViewCell class]]) view = view.superview;
     if (view) {
-        ApolloHideModDecorateCell((UIViewController *)self, (UITableViewCell *)view, YES, YES, name);
+        ApolloHideModDecorateCell((UIViewController *)self, (UITableViewCell *)view, YES, YES, name, NO);
     }
     ApolloLog(@"[HideModSubs] toggled '%@' -> hidden=%d", name, (int)!wasHidden);
+}
+
+%end
+
+%hook RedditListTableViewCell
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UITableViewCell *cell = (UITableViewCell *)self;
+    UIView *button = [cell viewWithTag:kApolloHideModButtonTag];
+    // UIKit can put an editing overlay above the custom moderator control.
+    if (cell.isEditing && [button isKindOfClass:ApolloModeratorToggleButton.class] &&
+        !button.hidden && button.alpha > 0.01 && button.userInteractionEnabled) {
+        UIView *hit = [button hitTest:[cell convertPoint:point toView:button] withEvent:event];
+        if (hit) return hit;
+    }
+    return %orig;
 }
 
 %end
@@ -571,7 +755,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     Class listClass = objc_getClass("Apollo.RedditListViewController");
     if (!listClass) listClass = NSClassFromString(@"Apollo.RedditListViewController");
     if (listClass) {
-        %init(ApolloHideModList, RedditListViewController = listClass);
+        %init(ApolloHideModList, RedditListViewController = listClass, RedditListTableViewCell = NSClassFromString(@"Apollo.RedditListTableViewCell"));
         ApolloLog(@"[HideModSubs] list hooks installed on %@", NSStringFromClass(listClass));
     } else {
         ApolloLog(@"[HideModSubs] RedditListViewController class missing; Hide UI unavailable");

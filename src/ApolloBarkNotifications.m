@@ -1,4 +1,5 @@
 #import "ApolloBarkNotifications.h"
+#import "ApolloBarkIconResolver.h"
 #import "ApolloLiquidGlassIconIDs.h"
 #import "ApolloCommon.h"
 #import "ApolloNotificationBackend.h"
@@ -131,11 +132,13 @@ NSURL *ApolloBarkPushURL(void) {
 static NSString *const kApolloBarkIconBaseURL = @"https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/assets/bark-icons/";
 
 NSString *ApolloBarkNotificationIconURLString(void) {
-    NSString *name = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyBarkSelectedIconName];
-    if (![name isKindOfClass:[NSString class]] || name.length == 0) {
-        name = @"default";
+    id storedName = [[NSUserDefaults standardUserDefaults] objectForKey:UDKeyBarkSelectedIconName];
+    NSString *name = [storedName isKindOfClass:NSString.class] ? storedName : nil;
+    NSString *hostedName = ApolloBarkResolvedHostedIconName(name);
+    if (name.length > 0 && ![hostedName isEqualToString:name]) {
+        ApolloLog(@"[Bark] No hosted PNG for app icon %@; using default", name);
     }
-    NSString *escaped = [name stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+    NSString *escaped = [hostedName stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
     return [NSString stringWithFormat:@"%@%@.png", kApolloBarkIconBaseURL, escaped];
 }
 

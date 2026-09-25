@@ -10,6 +10,7 @@
 #import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
 #import "ApolloListLayoutSupport.h"
+#import "ApolloMessageDraftStore.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -860,6 +861,20 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // Set once a standalone mailbox discovers its seeded account is no longer the
 // active one; the controller blanks itself and leaves its navigation stack.
 @property (nonatomic, assign) BOOL sessionIdentityInvalidated;
+// requestId -> immutable account/room/snapshot record. Reddit clears the
+// composer optimistically, so the record is the authority until THIS exact
+// Matrix request reports a success or failure.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *pendingDraftSends;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *draftEmptyClearGenerations;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *draftContentGenerations;
+// Last mutation per opaque key. Coalescing keeps Keychain I/O off the typing
+// path while a lifecycle flush makes a quick room exit durable.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *pendingDraftWrites;
+// One Keychain read per room visit. Repeated hydration/reveal callbacks may
+// probe for a composer, but a missing draft must not trigger 21 reads.
+@property (nonatomic, strong) NSMutableSet<NSString *> *draftRestoreAttemptedKeys;
+@property (nonatomic, copy) NSString *draftRestoreRoute;
+@property (nonatomic, assign) NSUInteger draftRestoreGeneration;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
 - (BOOL)apollo_isModmailListURL:(NSURL *)url;
@@ -926,6 +941,21 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_applicationWillResignActive:(NSNotification *)notification;
 - (void)apollo_enableNativeScrollBounce;
 - (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance;
+- (BOOL)apollo_validateDraftPath:(NSString *)path;
+- (void)apollo_handleDraftMessage:(NSDictionary *)body;
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt;
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt generation:(NSUInteger)generation;
+- (BOOL)apollo_draftSessionIsCurrentForAccount:(NSString *)account
+                                          path:(NSString *)path
+                                    generation:(NSUInteger)generation;
+- (void)apollo_scheduleDraftWriteForAccount:(NSString *)account
+                                conversation:(NSString *)conversation
+                                        text:(NSString *)text
+                                   opaqueKey:(NSString *)opaqueKey;
+- (void)apollo_flushPendingDraftWrites;
+- (void)apollo_invalidateEmptyDraftClearForKey:(NSString *)opaqueKey;
+- (BOOL)apollo_hasPendingDraftSendForOpaqueKey:(NSString *)opaqueKey
+                             contentGeneration:(NSUInteger)contentGeneration;
 @end
 
 // A CSS overflow scroller inside WKWebView is represented by a private
@@ -1072,6 +1102,71 @@ static NSString *ApolloModernChatMessagesFilterName(ApolloModernChatMessagesFilt
 
 // Name of the page's surface report (see pageConversationVisible).
 static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface";
+static NSString * const ApolloDirectChatDraftMessageName = @"apolloChatDraft";
+
+static NSString *ApolloCanonicalChatDraftPath(NSString *path) {
+    return [path isKindOfClass:[NSString class]] ? (path.stringByRemovingPercentEncoding ?: path) : nil;
+}
+
+// Keychain writes can occasionally block while securityd wakes or evaluates a
+// protection class. Serialize them off the main queue: ordering is preserved
+// (save -> send-success clear, or save -> manual-clear), while typing stays
+// entirely on WebKit/UIKit's input path.
+static void ApolloDirectChatPersistDraft(NSString *account, NSString *conversation, NSString *text, NSUInteger storeGeneration, NSUInteger accountGeneration) {
+    ApolloMessageDraftStoreAsync(^{
+        ApolloMessageDraftStoreTextIfCurrent(account, conversation, text, storeGeneration, accountGeneration);
+    });
+}
+
+static void ApolloDirectChatClearDraft(NSString *account, NSString *conversation) {
+    ApolloMessageDraftStoreAsync(^{
+        ApolloMessageDraftClear(account, conversation);
+    });
+}
+
+static void ApolloDirectChatLoadDraft(NSString *account,
+                                      NSString *conversation,
+                                      void (^completion)(NSString *draft)) {
+    ApolloMessageDraftStoreAsync(^{
+        NSString *draft = ApolloMessageDraftLoadText(account, conversation);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(draft); });
+    });
+}
+
+// This isolated script does only draft bookkeeping. Keeping it separate from
+// the theme/layout script makes the privacy boundary auditable: it transmits
+// the current room path, draft text, and a matched send response status, never
+// cookies, account tokens, DOM HTML, or message history.
+static NSString *ApolloDirectChatDraftScript(void) {
+    return @"(()=>{if(window.__apolloChatDraftHook)return;window.__apolloChatDraftHook=1;"
+        "const bridge=payload=>{try{window.webkit?.messageHandlers?.apolloChatDraft?.postMessage(payload)}catch(e){}};"
+        "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const n of r.querySelectorAll?.('*')||[])if(n.shadowRoot)visit(n.shadowRoot)};visit(document);return out};"
+        "const conversationPath=()=>{const p=location.pathname||'';return /^\\/chat\\/room\\/(?!create\\/?$)[^\\/?#]+\\/?$/.test(p)||/^\\/chat\\/user\\/[^\\/?#]+\\/?$/.test(p)||/^\\/chat\\/threads\\/[^\\/?#]+\\/?$/.test(p)};"
+        "const visible=e=>{const r=e?.getBoundingClientRect?.();return !!r&&r.width>0&&r.height>0};"
+        "const entryValue=e=>e?.matches?.('[contenteditable=true]')?(e.innerText||e.textContent||''):(e?.value||'');"
+        // Reddit's room composer has a visible, exact "Send message" control
+        // in its component tree. Requiring both that control and a real room
+        // route excludes the Create Chat recipient/search boxes and headers.
+        "const composer=e=>{if(!conversationPath()||!visible(e)||!e?.matches?.('textarea,[contenteditable=true],[role=textbox]'))return false;if(e.getRootNode?.()?.host?.getAttribute?.('composer-type')==='thread')return false;for(const r of roots())for(const b of r.querySelectorAll?.('[aria-label=\"Send message\"],button[title=\"Send message\"]')||[])if(visible(b))return true;return false};"
+        "const snapshot=()=>{for(const r of roots())for(const e of r.querySelectorAll?.('textarea,[contenteditable=true],[role=textbox]')||[])if(composer(e))return {path:location.pathname||'',text:entryValue(e)};return null};"
+        "window.__apolloChatDraftComposerSnapshot=snapshot;"
+        "window.__apolloChatDraftRestore=(path,text)=>{const now=snapshot();if(!now||now.path!==path||now.text)return false;for(const r of roots())for(const e of r.querySelectorAll?.('textarea,[contenteditable=true],[role=textbox]')||[]){if(!composer(e))continue;if(e.matches('[contenteditable=true]'))e.textContent=text;else e.value=text;e.dispatchEvent(new InputEvent('input',{bubbles:true,composed:true,inputType:'insertText',data:text}));return true}return false};"
+        "let serial=0,requestSerial=0,current=null,lastNonempty=null,retryCandidate=null;const remember=e=>{if(!composer(e))return;current={path:location.pathname||'',text:entryValue(e),serial:++serial,at:Date.now()};if(current.text)lastNonempty={...current};bridge({kind:'changed',path:current.path,text:current.text,serial:current.serial})};"
+        "document.addEventListener('input',e=>remember(e.composedPath?.()[0]||e.target),true);"
+        // The current authenticated client uses Matrix v3's standard event-send
+        // API: PUT /_matrix/client/v3/rooms/<room>/send/m.room.message/<txn>.
+        // Its text event payload is exactly {msgtype:'m.text',body:<draft>}.
+        "const endpoint=(method,url)=>{try{const u=new URL(url,location.href);return method==='PUT'&&u.hostname==='matrix.redditspace.com'&&/^\\/_matrix\\/client\\/v3\\/rooms\\/[^/]+\\/send\\/m\\.room\\.message\\/[^/?#]+$/.test(u.pathname)}catch(e){return false}};"
+        // Reddit may clear the composer immediately before starting fetch. Keep
+        // that last value only for a short correlation window. A failed send
+        // gets a bounded exception for Reddit's same-transaction retry, but a
+        // different transaction or newly typed content cannot reuse it.
+        "const candidate=(method,url,body)=>{if(!lastNonempty?.text||lastNonempty.path!==(location.pathname||'')||!endpoint(method,url))return null;try{const payload=typeof body==='string'?JSON.parse(body):body;if(payload?.msgtype!=='m.text'||payload.body!==lastNonempty.text)return null;const txnId=new URL(url,location.href).pathname.split('/').pop(),retryLive=retryCandidate&&Date.now()-retryCandidate.failedAt<=10000,retry=retryLive&&retryCandidate.txnId===txnId&&retryCandidate.serial===lastNonempty.serial&&retryCandidate.path===lastNonempty.path&&retryCandidate.text===lastNonempty.text;if(retryLive&&retryCandidate.txnId===txnId&&retryCandidate.serial!==lastNonempty.serial)return null;const cleared=current&&!current.text&&(current.path!==lastNonempty.path||current.serial<=lastNonempty.serial||Date.now()-current.at>750);if(cleared&&!retry){if(!retryLive){lastNonempty=null;retryCandidate=null}return null}return {...lastNonempty,requestId:`send-${Date.now()}-${++requestSerial}`,txnId}}catch(e){}return null};"
+        "const notify=(kind,c,status)=>{if(!c)return;const success=kind==='send'&&status>=200&&status<300;if(success&&lastNonempty?.serial===c.serial)lastNonempty=null;if(success&&retryCandidate?.serial===c.serial)retryCandidate=null;else if(!success&&(kind==='send'||kind==='failed')&&lastNonempty?.serial===c.serial)retryCandidate={txnId:c.txnId,serial:c.serial,path:c.path,text:c.text,failedAt:Date.now()};bridge({kind,requestId:c.requestId,path:c.path,text:c.text,serial:c.serial,txnId:c.txnId||'',status:status||0})};"
+        "const originalFetch=window.fetch;if(originalFetch)window.fetch=function(...args){const request=args[0],init=args[1]||{},method=(init.method||request?.method||'GET').toUpperCase(),url=typeof request==='string'?request:(request instanceof Request?request.url:String(request));const c=candidate(method,url,init.body);if(c)notify('sending',c);let p;try{p=originalFetch.apply(this,args)}catch(e){notify('failed',c);throw e}return p.then(response=>{notify('send',c,response.status);return response},error=>{notify('failed',c);throw error})};"
+        "const originalOpen=XMLHttpRequest.prototype.open,originalSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url,...args){this.__apolloDraftMethod=(method||'GET').toUpperCase();this.__apolloDraftURL=url;return originalOpen.call(this,method,url,...args)};XMLHttpRequest.prototype.send=function(body){const c=candidate(this.__apolloDraftMethod,this.__apolloDraftURL,body);if(c){notify('sending',c);let done=false;const settle=(kind,status)=>{if(done)return;done=true;notify(kind,c,status)};this.addEventListener('loadend',()=>settle(this.status>=200&&this.status<300?'send':'failed',this.status),{once:true});this.addEventListener('error',()=>settle('failed',0),{once:true});this.addEventListener('abort',()=>settle('failed',0),{once:true});this.addEventListener('timeout',()=>settle('failed',0),{once:true})}return originalSend.call(this,body)};"
+        "})()";
+}
 
 // WKUserContentController retains its script message handlers; routing them
 // through a weak proxy keeps the web view's configuration from retaining the
@@ -1136,6 +1231,17 @@ static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface
     surfaceProxy.target = self;
     [self.webView.configuration.userContentController addScriptMessageHandler:surfaceProxy
                                                                          name:ApolloDirectChatSurfaceMessageName];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        ApolloDirectChatScriptMessageProxy *draftProxy = [ApolloDirectChatScriptMessageProxy new];
+        draftProxy.target = self;
+        [self.webView.configuration.userContentController addScriptMessageHandler:draftProxy
+                                                                             name:ApolloDirectChatDraftMessageName];
+    }
+    self.pendingDraftSends = [NSMutableDictionary dictionary];
+    self.draftEmptyClearGenerations = [NSMutableDictionary dictionary];
+    self.draftContentGenerations = [NSMutableDictionary dictionary];
+    self.pendingDraftWrites = [NSMutableDictionary dictionary];
+    self.draftRestoreAttemptedKeys = [NSMutableSet set];
     if (self.mailboxKind == ApolloModernMailboxKindChat) {
         // See apollo_noteTouchBeganOnPage. Recognizers on this view receive
         // every touch that lands in the web view's subtree.
@@ -1419,12 +1525,15 @@ static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface
     // controller's pair so the immortal pan can never message a dead host
     // (removeTarget: matches by pointer — a no-op for every other host).
     ApolloStandaloneChatBackPanForgetHost(self);
+    [self apollo_flushPendingDraftWrites];
     [self.chatStatusRefreshTimer invalidate];
     [self.webView removeObserver:self
                      forKeyPath:@"URL"
                         context:ApolloDirectChatWebViewURLContext];
     [self.webView.configuration.userContentController
         removeScriptMessageHandlerForName:ApolloDirectChatSurfaceMessageName];
+    [self.webView.configuration.userContentController
+        removeScriptMessageHandlerForName:ApolloDirectChatDraftMessageName];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -1599,6 +1708,10 @@ static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
+    [self apollo_flushPendingDraftWrites];
+    self.draftRestoreRoute = nil;
+    self.draftRestoreGeneration += 1;
+    [self.draftRestoreAttemptedKeys removeAllObjects];
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
     if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
     // The tab bar is a shared UITabBarController state. Always hand it back
@@ -1634,6 +1747,7 @@ static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface
 
 - (void)apollo_applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
+    [self apollo_flushPendingDraftWrites];
     if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
 }
 
@@ -1743,6 +1857,12 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         initWithSource:ApolloDirectChatEnhancementScript(palette)
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart
         forMainFrameOnly:YES]];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        [contentController addUserScript:[[WKUserScript alloc]
+            initWithSource:ApolloDirectChatDraftScript()
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+            forMainFrameOnly:YES]];
+    }
 
     if (self.webView.URL) {
         NSString *script = ApolloDirectChatEnhancementScript(palette);
@@ -1753,6 +1873,9 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
                 ApolloLog(@"[DirectChatWeb] Applied Apollo theme and compact GIPHY grid");
             }
         }];
+        if (self.mailboxKind == ApolloModernMailboxKindChat) {
+            [self.webView evaluateJavaScript:ApolloDirectChatDraftScript() completionHandler:nil];
+        }
     }
 }
 
@@ -2235,13 +2358,225 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
-    if (![message.name isEqualToString:ApolloDirectChatSurfaceMessageName]) return;
-    // Page content is data: only the two typed fields are read.
     NSDictionary *body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : nil;
+    if (![message.name isEqualToString:ApolloDirectChatSurfaceMessageName]) {
+        if ([message.name isEqualToString:ApolloDirectChatDraftMessageName]) {
+            [self apollo_handleDraftMessage:body];
+        }
+        return;
+    }
+    // Page content is data: only the two typed fields are read.
     id room = body[@"room"];
     NSString *path = [body[@"path"] isKindOfClass:[NSString class]] ? body[@"path"] : @"";
     [self apollo_notePageConversationVisible:[room isKindOfClass:[NSNumber class]] && [room boolValue]
                                 reportedPath:path];
+}
+
+- (BOOL)apollo_validateDraftPath:(NSString *)path {
+    if (self.mailboxKind != ApolloModernMailboxKindChat || ![path isKindOfClass:[NSString class]]) return NO;
+    NSString *decodedPath = ApolloCanonicalChatDraftPath(path);
+    if (decodedPath.length == 0 || decodedPath.length > 1024 || ![decodedPath hasPrefix:@"/chat/"]) return NO;
+    // Do not accept a page-supplied room name unless WebKit's actual URL agrees.
+    // A rare route-reporting failure therefore skips persistence rather than
+    // risking one room's draft appearing in another room.
+    NSString *loadedPath = self.webView.URL.path ?: @"";
+    return [loadedPath isEqualToString:decodedPath] && [self apollo_isChatConversationPath:decodedPath];
+}
+
+- (void)apollo_scheduleDraftWriteForAccount:(NSString *)account
+                                conversation:(NSString *)conversation
+                                        text:(NSString *)text
+                                   opaqueKey:(NSString *)opaqueKey {
+    if (account.length == 0 || conversation.length == 0 || text.length == 0 || opaqueKey.length == 0) return;
+    NSUInteger generation = [self.pendingDraftWrites[opaqueKey][@"generation"] unsignedIntegerValue] + 1;
+    NSDictionary *write = @{ @"account": account, @"conversation": conversation,
+                              @"text": text, @"generation": @(generation),
+                              @"storeGeneration": @(ApolloMessageDraftStoreInvalidationGeneration()),
+                              @"accountGeneration": @(ApolloMessageDraftStoreAccountGeneration(account)) };
+    self.pendingDraftWrites[opaqueKey] = write;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) self = weakSelf;
+        NSDictionary *current = self.pendingDraftWrites[opaqueKey];
+        if (!self || ![current[@"generation"] isEqual:write[@"generation"]]) return;
+        [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+        NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+        if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat] ||
+            ![current[@"account"] isEqualToString:active]) {
+            ApolloLog(@"[ChatDraft] Discarded debounced write (modern chat disabled or account changed)");
+            return;
+        }
+        ApolloDirectChatPersistDraft(current[@"account"], current[@"conversation"], current[@"text"], [current[@"storeGeneration"] unsignedIntegerValue], [current[@"accountGeneration"] unsignedIntegerValue]);
+    });
+}
+
+- (void)apollo_flushPendingDraftWrites {
+    NSDictionary<NSString *, NSDictionary *> *writes = self.pendingDraftWrites.copy;
+    [self.pendingDraftWrites removeAllObjects];
+    [writes enumerateKeysAndObjectsUsingBlock:^(__unused NSString *key, NSDictionary *write, __unused BOOL *stop) {
+        NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+        if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat] ||
+            ![write[@"account"] isEqualToString:active]) {
+            ApolloLog(@"[ChatDraft] Discarded pending write (modern chat disabled or account changed)");
+            return;
+        }
+        ApolloDirectChatPersistDraft(write[@"account"], write[@"conversation"], write[@"text"], [write[@"storeGeneration"] unsignedIntegerValue], [write[@"accountGeneration"] unsignedIntegerValue]);
+    }];
+}
+
+- (void)apollo_invalidateEmptyDraftClearForKey:(NSString *)opaqueKey {
+    self.draftEmptyClearGenerations[opaqueKey] = @([self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue] + 1);
+}
+
+- (BOOL)apollo_hasPendingDraftSendForOpaqueKey:(NSString *)opaqueKey
+                             contentGeneration:(NSUInteger)contentGeneration {
+    for (NSDictionary *send in self.pendingDraftSends.allValues) {
+        if ([send[@"opaqueKey"] isEqualToString:opaqueKey] &&
+            ApolloMessageDraftSendOwnsContentGeneration([send[@"contentGeneration"] unsignedIntegerValue],
+                                                         contentGeneration)) return YES;
+    }
+    return NO;
+}
+
+- (void)apollo_handleDraftMessage:(NSDictionary *)body {
+    if (![body isKindOfClass:[NSDictionary class]] || self.sessionIdentityInvalidated ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat]) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (invalid or stale controller)");
+        return;
+    }
+    NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    NSString *account = self.username.lowercaseString ?: @"";
+    if (account.length == 0 || ![account isEqualToString:active]) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (account mismatch)");
+        return;
+    }
+    NSString *kind = [body[@"kind"] isKindOfClass:[NSString class]] ? body[@"kind"] : @"";
+    NSString *requestID = [body[@"requestId"] isKindOfClass:[NSString class]] ? body[@"requestId"] : @"";
+    NSString *path = [body[@"path"] isKindOfClass:[NSString class]] ? body[@"path"] : nil;
+    NSString *text = [body[@"text"] isKindOfClass:[NSString class]] ? body[@"text"] : nil;
+    if (![self apollo_validateDraftPath:path] || text.length > 100000) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (unverified route or length %lu)", (unsigned long)text.length);
+        return;
+    }
+    NSString *conversation = [@"web:" stringByAppendingString:ApolloCanonicalChatDraftPath(path)];
+    NSString *opaqueKey = ApolloMessageDraftOpaqueKey(account, conversation);
+    if (opaqueKey.length == 0) return;
+
+    if ([kind isEqualToString:@"sending"]) {
+        if (text.length > 0 && requestID.length > 0 && requestID.length <= 128) {
+            [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+            [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+            ApolloDirectChatPersistDraft(account, conversation, text, ApolloMessageDraftStoreInvalidationGeneration(), ApolloMessageDraftStoreAccountGeneration(account));
+            NSUInteger contentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+            self.pendingDraftSends[requestID] = @{ @"opaqueKey": opaqueKey, @"account": account,
+                                                   @"conversation": conversation, @"text": text,
+                                                   @"contentGeneration": @(contentGeneration) };
+            ApolloLog(@"[ChatDraft] Tracked send (%lu chars, generation %lu)", (unsigned long)text.length, (unsigned long)contentGeneration);
+        }
+        return;
+    }
+    if ([kind isEqualToString:@"send"] || [kind isEqualToString:@"failed"]) {
+        NSNumber *status = [body[@"status"] isKindOfClass:[NSNumber class]] ? body[@"status"] : nil;
+        NSDictionary *send = self.pendingDraftSends[requestID];
+        if (!send || ![send[@"opaqueKey"] isEqualToString:opaqueKey] ||
+            ![send[@"text"] isEqualToString:text]) return;
+        NSUInteger sentGeneration = [send[@"contentGeneration"] unsignedIntegerValue];
+        NSUInteger currentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+        BOOL ownsCurrentGeneration = ApolloMessageDraftShouldInvalidateEmptyClearForSendGeneration(sentGeneration, currentGeneration);
+        if (ownsCurrentGeneration) {
+            [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+            [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+        }
+        if ([kind isEqualToString:@"send"] && status &&
+            ApolloMessageDraftShouldClearForSendGeneration(status.integerValue, sentGeneration, currentGeneration)) {
+            ApolloDirectChatClearDraft(account, conversation);
+        }
+        [self.pendingDraftSends removeObjectForKey:requestID];
+        ApolloLog(@"[ChatDraft] Send %@ (%ld, newer=%d)", kind, (long)status.integerValue, !ownsCurrentGeneration);
+        return;
+    }
+    if (![kind isEqualToString:@"changed"]) return;
+    if (text.length > 0) {
+        [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+        self.draftContentGenerations[opaqueKey] = @([self.draftContentGenerations[opaqueKey] unsignedIntegerValue] + 1);
+        [self apollo_scheduleDraftWriteForAccount:account conversation:conversation text:text opaqueKey:opaqueKey];
+        return;
+    }
+    // Send buttons commonly clear the editor before their network request has
+    // resolved. Defer an empty-field deletion briefly; a matched send attempt
+    // keeps the draft on failures, while an intentional manual clear still
+    // removes it.
+    [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+    [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+    NSUInteger clearGeneration = [self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue];
+    NSUInteger contentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) self = weakSelf;
+        if (!self || [self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue] != clearGeneration ||
+            [self apollo_hasPendingDraftSendForOpaqueKey:opaqueKey contentGeneration:contentGeneration]) return;
+        ApolloDirectChatClearDraft(account, conversation);
+    });
+}
+
+- (BOOL)apollo_draftSessionIsCurrentForAccount:(NSString *)account
+                                          path:(NSString *)path
+                                    generation:(NSUInteger)generation {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || self.draftRestoreGeneration != generation ||
+        ![self.draftRestoreRoute isEqualToString:ApolloCanonicalChatDraftPath(path)] || ![self apollo_validateDraftPath:path]) return NO;
+    NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    return account.length > 0 && [account isEqualToString:self.username.lowercaseString ?: @""] &&
+        [account isEqualToString:active];
+}
+
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || ![self apollo_isInsideConversation]) return;
+    [self apollo_restoreDraftAttempt:attempt generation:self.draftRestoreGeneration];
+}
+
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt generation:(NSUInteger)generation {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || generation != self.draftRestoreGeneration) return;
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:@"window.__apolloChatDraftComposerSnapshot?.()||null"
+                   completionHandler:^(id result, NSError *error) {
+        typeof(self) self = weakSelf;
+        NSDictionary *snapshot = [result isKindOfClass:[NSDictionary class]] ? result : nil;
+        NSString *path = [snapshot[@"path"] isKindOfClass:[NSString class]] ? snapshot[@"path"] : nil;
+        NSString *current = [snapshot[@"text"] isKindOfClass:[NSString class]] ? snapshot[@"text"] : nil;
+        if (self && !error && [self apollo_validateDraftPath:path]) {
+            NSString *canonicalPath = ApolloCanonicalChatDraftPath(path);
+            if (![self.draftRestoreRoute isEqualToString:canonicalPath]) {
+                self.draftRestoreRoute = canonicalPath;
+                self.draftRestoreGeneration += 1;
+                [self.draftRestoreAttemptedKeys removeAllObjects];
+                [self apollo_restoreDraftAttempt:attempt generation:self.draftRestoreGeneration];
+                return;
+            }
+            NSString *account = self.username.lowercaseString ?: @"";
+            if (![self apollo_draftSessionIsCurrentForAccount:account path:path generation:generation]) return;
+            if (current.length > 0) return; // never overwrite typing or Reddit's own draft.
+            NSString *conversation = [@"web:" stringByAppendingString:canonicalPath];
+            NSString *opaqueKey = ApolloMessageDraftOpaqueKey(account, conversation);
+            if (opaqueKey.length == 0 || [self.draftRestoreAttemptedKeys containsObject:opaqueKey]) return;
+            [self.draftRestoreAttemptedKeys addObject:opaqueKey];
+            ApolloDirectChatLoadDraft(account, conversation, ^(NSString *draft) {
+                if (![self apollo_draftSessionIsCurrentForAccount:account path:path generation:generation]) return;
+                if (draft.length == 0) return;
+                NSString *script = [NSString stringWithFormat:@"window.__apolloChatDraftRestore?.(%@,%@)",
+                                    ApolloDirectChatJSStringLiteral(path), ApolloDirectChatJSStringLiteral(draft)];
+                [self.webView evaluateJavaScript:script completionHandler:nil];
+            });
+            return;
+        }
+        if (self && attempt < 20 && generation == self.draftRestoreGeneration && [self apollo_isInsideConversation]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self apollo_restoreDraftAttempt:attempt + 1 generation:generation];
+            });
+        }
+    }];
 }
 
 // The page reported its surface. Agreement with the route needs nothing —
@@ -2251,8 +2586,15 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 // page has left a room the route never saw it enter.
 - (void)apollo_notePageConversationVisible:(BOOL)visible reportedPath:(NSString *)reportedPath {
     if (self.mailboxKind != ApolloModernMailboxKindChat) return;
+    if (!visible) {
+        [self apollo_flushPendingDraftWrites];
+        self.draftRestoreRoute = nil;
+        self.draftRestoreGeneration += 1;
+        [self.draftRestoreAttemptedKeys removeAllObjects];
+    }
     self.pageConversationVisible = visible;
     [self apollo_reconcilePageSurfaceReportedPath:reportedPath];
+    if (visible) [self apollo_restoreDraftAttempt:0];
 }
 
 - (void)apollo_reconcilePageSurfaceReportedPath:(NSString *)reportedPath {
@@ -2905,7 +3247,10 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         [self.webView.layer removeAllAnimations];
         [UIView animateWithDuration:0.15 animations:^{ self.webView.alpha = 1.0; }];
         if (isList) [self apollo_openPendingInPlaceConversationIfReady];
-        else [self apollo_releaseLoadingCoverIfHeld];
+        else {
+            [self apollo_releaseLoadingCoverIfHeld];
+            [self apollo_restoreDraftAttempt:0];
+        }
     }
     ApolloLog(@"[DirectChatWeb] Revealed settled Chat %@", isList ? @"list" : @"conversation");
 }
@@ -2991,6 +3336,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     if (self.mailboxKind == ApolloModernMailboxKindChat) {
         [self apollo_startChatStatusRefreshIfNeeded];
         [self apollo_captureChatStatus];
+        [self apollo_restoreDraftAttempt:0];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self apollo_captureChatStatus];
         });
@@ -4827,6 +5173,7 @@ void ApolloDirectChatDebugEvaluateJS(NSString *js) {
 
 %ctor {
     %init;
+    ApolloMessageDraftStoreAsync(^{ ApolloMessageDraftStorePruneExpired(); });
     ApolloMigrateModernMailboxPreferences();
     // The mailbox web views load real reddit.com documents, so their isolated
     // cookie jar carries the token_v2 Reddit refreshed on the way — an

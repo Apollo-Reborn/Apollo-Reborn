@@ -4,7 +4,8 @@
 The archive contents remain ZIP-compatible. Registration belongs to the main
 app's Info.plist (not the injected dylib or its resource bundle), and must happen
 before signing. Existing document declarations are preserved; repeated packaging
-replaces only our own declaration. Restore remains an explicit in-app action.
+replaces only our own declaration. Opening a backup presents a confirmation
+before any settings are restored.
 """
 import argparse
 import os
@@ -35,10 +36,12 @@ def registered_plist(data):
         "CFBundleTypeName": "Apollo Reborn Backup",
         "LSItemContentTypes": [TYPE_ID],
         "CFBundleTypeIconFiles": [ICON_NAME],
-        # Export the icon without advertising an unimplemented Open In handler.
-        # The settings restore picker owns validation and user confirmation.
-        "CFBundleTypeRole": "None",
-        "LSHandlerRank": "None",
+        # Files can otherwise select a generic archive handler (e.g. ESign),
+        # showing its generic icon in Browse even while Get Info and Recents
+        # use our exported icon. Own only this custom type, never all ZIPs.
+        # ApolloBackupDocument handles opening it with explicit confirmation.
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Owner",
     }
     info["UTExportedTypeDeclarations"] = [
         item for item in info.get("UTExportedTypeDeclarations", [])

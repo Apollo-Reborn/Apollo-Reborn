@@ -23,6 +23,9 @@ NSArray<NSString *> *ApolloSubredditSectionsResolvedOrder(void);
 // Display name for a token ("Favorites", "Multireddits", …).
 NSString *ApolloSubredditSectionDisplayName(NSString *token);
 
+// Animate the next confirmed removal. Complex model changes use a full reload.
+void ApolloFollowingAnimateNextRemoval(UITableView *tableView, NSIndexPath *visiblePath);
+
 // Remap-awareness bridge for the other subreddit-list modules
 // (ApolloHideModSubreddits / ApolloMultiredditEdit): those modules identify a
 // row's section by reading the on-screen header title for indexPath.section.
@@ -34,6 +37,12 @@ NSString *ApolloSubredditSectionDisplayName(NSString *token);
 // canonical uppercase title for the native special sections ("FAVORITES" /
 // "MULTIREDDITS" / "MODERATOR") or @"" for any other native section.
 NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, NSInteger nativeSection);
+
+// Subreddit name backing a VISIBLE row of the Subreddits list, from Apollo's
+// model (FavoriteSubreddits / sectionedSubreddits). Translates through the
+// Following remap when that remap is engaged. nil for rows without a
+// favoritable name (feed shortcuts, multireddits, moderator) or on failure.
+NSString *ApolloSubredditListNameAtIndexPath(UITableView *tableView, NSIndexPath *visiblePath);
 
 #ifdef __cplusplus
 }

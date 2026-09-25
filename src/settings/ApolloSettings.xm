@@ -13,6 +13,7 @@
 #import "ApolloReportViewController.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWallpapersViewController.h"
+#import "ApolloSettingsTableViewController.h"
 
 // MARK: - Settings View Controller (Custom API row injection)
 
@@ -258,7 +259,8 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = indexPath.row == 0 ? @"Apollo Reborn" : @"Buy Us a Coffee";
-        UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
+        ApolloSettingsApplyCellTypography(cell);
+        UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
             ? (ApolloRebornOptionsSettingsIcon(29.0) ?: createSettingsIcon(@"key.fill", [UIColor systemTealColor]))
@@ -279,7 +281,8 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = title;
-        UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
+        ApolloSettingsApplyCellTypography(cell);
+        UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
             ? createSettingsIcon(@"photo.on.rectangle.angled", UIColor.systemRedColor)
@@ -391,8 +394,9 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) return 52.0;
-    if (indexPath.section == 2) return 52.0;
+    if (ApolloRootCellCopiesNativeSurface(indexPath)) {
+        return MAX(52.0, ceil(ApolloSettingsFont(UIFontTextStyleBody, tableView.traitCollection).lineHeight) + 22.0);
+    }
     return %orig;
 }
 

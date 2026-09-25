@@ -245,7 +245,7 @@ static BOOL ShouldAugmentSpeedMenu(NSArray<UIMenuElement *> *children) {
 static const CGFloat kSpeedIconSourcePx = 144.0;
 static const CGFloat kSpeedIconPointSize = 34.0;
 
-// Load a bundled icon (resources/<name>.png) as a template image at the menu
+// Load a bundled icon (Resources/<name>.png) as a template image at the menu
 // point size. ApolloBundledResourcePath resolves the file across the supported
 // install layouts (jailbreak, sideload, deb fuse) and the simulator.
 static UIImage *LoadBundledSpeedIcon(NSString *name) {
@@ -257,7 +257,7 @@ static UIImage *LoadBundledSpeedIcon(NSString *name) {
     return [raw imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
-// Custom icons (PNGs in resources/), loaded once and cached: a leaping deer for
+// Custom icons (PNGs in Resources/), loaded once and cached: a leaping deer for
 // 0.75× and a side-view running fox for 1.25× — matching Apollo's snail/turtle/
 // rabbit/cheetah line-art set.
 static UIImage *DeerIcon(void) {
