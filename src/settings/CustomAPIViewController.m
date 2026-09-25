@@ -1,4 +1,5 @@
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
@@ -2955,7 +2956,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     crashReports.iconSystemName = @"bandage";
     crashReports.iconTileColor = [UIColor systemOrangeColor];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports ]];
+    ApolloSettingsRow *siri = [ApolloSettingsRow disclosureRowWithID:@"privacy.siri" title:@"Siri & Spotlight"
+        detail:nil push:^UIViewController * {
+            return [[ApolloSiriSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    siri.visible = ^BOOL { return NSClassFromString(@"ApolloContentBridge") != Nil; };
+    siri.iconSystemName = @"sparkle.magnifyingglass";
+    siri.iconTileColor = UIColor.systemPurpleColor;
+    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports, siri ]];
 }
 
 - (ApolloSettingsSection *)buildAboutSection {

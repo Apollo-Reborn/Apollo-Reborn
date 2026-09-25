@@ -25,7 +25,8 @@ liquid-glass/scripts/rebuilt/
 liquid-glass/scripts/cartool
 
 AsyncDisplayKit.framework/
-docs/
+docs/*
+!docs/siri-spotlight-task-list.md
 iPhone18-3_26.1_23B85_Restore/
 iOS26-Runtime-Headers/
 
@@ -35,6 +36,11 @@ widgets/build/
 widgets/build-*/
 widgets/*.xcodeproj/
 widgets/Info.plist
+
+# Optional Siri packaging proof — framework only; no standalone app target.
+siri/build/
+siri/build-*/
+siri/*.xcodeproj/
 
 # Local iOS Simulator working dirs (scripts/run-in-sim.sh; sessions use
 # .sim-<name> variants so parallel runs don't clobber each other)
