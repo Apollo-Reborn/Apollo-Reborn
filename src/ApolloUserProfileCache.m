@@ -131,17 +131,21 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
         _infoCache = [[NSCache alloc] init];
         _infoCache.countLimit = 2000;
 
-        // Avatars render at ~40pt, so a decoded entry is tens of KB; this holds
-        // a few hundred distinct authors, far more than any one thread shows.
+        // Avatars are decoded at their source size, not the ~40pt they render
+        // at: a 256px icon is 256KB, so this holds about forty authors. A miss
+        // re-reads the disk copy.
         _imageCache = [[NSCache alloc] init];
         _imageCache.countLimit = 400;
         _imageCache.totalCostLimit = 10 * 1024 * 1024;
         ApolloMemoryRegisterPurgableCache(@"profile-avatars", _imageCache);
 
-        // One profile header is on screen at a time; the rest is look-back.
+        // One profile or subreddit header is on screen at a time; the rest is
+        // look-back. A banner is decoded at up to the screen's longest side, so
+        // one entry alone can be 14MB (2560x1440), and an entry over the limit
+        // is evicted as it is inserted, emptying the cache with it.
         _bannerCache = [[NSCache alloc] init];
         _bannerCache.countLimit = 4;
-        _bannerCache.totalCostLimit = 6 * 1024 * 1024;
+        _bannerCache.totalCostLimit = 32 * 1024 * 1024;
         ApolloMemoryRegisterPurgableCache(@"profile-banners", _bannerCache);
         (void)ApolloBannerMaxPixelDimension(); // warm the UIScreen read on main
 
