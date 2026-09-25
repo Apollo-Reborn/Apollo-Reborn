@@ -4,6 +4,9 @@ This is an opt-in iOS 27 proof embedded in the **real Apollo application**.
 There is no standalone app target, replacement executable, or new extension.
 The normal Theos build and its iOS 14 deployment target are unchanged.
 
+For the 2026-09-25 review against shipping Siri AI and the merged upstream code,
+see the [gap assessment and implementation sequence](../docs/siri-ai-gap-assessment.md).
+
 ## Current implementation (2026-09-19)
 
 The integration now has a bounded persistent content catalogue, native search,

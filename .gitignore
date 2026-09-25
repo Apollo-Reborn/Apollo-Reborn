@@ -27,6 +27,7 @@ liquid-glass/scripts/cartool
 AsyncDisplayKit.framework/
 docs/*
 !docs/siri-spotlight-task-list.md
+!docs/siri-ai-gap-assessment.md
 iPhone18-3_26.1_23B85_Restore/
 iOS26-Runtime-Headers/
 

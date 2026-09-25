@@ -3,6 +3,13 @@
 Started: 2026-09-19. This is an integration in the real sideloaded Apollo app,
 not a standalone test app. Existing automation runners may drive Apollo.
 
+2026-09-25 review: WIP preserved on `feature/siri-spotlight-integration` and
+merged with all 39 upstream commits through `b92a722`. See the
+[Siri AI gap assessment](siri-ai-gap-assessment.md) for the current capability
+matrix, subscription-index design, performance gaps, and prioritized next work.
+The implementation/evidence checkboxes below remain historical; the assessment
+does not mark unverified Siri behavior as complete.
+
 ## Approach
 
 Persist a bounded catalogue of Reddit content, expose stable post/subreddit
