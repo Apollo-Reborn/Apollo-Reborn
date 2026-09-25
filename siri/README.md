@@ -25,7 +25,8 @@ interactive result snippets and an opt-in schema experiment. Progress and remain
 - **Search Apollo** calls Apollo's native search-bar callbacks and verifies the
   resulting `PostsSearchResultsViewController` and query activity. It never
   routes a search URL to a browser and refuses to dismiss a presented sheet.
-  An empty App Shortcut invocation explicitly asks for a query first.
+  Empty criteria explicitly prompt for a query first. This navigation action
+  does not return the separate post-result snippet.
 - **Set Apollo Content Indexing** is an explicit Shortcuts action. It defaults
   off. Enable it before browsing; disable it to clear this integration's local
   catalogue and post/subreddit entities. Existing legacy indexes and the original
@@ -57,16 +58,44 @@ interactive result snippets and an opt-in schema experiment. Progress and remain
   no note create/edit/delete intents. Metadata validation passes; improved Siri
   discovery is a hypothesis, not a verified result.
 
-This is experimental. Full favourites/saved/read-history backfill, real-account
-capture verification, lifecycle/device checks and Siri discovery comparisons
-remain in the task list. Siri AI discovery is a separate acceptance gate.
+This is experimental. Real post and subreddit Spotlight discovery now pass
+user device testing. Lifecycle checks, unread/subscription collection and Siri
+discovery comparisons remain in the task list. Natural search currently opens
+Apollo search; natural subreddit opening incorrectly falls through to search.
+The observed onscreen summary does not yet prove entity resolution.
 
 Run the Foundation-only catalogue checks with `bash scripts/test-siri-catalog.sh`.
-All 37 assertions pass. The updated framework and Theos builds compile. Actual
+All 51 assertions pass, including spoken subreddit names with spaces/hyphens.
+The updated device framework builds. Actual
 simulator Shortcuts execution verified warm Unicode/cold native search, two-row
 synthetic snippets, native Comments routing and disable/clear. The simulator-only
-fixture flag is not compiled into device builds. Real-account capture/Spotlight
-and live Reddit search validation is pending an unlocked phone.
+fixture flag is not compiled into device builds. Live Reddit search through
+the snippet-returning action still needs device validation.
+
+## Diagnosing conversational Siri
+
+The `apollofix` / `SiriProof` log category now separates:
+
+- `Onscreen detail` binding, eligibility, view annotation and activity annotation.
+- `Query started/completed/failed` for post, subscribed subreddit and experimental
+  note queries. Completion includes a result count, never identifiers or text.
+- Open action execution, search-in-app navigation, snippet-returning search and
+  snippet view execution. Returning a snippet view is not proof Siri displayed it.
+
+Detail events use notice level and appear in Apollo Reborn > Advanced > Export
+Debug Logs. Export immediately after the test without force-quitting; this export
+reads the current process's log. Feed-row events use debug level to avoid noisy
+persistent logs during scrolling. All new messages contain only fixed stage
+labels and counts, never search terms, titles, account identifiers or body text.
+
+Keep Experimental Notes Schema off for the first run. Type an exact indexed
+subreddit name in Siri, then speak its spaced/hyphenated name. For context, open
+a short indexed text post, scroll its body offscreen and ask about that body.
+Record the time and response, then export logs. An annotation only proves we
+offered context; a query callback proves access by a system consumer (which may
+also be Spotlight or Shortcuts). Neither alone proves Siri used it in its answer,
+and cached system content can mean no fresh callback. Compare the answer against
+content unavailable in the visible screen before claiming stronger awareness.
 
 ## Preserved packaging proof
 

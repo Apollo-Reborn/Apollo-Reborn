@@ -9,7 +9,9 @@ struct SearchApolloPostsIntent: AppIntent {
     static var parameterSummary: some ParameterSummary { Summary("Search Apollo posts for \(\.$query)") }
 
     func perform() async throws -> some IntentResult & ReturnsValue<[ApolloPostEntity]> & ProvidesDialog & ShowsSnippetIntent {
+        ApolloSiriLog.event("Live post search action started")
         let result = try await ApolloContentService.shared.liveSearch(query: query)
+        ApolloSiriLog.event("Live post search returning snippet", count: result.records.count)
         return .result(value: result.records.map(ApolloPostEntity.init),
                        dialog: "Found \(result.records.count) eligible posts from Reddit.",
                        snippetIntent: ApolloPostResultsSnippetIntent(records: result.records, account: result.account))

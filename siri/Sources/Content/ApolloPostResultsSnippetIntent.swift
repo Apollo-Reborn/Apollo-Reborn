@@ -17,7 +17,9 @@ struct ApolloPostResultsSnippetIntent: SnippetIntent {
     }
 
     func perform() async throws -> some IntentResult & ShowsSnippetView {
+        ApolloSiriLog.event("Post results snippet requested")
         let records = try await ApolloContentService.shared.snippetRecords(identifiers: identifiers, account: account)
+        ApolloSiriLog.event("Post results snippet view returned", count: records.count)
         return .result(view: ApolloPostResultsView(posts: records.prefix(3).map(ApolloPostEntity.init),
                                                  totalCount: records.count))
     }

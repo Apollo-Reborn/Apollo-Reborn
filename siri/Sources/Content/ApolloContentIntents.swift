@@ -33,7 +33,9 @@ struct FindApolloIndexedPostsIntent: AppIntent {
     @Parameter(title: "Search") var query: String
     static var parameterSummary: some ParameterSummary { Summary("Find indexed Apollo posts matching \(\.$query)") }
     func perform() async throws -> some IntentResult & ReturnsValue<[ApolloPostEntity]> & ProvidesDialog & ShowsSnippetIntent {
+        ApolloSiriLog.event("Indexed post search action started")
         let snapshot = try await ApolloContentService.shared.searchSnapshot(query: query)
+        ApolloSiriLog.event("Indexed post search returning snippet", count: snapshot.records.count)
         return .result(value: snapshot.records.map(ApolloPostEntity.init),
                        dialog: "Found \(snapshot.records.count) indexed posts in Apollo.",
                        snippetIntent: ApolloPostResultsSnippetIntent(records: snapshot.records, account: snapshot.account))

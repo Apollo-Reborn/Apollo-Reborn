@@ -117,6 +117,36 @@ do {
     check(store.records(kind: .subreddit, now: now).count == 1, "Resubscribe did not allow fresh metadata")
     try store.configure(enabled: true, account: "other-account")
     check(store.state.suppressed == nil && store.state.suppressedAliases == nil, "Account change retained tombstones")
+
+    // Reproduce the device's spoken community name. Include a newer community
+    // whose description matches, so the intended name wins before applying limit.
+    let names = try ApolloContentCatalog(file: directory.appendingPathComponent("names.json"), retention: 100)
+    try names.configure(enabled: true, account: account)
+    func community(_ name: String, description: String = "") -> [String: Any] {
+        ["kind": "t5", "display_name": name, "public_description": description,
+         "subreddit_type": "public", "over18": false, "user_is_subscriber": true]
+    }
+    try names.ingest(data([community("boutiquebluray"), community("boutique_bluray")]), account: account, now: now)
+    try names.ingest(data([community("movies", description: "boutique blu-ray boutiqueBluray cinema")]),
+                     account: account, now: now.addingTimeInterval(1))
+    for query in ["boutique blu-ray", "BOUTIQUE BLU–RAY", "r/boutiquebluray", " /r/BoutiqueBluray "] {
+        check(names.records(kind: .subreddit, query: query, limit: 1, now: now).map(\.id) == ["reddit:subreddit:boutiquebluray"],
+              "Spoken/qualified name didn't outrank description: \(query)")
+    }
+    check(names.records(kind: .subreddit, query: "boutique_bluray", now: now).map(\.id) == ["reddit:subreddit:boutique_bluray"],
+          "Underscore community name was conflated")
+    check(names.records(kind: .subreddit, query: "cinema", now: now).map(\.id) == ["reddit:subreddit:movies"],
+          "Description search regressed")
+    check(names.records(kind: .subreddit, query: "boutique bluray missing", now: now).isEmpty,
+          "Unmatched words were discarded")
+    check(names.records(kind: .subreddit, query: "boutique blu-ray", now: now.addingTimeInterval(102)).isEmpty,
+          "Spoken matching resurrected expired records")
+    try names.suppress(["reddit:subreddit:boutiquebluray"], account: account, now: now)
+    check(!names.records(kind: .subreddit, query: "boutique blu-ray", now: now).contains { $0.id == "reddit:subreddit:boutiquebluray" },
+          "Spoken matching resurrected a suppressed community")
+    try names.configure(enabled: false, account: account)
+    check(names.records(kind: .subreddit, query: "boutique blu-ray", now: now).isEmpty,
+          "Spoken matching bypassed opt-out")
     print("PASS: \(assertions) catalogue assertions (persistence, privacy, account isolation, search, retention, routing)")
 } catch {
     fatalError("Catalogue test failed: \(error)")

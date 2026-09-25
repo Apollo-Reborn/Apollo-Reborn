@@ -67,13 +67,19 @@ struct ApolloPostQuery: EntityStringQuery, IndexedEntityQuery {
         try await ApolloContentService.shared.reindex(protectionClass: indexDescription.protectionClass)
     }
     func entities(for identifiers: [String]) async throws -> [ApolloPostEntity] {
-        try await ApolloContentService.shared.resolve(identifiers, kind: .post).map(ApolloPostEntity.init)
+        try await ApolloSiriLog.query("Post IDs") {
+            try await ApolloContentService.shared.resolve(identifiers, kind: .post).map(ApolloPostEntity.init)
+        }
     }
     func entities(matching string: String) async throws -> [ApolloPostEntity] {
-        try await ApolloContentService.shared.records(kind: .post, query: string).map(ApolloPostEntity.init)
+        try await ApolloSiriLog.query("Post text match") {
+            try await ApolloContentService.shared.records(kind: .post, query: string).map(ApolloPostEntity.init)
+        }
     }
     func suggestedEntities() async throws -> [ApolloPostEntity] {
-        try await ApolloContentService.shared.records(kind: .post, limit: 10).map(ApolloPostEntity.init)
+        try await ApolloSiriLog.query("Post suggestions") {
+            try await ApolloContentService.shared.records(kind: .post, limit: 10).map(ApolloPostEntity.init)
+        }
     }
 }
 
@@ -85,13 +91,19 @@ struct ApolloSubredditQuery: EntityStringQuery, IndexedEntityQuery {
         try await ApolloContentService.shared.reindex(protectionClass: indexDescription.protectionClass)
     }
     func entities(for identifiers: [String]) async throws -> [ApolloSubredditEntity] {
-        try await ApolloContentService.shared.resolve(identifiers, kind: .subreddit).map(ApolloSubredditEntity.init)
+        try await ApolloSiriLog.query("Subscribed subreddit IDs") {
+            try await ApolloContentService.shared.resolve(identifiers, kind: .subreddit).map(ApolloSubredditEntity.init)
+        }
     }
     func entities(matching string: String) async throws -> [ApolloSubredditEntity] {
-        try await ApolloContentService.shared.records(kind: .subreddit, query: string).map(ApolloSubredditEntity.init)
+        try await ApolloSiriLog.query("Subscribed subreddit text match") {
+            try await ApolloContentService.shared.records(kind: .subreddit, query: string).map(ApolloSubredditEntity.init)
+        }
     }
     func suggestedEntities() async throws -> [ApolloSubredditEntity] {
-        try await ApolloContentService.shared.records(kind: .subreddit, limit: 10).map(ApolloSubredditEntity.init)
+        try await ApolloSiriLog.query("Subscribed subreddit suggestions") {
+            try await ApolloContentService.shared.records(kind: .subreddit, limit: 10).map(ApolloSubredditEntity.init)
+        }
     }
 }
 
@@ -104,9 +116,11 @@ struct OpenApolloPostIntent {
     init() {}
     init(target: ApolloPostEntity) { self.target = target }
     func perform() async throws -> some IntentResult {
+        ApolloSiriLog.event("Open post action started")
         guard let record = try await ApolloContentService.shared.resolve([target.id], kind: .post).first,
               let url = URL(string: record.route) else { throw AppIntentError.Unrecoverable.entityNotFound }
         try await ApolloSiriNavigation.open(url)
+        ApolloSiriLog.event("Open post action completed")
         return .result()
     }
 }
@@ -118,9 +132,11 @@ struct OpenApolloSubscribedSubredditIntent {
     static var allowedExecutionTargets: IntentExecutionTargets { .main }
     var target: ApolloSubredditEntity
     func perform() async throws -> some IntentResult {
+        ApolloSiriLog.event("Open subscribed subreddit action started")
         guard let record = try await ApolloContentService.shared.resolve([target.id], kind: .subreddit).first,
               let url = URL(string: record.route) else { throw AppIntentError.Unrecoverable.entityNotFound }
         try await ApolloSiriNavigation.open(url)
+        ApolloSiriLog.event("Open subscribed subreddit action completed")
         return .result()
     }
 }

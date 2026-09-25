@@ -25,6 +25,7 @@ final class ApolloOnscreenBridge: NSObject {
         guard view.window != nil, UserDefaults.standard.bool(forKey: ApolloContentBridge.enabledKey),
               let account = ApolloContentBridge.accountState().fingerprint,
               let id = ApolloContentRecord.identifier(["kind": "t3", "name": fullName]) else {
+            ApolloSiriLog.onscreen("Skipped; view, indexing, account or identifier unavailable", detail: detail)
             hideView(view)
             return
         }
@@ -32,6 +33,7 @@ final class ApolloOnscreenBridge: NSObject {
            !detail || activity == nil || existing.activity === activity { return }
         hideView(view)
         let binding = Binding(id: id, account: account, detail: detail, activity: activity)
+        ApolloSiriLog.onscreen("Binding created; awaiting eligible record", detail: detail)
         bindings.setObject(binding, forKey: view)
         update(view, binding: binding)
     }
@@ -60,6 +62,7 @@ final class ApolloOnscreenBridge: NSObject {
     private static func removeAnnotation(_ view: UIView, binding: Binding) {
         if binding.annotated {
             view.appEntityIdentifier = nil
+            ApolloSiriLog.onscreen("Annotation removed", detail: binding.detail)
         }
         if binding.activityAnnotated { binding.activity?.appEntityIdentifier = nil }
         if binding.ownsActivity { binding.activity?.resignCurrent() }
@@ -70,17 +73,30 @@ final class ApolloOnscreenBridge: NSObject {
     private static func update(_ view: UIView, binding: Binding) {
         let generation = binding.generation
         Task { @MainActor [weak view] in
-            let records = try? await ApolloContentService.shared.snippetRecords(identifiers: [binding.id], account: binding.account)
+            let records: [ApolloContentRecord]
+            do {
+                records = try await ApolloContentService.shared.snippetRecords(identifiers: [binding.id], account: binding.account)
+            } catch {
+                ApolloSiriLog.onscreen("Record lookup failed", detail: binding.detail)
+                return
+            }
             guard let view, bindings.object(forKey: view) === binding, generation == binding.generation else { return }
-            guard view.window != nil, let record = records?.first,
+            guard view.window != nil, let record = records.first,
                   UserDefaults.standard.bool(forKey: ApolloContentBridge.enabledKey),
-                  ApolloContentBridge.accountState().fingerprint == binding.account else { return }
+                  ApolloContentBridge.accountState().fingerprint == binding.account else {
+                ApolloSiriLog.onscreen("Skipped; no eligible record or view/account changed", detail: binding.detail)
+                return
+            }
             let experimental = UserDefaults.standard.bool(forKey: ApolloContentBridge.schemaExperimentKey)
             let annotation = experimental
                 ? EntityIdentifier(for: ApolloExperimentalPostNote.self, identifier: ApolloExperimentalPostNote.prefix + record.id)
                 : EntityIdentifier(for: ApolloPostEntity.self, identifier: record.id)
-            guard view.appEntityIdentifier == nil || binding.annotated else { return }
+            guard view.appEntityIdentifier == nil || binding.annotated else {
+                ApolloSiriLog.onscreen("Skipped; view already has another annotation", detail: binding.detail)
+                return
+            }
             view.appEntityIdentifier = annotation
+            ApolloSiriLog.onscreen(experimental ? "Notes entity attached" : "Post entity attached", detail: binding.detail)
             if binding.detail {
                 if binding.activity == nil {
                     let activity = NSUserActivity(activityType: "app.apolloreborn.viewPost")
@@ -94,6 +110,7 @@ final class ApolloOnscreenBridge: NSObject {
                     binding.activity?.appEntityIdentifier = annotation
                     binding.activityAnnotated = true
                     if binding.ownsActivity { binding.activity?.becomeCurrent() }
+                    ApolloSiriLog.onscreen(binding.ownsActivity ? "Owned activity annotated and made current" : "Existing activity annotated", detail: true)
                 }
             }
             binding.annotated = true

@@ -18,7 +18,7 @@ does not mark unverified Siri behavior as complete.
   incorrectly required the post field `over_18`. Corrected both and replaced the
   inaccurate community fixture; all 41 catalogue assertions, the device Siri
   framework build, and `make package` pass. Package: `3.8.0-2+debug`. This fix
-  has not yet been installed on the phone.
+  was subsequently installed with the phrase-disabled build described below.
 - The intended Siri experience is a natural-language request producing an
   interactive card inside Siri, like the supplied Things example. A successful
   Shortcuts execution only validates the action/card implementation; it is not
@@ -36,6 +36,51 @@ and framework metadata. Existing user-authored shortcuts remain intact.
 Verified the device framework build and repackaging of the previously installed
 IPA: five registrations became zero, all 12 action and six entity identifiers
 and action schemas were preserved, and the old phrase assets were removed.
+
+2026-09-25 baseline results from the installed phrase-disabled build:
+
+- User confirms subscribed subreddits now appear in Spotlight, along with many
+  more posts. Post result navigation was confirmed earlier; subreddit navigation
+  from Spotlight has not yet been explicitly confirmed.
+- “Find posts about apple in apollo reborn” opens native Apollo search, with no
+  Siri result card. This matches `SearchApolloProofIntent`'s `system.searchInApp`
+  implementation; the separate snippet-returning action has no schema. In-Siri
+  result-card discovery remains unresolved.
+- “Open boutiquebluray in apollo reborn” instead searches for “boutique blu-ray”.
+  Subreddit opening via conversational Siri fails this acceptance test. Query
+  matching does not normalize punctuation in spoken names; that is a candidate
+  contributor, not proof that Siri called the subreddit query. Trace query/open
+  execution before attributing this solely to matching.
+- “Summarise this post” produces a relevant visible-post summary. A follow-up
+  asking about comments says only the beginning of one comment is visible and
+  the remaining 107 comments are not visible. This demonstrates visible-content
+  understanding, not verified use of Apollo's entity annotations. The current
+  integration exposes no comment content/query or comment-fetch action.
+- Experimental Notes Schema state was not stated with these results. Do not
+  label them a confirmed canonical-versus-notes comparison.
+- Next diagnostics: distinguish annotation attachment from entity resolution
+  and action execution; test an indexed post's offscreen body content; compare
+  exact typed subreddit names with spoken variants. Keep snippet discovery,
+  entity resolution, and comment access as separate acceptance criteria.
+
+2026-09-25 diagnostic update:
+
+- Subreddit queries first match whole community names with optional r/ or /r/
+  prefixes and spoken spaces/hyphens removed. Underscores remain meaningful;
+  exact destinations outrank description matches before limiting results.
+  The catalogue still enforces opt-in, account scope, expiry and suppression.
+- Added fixed-stage diagnostics for onscreen binding/eligibility/annotation,
+  canonical and experimental entity queries (including counts and failures),
+  navigation actions, snippet search and snippet rendering. No content/IDs/search
+  terms are logged. Detail logs are included by the existing Export Debug Logs
+  action; high-frequency feed row logs are debug level.
+- All 51 catalogue assertions pass and the iOS 27 device framework builds.
+  Host metadata extraction confirms zero phrase shortcuts. This update diagnoses
+  Siri routing; it does not establish in-Siri card discovery or add comment access.
+- ApolloSign signing and strict deep signature verification pass; signed host
+  and framework retain 12 actions, six entities and zero phrase registrations.
+  Installation has not been confirmed: CoreDevice initially reset the connection,
+  then timed out after 60 seconds on retry. Await an awake/reachable phone.
 
 ## Approach
 

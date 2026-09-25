@@ -16,13 +16,13 @@ public struct SearchApolloProofIntent {
     public init() {}
 
     public func perform() async throws -> some IntentResult {
-        ApolloSiriLog.event("Search intent performed")
-        // App Shortcut tiles can supply an empty criteria value rather than
-        // resolving it first. Ask before touching Apollo's navigation state.
+        ApolloSiriLog.event("Search-in-app action started; foreground navigation")
+        // Callers may supply empty criteria. Ask before touching navigation.
         let resolved = criteria.term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? try await $criteria.requestValue("What would you like to search for in Apollo?")
             : criteria
         try await ApolloSiriNavigation.search(resolved.term)
+        ApolloSiriLog.event("Search-in-app action completed; no snippet")
         return .result()
     }
 }

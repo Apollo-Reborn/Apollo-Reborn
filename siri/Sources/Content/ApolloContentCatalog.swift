@@ -198,15 +198,40 @@ final class ApolloContentCatalog {
         guard state.enabled, state.account != nil, limit > 0 else { return [] }
         let terms = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .split(whereSeparator: \.isWhitespace).map(String.init)
-        return state.records.values.filter { record in
-            guard now.timeIntervalSince(record.observedAt) < retention,
-                  kind == nil || record.kind == kind else { return false }
-            let haystack = "\(record.title) \(record.subreddit) \(record.author) \(record.text)"
-                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            return terms.allSatisfy { haystack.contains($0) }
-        }.sorted {
+        let eligible = state.records.values.filter {
+            now.timeIntervalSince($0.observedAt) < retention && (kind == nil || $0.kind == kind)
+        }
+        var matches: [ApolloContentRecord] = []
+        if kind == .subreddit, !terms.isEmpty {
+            // Siri may transcribe a joined community name as separate words or
+            // insert a hyphen ("boutique blu-ray"). Match the whole name before
+            // searching descriptions; don't let a description match displace an
+            // exact destination. Keep underscores meaningful and return every
+            // match rather than arbitrarily selecting an ambiguous destination.
+            let name = Self.spokenSubredditName(query)
+            if !name.isEmpty {
+                matches = eligible.filter { Self.spokenSubredditName($0.subreddit) == name }
+            }
+        }
+        if matches.isEmpty {
+            matches = eligible.filter { record in
+                let haystack = "\(record.title) \(record.subreddit) \(record.author) \(record.text)"
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+                return terms.allSatisfy { haystack.contains($0) }
+            }
+        }
+        return matches.sorted {
             $0.observedAt == $1.observedAt ? $0.id < $1.id : $0.observedAt > $1.observedAt
         }.prefix(limit).map { $0 }
+    }
+
+    private static func spokenSubredditName(_ value: String) -> String {
+        var name = value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasPrefix("/r/") { name.removeFirst(3) }
+        else if name.hasPrefix("r/") { name.removeFirst(2) }
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "-‐‑‒–—"))
+        return String(name.unicodeScalars.filter { !separators.contains($0) })
     }
 
     func resolve(_ identifiers: [String], now: Date = Date()) -> [ApolloContentRecord] {

@@ -8,12 +8,14 @@ struct OpenApolloExperimentalPostIntent {
     static var allowedExecutionTargets: IntentExecutionTargets { .main }
     var target: ApolloExperimentalPostNote
     func perform() async throws -> some IntentResult {
+        ApolloSiriLog.event("Open experimental note action started")
         guard await ApolloContentService.shared.schemaExperimentEnabled(),
               target.id.hasPrefix(ApolloExperimentalPostNote.prefix) else { throw AppIntentError.Unrecoverable.entityNotFound }
         let id = String(target.id.dropFirst(ApolloExperimentalPostNote.prefix.count))
         guard let record = try await ApolloContentService.shared.resolve([id], kind: .post).first,
               let url = URL(string: record.route) else { throw AppIntentError.Unrecoverable.entityNotFound }
         try await ApolloSiriNavigation.open(url)
+        ApolloSiriLog.event("Open experimental note action completed")
         return .result()
     }
 }
