@@ -376,7 +376,7 @@ ApolloReborn_CFLAGS += \
 # the Swift module-interface build, where a C++ -std flag is a hard error.
 ApolloReborn_LIBRARIES += c++
 
-ApolloReborn_BUNDLE_RESOURCE_DIRS = resources
+ApolloReborn_BUNDLE_RESOURCE_DIRS = Resources
 ApolloReborn_BUNDLE_RESOURCES = \
     assets/bark-icons/low-battery.png \
     assets/bark-icons/palette.png \
