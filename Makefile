@@ -193,6 +193,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloContextMenuPreviewTheme.xm \
     $(SRC_DIR)/ApolloPostPreviewWindowGuard.xm \
     $(SRC_DIR)/ApolloActionMenu.xm \
+    $(SRC_DIR)/ApolloActionMenuLayout.m \
     $(SRC_DIR)/ApolloHostedVideo.m \
     $(SRC_DIR)/ApolloSportsClipResolver.m \
     $(SRC_DIR)/ApolloSportsClips.xm \
@@ -290,6 +291,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSubredditLayoutPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutViewController.m \
     $(SRC_DIR)/settings/ApolloSubredditSectionsViewController.m \
+    $(SRC_DIR)/settings/ApolloActionMenuSettingsViewController.m \
     $(SRC_DIR)/settings/ApolloAISettingsViewController.m \
     $(SRC_DIR)/settings/ApolloDeletedCommentsSettingsViewController.m \
     $(SRC_DIR)/settings/ApolloProfileLayoutViewController.m \

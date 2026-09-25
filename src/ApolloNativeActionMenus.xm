@@ -1,4 +1,5 @@
 #import "ApolloActionMenu.h"
+#import "ApolloActionMenuLayout.h"
 #import "ApolloCommon.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloNavigationActions.h"
@@ -842,6 +843,8 @@ static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitl
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
             });
+            // The moderator sheet this row opens gets its own saved layout.
+            ApolloActionMenuArmModeratorFollowUp(actionController);
         }
         ApolloNativeActionMenuSelectRow(actionController, row);
     }];
@@ -861,6 +864,26 @@ static UIAction *ApolloNativeActionMenuAction(NSString *title, NSString *subtitl
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(action, @selector(setState:), 1);
     }
 
+    return action;
+}
+
+BOOL ApolloNativeActionMenusActive(void) {
+    return ApolloNativeActionMenusEnabled();
+}
+
+// Same styling path as ApolloNativeActionMenuAction, minus the ActionController
+// round trip: the settings preview shows the menu, it never performs it.
+UIMenuElement *ApolloNativeActionMenuPreviewAction(NSString *title, UIImage *image, BOOL moderator, BOOL enabled) {
+    if (title.length == 0) return nil;
+    BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
+    UIColor *tintColor = (moderator && !destructive) ? ApolloNativeActionMenuModeratorColor() : nil;
+    if (tintColor && image) image = ApolloNativeActionMenuTintedImage(image, tintColor);
+    UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {}];
+    ApolloNativeActionMenuStyleElementTitle(action, tintColor ? UIColor.labelColor : nil);
+    UIMenuElementAttributes attributes = 0;
+    if (destructive) attributes |= UIMenuElementAttributesDestructive;
+    if (!enabled) attributes |= UIMenuElementAttributesDisabled;
+    action.attributes = attributes;
     return action;
 }
 
@@ -1000,6 +1023,11 @@ static NSArray<UIMenuElement *> *ApolloNativeActionMenuBuildModeratorReportSecti
 static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderatorStyle) {
     objc_setAssociatedObject(actionController, &kApolloNativeActionMenuModeratorSelectionKey,
         @(moderatorStyle), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // A customised ••• layout (Settings → Interface → Action Menus) permutes
+    // the controller's native actions in place; it must land before the
+    // buffer is walked below. Memoised per controller, no-op otherwise.
+    ApolloActionMenuPrepareController(actionController, nil);
+
     void *actionsBuffer = ApolloReadRawIvar(actionController, "actions");
     void *textActionsBuffer = ApolloReadRawIvar(actionController, "textActions");
     int64_t actionCount = ApolloSwiftArrayCount(actionsBuffer);
@@ -1043,6 +1071,7 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
                 });
                 if (postTypes) element = postTypes;
             }
+            ApolloActionMenuTagElementWithNativeKind(element, actionKind);
             [children addObject:element];
         }
     }
@@ -1595,6 +1624,9 @@ BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id cont
 }
 
 static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {
+    // Capture even on the legacy path: UIKit may defer its table/geometry
+    // callbacks until after the originating tap has returned.
+    ApolloActionMenuCaptureContextForController(actionController);
     if (!ApolloNativeActionMenusEnabled()) return NO;
     if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
     if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
@@ -1646,57 +1678,114 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
     return sourceView.window != nil;
 }
 
+// The six ••• tap hooks below also arm the menu CONTEXT for the customised
+// layouts (ApolloActionMenuLayout.h — which of the four customisable menus is
+// opening, keyed by entry point, see ApolloActionMenu.xm) and disarm it in
+// @finally, so an unclaimed tap can never leak into an unrelated sheet.
+
 %hook _TtC6Apollo17LargePostCellNode
 - (void)moreOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo19CompactPostCellNode
 - (void)moreOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo15CommentCellNode
 - (void)moreOptionsTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextComment);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorComment);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
+}
+
+// The comment cell's own shield (Hopper: -[CommentCellNode modButtonTappedWithSender:]).
+- (void)modButtonTappedWithSender:(id)sender {
+    ApolloNativeActionMenuBeginModeratorCapture(sender, self);
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorComment);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1711,22 +1800,39 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo13RichMediaNode
 - (void)moreOptionsButtonTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    // The comments header's media ••• builds the same post-options sheet as a
+    // feed cell's (PostCellActionTaker), so it is the Post menu too.
+    ApolloActionMenuArmContext(ApolloActionMenuContextPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo22CommentsHeaderCellNode
 - (void)moderatorBannerNodeTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -1749,8 +1855,13 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo19PostsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextFeed);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)sortBarButtonItemTappedWithSender:(id)sender {
@@ -1761,16 +1872,26 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorSubreddit);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
 %hook _TtC6Apollo22CommentsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextPostDetail);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 
 - (void)sortBarButtonItemTappedWithSender:(id)sender {
@@ -1781,8 +1902,13 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 - (void)moderatorBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginModeratorCapture(sender, self);
-    %orig;
-    ApolloNativeActionMenuEndCapture();
+    ApolloActionMenuArmContext(ApolloActionMenuContextModeratorPost);
+    @try {
+        %orig;
+    } @finally {
+        ApolloActionMenuDisarmContext();
+        ApolloNativeActionMenuEndCapture();
+    }
 }
 %end
 
@@ -2075,6 +2201,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 
 %hook _TtC6Apollo16ActionController
 - (void)viewWillAppear:(BOOL)animated {
+    // Legacy sheet: a customised ••• layout (ApolloActionMenu.xm) permutes the
+    // native actions here, before Apollo's own appearance work sizes the
+    // table from actions.count. Memoised per controller; a no-op for an
+    // untouched menu and on the glass path (this controller is never
+    // presented there — the UIMenu builder calls the same prepare).
+    ApolloActionMenuPrepareController(self, nil);
     UIViewController *actionController = (UIViewController *)self;
     if (!objc_getAssociatedObject(self, &kApolloNativeActionMenuLifecycleFallbackKey)
         && ApolloNativeActionMenuCanFallbackPresent(actionController.presentingViewController, self)) {

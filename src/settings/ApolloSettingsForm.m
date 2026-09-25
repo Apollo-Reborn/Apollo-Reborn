@@ -395,6 +395,32 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     [self.tableView reloadData];
 }
 
+- (void)noteRowMovedFromIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath {
+    if (!_visibleRows || !_visibleSections) return;
+    if (fromIndexPath.section != toIndexPath.section) return;
+    NSUInteger s = (NSUInteger)fromIndexPath.section;
+    if (s >= _visibleRows.count || s >= _visibleSections.count) return;
+    NSMutableArray<ApolloSettingsRow *> *visible = [_visibleRows[s] mutableCopy];
+    NSUInteger from = (NSUInteger)fromIndexPath.row, to = (NSUInteger)toIndexPath.row;
+    if (from >= visible.count || to >= visible.count || from == to) return;
+    ApolloSettingsRow *moved = visible[from];
+    [visible removeObjectAtIndex:from];
+    [visible insertObject:moved atIndex:to];
+    NSMutableArray *rowsBySection = [_visibleRows mutableCopy];
+    rowsBySection[s] = [visible copy];
+    _visibleRows = [rowsBySection copy];
+    // The section's full row list (hidden rows included) follows: the moved
+    // row goes right before the row that now follows it on screen, or last.
+    ApolloSettingsSection *section = _visibleSections[s];
+    NSMutableArray<ApolloSettingsRow *> *all = [section.rows mutableCopy];
+    [all removeObjectIdenticalTo:moved];
+    ApolloSettingsRow *next = to + 1 < visible.count ? visible[to + 1] : nil;
+    NSUInteger insertAt = next ? [all indexOfObjectIdenticalTo:next] : NSNotFound;
+    if (insertAt == NSNotFound) insertAt = all.count;
+    [all insertObject:moved atIndex:insertAt];
+    section.rows = all;
+}
+
 #pragma mark identity lookups
 
 - (ApolloSettingsRow *)rowWithID:(NSString *)rowID {
@@ -502,14 +528,20 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         }
         case ApolloSFRowKindValue:
         case ApolloSFRowKindDisclosure: {
-            static NSString *const reuseID = @"ApolloSFValue";
+            // A disclosure row may carry its detail as a subtitle under the
+            // title (wraps, never truncates) rather than as a trailing value;
+            // that variant gets its own reuse pool since the cell style differs.
+            BOOL subtitle = row.kind == ApolloSFRowKindDisclosure && row.detailAsSubtitle;
+            NSString *reuseID = subtitle ? @"ApolloSFDisclosureSubtitle" : @"ApolloSFValue";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
-            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseID];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1
+                                                  reuseIdentifier:reuseID];
             BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             cell.textLabel.enabled = enabled;
             cell.detailTextLabel.text = row.detail ? row.detail() : nil;
+            cell.detailTextLabel.numberOfLines = subtitle ? 0 : 1;
             cell.detailTextLabel.textColor = enabled
                 ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
             cell.accessoryType = (enabled && row.kind == ApolloSFRowKindDisclosure)

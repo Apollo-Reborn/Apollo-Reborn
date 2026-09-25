@@ -8,6 +8,8 @@
 #import "PictureInPictureViewController.h"
 #import "TagFiltersViewController.h"
 #import "settings/ApolloAISettingsViewController.h"
+#import "settings/ApolloActionMenuSettingsViewController.h"
+#import "ApolloActionMenuLayout.h"
 #import "settings/ApolloAutomaticBackupViewController.h"
 #import "settings/ApolloDeletedCommentsSettingsViewController.h"
 #import "settings/ApolloLinkPreviewSettingsViewController.h"
@@ -77,6 +79,16 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
+        add(@"action-menus", @"Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
+        // One route per menu editor (settings search indexes a screen per route,
+        // so each menu's items stay searchable and open in the right editor).
+        for (NSString *context in [@[ ApolloActionMenuEditorAllMenus ] arrayByAddingObjectsFromArray:ApolloActionMenuAllContexts()]) {
+            BOOL all = [context isEqualToString:ApolloActionMenuEditorAllMenus];
+            add([@"action-menus-" stringByAppendingString:context],
+                all ? @"All Menus" : ApolloActionMenuContextTitle(context),
+                @"Apollo Reborn → Features → Interface → Action Menus",
+                ^UIViewController *{ return [[ApolloActionMenuEditorViewController alloc] initWithContext:context]; });
+        }
         add(@"notification-backend", @"Notification Backend", @"Apollo Reborn → Advanced", ApolloSettingsInsetGrouped([ApolloNotificationBackendViewController class]));
         add(@"automatic-backups", @"Automatic Backups", @"Apollo Reborn → Data", ApolloSettingsInsetGrouped([ApolloAutomaticBackupViewController class]));
         add(@"saved-categories", @"Saved Categories", @"General → Other", ApolloSettingsInsetGrouped([SavedCategoriesViewController class]));
