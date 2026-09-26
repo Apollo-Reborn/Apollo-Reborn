@@ -56,20 +56,15 @@ NSData *ApolloWebJSONFixupListingMediaResponseData(NSURLResponse *response, NSDa
 // mode or for any other endpoint. Called from the RDKResponseSerializer hook.
 id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id responseObject);
 
-// Listing-shape guard for RDKResponseSerializer's output (#1135). Some of
-// RedditKit's listing completions (the moderated-subreddits one, at least)
-// index the parsed body as a dictionary with no class check, and the
-// serializer parses with NSJSONReadingAllowFragments, so a
-// Reddit body whose JSON root is an array / string / number / bare `null`
-// reaches them as NSArray / NSString / NSNumber / NSNull and crashes on
-// -objectForKeyedSubscript:. For a Reddit path whose valid root is a listing
-// dictionary, a non-dictionary object is returned as nil with `error` filled
-// so the completion takes its ordinary error path instead. Returns
-// `responseObject` untouched for dictionaries, nil, non-Reddit hosts, and the
-// path families whose root is legitimately an array (comments, duplicates,
-// /prefs/*, /api/*). Runs in every auth mode. Called from the
-// RDKResponseSerializer hook right after the original serializer.
-id ApolloWebJSONGuardListingResponseObject(NSURLResponse *response, id responseObject, NSError **error);
+// Guard RedditKit listing completions using their ORIGINAL request path.
+// Redirects can change response.URL to a non-listing path, so validating only
+// the serializer's response URL misses malformed login/error responses.
+// A non-dictionary listing result becomes nil + an error, even if an existing
+// error is already present (native completions inspect the object first).
+// Valid dictionary responses, nil, writes and array-rooted endpoints pass through.
+id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
+                                        NSHTTPURLResponse *response, id responseObject,
+                                        NSError **error);
 
 // YES if `response` is GET /api/v1/<sub>/moderators_invited and a cookie
 // session is active — this endpoint is OAuth2-only with no cookie-compatible
@@ -256,6 +251,11 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // requests must pass through the network hooks completely untouched: no Web
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
+
+// Verify the requesting web account independently of public HTTP successes.
+void ApolloWebJSONCheckAccountSession(NSString *username);
+void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path);
+NSError *ApolloWebJSONAccountSessionError(NSString *username);
 
 #ifdef __cplusplus
 }

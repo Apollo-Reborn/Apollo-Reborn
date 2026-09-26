@@ -1,3 +1,4 @@
+#import "ApolloProfileBannerURL.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — follow-state account scoping
 #import "ApolloBannedProfile.h"
@@ -99,6 +100,11 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
 // t2_ fullnames already issued to a batch this session (touched only on `queue`),
 // so re-opening threads with overlapping authors doesn't re-request them.
 @property(nonatomic, strong) NSMutableSet<NSString *> *batchRequestedFullNames;
+// The credential Reddit last answered a profile lookup with 401/403 for, and
+// until when lookups sent on that same credential are skipped (touched only on
+// `queue`). See -holdLookupForRejectedCredential:.
+@property(nonatomic, copy) NSString *rejectedCredential;
+@property(nonatomic) NSTimeInterval rejectedCredentialUntil;
 @property(nonatomic) dispatch_queue_t queue;
 @property(nonatomic) BOOL diskSaveScheduled;
 @property(nonatomic) NSUInteger diskSaveGeneration;
@@ -478,7 +484,7 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
 
 - (NSURLRequest *)profileRequestForUsername:(NSString *)username {
     NSString *escaped = [self escapedUsernameForPath:username];
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloActiveAccountRedditBearerToken();
     NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/user/%@/about.json?raw_json=1", escaped]
         : [NSString stringWithFormat:@"https://www.reddit.com/user/%@/about.json?raw_json=1", escaped];
@@ -640,6 +646,53 @@ static NSTimeInterval ApolloUserProfileRetryBackoffForAttempt(NSInteger attempt)
     [self startInfoFetchForKey:key bypassingCache:bypassingCache attempt:0];
 }
 
+// A 401/403 on about.json means Reddit rejected the credential the lookup was
+// sent with (an expired or revoked bearer, a signed-out web session, an
+// anonymous request), not that the user is missing. Nothing gets
+// negative-cached for it; instead lookups sent on that same credential are
+// skipped for a while, so every cell that asks doesn't fire another doomed
+// request. A new credential (Apollo refreshing its token, an account switch)
+// isn't held, so avatars come back as soon as one is in place.
+static NSTimeInterval const ApolloUserProfileRejectedCredentialHold = 60.0;
+
+// What a profile request authenticates with: its Authorization header, or for a
+// bearer-less request the account whose web session the request chokepoint
+// signs it with (the active one, or none when signed out).
+static NSString *ApolloUserProfileRequestCredential(NSURLRequest *request) {
+    NSString *authorization = [request valueForHTTPHeaderField:@"Authorization"];
+    if (authorization.length > 0) return authorization;
+    return [@"bearerless:" stringByAppendingString:ApolloActiveAccountUsername().lowercaseString ?: @""];
+}
+
+static NSString *ApolloUserProfileCredentialDescription(NSString *credential) {
+    if (![credential hasPrefix:@"bearerless:"]) return @"the captured bearer";
+    NSString *username = [credential substringFromIndex:@"bearerless:".length];
+    return username.length > 0 ? [NSString stringWithFormat:@"bearer-less requests for u/%@", username]
+                               : @"anonymous requests";
+}
+
+// Runs on `queue`.
+- (BOOL)holdLookupForRejectedCredential:(NSString *)credential {
+    if (self.rejectedCredential.length == 0 || ![credential isEqualToString:self.rejectedCredential]) return NO;
+    if ([[NSDate date] timeIntervalSince1970] < self.rejectedCredentialUntil) return YES;
+    self.rejectedCredential = nil;
+    return NO;
+}
+
+// Any thread.
+- (void)noteRejectedCredential:(NSString *)credential {
+    dispatch_async(self.queue, ^{
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        BOOL alreadyHeld = [credential isEqualToString:self.rejectedCredential] && now < self.rejectedCredentialUntil;
+        self.rejectedCredential = credential;
+        self.rejectedCredentialUntil = now + ApolloUserProfileRejectedCredentialHold;
+        if (!alreadyHeld) {
+            ApolloLog(@"[UserAvatars] Holding profile lookups sent on %@ for %.0fs (Reddit rejected it)",
+                      ApolloUserProfileCredentialDescription(credential), ApolloUserProfileRejectedCredentialHold);
+        }
+    });
+}
+
 // Negative-cache a permanent miss (404 nonexistent/deleted user, unparseable
 // body) so repeated lookups short-circuit for the cache TTL. Without this,
 // every layout pass of any cell referencing the user (inline avatar path,
@@ -689,6 +742,12 @@ static NSTimeInterval ApolloUserProfileRetryBackoffForAttempt(NSInteger attempt)
         }
     };
 
+    NSString *credential = ApolloUserProfileRequestCredential(request);
+    if ([self holdLookupForRejectedCredential:credential]) {
+        [self finishInfoRequestForKey:key info:nil];
+        return;
+    }
+
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error) {
             if (ApolloUserProfileErrorIsTransient(error)) {
@@ -708,8 +767,17 @@ static NSTimeInterval ApolloUserProfileRetryBackoffForAttempt(NSInteger attempt)
             retryOrGiveUp([NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
             return;
         }
+        // Rejected credential, see ApolloUserProfileRejectedCredentialHold. No
+        // retry either: it would go out on the same credential.
+        if (statusCode == 401 || statusCode == 403) {
+            ApolloLog(@"[UserAvatars] Profile fetch for u/%@ returned HTTP %ld on %@; not caching u/%@ as missing",
+                      key, (long)statusCode, ApolloUserProfileCredentialDescription(credential), key);
+            [self noteRejectedCredential:credential];
+            [self finishInfoRequestForKey:key info:nil];
+            return;
+        }
         if (statusCode < 200 || statusCode >= 300) {
-            // Permanent (404 not found, 403 forbidden, etc.) — no retry.
+            // Permanent (404 not found, etc.) — no retry.
             ApolloLog(@"[UserAvatars] Profile fetch for u/%@ returned HTTP %ld", key, (long)statusCode);
             [self cacheNotFoundInfoForKey:key];
             [self finishInfoRequestForKey:key info:nil];
@@ -827,12 +895,14 @@ static NSTimeInterval ApolloUserProfileRetryBackoffForAttempt(NSInteger attempt)
 
 - (void)batchPrefetchProfilesForFullNames:(NSArray<NSString *> *)fullNames {
     if (fullNames.count == 0) return;
-    NSString *token = [sLatestRedditBearerToken copy];
-    // The batch endpoint is OAuth-only (scope privatemessages); with no token the
-    // per-cell about.json path (which can fall back to www.reddit.com) still covers us.
-    if (token.length == 0) return;
 
     dispatch_async(self.queue, ^{
+        // The batch endpoint is OAuth-only (scope privatemessages); with no token (none
+        // captured yet, or an API-Key-Free account is active) the per-cell about.json
+        // path (which can fall back to www.reddit.com) still covers us. Resolved here,
+        // not on the caller's main thread: the API-Key-Free check reads the keychain.
+        NSString *token = ApolloActiveAccountRedditBearerToken();
+        if (token.length == 0) return;
         NSMutableArray<NSString *> *pending = [NSMutableArray array];
         for (NSString *fn in fullNames) {
             if (![fn isKindOfClass:[NSString class]] || ![fn hasPrefix:@"t2_"]) continue;
@@ -1124,7 +1194,8 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
 }
 
 - (NSString *)bannerKeyForURL:(NSURL *)url {
-    return [@"banner:" stringByAppendingString:url.absoluteString ?: @""];
+    // Preserve the supplied query in the key: signed/versioned URLs must not collide.
+    return [@"banner-v2:" stringByAppendingString:url.absoluteString ?: @""];
 }
 
 - (UIImage *)cachedBannerImageForURL:(NSURL *)url {
@@ -1201,43 +1272,56 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
                 }
             }
 
-            NSURLSessionDataTask *task = [self.imageSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-                UIImage *image = nil;
-                BOOL sourceHasAlpha = NO;
-                if (!error && data.length > 0) {
-                    @autoreleasepool {
-                        UIImage *sourceImage = [UIImage imageWithData:data];
-                        sourceHasAlpha = ApolloImageHasAlphaChannel(sourceImage);
-                        image = ApolloDownscaledBannerImage(sourceImage);
-                    }
-                }
-                if (!image && error) {
-                    ApolloLog(@"[UserAvatars] Failed to load banner %@: %@", key, error.localizedDescription);
-                }
-                if (!image) {
-                    NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-                    NSInteger statusCode = http ? http.statusCode : 0;
-                    BOOL transient = (error && ApolloUserProfileErrorIsTransient(error)) ||
-                        statusCode == 429 || statusCode >= 500;
-                    if (!transient) {
-                        dispatch_async(self.queue, ^{ self.imageNotFoundDates[key] = [NSDate date]; });
-                    }
-                } else {
-                    // JPEG flattens transparency. Preserve alpha-bearing banner
-                    // sources as PNG so their cold-cache rendering matches the
-                    // in-memory result from the download that created the file.
-                    NSData *persistData = sourceHasAlpha
-                        ? UIImagePNGRepresentation(image)
-                        : UIImageJPEGRepresentation(image, 0.85);
-                    if (persistData) {
-                        dispatch_barrier_async(self.imageIOQueue, ^{ [self persistImageData:persistData forKey:key]; });
-                    }
-                }
-                [self finishBannerImageRequestForKey:key image:image];
-            }];
-            [task resume];
+            NSURL *candidate = ApolloProfileBannerOriginalCandidate(url);
+            [self downloadBannerImageForURL:candidate
+                               fallbackURL:[candidate isEqual:url] ? nil : url key:key];
         });
     });
+}
+// At most two attempts; finish/cache only after the selected URL succeeds or both fail.
+- (void)downloadBannerImageForURL:(NSURL *)url fallbackURL:(NSURL *)fallbackURL key:(NSString *)key {
+    NSURLSessionDataTask *task = [self.imageSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        UIImage *image = nil;
+        BOOL sourceHasAlpha = NO;
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (id)response : nil;
+        BOOL successfulResponse = !http || (http.statusCode >= 200 && http.statusCode < 300);
+        if (!error && successfulResponse && data.length > 0) {
+            @autoreleasepool {
+                UIImage *sourceImage = [UIImage imageWithData:data];
+                sourceHasAlpha = ApolloImageHasAlphaChannel(sourceImage);
+                image = ApolloDownscaledBannerImage(sourceImage);
+            }
+        }
+        BOOL cancelled = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
+        if (!image && fallbackURL && !cancelled) {
+            ApolloLog(@"[UserAvatars] Original banner unavailable; retrying supplied URL");
+            [self downloadBannerImageForURL:fallbackURL fallbackURL:nil key:key];
+            return;
+        }
+        if (!image && error) {
+            ApolloLog(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
+        }
+        if (!image) {
+            NSInteger statusCode = http ? http.statusCode : 0;
+            BOOL transient = (error && ApolloUserProfileErrorIsTransient(error)) ||
+                statusCode == 429 || statusCode >= 500;
+            if (!transient) {
+                dispatch_async(self.queue, ^{ self.imageNotFoundDates[key] = [NSDate date]; });
+            }
+        } else {
+            // JPEG flattens transparency. Preserve alpha-bearing banner
+            // sources as PNG so their cold-cache rendering matches the
+            // in-memory result from the download that created the file.
+            NSData *persistData = sourceHasAlpha
+                ? UIImagePNGRepresentation(image)
+                : UIImageJPEGRepresentation(image, 0.85);
+            if (persistData) {
+                dispatch_barrier_async(self.imageIOQueue, ^{ [self persistImageData:persistData forKey:key]; });
+            }
+        }
+        [self finishBannerImageRequestForKey:key image:image];
+    }];
+    [task resume];
 }
 
 - (void)clearAllCaches {

@@ -1,3 +1,4 @@
+#import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
@@ -12,11 +13,13 @@
 #import "InfoRowSettingsViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloDirectChatWeb.h"
+#import "ApolloMessageDraftStore.h"
 #import "ApolloDevvitPosts.h"        // ApolloDevvitFeedOwnershipChangedNotification
 #import "ApolloFloatingTabs.h"       // close-all / fan-out entry points for the toggles
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloWebJSON.h"           // ApolloWebJSONBearerIsSynthetic() — widget setup code
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
@@ -59,6 +62,8 @@
 #import "settings/SavedCategoriesViewController.h"
 #import "settings/ApolloSubredditLayoutViewController.h"
 #import "settings/ApolloSubredditSectionsViewController.h"
+#import "ApolloActionMenuLayout.h"
+#import "settings/ApolloActionMenuSettingsViewController.h"
 #import "ApolloFollowingSection.h"
 #import "settings/TranslationSettingsViewController.h"
 #import "PictureInPictureViewController.h"
@@ -419,6 +424,9 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController ()
 @property (nonatomic) BOOL resolvingRestoreFolder;
+// Hub only: whether the Setup section last rendered its "add a Reddit key"
+// footer, so viewWillAppear reloads that section only when the answer flips.
+@property (nonatomic) BOOL setupFooterShowsKeyNudge;
 @end
 
 @implementation CustomAPIViewController
@@ -687,6 +695,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSUserDefaults standardUserDefaults] setBool:sFeedVideoScrubber forKey:UDKeyFeedVideoScrubber];
 }
 
+- (void)videoScrollSmoothingSwitchToggled:(UISwitch *)sender {
+    sFeedVideoScrollSmoothing = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sFeedVideoScrollSmoothing forKey:UDKeyFeedVideoScrollSmoothing];
+}
+
 - (void)forwardSwipeForgetSwitchToggled:(UISwitch *)sender {
     sForwardSwipeForgetAfterScrolling = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sForwardSwipeForgetAfterScrolling
@@ -878,6 +891,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     self.title = [self apollo_screenTitle];
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     if (![self apollo_isHub]) return;
+    // What the first table load renders; viewWillAppear compares against it.
+    self.setupFooterShowsKeyNudge = sRedditClientId.length == 0;
 
     [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
         (void)info;
@@ -916,9 +931,21 @@ typedef NS_ENUM(NSInteger, Tag) {
     // The Setup section footer (onboarding nudge) collapses once a Reddit key
     // exists, which may have just been entered on the pushed API Keys screen.
     // Section 0 is Setup on the hub; reloading it re-evaluates the footer.
-    if ([self apollo_isHub] && self.tableView.numberOfSections > 0) {
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                      withRowAnimation:UITableViewRowAnimationNone];
+    // Only when the nudge actually flips, though: a section reload re-measures
+    // that section's header and footer, and this runs inside the pop transition
+    // on every return to the hub, so an unconditional reload left a settle for
+    // the transition to animate (the list came back a few points high and slid
+    // down into place). Same suppression as -reloadRowWithID: for the rare
+    // reload that is still needed.
+    BOOL showsKeyNudge = sRedditClientId.length == 0;
+    if ([self apollo_isHub] && self.tableView.numberOfSections > 0 &&
+        showsKeyNudge != self.setupFooterShowsKeyNudge) {
+        self.setupFooterShowsKeyNudge = showsKeyNudge;
+        [UIView performWithoutAnimation:^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                          withRowAnimation:UITableViewRowAnimationNone];
+            [self.tableView layoutIfNeeded];
+        }];
     }
 }
 
@@ -1024,9 +1051,9 @@ typedef NS_ENUM(NSInteger, Tag) {
     openInApp.iconSystemName = @"arrow.up.forward.app.fill";      openInApp.iconTileColor = [UIColor systemBlueColor];
     pip.iconSystemName = @"pip.fill";                             pip.iconTileColor = [UIColor systemPurpleColor];
     translation.iconSystemName = @"character.bubble.fill";        translation.iconTileColor = [UIColor systemTealColor];
-    savedCategories.iconSystemName = @"bookmark.fill";            savedCategories.iconTileColor = [UIColor systemOrangeColor];
-    tagFilters.iconSystemName = @"tag.fill";                      tagFilters.iconTileColor = [UIColor systemGreenColor];
-    themeManager.iconSystemName = @"paintbrush.fill";             themeManager.iconTileColor = [UIColor systemIndigoColor];
+    savedCategories.iconSystemName = @"apollo.saved-categories";  savedCategories.iconTileColor = [UIColor systemGreenColor];
+    tagFilters.iconSystemName = @"tag.fill";                      tagFilters.iconTileColor = [UIColor systemOrangeColor];
+    themeManager.iconSystemName = @"paintbrush.fill";             themeManager.iconTileColor = ApolloThemeManagerIconColor();
     colorFlairs.iconSystemName = @"paintpalette.fill";            colorFlairs.iconTileColor = [UIColor systemPinkColor];
 
     return [ApolloSettingsSection sectionWithTitle:@"Shortcuts"
@@ -1616,7 +1643,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onSelect:^{ [weakSelf copyWidgetSetupCode]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Extras"
-                                            footer:@"Copy a code to set up the Apollo home-screen widget."
+                                            footer:@"Copy a code to set up Apollo's home-screen widgets. Include your account for Home and multireddit feeds."
                                               rows:@[ widgetSetupCode ]];
 }
 
@@ -1746,6 +1773,12 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return sFeedVideoScrubber; }
                                   onToggle:^(UISwitch *sender) { [weakSelf feedVideoScrubberSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *videoScrollSmoothing =
+        [ApolloSettingsRow switchRowWithID:@"media.videoScrollSmoothing"
+                                     title:@"Smoother Video Scrolling"
+                                      isOn:^BOOL { return sFeedVideoScrollSmoothing; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf videoScrollSmoothingSwitchToggled:sender]; }];
+
     ApolloSettingsRow *forwardSwipeForget =
         [ApolloSettingsRow switchRowWithID:@"gen.forwardSwipeForget"
                                      title:@"Forget Forward Swipe After Scrolling"
@@ -1780,8 +1813,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     devvitFeedPosts.visible = ^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDevvitInteractivePosts]; };
 
     return [ApolloSettingsSection sectionWithTitle:@"Feed"
-                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments."
-                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts ]];
+                                            footer:@"Feed Video Scrubber: drag the bar under a feed video to scrub it.\n\nSmoother Video Scrolling: prepares feed videos in the background and lets video posts finish drawing right after they scroll in instead of holding the frame for them. Turn off to get Apollo's original behavior back.\n\nForget Forward Swipe After Scrolling: once you've scrolled a few posts on, a forward swipe won't reopen the post you came back from.\n\nLive Interactive Posts: shows live scores, polls, brackets and other interactive posts instead of placeholder text. Show in Feed adds them to the feed as well as comments."
+                                              rows:@[ textPostThumbnails, infoRow, feedScrubber, videoScrollSmoothing, forwardSwipeForget, blockAnnouncements, devvitPosts, devvitFeedPosts ]];
 }
 
 - (ApolloSettingsSection *)buildPostsFloatingTabsSection {
@@ -1936,7 +1969,36 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
-                                                      iPadTabBarBottom, tabBarSwipeNavigation ]];
+                                                      iPadTabBarBottom, tabBarSwipeNavigation,
+                                                      [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
+                                                          return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+                                                      }] ]];
+}
+
+// Interface → Menus: the ••• menus' item order and visibility live on their own
+// screen (ApolloActionMenuSettingsViewController); the hub row summarises how
+// many menus differ from Apollo's default.
+- (NSString *)actionMenusSummaryText {
+    NSMutableArray<NSString *> *customized = [NSMutableArray array];
+    for (ApolloActionMenuContext context in ApolloActionMenuAllContexts()) {
+        if (ApolloActionMenuContextIsCustomized(context)) [customized addObject:ApolloActionMenuContextTitle(context)];
+    }
+    if (customized.count == 0) return @"Default";
+    return [NSString stringWithFormat:@"Customized: %@", [customized componentsJoinedByString:@", "]];
+}
+
+- (ApolloSettingsSection *)buildInterfaceMenusSection {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsRow *actionMenus =
+        [self hubDisclosureRowWithID:@"interface.actionMenus"
+                               title:@"Action Menus"
+                            subtitle:^NSString * { return [weakSelf actionMenusSummaryText]; }
+                                push:^UIViewController * {
+            return [[ApolloActionMenuSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    return [ApolloSettingsSection sectionWithTitle:@"Menus"
+                                            footer:@"Reorder or hide the items in the ••• menus of feeds, posts and comments, and in the moderator menus."
+                                              rows:@[ actionMenus ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -2721,10 +2783,19 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       [sender setOn:sSortFavoritesAlphabetically animated:YES];
                                   }];
     sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
+    ApolloSettingsRow *confirmFavoriteToggle =
+        [ApolloSettingsRow switchRowWithID:@"sub.confirmFavoriteToggle"
+                                     title:@"Confirm Favorite Changes"
+                                      isOn:^BOOL { return sConfirmFavoriteToggle; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sConfirmFavoriteToggle = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyConfirmFavoriteToggle];
+                                  }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list."
-                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically ]];
+                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list.\nConfirm Favorite Changes asks before adding or removing a favorite from the Subreddits list star."
+                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
 - (NSString *)subredditLayoutSummaryText {
@@ -3423,7 +3494,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 // not position) so a buildForm reorder can never misfile a footer.
 - (NSAttributedString *)footerAttributedTextForSection:(NSInteger)section {
     NSString *sectionTitle = [self tableView:self.tableView titleForHeaderInSection:section];
-    NSDictionary *plainAttrs = @{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [UIColor secondaryLabelColor]};
+    NSDictionary *plainAttrs = @{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [UIColor secondaryLabelColor]};
     NSMutableAttributedString *text;
 
     if ([sectionTitle isEqualToString:@"Setup"]) {
@@ -3445,7 +3516,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             initWithString:@"Reddit and Imgur no longer allow new API key creation. Existing keys still work if you have access. Image Chest is optional and improves album metadata when a personal token is configured. You may be able to use credentials from another 3rd-party app ("
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"more info"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"). The Reddit API Key/Secret/Redirect URI above are the default, used by any signed-in account that doesn't have its own key — set a different key per account from the account switcher."
             attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Sources"]) {
@@ -3453,11 +3524,11 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             initWithString:@"Configure custom subreddit sources by providing a URL to a plaintext file with line-separated subreddit names (without /r/). "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"Example file"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://jeffreyca.github.io/subreddits/popular.txt"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://jeffreyca.github.io/subreddits/popular.txt"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" ("
             attributes:plainAttrs]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"GitHub repo"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/JeffreyCA/subreddits"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/JeffreyCA/subreddits"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@")"
             attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Uploads"]) {
@@ -3473,7 +3544,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             initWithString:@"For users running their own "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"forked apollo-backend"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/nickclyde/apollo-backend"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/nickclyde/apollo-backend"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@" instance. APNs delivery requires a paid Apple Developer account on the signing side. Leave empty to disable."
             attributes:plainAttrs]];
         NSString *barkLead = ApolloPushNotificationsSupported()
@@ -3485,14 +3556,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         barkTail = [barkTail stringByAppendingString:@" Notifications show your selected app icon automatically; to also hear Apollo's notification sounds, import the matching .caf from the project's assets/bark-sounds via the Bark app's Service tab → Alert Sound → view all sounds → Upload Sound."];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkLead attributes:plainAttrs]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"Bark app"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSLinkAttributeName: [NSURL URLWithString:@"https://apps.apple.com/us/app/bark-custom-notifications/id1403753865"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSLinkAttributeName: [NSURL URLWithString:@"https://apps.apple.com/us/app/bark-custom-notifications/id1403753865"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkTail attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Privacy"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our "
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"privacy policy"
-            attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote], NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
+            attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"."
             attributes:plainAttrs]];
     } else {
@@ -3522,12 +3593,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) {
         // No attributed footer for this section. If the form model supplies a
-        // plain string footer, let UIKit's default footer label self-size to it
-        // (a hard-coded small height would clip multi-line hint text — the very
-        // regression this screen had). Otherwise return a small inter-section
-        // spacer so back-to-back sections don't crowd.
+        // plain string footer, the form base sizes it from the footer's own
+        // view (a hard-coded small height would clip multi-line hint text — the
+        // very regression this screen had). Otherwise return a small
+        // inter-section spacer so back-to-back sections don't crowd.
         NSString *plainFooter = [self tableView:tableView titleForFooterInSection:section];
-        return plainFooter.length > 0 ? UITableViewAutomaticDimension : 12.0;
+        return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
     CGFloat tableWidth = tableView.bounds.size.width;
@@ -3564,19 +3635,127 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     }
 }
 
+// The signed-in account's OAuth refresh token plus the client id it was issued
+// under, for the "with account" widget setup code. Nil when nobody is signed
+// in, when the active account is a web-session (keyless) one — those carry a
+// synthetic bearer and no refresh token — or when the credential is missing.
+// Each nil path logs why (never the token or the name), so an exported log
+// answers "why is there no Copy with Account?".
+static NSDictionary *ApolloWidgetAccountCredentials(void) {
+    id client = ApolloActiveAccountClient();
+    if (!client) {
+        ApolloLog(@"[WidgetSetup] No account option: no signed-in account");
+        return nil;
+    }
+
+    id refreshToken = nil, accessToken = nil, credentialClientId = nil, clientUsername = nil;
+    @try {
+        id credential = [client valueForKey:@"authorizationCredential"];
+        id token = [credential valueForKey:@"accessToken"];
+        refreshToken = [token valueForKey:@"refreshToken"];
+        accessToken = [token valueForKey:@"accessToken"];
+        credentialClientId = [credential valueForKey:@"clientIdentifier"];
+        clientUsername = [client valueForKeyPath:@"currentUser.username"];
+    } @catch (__unused NSException *e) {
+        ApolloLog(@"[WidgetSetup] No account option: couldn't read the account's credential");
+        return nil;
+    }
+    // Name the account from the same live client the token comes from; the
+    // persisted account index is a separate read, so it's only the fallback.
+    NSString *username = ([clientUsername isKindOfClass:[NSString class]] && [clientUsername length] > 0)
+        ? clientUsername : ApolloActiveAccountUsername();
+    if (username.length > 0 && ApolloWebSessionFor(username) != nil) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account signs in with a web session (API-key-free)");
+        return nil;
+    }
+    if (![refreshToken isKindOfClass:[NSString class]] || [refreshToken length] == 0) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account has no refresh token");
+        return nil;
+    }
+    if ([accessToken isKindOfClass:[NSString class]] && ApolloWebJSONBearerIsSynthetic(accessToken)) {
+        ApolloLog(@"[WidgetSetup] No account option: the active account has a web-session credential");
+        return nil;
+    }
+
+    // Reddit binds a refresh token to the client id that issued it, and the
+    // credential's own id is what RedditKit presents on every refresh — so
+    // that's the id the widget must present too. Fall back to the effective
+    // (per-account, then global) key only when the credential carries none.
+    NSString *clientId = ([credentialClientId isKindOfClass:[NSString class]] && [credentialClientId length] > 0)
+        ? credentialClientId : (ApolloEffectiveRedditClientId() ?: sRedditClientId);
+    if (clientId.length == 0) {
+        ApolloLog(@"[WidgetSetup] No account option: no client id for the account's credential");
+        return nil;
+    }
+
+    NSMutableDictionary *account = [@{ @"clientID": clientId, @"refreshToken": refreshToken } mutableCopy];
+    if (username.length > 0) account[@"username"] = username;
+    ApolloLog(@"[WidgetSetup] Offering Copy with Account (credential client id %@ the global key)",
+              [clientId isEqualToString:(sRedditClientId ?: @"")] ? @"matches" : @"differs from");
+    return account;
+}
+
 - (void)copyWidgetSetupCode {
     NSString *clientID = sRedditClientId ?: @"";
     if (clientID.length == 0) {
+        ApolloLog(@"[WidgetSetup] No API key set, so no setup code to copy");
         [self showAlertWithTitle:@"No API Key"
                          message:@"Enter your Reddit API Key above first, then copy the widget setup code."];
         return;
     }
 
-    // base64( JSON { v, clientID, userAgent } ) — decoded by the widget's
-    // SetupCode parser. userAgent is included so the widget's Reddit requests
-    // carry the same identity as the configured (spoofed) app.
-    NSMutableDictionary *payload = [@{ @"v": @1, @"clientID": clientID } mutableCopy];
+    // With a signed-in API-key account the code can carry its login, which is
+    // what the widgets need for Home and private multireddits — but that's the
+    // user's choice, so ask. Keyless/no account: the plain code, as before.
+    NSDictionary *account = ApolloWidgetAccountCredentials();
+    if (!account) {
+        [self copyWidgetSetupCodeWithAccount:nil];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Widget Setup Code"
+                         message:@"Include your account so widgets can show Home and your private multireddits."
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy with Account" style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf copyWidgetSetupCodeWithAccount:account];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy without Account" style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
+        [weakSelf copyWidgetSetupCodeWithAccount:nil];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *cell = [self cellForRowID:@"api.widgetSetupCode"];
+    sheet.popoverPresentationController.sourceView = cell ?: self.view;
+    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)copyWidgetSetupCodeWithAccount:(NSDictionary *)account {
+    // base64( JSON { v, clientID, userAgent[, clientSecret][, refreshToken,
+    // username] } ) — decoded by the widget's SetupCode parser. userAgent is
+    // included so the widget's Reddit requests carry the same identity as the
+    // configured (spoofed) app. clientSecret only exists for "web app" keys,
+    // whose token endpoint refuses the empty password installed apps use.
+    // With an account the code is v2 and carries the OAuth refresh token —
+    // that is what lets the widget read Home and private multireddits. Reddit
+    // does not rotate refresh tokens on use, so the widget minting its own
+    // access tokens never invalidates the app's session. `issued` (unix
+    // seconds) lets the widgets treat the most recently copied code as the
+    // one that wins everywhere — so copying "without account" and pasting it
+    // into any widget is how account access is removed again.
+    NSString *clientID = account[@"clientID"] ?: (sRedditClientId ?: @"");
+    NSMutableDictionary *payload = [@{ @"v": account ? @2 : @1,
+                                       @"clientID": clientID,
+                                       @"issued": @((long long)[NSDate date].timeIntervalSince1970) } mutableCopy];
     if (sUserAgent.length > 0) payload[@"userAgent"] = sUserAgent;
+    NSString *secret = ApolloSecretForClientId(clientID);
+    if (secret.length > 0) payload[@"clientSecret"] = secret;
+    if (account) {
+        payload[@"refreshToken"] = account[@"refreshToken"];
+        if ([account[@"username"] length] > 0) payload[@"username"] = account[@"username"];
+    }
 
     NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
     if (!json) {
@@ -3590,9 +3769,13 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         UIPasteboardOptionExpirationDate: [NSDate dateWithTimeIntervalSinceNow:10 * 60],
     };
     [[UIPasteboard generalPasteboard] setItems:@[item] options:options];
+    ApolloLog(@"[WidgetSetup] Copied a v%@ setup code %@", payload[@"v"], account ? @"with account" : @"without account");
 
+    NSString *how = @"Long-press an Apollo widget → Edit Widget and paste it into Setup Code. One paste covers every widget";
     [self showAlertWithTitle:@"Copied"
-                     message:@"Setup code copied. On your Home Screen, add the Apollo “Showerthoughts” widget, long-press it → Edit Widget, and paste this code into Setup Code."];
+                     message:account
+                         ? [NSString stringWithFormat:@"Setup code copied. %@. It includes your account login, so don't share it.", how]
+                         : [NSString stringWithFormat:@"Setup code copied. %@ and removes any account you added before.", how]];
 }
 
 - (void)testNotificationBackendConnection {
@@ -4120,6 +4303,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 // Modern Chat / Modmail are a plain app-wide choice for every account.
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
+    if (!sender.isOn) ApolloMessageDraftStoreMarkAllPendingDelete();
     // The combined Inbox tab badge gates its chat contribution on this key —
     // re-render it now so switching modern Chat off immediately drops any
     // chat-inflated count back to Apollo's native value.
@@ -5024,7 +5208,13 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
-              [self buildInterfaceDisplayNavigationSection] ];
+              [self buildInterfaceDisplayNavigationSection],
+              [self buildInterfaceMenusSection] ];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Refresh the Action Menus summary after returning from that screen.
+    [self reloadRowWithID:@"interface.actionMenus"];
 }
 @end
 

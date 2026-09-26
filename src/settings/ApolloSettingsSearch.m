@@ -4,6 +4,7 @@
 #import <string.h>
 
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
 #import "settings/ApolloSettingsSearchNativeIndex.h"
@@ -764,6 +765,7 @@ void ApolloSettingsSearchAttach(UIViewController *settingsVC) {
     searchController.searchBar.placeholder = @"Search Settings";
     searchController.obscuresBackgroundDuringPresentation = NO;
     results.searchController = searchController;
+    ApolloHeaderStyleRegisterSearchBar(searchController.searchBar);
 
     settingsVC.navigationItem.searchController = searchController;
     // Start pinned so the bar is laid out visible on the very first appearance

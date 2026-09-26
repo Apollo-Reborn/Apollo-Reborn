@@ -906,7 +906,7 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
         // died — anything else (logged out, different account) is a real
         // expiry for our target and must go to the visible prompt.
         if (![user.lowercaseString isEqualToString:s.username]) {
-            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ found %@ in the webview jar — falling through to the expiry prompt",
+            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ found %@ in the webview jar — reporting recovery failure to caller",
                       s.username, user.length > 0 ? [NSString stringWithFormat:@"u/%@", user] : @"no login");
             [s _finish:NO];
             return;

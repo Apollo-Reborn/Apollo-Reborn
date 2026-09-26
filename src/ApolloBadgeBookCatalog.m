@@ -4,7 +4,7 @@
 
 #pragma mark - Bundled asset directory resolution
 
-// The generator writes assets into resources/BadgeBook/, which ships as a
+// The generator writes assets into Resources/BadgeBook/, which ships as a
 // subdirectory of ApolloReborn.bundle. Depending on how the tweak is installed
 // that bundle lands in different places, so try each known layout. Mirrors
 // ApolloBundledResourcePath()'s roots, plus a flat fallback (assets copied to the

@@ -1,9 +1,20 @@
 #import <Foundation/Foundation.h>
 @class UIView;
 @class UIViewController;
+@class UIMenu;
 
 NS_ASSUME_NONNULL_BEGIN
 __BEGIN_DECLS
+
+// Capture a synchronously built native action sheet without presenting it.
+// Media menus reuse its original action handlers rather than reconstructing
+// Apollo's saving/sharing pipeline. The controller owns the captured handlers.
+id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_block_t build);
+BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
+void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
+UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
+BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller,
+                                           dispatch_block_t _Nullable didEnd);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
 // from `actionController` has completely dismissed. Returns NO when the
@@ -36,6 +47,21 @@ BOOL ApolloNativeActionMenuOwnsNavigationSurface(UIView * _Nullable surface);
 BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView * _Nullable surface,
                                                   NSString *key,
                                                   dispatch_block_t update);
+
+@class UIImage;
+@class UIMenuElement;
+
+// Whether Apollo's ••• sheets are being drawn as native Liquid Glass UIMenus
+// right now (Liquid Glass build on an iOS that has the glass menu metrics).
+BOOL ApolloNativeActionMenusActive(void);
+
+// A menu row styled the way the glass renderer styles Apollo's own rows
+// (moderator tint, label ink, disabled dimming) with a no-op handler — the
+// Action Menus settings screen builds its ••• preview menu from these.
+UIMenuElement * _Nullable ApolloNativeActionMenuPreviewAction(NSString *title,
+                                                              UIImage * _Nullable image,
+                                                              BOOL moderator,
+                                                              BOOL enabled);
 
 __END_DECLS
 NS_ASSUME_NONNULL_END

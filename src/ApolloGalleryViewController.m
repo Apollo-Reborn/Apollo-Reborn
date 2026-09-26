@@ -560,6 +560,11 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, weak, nullable) ApolloGalleryImageViewer *activeViewer;
 @property (nonatomic, strong, nullable) UIBarButtonItem *filterBarButtonItem;
+// YES from -apollo_beginInitialLoad until that batch reports back. Only its
+// completion stops the centre spinner and the refresh control and settles the
+// empty state, so whatever drops the batch first (a filter change — the feed
+// never calls a dropped batch back) must start another one.
+@property (nonatomic) BOOL initialLoadPending;
 // Outstanding look-ahead loads keyed by index path, so UIKit's cancel callback
 // can actually stop them (see collectionView:cancelPrefetchingForItemsAtIndexPaths:).
 @property (nonatomic, strong) NSMutableDictionary<NSIndexPath *, ApolloGalleryImageRequest *> *prefetchRequests;
@@ -1262,12 +1267,25 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     [self apollo_setFooterText:nil];
     [self.collectionView reloadData];
     [self.collectionView setContentOffset:CGPointMake(0.0, -self.collectionView.adjustedContentInset.top) animated:NO];
-    [self apollo_updateEmptyStateWithError:nil];
     ApolloLog(@"[Gallery] filter -> photo:%d gif:%d video:%d (%lu of %lu shown)",
               (updated & ApolloGalleryMediaKindPhoto) != 0,
               (updated & ApolloGalleryMediaKindGIF) != 0,
               (updated & ApolloGalleryMediaKindVideo) != 0,
               (unsigned long)self.feed.items.count, (unsigned long)self.feed.allItems.count);
+
+    // Setting the filter dropped any batch in flight, and a dropped batch never
+    // calls back. When nothing has landed yet (the first load still running,
+    // or it failed or came back empty) there is no grid to top up: run the
+    // first load again under the new filter, spinner and all, so its
+    // completion is what settles the screen. Topping up instead left the
+    // spinner turning over the finished grid, under a "No media found" that
+    // was never cleared (#1175).
+    if (self.initialLoadPending || self.feed.allItems.count == 0) {
+        ApolloLog(@"[Gallery] filter changed before the first batch landed; restarting the first load");
+        [self apollo_beginInitialLoad];
+        return;
+    }
+    [self apollo_updateEmptyStateWithError:nil];
 
     // The visible list just shrank; it may no longer fill the screen, so top it
     // up rather than leaving the user on a stub of a grid.
@@ -1355,6 +1373,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 #pragma mark Loading
 
 - (void)apollo_beginInitialLoad {
+    self.initialLoadPending = YES;
     self.messageLabel.hidden = YES;
     self.retryButton.hidden = YES;
     [self.initialSpinner startAnimating];
@@ -1363,6 +1382,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf) return;
+        strongSelf.initialLoadPending = NO;
         [strongSelf.initialSpinner stopAnimating];
         [strongSelf.refreshControl endRefreshing];
         [strongSelf.collectionView reloadData];
@@ -1376,6 +1396,10 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (void)apollo_pullToRefresh {
     [self.feed reset];
+    // The reset drops a load-more still in flight, and a dropped batch never
+    // calls back to clear its "Loading more…" pill; a sort change clears it
+    // the same way.
+    [self apollo_setFooterText:nil];
     [self.collectionView reloadData];
     [self apollo_beginInitialLoad];
 }
@@ -1451,6 +1475,9 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         if (addedRange.length > 0) {
             [strongSelf apollo_syncAppendedItems];
         }
+        // A filter can leave the grid empty with "Nothing matches" showing
+        // while this batch pages on; tiles that arrive must not land under it.
+        [strongSelf apollo_updateEmptyStateWithError:nil];
         if (strongSelf.feed.isExhausted) {
             [strongSelf apollo_setFooterText:@"That's everything"];
             [strongSelf apollo_clearFooterAfterDelay];

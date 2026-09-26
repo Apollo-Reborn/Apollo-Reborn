@@ -45,6 +45,12 @@ static const CGFloat kApolloPinnedPreviewPinSide = 22.0;        // glyph box
 // card, so the card itself never moves. Set by -apollo_releaseWhileStuck and
 // cleared by the layout pass once the list is home (or the user takes over).
 @property (nonatomic) BOOL holdStuck;
+// The spacer row's content y the card locked at, held for as long as it stays
+// stuck (see the layout pass), plus the table width it was taken at.
+@property (nonatomic) BOOL hasLockedRowY;
+@property (nonatomic) CGFloat lockedRowMinY;
+@property (nonatomic) CGFloat lockedWidth;
+@property (nonatomic) CGFloat lastSeenRowMinY;
 @property (nonatomic, strong) UIButton *pinButton;
 @property (nonatomic, strong) UIImageView *pinIcon;
 @property (nonatomic, strong) UILabel *pinCaption;
@@ -343,6 +349,33 @@ void ApolloPinnedPreviewAttachHost(UITableView *table, ApolloPinnedPreviewHost *
     [self apollo_layoutPinnedPreview];
 }
 
+// A batch update can leave the stuck card where a pass ran MID-update —
+// against a transient offset or row rect — with no further layout scheduled
+// until the next scroll: the form base's footer re-measure (an empty
+// beginUpdates/endUpdates once the items footer scrolls into view) pushed the
+// Action Menus card ~20pt up under the nav bar, title cut off, until the user
+// scrolled again (device recording, 2026-09-15). Re-run the pinned pass once
+// each kind of update has landed; it is the same work a scroll frame does.
+- (void)endUpdates {
+    [super endUpdates];
+    [self apollo_layoutPinnedPreview];
+}
+
+- (void)performBatchUpdates:(void (NS_NOESCAPE ^)(void))updates completion:(void (^)(BOOL))completion {
+    [super performBatchUpdates:updates completion:completion];
+    [self apollo_layoutPinnedPreview];
+}
+
+- (void)reloadSections:(NSIndexSet *)sections withRowAnimation:(UITableViewRowAnimation)animation {
+    [super reloadSections:sections withRowAnimation:animation];
+    [self apollo_layoutPinnedPreview];
+}
+
+- (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    [super reloadRowsAtIndexPaths:indexPaths withRowAnimation:animation];
+    [self apollo_layoutPinnedPreview];
+}
+
 // The whole preview card is covered by its pin button (a UIControl), and
 // UIScrollView's default refuses to cancel a touch that landed on a control —
 // which would make a drag starting anywhere on the card (a third of the screen)
@@ -425,9 +458,37 @@ void ApolloPinnedPreviewAttachHost(UITableView *table, ApolloPinnedPreviewHost *
     // y follows the offset one-for-one, so scrolling down slides the rows
     // under it and a pull-down bounce leaves it put while the rows spring
     // away and back beneath it. Unpinned (or no room): it rides its row.
-    CGFloat cardY = CGRectGetMinY(row);
-    if (canLock) cardY += scrolled;
     BOOL stuck = canLock && fabs(scrolled) > 0.5;
+    // The spacer row's content y can move under a stuck card: a batch update
+    // (the form base's footer re-measure, a row appearing) applies section
+    // header/footer heights UIKit had only estimated, and everything below
+    // them — this row included — shifts by the difference. Positioning the
+    // stuck card from the live row pushed the Action Menus card ~20–40pt up
+    // under the nav bar, title cut off (device recording, 2026-09-15). Pinned
+    // means pinned: hold the row y the card locked at until the list is home
+    // again (or the table's width changes), and say so when it drifts. (An
+    // empty batch update at first layout does NOT pre-empt this: UIKit goes
+    // back to the estimate for the header once it is off-screen and returns
+    // to the measured height as it scrolls back in — the row is back where
+    // the card locked before the list is home, so there is no hop either.)
+    CGFloat rowMinY = CGRectGetMinY(row);
+    if (stuck && host.hasLockedRowY && fabs(host.lockedWidth - CGRectGetWidth(self.bounds)) < 0.5) {
+        if (fabs(rowMinY - host.lastSeenRowMinY) > 0.5) {
+            ApolloLog(@"[PinnedPreview] spacer row moved %.1fpt while stuck (%.1f → %.1f) — holding the card at %.1f",
+                      rowMinY - host.lastSeenRowMinY, host.lastSeenRowMinY, rowMinY, host.lockedRowMinY);
+            host.lastSeenRowMinY = rowMinY;
+        }
+        rowMinY = host.lockedRowMinY;
+    } else if (stuck) {
+        host.hasLockedRowY = YES;
+        host.lockedRowMinY = rowMinY;
+        host.lastSeenRowMinY = rowMinY;
+        host.lockedWidth = CGRectGetWidth(self.bounds);
+    } else {
+        host.hasLockedRowY = NO;
+    }
+    CGFloat cardY = rowMinY;
+    if (canLock) cardY += scrolled;
 
     // Locked: the backdrop runs from the very top of the visible bounds, so
     // the native header and the section's own rounded background never show

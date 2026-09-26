@@ -888,6 +888,30 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 
 %end
 
+// Validate at the request completion boundary, where the original endpoint
+// survives redirects and every serializer/cache path has already finished.
+%hook RDKClient
+- (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
+    completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion {
+    if (!completion) return %orig;
+    NSString *requestMethod = [method copy];
+    NSString *requestPath = [path copy];
+    NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
+    ApolloWebJSONCheckAccountSession(username);
+    void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        NSError *sessionError = ApolloWebJSONAccountSessionError(username);
+        if (sessionError) {
+            completion(response, nil, sessionError);
+            return;
+        }
+        id guarded = ApolloWebJSONGuardListingTaskResponse(requestMethod, requestPath, response, object, &error);
+        if (object && !guarded) ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
+        completion(response, guarded, error);
+    };
+    return %orig(method, path, parameters, wrapped);
+}
+%end
+
 // Comment writes (/api/editusertext, /api/comment) can come back in the legacy
 // old-reddit {parent, content:"<html>"} shape — always from www.reddit.com
 // (Web JSON mode), and intermittently from oauth.reddit.com for API-key
@@ -902,14 +926,6 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
         @catch (NSException *e) { ApolloLog(@"[WebJSON] listing-media fixup failed: %@", e); }
     }
     id obj = %orig(response, serializerData, error);
-    // A listing body whose JSON root isn't a dictionary (array / string / bare
-    // null via AllowFragments) crashes RedditKit's completions on
-    // -objectForKeyedSubscript: — #1135 was a launch crash loop on the
-    // moderated-subreddits fetch. Runs in EVERY auth mode and is a no-op for
-    // the dictionary root every valid listing has; see
-    // ApolloWebJSONGuardListingResponseObject.
-    @try { obj = ApolloWebJSONGuardListingResponseObject(response, obj, (NSError **)error); }
-    @catch (NSException *e) { ApolloLog(@"[WebJSON] listing-shape guard failed: %@", e); }
     // The write fixup runs in EVERY auth mode, not just Web JSON: since 2026-08
     // oauth.reddit.com has intermittently returned the legacy old-reddit
     // write-response shape to API-key (OAuth) clients too (also hit Narwhal),

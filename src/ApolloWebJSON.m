@@ -526,6 +526,45 @@ static NSMutableDictionary<NSString *, NSNumber *> *sConsecutiveBlockResponsesBy
 static NSMutableSet<NSString *> *sSessionExpiredAnnouncedUsers;
 static NSMutableSet<NSString *> *sSessionProbeInFlightUsers;
 static const NSUInteger kSessionExpiredBlockThreshold = 3;
+// A successful public listing is not proof of authentication. Probe account
+// identity at first use (and periodically), even if Reddit serves HTTP 200.
+static NSMutableDictionary<NSString *, NSDate *> *sIdentityProbeDates;
+static NSMutableDictionary<NSString *, NSString *> *sInvalidSessionCookies;
+static NSMutableSet<NSString *> *sMalformedAccountResponseUsers;
+
+NSError *ApolloWebJSONAccountSessionError(NSString *username) {
+    if (username.length == 0) return nil;
+    NSString *cookie = ApolloWebSessionFor(username).cookieHeader;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!cookie || ![sInvalidSessionCookies[username] isEqualToString:cookie]) return nil;
+    }
+    return [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorUserAuthenticationRequired
+                          userInfo:@{NSLocalizedDescriptionKey: @"Your Reddit session expired. Sign in again to load this account."}];
+}
+
+typedef NS_ENUM(NSInteger, ApolloWebJSONProbeVerdict) {
+    ApolloWebJSONProbeInconclusive, ApolloWebJSONProbeAlive, ApolloWebJSONProbeDead
+};
+
+static ApolloWebJSONProbeVerdict ApolloWebJSONIdentityVerdict(NSString *username, NSData *data,
+                                                            NSHTTPURLResponse *response, NSError *error) {
+    if (error || !response) return ApolloWebJSONProbeInconclusive;
+    if (response.statusCode == 401) return ApolloWebJSONProbeDead;
+    // Preserve the existing block-page recovery path; silent WK re-harvest
+    // still gets a chance to recover before any visible sign-in prompt.
+    if (response.statusCode == 403 && [response.MIMEType.lowercaseString isEqualToString:@"text/html"]) return ApolloWebJSONProbeDead;
+    if (response.statusCode != 200 || data.length == 0) return ApolloWebJSONProbeInconclusive;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if (![json isKindOfClass:[NSDictionary class]]) return ApolloWebJSONProbeInconclusive;
+    // Only an empty object or a well-formed identity is conclusive. Error JSON,
+    // HTML challenges and rate limits must not invalidate a healthy account.
+    if ([json count] == 0) return ApolloWebJSONProbeDead;
+    id user = json[@"data"];
+    id name = [user isKindOfClass:[NSDictionary class]] ? user[@"name"] : nil;
+    if (![name isKindOfClass:[NSString class]] || [name length] == 0) return ApolloWebJSONProbeInconclusive;
+    return [name caseInsensitiveCompare:username] == NSOrderedSame
+        ? ApolloWebJSONProbeAlive : ApolloWebJSONProbeDead;
+}
 
 // Backoff state for inconclusive probes (rate limit / server error / network
 // blip): probe again later instead of declaring the session dead on a signal
@@ -549,16 +588,17 @@ void ApolloWebJSONNoteSessionReauthenticated(NSString *username) {
         [sConsecutiveBlockResponsesByUser removeObjectForKey:key];
         [sSessionExpiredAnnouncedUsers removeObject:key];
         [sProbeBackoffAttemptsByUser removeObjectForKey:key];
+        [sInvalidSessionCookies removeObjectForKey:key];
+        [sMalformedAccountResponseUsers removeObject:key];
+        if (!sIdentityProbeDates) sIdentityProbeDates = [NSMutableDictionary dictionary];
+        sIdentityProbeDates[key] = [NSDate date];
     }
 }
 
 void ApolloWebJSONNoteSessionReauthenticationDeferred(NSString *username) {
     NSString *key = [[username ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     if (key.length == 0) return;
-    // This intentionally has the same in-memory reset shape as a successful
-    // re-authentication, but does NOT touch the stored session. The distinction
-    // is semantic and important to the callers: Later/Cancel means "ask me on
-    // the next failing action", not "this cookie is healthy now".
+    // Re-arm the prompt after Later/Cancel, keeping the invalid-session marker.
     @synchronized (ApolloWebJSONExpiryLock()) {
         [sConsecutiveBlockResponsesByUser removeObjectForKey:key];
         [sSessionExpiredAnnouncedUsers removeObject:key];
@@ -568,14 +608,8 @@ void ApolloWebJSONNoteSessionReauthenticationDeferred(NSString *username) {
     ApolloLog(@"[WebJSON] Re-armed the expired-session prompt for u/%@ after re-authentication was deferred", key);
 }
 
-// Confirm the cookie is actually dead with a direct GET /api/me.json before
-// declaring expiry. A revoked/expired cookie returns the block page (or no
-// username); a transient Cloudflare/rate-limit 403 burst — common right after
-// the app resumes from a long background, when several cookie-authed requests
-// fire concurrently and all hit the block page before any 200 resets the streak
-// — still authenticates here, so we suppress the spurious "sign in again"
-// prompt. The probe is tagged so it bypasses our own rewrite + this counter.
-// Keyed by username so an expiry verdict for one account never affects another.
+// Verify each account independently. Probe requests bypass normal URL rewriting
+// and response accounting to avoid recursively triggering recovery.
 static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
     if (username.length == 0) return;
     @synchronized (ApolloWebJSONExpiryLock()) {
@@ -601,53 +635,58 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
     NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration]];
     NSURLSessionDataTask *task = [session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-        // Three-way verdict. "Inconclusive" (rate limit, server error, network
-        // blip, challenge page served as 200) says nothing about the cookie:
-        // announcing on it kills a healthy session and trains the user to
-        // re-login pointlessly, so those back off and probe again instead.
-        typedef NS_ENUM(NSInteger, ProbeVerdict) { ProbeInconclusive, ProbeAlive, ProbeDead };
-        ProbeVerdict verdict = ProbeInconclusive;
-        NSString *contentType = [http.allHeaderFields[@"Content-Type"] lowercaseString] ?: @"";
-        if (http.statusCode == 200 && data.length > 0) {
-            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-            NSDictionary *d = [json isKindOfClass:[NSDictionary class]] ? json[@"data"] : nil;
-            NSString *name = [d isKindOfClass:[NSDictionary class]] ? d[@"name"] : nil;
-            if ([name isKindOfClass:[NSString class]] && name.length > 0) {
-                verdict = ProbeAlive;
-            } else if ([json isKindOfClass:[NSDictionary class]]) {
-                // A logged-out /api/me.json is HTTP 200 with an empty JSON
-                // object — the definitive "this cookie no longer signs in".
-                verdict = ProbeDead;
-            }
-            // 200 with a non-JSON body (challenge page) stays inconclusive.
-        } else if (http.statusCode == 403 && [contentType containsString:@"text/html"]) {
-            // The anonymous block page on a direct probe: the cookie itself no
-            // longer authenticates. (A sustained IP rate limit can also look
-            // like this — the silent re-harvest gate downstream of the expiry
-            // notification is what disambiguates those.)
-            verdict = ProbeDead;
+        // Ignore results for a snapshot replaced while the request was in flight.
+        if (![ApolloWebSessionFor(username).cookieHeader isEqualToString:cookie]) {
+            @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }
+            [session finishTasksAndInvalidate];
+            BOOL retry;
+            @synchronized (ApolloWebJSONExpiryLock()) { retry = [sMalformedAccountResponseUsers containsObject:username]; }
+            // Chat may rotate a bearer without recovering authentication. A
+            // genuine re-login clears this flag; otherwise verify the new snapshot.
+            if (retry) ApolloWebJSONVerifySessionThenAnnounce(username);
+            return;
         }
+        ApolloWebJSONProbeVerdict verdict = ApolloWebJSONIdentityVerdict(username, data, http, error);
+        BOOL malformedAccountResponse;
+        @synchronized (ApolloWebJSONExpiryLock()) {
+            malformedAccountResponse = [sMalformedAccountResponseUsers containsObject:username];
+        }
+        // A malformed account listing plus an identity endpoint that cannot
+        // identify anyone is an unusable session, even when both say HTTP 200.
+        // Try the browser's authenticated identity before deciding to prompt.
+        // Ordinary public 200s, rate limits and network failures do not qualify.
+        BOOL needsRecovery = verdict == ApolloWebJSONProbeDead ||
+            (verdict == ApolloWebJSONProbeInconclusive && !error && http.statusCode == 200 && malformedAccountResponse);
 
-        if (verdict == ProbeAlive) {
+        if (verdict == ApolloWebJSONProbeAlive) {
             ApolloWebJSONResetBlockStreak(username);
-            @synchronized (ApolloWebJSONExpiryLock()) { [sProbeBackoffAttemptsByUser removeObjectForKey:username]; }
-            // A successful probe is the perfect moment to fold in any rotated
-            // auth cookies the response carried.
+            @synchronized (ApolloWebJSONExpiryLock()) {
+                [sMalformedAccountResponseUsers removeObject:username];
+                [sProbeBackoffAttemptsByUser removeObjectForKey:username];
+            }
+            // Persist rotations only after verifying the account identity.
             ApolloWebJSONMergeSetCookiesFromResponse(username, http);
             ApolloLog(@"[WebJSON] Session probe for u/%@ still authenticates — suppressing false expiry prompt", username);
-        } else if (verdict == ProbeDead) {
-            // The stored snapshot no longer signs in — but the persistent
-            // WKWebView jar usually still holds a LIVE login for this user
-            // (Reddit rotates its cookies there, while our frozen header went
-            // stale). Try a silent re-harvest first; only the visible prompt
-            // when that also fails. Success re-arms all expiry state via
-            // ApolloWebJSONNoteSessionReauthenticated inside the harvest.
+        } else if (needsRecovery) {
+            // The browser may still have a valid login. Successful recovery
+            // resets expiry state through ApolloWebJSONNoteSessionReauthenticated.
             ApolloLog(@"[WebJSON] Session probe for u/%@ came back logged-out (HTTP %ld) — attempting silent re-harvest before prompting",
                       username, (long)http.statusCode);
             [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username completion:^(BOOL success) {
-                if (success) return; // recovered without UI; nothing to announce
+                @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }
+                if (success) return;
+                if (![ApolloWebSessionFor(username).cookieHeader isEqualToString:cookie]) {
+                    BOOL retry;
+                    @synchronized (ApolloWebJSONExpiryLock()) { retry = [sMalformedAccountResponseUsers containsObject:username]; }
+                    if (retry) ApolloWebJSONVerifySessionThenAnnounce(username);
+                    return;
+                }
+                // Retain the account and its snapshot for reauthentication;
+                // do not silently display anonymous data as account data.
                 @synchronized (ApolloWebJSONExpiryLock()) {
                     [sSessionExpiredAnnouncedUsers addObject:username];
+                    if (!sInvalidSessionCookies) sInvalidSessionCookies = [NSMutableDictionary dictionary];
+                    sInvalidSessionCookies[username] = cookie;
                     [sProbeBackoffAttemptsByUser removeObjectForKey:username];
                 }
                 ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ failed — session expired, prompting re-login", username);
@@ -669,26 +708,54 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
             NSTimeInterval delay = kProbeBackoffDelays[MIN(attempt, kProbeBackoffDelayCount - 1)];
             NSTimeInterval retryAfter = [http.allHeaderFields[@"Retry-After"] doubleValue];
             if (retryAfter > delay) delay = MIN(retryAfter, 900.0);
+            ApolloLog(@"[WebJSON] Identity probe metadata: MIME=%@, bytes=%lu, finalPath=%@", http.MIMEType, (unsigned long)data.length, http.URL.path);
             ApolloLog(@"[WebJSON] Session probe for u/%@ inconclusive (HTTP %ld%@) — not treating as expiry, re-probing in %.0fs",
                       username, (long)http.statusCode, error ? [@", " stringByAppendingString:error.localizedDescription] : @"", delay);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                BOOL stillBlocked;
+                BOOL needsRetry;
                 @synchronized (ApolloWebJSONExpiryLock()) {
-                    stillBlocked = sConsecutiveBlockResponsesByUser[username].unsignedIntegerValue >= kSessionExpiredBlockThreshold;
+                    // Public HTTP successes reset the old block streak but
+                    // cannot cancel an inconclusive account-identity check.
+                    needsRetry = sProbeBackoffAttemptsByUser[username] != nil;
                 }
-                if (stillBlocked) {
-                    ApolloWebJSONVerifySessionThenAnnounce(username);
-                } else {
-                    // A good response came through while we were waiting — the
-                    // burst was transient, forget the backoff.
-                    @synchronized (ApolloWebJSONExpiryLock()) { [sProbeBackoffAttemptsByUser removeObjectForKey:username]; }
-                }
+                if (needsRetry) ApolloWebJSONVerifySessionThenAnnounce(username);
             });
         }
-        @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }
+        if (!needsRecovery) {
+            @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }
+        }
         [session finishTasksAndInvalidate];
     }];
     [task resume];
+}
+
+void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path) {
+    if (!sWebJSONEnabled || username.length == 0 || !ApolloWebSessionFor(username)) return;
+    NSString *p = [[path componentsSeparatedByString:@"?"] firstObject];
+    if (![p hasPrefix:@"/"]) p = [@"/" stringByAppendingString:p ?: @""];
+    // These require account identity. A malformed public post/subreddit page
+    // alone is not evidence that its reader's session needs reauthentication.
+    if (![p hasPrefix:@"/subreddits/mine/"] && ![p hasPrefix:@"/prefs/"] && ![p hasPrefix:@"/message/"]) return;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sMalformedAccountResponseUsers) sMalformedAccountResponseUsers = [NSMutableSet set];
+        if ([sMalformedAccountResponseUsers containsObject:username]) return;
+        [sMalformedAccountResponseUsers addObject:username];
+    }
+    ApolloLog(@"[WebJSON] Account response unusable; checking identity and browser recovery for u/%@", username);
+    ApolloWebJSONVerifySessionThenAnnounce(username);
+}
+
+// Called using the requesting client's identity, captured before any account
+// switch. Public 200 responses never reset this independent check schedule.
+void ApolloWebJSONCheckAccountSession(NSString *username) {
+    if (!sWebJSONEnabled || username.length == 0 || ApolloWebSessionFor(username).cookieHeader.length == 0) return;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sIdentityProbeDates) sIdentityProbeDates = [NSMutableDictionary dictionary];
+        NSDate *last = sIdentityProbeDates[username];
+        if (last && -last.timeIntervalSinceNow < 60.0) return;
+        sIdentityProbeDates[username] = [NSDate date];
+    }
+    ApolloWebJSONVerifySessionThenAnnounce(username);
 }
 
 #pragma mark - Set-Cookie rotation capture
@@ -799,13 +866,8 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     NSString *username = ApolloWebJSONAccountFromURL(url);
     if (username.length == 0) return;
 
-    // Persist server-rotated auth cookies before the expiry accounting.
-    // Successful responses only: a 403 block/challenge page never carries a
-    // fresh token_v2, and merging challenge cookies could poison the header.
-    NSHTTPURLResponse *earlyHTTP = (NSHTTPURLResponse *)response;
-    if (earlyHTTP.statusCode >= 200 && earlyHTTP.statusCode < 400) {
-        ApolloWebJSONMergeSetCookiesFromResponse(username, earlyHTTP);
-    }
+    // Public successes can carry anonymous cookies. Only verified identity
+    // probes may persist those rotations.
 
     BOOL alreadyAnnounced;
     @synchronized (ApolloWebJSONExpiryLock()) {
@@ -1299,35 +1361,11 @@ id ApolloWebJSONFixupModeratorsResponseObject(NSURLResponse *response, id respon
 
 #pragma mark - Listing response shape guard (#1135)
 
-// Not every RedditKit listing completion checks the class of the serialized
-// body before indexing it as a dictionary: -[RDKClient
-// moderatedSubredditsWithPagination:completion:]'s inner block (Hopper:
-// sub_100040084) does responseObject[@"data"][@"children"] the moment the
-// object is non-nil, while its subscribed-subreddits sibling (sub_10004048c)
-// does guard with isKindOfClass:NSDictionary and fails the completion instead.
-// RDKResponseSerializer parses every application/json body with
-// NSJSONReadingAllowFragments (Hopper: options 0x4). So a Reddit body whose
-// JSON root is an array, a string, a number, or a bare `null` arrives there as
-// NSArray / NSString / NSNumber / NSNull and dies on -objectForKeyedSubscript:
-// with NSInvalidArgumentException. Issue #1135 was exactly that: a launch crash
-// loop on the moderated-subreddits fetch right after a second keyless account
-// was added, while Reddit was rate-limiting the session (HTTP 429 in the same
-// log) — every relaunch fetched the listing, got a non-dictionary JSON body,
-// and crashed before the UI was up. A healthy session answers every listing
-// family Apollo reads with a dictionary root (verified live for
-// /subreddits/mine/moderator.json and /subreddits/mine/subscriber.json), so
-// anything else is a transport/edge anomaly: surface it as an ordinary request
-// error — the completion then runs its error path and the screen offers a
-// retry — instead of letting RedditKit crash.
-//
-// Scope: only paths whose valid root IS a dictionary. Comments and duplicates
-// listings are arrays by design, /prefs/friends is an array, and /api/*
-// endpoints have their own shapes (bools, arrays), so those stay untouched.
-
-// YES for a Reddit read path whose valid JSON root is a listing dictionary:
-// the front page and its sorts, /r/<sub> listings + about/search/wiki,
-// /user/<name> listings + about + /m/<multi>, /subreddits/*, /message/*, and
-// /search. NO for the array-rooted families and everything unclassified.
+// Moderated-subreddits and blocked-users completions index any non-nil object
+// before checking the error. The serializer allows JSON fragments, so invalid
+// roots must become nil before reaching those callbacks. Classify the original
+// request path because redirects can hide the listing endpoint (#1135).
+// Array-rooted endpoints and unclassified paths remain untouched.
 static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
     if (path.length == 0) return NO;
     if (ApolloWebJSONClassifyReadPath(path) != ApolloWebJSONPathListing) return NO;
@@ -1339,32 +1377,37 @@ static BOOL ApolloWebJSONPathExpectsListingDictionary(NSString *path) {
     NSString *head = seg.count > 0 ? seg[0] : @"";
     // Array-rooted families: /comments/<id>, /duplicates/<id>, /r/<sub>/comments/<id>,
     // /r/<sub>/duplicates/<id>, and /prefs/friends (two UserLists in an array).
-    if ([head isEqualToString:@"comments"] || [head isEqualToString:@"duplicates"] || [head isEqualToString:@"prefs"]) return NO;
+    if ([head isEqualToString:@"comments"] || [head isEqualToString:@"duplicates"]) return NO;
+    // /prefs/blocked is one UserList dictionary; /prefs/friends is an array.
+    if ([head isEqualToString:@"prefs"]) {
+        return seg.count == 2 && [seg[1] isEqualToString:@"blocked"];
+    }
     if ([head isEqualToString:@"r"] && seg.count >= 3 &&
         ([seg[2] isEqualToString:@"comments"] || [seg[2] isEqualToString:@"duplicates"])) return NO;
     return YES;
 }
 
-id ApolloWebJSONGuardListingResponseObject(NSURLResponse *response, id responseObject, NSError **error) {
-    // Hot path first: nil (serializer already failed) and the dictionary root
-    // every valid listing has cost one class check and nothing else.
+id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
+                                        NSHTTPURLResponse *response, id responseObject,
+                                        NSError **error) {
     if (responseObject == nil || [responseObject isKindOfClass:[NSDictionary class]]) return responseObject;
-    if (![response isKindOfClass:[NSHTTPURLResponse class]]) return responseObject;
-    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-    NSString *host = http.URL.host.lowercaseString ?: @"";
-    if (![host isEqualToString:@"reddit.com"] && ![host hasSuffix:@".reddit.com"]) return responseObject;
-    NSString *path = http.URL.path ?: @"";
-    if (!ApolloWebJSONPathExpectsListingDictionary(path)) return responseObject;
+    if (!method || [method caseInsensitiveCompare:@"GET"] != NSOrderedSame) return responseObject;
+    // RDKClient supplies relative paths (with or without a leading slash).
+    if (![path isKindOfClass:[NSString class]] || path.length == 0) return responseObject;
+    NSString *requestPath = [[path componentsSeparatedByString:@"?"] firstObject];
+    if (![requestPath hasPrefix:@"/"]) requestPath = [@"/" stringByAppendingString:requestPath];
+    if (!ApolloWebJSONPathExpectsListingDictionary(requestPath)) return responseObject;
 
-    // Name the shape in the log so the next report says what Reddit actually
-    // sent; the snippet is Reddit's own (non-listing) body, kept short.
-    NSString *snippet = [[responseObject description] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-    if (snippet.length > 100) snippet = [[snippet substringToIndex:100] stringByAppendingString:@"..."];
-    ApolloLog(@"[WebJSON] %@%@ answered with a %@ root instead of a listing dictionary (HTTP %ld): %@ ; surfaced as an error so RedditKit doesn't crash indexing it",
-              host, path, NSStringFromClass([responseObject class]), (long)http.statusCode, snippet);
-    if (error) {
+    // Never log response bodies or query parameters: redirected bodies can
+    // contain account/session data. Preserve any existing transport error,
+    // but clear the invalid object even on failure: the native completion
+    // tests object != nil BEFORE checking its error argument.
+    ApolloLog(@"[WebJSON] Rejected non-dictionary listing response (class=%@, HTTP=%ld, redirected=%d)",
+              NSStringFromClass([responseObject class]), (long)response.statusCode,
+              response.URL && ![response.URL.path isEqualToString:requestPath]);
+    if (error && !*error) {
         *error = [NSError errorWithDomain:@"ApolloReborn.WebJSON.Response"
-                                     code:http.statusCode
+                                     code:1135
                                  userInfo:@{ NSLocalizedDescriptionKey: @"Reddit sent an unexpected response. Pull to refresh to try again." }];
     }
     return nil;

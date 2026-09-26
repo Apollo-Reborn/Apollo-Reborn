@@ -27,3 +27,9 @@ void ApolloFindInCommentsGlassViewWillDisappear(UIViewController *vc);
 // rightBarButtonItems. ApolloTranslation.xm's globe merge stands down then, so
 // it never treats the navigator as Apollo's trailing container.
 BOOL ApolloFindInCommentsGlassOwnsRightItems(UINavigationItem *navItem);
+
+// The navigator's trailing platter (or, before UIKit has laid one out, the slot it is
+// about to take) in `view`'s coordinates while the navigator owns the trailing group;
+// CGRectNull otherwise. The title layout fits the title to this edge instead of to
+// whatever platter the bar is still fading out.
+CGRect ApolloFindInCommentsGlassTrailingFrame(UINavigationItem *navItem, UIView *view);

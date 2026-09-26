@@ -10,6 +10,7 @@
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloTranslation.h"
 #import "Tweak.h"
 
 // Private cross-module classification ABI implemented by
@@ -278,6 +279,42 @@ static UIFont *ApolloDeletedCommentsRecoveredBodyFont(void) {
     // Last-resort fallback: Apollo's comment body is UIFontTextStyleSubheadline
     // (15pt @ .large), NOT Body (17pt).
     return [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+}
+
+// Apollo's current light/dark style, read from its key window on the main
+// thread at launch, on foreground and after every Apollo theme switch.
+// Recovered bodies are built on Texture's layout threads, and on non-glass
+// builds an existing node's traits don't follow Apollo's runtime light/dark
+// toggle, so a dynamic color keeps resolving for the mode the thread was
+// opened in.
+static _Atomic NSInteger sApolloDeletedCommentsAppStyle = 0; // UIUserInterfaceStyleUnspecified
+
+static void ApolloDeletedCommentsCaptureAppStyle(void) {
+    UIWindow *window = nil;
+    for (UIWindow *candidate in ApolloAllWindows()) {
+        if (candidate.isKeyWindow) { window = candidate; break; }
+    }
+    if (!window) window = ApolloAllWindows().firstObject;
+    if (!window) return;
+    sApolloDeletedCommentsAppStyle = window.traitCollection.userInterfaceStyle;
+}
+
+// Recovered bodies use the text color Apollo draws comments with (the custom
+// theme's label token, else stock D0D1D6 Pure Black / EEEFF5 dark / black
+// light), resolved for Apollo's current style. A color carried over from the
+// mode the body was built in is what made them unreadable after a light/dark
+// switch (issue #1065). The resolved color also compares equal by value, which
+// keeps SetTextNodeAttributedText's no-op guard working for custom themes (#514).
+static UIColor *ApolloDeletedCommentsBodyTextColor(void) {
+    UIColor *color = ApolloThemeSettingsTextColor();
+    if (![color isKindOfClass:[UIColor class]]) {
+        if (@available(iOS 13.0, *)) color = [UIColor labelColor];
+        else return [UIColor blackColor];
+    }
+    NSInteger style = sApolloDeletedCommentsAppStyle;
+    if (style == UIUserInterfaceStyleUnspecified) return color;
+    return [color resolvedColorWithTraitCollection:
+        [UITraitCollection traitCollectionWithUserInterfaceStyle:(UIUserInterfaceStyle)style]];
 }
 
 static NSString *ApolloDeletedCommentsNormalizeCommentFullName(NSString *value) {
@@ -1053,14 +1090,12 @@ static NSAttributedString *ApolloDeletedCommentsPlaceholderAttributedText(NSAttr
 static NSMutableDictionary *ApolloDeletedCommentsDefaultBodyAttributes(void) {
     NSDictionary *tmpl = ApolloDeletedCommentsBodyTemplateGet();
     if ([tmpl isKindOfClass:[NSDictionary class]] && tmpl.count > 0) {
-        return [tmpl mutableCopy];
+        NSMutableDictionary *attributes = [tmpl mutableCopy];
+        attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
+        return attributes;
     }
 
-    UIColor *textColor = nil;
-    if (@available(iOS 13.0, *)) {
-        textColor = [UIColor labelColor];
-    }
-    if (!textColor) textColor = [UIColor blackColor];
+    UIColor *textColor = ApolloDeletedCommentsBodyTextColor();
     return [@{
         NSFontAttributeName: ApolloDeletedCommentsRecoveredBodyFont(),
         NSForegroundColorAttributeName: textColor,
@@ -1167,22 +1202,15 @@ static UIFont *ApolloDeletedCommentsAppCommentBodyFontForNode(id node) {
     return [font isKindOfClass:[UIFont class]] ? font : nil;
 }
 
-// Body attributes using the deterministic app font (above) for size/weight, while
-// keeping Apollo's body text color/paragraph from whatever we last saw (or sane
-// defaults). This is the primary source for revealed comment bodies.
+// Body attributes using the deterministic app font (above) for size/weight and
+// Apollo's current theme text color. This is the primary source for revealed
+// comment bodies.
 static NSDictionary *ApolloDeletedCommentsAppBodyAttributesForNode(id node) {
     UIFont *font = ApolloDeletedCommentsAppCommentBodyFontForNode(node);
     if (![font isKindOfClass:[UIFont class]]) return nil;
 
-    NSDictionary *tmpl = ApolloDeletedCommentsBodyTemplateGet();
-    NSDictionary *base = [tmpl isKindOfClass:[NSDictionary class]] && tmpl.count > 0 ? tmpl : nil;
     NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
-    UIColor *color = base[NSForegroundColorAttributeName];
-    if (![color isKindOfClass:[UIColor class]]) {
-        if (@available(iOS 13.0, *)) color = [UIColor labelColor];
-        if (![color isKindOfClass:[UIColor class]]) color = [UIColor blackColor];
-    }
-    attributes[NSForegroundColorAttributeName] = color;
+    attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
     attributes[NSFontAttributeName] = font;
     return attributes;
 }
@@ -1197,6 +1225,9 @@ static NSMutableDictionary *ApolloDeletedCommentsSanitizedBodyAttributes(NSDicti
     [attributes removeObjectForKey:NSLinkAttributeName];
     [attributes removeObjectForKey:ApolloDeletedCommentsRevealAttributeName];
     [attributes removeObjectForKey:ApolloDeletedCommentsReasonPrefixAttributeName];
+    // Native placeholder nodes can carry the deleted-row's dark foreground;
+    // never promote that color into a recovered body.
+    attributes[NSForegroundColorAttributeName] = ApolloDeletedCommentsBodyTextColor();
     return attributes;
 }
 
@@ -2578,12 +2609,51 @@ static void ApolloDeletedCommentsInstallRevealTapGestureOnCell(id cellNode) {
 
 #pragma mark - Link taps in recovered bodies
 
-// Resolve the NSLink URL under a tap on the cell, if any. The recovered body is our
+// What a tap on a recovered body landed on: the text node, the link attribute
+// ASTextNode's own hit-test found there, and that attribute's raw value. webURL is
+// set only for http(s) links, the one kind this module opens itself. Any other
+// link attribute belongs to whoever put it on the text — e.g. translation's
+// "Translated from …" marker, whose value is the apollo-translation://toggle
+// sentinel. Opening that as a web URL handed it to SFSafariViewController, which
+// throws on non-http(s) schemes (#1179).
+@interface ApolloDeletedCommentsLinkHit : NSObject
+@property (nonatomic, weak) id textNode;
+@property (nonatomic, copy) NSString *attributeName;
+@property (nonatomic, strong) id value;
+@property (nonatomic) CGPoint pointInTextNode;
+@property (nonatomic) NSRange range;
+@property (nonatomic, strong) NSURL *webURL;
+@end
+
+@implementation ApolloDeletedCommentsLinkHit
+@end
+
+static NSURL *ApolloDeletedCommentsWebURLForLinkValue(id value) {
+    NSURL *url = nil;
+    if ([value isKindOfClass:[NSURL class]]) url = (NSURL *)value;
+    else if ([value isKindOfClass:[NSString class]]) url = [NSURL URLWithString:(NSString *)value];
+    NSString *scheme = url.scheme.lowercaseString;
+    return ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) ? url : nil;
+}
+
+// The text node's delegate, when it implements ASTextNode's link-tap callback.
+static id ApolloDeletedCommentsLinkTapDelegateForTextNode(id textNode) {
+    if (![textNode respondsToSelector:@selector(delegate)]) return nil;
+    id delegate = nil;
+    @try {
+        delegate = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(delegate));
+    } @catch (__unused NSException *e) {
+        return nil;
+    }
+    return [delegate respondsToSelector:@selector(textNode:tappedLinkAttribute:value:atPoint:textRange:)] ? delegate : nil;
+}
+
+// Resolve the link under a tap on the cell, if any. The recovered body is our
 // own replacement ASTextNode (attached to the captured MarkdownNode), so we convert
 // the touch into that node's coordinate space and ask ASTextNode's own link hit-test.
 // Works whether or not the node has a loaded view (rasterized cells included) because
 // the conversion goes through the node hierarchy, not the view hierarchy.
-static NSURL *ApolloDeletedCommentsLinkURLAtCellPoint(id cellNode, CGPoint pointInCellView) {
+static ApolloDeletedCommentsLinkHit *ApolloDeletedCommentsLinkHitAtCellPoint(id cellNode, CGPoint pointInCellView) {
     if (!cellNode) return nil;
     id markdownNode = objc_getAssociatedObject(cellNode, kApolloDeletedCommentsCellMarkdownNodeKey);
     id replacement = markdownNode ? objc_getAssociatedObject(markdownNode, kApolloDeletedCommentsBodyReplacementTextNodeKey) : nil;
@@ -2608,8 +2678,19 @@ static NSURL *ApolloDeletedCommentsLinkURLAtCellPoint(id cellNode, CGPoint point
             NSString *attributeName = nil;
             NSRange linkRange = NSMakeRange(NSNotFound, 0);
             id value = ((id (*)(id, SEL, CGPoint, NSString **, NSRange *))objc_msgSend)(textNode, linkSel, nodePoint, &attributeName, &linkRange);
-            if ([value isKindOfClass:[NSURL class]]) return (NSURL *)value;
-            if ([value isKindOfClass:[NSString class]]) return [NSURL URLWithString:(NSString *)value];
+            if (![value isKindOfClass:[NSURL class]] && ![value isKindOfClass:[NSString class]]) continue;
+            NSURL *webURL = ApolloDeletedCommentsWebURLForLinkValue(value);
+            // A non-web link is only ours to claim when the text node's delegate can
+            // take the tap (see apolloLinkTap:); otherwise leave the touch alone.
+            if (!webURL && !ApolloDeletedCommentsLinkTapDelegateForTextNode(textNode)) continue;
+            ApolloDeletedCommentsLinkHit *hit = [ApolloDeletedCommentsLinkHit new];
+            hit.textNode = textNode;
+            hit.attributeName = attributeName;
+            hit.value = value;
+            hit.pointInTextNode = nodePoint;
+            hit.range = linkRange;
+            hit.webURL = webURL;
+            return hit;
         } @catch (__unused NSException *e) {}
     }
     return nil;
@@ -2639,34 +2720,52 @@ static void ApolloDeletedCommentsOpenRecoveredBodyURL(UIViewController *presente
 // points can disagree, so the gesture claimed the tap (cancelling Apollo's collapse
 // tap) and then opened nothing — the "comment won't collapse until you collapse a
 // different one" regression. With a single resolution, claim == open, always.
-@property (nonatomic, strong) NSURL *pendingURL;
+@property (nonatomic, strong) ApolloDeletedCommentsLinkHit *pendingHit;
 @end
 
 @implementation ApolloDeletedCommentsLinkTapHandler
 
 - (void)apolloLinkTap:(UITapGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateEnded) return;
-    NSURL *url = self.pendingURL;
-    self.pendingURL = nil;
-    if (!url) return;
+    ApolloDeletedCommentsLinkHit *hit = self.pendingHit;
+    self.pendingHit = nil;
+    if (!hit) return;
+
+    // Not a web link: this recognizer cancelled the text node's own touches, so
+    // deliver the tap to its delegate exactly as ASTextNode would. For the
+    // "Translated from …" marker that is the MarkdownNode, whose translation hook
+    // toggles the comment back to its original text (#1179).
+    if (!hit.webURL) {
+        id textNode = hit.textNode;
+        id delegate = ApolloDeletedCommentsLinkTapDelegateForTextNode(textNode);
+        if (!delegate) return;
+        ApolloLog(@"[DeletedComments] Forwarding recovered-body %@ tap to %@",
+                  hit.attributeName ?: @"(unnamed)", NSStringFromClass([delegate class]));
+        @try {
+            ((void (*)(id, SEL, id, id, id, CGPoint, NSRange))objc_msgSend)(
+                delegate, @selector(textNode:tappedLinkAttribute:value:atPoint:textRange:),
+                textNode, hit.attributeName, hit.value, hit.pointInTextNode, hit.range);
+        } @catch (__unused NSException *e) {}
+        return;
+    }
 
     UIViewController *presenter = nil;
     for (UIResponder *responder = recognizer.view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:[UIViewController class]]) { presenter = (UIViewController *)responder; break; }
     }
     if (!presenter) return;
-    ApolloLog(@"[DeletedComments] Opening recovered-body link %@", url.absoluteString);
-    ApolloDeletedCommentsOpenRecoveredBodyURL(presenter, url);
+    ApolloLog(@"[DeletedComments] Opening recovered-body link %@", hit.webURL.absoluteString);
+    ApolloDeletedCommentsOpenRecoveredBodyURL(presenter, hit.webURL);
 }
 
 // Claim the tap only when a link is actually under the finger; every other tap
 // (collapse, expand, reveal chip, buttons) passes through untouched.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    self.pendingURL = nil;
+    self.pendingHit = nil;
     id cellNode = self.cellNode;
     if (!cellNode || !ApolloDeletedCommentsFeatureActive()) return NO;
-    self.pendingURL = ApolloDeletedCommentsLinkURLAtCellPoint(cellNode, [touch locationInView:gestureRecognizer.view]);
-    return self.pendingURL != nil;
+    self.pendingHit = ApolloDeletedCommentsLinkHitAtCellPoint(cellNode, [touch locationInView:gestureRecognizer.view]);
+    return self.pendingHit != nil;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -2681,7 +2780,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (![otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) return NO;
     if (((UITapGestureRecognizer *)otherGestureRecognizer).numberOfTapsRequired > 1) return NO;
-    return self.pendingURL != nil;
+    return self.pendingHit != nil;
 }
 @end
 
@@ -3416,9 +3515,12 @@ static void ApolloDeletedCommentsApplyCellHighlight(id cellNode) {
     highlight.frame = cellView.bounds;
     if (highlight.superview != cellView) {
         [highlight removeFromSuperview];
-        [cellView addSubview:highlight];
+        [cellView insertSubview:highlight atIndex:0];
     } else {
-        [cellView bringSubviewToFront:highlight];
+        // Keep the tint behind Apollo's author/body nodes. Bringing this view to
+        // the front composites its red fill over the text, which makes dark-mode
+        // deleted comments effectively unreadable (issue #1065).
+        [cellView sendSubviewToBack:highlight];
     }
 }
 
@@ -3483,6 +3585,12 @@ static void ApolloDeletedCommentsSetTextNodeAttributedText(id textNode, NSAttrib
         [current isEqualToAttributedString:attributedText]) {
         return;
     }
+    // Same when the only difference is translation's line under this exact body
+    // ("Show translation" once a recovered comment is pinned to its original).
+    // Rewriting strips it, translation re-adds it, and each write re-measures the
+    // cell, so the two modules would rewrite the node every frame (#1179).
+    NSAttributedString *undecorated = ApolloTranslationTextByRemovingTrailingMarker(current);
+    if (undecorated && [undecorated isEqualToAttributedString:attributedText]) return;
     @try {
         ((void (*)(id, SEL, NSAttributedString *))objc_msgSend)(textNode, @selector(setAttributedText:), attributedText);
     } @catch (__unused NSException *e) {}
@@ -3633,15 +3741,11 @@ static id __attribute__((unused)) ApolloDeletedCommentsDeletedMarkdownLayoutSpec
     // guessing, or hardcoded point sizes:
     //   "Use System Text Size" ON  -> the live system Dynamic Type size
     //   "Use System Text Size" OFF -> Apollo's in-app slider (ApolloCustomTextSize)
-    // SIZE/WEIGHT come from that resolver; body COLOR comes from the comment's own
-    // native attributes when available (so it matches the active theme).
+    // SIZE/WEIGHT come from that resolver; body COLOR comes from
+    // ApolloDeletedCommentsBodyTextColor so runtime theme changes cannot retain
+    // the style in which this node was first built.
     NSDictionary *nativeAttributes = ApolloDeletedCommentsNativeBodyAttributesForMarkdownNode(markdownNode);
     NSDictionary *appAttributes = ApolloDeletedCommentsAppBodyAttributesForNode(markdownNode);
-    if (appAttributes && [nativeAttributes[NSForegroundColorAttributeName] isKindOfClass:[UIColor class]]) {
-        NSMutableDictionary *merged = [appAttributes mutableCopy];
-        merged[NSForegroundColorAttributeName] = nativeAttributes[NSForegroundColorAttributeName];
-        appAttributes = merged;
-    }
 
     // Promote the resolved app font to the single authoritative body template so
     // EVERY body path (this layout, tap reveal, redecoration) and the unify
@@ -4508,7 +4612,46 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
 
 %end
 
+static void ApolloDeletedCommentsRebuildVisibleRecoveredBodies(void) {
+    ApolloDeletedCommentsBodyTemplateSet(nil);
+    if (!ApolloDeletedCommentsFeatureActive()) return;
+    for (id cellNode in ApolloDeletedCommentsAllTrackedVisibleCells()) {
+        id markdownNode = objc_getAssociatedObject(cellNode, kApolloDeletedCommentsCellMarkdownNodeKey);
+        if (markdownNode) ApolloDeletedCommentsRelayoutCellAndTextNode(cellNode, markdownNode);
+    }
+    ApolloDeletedCommentsScheduleBodyAttributesRefresh();
+}
+
+// Apollo posts its theme-changed notification before it has flipped the
+// window's style, so re-read the style over a short window and rebuild the
+// visible recovered bodies when it actually changes.
+static void ApolloDeletedCommentsHandleAppThemeChanged(void) {
+    NSArray<NSNumber *> *delays = @[@0.0, @0.15, @0.4, @0.8];
+    for (NSNumber *delay in delays) {
+        BOOL first = delay.doubleValue == 0.0;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSInteger previous = sApolloDeletedCommentsAppStyle;
+            ApolloDeletedCommentsCaptureAppStyle();
+            if (first || previous != sApolloDeletedCommentsAppStyle) ApolloDeletedCommentsRebuildVisibleRecoveredBodies();
+        });
+    }
+}
+
 %ctor {
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"com.christianselig.ApolloSpecificThemeChanged"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDeletedCommentsHandleAppThemeChanged();
+        });
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        ApolloDeletedCommentsCaptureAppStyle();
+    }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloDeletedCommentsArcticCacheUpdatedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
@@ -4525,6 +4668,7 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *notification) {
+        ApolloDeletedCommentsCaptureAppStyle();
         NSArray<NSNumber *> *delays = @[@0.0, @0.08, @0.25, @0.60];
         for (NSNumber *delayNumber in delays) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayNumber.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{

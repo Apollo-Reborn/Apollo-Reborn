@@ -266,6 +266,11 @@ static uint32_t InputColor(NSDictionary *modeInput, NSString *key, ApolloThemeMo
     T[ApolloThemeTokenLink] = RepairContrast(tunedAccent, background, 4.0);
     // Selection: accent tinted heavily toward the card surface.
     T[ApolloThemeTokenSelection] = Mix(tunedAccent, card, tune.selectionMix);
+
+    // Keep press feedback separate from unread indicators (Selection).
+    // Halve the accent contribution (7/10/15 percent) and precompose onto
+    // the card so UIKit and Texture draw the same subtle highlight.
+    T[ApolloThemeTokenRowHighlight] = Mix(tunedAccent, card, 1.0 - (1.0 - tune.selectionMix) * 0.5);
 }
 
 - (uint32_t)rgbForToken:(ApolloThemeToken)token mode:(ApolloThemeMode)mode {

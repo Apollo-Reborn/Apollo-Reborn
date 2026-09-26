@@ -70,6 +70,7 @@ NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
 void ApolloFlushReadPostIDsToDefaults(void);
 UITableView *ApolloInheritedSettingsThemeSourceTableView(UITableViewController *controller);
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller);
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller);
 
 // YES if sourceTable is nil or detached from its window. A covered (non-
@@ -183,6 +184,10 @@ BOOL ApolloIsSystemShareComposeController(UIViewController *controller);
 // the name it is a generic viewer, not ImageChest-specific. Returns NO when
 // items is empty or no presenter could be found from sourceView.
 BOOL ApolloPresentImageChestItems(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex);
+// Profile-only viewer chrome and native save confirmation.
+BOOL ApolloPresentProfileBanner(NSURL *url, UIView *sourceView);
+// Returns the generator so the caller can retain it through presentation.
+id ApolloPlayPreviewOpenedFeedback(UIView *sourceView);
 // As above, but albumURL is the album's page URL when known — it enables the
 // viewer's "Share Album Link" action; pass nil otherwise.
 BOOL ApolloPresentImageChestItemsWithAlbumURL(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex, NSURL *albumURL);
@@ -230,6 +235,11 @@ BOOL ApolloPollsFeatureEnabled(void);
 // sheet's segmented control when it appears. Called from
 // ApolloNativeActionMenuBuildMenu when it hits actionKind 51 (Submit Post).
 UIMenu *ApolloSubmitPostTypesMenu(id actionController, void (^selectRow)(void));
+// One of the tweak's bundled custom new-post symbols ("custom.photo.badge.plus",
+// …) from ApolloPollSymbols.bundle, or nil when the bundle is unavailable —
+// callers fall back to a stock SF Symbol. Shared with the Action Menus settings
+// preview so its mock of the quick new-post buttons shows the real glyphs.
+UIImage *ApolloPollComposeSymbol(NSString *symbolName);
 
 // Container keychain mirror (Tweak.xm): the Valet items the real keychain could not persist
 // on a keychain-broken sideload, so a backup taken there still carries the signed-in account.

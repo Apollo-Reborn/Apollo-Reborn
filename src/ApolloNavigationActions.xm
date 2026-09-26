@@ -30,13 +30,35 @@ static char kActionsStandardMoreKey;
 static char kActionsScrollOwnerKey;
 static char kActionsChromeKey;
 static char kActionsBlueDoneKey;
+static char kActionsAccentSubmitKey;
 static char kActionsApprovedLayoutKey;
 static NSUInteger sActionsModelWriteDepth;
 @class ApolloNavigationActionsOwner;
 
+// The post composer's Post and Done buttons keep Done's prominent style, whose
+// tint is its fill: neutral chrome painted a labelColor (white in dark mode)
+// pill. Fill it with the theme accent; UIKit picks a readable title for it.
+// One provider for the process: dynamic colors compare by provider identity,
+// so a fresh ApolloThemeAccentColor() per pass would never match the pin
+// guards and would re-tint the button on every preparation.
+static UIColor *ApolloActionsAccentSubmitColor(void) {
+    static UIColor *color;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        color = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+            UIColor *accent = ApolloThemeAccentColor() ?: UIColor.systemBlueColor;
+            return [accent resolvedColorWithTraitCollection:traits];
+        }];
+    });
+    return color;
+}
+
 // Keep right-item chrome neutral before it appears, including lone actions on
 // profile feeds. Mark only the actual item content, never the whole nav bar.
 static UIColor *ApolloActionsChromeColor(id object) {
+    if ([objc_getAssociatedObject(object, &kActionsAccentSubmitKey) boolValue]) {
+        return ApolloActionsAccentSubmitColor();
+    }
     return [objc_getAssociatedObject(object, &kActionsBlueDoneKey) boolValue]
         ? UIColor.systemBlueColor : ApolloNavigationChromeColor();
 }
@@ -66,6 +88,23 @@ static BOOL ApolloActionsUsesPlainSubmitStyle(UIBarButtonItem *item) {
             [targetClass isEqualToString:@"Apollo.ComposeViewController"]) ||
            (item.action == NSSelectorFromString(@"updateBarButtonItemTappedWithSender:") &&
             [targetClass isEqualToString:@"Apollo.FlairSelectorViewController"]);
+}
+
+// The post composer's storyboard Post item (style Done), the Poll tab's
+// replacement for it (ApolloPollCompose.xm), and the Done checkmark that
+// replaces Post in its body editors (ApolloPhotoPostComposerScrollFix.xm).
+static BOOL ApolloActionsUsesAccentSubmitStyle(UIBarButtonItem *item) {
+    NSString *targetClass = NSStringFromClass([item.target class]);
+    SEL action = item.action;
+    if ([targetClass isEqualToString:@"Apollo.ComposePostViewController"]) {
+        return action == NSSelectorFromString(@"postButtonTapped:");
+    }
+    if ([targetClass isEqualToString:@"Apollo.ComposeViewController"]) {
+        return action == NSSelectorFromString(@"apollo_mediaBodyDoneButtonTapped:") ||
+            action == NSSelectorFromString(@"apollo_textBodyDoneButtonTapped:");
+    }
+    return action == NSSelectorFromString(@"postTapped") &&
+        [targetClass isEqualToString:@"ApolloPollComposeViewController"];
 }
 
 static void ApolloActionsPrepareApprovedContent(UIView *content) {
@@ -643,9 +682,18 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 }
             }
         }
+        NSString *editingControllerClass = NSStringFromClass(controllerBox.controller.class);
         BOOL blueDone = controllerBox.controller.isEditing &&
-            [NSStringFromClass(controllerBox.controller.class) isEqualToString:@"Apollo.RedditListViewController"];
+            ([editingControllerClass isEqualToString:@"Apollo.RedditListViewController"] ||
+             [editingControllerClass isEqualToString:@"ApolloSettingsShortcutsViewController"]);
         objc_setAssociatedObject(item, &kActionsBlueDoneKey, @(blueDone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        BOOL accentSubmit = ApolloActionsUsesAccentSubmitStyle(item);
+        if (accentSubmit && !objc_getAssociatedObject(item, &kActionsAccentSubmitKey)) {
+            ApolloLog(@"[NavigationActions] Accent-filled compose submit on %@ (target %@ action %@)",
+                NSStringFromClass(self.controller.class), NSStringFromClass([item.target class]),
+                NSStringFromSelector(item.action));
+        }
+        objc_setAssociatedObject(item, &kActionsAccentSubmitKey, @(accentSubmit), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloActionsPinChrome(item);
         UIImage *image = ApolloActionsTemplateImage(item.image);
         if (image != item.image) item.image = image;

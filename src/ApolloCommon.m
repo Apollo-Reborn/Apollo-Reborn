@@ -760,14 +760,17 @@ static UIColor *ApolloVisibleBackgroundColorForTable(UITableView *tableView,
     return nil;
 }
 
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller) {
+    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
+    return (ApolloThemeSourceTableIsStale(source) ? nil
+        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
+        ?: ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+}
+
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller) {
     if (!controller) return;
 
-    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
-    BOOL stale = ApolloThemeSourceTableIsStale(source);
-    UIColor *backgroundColor = (stale ? nil
-        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
-        ?: ApolloThemePageBackgroundColor() ?: controller.tableView.backgroundColor;
+    UIColor *backgroundColor = ApolloInheritedSettingsBackgroundColor(controller);
     controller.view.backgroundColor = backgroundColor;
     controller.tableView.backgroundColor = backgroundColor;
     controller.tableView.separatorColor = ApolloThemeSeparatorColor()
@@ -941,10 +944,6 @@ UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFl
         UIColor *fill = backgroundColor ?: [UIColor secondarySystemFillColor];
         [fill setFill];
         [path fill];
-
-        [[UIColor separatorColor] setStroke];
-        path.lineWidth = 0.5;
-        [path stroke];
 
         UIFont *font = [UIFont systemFontOfSize:size * 0.58];
         NSDictionary *attrs = @{NSFontAttributeName: font};
@@ -1223,6 +1222,23 @@ void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *u
     NSURL *normalizedURL = ApolloNormalizedWebURL(url);
     if (!normalizedURL) return;
 
+    // The in-app browser is an SFSafariViewController, which throws
+    // NSInvalidArgumentException for any scheme but http(s) (#1179: a
+    // recovered comment's apollo-translation://toggle marker crashed here).
+    // Hand other schemes (mailto:, tel:, app links) to the system; a URL with
+    // no scheme at all has nowhere to go.
+    // Only the scheme is logged: a mailto:/tel: URL is an address or number.
+    NSString *scheme = normalizedURL.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        if (scheme.length == 0) {
+            ApolloLog(@"[Browser] skip present: URL has no scheme");
+            return;
+        }
+        ApolloLog(@"[Browser] %@: is not a web scheme, handing it to the system", scheme);
+        [[UIApplication sharedApplication] openURL:normalizedURL options:@{} completionHandler:nil];
+        return;
+    }
+
     if (ApolloShouldSkipDuplicateBrowserPresent(normalizedURL)) {
         ApolloLog(@"[Browser] skip duplicate present url=%@", normalizedURL.absoluteString);
         return;
@@ -1430,4 +1446,24 @@ void ApolloMarkTweakUITextNode(id node) {
 BOOL ApolloTextNodeIsTweakUI(id node) {
     if (!node) return NO;
     return [objc_getAssociatedObject(node, &kApolloTweakUITextNodeKey) boolValue];
+}
+
+// Runtime-checked UIKit preview feedback shared by profile menus and their viewer.
+id ApolloPlayPreviewOpenedFeedback(UIView *sourceView) {
+    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
+    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
+    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
+    SEL stateSelector = NSSelectorFromString(@"previewState");
+    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
+    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
+    if (![configurationClass respondsToSelector:configurationSelector] ||
+        ![configurationClass respondsToSelector:stateSelector] ||
+        ![generatorClass instancesRespondToSelector:initializer] ||
+        ![generatorClass instancesRespondToSelector:transition]) return nil;
+    id configuration = ((id (*)(id, SEL))objc_msgSend)(configurationClass, configurationSelector);
+    id state = ((id (*)(id, SEL))objc_msgSend)(configurationClass, stateSelector);
+    if (!configuration || !state) return nil;
+    id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, sourceView);
+    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
+    return generator;
 }

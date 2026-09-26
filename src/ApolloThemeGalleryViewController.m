@@ -7,6 +7,7 @@
 #import "ApolloThemeStore.h"
 #import "ApolloThemeTokens.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 
 static UIColor *GalleryColor(ApolloCompiledTheme *compiled, ApolloThemeToken token, ApolloThemeMode mode) {
     return ApolloThemeUIColorFromRGB([compiled rgbForToken:token mode:mode]);
@@ -294,6 +295,7 @@ typedef void (^ApolloThemeGalleryAction)(NSString *slug);
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.searchBar.placeholder = @"Search";
+    ApolloHeaderStyleRegisterSearchBar(search.searchBar);
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;

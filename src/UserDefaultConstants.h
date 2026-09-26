@@ -1,3 +1,7 @@
+// Ordered Settings hold-menu route IDs. Missing value uses the default five;
+// an empty array intentionally disables the menu. Included in settings backups.
+static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
+
 // UserDefaults keys
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
@@ -72,6 +76,9 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
 // Alphabetize shared favorites and disable manual reordering. Default NO.
 static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Ask before adding or removing a favorite via the Subreddits-list star.
+// Opt-in; default OFF. See ApolloFavoriteConfirm.xm.
+static NSString *const UDKeyConfirmFavoriteToggle = @"ConfirmFavoriteToggle";
 // Per-account sorting preferences, keyed by the per-account favorites identity
 // (u:name / anonymous). Missing entries default OFF; shared preference is above.
 static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
@@ -143,6 +150,11 @@ static NSString *const UDKeyFeedVideosUnmutedMemory = @"FeedVideosUnmutedMemory"
 // the video (bar included) still opens it fullscreen as stock. Default NO.
 // See ApolloFeedVideoScrubber.xm.
 static NSString *const UDKeyFeedVideoScrubber = @"FeedVideoScrubber";
+// "Smoother Video Scrolling": build feed video players on a background queue
+// and let video posts finish drawing asynchronously after they scroll in
+// instead of holding the frame for them. Default YES. See
+// ApolloFeedVideoScrolling.xm.
+static NSString *const UDKeyFeedVideoScrollSmoothing = @"FeedVideoScrollSmoothing";
 // "Hold for Video Speed": press-and-hold the right side of a fullscreen video to
 // play at a chosen speed while held. Master toggle (default YES via
 // registerDefaults — preserves the original always-on behaviour) and the speed
@@ -735,6 +747,19 @@ static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLink
 // Posted by the Inline Media settings screen when size/alignment changes so
 // visible comments re-measure their inline media immediately.
 static NSString *const ApolloInlineMediaLayoutDidChangeNotification = @"ApolloInlineMediaLayoutDidChangeNotification";
+
+// Per-menu ••• layouts (Apollo Reborn → Interface → Action Menus): a dictionary
+// keyed by ApolloActionMenuContext id → { "order": [itemID…], "hidden": [itemID…] }.
+// An absent context means Apollo's own order with nothing hidden, and that
+// sheet is never touched. Model and item vocabulary: ApolloActionMenuLayout.h.
+static NSString *const UDKeyActionMenuLayouts = @"ActionMenuLayouts";
+// Which catalogue items each ••• menu offered the last time it was opened
+// (context id → [itemID…]); written by the menu owner, read by the settings
+// screen's ••• preview so it mirrors this user's menus rather than the whole
+// catalogue.
+static NSString *const UDKeyActionMenuLastPresented = @"ActionMenuLastPresented";
+// Posted (object = the context id) whenever a menu's order or hidden set changes.
+static NSString *const ApolloActionMenuLayoutsChangedNotification = @"ApolloActionMenuLayoutsChangedNotification";
 
 // The last TWEAK_VERSION (without the leading "v") the What's New sheet was
 // shown for (or silently advanced past, when a version has no catalog entry).

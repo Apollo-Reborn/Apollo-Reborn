@@ -587,12 +587,146 @@ static const NSTimeInterval kApolloGifLoopSeekDedupeWindow = 0.25;
 
 %end
 
+// MARK: - ShareMediaManager Download Cleanup
+
+// Apollo copies every ShareMediaManager download (Download Video…, GIF
+// conversion, v.redd.it audio + video) to
+// NSTemporaryDirectory()/<ProcessInfo.globallyUniqueString>_gifvideo.mp4, or
+// _gifaudio.aac for v.redd.it's separate audio track, in
+// -URLSession:downloadTask:didFinishDownloadingToURL: (0x1004bfffc). The copy
+// is then exported to tmp/Video.mov or converted to tmp/Image.gif, which is
+// what the share sheet gets. Apollo's removeTemporaryFiles(audioFileURL:
+// videoFileURL:) (0x1004bed04) deletes the copies on only some paths:
+//   - Video and GIF shares (completions 0x1004b73d8, 0x1004b51bc): only
+//     after Apollo's own Copy and Save activities. Messages, Mail, AirDrop,
+//     Save to Files, other apps and Cancel keep the download.
+//   - v.redd.it audio + video share (completion 0x1004bd480): deletes the
+//     video copy, but calls reset() (0x1004bd9d4), which clears
+//     downloadedAudioLocation, before reading that URL, so the audio copy is
+//     always kept.
+// Each copy has a unique name, so tmp grows by one download per share until
+// iOS purges it. When the next share's first download finishes, delete copies
+// older than a few minutes. Video.mov, Image.gif and anything else in tmp are
+// never touched.
+static const NSTimeInterval kApolloShareMediaStaleDownloadAge = 5 * 60;
+
+// "<UUID>-<pid>-<hex>_gifvideo.mp4": globallyUniqueString starts with a UUID.
+static BOOL ApolloShareMediaIsDownloadCopyName(NSString *name) {
+    static NSRegularExpression *pattern;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        pattern = [NSRegularExpression regularExpressionWithPattern:@"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}(-[0-9A-F]+)*_gif(video\\.mp4|audio\\.aac)$"
+                                                            options:NSRegularExpressionCaseInsensitive
+                                                              error:nil];
+    });
+    return name.length > 0 && [pattern firstMatchInString:name options:0 range:NSMakeRange(0, name.length)] != nil;
+}
+
+// YES only when `task` is the first of the manager's current downloads to
+// finish. The task ivars only hold this share's downloads: the video start
+// (0x1004aa2c4) calls reset() (0x1004bd9d4) before creating its task, and the
+// v.redd.it start (0x1004ad7a4) won't run unless both ivars are nil before
+// its manifest completion (0x1004adf54) sets them. A v.redd.it share
+// downloads video and audio in parallel; when the second one finishes, the
+// first one's copy is still waiting for the merge however long ago it
+// finished, so that finish must not sweep. Unknown layouts or tasks keep
+// everything.
+static BOOL ApolloShareMediaIsFirstFinishedDownload(id manager, NSURLSessionTask *task) {
+    Class managerClass = object_getClass(manager);
+    Ivar videoIvar = class_getInstanceVariable(managerClass, "videoDownloadTask");
+    Ivar audioIvar = class_getInstanceVariable(managerClass, "audioDownloadTask");
+    if (!videoIvar || !audioIvar) {
+        ApolloLog(@"[ShareMediaTmp] download task ivars missing; skipping cleanup");
+        return NO;
+    }
+    id videoTask = object_getIvar(manager, videoIvar);
+    id audioTask = object_getIvar(manager, audioIvar);
+    id sibling = nil;
+    if (task == videoTask) {
+        sibling = audioTask;
+    } else if (task == audioTask) {
+        sibling = videoTask;
+    } else {
+        ApolloLog(@"[ShareMediaTmp] finished task %lu isn't the manager's current download; skipping cleanup", (unsigned long)task.taskIdentifier);
+        return NO;
+    }
+    if (!sibling) return YES;
+    if (![sibling isKindOfClass:[NSURLSessionTask class]]) return NO;
+    NSURLSessionTaskState siblingState = ((NSURLSessionTask *)sibling).state;
+    if (siblingState == NSURLSessionTaskStateRunning || siblingState == NSURLSessionTaskStateSuspended) return YES;
+    ApolloLog(@"[ShareMediaTmp] task %lu finished after task %lu; keeping the earlier copy for the merge", (unsigned long)task.taskIdentifier, (unsigned long)((NSURLSessionTask *)sibling).taskIdentifier);
+    return NO;
+}
+
+static void ApolloShareMediaRemoveStaleDownloadCopies(id manager, NSURLSessionTask *task) {
+    if (!ApolloShareMediaIsFirstFinishedDownload(manager, task)) return;
+
+    static dispatch_queue_t sweepQueue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sweepQueue = dispatch_queue_create("com.apolloreborn.sharemedia-tmp-sweep",
+                                           dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    });
+
+    // ShareMediaManager's delegate queue is the main queue, so list and
+    // delete on a utility queue. %orig's copy of this download lands
+    // meanwhile; it is seconds old, so the age check keeps it.
+    NSUInteger taskIdentifier = task.taskIdentifier;
+    dispatch_async(sweepQueue, ^{
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSURL *tmpURL = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
+        NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLCreationDateKey, NSURLContentModificationDateKey, NSURLFileSizeKey];
+        NSError *error = nil;
+        NSArray<NSURL *> *entries = [fileManager contentsOfDirectoryAtURL:tmpURL includingPropertiesForKeys:keys options:NSDirectoryEnumerationSkipsHiddenFiles error:&error];
+        if (!entries) {
+            ApolloLog(@"[ShareMediaTmp] couldn't list tmp: %@", error.localizedDescription);
+            return;
+        }
+
+        NSDate *now = [NSDate date];
+        NSUInteger removedCount = 0;
+        NSUInteger keptCount = 0;
+        unsigned long long removedBytes = 0;
+        for (NSURL *entry in entries) {
+            NSString *name = entry.lastPathComponent;
+            if (!ApolloShareMediaIsDownloadCopyName(name)) continue;
+            NSDictionary<NSURLResourceKey, id> *values = [entry resourceValuesForKeys:keys error:nil];
+            if (![values[NSURLIsRegularFileKey] boolValue]) continue;
+
+            // Age from the newest timestamp; a file without dates is kept.
+            NSDate *created = values[NSURLCreationDateKey];
+            NSDate *modified = values[NSURLContentModificationDateKey];
+            NSDate *newest = (created && modified) ? [created laterDate:modified] : (created ?: modified);
+            NSTimeInterval age = newest ? [now timeIntervalSinceDate:newest] : 0;
+            if (!newest || age < kApolloShareMediaStaleDownloadAge) {
+                keptCount++;
+                continue;
+            }
+
+            unsigned long long size = [values[NSURLFileSizeKey] unsignedLongLongValue];
+            NSError *removeError = nil;
+            if ([fileManager removeItemAtURL:entry error:&removeError]) {
+                removedCount++;
+                removedBytes += size;
+                ApolloLog(@"[ShareMediaTmp] removed %@ (%llu bytes, %.0fs old)", name, size, age);
+            } else {
+                ApolloLog(@"[ShareMediaTmp] couldn't remove %@: %@", name, removeError.localizedDescription);
+            }
+        }
+        ApolloLog(@"[ShareMediaTmp] sweep after task %lu: removed %lu (%llu bytes), kept %lu recent", (unsigned long)taskIdentifier, (unsigned long)removedCount, removedBytes, (unsigned long)keptCount);
+    });
+}
+
 %hook _TtC6Apollo17ShareMediaManager
 
 // Patches to fix audio container formats for v.redd.it videos:
 // - Some streams use MPEG-TS containers (fix: convert to ADTS)
 // - Newer streams use CMAF/MP4 containers (fix: extract AAC and wrap in ADTS)
 - (void)URLSession:(NSURLSession *)urlSession downloadTask:(NSURLSessionDownloadTask *)downloadTask didFinishDownloadingToURL:(NSURL *)fileUrl {
+    // Before %orig copies this download into tmp; see ShareMediaManager
+    // Download Cleanup above.
+    ApolloShareMediaRemoveStaleDownloadCopies(self, downloadTask);
+
     NSURL *originalURL = downloadTask.originalRequest.URL;
 #if !APOLLO_SIM_BUILD
     // Only the FFmpeg remux paths use these; the simulator build stubs them out.
@@ -924,4 +1058,5 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 
 %ctor {
     %init;
+    ApolloLog(@"[ShareMediaTmp] download cleanup hook installed");
 }

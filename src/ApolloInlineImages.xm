@@ -1,3 +1,4 @@
+#import "ApolloProfileBannerURL.h"
 // ApolloInlineImages.xm
 //
 // Renders image URLs inside Apollo's selftext / comment markdown bodies as
@@ -1449,6 +1450,8 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
 @end
 
 @interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
+@property (nonatomic) BOOL profileBannerPresentation;
+@property (nonatomic, strong) id previewFeedback;
 @property (nonatomic, copy) NSArray<NSDictionary *> *items;
 @property (nonatomic) NSInteger initialIndex;
 @property (nonatomic, strong) UIScrollView *scrollView;
@@ -1636,6 +1639,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     self.actionButton.clipsToBounds = YES;
     [self.actionButton addTarget:self action:@selector(apollo_actionButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.actionButton];
+    self.actionButton.hidden = self.profileBannerPresentation;
 
     // True download progress for big albums, fed by the tasks' NSProgress.
     self.progressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
@@ -1897,6 +1901,16 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = YES;
                     [owner apollo_displayFileForPageIfActive:page decodedImage:nil];
                 } else if (!cancelled && !owner.tearingDown) {
+                    NSURL *fallback = owner.profileBannerPresentation ? owner.items[page][@"bannerFallbackURL"] : nil;
+                    if (fallback) {
+                        // Consume the fallback before retrying, so failure cannot loop.
+                        NSMutableArray *items = [owner.items mutableCopy];
+                        items[page] = @{@"url": fallback};
+                        owner.items = items;
+                        [owner.pendingImageIndexes insertObject:index atIndex:0];
+                        [owner apollo_pumpImageDownloads];
+                        return;
+                    }
                     [owner.failedImageIndexes addObject:index];
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = NO;
                     ApolloLog(@"[InlineImages] viewer download failed page=%ld status=%ld err=%@",
@@ -2190,6 +2204,8 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
 
 - (void)apollo_viewerLongPressed:(UILongPressGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    if (self.presentedViewController) return;
+    if (self.profileBannerPresentation) self.previewFeedback = ApolloPlayPreviewOpenedFeedback(self.view);
     [self apollo_presentActionsForPage:[self apollo_currentPageIndex] fromView:self.view];
 }
 
@@ -2262,8 +2278,21 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                         owner.photoLibrarySavesInFlight--;
                     }
                     if (success) {
-                        [owner apollo_showToast:files.count == 1 ? @"Saved"
-                                              : [NSString stringWithFormat:@"Saved %lu images", (unsigned long)files.count]];
+                        // Apollo 1.15.11: the ObjC thunk at 0x1004b13e8 ignores
+                        // context and only retains/releases image. Its helper
+                        // (0x1004bfab0) branches on error; nil selects Saved! when
+                        // a fresh manager has no wallpaperSavingViewController.
+                        // This reports the confirmed Photos result; it performs no save.
+                        id manager = owner.profileBannerPresentation
+                            ? [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init] : nil;
+                        SEL saved = NSSelectorFromString(@"image:didFinishSavingWithError:contextInfo:");
+                        if ([manager respondsToSelector:saved]) {
+                            owner.toastLabel.alpha = 0.0;
+                            ((void (*)(id, SEL, id, id, void *))objc_msgSend)(manager, saved, nil, nil, NULL);
+                        } else {
+                            [owner apollo_showToast:files.count == 1 ? @"Saved"
+                                : [NSString stringWithFormat:@"Saved %lu images", (unsigned long)files.count]];
+                        }
                     } else {
                         ApolloLog(@"[InlineImages] album save failed: %@", error.localizedDescription);
                         [owner apollo_showToast:@"Save failed"];
@@ -2563,6 +2592,20 @@ static void ApolloReleaseVideoCommentAudioSession(NSUInteger generation);
 
 static UIViewController *ApolloTopVCFromView(UIView *v);
 static BOOL ApolloPresentRedditVideoCommentURL(NSURL *url, UIView *sourceView);
+BOOL ApolloPresentProfileBanner(NSURL *url, UIView *sourceView) {
+    if (!url) return NO;
+    UIViewController *top = ApolloTopVCFromView(sourceView);
+    if (!top) return NO;
+    NSURL *candidate = ApolloProfileBannerOriginalCandidate(url);
+    NSDictionary *item = [candidate isEqual:url] ? @{@"url": url}
+        : @{@"url": candidate, @"bannerFallbackURL": url};
+    ApolloImageChestAlbumViewController *viewer = [[ApolloImageChestAlbumViewController alloc]
+        initWithItems:@[item] initialIndex:0];
+    viewer.profileBannerPresentation = YES;
+    [top presentViewController:viewer animated:YES completion:nil];
+    return YES;
+}
+
 static void ApolloOpenImageChestURLNormally(NSURL *url);
 static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceView, void (^fallback)(void));
 

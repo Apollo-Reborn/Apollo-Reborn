@@ -85,7 +85,8 @@ static char kApolloMediaComposerNativeBodyEditorSavedKey;
 static char kApolloMediaComposerBodyDoneItemKey;
 static char kApolloMediaComposerBodyCancelItemKey;
 static char kApolloComposeFormBodyDoneItemKey;
-static char kApolloComposeFormBodyNavItemDoneKey;
+static char kApolloComposeBodyEditorNavItemDoneKey;
+static char kApolloComposeBodyEditorRedirectLoggedKey;
 static char kApolloMediaComposerTitleRemeasureScheduledKey;
 static BOOL sApolloMediaComposerContextActive = NO;
 static BOOL sApolloMediaComposerPickerActive = NO;
@@ -1622,6 +1623,27 @@ static void ApolloMediaComposerSeedNativeBodyEditorTextView(UIViewController *ed
     }
 }
 
+// Pins a body editor's right bar button to its Done checkmark. Apollo installs its own
+// "Post" item in viewDidLoad and puts it back from textViewDidChange on every keystroke
+// (navigationItem.rightBarButtonItem = postBarButtonItem, or the characters-remaining item
+// near the limit), and the editor's view does not lay out for nav-bar-only changes, so a
+// lifecycle re-apply alone loses the race the moment the user types. Tag the navigation
+// item so the UINavigationItem setter hooks below redirect every later right-item write
+// back to the checkmark for this editor's lifetime. Shared by the Media-tab and Text-tab
+// body editors; only writes when something differs, so steady-state layout passes stay
+// no-ops (see the compose-freeze notes in ApolloMediaComposerConfigureNativeBodyEditor).
+static void ApolloComposeBodyEditorPinDoneItem(UINavigationItem *navigationItem, UIBarButtonItem *doneItem) {
+    if (!navigationItem || ![doneItem isKindOfClass:[UIBarButtonItem class]]) return;
+    if (objc_getAssociatedObject(navigationItem, &kApolloComposeBodyEditorNavItemDoneKey) != doneItem) {
+        objc_setAssociatedObject(navigationItem, &kApolloComposeBodyEditorNavItemDoneKey, doneItem, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[ComposeBodyEditor] pinned Done checkmark to body editor nav item action=%@",
+            NSStringFromSelector(doneItem.action) ?: @"(none)");
+    }
+    if (navigationItem.rightBarButtonItem != doneItem) navigationItem.rightBarButtonItem = doneItem;
+    NSArray<UIBarButtonItem *> *rightItems = navigationItem.rightBarButtonItems;
+    if (rightItems.count != 1 || rightItems.firstObject != doneItem) navigationItem.rightBarButtonItems = @[doneItem];
+}
+
 static void ApolloMediaComposerConfigureNativeBodyEditor(UIViewController *editor) {
     UIViewController *ownerController = ApolloMediaComposerOwnerForNativeBodyEditor(editor);
     if (!ownerController) return;
@@ -1666,9 +1688,11 @@ static void ApolloMediaComposerConfigureNativeBodyEditor(UIViewController *edito
 
     // Only (re-)assert the items when they are not already ours; if Apollo ever clobbers
     // them we re-apply, but steady-state passes write nothing and never touch the nav bar.
-    if (navigationItem.rightBarButtonItem != doneItem) navigationItem.rightBarButtonItem = doneItem;
-    NSArray<UIBarButtonItem *> *rightItems = navigationItem.rightBarButtonItems;
-    if (rightItems.count != 1 || rightItems.firstObject != doneItem) navigationItem.rightBarButtonItems = @[doneItem];
+    // The right item is also pinned by tag, before the editor is presented, so the "Post"
+    // item Apollo re-asserts on every keystroke lands on the checkmark instead. The left
+    // item needs no tag: Apollo sets its Cancel item only in viewDidLoad, and the
+    // viewDidLoad hook re-applies ours right after.
+    ApolloComposeBodyEditorPinDoneItem(navigationItem, doneItem);
     if (navigationItem.leftBarButtonItem != cancelItem) navigationItem.leftBarButtonItem = cancelItem;
 
     // Seeding is internally one-shot (guarded by kApolloMediaComposerBodyTextViewSeededKey)
@@ -1756,17 +1780,9 @@ static void ApolloComposeFormBodyEditorApplyDoneItem(UIViewController *editor) {
             NSStringFromClass(formController.class) ?: @"(unknown)");
     }
 
-    UINavigationItem *navigationItem = editor.navigationItem;
-    // Apollo re-asserts its own "Post" item from textViewDidChange on every keystroke, and
-    // the editor's view does not lay out for nav-bar-only changes, so a lifecycle re-apply
-    // alone loses the race the moment the user types (observed: the first keystroke brought
-    // "Post" back and a checkmark-position tap submitted the post). Tag the navigation item
-    // so the UINavigationItem setter hooks below redirect every later right-item write back
-    // to the checkmark for this editor's lifetime.
-    objc_setAssociatedObject(navigationItem, &kApolloComposeFormBodyNavItemDoneKey, doneItem, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (navigationItem.rightBarButtonItem != doneItem) navigationItem.rightBarButtonItem = doneItem;
-    NSArray<UIBarButtonItem *> *rightItems = navigationItem.rightBarButtonItems;
-    if (rightItems.count != 1 || rightItems.firstObject != doneItem) navigationItem.rightBarButtonItems = @[doneItem];
+    // Before the tag existed, the first keystroke brought "Post" back here and a tap where
+    // the checkmark had been submitted the whole post.
+    ApolloComposeBodyEditorPinDoneItem(editor.navigationItem, doneItem);
 }
 
 static UISegmentedControl *ApolloMediaComposerFindPostTypeSegmentedControl(UIViewController *controller) {
@@ -3555,6 +3571,46 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
         heightHook ? @"yes" : @"skip", estimatedHook ? @"yes" : @"skip");
 }
 
+// Hardware keyboard Command-Return in the two body editors. ComposeViewController's
+// -keyCommands (0x1001b27b4) builds a fresh UIKeyCommand on every call: title and
+// discoverabilityTitle "Submit", input "\r", modifier Command, action keyboardSubmit
+// (0x1001b28c0), which runs a validity check (0x1001b7d98) and then the same submit
+// routine as submitBarButtonTapped: (0x1001cfa08). The tweak shows a Done checkmark in
+// place of Apollo's Post button in both body editors, but Command-Return still went to
+// that routine: the Text tab's "Post Text" editor submitted the whole post through the
+// form (0x100780d24, "No Title Entered" without a title), and the Media tab's
+// "Text (optional)" editor took Apollo's reply path (0x1001c29e0), which has nothing to
+// send and dismisses without the Done action. The keyCommands/keyboardSubmit hooks below
+// make Command-Return do what the checkmark does in those two editors; every other
+// ComposeViewController (comment replies, messages, edits) keeps Apollo's submit.
+
+// YES once either body editor has been configured with its Done checkmark. The item stays
+// associated with the editor for its whole lifetime, so this still recognises a Text tab
+// editor that is being popped, when ApolloComposeFormBodyEditorFormController no longer
+// finds it in the navigation stack.
+static BOOL ApolloComposeBodyEditorHasDoneItem(UIViewController *editor) {
+    return [objc_getAssociatedObject(editor, &kApolloMediaComposerBodyDoneItemKey) isKindOfClass:[UIBarButtonItem class]] ||
+        [objc_getAssociatedObject(editor, &kApolloComposeFormBodyDoneItemKey) isKindOfClass:[UIBarButtonItem class]];
+}
+
+// The post form has its own Command-Return (-[ComposePostViewController keyboardSubmit]
+// 0x1007752e0: validity check 0x10077fc70, then the form's submit 0x100780d24). While a
+// body editor is closing (Command-Return's Done, the checkmark, back, Cancel or a swipe-back),
+// its text view has already resigned, so a second press ~80ms later reaches the form and
+// would post before the form is back on screen. Take the form's Command-Return only once
+// the form has settled.
+%hook _TtC6Apollo25ComposePostViewController
+
+- (void)keyboardSubmit {
+    if (((UIViewController *)self).transitionCoordinator) {
+        ApolloLog(@"[ComposeBodyEditor] ignored Command-Return in the post form while it is still transitioning");
+        return;
+    }
+    %orig;
+}
+
+%end
+
 %hook _TtC6Apollo21ComposeViewController
 
 - (void)viewDidLoad {
@@ -3611,6 +3667,46 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
     %orig;
 }
 
+- (NSArray *)keyCommands {
+    NSArray *commands = %orig;
+    if (!ApolloComposeBodyEditorHasDoneItem((UIViewController *)self)) return commands;
+    // Command-Return does what the Done checkmark does here (keyboardSubmit below), so the
+    // keyboard shortcut list (iPad Command-hold overlay, Full Keyboard Access) says "Done"
+    // instead of "Submit". Apollo builds these commands fresh on every call, so retitling
+    // them in place touches nothing shared with other composers.
+    for (UIKeyCommand *command in commands) {
+        if (![command isKindOfClass:[UIKeyCommand class]] || command.action != @selector(keyboardSubmit)) continue;
+        command.title = @"Done";
+        command.discoverabilityTitle = @"Done";
+    }
+    return commands;
+}
+
+- (void)keyboardSubmit {
+    UIViewController *editor = (UIViewController *)self;
+    BOOL mediaEditor = ApolloMediaComposerOwnerForNativeBodyEditor(editor) != nil;
+    BOOL formEditor = !mediaEditor && ApolloComposeFormBodyEditorFormController(editor) != nil;
+    if (!mediaEditor && !formEditor && !ApolloComposeBodyEditorHasDoneItem(editor)) {
+        %orig;
+        return;
+    }
+    // Never fall through to Apollo's submit from a body editor. Holding Command-Return
+    // repeats this action on the same editor (Apollo's key command keeps UIKit's default
+    // repeatable behaviour), and a press can also land while the checkmark, the back button
+    // or Cancel is already closing the editor. A Text tab editor that is being popped no
+    // longer matches ApolloComposeFormBodyEditorFormController, and %orig there would post
+    // the whole post. So only act while the editor is on screen with no transition running,
+    // and swallow the press otherwise.
+    if ((!mediaEditor && !formEditor) || !editor.viewIfLoaded.window || editor.transitionCoordinator) {
+        ApolloLogDebug(@"[ComposeBodyEditor] ignored Command-Return while the body editor is opening or closing");
+        return;
+    }
+    ApolloLog(@"[ComposeBodyEditor] Command-Return in the %@ body editor; doing what its Done checkmark does",
+        mediaEditor ? @"Media tab" : @"Text tab");
+    SEL doneAction = mediaEditor ? @selector(apollo_mediaBodyDoneButtonTapped:) : @selector(apollo_textBodyDoneButtonTapped:);
+    [[UIApplication sharedApplication] sendAction:doneAction to:editor from:nil forEvent:nil];
+}
+
 %new
 - (void)apollo_mediaBodyDoneButtonTapped:(id)sender {
     (void)sender;
@@ -3637,14 +3733,25 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 
 %end
 
-// Keeps the form body editor's Done checkmark in place against Apollo's own re-assertions
-// (textViewDidChange re-sets postBarButtonItem on every keystroke). Nav items without the
-// tag pass straight through, so this is a two-instruction early-out for the rest of the app.
+// One log line per editor the first time a foreign right item is redirected, so a sim or
+// device log shows which Apollo item was kept off the bar without logging every keystroke.
+static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationItem, UIBarButtonItem *incoming) {
+    if (objc_getAssociatedObject(navigationItem, &kApolloComposeBodyEditorRedirectLoggedKey)) return;
+    objc_setAssociatedObject(navigationItem, &kApolloComposeBodyEditorRedirectLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[ComposeBodyEditor] kept Done checkmark; redirected right-item write action=%@",
+        incoming ? (NSStringFromSelector(incoming.action) ?: @"(none)") : @"(nil item)");
+}
+
+// Keeps both body editors' Done checkmark (Media tab and Text tab) in place against Apollo's
+// own re-assertions (textViewDidChange re-sets postBarButtonItem on every keystroke). Nav
+// items without the tag (ApolloComposeBodyEditorPinDoneItem) pass straight through, so this
+// is a two-instruction early-out for the rest of the app.
 %hook UINavigationItem
 
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item {
-    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeFormBodyNavItemDoneKey);
+    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeBodyEditorNavItemDoneKey);
     if ([doneItem isKindOfClass:[UIBarButtonItem class]] && item != doneItem) {
+        ApolloComposeBodyEditorLogRedirectOnce(self, item);
         %orig(doneItem);
         return;
     }
@@ -3652,8 +3759,9 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 }
 
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item animated:(BOOL)animated {
-    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeFormBodyNavItemDoneKey);
+    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeBodyEditorNavItemDoneKey);
     if ([doneItem isKindOfClass:[UIBarButtonItem class]] && item != doneItem) {
+        ApolloComposeBodyEditorLogRedirectOnce(self, item);
         %orig(doneItem, animated);
         return;
     }
@@ -3661,9 +3769,10 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 }
 
 - (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items {
-    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeFormBodyNavItemDoneKey);
+    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeBodyEditorNavItemDoneKey);
     if ([doneItem isKindOfClass:[UIBarButtonItem class]] &&
         !(items.count == 1 && items.firstObject == doneItem)) {
+        ApolloComposeBodyEditorLogRedirectOnce(self, items.firstObject);
         %orig(@[doneItem]);
         return;
     }
@@ -3671,9 +3780,10 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
 }
 
 - (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(BOOL)animated {
-    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeFormBodyNavItemDoneKey);
+    UIBarButtonItem *doneItem = objc_getAssociatedObject(self, &kApolloComposeBodyEditorNavItemDoneKey);
     if ([doneItem isKindOfClass:[UIBarButtonItem class]] &&
         !(items.count == 1 && items.firstObject == doneItem)) {
+        ApolloComposeBodyEditorLogRedirectOnce(self, items.firstObject);
         %orig(@[doneItem], animated);
         return;
     }
@@ -4244,4 +4354,7 @@ size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out) {
     // guarantee is required before the bridge monitor starts.
     ApolloMediaComposerInstallComposeTableHooks();
     %init;
+    if (objc_getClass("_TtC6Apollo21ComposeViewController") && objc_getClass("_TtC6Apollo25ComposePostViewController")) {
+        ApolloLog(@"[ComposeBodyEditor] Command-Return hooks installed (ComposeViewController keyCommands and keyboardSubmit, ComposePostViewController keyboardSubmit)");
+    }
 }
