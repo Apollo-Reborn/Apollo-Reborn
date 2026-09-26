@@ -2,6 +2,7 @@
 #import "ApolloBadgeBookCatalog.h"
 #import "ApolloBadgeBookScraper.h"
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — locked-note wording
 #import <ImageIO/ImageIO.h>
@@ -20,8 +21,9 @@ static NSCache<NSString *, UIImage *> *ApolloBBRemoteImageCache(void) {
     static NSCache *cache; static dispatch_once_t once;
     dispatch_once(&once, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 120;
-        cache.totalCostLimit = 16 * 1024 * 1024;   // decoded thumbs; evictable under pressure
+        cache.countLimit = 60;
+        cache.totalCostLimit = 4 * 1024 * 1024;   // decoded thumbs; evictable under pressure
+        ApolloMemoryRegisterPurgableCache(@"badge-remote-thumbs", cache);
     });
     return cache;
 }
@@ -174,7 +176,12 @@ static UIImage *ApolloBBPlaceholderCircleImage(UIColor *fill, UITraitCollection 
     NSString *key = [NSString stringWithFormat:@"%.3f-%.3f-%.3f", r, g, b];
 
     static NSCache<NSString *, UIImage *> *cache; static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [[NSCache alloc] init]; cache.countLimit = 12; });
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 8;
+        cache.totalCostLimit = 3 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"badge-placeholders", cache);
+    });
     UIImage *cached = [cache objectForKey:key];
     if (cached) return cached;
 
@@ -201,7 +208,7 @@ static UIImage *ApolloBBPlaceholderCircleImage(UIColor *fill, UITraitCollection 
         [outside fill];
         CGContextRestoreGState(c);
     }];
-    [cache setObject:image forKey:key];
+    [cache setObject:image forKey:key cost:ApolloImageByteCost(image)];
     return image;
 }
 

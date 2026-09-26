@@ -871,11 +871,18 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 }
 
 - (id)editComment:(id)comment newText:(id)text completion:(id)completion {
-    ApolloWebJSONNoteCommentWriteContext(self, text,
-                                         ApolloWebJSONThingProperty(comment, @selector(subreddit)),
-                                         ApolloWebJSONThingProperty(comment, @selector(subredditID)),
-                                         ApolloWebJSONThingProperty(comment, @selector(linkID)),
-                                         nil);
+    ApolloWebJSONNoteCommentEditContext(self, [text isKindOfClass:[NSString class]] ? text : nil, comment);
+    return %orig;
+}
+
+// Self-text edits arrive as the raw form fields (thing_id + text); the t3
+// gate inside the capture keeps a comment edit routed through here from
+// starting a prefetch it doesn't need.
+- (id)editSelfTextWithParameters:(id)parameters completion:(id)completion {
+    NSDictionary *params = [parameters isKindOfClass:[NSDictionary class]] ? parameters : nil;
+    NSString *thingID = [params[@"thing_id"] isKindOfClass:[NSString class]] ? params[@"thing_id"] : nil;
+    NSString *text = [params[@"text"] isKindOfClass:[NSString class]] ? params[@"text"] : nil;
+    ApolloWebJSONNoteSelfTextEditContext(self, text, thingID);
     return %orig;
 }
 

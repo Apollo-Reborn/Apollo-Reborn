@@ -29,6 +29,13 @@ static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled"
 static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
 // Legacy destination value retained for compatibility with older builds.
 static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
+// Version stamps for Apollo's own sideload-unlock flags, which the constructor
+// writes into two preference domains. Each stamp lives in the SAME domain as
+// the flags it guards, so anything that resets a domain (fresh install, a
+// settings restore, Apollo wiping the group container) takes the stamp with it
+// and the flags are rewritten on the next launch.
+static NSString *const UDKeySideloadFlagsStamp = @"ApolloRebornSideloadFlagsStamp";
+static NSString *const UDKeyGroupUnlockFlagsStamp = @"ApolloRebornGroupUnlockFlagsStamp";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on

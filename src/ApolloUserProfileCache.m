@@ -4,6 +4,7 @@
 #import "ApolloBannedProfile.h"
 #import "ApolloCommon.h"
 #import "ApolloLinkPreviewCache.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
 
 #import <CommonCrypto/CommonDigest.h>
@@ -136,13 +137,22 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
         _infoCache = [[NSCache alloc] init];
         _infoCache.countLimit = 2000;
 
+        // Avatars are decoded at their source size, not the ~40pt they render
+        // at: a 256px icon is 256KB, so this holds about forty authors. A miss
+        // re-reads the disk copy.
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 800;
-        _imageCache.totalCostLimit = 40 * 1024 * 1024;
+        _imageCache.countLimit = 400;
+        _imageCache.totalCostLimit = 10 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"profile-avatars", _imageCache);
 
+        // One profile or subreddit header is on screen at a time; the rest is
+        // look-back. A banner is decoded at up to the screen's longest side, so
+        // one entry alone can be 14MB (2560x1440), and an entry over the limit
+        // is evicted as it is inserted, emptying the cache with it.
         _bannerCache = [[NSCache alloc] init];
-        _bannerCache.countLimit = 8;
+        _bannerCache.countLimit = 4;
         _bannerCache.totalCostLimit = 32 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"profile-banners", _bannerCache);
         (void)ApolloBannerMaxPixelDimension(); // warm the UIScreen read on main
 
         _diskInfo = [NSMutableDictionary dictionary];
@@ -988,7 +998,7 @@ static NSString *ApolloUserProfileCredentialDescription(NSString *credential) {
 - (void)finishImageRequestForKey:(NSString *)key image:(UIImage *)image {
     dispatch_async(self.queue, ^{
         if (image) {
-            NSUInteger cost = (NSUInteger)MAX(1.0, image.size.width * image.size.height * image.scale * image.scale * 4.0);
+            NSUInteger cost = MAX((NSUInteger)1, ApolloImageByteCost(image));
             [self.imageCache setObject:image forKey:key cost:cost];
         }
 
@@ -1196,7 +1206,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
 - (void)finishBannerImageRequestForKey:(NSString *)key image:(UIImage *)image {
     dispatch_async(self.queue, ^{
         if (image) {
-            NSUInteger cost = (NSUInteger)MAX(1.0, image.size.width * image.size.height * image.scale * image.scale * 4.0);
+            NSUInteger cost = MAX((NSUInteger)1, ApolloImageByteCost(image));
             [self.bannerCache setObject:image forKey:key cost:cost];
         }
 

@@ -1416,6 +1416,22 @@ double ApolloPerfNowMs(void) {
     return CACurrentMediaTime() * 1000.0;
 }
 
+NSUInteger ApolloImageByteCost(UIImage *image) {
+    if (![image isKindOfClass:[UIImage class]]) return 0;
+    CGImageRef cgImage = image.CGImage;
+    if (cgImage) {
+        size_t bytesPerRow = CGImageGetBytesPerRow(cgImage);
+        size_t height = CGImageGetHeight(cgImage);
+        if (height == 0 || bytesPerRow == 0) return 0;
+        if (bytesPerRow > NSUIntegerMax / height) return NSUIntegerMax;
+        return (NSUInteger)(bytesPerRow * height);
+    }
+    CGFloat scale = image.scale > 0.0 ? image.scale : 1.0;
+    double pixels = (double)image.size.width * scale * (double)image.size.height * scale * 4.0;
+    if (pixels <= 0.0) return 0;
+    return pixels >= (double)NSUIntegerMax ? NSUIntegerMax : (NSUInteger)pixels;
+}
+
 // --- Tweak-UI text node marker -------------------------------------------
 // Content scans (translation's post-body candidate walk, etc.) must never
 // treat tweak-drawn text as user content. One shared assoc key, set at node

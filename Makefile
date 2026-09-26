@@ -277,6 +277,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloVisionOSMultiwindow.xm \
     $(SRC_DIR)/ApolloWebAuthViewController.m \
     $(SRC_DIR)/ApolloWebJSON.m \
+    $(SRC_DIR)/ApolloWebJSONWriteRepair.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloWebSessionStore.m \

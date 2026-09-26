@@ -5,6 +5,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -255,8 +256,13 @@ static UIImage *ApolloMultiEditDisplayIconForKey(NSString *key, CGSize targetSiz
     UIImage *resized = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
         [stored drawInRect:CGRectMake(0, 0, targetSize.width, targetSize.height)];
     }];
-    if (!sMultiEditDisplayIconCache) sMultiEditDisplayIconCache = [[NSCache alloc] init];
-    [sMultiEditDisplayIconCache setObject:resized forKey:cacheKey];
+    if (!sMultiEditDisplayIconCache) {
+        sMultiEditDisplayIconCache = [[NSCache alloc] init];
+        sMultiEditDisplayIconCache.countLimit = 40;
+        sMultiEditDisplayIconCache.totalCostLimit = 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"multireddit-icons", sMultiEditDisplayIconCache);
+    }
+    [sMultiEditDisplayIconCache setObject:resized forKey:cacheKey cost:ApolloImageByteCost(resized)];
     return resized;
 }
 
