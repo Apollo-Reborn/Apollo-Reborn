@@ -2753,7 +2753,7 @@ static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, Apoll
 }
 
 // ---- API-Key-Free: wait for the batched lookup ----
-// With no captured OAuth bearer (an API-Key-Free account), every profile lookup
+// An API-Key-Free account has no OAuth bearer of its own, so every profile lookup
 // goes out on the web session's cookie, against the same Reddit request budget
 // as the feed and comment loads (see ApolloWebJSONOptionalReadBackoff). Comment
 // authors are queued for the batched lookup as their cells enter the preload
@@ -2765,12 +2765,24 @@ static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, Apoll
 static NSMutableDictionary<NSString *, NSDate *> *sApolloInlineAvatarAwaitingBatchSince;
 static NSTimeInterval const ApolloInlineAvatarBatchWaitLimit = 3.0;
 
+// Main thread. YES when the profile lookups go out without a bearer, the same
+// call ApolloActiveAccountRedditBearerToken() makes for them: no bearer captured
+// yet, or the active account is API-Key-Free. The captured bearer can belong to
+// another signed-in account, so having one doesn't mean these lookups use it.
+// That helper reads the keychain, so this checks the defaults-backed web
+// session index instead, once per queued author.
+static BOOL ApolloInlineAvatarLookupsAreBearerless(void) {
+    if (sLatestRedditBearerToken.length == 0) return YES;
+    NSString *activeUsername = ApolloActiveWebSessionUsername().lowercaseString;
+    return activeUsername.length > 0 && [ApolloWebSessionUsernames() containsObject:activeUsername];
+}
+
 static void ApolloInlineAvatarNoteQueuedForBatch(NSString *username) {
     NSString *key = ApolloAvatarNormalizedUsername(username).lowercaseString;
     if (key.length == 0) return;
     // Only when the lookup would draw on a web session's budget (Web JSON on,
     // no bearer); API-key lookups keep racing the batch as they always have.
-    if (!sWebJSONEnabled || sLatestRedditBearerToken.length > 0) return;
+    if (!sWebJSONEnabled || !ApolloInlineAvatarLookupsAreBearerless()) return;
     if (!sApolloInlineAvatarAwaitingBatchSince) sApolloInlineAvatarAwaitingBatchSince = [NSMutableDictionary dictionary];
     if (sApolloInlineAvatarAwaitingBatchSince.count >= 256) {
         NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-ApolloInlineAvatarBatchWaitLimit];
