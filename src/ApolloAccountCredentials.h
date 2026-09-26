@@ -66,9 +66,54 @@ NSString *ApolloSecretForClientId(NSString *_Nullable clientId);
 // Effective client id / redirect URI to install on RDKOAuthCredential right
 // now: the active account's stored override, falling back to the global
 // default (sRedditClientId / sRedirectURI-or-default) when the active
-// account (or no account yet, e.g. a fresh "Add Account" login) has none.
+// account (or no account yet, e.g. the signed-out app-only client) has none.
+// An interactive sign-in (Add Account, the signed-out splash) does NOT
+// resolve through these: its credential carries the default it started with
+// (see the interactive sign-in section below).
 NSString *ApolloEffectiveRedditClientId(void);
 NSString *ApolloEffectiveRedirectURI(void);
+
+// Interactive (API-key) sign-in credentials. A new sign-in (Add Account or
+// the signed-out splash, "Sign In With API Key") must use the DEFAULT key from
+// Settings for the authorize URL AND the authorization_code exchange. The
+// functions above would instead hand it the ACTIVE account's pinned key,
+// which can be stale (#1232: Reddit rejects the grant with a bare 400 "{}"),
+// and even when it works the new account ends up pinned to the default while
+// its refresh token is bound to the other key. The override can't be a
+// process-global flag either: the active account keeps refreshing with its
+// own pin while the sign-in sheet is open. So the default is captured onto
+// the sign-in's own RDKOAuthCredential (associated object) when Apollo
+// creates it (the RDKClient -authenticateWithClientIdentifier:redirectURI:
+// hook in Tweak.xm). Every other credential resolves exactly as before, and
+// a cancelled or failed sign-in needs no cleanup: Apollo drops that RDKClient
+// and the snapshot goes with it. After a successful sign-in the snapshot
+// stays on the new account's credential, since its tokens are bound to that
+// key; after a relaunch that account resolves through its pin like any other.
+//
+// Captures the current default (sRedditClientId / sRedditClientSecret /
+// sRedirectURI, raw, like the account pin) onto `credential`. With no default
+// API key set at all it captures what the sign-in sent before this existed
+// (the active account's saved key), so that setup doesn't fall through to
+// Apollo's own client id; the new account is still pinned to what it used.
+void ApolloAccountCredentialsBeginInteractiveSignIn(id credential);
+// The snapshot captured for `credential`, or nil for every other credential.
+ApolloAccountCredentialEntry * _Nullable ApolloInteractiveSignInCredentialsFor(id _Nullable credential);
+// What RDKOAuthCredential's -clientIdentifier / -redirectURI hooks return for
+// `credential`: its sign-in snapshot when it has one (redirect falls back to
+// the built-in default like ApolloEffectiveRedirectURI), else the effective
+// values above. Empty client id = keep the credential's own stored value.
+NSString *ApolloRedditClientIdForCredential(id _Nullable credential);
+NSString *ApolloRedirectURIForCredential(id _Nullable credential);
+// Called when an RDKClient installs its user (-setCurrentUser:,
+// -updateCurrentUserWithNewUser:). If `client`'s credential carries a sign-in
+// snapshot, pins `username` to it — overwriting any older entry, because the
+// new refresh token is bound to the snapshot's client id (removing an account
+// doesn't clear its pin, so the same username signing in again would
+// otherwise keep its old key) — and returns YES. Pins once per credential,
+// so later identity refreshes of the same client don't rewrite it. Returns NO
+// (nothing written) for every other client, including every account decoded
+// from RedditAccounts2.
+BOOL ApolloAccountCredentialsPinInteractiveSignIn(id _Nullable client, NSString *username);
 
 // Lowercased username of the account RDKClient currently considers signed in
 // ([[RDKClient sharedClient] currentUser].username), or nil if none/unavailable.
