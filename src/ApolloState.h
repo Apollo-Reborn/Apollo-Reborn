@@ -551,8 +551,21 @@ extern NSInteger sShareLinkHost;
 
 // Most recently observed Reddit bearer token, captured from outgoing Authorization
 // headers. Used by the native Reddit image upload path. nil if Apollo hasn't made an
-// authenticated Reddit API call yet.
+// authenticated Reddit API call yet. It can belong to any signed-in account, not
+// just the active one.
 extern NSString *sLatestRedditBearerToken;
+#ifdef __cplusplus
+extern "C" {
+#endif
+// The bearer a tweak-authored Reddit read for the ACTIVE account should carry:
+// sLatestRedditBearerToken, or nil when none is captured yet or the active account
+// is API-Key-Free (it never owns a real bearer). On nil, send the read bearer-less
+// to www.reddit.com; the request chokepoint signs it with the active account's web
+// session. Implemented in ApolloImageUploadHost.xm, next to the capture.
+NSString *ApolloActiveAccountRedditBearerToken(void);
+#ifdef __cplusplus
+}
+#endif
 
 extern BOOL sEnableBulkTranslation;
 extern BOOL sAutoTranslateOnAppear;

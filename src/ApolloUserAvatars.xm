@@ -3096,6 +3096,33 @@ static void ApolloProfileApplySyntheticBanner(ApolloProfileHeaderView *header, A
     });
 }
 
+// Headers whose info lookup came back empty, by lowercased username. The lookup
+// can fail for a reason that says nothing about the user (Reddit rejecting an
+// expired bearer at launch, before Apollo refreshed it; a network error), and a
+// header only asks once, so it would sit on the placeholder until it reloads.
+// Whatever asks for that user next (opening the profile tab does) re-applies it
+// here. Main thread only. Weak values: an entry never keeps a header alive.
+static NSMapTable<NSString *, ApolloProfileHeaderView *> *ApolloProfileHeadersAwaitingInfo(void) {
+    static NSMapTable *headers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ headers = [NSMapTable strongToWeakObjectsMapTable]; });
+    return headers;
+}
+
+// Runs from the ApolloUserProfileInfoUpdatedNotification observer (main queue).
+static void ApolloProfileReapplyInfoToAwaitingHeader(NSString *username) {
+    NSString *key = ApolloAvatarNormalizedUsername(username).lowercaseString;
+    if (key.length == 0) return;
+    NSMapTable<NSString *, ApolloProfileHeaderView *> *awaiting = ApolloProfileHeadersAwaitingInfo();
+    ApolloProfileHeaderView *header = [awaiting objectForKey:key];
+    if (!header) return;
+    [awaiting removeObjectForKey:key];
+    // Repointed to someone else since its lookup failed.
+    if (!ApolloAvatarUsernameMatches(header.username, key)) return;
+    ApolloLog(@"[UserAvatars] Profile info for u/%@ arrived after the header's lookup failed; applying it", key);
+    ApolloProfileLoadImages(header, header.username, NO);
+}
+
 static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh) {
     if (!header || username.length == 0) return;
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
@@ -3113,11 +3140,20 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
     if (targetUsername.length == 0) return;
 
     void (^applyInfo)(ApolloUserProfileInfo *) = ^(ApolloUserProfileInfo *info) {
-        if (!info) return;
+        NSMapTable<NSString *, ApolloProfileHeaderView *> *awaiting = ApolloProfileHeadersAwaitingInfo();
+        if (!info) {
+            if (ApolloAvatarUsernameMatches(header.username, targetUsername)) {
+                [awaiting setObject:header forKey:targetUsername.lowercaseString];
+            }
+            return;
+        }
         // Dropped if the header was repointed to another user while this was in flight.
         if (!ApolloAvatarUsernameMatches(header.username, targetUsername)) {
             ApolloLog(@"[UserAvatars] Dropping stale profile info for u/%@ (header now u/%@)", targetUsername, header.username ?: @"nil");
             return;
+        }
+        if ([awaiting objectForKey:targetUsername.lowercaseString] == header) {
+            [awaiting removeObjectForKey:targetUsername.lowercaseString];
         }
         [header applyProfileInfo:info fallbackUsername:username];
 
@@ -5313,8 +5349,9 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloUserProfileInfoUpdatedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(__unused NSNotification *note) {
+                                                  usingBlock:^(NSNotification *note) {
         ApolloProfileScheduleTabAvatarRefresh(@"profile info update");
+        ApolloProfileReapplyInfoToAwaitingHeader(note.userInfo[ApolloUserProfileUsernameKey]);
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
                                                       object:nil

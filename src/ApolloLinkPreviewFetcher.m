@@ -1148,12 +1148,13 @@ static NSString *ApolloLinkPreviewBrowserUserAgent(void) {
         return;
     }
 
-    NSString *urlString = sLatestRedditBearerToken.length > 0
+    NSString *token = ApolloActiveAccountRedditBearerToken();
+    NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/comments/%@/.json?raw_json=1", postID]
         : [NSString stringWithFormat:@"https://www.reddit.com/comments/%@.json?raw_json=1", postID];
     NSMutableURLRequest *request = ApolloLinkPreviewRequest([NSURL URLWithString:urlString], 10.0);
-    if (sLatestRedditBearerToken.length > 0) {
-        [request setValue:[@"Bearer " stringByAppendingString:sLatestRedditBearerToken] forHTTPHeaderField:@"Authorization"];
+    if (token.length > 0) {
+        [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
     }
 
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -1425,12 +1426,13 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         return;
     }
 
-    NSString *urlString = sLatestRedditBearerToken.length > 0
+    NSString *token = ApolloActiveAccountRedditBearerToken();
+    NSString *urlString = token.length > 0
         ? [@"https://oauth.reddit.com/api/info.json?raw_json=1&url=" stringByAppendingString:escaped]
         : [@"https://www.reddit.com/api/info.json?raw_json=1&url=" stringByAppendingString:escaped];
     NSMutableURLRequest *request = ApolloLinkPreviewRequest([NSURL URLWithString:urlString], 10.0);
-    if (sLatestRedditBearerToken.length > 0) {
-        [request setValue:[@"Bearer " stringByAppendingString:sLatestRedditBearerToken] forHTTPHeaderField:@"Authorization"];
+    if (token.length > 0) {
+        [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
     }
 
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {

@@ -1210,11 +1210,11 @@ static NSDictionary *ApolloUserFlairFetchTemplateLimits(NSURL *url, NSString *be
 // left uncached so it can retry.
 //
 // Two transports, because the endpoint is OAuth-only: Apollo's own bearer works
-// directly for API-key accounts, but on a keyless (web-session) account the WebJSON
-// layer reroutes that first request to cookie auth on www — which user_flair_v2
-// rejects — so we rescue with the session's token_v2 cookie, itself a valid OAuth
-// bearer on oauth.reddit.com (same trick as ApolloWebJSONRescueFlairList). The rescue
-// request is probe-marked so the transport hooks don't reroute it again.
+// directly for API-key accounts, but a keyless (web-session) account has none of its
+// own (ApolloActiveAccountRedditBearerToken returns nil for it) and user_flair_v2
+// rejects cookie auth on www, so we rescue with the session's token_v2 cookie, itself
+// a valid OAuth bearer on oauth.reddit.com (same trick as ApolloWebJSONRescueFlairList).
+// The rescue request is probe-marked so the transport hooks don't reroute it.
 static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^completion)(void)) {
     void (^done)(void) = ^{
         if (!completion) return;
@@ -1232,7 +1232,7 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
         NSInteger status = 0;
         BOOL definitive = NO;
         NSDictionary *byTemplate = nil;
-        NSString *apolloBearer = [sLatestRedditBearerToken copy];
+        NSString *apolloBearer = ApolloActiveAccountRedditBearerToken();
         if (apolloBearer.length) {
             byTemplate = ApolloUserFlairFetchTemplateLimits(url, apolloBearer, &status, &definitive);
             if (!byTemplate.count) {
