@@ -3555,6 +3555,46 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
         heightHook ? @"yes" : @"skip", estimatedHook ? @"yes" : @"skip");
 }
 
+// Hardware keyboard Command-Return in the two body editors. ComposeViewController's
+// -keyCommands (0x1001b27b4) builds a fresh UIKeyCommand on every call: title and
+// discoverabilityTitle "Submit", input "\r", modifier Command, action keyboardSubmit
+// (0x1001b28c0), which runs a validity check (0x1001b7d98) and then the same submit
+// routine as submitBarButtonTapped: (0x1001cfa08). The tweak shows a Done checkmark in
+// place of Apollo's Post button in both body editors, but Command-Return still went to
+// that routine: the Text tab's "Post Text" editor submitted the whole post through the
+// form (0x100780d24, "No Title Entered" without a title), and the Media tab's
+// "Text (optional)" editor took Apollo's reply path (0x1001c29e0), which has nothing to
+// send and dismisses without the Done action. The keyCommands/keyboardSubmit hooks below
+// make Command-Return do what the checkmark does in those two editors; every other
+// ComposeViewController (comment replies, messages, edits) keeps Apollo's submit.
+
+// YES once either body editor has been configured with its Done checkmark. The item stays
+// associated with the editor for its whole lifetime, so this still recognises a Text tab
+// editor that is being popped, when ApolloComposeFormBodyEditorFormController no longer
+// finds it in the navigation stack.
+static BOOL ApolloComposeBodyEditorHasDoneItem(UIViewController *editor) {
+    return [objc_getAssociatedObject(editor, &kApolloMediaComposerBodyDoneItemKey) isKindOfClass:[UIBarButtonItem class]] ||
+        [objc_getAssociatedObject(editor, &kApolloComposeFormBodyDoneItemKey) isKindOfClass:[UIBarButtonItem class]];
+}
+
+// The post form has its own Command-Return (-[ComposePostViewController keyboardSubmit]
+// 0x1007752e0: validity check 0x10077fc70, then the form's submit 0x100780d24). While a
+// body editor is closing (Command-Return's Done, the checkmark, back, Cancel or a swipe-back),
+// its text view has already resigned, so a second press ~80ms later reaches the form and
+// would post before the form is back on screen. Take the form's Command-Return only once
+// the form has settled.
+%hook _TtC6Apollo25ComposePostViewController
+
+- (void)keyboardSubmit {
+    if (((UIViewController *)self).transitionCoordinator) {
+        ApolloLog(@"[ComposeBodyEditor] ignored Command-Return in the post form while it is still transitioning");
+        return;
+    }
+    %orig;
+}
+
+%end
+
 %hook _TtC6Apollo21ComposeViewController
 
 - (void)viewDidLoad {
@@ -3609,6 +3649,46 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
         return;
     }
     %orig;
+}
+
+- (NSArray *)keyCommands {
+    NSArray *commands = %orig;
+    if (!ApolloComposeBodyEditorHasDoneItem((UIViewController *)self)) return commands;
+    // Command-Return does what the Done checkmark does here (keyboardSubmit below), so the
+    // keyboard shortcut list (iPad Command-hold overlay, Full Keyboard Access) says "Done"
+    // instead of "Submit". Apollo builds these commands fresh on every call, so retitling
+    // them in place touches nothing shared with other composers.
+    for (UIKeyCommand *command in commands) {
+        if (![command isKindOfClass:[UIKeyCommand class]] || command.action != @selector(keyboardSubmit)) continue;
+        command.title = @"Done";
+        command.discoverabilityTitle = @"Done";
+    }
+    return commands;
+}
+
+- (void)keyboardSubmit {
+    UIViewController *editor = (UIViewController *)self;
+    BOOL mediaEditor = ApolloMediaComposerOwnerForNativeBodyEditor(editor) != nil;
+    BOOL formEditor = !mediaEditor && ApolloComposeFormBodyEditorFormController(editor) != nil;
+    if (!mediaEditor && !formEditor && !ApolloComposeBodyEditorHasDoneItem(editor)) {
+        %orig;
+        return;
+    }
+    // Never fall through to Apollo's submit from a body editor. Holding Command-Return
+    // repeats this action on the same editor (Apollo's key command keeps UIKit's default
+    // repeatable behaviour), and a press can also land while the checkmark, the back button
+    // or Cancel is already closing the editor. A Text tab editor that is being popped no
+    // longer matches ApolloComposeFormBodyEditorFormController, and %orig there would post
+    // the whole post. So only act while the editor is on screen with no transition running,
+    // and swallow the press otherwise.
+    if ((!mediaEditor && !formEditor) || !editor.viewIfLoaded.window || editor.transitionCoordinator) {
+        ApolloLogDebug(@"[ComposeBodyEditor] ignored Command-Return while the body editor is opening or closing");
+        return;
+    }
+    ApolloLog(@"[ComposeBodyEditor] Command-Return in the %@ body editor; doing what its Done checkmark does",
+        mediaEditor ? @"Media tab" : @"Text tab");
+    SEL doneAction = mediaEditor ? @selector(apollo_mediaBodyDoneButtonTapped:) : @selector(apollo_textBodyDoneButtonTapped:);
+    [[UIApplication sharedApplication] sendAction:doneAction to:editor from:nil forEvent:nil];
 }
 
 %new
@@ -4242,4 +4322,7 @@ static void ApolloMediaComposerLogPhotoAuthStateOnce(void) {
         {"UIImagePNGRepresentation", (void *)hooked_UIImagePNGRepresentation, (void **)&orig_UIImagePNGRepresentation},
     }, 2);
     %init;
+    if (objc_getClass("_TtC6Apollo21ComposeViewController") && objc_getClass("_TtC6Apollo25ComposePostViewController")) {
+        ApolloLog(@"[ComposeBodyEditor] Command-Return hooks installed (ComposeViewController keyCommands and keyboardSubmit, ComposePostViewController keyboardSubmit)");
+    }
 }
