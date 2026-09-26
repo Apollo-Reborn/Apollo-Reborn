@@ -10,6 +10,7 @@
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloTranslation.h"
 #import "Tweak.h"
 
 // Private cross-module classification ABI implemented by
@@ -2608,12 +2609,51 @@ static void ApolloDeletedCommentsInstallRevealTapGestureOnCell(id cellNode) {
 
 #pragma mark - Link taps in recovered bodies
 
-// Resolve the NSLink URL under a tap on the cell, if any. The recovered body is our
+// What a tap on a recovered body landed on: the text node, the link attribute
+// ASTextNode's own hit-test found there, and that attribute's raw value. webURL is
+// set only for http(s) links, the one kind this module opens itself. Any other
+// link attribute belongs to whoever put it on the text — e.g. translation's
+// "Translated from …" marker, whose value is the apollo-translation://toggle
+// sentinel. Opening that as a web URL handed it to SFSafariViewController, which
+// throws on non-http(s) schemes (#1179).
+@interface ApolloDeletedCommentsLinkHit : NSObject
+@property (nonatomic, weak) id textNode;
+@property (nonatomic, copy) NSString *attributeName;
+@property (nonatomic, strong) id value;
+@property (nonatomic) CGPoint pointInTextNode;
+@property (nonatomic) NSRange range;
+@property (nonatomic, strong) NSURL *webURL;
+@end
+
+@implementation ApolloDeletedCommentsLinkHit
+@end
+
+static NSURL *ApolloDeletedCommentsWebURLForLinkValue(id value) {
+    NSURL *url = nil;
+    if ([value isKindOfClass:[NSURL class]]) url = (NSURL *)value;
+    else if ([value isKindOfClass:[NSString class]]) url = [NSURL URLWithString:(NSString *)value];
+    NSString *scheme = url.scheme.lowercaseString;
+    return ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) ? url : nil;
+}
+
+// The text node's delegate, when it implements ASTextNode's link-tap callback.
+static id ApolloDeletedCommentsLinkTapDelegateForTextNode(id textNode) {
+    if (![textNode respondsToSelector:@selector(delegate)]) return nil;
+    id delegate = nil;
+    @try {
+        delegate = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(delegate));
+    } @catch (__unused NSException *e) {
+        return nil;
+    }
+    return [delegate respondsToSelector:@selector(textNode:tappedLinkAttribute:value:atPoint:textRange:)] ? delegate : nil;
+}
+
+// Resolve the link under a tap on the cell, if any. The recovered body is our
 // own replacement ASTextNode (attached to the captured MarkdownNode), so we convert
 // the touch into that node's coordinate space and ask ASTextNode's own link hit-test.
 // Works whether or not the node has a loaded view (rasterized cells included) because
 // the conversion goes through the node hierarchy, not the view hierarchy.
-static NSURL *ApolloDeletedCommentsLinkURLAtCellPoint(id cellNode, CGPoint pointInCellView) {
+static ApolloDeletedCommentsLinkHit *ApolloDeletedCommentsLinkHitAtCellPoint(id cellNode, CGPoint pointInCellView) {
     if (!cellNode) return nil;
     id markdownNode = objc_getAssociatedObject(cellNode, kApolloDeletedCommentsCellMarkdownNodeKey);
     id replacement = markdownNode ? objc_getAssociatedObject(markdownNode, kApolloDeletedCommentsBodyReplacementTextNodeKey) : nil;
@@ -2638,8 +2678,19 @@ static NSURL *ApolloDeletedCommentsLinkURLAtCellPoint(id cellNode, CGPoint point
             NSString *attributeName = nil;
             NSRange linkRange = NSMakeRange(NSNotFound, 0);
             id value = ((id (*)(id, SEL, CGPoint, NSString **, NSRange *))objc_msgSend)(textNode, linkSel, nodePoint, &attributeName, &linkRange);
-            if ([value isKindOfClass:[NSURL class]]) return (NSURL *)value;
-            if ([value isKindOfClass:[NSString class]]) return [NSURL URLWithString:(NSString *)value];
+            if (![value isKindOfClass:[NSURL class]] && ![value isKindOfClass:[NSString class]]) continue;
+            NSURL *webURL = ApolloDeletedCommentsWebURLForLinkValue(value);
+            // A non-web link is only ours to claim when the text node's delegate can
+            // take the tap (see apolloLinkTap:); otherwise leave the touch alone.
+            if (!webURL && !ApolloDeletedCommentsLinkTapDelegateForTextNode(textNode)) continue;
+            ApolloDeletedCommentsLinkHit *hit = [ApolloDeletedCommentsLinkHit new];
+            hit.textNode = textNode;
+            hit.attributeName = attributeName;
+            hit.value = value;
+            hit.pointInTextNode = nodePoint;
+            hit.range = linkRange;
+            hit.webURL = webURL;
+            return hit;
         } @catch (__unused NSException *e) {}
     }
     return nil;
@@ -2669,34 +2720,52 @@ static void ApolloDeletedCommentsOpenRecoveredBodyURL(UIViewController *presente
 // points can disagree, so the gesture claimed the tap (cancelling Apollo's collapse
 // tap) and then opened nothing — the "comment won't collapse until you collapse a
 // different one" regression. With a single resolution, claim == open, always.
-@property (nonatomic, strong) NSURL *pendingURL;
+@property (nonatomic, strong) ApolloDeletedCommentsLinkHit *pendingHit;
 @end
 
 @implementation ApolloDeletedCommentsLinkTapHandler
 
 - (void)apolloLinkTap:(UITapGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateEnded) return;
-    NSURL *url = self.pendingURL;
-    self.pendingURL = nil;
-    if (!url) return;
+    ApolloDeletedCommentsLinkHit *hit = self.pendingHit;
+    self.pendingHit = nil;
+    if (!hit) return;
+
+    // Not a web link: this recognizer cancelled the text node's own touches, so
+    // deliver the tap to its delegate exactly as ASTextNode would. For the
+    // "Translated from …" marker that is the MarkdownNode, whose translation hook
+    // toggles the comment back to its original text (#1179).
+    if (!hit.webURL) {
+        id textNode = hit.textNode;
+        id delegate = ApolloDeletedCommentsLinkTapDelegateForTextNode(textNode);
+        if (!delegate) return;
+        ApolloLog(@"[DeletedComments] Forwarding recovered-body %@ tap to %@",
+                  hit.attributeName ?: @"(unnamed)", NSStringFromClass([delegate class]));
+        @try {
+            ((void (*)(id, SEL, id, id, id, CGPoint, NSRange))objc_msgSend)(
+                delegate, @selector(textNode:tappedLinkAttribute:value:atPoint:textRange:),
+                textNode, hit.attributeName, hit.value, hit.pointInTextNode, hit.range);
+        } @catch (__unused NSException *e) {}
+        return;
+    }
 
     UIViewController *presenter = nil;
     for (UIResponder *responder = recognizer.view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:[UIViewController class]]) { presenter = (UIViewController *)responder; break; }
     }
     if (!presenter) return;
-    ApolloLog(@"[DeletedComments] Opening recovered-body link %@", url.absoluteString);
-    ApolloDeletedCommentsOpenRecoveredBodyURL(presenter, url);
+    ApolloLog(@"[DeletedComments] Opening recovered-body link %@", hit.webURL.absoluteString);
+    ApolloDeletedCommentsOpenRecoveredBodyURL(presenter, hit.webURL);
 }
 
 // Claim the tap only when a link is actually under the finger; every other tap
 // (collapse, expand, reveal chip, buttons) passes through untouched.
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    self.pendingURL = nil;
+    self.pendingHit = nil;
     id cellNode = self.cellNode;
     if (!cellNode || !ApolloDeletedCommentsFeatureActive()) return NO;
-    self.pendingURL = ApolloDeletedCommentsLinkURLAtCellPoint(cellNode, [touch locationInView:gestureRecognizer.view]);
-    return self.pendingURL != nil;
+    self.pendingHit = ApolloDeletedCommentsLinkHitAtCellPoint(cellNode, [touch locationInView:gestureRecognizer.view]);
+    return self.pendingHit != nil;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -2711,7 +2780,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     if (![otherGestureRecognizer isKindOfClass:[UITapGestureRecognizer class]]) return NO;
     if (((UITapGestureRecognizer *)otherGestureRecognizer).numberOfTapsRequired > 1) return NO;
-    return self.pendingURL != nil;
+    return self.pendingHit != nil;
 }
 @end
 
@@ -3516,6 +3585,12 @@ static void ApolloDeletedCommentsSetTextNodeAttributedText(id textNode, NSAttrib
         [current isEqualToAttributedString:attributedText]) {
         return;
     }
+    // Same when the only difference is translation's line under this exact body
+    // ("Show translation" once a recovered comment is pinned to its original).
+    // Rewriting strips it, translation re-adds it, and each write re-measures the
+    // cell, so the two modules would rewrite the node every frame (#1179).
+    NSAttributedString *undecorated = ApolloTranslationTextByRemovingTrailingMarker(current);
+    if (undecorated && [undecorated isEqualToAttributedString:attributedText]) return;
     @try {
         ((void (*)(id, SEL, NSAttributedString *))objc_msgSend)(textNode, @selector(setAttributedText:), attributedText);
     } @catch (__unused NSException *e) {}
