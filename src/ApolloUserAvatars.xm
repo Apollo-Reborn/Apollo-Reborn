@@ -1976,9 +1976,21 @@ static id ApolloBestAuthorTextNodeInRoot(id root, NSString *username) {
 static id ApolloBestAuthorTextNode(id cell, NSString *username) {
     id authorSubtree = ApolloResolveAuthorNodeSubtree(cell);
     if (authorSubtree) {
-        id node = ApolloBestAuthorTextNodeInRoot(authorSubtree, username);
-        if (node) return node;
+        // Once the cell has a known author node, the byline can only be in
+        // there, so never fall back to scanning the rest of the cell. Until
+        // the author button's first layout its title node is not in
+        // `subnodes`, so this finds nothing when -didLoad binds and the bind
+        // retry ladder picks the byline up once it lands. A cell-wide scan
+        // in that window matched post titles that name their own author: "by
+        // <name>" in "Rally Lutosus by Lowtrippy" (u/lowtrippy's post) scores
+        // exactly like the byline, so the avatar went into the title and
+        // stayed there (#977). The same scan hit every retry when a feed
+        // shows the subreddit instead of the author (no authorButtonNode, so
+        // this searches the whole PostInfoNode): with no author shown there
+        // is nothing to put an avatar on.
+        return ApolloBestAuthorTextNodeInRoot(authorSubtree, username);
     }
+    // No known author ivar on this cell: score every text node in it.
     return ApolloBestAuthorTextNodeInRoot(cell, username);
 }
 
