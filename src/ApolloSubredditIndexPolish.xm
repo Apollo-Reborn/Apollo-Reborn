@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFavoriteConfirm.h"
+#import "ApolloFollowingSection.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -60,7 +61,6 @@ static char kApolloMetaFeedModeratorAvailabilityMismatchKey;
 static NSHashTable<UITableView *> *sApolloSubredditKnownTables = nil;
 
 static void ApolloSubredditIndexRestoreCellNativeState(UITableViewCell *cell);
-static char kApolloSubredditMultiredditsSectionKey;
 static char kApolloSubredditMultiredditChildStyledKey;
 
 static NSString * const ApolloSubredditIndexFavoriteSubredditsKey = @"FavoriteSubreddits";
@@ -174,7 +174,6 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, weak) UITableView *tableView;
 @property (nonatomic, weak) UITableViewCell *cell;
 @property (nonatomic, weak) UIControl *nativeControl;
-@property (nonatomic, copy) NSString *subredditName;
 - (void)apollo_performStarTap;
 @end
 
@@ -836,6 +835,16 @@ static Class ApolloSubredditIndexRedditListTableViewCellClass(void) {
     return cls;
 }
 
+static Class ApolloSubredditIndexSubItemTableViewCellClass(void) {
+    static Class cls = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cls = NSClassFromString(@"_TtC6Apollo20SubItemTableViewCell");
+        if (!cls) cls = NSClassFromString(@"Apollo.SubItemTableViewCell");
+    });
+    return cls;
+}
+
 static UIControl *ApolloSubredditIndexRedditListAccessoryButton(UITableViewCell *cell) {
     static Ivar accessoryButtonIvar = NULL;
     static dispatch_once_t onceToken;
@@ -1192,11 +1201,27 @@ static NSString *ApolloSubredditIndexCellTitle(UITableViewCell *cell) {
     return title.length > 0 ? title : nil;
 }
 
+static BOOL ApolloSubredditIndexControlHasFavoriteAction(UIControl *control) {
+    if (!control) return NO;
+
+    // Apollo reuses RedditListTableViewCell's accessory button for both a
+    // subreddit star and a multireddit expand chevron. Their frames look the
+    // same, so identify the control by the action it actually sends instead
+    // of treating every right-side button as a favorite toggle.
+    NSString *favoriteAction = NSStringFromSelector(@selector(favoriteSubredditButtonTapped:));
+    for (id target in control.allTargets) {
+        NSArray<NSString *> *actions =
+            [control actionsForTarget:target forControlEvent:UIControlEventTouchUpInside];
+        if ([actions containsObject:favoriteAction]) return YES;
+    }
+    return NO;
+}
+
 static UIControl *ApolloSubredditIndexFindStarControlInView(UIView *view, UITableViewCell *cell) {
     if (!view || !cell) return nil;
 
     UIControl *accessoryButton = ApolloSubredditIndexRedditListAccessoryButton(cell);
-    if (accessoryButton &&
+    if (ApolloSubredditIndexControlHasFavoriteAction(accessoryButton) &&
         !accessoryButton.hidden &&
         accessoryButton.alpha > 0.05 &&
         ApolloSubredditIndexStarControlFrameIsPlausible(accessoryButton, cell, NULL)) {
@@ -1213,7 +1238,10 @@ static UIControl *ApolloSubredditIndexFindStarControlInView(UIView *view, UITabl
         UIView *candidate = stack.lastObject;
         [stack removeLastObject];
 
-        if ([candidate isKindOfClass:[UIControl class]] && ![candidate isMemberOfClass:[ApolloSubredditStarHitProxy class]] && !candidate.hidden && candidate.alpha > 0.05) {
+        if ([candidate isKindOfClass:[UIControl class]] &&
+            ![candidate isMemberOfClass:[ApolloSubredditStarHitProxy class]] &&
+            !candidate.hidden && candidate.alpha > 0.05 &&
+            ApolloSubredditIndexControlHasFavoriteAction((UIControl *)candidate)) {
             CGRect frameInCell = CGRectZero;
             BOOL plausibleSize = ApolloSubredditIndexStarControlFrameIsPlausible((UIControl *)candidate, cell, &frameInCell);
             CGFloat midX = CGRectGetMidX(frameInCell);
@@ -1307,6 +1335,10 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 }
 
 - (void)apollo_starTapped {
+    // Resolve only for an actual tap. The proxy is positioned from cell
+    // layoutSubviews, where walking Apollo's sectioned model is too costly.
+    if ([self apollo_currentSubredditName].length == 0) return;
+
     // When Confirm Favorite Changes is on, defer the mutation (and its
     // scroll-anchor compensation) until the user confirms — otherwise the
     // anchor restore would run against an unchanged table and the later
@@ -1317,17 +1349,25 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     }
     __weak typeof(self) weakSelf = self;
     ApolloFavoriteConfirmRun(self, ^NSString * {
-        return weakSelf.subredditName;
+        return [weakSelf apollo_currentSubredditName];
     }, ^{
         [weakSelf apollo_performStarTap];
     });
 }
 
+- (NSString *)apollo_currentSubredditName {
+    UITableView *tableView = self.tableView;
+    UITableViewCell *cell = self.cell;
+    if (!tableView || !cell || ![cell isDescendantOfView:tableView]) return nil;
+    NSIndexPath *path = [tableView indexPathForCell:cell];
+    return ApolloSubredditListNameAtIndexPath(tableView, path);
+}
+
 - (void)apollo_performStarTap {
     UIControl *nativeControl = self.nativeControl;
     UITableView *tableView = self.tableView;
-    NSString *subredditName = self.subredditName;
-    if (!nativeControl || !tableView) return;
+    NSString *subredditName = [self apollo_currentSubredditName];
+    if (!nativeControl || !tableView || subredditName.length == 0) return;
 
     ApolloLog(@"[SubredditIndex] star-tap subreddit=%@", subredditName ?: @"(unknown)");
 
@@ -1833,7 +1873,6 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
     proxy.tableView = tableView;
     proxy.cell = cell;
     proxy.nativeControl = nativeControl;
-    proxy.subredditName = ApolloSubredditIndexCellTitle(cell);
     proxy.frame = ApolloSubredditIndexProxyFrameForCell(cell, nativeControl);
     ApolloSubredditIndexClearStarChrome(nativeControl);
     [cell bringSubviewToFront:proxy];
@@ -1841,7 +1880,7 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
     if (![objc_getAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey) boolValue]) {
         objc_setAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLogDebug(@"[SubredditIndex] star-proxy-installed subreddit=%@ frame=%@ native=%@",
-                       proxy.subredditName ?: @"(unknown)",
+                       ApolloSubredditIndexCellTitle(cell) ?: @"(unknown)",
                        NSStringFromCGRect(proxy.frame),
                        NSStringFromClass([nativeControl class]));
     }
@@ -2115,25 +2154,6 @@ static void ApolloSubredditIndexApplyModernPressedCellSelectionChrome(UITableVie
     ApolloSubredditIndexSetModernPressOverlayVisible(cell, tableView, cell.highlighted || cell.selected, NO);
 }
 
-static NSInteger ApolloSubredditIndexMultiredditsSection(UITableView *tableView) {
-    if (!tableView) return NSNotFound;
-    NSNumber *section = objc_getAssociatedObject(tableView, &kApolloSubredditMultiredditsSectionKey);
-    return section ? section.integerValue : NSNotFound;
-}
-
-static void ApolloSubredditIndexTrackMultiredditsSection(UITableView *tableView, UIView *headerView, NSInteger section) {
-    if (!sSubredditListEnhancements) return;
-    if (!tableView || !headerView) return;
-
-    UILabel *label = ApolloSubredditIndexHeaderLabelInView(headerView);
-    if (!label) return;
-
-    NSString *text = [[label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
-    if ([text isEqualToString:@"MULTIREDDITS"]) {
-        objc_setAssociatedObject(tableView, &kApolloSubredditMultiredditsSectionKey, @(section), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
 static BOOL ApolloSubredditIndexViewLooksLikeMultiredditChildLine(UIView *view) {
     if (!view || view.hidden || view.alpha < 0.05) return NO;
     if ([view isKindOfClass:[UILabel class]] || [view isKindOfClass:[UIImageView class]] || [view isKindOfClass:[UIControl class]]) {
@@ -2185,10 +2205,11 @@ static UIView *ApolloSubredditIndexMultiredditChildLineView(UITableViewCell *cel
 
 static BOOL ApolloSubredditIndexCellIsMultiredditChild(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
     if (!sModernSubredditDividers || !tableView || !cell || !indexPath) return NO;
-
-    NSInteger multiredditsSection = ApolloSubredditIndexMultiredditsSection(tableView);
-    if (multiredditsSection == NSNotFound || indexPath.section != multiredditsSection) return NO;
-
+    Class subItemClass = ApolloSubredditIndexSubItemTableViewCellClass();
+    if (!subItemClass || ![cell isMemberOfClass:subItemClass]) return NO;
+    // Apollo inserts these cells when a multireddit expands. Their class and
+    // leading guide line identify them even before a section header displays
+    // or when the user reorders the multireddit section.
     return ApolloSubredditIndexMultiredditChildLineView(cell) != nil;
 }
 
@@ -2508,7 +2529,6 @@ static void ApolloSubredditIndexWillDisplayHeaderHook(id self, SEL _cmd, UITable
     objc_setAssociatedObject(view, &kApolloSubredditHeaderSectionKey, @(section), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(view, &kApolloSubredditHeaderPinnedStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSubredditIndexStyleHeaderView(view, tableView);
-    ApolloSubredditIndexTrackMultiredditsSection(tableView, view, section);
 }
 
 static void ApolloSubredditIndexWillDisplayCellHook(id self, SEL _cmd, UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
@@ -2754,7 +2774,6 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
 }
 
 - (void)reloadData {
-    objc_setAssociatedObject((UITableView *)self, &kApolloSubredditMultiredditsSectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
