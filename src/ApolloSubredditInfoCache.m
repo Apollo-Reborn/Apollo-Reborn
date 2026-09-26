@@ -364,7 +364,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
 - (NSURLRequest *)requestForSubreddit:(NSString *)subredditName {
     NSString *escaped = [self escapedSubredditForPath:subredditName];
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloActiveAccountRedditBearerToken();
     NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/about.json?raw_json=1", escaped]
         : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", escaped];

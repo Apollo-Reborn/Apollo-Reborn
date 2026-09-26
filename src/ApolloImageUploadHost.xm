@@ -318,6 +318,27 @@ NSString *ApolloLatestRedditBearerToken(void) {
     return sLatestRedditBearerToken.length > 0 ? [sLatestRedditBearerToken copy] : nil;
 }
 
+// The captured bearer is the last REAL token seen on the wire, not necessarily
+// the active account's. Apollo refreshes every signed-in account at launch
+// (/api/v1/me, /subreddits/mine/*, /prefs/*, /api/multi/mine, ...) and the
+// account-specific-poll filter above only skips part of that, so on an install
+// that mixes an API-Key-Free account with an API-key one, the capture ends up
+// holding the API-key account's token. An API-Key-Free account never owns a
+// real bearer (its requests carry a synthetic one, which is never captured), so
+// while it is active its own traffic never replaces that token. Reads sent on
+// it run as the other account (follow and subscribe state, rate limit) and fail
+// with 401/403 once it is dead: tokens last 24 hours, and Apollo refreshes one
+// only after Reddit rejects it. Returning nil sends the caller down its
+// bearer-less www.reddit.com path, which the request chokepoint (Tweak.xm)
+// signs with the active account's web session, the same path an
+// API-Key-Free-only install always takes.
+NSString *ApolloActiveAccountRedditBearerToken(void) {
+    NSString *token = [sLatestRedditBearerToken copy];
+    if (token.length == 0) return nil;
+    if (ApolloWebJSONHasUsableSession()) return nil;
+    return token;
+}
+
 // MARK: - Asset map
 
 static void ApolloRecordRedditUploadedMediaAssetID(NSURL *imageURL, NSString *assetID) {
