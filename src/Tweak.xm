@@ -1973,11 +1973,13 @@ void ApolloPrepareRandomNSFWSubredditSource(
             });
         });
 }
-// Replace Reddit API client ID. Resolved per-account (see
-// ApolloAccountCredentials.{h,m}): a pending add-account choice, else the
-// active account's stored override, else the global default — instead of
-// unconditionally forcing the single global client id/redirect URI onto every
-// account, which broke a second account's login/refresh under a different key.
+// Replace Reddit API client ID. Resolved per credential (see
+// ApolloAccountCredentials.{h,m}): a credential created by an interactive
+// sign-in (Add Account) keeps the default key it started with, every other one
+// follows the active account's stored override, else the global default —
+// instead of unconditionally forcing the single global client id/redirect URI
+// onto every account, which broke a second account's login/refresh under a
+// different key.
 %hook RDKOAuthCredential
 
 // Fall back to %orig (the credential's REAL stored value) when nothing is
@@ -1987,12 +1989,12 @@ void ApolloPrepareRandomNSFWSubredditSource(
 // hardcoded fallback constant, unlike the redirect URI below), breaking token
 // refresh for exactly that account with a blank, unmatchable client_id.
 - (NSString *)clientIdentifier {
-    NSString *effective = ApolloEffectiveRedditClientId();
+    NSString *effective = ApolloRedditClientIdForCredential(self);
     return effective.length > 0 ? effective : %orig;
 }
 
 - (NSURL *)redirectURI {
-    NSString *effective = ApolloEffectiveRedirectURI();
+    NSString *effective = ApolloRedirectURIForCredential(self);
     return effective.length > 0 ? [NSURL URLWithString:effective] : %orig;
 }
 
@@ -2145,6 +2147,33 @@ static const char kARCompletion = '\0';
 - (NSString *)userAgent {
     NSString *customUA = [sUserAgent length] > 0 ? sUserAgent : defaultUserAgent;
     return customUA;
+}
+
+// Every interactive sign-in (Add Account, the signed-out splash) starts here:
+// AccountManager's beginAuthenticationOfNewUser(_:completion:) — and its
+// SFSafariViewController variant — allocates a fresh RDKClient and calls this
+// with Apollo's own client id + redirect URI, then asks the same client for
+// -authenticationURLWithScope:. RDK creates a new RDKOAuthCredential here and
+// installs it with -setAuthorizationCredential:, which already bakes the Basic
+// auth header for the later authorization_code exchange from -clientIdentifier.
+// So the credential gets the default key attached (see
+// ApolloAccountCredentialsBeginInteractiveSignIn) and is installed again so
+// that header is rebuilt from it: the authorize URL, the exchange's Basic auth
+// and its redirect_uri then all carry the default, while every other account's
+// credential (the active one keeps refreshing meanwhile) is untouched. The
+// app-only bootstrap arrives through -authenticateWithClientIdentifier:, which
+// passes a nil redirect URI; a client that already has a user is never an
+// Add Account sign-in. Both keep the old resolution.
+- (void)authenticateWithClientIdentifier:(NSString *)identifier redirectURI:(NSURL *)redirectURI {
+    %orig;
+    if (!redirectURI || [self currentUser]) return;
+    id credential = [self authorizationCredential];
+    if (!credential) {
+        ApolloLog(@"[AccountCredentials] New sign-in: RDKClient has no credential after authenticate; default key not applied");
+        return;
+    }
+    ApolloAccountCredentialsBeginInteractiveSignIn(credential);
+    [self setAuthorizationCredential:credential];
 }
 
 // #785: "Go to user" with a trailing space after the username crashes. Apollo
