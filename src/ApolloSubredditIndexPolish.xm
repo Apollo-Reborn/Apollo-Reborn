@@ -174,7 +174,6 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, weak) UITableView *tableView;
 @property (nonatomic, weak) UITableViewCell *cell;
 @property (nonatomic, weak) UIControl *nativeControl;
-@property (nonatomic, copy) NSString *subredditName;
 - (void)apollo_performStarTap;
 @end
 
@@ -1336,6 +1335,10 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 }
 
 - (void)apollo_starTapped {
+    // Resolve only for an actual tap. The proxy is positioned from cell
+    // layoutSubviews, where walking Apollo's sectioned model is too costly.
+    if ([self apollo_currentSubredditName].length == 0) return;
+
     // When Confirm Favorite Changes is on, defer the mutation (and its
     // scroll-anchor compensation) until the user confirms — otherwise the
     // anchor restore would run against an unchanged table and the later
@@ -1346,17 +1349,25 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     }
     __weak typeof(self) weakSelf = self;
     ApolloFavoriteConfirmRun(self, ^NSString * {
-        return weakSelf.subredditName;
+        return [weakSelf apollo_currentSubredditName];
     }, ^{
         [weakSelf apollo_performStarTap];
     });
 }
 
+- (NSString *)apollo_currentSubredditName {
+    UITableView *tableView = self.tableView;
+    UITableViewCell *cell = self.cell;
+    if (!tableView || !cell || ![cell isDescendantOfView:tableView]) return nil;
+    NSIndexPath *path = [tableView indexPathForCell:cell];
+    return ApolloSubredditListNameAtIndexPath(tableView, path);
+}
+
 - (void)apollo_performStarTap {
     UIControl *nativeControl = self.nativeControl;
     UITableView *tableView = self.tableView;
-    NSString *subredditName = self.subredditName;
-    if (!nativeControl || !tableView) return;
+    NSString *subredditName = [self apollo_currentSubredditName];
+    if (!nativeControl || !tableView || subredditName.length == 0) return;
 
     ApolloLog(@"[SubredditIndex] star-tap subreddit=%@", subredditName ?: @"(unknown)");
 
@@ -1846,16 +1857,6 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
         return;
     }
 
-    // A multireddit header uses the same cell class and right-side accessory
-    // geometry as a subreddit. Only rows backed by Apollo's subreddit model
-    // may receive a favorite hit target; an expanded child is not such a row.
-    NSIndexPath *path = [tableView indexPathForCell:cell];
-    NSString *modelName = ApolloSubredditListNameAtIndexPath(tableView, path);
-    if (modelName.length == 0) {
-        ApolloSubredditIndexRemoveStarProxyFromCell(cell);
-        return;
-    }
-
     UIControl *nativeControl = ApolloSubredditIndexFindStarControlInView(cell, cell);
     ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
     if (!nativeControl) {
@@ -1872,7 +1873,6 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
     proxy.tableView = tableView;
     proxy.cell = cell;
     proxy.nativeControl = nativeControl;
-    proxy.subredditName = modelName;
     proxy.frame = ApolloSubredditIndexProxyFrameForCell(cell, nativeControl);
     ApolloSubredditIndexClearStarChrome(nativeControl);
     [cell bringSubviewToFront:proxy];
@@ -1880,7 +1880,7 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
     if (![objc_getAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey) boolValue]) {
         objc_setAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLogDebug(@"[SubredditIndex] star-proxy-installed subreddit=%@ frame=%@ native=%@",
-                       proxy.subredditName ?: @"(unknown)",
+                       ApolloSubredditIndexCellTitle(cell) ?: @"(unknown)",
                        NSStringFromCGRect(proxy.frame),
                        NSStringFromClass([nativeControl class]));
     }
