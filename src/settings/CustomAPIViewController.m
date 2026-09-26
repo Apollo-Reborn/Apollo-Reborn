@@ -1696,7 +1696,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     ApolloSettingsRow *readThumbnails =
         [ApolloSettingsRow switchRowWithID:@"gen.readThumbnails"
-                                     title:@"Recently Read Thumbnails"
+                                     title:@"Show Thumbnails"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRecentlyReadThumbnails]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf showRecentlyReadThumbnailsSwitchToggled:sender]; }];
 
@@ -1705,7 +1705,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
             NSString *readPostMaxStr = sReadPostMaxCount > 0 ? [NSString stringWithFormat:@"%ld", (long)sReadPostMaxCount] : @"";
             return [weakSelf textFieldCellWithIdentifier:@"Cell_Gen_ReadMax"
-                                                   label:@"Recently Read Posts Limit"
+                                                   label:@"History Limit"
                                              placeholder:@"(unlimited)"
                                                     text:readPostMaxStr
                                                      tag:TagReadPostMaxCount
@@ -1716,13 +1716,13 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     ApolloSettingsRow *filterNSFWRR =
         [ApolloSettingsRow switchRowWithID:@"gen.filterNSFWRR"
-                                     title:@"Hide NSFW in Recently Read"
+                                     title:@"Hide NSFW Posts"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFilterNSFWRecentlyRead]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf filterNSFWRecentlyReadSwitchToggled:sender]; }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Recently Read"
-                                            footer:@"Show thumbnails on posts you've already read, and cap how many Apollo remembers."
-                                              rows:@[ readThumbnails, readPostMax, filterNSFWRR ]];
+                                            footer:@"Choose how posts appear in Recently Read and how many Apollo remembers."
+                                            rows:@[ readThumbnails, readPostMax, filterNSFWRR ]];
 }
 
 // The "Open in App" screen now lives in native General → Open Links — see
