@@ -31,6 +31,7 @@
 #import "Defaults.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "ApolloWebAuthViewController.h"
+#import "ApolloToast.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -3697,6 +3698,22 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
 }
 %end
 
+// Reddit refusing the active API-Key-Free session (#1163, #1225): say so, rather
+// than leave a feed that won't load spinning with no explanation. Shown when the
+// limit starts (ApolloWebJSONSessionRateLimitedNotification) and again when the
+// app comes back while it still holds. At most once every 30s, so the launch-time
+// notice and the didBecomeActive right after it don't both show. Main thread.
+static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
+    static NSTimeInterval sLastShownAt = 0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - sLastShownAt < 30.0) return;
+    sLastShownAt = now;
+    NSString *detail = seconds < 60.0
+        ? @"Try again in under a minute"
+        : [NSString stringWithFormat:@"Try again in about %lu min", (unsigned long)ceil(seconds / 60.0)];
+    ApolloShowToastWithStyle(@"Reddit Rate Limit Reached", detail, ApolloToastStyleError, @"exclamationmark.triangle");
+}
+
 // MARK: - Constructor
 %ctor {
     // Local crash recording installs before anything else in the tweak (and
@@ -4256,6 +4273,23 @@ static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
                                                   usingBlock:^(NSNotification *note) {
         NSString *username = note.userInfo[@"username"];
         [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:username];
+    }];
+    // ...and a rate-limited one (HTTP 429 on every request until Reddit's
+    // window resets) as a toast, the moment it starts and on each return to
+    // the app while it lasts. Only web-session accounts ever record a limit,
+    // so API-key accounts never see this.
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloWebJSONSessionRateLimitedNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        ApolloShowRedditRateLimitToast([note.userInfo[@"seconds"] doubleValue]);
+    }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *note) {
+        NSTimeInterval wait = ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername());
+        if (wait > 0) ApolloShowRedditRateLimitToast(wait);
     }];
     // Picture-in-Picture hydration.
     sPiPEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureEnabled];

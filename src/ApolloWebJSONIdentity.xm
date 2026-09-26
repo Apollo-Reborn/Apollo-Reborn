@@ -70,6 +70,7 @@
 #import "ApolloWebJSON.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloUserProfileCache.h"
 #import "ApolloWebSessionStore.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
@@ -926,6 +927,18 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
     // The repair is a strict no-op for the modern shape.
     @try { obj = ApolloWebJSONFixupWriteResponseObject(response, obj); }
     @catch (NSException *e) { ApolloLog(@"[WebJSON] write-response fixup failed: %@", e); }
+    // Apollo fetches user_data_by_account_ids for a thread's comment authors on
+    // its own (every auth mode). Hand the result to the avatar cache so inline
+    // avatars don't look each of those authors up again; for an API-Key-Free
+    // account that was one about.json per author, on the same Reddit budget as
+    // the thread itself (issue #1163).
+    if (sShowUserAvatars && [obj isKindOfClass:[NSDictionary class]] && [response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSString *path = ((NSHTTPURLResponse *)response).URL.path;
+        if ([path isEqualToString:@"/api/user_data_by_account_ids.json"] || [path isEqualToString:@"/api/user_data_by_account_ids"]) {
+            @try { [[ApolloUserProfileCache sharedCache] ingestUserDataByAccountIDsResponse:obj]; }
+            @catch (NSException *e) { ApolloLog(@"[UserAvatars] user_data_by_account_ids ingest failed: %@", e); }
+        }
+    }
     if (sWebJSONEnabled) {
         @try { obj = ApolloWebJSONFixupModeratorsResponseObject(response, obj); }
         @catch (NSException *e) { ApolloLog(@"[WebJSON] moderators-response fixup failed: %@", e); }
