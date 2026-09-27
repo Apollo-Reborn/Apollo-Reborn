@@ -4926,16 +4926,8 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    if (liquidGlass) {
-        titleLabel.text = @"Preview";
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
-        titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-            scaledFontForFont:titleFont];
-    } else {
-        titleLabel.text = @"PREVIEW";
-        titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    }
-    titleLabel.adjustsFontForContentSizeCategory = YES;
+    titleLabel.text = @"Preview";
+    ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
     titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     self.previewTitleLabel = titleLabel;
@@ -5040,9 +5032,10 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     self.previewHost.backgroundColor = backgroundColor;
     self.previewCardView.backgroundColor = ApolloThemeCardBackgroundColor()
         ?: UIColor.secondarySystemGroupedBackgroundColor;
-    self.previewTitleLabel.textColor =
-        ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
-        ?: UIColor.secondaryLabelColor;
+    // This heading lives outside the form table, so table reloads do not
+    // refresh it. Reapply the effective text size and native theme palette
+    // on appearance and Dynamic Type changes, before preview measurement.
+    ApolloSettingsApplySectionHeaderTypography(self.previewTitleLabel);
     self.scrollBoundaryView.backgroundColor = ApolloThemeSeparatorColor()
         ?: self.formViewController.tableView.separatorColor
         ?: UIColor.separatorColor;

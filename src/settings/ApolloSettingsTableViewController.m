@@ -47,6 +47,51 @@ UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits) {
               compatibleWithTraitCollection:ApolloSettingsTextTraits(traits)];
 }
 
+static UIFont *ApolloSettingsSectionHeaderFont(UITraitCollection *traits) {
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]
+        compatibleWithTraitCollection:ApolloSettingsTextTraits(traits)];
+}
+
+static NSString *ApolloSettingsSentenceCaseHeader(NSString *text) {
+    if (text.length == 0) return text;
+    // UIKit/native headers may already be uppercase. Normalize the whole
+    // title, then capitalize only its first composed character (not each word).
+    NSString *lowercase = text.lowercaseString;
+    NSRange first = [lowercase rangeOfComposedCharacterSequenceAtIndex:0];
+    return [lowercase stringByReplacingCharactersInRange:first
+        withString:[[lowercase substringWithRange:first] uppercaseString]];
+}
+
+void ApolloSettingsApplySectionHeaderTypography(UIView *view) {
+    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        // UIKit owns standard form headers. Configure their source of truth,
+        // rather than only modifying labels that UIKit can recreate on update.
+        if ([header.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
+            UIListContentConfiguration *configuration = [(UIListContentConfiguration *)header.contentConfiguration copy];
+            configuration.text = ApolloSettingsSentenceCaseHeader(configuration.text);
+            configuration.textProperties.font = ApolloSettingsSectionHeaderFont(view.traitCollection);
+            configuration.textProperties.adjustsFontForContentSizeCategory = NO;
+            configuration.textProperties.color = ApolloThemeSettingsSecondaryTextColor()
+                ?: UIColor.secondaryLabelColor;
+            header.contentConfiguration = configuration;
+            return;
+        }
+        // Legacy title-based headers create their label lazily; force its
+        // creation before walking subviews in willDisplayHeaderView.
+        ApolloSettingsApplySectionHeaderTypography(header.textLabel);
+    }
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label = (UILabel *)view;
+        label.text = ApolloSettingsSentenceCaseHeader(label.text);
+        label.textColor = ApolloThemeSettingsSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+        label.font = ApolloSettingsSectionHeaderFont(view.traitCollection);
+        label.adjustsFontForContentSizeCategory = NO;
+    }
+    for (UIView *child in view.subviews) ApolloSettingsApplySectionHeaderTypography(child);
+}
+
 static void ApolloSettingsApplyTextTypography(UIView *view) {
     // Only semantic text participates: fixed artwork/preview typography stays
     // with its owner. Keep the descriptor's family and weight, changing size
@@ -188,11 +233,7 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
-        UITableViewHeaderFooterView *sectionView = (UITableViewHeaderFooterView *)view;
-        sectionView.textLabel.font = ApolloSettingsFont(UIFontTextStyleCaption1, view.traitCollection);
-    }
-    ApolloSettingsApplyTextTypography(view);
+    ApolloSettingsApplySectionHeaderTypography(view);
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {

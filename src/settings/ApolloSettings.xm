@@ -662,7 +662,22 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 
 %end
 
+%group ApolloSettingsGestureHeaders
+%hook ApolloSettingsGesturesViewController
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    UIView *header = %orig;
+    ApolloSettingsApplySectionHeaderTypography(header);
+    return header;
+}
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    %orig;
+    ApolloSettingsApplySectionHeaderTypography(view);
+}
+%end
+%end
+
 %ctor {
+    %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = NSClassFromString(@"Apollo.SettingsGesturesViewController"));
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
           SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"));
 

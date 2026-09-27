@@ -22,6 +22,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import "settings/ApolloSettingsTableViewController.h"
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
@@ -117,7 +118,7 @@ static UIView *ApolloPFSectionHeaderView(NSString *title) {
     UILabel *label = [[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.text = title.uppercaseString;
-    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    ApolloSettingsApplySectionHeaderTypography(label);
     label.textColor = [UIColor secondaryLabelColor];
     label.numberOfLines = 0;
     [container addSubview:label];
@@ -237,6 +238,11 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
     return cell;
 }
 
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    %orig;
+    ApolloSettingsApplySectionHeaderTypography(view);
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     NSInteger native = [self apollo_pfNativeSectionCount:tableView];
     if (section < native) {
@@ -245,7 +251,9 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
             // toggle + its users read as one continuous rounded group.
             return [[UIView alloc] init];
         }
-        return %orig;
+        UIView *header = %orig;
+        ApolloSettingsApplySectionHeaderTypography(header);
+        return header;
     }
     NSString *title;
     if (section == native) title = @"Subreddit-Specific Filters";

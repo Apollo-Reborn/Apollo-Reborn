@@ -962,10 +962,11 @@ static NSString *SpacedThemeName(NSString *raw) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
     UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
-    header.textLabel.textColor = [self themeColorForToken:ApolloThemeTokenSecondaryLabel
-                                                 fallback:UIColor.secondaryLabelColor];
+    // The shared header callback owns typography and the native/custom
+    // settings palette; keep its color for both labels and configurations.
     header.contentView.backgroundColor = UIColor.clearColor;
 }
 
