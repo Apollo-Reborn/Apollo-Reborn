@@ -422,6 +422,32 @@ static BOOL PlayerIsPresentedFullscreen(AVPlayer *player) {
     return player != nil && player == PresentedFullscreenPlayer();
 }
 
+// Apollo keeps screens alive after they leave the window: every screen you go
+// back from waits in the navigation controller's forward stack
+// (poppedViewControllers), and feeds in other tabs or under a pushed screen stay
+// loaded. Their tables still send visibility ticks. An account switch, for
+// example, runs PostsViewController.redditAccountChangedWithNotification: on
+// every live feed, and its scrollToRow(0) sends a VisibleRectChanged tick to
+// every cell the table last displayed, including a video still playing muted
+// in a feed you left minutes ago. Apollo's own midpoint autoplay ignores such a
+// tick (sub_100307a14 does nothing when the cell's view has no window), but
+// unmuting from it plays sound nobody can see, and nothing releases it
+// afterwards: its invisible event (2) already fired when the screen left. So
+// every tweak unmute that can run while its video is off screen (a feed tick,
+// and the comments retries that fire after a delay) asks this first, the same
+// window test Apollo uses. YES = skipped (logged).
+static BOOL SkipUnmuteIfOffScreen(id richMediaNode, NSString *what) {
+    UIView *view = nil;
+    if (richMediaNode && [richMediaNode respondsToSelector:@selector(isNodeLoaded)]
+        && ((BOOL (*)(id, SEL))objc_msgSend)(richMediaNode, @selector(isNodeLoaded))) {
+        view = ((UIView *(*)(id, SEL))objc_msgSend)(richMediaNode, @selector(view));
+    }
+    if ([view window]) return NO;
+
+    ApolloLog(@"[VideoUnmute] %@ skipped: the video is off screen (not in a window), leaving it muted", what);
+    return YES;
+}
+
 // Update the MuteUnmuteVideoButtonNode's visual state to match actual mute state.
 // Sets the `isMuted` ivar (Swift Bool) and updates the `icon` ASImageNode's image.
 //
@@ -600,6 +626,10 @@ static void ReUnmuteAfterFullscreenWhenReady(id richMediaNode, id videoNode, NSU
         return;
     }
 
+    // Runs 200ms+ after the dismissal: the comments screen may have been
+    // swiped away in the meantime (see SkipUnmuteIfOffScreen).
+    if (SkipUnmuteIfOffScreen(rmNode, @"Re-unmute after fullscreen")) return;
+
     ApolloLog(@"[VideoUnmute] Re-unmuting after fullscreen dismiss");
     UnmuteRichMediaNode(rmNode, vNode);
 }
@@ -707,6 +737,12 @@ static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if ([player rate] <= 0.0f) return NO;
 
     if (!FeedVideosShouldBeAudible()) return NO;
+
+    // Last, so it only logs for a video that is playing and would otherwise
+    // become audible. Not eligible rather than handled: if a retry is running,
+    // it re-checks, and a feed coming back on screen sends its cells a fresh
+    // Visible event anyway.
+    if (SkipUnmuteIfOffScreen(richMediaNode, @"Feed auto-unmute")) return NO;
 
     MutePreviouslyAudibleFeedVideo(player);
 
@@ -883,6 +919,10 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
 
             if (sUnmuteCommentsVideos == 2 && sPresentedMediaPageVC == nil
                 && !objc_getAssociatedObject(strongOwner, kAutoUnmuteAppliedKey)) {
+                // The comments screen may have been swiped away during the
+                // 500ms wait (see SkipUnmuteIfOffScreen). Leave the flag unset
+                // so its next Visible event still unmutes if it comes back.
+                if (SkipUnmuteIfOffScreen(rmNode, [contextLabel stringByAppendingString:@" retry unmute"])) return;
                 objc_setAssociatedObject(strongOwner, kAutoUnmuteAppliedKey, @YES,
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 ApolloLog(@"[VideoUnmute] %@ retry: unmuting after delay (muted=%d)",
