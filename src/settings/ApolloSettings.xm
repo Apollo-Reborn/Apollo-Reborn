@@ -12,6 +12,8 @@
 #import "ApolloSettingsSearch.h"
 #import "ApolloReportViewController.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import "ApolloWallpapersViewController.h"
 #import "ApolloSettingsTableViewController.h"
 
@@ -55,6 +57,17 @@ static NSString *const kApolloRebornFeatureRequestsURL = @"https://apolloreborn.
 // contain SettingsVC).
 static __weak UIViewController *sApolloLastSettingsVC = nil;
 static char kApolloRootNativeSurfaceKey;
+static char kApolloRootNativeCellKey;
+
+static void ApolloRootSettingsExposeSelection(UITableViewCell *cell) {
+    if (![objc_getAssociatedObject(cell, &kApolloRootNativeCellKey) boolValue]) return;
+    // Apollo's native cells paint the card on both the cell and content view.
+    // UIKit's full-width selected background sits BETWEEN those two views;
+    // the opaque content therefore hides it everywhere except the disclosure
+    // accessory. Keep the native card on the cell, just as our injected rows
+    // do, and let UIKit own the entire pressed/selected background.
+    cell.contentView.backgroundColor = UIColor.clearColor;
+}
 
 static void ApolloApplyRootNativeSurface(UITableViewCell *cell, UIColor *surface) {
     if (!cell || !surface) return;
@@ -159,6 +172,14 @@ static UIImage *ApolloRootSettingsArtworkAtStandardSize(UIImage *artwork) {
 // Matches UIKit's inset-grouped spacing between two adjacent groups, which is
 // what Apollo's own sections use; see the first-section note in -viewWillAppear:.
 static const CGFloat kApolloRootFirstSectionTopPadding = 18.0;
+static char kApolloPixelPalsSectionKey;
+static char kApolloPixelPalsFooterReloadedKey;
+static char kApolloPixelPalsDuoRefreshKey;
+
+static BOOL ApolloSettingsIsDuo(void) {
+    return ApolloDuoRailHasVisibleSideBar()
+        || ApolloDuoCurrentMode() != ApolloDuoModePhone;
+}
 
 static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     if ([view isKindOfClass:UITableView.class]) return (UITableView *)view;
@@ -219,6 +240,19 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     // The search bar is attached pinned so it's on screen the moment Settings
     // opens; from here on it scrolls away and reveals like a stock iOS one.
     ApolloSettingsSearchEnableScrollAway((UIViewController *)self);
+
+    // On the compatibility simulator UIKit installs its vertical tab rail
+    // after the root settings cells are first requested. Rebuild the visible
+    // cells once the rail is measurable so Pixel Pals cannot retain the
+    // enabled phone presentation from that early pass.
+    if (ApolloSettingsIsDuo()
+        && ![objc_getAssociatedObject(self, &kApolloPixelPalsDuoRefreshKey) boolValue]) {
+        objc_setAssociatedObject(self, &kApolloPixelPalsDuoRefreshKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UITableView *tableView = ApolloRootSettingsTableInView(((UIViewController *)self).view);
+        [tableView reloadData];
+        ApolloLog(@"[Settings] Pixel Pals disabled for visible Duo side rail");
+    }
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -311,6 +345,46 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     }
 
     UITableViewCell *cell = %orig;
+    objc_setAssociatedObject(cell, &kApolloRootNativeCellKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // This owner configures every native Settings root row. Apollo can return
+    // cached/reconfigured cells without prepareForReuse, and UIKit does not
+    // reset their interaction state. Reapply the row's current availability
+    // here, while retaining the colors/accessories Apollo just configured.
+    // Notifications remains a destination even without push entitlement: its
+    // own screen explains availability and offers the supported alternatives.
+    cell.userInteractionEnabled = YES;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    if ([cell.textLabel.text isEqualToString:@"Pixel Pals"]) {
+        BOOL duo = ApolloSettingsIsDuo();
+        if (duo) {
+            NSNumber *oldSection = objc_getAssociatedObject(self, &kApolloPixelPalsSectionKey);
+            objc_setAssociatedObject(self, &kApolloPixelPalsSectionKey, @(indexPath.section),
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            cell.userInteractionEnabled = NO;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.textLabel.textColor = UIColor.secondaryLabelColor;
+            cell.detailTextLabel.textColor = UIColor.tertiaryLabelColor;
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.accessoryView = nil;
+
+            // Apollo can ask for its footer before it asks for this cell.
+            // Re-evaluate the discovered section once, without assuming a
+            // fixed native section number.
+            if ((!oldSection || oldSection.integerValue != indexPath.section) &&
+                ![objc_getAssociatedObject(self, &kApolloPixelPalsFooterReloadedKey) boolValue]) {
+                objc_setAssociatedObject(self, &kApolloPixelPalsFooterReloadedKey, @YES,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                __weak UITableView *weakTable = tableView;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    UITableView *liveTable = weakTable;
+                    if (!liveTable) return;
+                    [liveTable reloadSections:[NSIndexSet indexSetWithIndex:(NSUInteger)indexPath.section]
+                             withRowAnimation:UITableViewRowAnimationNone];
+                });
+            }
+        }
+    }
     UIColor *nativeSurface = cell.backgroundColor ?: cell.contentView.backgroundColor;
     if (nativeSurface) {
         objc_setAssociatedObject(self, &kApolloRootNativeSurfaceKey, nativeSurface,
@@ -341,6 +415,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
              (cell.imageView.image.size.width > 29.5 || cell.imageView.image.size.height > 29.5)) {
         cell.imageView.image = ApolloRootSettingsArtworkAtStandardSize(cell.imageView.image);
     }
+    ApolloRootSettingsExposeSelection(cell);
     return cell;
 }
 
@@ -390,6 +465,11 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return nil;
+    NSNumber *pixelPalsSection = objc_getAssociatedObject(self, &kApolloPixelPalsSectionKey);
+    if (ApolloSettingsIsDuo() &&
+        pixelPalsSection && pixelPalsSection.integerValue == section) {
+        return @"Pixel Pals aren’t currently compatible with iPhone Duo.";
+    }
     return %orig;
 }
 
@@ -398,6 +478,30 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
         return MAX(52.0, ceil(ApolloSettingsFont(UIFontTextStyleBody, tableView.traitCollection).lineHeight) + 22.0);
     }
     return %orig;
+}
+
+%end
+
+// Native Apollo cells reapply their content background on every press/release.
+// Repair at that owner rather than a global cell layout hook; the marker limits
+// this to cells configured by the Settings root above, including cached cells
+// that never pass through prepareForReuse between taps.
+%hook _TtC6Apollo19ApolloTableViewCell
+
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
+    %orig;
+    ApolloRootSettingsExposeSelection((UITableViewCell *)self);
+}
+
+- (void)setSelected:(BOOL)selected animated:(BOOL)animated {
+    %orig;
+    ApolloRootSettingsExposeSelection((UITableViewCell *)self);
+}
+
+- (void)prepareForReuse {
+    %orig;
+    objc_setAssociatedObject(self, &kApolloRootNativeCellKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 %end

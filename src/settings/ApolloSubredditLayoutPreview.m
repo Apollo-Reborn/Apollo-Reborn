@@ -541,9 +541,9 @@ static ApolloNativePreviewMetrics ApolloNativePreviewMetricsMake(CGFloat width,
             ApolloPinnedPostsPreviewMessage, font, MAX(1.0, width - 24.0));
         return MAX(52.0, textHeight + 16.0);
     }
-    CGFloat renderWidth = ApolloSubredditPreviewRenderWidth(hostView, width);
-    CGFloat scale = width / MAX(1.0, renderWidth);
-    return ceil([ApolloHLPreviewFactory expandedCarouselHeight] * scale);
+    // Use production point sizes; a narrow preview shows fewer cards, not
+    // miniature cards and text.
+    return ceil([ApolloHLPreviewFactory expandedCarouselHeight]);
 }
 
 - (void)layoutSubviews {
@@ -557,7 +557,7 @@ static ApolloNativePreviewMetrics ApolloNativePreviewMetricsMake(CGFloat width,
         return;
     }
 
-    CGFloat renderWidth = ApolloSubredditPreviewRenderWidth(self, width);
+    CGFloat renderWidth = width;
     BOOL needsRebuild = !self.productionCarouselView || self.renderedMode != self.highlightsMode;
     if (needsRebuild) {
         [self.productionCarouselView removeFromSuperview];

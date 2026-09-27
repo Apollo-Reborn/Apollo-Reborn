@@ -80,6 +80,13 @@
 #import <sys/sysctl.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
+
+static BOOL ApolloPixelPalsDisabledOnDuo(void) {
+    return ApolloDuoRailHasVisibleSideBar()
+        || ApolloDuoCurrentMode() != ApolloDuoModePhone;
+}
 
 // Apollo's stock strip height (sub_10030c494) and y (sub_10030c880).
 static const CGFloat kApolloPalStripHeight = 14.0;
@@ -175,6 +182,7 @@ static NSString *ApolloRectString(CGRect r) {
 // layout untouched) until the pill has been captured, or when no correction is
 // needed.
 static BOOL ApolloPixelPalGeometry(UIWindow *window, CGRect *outApollo, CGRect *outPill) {
+    if (ApolloPixelPalsDisabledOnDuo()) return NO;
     if (!sApolloPillKnown) return NO;
     CGRect apollo = sApolloPill;
     CGRect pill = apollo;
@@ -389,6 +397,18 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 
 %hook _TtC6Apollo15ThemeableWindow
 
+// Duo has no supported Pixel Pals surface. Keep upstream's island geometry
+// hooks intact for regular phones, and only hide Apollo's own views on Duo.
+- (void)layoutSubviews {
+    %orig;
+    if (!ApolloPixelPalsDisabledOnDuo()) return;
+    for (NSString *name in @[@"fauxCutOutView", @"pixelPalView"]) {
+        Ivar ivar = class_getInstanceVariable(object_getClass(self), name.UTF8String);
+        UIView *view = ivar ? object_getIvar(self, ivar) : nil;
+        view.hidden = YES;
+    }
+}
+
 // Views Apollo adds to the window positioned from the stock pill: the tap flash
 // (sub_10030d6c4) and the hearts / food / emotes placed next to the pal
 // (PixelPalAddedSceneElementImageView). Both are framed before being added.
@@ -437,6 +457,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 // Suppress the Pixel Pals menu while media / a website / any modal is open or
 // mid-transition — opening it then races UIKit and freezes the app (issue #305).
 - (void)pixelPalTappedWithTapGestureRecognizer:(id)recognizer {
+    if (ApolloPixelPalsDisabledOnDuo()) return;
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
         return;
@@ -446,6 +467,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 
 // Same guard for the auto-open path when a pal barks for attention.
 - (void)dogBarkedWithNotification:(id)notification {
+    if (ApolloPixelPalsDisabledOnDuo()) return;
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
         return;

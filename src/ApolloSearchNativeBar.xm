@@ -48,6 +48,7 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloFindInCommentsGlass.h"
 
 // ApolloSwipeUpComments.xm: YES for the CommentsViewController hosted in the
@@ -923,9 +924,47 @@ static void NSBRestoreHeaderForTable(UIScrollView *sv) {
 
 // MARK: - Attach / policy
 
+static char kNSBDuoSearchPlacementKey;
+static char kNSBDuoSearchPlacementScheduledKey;
+
+static void NSBUpdateSearchPlacement(UIViewController *vc) {
+    if (@available(iOS 16.0, *)) {
+        UINavigationItem *item = vc.navigationItem;
+        // Both unfolded orientations keep the search field below the title.
+        // Use the destination display size during folding, before UIKit has
+        // finished installing its split columns or trailing navigation rail.
+        BOOL stacked = ApolloDuoSplitIsUnfolded();
+        NSNumber *original = objc_getAssociatedObject(item, &kNSBDuoSearchPlacementKey);
+        if (stacked && !original) {
+            original = @(item.preferredSearchBarPlacement);
+            objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!stacked && !original) return;
+        UINavigationItemSearchBarPlacement placement = stacked
+            ? UINavigationItemSearchBarPlacementStacked : (UINavigationItemSearchBarPlacement)original.integerValue;
+        if (item.preferredSearchBarPlacement != placement) item.preferredSearchBarPlacement = placement;
+        if (!stacked) objc_setAssociatedObject(item, &kNSBDuoSearchPlacementKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void NSBScheduleSearchPlacement(UIViewController *vc) {
+    if ([objc_getAssociatedObject(vc, &kNSBDuoSearchPlacementScheduledKey) boolValue]) return;
+    objc_setAssociatedObject(vc, &kNSBDuoSearchPlacementScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakVC = vc;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *strongVC = weakVC;
+        if (!strongVC) return;
+        objc_setAssociatedObject(strongVC, &kNSBDuoSearchPlacementScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSBUpdateSearchPlacement(strongVC);
+    });
+}
+
 static void NSBAttachNativeSearch(UIViewController *vc) {
     UINavigationItem *navItem = vc.navigationItem;
-    if (navItem.searchController != nil) return; // ours (or someone's) — never fight it
+    if (navItem.searchController != nil) {
+        NSBScheduleSearchPlacement(vc);
+        return;
+    }
 
     // The comments screen gets the comments bridge (ApolloFindInCommentsGlass.xm
     // drives Apollo's in-thread match pipeline); feeds get the results bridge.
@@ -966,6 +1005,8 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
             navItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementStacked;
         }
     }
+
+    NSBUpdateSearchPlacement(vc);
 
     // Attach laid-out-visible; the scroll-away policy flips it after the first
     // appearance (plain YES here parks the bar off-screen — no large title).

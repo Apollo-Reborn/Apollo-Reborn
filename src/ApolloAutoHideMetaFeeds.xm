@@ -85,6 +85,14 @@ static void ApolloAHCollectVisibleLeaves(UIViewController *vc,
         }
         return;
     }
+    // Duo keeps the split as a child of a plain navigation-stack host.
+    // Visit that container without treating offscreen stack entries as visible.
+    for (UIViewController *child in vc.childViewControllers) {
+        if ([child isKindOfClass:UISplitViewController.class]) {
+            ApolloAHCollectVisibleLeaves(child, leaves, depth + 1);
+            return;
+        }
+    }
     [leaves addObject:vc];
 }
 

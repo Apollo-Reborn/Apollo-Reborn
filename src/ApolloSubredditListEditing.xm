@@ -33,17 +33,17 @@ static id ApolloEditingIvar(id object, const char *name) {
 // Enhancements' wider inset, 8pt without it), so a fixed 23pt there moved the
 // non-Favorites stars 15pt left on some lists.
 static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
-    UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
-    if (![star isKindOfClass:UIButton.class]) return;
     NSNumber *original = objc_getAssociatedObject(cell, &kEditingRightMargin);
     NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
-    BOOL listEditing = NO;
-    if (editing) {
-        UITableView *table = ApolloEditingTable(cell);
-        // A row's swipe-to-delete is not Edit mode: the swiped row slides as it is.
-        listEditing = ApolloEditingIsList(table) && !ApolloSubredditListIsSwipeEditing(table);
-    }
-    if (listEditing) {
+    UITableView *table = editing ? ApolloEditingTable(cell) : nil;
+    // A row's swipe-to-delete is not Edit mode: the swiped row slides as it is.
+    BOOL editingList = editing && ApolloEditingIsList(table) && !ApolloSubredditListIsSwipeEditing(table);
+    // These lifecycle hooks also run for unrelated UIKit cells. Do not probe
+    // Apollo's ivars unless this is an editing list row or a row we modified.
+    if (!editingList && !original && !priorities) return;
+    UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
+    if (![star isKindOfClass:UIButton.class]) return;
+    if (editingList) {
         // Keep the star button from stretching and shifting its glyph.
         if (!priorities) {
             priorities = @[@([star contentHuggingPriorityForAxis:UILayoutConstraintAxisHorizontal]),
@@ -59,7 +59,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     }
     // UIKit sets the row's grip (showsReorderControl) before calling setEditing:.
     UIEdgeInsets margins = cell.contentView.layoutMargins;
-    if (listEditing && cell.showsReorderControl) {
+    if (editingList && cell.showsReorderControl) {
         if (!original) objc_setAssociatedObject(cell, &kEditingRightMargin, @(margins.right), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (objc_getAssociatedObject(cell, &kCellConfirmation)) return;
         margins.right = 23.0;
@@ -77,8 +77,6 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 @property(nonatomic, weak) UITableViewCell *cell;
 @property(nonatomic, strong) UIView *panel;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
-@property(nonatomic, weak) UIView *star;
-@property(nonatomic) CGAffineTransform starTransform;
 @property(nonatomic) UIEdgeInsets contentMargins;
 @property(nonatomic) BOOL closing;
 @property(nonatomic, strong) NSMutableArray<NSArray *> *reorderControls;
@@ -98,16 +96,16 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
         self.cell.contentView.layoutMargins = self.contentMargins;
         [self.cell layoutIfNeeded];
     }
-    self.star.transform = self.starTransform;
-    self.star = nil;
     objc_setAssociatedObject(self.cell, &kCellConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (self.panel) ApolloLog(@"[ListEditing] dismiss");
     [self.panel removeFromSuperview];
     [self.table removeGestureRecognizer:self.outsideTap];
     [self.table.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
     self.panel = nil;
     self.cell = nil;
     self.outsideTap = nil;
+    if (objc_getAssociatedObject(self.table, &kListConfirmation) == self) {
+        objc_setAssociatedObject(self.table, &kListConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 - (void)close {
     UIView *panel = self.panel;
@@ -148,7 +146,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 - (void)confirm {
     UITableView *table = self.table;
     NSIndexPath *path = [table indexPathForCell:self.cell];
-    ApolloLog(@"[ListEditing] confirmation tapped editing=%d validRow=%d", table.editing, path != nil);
+    ApolloLogDebug(@"[ListEditing] confirmation tapped editing=%d validRow=%d", table.editing, path != nil);
     [self dismiss];
     // Resolve the current row before the remapping hooks translate its index.
     if (table.editing && path && [table.dataSource respondsToSelector:@selector(tableView:commitEditingStyle:forRowAtIndexPath:)]) {
@@ -220,7 +218,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
         [button.centerYAnchor constraintEqualToAnchor:surface.centerYAnchor],
         [button.heightAnchor constraintEqualToAnchor:surface.heightAnchor constant:-8.0]
     ]];
-    ApolloLog(@"[ListEditing] showing confirmation %@", title);
+    ApolloLogDebug(@"[ListEditing] showing confirmation %@", title);
     state.cell = cell;
     objc_setAssociatedObject(cell, &kCellConfirmation, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     state.panel = panel;
@@ -244,11 +242,10 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
         }
     }
     [cell bringSubviewToFront:panel];
-    state.star = ApolloEditingIvar(cell, "accessoryButton");
-    state.starTransform = state.star.transform;
+    UIView *star = ApolloEditingIvar(cell, "accessoryButton");
     state.contentMargins = cell.contentView.layoutMargins;
-    CGRect starFrame = [state.star convertRect:state.star.bounds toView:cell];
-    CGFloat starNudge = state.star ? MAX(16.0, CGRectGetMaxX(starFrame) - CGRectGetMinX(panel.frame) + 8.0) : 0.0;
+    CGRect starFrame = [star convertRect:star.bounds toView:cell];
+    CGFloat starNudge = star ? MAX(16.0, CGRectGetMaxX(starFrame) - CGRectGetMinX(panel.frame) + 8.0) : 0.0;
     surface.transform = CGAffineTransformMakeTranslation(width + 8.0, 0.0);
     // Narrow the text/star stack to truncate the label without moving its left edge.
     UIEdgeInsets confirmationMargins = state.contentMargins;
@@ -302,13 +299,17 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 
 %hook UITableViewCell
 - (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
-    UITableView *table = ApolloEditingTable(self);
-    if (table.editing && ApolloEditingIsList(table)) highlighted = NO;
+    if (highlighted) {
+        UITableView *table = ApolloEditingTable(self);
+        if (table.editing && ApolloEditingIsList(table)) highlighted = NO;
+    }
     %orig(highlighted, animated);
 }
 - (void)setSelected:(BOOL)selected animated:(BOOL)animated {
-    UITableView *table = ApolloEditingTable(self);
-    if (table.editing && ApolloEditingIsList(table)) selected = NO;
+    if (selected) {
+        UITableView *table = ApolloEditingTable(self);
+        if (table.editing && ApolloEditingIsList(table)) selected = NO;
+    }
     %orig(selected, animated);
 }
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
@@ -337,9 +338,13 @@ static UITableView *ApolloEditingFindListTable(UIView *view) {
 }
 
 static void ApolloEditingMatchListBackground(UIViewController *controller) {
+    if (!controller.isViewLoaded) return;
     UITableView *table = ApolloEditingFindListTable(controller.view);
     UIColor *color = nil;
     for (UITableViewCell *cell in table.visibleCells) {
+        // A selected Home/Popular/All row has a transient darker surface.
+        // Sampling it would leave the entire list tinted after selection ends.
+        if (cell.selected || cell.highlighted) continue;
         for (UIColor *candidate in @[cell.contentView.backgroundColor ?: UIColor.clearColor,
                                      cell.backgroundColor ?: UIColor.clearColor]) {
             if (CGColorGetAlpha([candidate resolvedColorWithTraitCollection:table.traitCollection].CGColor) > 0.99) {
@@ -355,9 +360,37 @@ static void ApolloEditingMatchListBackground(UIViewController *controller) {
     controller.view.backgroundColor = color;
 }
 
+// Apollo installs its own section-index pan on the list's ancestor. Its
+// native shouldReceiveTouch implementation accepts every touch (0x10063a0c0),
+// including the reorder grip. Reject that gesture at touch-began so UIKit's
+// reorder control receives the complete drag instead of an index/page scrub.
+static BOOL ApolloEditingTouchHitsReorder(UIView *view, UITouch *touch) {
+    if (view.hidden || view.alpha < 0.01) return NO;
+    if ([NSStringFromClass(view.class) containsString:@"ReorderControl"] &&
+        CGRectContainsPoint(view.bounds, [touch locationInView:view])) return YES;
+    for (UIView *child in view.subviews) {
+        if (ApolloEditingTouchHitsReorder(child, touch)) return YES;
+    }
+    return NO;
+}
+
 @interface ApolloEditListController : UIViewController @end
 %group ApolloListEditingController
 %hook ApolloEditListController
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
+    // The enhancement index handles its own scrub. Apollo's hidden native
+    // index pan uses different letter geometry, especially in a split column.
+    for (UIView *view = touch.view; view; view = view.superview) {
+        if ([NSStringFromClass(view.class) isEqualToString:@"ApolloSubredditIndexOverlayView"]) return NO;
+    }
+    UITableView *table = ApolloEditingFindListTable(((UIViewController *)self).view);
+    if (table.editing) {
+        for (UITableViewCell *cell in table.visibleCells) {
+            if (ApolloEditingTouchHitsReorder(cell, touch)) return NO;
+        }
+    }
+    return %orig(gesture, touch);
+}
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ApolloEditingMatchListBackground(self);

@@ -178,7 +178,10 @@ static void ApolloPostedCommentDisplayPendingCell(UITableView *tableView, UITabl
 %hook ASTableNode
 
 - (void)performBatchAnimated:(BOOL)animated updates:(void (^)(void))updates completion:(void (^)(BOOL))completion {
-    if (!sApolloPostedCommentCompletionActive || animated) { %orig; return; }
+    if (!sApolloPostedCommentCompletionActive || animated) {
+        %orig;
+        return;
+    }
     if (!ApolloPostedCommentTableIsCommentsList(self)) {
         ApolloLog(@"[PostedCommentInsert] non-animated batch during a comment submit is not on a comments list — leaving it");
         %orig;
