@@ -1,22 +1,47 @@
+#import "ApolloDuoSplitView.h"
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloState.h"
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloFindInCommentsGlass.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoRailLayout.h"
+#import "ApolloDuoSubsChrome.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
 static char kApolloFloatingTabItemViewSetupKey;
 static char kApolloTabBarApplyingAdaptiveAppearanceKey;
 static char kApolloTabBarHasScrubbedAppearanceKey;
+static NSUInteger sApolloAccountRailPressGeneration;
+static CGPoint sApolloAccountRailPressOrigin;
+static __weak UITouch *sApolloAccountRailPressTouch;
+static __weak UITabBarController *sApolloAccountRailTabController;
+static __weak UIViewController *sApolloAccountRailPreviousTab;
+static BOOL sApolloAccountRailSuppressesSelection;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
+
+static void ApolloFinishAccountRailLongPress(void) {
+    if (!sApolloAccountRailSuppressesSelection) return;
+    UITabBarController *tabs = sApolloAccountRailTabController;
+    UIViewController *previous = sApolloAccountRailPreviousTab;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (tabs && previous && [tabs.viewControllers containsObject:previous]) {
+            tabs.selectedViewController = previous;
+        }
+        sApolloAccountRailSuppressesSelection = NO;
+        sApolloAccountRailTabController = nil;
+        sApolloAccountRailPreviousTab = nil;
+    });
+}
 
 static BOOL ApolloDictionaryHasForegroundColor(NSDictionary *attributes) {
     return [attributes isKindOfClass:[NSDictionary class]] && attributes[NSForegroundColorAttributeName] != nil;
@@ -243,6 +268,13 @@ static UITabBar *ApolloTabBarForTabObject(id tabObject) {
 }
 
 static BOOL ApolloIsProfileTabView(UIView *view) {
+    NSString *accessibilityName = [(view.accessibilityLabel.lowercaseString ?: @"")
+        stringByAppendingFormat:@" %@", view.accessibilityIdentifier.lowercaseString ?: @""];
+    if ([accessibilityName containsString:@"account"]
+        || [accessibilityName containsString:@"profile"]) {
+        return YES;
+    }
+
     UITabBar *tabBar = FindAncestorTabBar(view);
     UITabBarItem *item = ApolloTabBarItemForButtonInTabBar(view, tabBar);
     if (!item) {
@@ -254,7 +286,31 @@ static BOOL ApolloIsProfileTabView(UIView *view) {
         tabBar = ApolloTabBarForTabObject(tabObject);
     }
 
-    if (!tabBar || !item) return NO;
+    if (!tabBar || !item) {
+        // iOS 27's trailing floating rail owns two visual copies of each
+        // _UITabButton. Those copies are not always reachable through the
+        // UITabBarItem private view pointers, but each parent still contains
+        // the five buttons in vertical tab order. Keep this fallback scoped to
+        // that vertical geometry so ordinary iPhones retain the native path.
+        NSMutableArray<UIView *> *siblings = [NSMutableArray array];
+        for (UIView *candidate in view.superview.subviews) {
+            if ([candidate isKindOfClass:view.class] && !candidate.hidden
+                && CGRectGetHeight(candidate.bounds) > CGRectGetWidth(candidate.bounds)) {
+                [siblings addObject:candidate];
+            }
+        }
+        if (siblings.count >= 5) {
+            [siblings sortUsingComparator:^NSComparisonResult(UIView *left, UIView *right) {
+                CGFloat leftY = CGRectGetMidY(left.frame);
+                CGFloat rightY = CGRectGetMidY(right.frame);
+                if (leftY < rightY) return NSOrderedAscending;
+                if (leftY > rightY) return NSOrderedDescending;
+                return NSOrderedSame;
+            }];
+            return [siblings indexOfObjectIdenticalTo:view] == 2;
+        }
+        return NO;
+    }
 
     NSArray<UITabBarItem *> *items = tabBar.items;
     return items.count > 2 && items[2] == item;
@@ -288,19 +344,31 @@ static void OpenAccountManager(void) {
     UIViewController *rootVC = lastKeyWindow.rootViewController;
 
     UITabBarController *tabBarController = nil;
-    if ([rootVC isKindOfClass:[UITabBarController class]]) {
+    id mainTabs = ApolloMainTabBarController();
+    if ([mainTabs isKindOfClass:[UITabBarController class]]) {
+        tabBarController = (UITabBarController *)mainTabs;
+    }
+    if (!tabBarController && [rootVC isKindOfClass:[UITabBarController class]]) {
         tabBarController = (UITabBarController *)rootVC;
-    } else if ([rootVC.presentedViewController isKindOfClass:[UITabBarController class]]) {
+    } else if (!tabBarController && [rootVC.presentedViewController isKindOfClass:[UITabBarController class]]) {
         tabBarController = (UITabBarController *)rootVC.presentedViewController;
     }
 
     UIViewController *profileVC = nil;
     if (tabBarController) {
         for (UIViewController *vc in tabBarController.viewControllers) {
-            if ([vc isKindOfClass:[UINavigationController class]]) {
-                UINavigationController *navController = (UINavigationController *)vc;
-                // Search through the entire navigation stack, not just topViewController
-                for (UIViewController *stackVC in navController.viewControllers) {
+            if ([vc isKindOfClass:UINavigationController.class]) {
+                UINavigationController *navigation = (id)vc;
+                // Unfolding moves the native root out of the outer stack.
+                // Read the retained root directly: an inactive split host may
+                // not have loaded its child controllers yet. This must not
+                // select Account or load its view just to open the switcher.
+                UIViewController *root = ApolloDuoSplitRootController(navigation);
+                if ([root isMemberOfClass:profileVCClass]) {
+                    profileVC = root;
+                    break;
+                }
+                for (UIViewController *stackVC in navigation.viewControllers) {
                     if ([stackVC isMemberOfClass:profileVCClass]) {
                         profileVC = stackVC;
                         break;
@@ -315,6 +383,12 @@ static void OpenAccountManager(void) {
     }
 
     if (profileVC && [profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
+        // A long press begins on the Profile tab button but should only open
+        // the switcher. Preserve the tab that was visible before UIKit's
+        // continuous-selection recognizer handles the eventual finger-up.
+        sApolloAccountRailTabController = tabBarController;
+        sApolloAccountRailPreviousTab = tabBarController.selectedViewController;
+        sApolloAccountRailSuppressesSelection = sApolloAccountRailPreviousTab != nil;
         [profileVC performSelector:@selector(accountsBarButtonItemTappedWithSender:) withObject:nil];
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         [feedback impactOccurred];
@@ -322,6 +396,26 @@ static void OpenAccountManager(void) {
         ApolloLog(@"[LiquidGlassTabBar] Unable to find ProfileViewController for account manager");
     }
 }
+
+// A horizontal Account button owns a recognizer; the vertical rail uses the
+// touch observer below. Reject before recognition so the unused recognizer
+// cannot cancel the rail touch before its hold timer fires.
+@interface ApolloAccountTabGestureDelegate : NSObject <UIGestureRecognizerDelegate>
+@end
+
+@implementation ApolloAccountTabGestureDelegate
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer {
+    return IsLiquidGlass() && !ApolloDuoRailHasVisibleSideBar()
+        && ApolloIsProfileTabView(recognizer.view);
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    // UIKit's Liquid Lens begins before our hold. Let both recognize until
+    // the Account handler cancels the lens and opens the switcher.
+    return YES;
+}
+@end
 
 static void ApolloInstallAccountTabLongPress(UIView *view, const void *setupKey) {
     if (!IsLiquidGlass() || !view.window) return;
@@ -331,15 +425,73 @@ static void ApolloInstallAccountTabLongPress(UIView *view, const void *setupKey)
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
         initWithTarget:view action:@selector(apollo_tabButtonLongPressed:)];
     longPress.minimumPressDuration = 0.5;
-    longPress.delegate = (id<UIGestureRecognizerDelegate>)view;
+    static ApolloAccountTabGestureDelegate *delegate;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ delegate = [ApolloAccountTabGestureDelegate new]; });
+    longPress.delegate = delegate;
     [view addGestureRecognizer:longPress];
 }
 
+// UIKit hosts the Duo rail outside the legacy tab button's touch hierarchy.
+// Observe that rail's touches directly; adding recognizers to the window or
+// root view also consumes unrelated holds in posts, text, and context menus.
+static void ApolloCollectVerticalTabButtonFrames(UIView *view, UIWindow *window,
+                                                 NSMutableArray<NSValue *> *frames) {
+    if (view.hidden || view.alpha <= 0.01) return;
+    if ([NSStringFromClass(view.class) isEqualToString:@"_UITabButton"]
+        && CGRectGetHeight(view.bounds) > CGRectGetWidth(view.bounds)) {
+        CGRect frame = [view convertRect:view.bounds toView:window];
+        if (CGRectIntersectsRect(frame, window.bounds)) {
+            [frames addObject:[NSValue valueWithCGRect:frame]];
+        }
+        return;
+    }
+    for (UIView *subview in view.subviews) {
+        ApolloCollectVerticalTabButtonFrames(subview, window, frames);
+    }
+}
+
+static BOOL ApolloWindowPointTargetsProfile(UIWindow *window, CGPoint point) {
+    if (!window || !ApolloDuoRailHasVisibleSideBar()
+        || point.x < CGRectGetWidth(window.bounds) * 0.75) return NO;
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]
+        || tabs.viewIfLoaded.window != window || tabs.presentedViewController) return NO;
+
+    NSMutableArray<NSValue *> *rawFrames = [NSMutableArray array];
+    ApolloCollectVerticalTabButtonFrames(window, window, rawFrames);
+    [rawFrames sortUsingComparator:^NSComparisonResult(NSValue *left, NSValue *right) {
+        CGFloat a = CGRectGetMidY(left.CGRectValue), b = CGRectGetMidY(right.CGRectValue);
+        return a < b ? NSOrderedAscending : (a > b ? NSOrderedDescending : NSOrderedSame);
+    }];
+    NSMutableArray<NSValue *> *frames = [NSMutableArray array];
+    for (NSValue *candidate in rawFrames) {
+        CGRect frame = candidate.CGRectValue;
+        CGRect previous = frames.lastObject.CGRectValue;
+        if (frames.count && fabs(CGRectGetMidY(frame) - CGRectGetMidY(previous)) <= 3.0) {
+            frames[frames.count - 1] = [NSValue valueWithCGRect:CGRectUnion(previous, frame)];
+        } else {
+            [frames addObject:candidate];
+        }
+    }
+    // Normal and selected-content copies share a center. Require the touch to
+    // be inside the Account button, not merely at its Y position in the feed.
+    return frames.count == 5 && CGRectContainsPoint(frames[2].CGRectValue, point);
+}
+
 static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureRecognizer *recognizer) {
+    if (recognizer.state == UIGestureRecognizerStateEnded
+        || recognizer.state == UIGestureRecognizerStateCancelled
+        || recognizer.state == UIGestureRecognizerStateFailed) {
+        ApolloFinishAccountRailLongPress();
+        return;
+    }
     if (recognizer.state != UIGestureRecognizerStateBegan) {
         return;
     }
 
+    // The vertical rail is handled by sendEvent: below, including finger-up.
+    if (ApolloDuoRailHasVisibleSideBar()) return;
     UITabBar *tabBar = FindAncestorTabBar(view);
     if (ApolloIsProfileTabView(view)) {
         ApolloCancelLiquidLensGesture(tabBar);
@@ -492,7 +644,87 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
 %end
 
+%hook UIApplication
+
+- (void)sendEvent:(UIEvent *)event {
+    %orig(event);
+    if (!IsLiquidGlass() || event.type != UIEventTypeTouches) return;
+
+    NSSet<UITouch *> *touches = event.allTouches;
+    UITouch *trackedTouch = sApolloAccountRailPressTouch;
+    UITouch *touch = trackedTouch && [touches containsObject:trackedTouch]
+        ? trackedTouch : touches.anyObject;
+    if (touches.count > 1) ++sApolloAccountRailPressGeneration;
+    UIWindow *window = touch.window;
+    if (!touch || !window) return;
+
+    CGPoint point = [touch locationInView:window];
+    switch (touch.phase) {
+        case UITouchPhaseBegan: {
+            if (touches.count != 1 || !ApolloWindowPointTargetsProfile(window, point)) return;
+            NSUInteger generation = ++sApolloAccountRailPressGeneration;
+            sApolloAccountRailPressTouch = touch;
+            sApolloAccountRailPressOrigin = point;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UITouch *currentTouch = sApolloAccountRailPressTouch;
+                if (generation != sApolloAccountRailPressGeneration || currentTouch != touch) return;
+                UITouchPhase phase = currentTouch.phase;
+                if (phase == UITouchPhaseEnded || phase == UITouchPhaseCancelled) return;
+                CGPoint current = [currentTouch locationInView:window];
+                if (hypot(current.x - sApolloAccountRailPressOrigin.x,
+                          current.y - sApolloAccountRailPressOrigin.y) > 12.0) return;
+                ApolloLogDebug(@"[LiquidGlassTabBar] Profile touch hold opening account switcher");
+                OpenAccountManager();
+            });
+            break;
+        }
+        case UITouchPhaseMoved:
+            if (touch == sApolloAccountRailPressTouch
+                && hypot(point.x - sApolloAccountRailPressOrigin.x,
+                         point.y - sApolloAccountRailPressOrigin.y) > 12.0) {
+                ++sApolloAccountRailPressGeneration;
+                // Keep tracking until finger-up so a hold that already opened
+                // Accounts always clears its temporary selection guard.
+            }
+            break;
+        case UITouchPhaseEnded:
+        case UITouchPhaseCancelled:
+            if (touch == sApolloAccountRailPressTouch) {
+                ++sApolloAccountRailPressGeneration;
+                sApolloAccountRailPressTouch = nil;
+                ApolloFinishAccountRailLongPress();
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+%end
+
 %hook UITabBarController
+
+- (void)setSelectedViewController:(UIViewController *)selectedViewController {
+    if (sApolloAccountRailSuppressesSelection && self == sApolloAccountRailTabController
+        && self.viewControllers.count > 2 && selectedViewController == self.viewControllers[2]
+        && selectedViewController != sApolloAccountRailPreviousTab) {
+        ApolloLogDebug(@"[LiquidGlassTabBar] Ignored Profile selection after account long press");
+        return;
+    }
+    %orig(selectedViewController);
+}
+
+- (void)setSelectedIndex:(NSUInteger)selectedIndex {
+    UIViewController *candidate = selectedIndex < self.viewControllers.count
+        ? self.viewControllers[selectedIndex] : nil;
+    if (sApolloAccountRailSuppressesSelection && self == sApolloAccountRailTabController
+        && selectedIndex == 2 && candidate != sApolloAccountRailPreviousTab) {
+        ApolloLogDebug(@"[LiquidGlassTabBar] Ignored Profile index after account long press");
+        return;
+    }
+    %orig(selectedIndex);
+}
 
 - (void)viewDidLoad {
     %orig;
@@ -531,10 +763,6 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     ApolloHandleAccountTabLongPress(self, recognizer);
 }
 
-%new
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    return YES;
-}
 
 %end
 
@@ -550,10 +778,6 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     ApolloHandleAccountTabLongPress(self, recognizer);
 }
 
-%new
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    return YES;
-}
 
 %end
 
@@ -1245,7 +1469,8 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         }
     }
 
-    CGFloat scale = hostView.window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGFloat scale = ApolloDeviceScreenForWindow(hostView.window).scale;
+    if (scale <= 0.0) scale = 2.0;
     frame.origin.x = round(frame.origin.x * scale) / scale;
     frame.origin.y = round(frame.origin.y * scale) / scale;
     frame.size.width = round(frame.size.width * scale) / scale;
@@ -1762,15 +1987,10 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     UIViewController *topVC = ApolloOwningTopViewController(titleControl);
     id<UIViewControllerTransitionCoordinator> transition = topVC.transitionCoordinator;
-    NSArray<UIView *> *titleCandidates = [controller titleContentViews];
-    BOOL segmentedTitle = titleCandidates.count == 1 &&
-        [titleCandidates.firstObject isKindOfClass:UISegmentedControl.class];
-    // Segmented titles already supply their full intrinsic geometry. During
-    // navigation the outgoing profile's Accounts/actions platters are still
+    // During navigation the outgoing profile's Accounts/actions platters are still
     // visible; fitting against those temporary edges clips the capsule ends.
     // Keep UIKit's supplied size until the completion/cancellation refresh.
-    if (transition.isAnimated && transition != controller.completedTransition &&
-        (segmentedTitle || !ApolloNavigationTitlePresentationOwnsControl(titleControl))) {
+    if (transition.isAnimated && transition != controller.completedTransition) {
         // UIKit may animate only nested hosts. Retry explicitly on transition
         // completion/cancellation instead of relying on another layout pass.
         if (controller.pendingTransition != transition) {
@@ -1812,8 +2032,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // (don't recurse to the buttons inside, which sit a few points further in).
     // Otherwise recurse into containers (e.g. _UITAMICAdaptorView wrappers) and
     // treat controls / labels / image views / visual-effect bubbles as edges.
-    CGFloat leftLimit = CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left;
-    CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - bar.safeAreaInsets.right;
+    UIEdgeInsets chromeInsets = ApolloDeviceChromeInsetsForView(bar);
+    CGFloat leftLimit = CGRectGetMinX(bar.bounds) + chromeInsets.left;
+    CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - chromeInsets.right;
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
     BOOL searching = jumpBar && ApolloJumpBarIsSearching(jumpBar);
     BOOL searchActions = NO;
@@ -1827,7 +2048,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // Outgoing platters remain visible during the search handoff. Their moving
     // edges are not the editor's available width; reserve the final items once.
     if (searchActions) {
-        rightLimit -= MAX(16.0, bar.layoutMargins.right) + searchActionsWidth;
+        // 16pt gap before the cancel cluster. Do not re-subtract layout
+        // margins — chromeInsets already honored any hinge extra.
+        rightLimit -= 16.0 + searchActionsWidth;
     }
     // The Find in Comments navigator (ApolloFindInCommentsGlass.xm) holds the trailing
     // group for the length of a glass search. Its swap keeps the outgoing action pill's
@@ -1899,15 +2122,17 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     CGFloat capsulePadding = !searching &&
         ApolloResolvedScrollEdgeEffectStyle() != ApolloScrollEdgeEffectStyleHard
         ? kApolloTitleCapsuleHorizontalPadding : 0.0;
+    CGRect columnBounds = ApolloDuoSplitContentFrame(topVC, bar);
+    CGRect titleBounds = CGRectIsNull(columnBounds) ? bar.bounds : columnBounds;
     ApolloNavigationTitleGeometry geometry = ApolloNavigationTitleCenteredGeometry(
-        bar.bounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
+        titleBounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
 
     CGRect actions = ApolloNavigationActionsExpandedFrame(bar);
     // The preference centers between actual controls, never an empty edge.
     // Settings screens with only Back keep their title at the bar midpoint.
     BOOL centerBetweenButtons = sCenterTitleBetweenButtons && !sCollapseNavigationActions &&
         !searching && !CGRectIsNull(actions) && !CGRectIsEmpty(actions) &&
-        leftLimit > CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left + 0.5;
+        leftLimit > CGRectGetMinX(bar.bounds) + chromeInsets.left + 0.5;
     if (centerBetweenButtons) {
         rightLimit = MIN(rightLimit, CGRectGetMinX(actions));
         geometry.center = (leftLimit + rightLimit) / 2.0;
@@ -1915,12 +2140,50 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
             2 * (capsulePadding + kEdgePadding));
     }
 
+    // The narrow Duo Account sidebar has Accounts/More on the left and its
+    // toggle on the right. Fit the username in the space between those actual
+    // groups; a fixed column midpoint unnecessarily cuts that space in half.
+    if (ApolloDuoSplitIsSidebarController(topVC) &&
+        [NSStringFromClass(topVC.class) isEqualToString:@"Apollo.ProfileViewController"] &&
+        CGRectGetWidth(bar.bounds) < 380.0) {
+        geometry.center = (leftLimit + rightLimit) / 2.0;
+        geometry.maximumContentWidth = MAX(0, rightLimit - leftLimit -
+            2 * (capsulePadding + kEdgePadding));
+    }
+
+    // Duo Subreddits: center over the visible list,
+    // not the full window, and keep the capsule out of corner/hinge
+    // chrome. Regular iPhone and non-RedditList screens are unchanged.
+    if (ApolloDuoSubsChromeControllerIsRedditList(topVC) && !ApolloDuoSplitIsUnfoldedPortrait()) {
+        int duoMode = ApolloDuoCurrentMode();
+        if (ApolloDuoSubsChromeShouldApply(duoMode)) {
+            CGFloat barMin = CGRectGetMinX(bar.bounds);
+            CGFloat barMax = CGRectGetMaxX(bar.bounds);
+            CGFloat lead = (CGFloat)ApolloDuoSubsChromeTitleLeading(
+                duoMode, (double)(leftLimit - barMin));
+            CGFloat trail = (CGFloat)ApolloDuoSubsChromeTitleTrailing(
+                (double)(barMax - rightLimit));
+            leftLimit = MAX(leftLimit, barMin + lead);
+            rightLimit = MIN(rightLimit, barMax - trail);
+            geometry.center = (CGFloat)ApolloDuoSubsChromeTitleCenterBetween(
+                (double)leftLimit, (double)rightLimit);
+            geometry.maximumContentWidth = (CGFloat)ApolloDuoSubsChromeTitleMaxWidth(
+                (double)leftLimit, (double)rightLimit,
+                (double)(capsulePadding + kEdgePadding));
+        }
+    }
+
     // Fit the original title through one constraint, preserving native text
     // truncation. Priority 999 yields to required transition constraints.
     // This deferred pass never writes from layoutSubviews, and expanding the
     // actions does not change the fitted width.
     CGFloat maximumWidth = geometry.maximumContentWidth;
-    CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, [controller naturalContentWidth]);
+    CGFloat naturalWidth = [controller naturalContentWidth];
+    // A newly adopted JumpBar may not have measured its labels yet. Installing
+    // a zero-width constraint here makes that temporary size self-perpetuating.
+    // Its content/layout callback retries once the native title is ready.
+    if (!searching && naturalWidth <= 1.0) return NO;
+    CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, naturalWidth);
     BOOL widthChanged = !controller.fittedWidthConstraint ||
         fabs(controller.fittedWidthConstraint.constant - fittedWidth) > 0.5;
     if (!controller.fittedWidthConstraint) {

@@ -1067,6 +1067,12 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugFieldProbe(tag.length ? tag : @"probe");
             return;
         }
+        if ([contents hasPrefix:@"tabselect "]) {
+            UITabBarController *tabs = (id)ApolloMainTabBarController();
+            NSUInteger index = [[contents substringFromIndex:10] integerValue];
+            if (index < tabs.viewControllers.count) tabs.selectedIndex = index;
+            return;
+        }
         if ([contents hasPrefix:@"dump"]) {
             ApolloSimDebugDumpHierarchy();
             return;

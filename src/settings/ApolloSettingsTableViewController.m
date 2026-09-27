@@ -209,6 +209,34 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 
 @end
 
+@implementation ApolloSettingsLinkFooterView
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithReuseIdentifier:reuseIdentifier];
+    if (!self) return nil;
+
+    // Let the table supply its final grouped/safe-area width before measuring
+    // the text. A bare UITextView footer initially receives the full table
+    // width, then rewraps when UIKit installs the grouped section insets.
+    _linkTextView = [[ApolloFooterLinkTextView alloc] init];
+    _linkTextView.translatesAutoresizingMaskIntoConstraints = NO;
+    _linkTextView.editable = NO;
+    _linkTextView.scrollEnabled = NO;
+    _linkTextView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    _linkTextView.backgroundColor = UIColor.clearColor;
+    _linkTextView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
+    [self.contentView addSubview:_linkTextView];
+    [NSLayoutConstraint activateConstraints:@[
+        [_linkTextView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+        [_linkTextView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+        [_linkTextView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [_linkTextView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+    ]];
+    return self;
+}
+
+@end
+
 
 // UITextView subclass that allows users to tap links within footer text, but not select text
 @implementation ApolloFooterLinkTextView

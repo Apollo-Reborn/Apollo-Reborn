@@ -5,6 +5,8 @@
 #import <stdint.h>
 #import <stdlib.h>
 #import "ApolloCommon.h"
+#import "ApolloDuoUIKitCompatibility.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconIDs.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
@@ -17,7 +19,7 @@
 // (_TtC6Apollo29SettingsAppIconViewController). Liquid Glass content is driven
 // by liquid-glass/icons.json via the generated `kLGIconGroups[]` table:
 //
-//   • A "Featured" section — five compact icon cards selected from the full
+//   • A "Featured" section — six compact icon cards selected from the full
 //     Liquid Glass registry by a deterministic daily shuffle. The choices stay
 //     stable for the local calendar day and require no network connection.
 //   • An adaptive grid of tappable "icon pack" cards (fanned sample artwork +
@@ -60,6 +62,7 @@ static NSString *const kLGLegacyClassicsMigrationDefaultsKey = @"ApolloLGLegacyC
 static NSString *const kLGDailyFeaturedDayDefaultsKey = @"ApolloLGDailyFeaturedDay";
 static NSString *const kLGDailyFeaturedIDsDefaultsKey = @"ApolloLGDailyFeaturedIDs";
 static const NSInteger kLGAppearanceBarButtonTag = 0x4C474150; // "LGAP"
+static char kLGAppearanceBarButtonKey;
 
 // Featured strip (main screen, above the pack cards). One horizontal row
 // replaces several full-width table rows while keeping every icon directly
@@ -68,7 +71,7 @@ static const CGFloat kLGFeaturedStripHeight = 130.0;
 static const CGFloat kLGFeaturedCardWidth   = 128.0;
 static const CGFloat kLGFeaturedCardHeight  = 112.0;
 static const CGFloat kLGFeaturedFanSide     = 64.0;
-static const NSInteger kLGDailyFeaturedCount = 5;
+static const NSInteger kLGDailyFeaturedCount = 6;
 
 // Rendition fan (per-icon, two renditions of one appearance overlapped into
 // one square — e.g. Default's light+dark, or Clear's light+dark). The host
@@ -884,10 +887,8 @@ static NSInteger LGGroupIndexForIconID(NSString *iconID) {
 
 // ── Main section helpers ───────────────────────────────────────────────────
 //
-// Every non-empty group renders as one card in the packs section. Cards share
-// each table row so Apollo can keep owning the surrounding table while the
-// injected content adapts from two columns on phones to three or four columns
-// on wider layouts.
+// Every non-empty group renders as one card. Each pack section keeps its cards
+// in one persistent table cell so changing columns can move the existing views.
 
 static NSInteger LGNonEmptyGroupCount(void) {
     LGInitRuntimeGroups();
@@ -898,10 +899,32 @@ static NSInteger LGNonEmptyGroupCount(void) {
     return n;
 }
 
-static NSInteger LGMainPackColumnCount(CGFloat width) {
+static char kLGPackColumnsKey, kLGPackColumnsUpdateKey, kLGPreparedPackCellsKey;
+
+static NSInteger LGMeasuredPackColumnCount(UITableView *table) {
+    // UIKit's secondary table may extend beneath both the sidebar and the
+    // Duo rail. Count columns in the same usable width as its cell content.
+    UIEdgeInsets safe = table.safeAreaInsets;
+    UIEdgeInsets adjusted = table.adjustedContentInset;
+    CGFloat width = CGRectGetWidth(table.bounds)
+        - MAX(safe.left, adjusted.left) - MAX(safe.right, adjusted.right);
+    // On the Duo the full landscape canvas has room for all four packs.
+    // Portrait and the split detail pane keep a balanced two-by-two grid,
+    // rather than leaving the fourth pack alone beneath a three-card row.
+    if (ApolloDuoSplitIsUnfolded()) return width >= 800.0 ? 4 : 2;
     if (width >= kLGMainGridFourColumnWidth) return 4;
     if (width >= kLGMainGridThreeColumnWidth) return 3;
     return 2;
+}
+
+static NSInteger LGMainPackColumnCount(UITableView *table) {
+    NSNumber *columns = objc_getAssociatedObject(table, &kLGPackColumnsKey);
+    if (!columns) {
+        columns = @(LGMeasuredPackColumnCount(table));
+        objc_setAssociatedObject(table, &kLGPackColumnsKey, columns, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Card constraints and the section cell's height must use the same count.
+    return columns.integerValue;
 }
 
 static NSInteger LGCardRowCount(NSInteger cardCount, NSInteger columnCount) {
@@ -1974,23 +1997,25 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
 @end
 
 @interface LGPackGridRowCell : UITableViewCell
-- (void)configureWithGroupCardStartIndex:(NSInteger)startIndex
-                             columnCount:(NSInteger)columnCount
-                      selectedGroupIndex:(NSInteger)selectedGroupIndex
-                             accentColor:(UIColor *)accentColor
-                     cardBackgroundColor:(UIColor *)cardBackgroundColor
-                              tapHandler:(LGGroupCardTapHandler)tapHandler;
-- (void)configureWithStandardCardStartIndex:(NSInteger)startIndex
-                                columnCount:(NSInteger)columnCount
-                       selectedStandardPack:(LGStandardPack)selectedStandardPack
-                                accentColor:(UIColor *)accentColor
-                        cardBackgroundColor:(UIColor *)cardBackgroundColor
-                                 tapHandler:(LGGroupCardTapHandler)tapHandler;
+- (void)configureWithGroupColumnCount:(NSInteger)columnCount
+                 selectedGroupIndex:(NSInteger)selectedGroupIndex
+                        accentColor:(UIColor *)accentColor
+                cardBackgroundColor:(UIColor *)cardBackgroundColor
+                         tapHandler:(LGGroupCardTapHandler)tapHandler;
+- (void)configureWithStandardColumnCount:(NSInteger)columnCount
+                  selectedStandardPack:(LGStandardPack)selectedStandardPack
+                           accentColor:(UIColor *)accentColor
+                   cardBackgroundColor:(UIColor *)cardBackgroundColor
+                            tapHandler:(LGGroupCardTapHandler)tapHandler;
 - (void)updateSelectedCardIndex:(NSInteger)selectedCardIndex animated:(BOOL)animated;
+- (void)setColumnCount:(NSInteger)columnCount;
 @end
 
 @implementation LGPackGridRowCell {
-    NSArray<LGPackCardView *> *_cards;
+    NSMutableArray<LGPackCardView *> *_cards;
+    NSArray<NSLayoutConstraint *> *_gridConstraints;
+    NSInteger _columnCount;
+    CGFloat _rowHeight;
 }
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
@@ -2001,53 +2026,66 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
     self.contentView.backgroundColor = UIColor.clearColor;
     self.separatorInset = UIEdgeInsetsMake(0, CGFLOAT_MAX, 0, 0);
 
-    NSMutableArray<LGPackCardView *> *cards = [NSMutableArray arrayWithCapacity:4];
-    for (NSInteger i = 0; i < 4; i++) [cards addObject:[[LGPackCardView alloc] initWithFrame:CGRectZero]];
-    _cards = [cards copy];
-
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:_cards];
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    stack.axis = UILayoutConstraintAxisHorizontal;
-    stack.spacing = kLGMainGridSpacing;
-    stack.distribution = UIStackViewDistributionFillEqually;
-    [self.contentView addSubview:stack];
-
-    CGFloat edge = kLGMainGridSpacing;
-    CGFloat vertical = kLGMainGridSpacing / 2.0;
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:edge],
-        [stack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-edge],
-        [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:vertical],
-        [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-vertical],
-    ]];
+    _cards = [NSMutableArray array];
     return self;
 }
 
-- (void)prepareForColumnCount:(NSInteger)columnCount {
+- (void)prepareForCardCount:(NSInteger)cardCount columnCount:(NSInteger)columnCount {
+    if ((NSInteger)_cards.count != cardCount) {
+        [NSLayoutConstraint deactivateConstraints:_gridConstraints];
+        _gridConstraints = nil;
+        while ((NSInteger)_cards.count > cardCount) {
+            [_cards.lastObject removeFromSuperview];
+            [_cards removeLastObject];
+        }
+        while ((NSInteger)_cards.count < cardCount) {
+            LGPackCardView *card = [[LGPackCardView alloc] initWithFrame:CGRectZero];
+            card.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.contentView addSubview:card];
+            [_cards addObject:card];
+        }
+    }
+    [self setColumnCount:columnCount];
+}
+
+- (void)setColumnCount:(NSInteger)columnCount {
+    CGFloat rowHeight = LGPackGridRowHeight();
+    if (_columnCount == columnCount && _rowHeight == rowHeight && _gridConstraints) return;
+    _columnCount = MAX(1, columnCount);
+    _rowHeight = rowHeight;
+    [NSLayoutConstraint deactivateConstraints:_gridConstraints];
+
+    // One persistent cell owns each complete pack section. Keeping every card
+    // in the same parent lets Auto Layout move it between rows without cell
+    // replacement, snapshots, or two sets of icons crossfading over each other.
+    NSMutableArray *constraints = [NSMutableArray array];
+    CGFloat gap = kLGMainGridSpacing;
+    CGFloat widthOffset = -(2.0 * gap + (_columnCount - 1) * gap) / _columnCount;
     for (NSInteger i = 0; i < (NSInteger)_cards.count; i++) {
         LGPackCardView *card = _cards[i];
-        card.hidden = i >= columnCount;
-        card.alpha = 0.0;
-        card.userInteractionEnabled = NO;
-        card.accessibilityElementsHidden = YES;
+        [constraints addObjectsFromArray:@[
+            [card.widthAnchor constraintEqualToAnchor:self.contentView.widthAnchor
+                                           multiplier:1.0 / _columnCount constant:widthOffset],
+            [card.heightAnchor constraintEqualToConstant:rowHeight - gap],
+            [card.topAnchor constraintEqualToAnchor:self.contentView.topAnchor
+                                          constant:gap / 2.0 + (i / _columnCount) * rowHeight],
+        ]];
+        [constraints addObject:i % _columnCount == 0
+            ? [card.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:gap]
+            : [card.leadingAnchor constraintEqualToAnchor:_cards[i - 1].trailingAnchor constant:gap]];
     }
+    _gridConstraints = constraints;
+    [NSLayoutConstraint activateConstraints:_gridConstraints];
 }
 
-- (void)showCard:(LGPackCardView *)card {
-    card.alpha = 1.0;
-    card.userInteractionEnabled = YES;
-    card.accessibilityElementsHidden = NO;
-}
-
-- (void)configureWithGroupCardStartIndex:(NSInteger)startIndex
-                             columnCount:(NSInteger)columnCount
-                      selectedGroupIndex:(NSInteger)selectedGroupIndex
-                             accentColor:(UIColor *)accentColor
-                     cardBackgroundColor:(UIColor *)cardBackgroundColor
-                              tapHandler:(LGGroupCardTapHandler)tapHandler {
-    [self prepareForColumnCount:columnCount];
-    for (NSInteger i = 0; i < columnCount; i++) {
-        NSInteger groupIndex = LGNonEmptyGroupIndexAt(startIndex + i);
+- (void)configureWithGroupColumnCount:(NSInteger)columnCount
+                 selectedGroupIndex:(NSInteger)selectedGroupIndex
+                        accentColor:(UIColor *)accentColor
+                cardBackgroundColor:(UIColor *)cardBackgroundColor
+                         tapHandler:(LGGroupCardTapHandler)tapHandler {
+    [self prepareForCardCount:LGNonEmptyGroupCount() columnCount:columnCount];
+    for (NSInteger i = 0; i < (NSInteger)_cards.count; i++) {
+        NSInteger groupIndex = LGNonEmptyGroupIndexAt(i);
         const LGRuntimeGroup *group = LGGroupAt(groupIndex);
         if (!group) continue;
         LGPackCardView *card = _cards[i];
@@ -2057,20 +2095,17 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
                      accentColor:accentColor
              cardBackgroundColor:cardBackgroundColor
                       tapHandler:tapHandler];
-        [self showCard:card];
     }
 }
 
-- (void)configureWithStandardCardStartIndex:(NSInteger)startIndex
-                                columnCount:(NSInteger)columnCount
-                       selectedStandardPack:(LGStandardPack)selectedStandardPack
-                                accentColor:(UIColor *)accentColor
-                        cardBackgroundColor:(UIColor *)cardBackgroundColor
-                                 tapHandler:(LGGroupCardTapHandler)tapHandler {
-    [self prepareForColumnCount:columnCount];
-    for (NSInteger i = 0; i < columnCount; i++) {
-        LGStandardPack pack = (LGStandardPack)(startIndex + i);
-        if (pack < 0 || pack >= LGStandardPackCount) continue;
+- (void)configureWithStandardColumnCount:(NSInteger)columnCount
+                  selectedStandardPack:(LGStandardPack)selectedStandardPack
+                           accentColor:(UIColor *)accentColor
+                   cardBackgroundColor:(UIColor *)cardBackgroundColor
+                            tapHandler:(LGGroupCardTapHandler)tapHandler {
+    [self prepareForCardCount:LGStandardPackCount columnCount:columnCount];
+    for (NSInteger i = 0; i < (NSInteger)_cards.count; i++) {
+        LGStandardPack pack = (LGStandardPack)i;
         LGPackCardView *card = _cards[i];
         [card configureWithTitle:LGStandardPackTitle(pack)
                        iconCount:LGStandardPackIconCount(pack)
@@ -2081,7 +2116,6 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
              cardBackgroundColor:cardBackgroundColor
             pressAnimationEnabled:YES
                       tapHandler:tapHandler];
-        [self showCard:card];
     }
 }
 
@@ -2092,6 +2126,15 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
 }
 
 @end
+
+static void LGRememberPreparedPackCell(UITableView *table, LGPackGridRowCell *cell) {
+    NSHashTable *cells = objc_getAssociatedObject(table, &kLGPreparedPackCellsKey);
+    if (!cells) {
+        cells = [NSHashTable weakObjectsHashTable];
+        objc_setAssociatedObject(table, &kLGPreparedPackCellsKey, cells, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [cells addObject:cell];
+}
 
 #pragma mark - Featured icon strip (main screen, above pack cards)
 
@@ -2277,6 +2320,16 @@ typedef void (^LGFeaturedCardTapHandler)(const LGIconRow *row);
 
 @implementation LGSpotlightScrollView
 
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    if (self.didScrollHandler) self.didScrollHandler();
+}
+
+- (void)setContentSize:(CGSize)contentSize {
+    [super setContentSize:contentSize];
+    if (self.didScrollHandler) self.didScrollHandler();
+}
+
 // Featured cards are UIControls. Let a drag that begins on one cancel its press
 // and become a horizontal scroll.
 - (BOOL)touchesShouldCancelInContentView:(UIView *)view {
@@ -2406,11 +2459,6 @@ typedef void (^LGFeaturedCardTapHandler)(const LGIconRow *row);
     return self;
 }
 
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    [self lg_updateEdgeFade];
-}
-
 - (void)lg_updateEdgeFade {
     CGFloat maximumOffset = MAX(0.0, _scrollView.contentSize.width - CGRectGetWidth(_scrollView.bounds));
     BOOL canScrollLeft = _scrollView.contentOffset.x > 1.0;
@@ -2514,10 +2562,10 @@ static UIViewController *LGTopViewControllerForView(UIView *view) {
     return controller;
 }
 
-// UIKit's public setter always adds its own "You have changed the icon"
-// confirmation. Apollo Reborn is already an injected tweak, so prefer
-// UIKit's underlying private setter to keep direct icon selection quiet.
-// Keep the public call as a compatibility fallback.
+// Prefer UIKit's underlying setter where available. Some newer runtimes
+// still present a system-owned confirmation through LaunchServices; this
+// selector does not guarantee that selection is quiet. The public setter
+// remains the compatibility path when the selector is absent.
 static void LGSetAlternateIconName(NSString *name, void (^completion)(NSError *error)) {
     UIApplication *application = UIApplication.sharedApplication;
     SEL quietSelector = NSSelectorFromString(@"_setAlternateIconName:completionHandler:");
@@ -2753,6 +2801,94 @@ static void LGSelectPreferredAppearance(UIView *hostView, LGIconAppearanceMode m
     });
 }
 
+static BOOL LGAppearanceUsesVerticalRail(void) {
+    if (!IsLiquidGlass()) return NO;
+    // The native tab bar briefly has horizontal/intermediate bounds while
+    // UIKit reparents the split columns. Use the destination geometry for the
+    // whole resize; otherwise a cover-to-landscape transition publishes a
+    // "System" title item between two layouts that both use the rail icon.
+    if (ApolloDuoSplitIsResizing()) return !ApolloDuoSplitIsUnfoldedPortrait();
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    return bar.window && !bar.hidden && CGRectGetWidth(bar.bounds) < 100.0
+        && CGRectGetHeight(bar.bounds) > CGRectGetWidth(bar.bounds);
+}
+
+static void LGUpdateAppearancePlacement(UIViewController *controller) {
+    UIBarButtonItem *appearanceItem = objc_getAssociatedObject(controller, &kLGAppearanceBarButtonKey);
+    if (!appearanceItem) return;
+    LGIconAppearanceMode selectedMode = LGPreferredAppearanceMode();
+    NSString *buttonTitle = [NSString stringWithFormat:@"%@ ▾", LGAppearanceModeTitle(selectedMode)];
+    BOOL verticalDuoRail = LGAppearanceUsesVerticalRail();
+
+    NSMutableArray<UIBarButtonItem *> *leftItems =
+        [controller.navigationItem.leftBarButtonItems mutableCopy] ?: [NSMutableArray array];
+    NSIndexSet *oldAppearanceItems = [leftItems indexesOfObjectsPassingTest:
+        ^BOOL(UIBarButtonItem *item, NSUInteger index, BOOL *stop) {
+            return item.tag == kLGAppearanceBarButtonTag;
+        }];
+    [leftItems removeObjectsAtIndexes:oldAppearanceItems];
+
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    for (UIBarButtonItem *item in controller.navigationItem.rightBarButtonItems ?: @[]) {
+        if (item.tag != kLGAppearanceBarButtonTag) [items addObject:item];
+    }
+    if (verticalDuoRail) {
+        appearanceItem.title = nil;
+        appearanceItem.image = LGAppearanceModeImage(selectedMode);
+        appearanceItem.accessibilityLabel = [NSString stringWithFormat:@"%@ icon appearance",
+                                               LGAppearanceModeTitle(selectedMode)];
+        if (@available(iOS 27.1, *)) {
+            appearanceItem.axisBehavior = UIBarButtonItemAxisBehaviorVerticalPreferred;
+        }
+        if (!controller.navigationItem.leftItemsSupplementBackButton) {
+            controller.navigationItem.leftItemsSupplementBackButton = YES;
+        }
+        [leftItems addObject:appearanceItem];
+    } else {
+        appearanceItem.image = nil;
+        appearanceItem.title = buttonTitle;
+        appearanceItem.accessibilityLabel = @"Icon appearance";
+        if (@available(iOS 27.1, *)) {
+            appearanceItem.axisBehavior = UIBarButtonItemAxisBehaviorAutomatic;
+        }
+        [items insertObject:appearanceItem atIndex:0];
+    }
+    // Moving between phone and Duo is a membership change; choosing another
+    // appearance isn't. Leave both arrays alone in the latter case.
+    if (![leftItems isEqualToArray:controller.navigationItem.leftBarButtonItems ?: @[]]) {
+        controller.navigationItem.leftBarButtonItems = leftItems;
+    }
+    if (![items isEqualToArray:controller.navigationItem.rightBarButtonItems ?: @[]]) {
+        controller.navigationItem.rightBarButtonItems = items;
+    }
+}
+
+static char kLGAppearancePlacementScheduledKey;
+static void LGScheduleAppearancePlacement(UIViewController *controller) {
+    UIBarButtonItem *item = objc_getAssociatedObject(controller, &kLGAppearanceBarButtonKey);
+    if (!item || [objc_getAssociatedObject(controller, &kLGAppearancePlacementScheduledKey) boolValue]) return;
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    if (!bar.window || bar.hidden) return;
+    BOOL vertical = LGAppearanceUsesVerticalRail();
+    BOOL inLeft = [controller.navigationItem.leftBarButtonItems containsObject:item];
+    BOOL inRight = [controller.navigationItem.rightBarButtonItems containsObject:item];
+    if (vertical ? (inLeft && !inRight && item.title == nil)
+                 : (inRight && !inLeft && item.image == nil)) return;
+    // The item is created before a reparented controller has its final tab-bar
+    // geometry. Reconcile after layout, without rebuilding its menu or changing
+    // navigation inputs from inside UIKit's layout traversal.
+    objc_setAssociatedObject(controller, &kLGAppearancePlacementScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakController = controller;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *owner = weakController;
+        if (!owner) return;
+        objc_setAssociatedObject(owner, &kLGAppearancePlacementScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (owner.viewIfLoaded.window) LGUpdateAppearancePlacement(owner);
+    });
+}
+
 static void LGInstallAppearanceMenu(UIViewController *controller, UIView *hostView,
                                     void (^reloadHandler)(void)) {
     if (!controller) return;
@@ -2788,16 +2924,20 @@ static void LGInstallAppearanceMenu(UIViewController *controller, UIView *hostVi
 
     UIMenu *menu = [UIMenu menuWithTitle:@"Icon Appearance" children:actions];
     NSString *buttonTitle = [NSString stringWithFormat:@"%@ ▾", LGAppearanceModeTitle(selectedMode)];
-    UIBarButtonItem *appearanceItem = [[UIBarButtonItem alloc] initWithTitle:buttonTitle menu:menu];
-    appearanceItem.tag = kLGAppearanceBarButtonTag;
-    appearanceItem.accessibilityLabel = @"Icon appearance";
-
-    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
-    for (UIBarButtonItem *item in controller.navigationItem.rightBarButtonItems ?: @[]) {
-        if (item.tag != kLGAppearanceBarButtonTag) [items addObject:item];
+    // Keep the native item identity when a menu selection changes its image
+    // and checkmark. Replacing it rebuilds Duo's shared vertical chrome even
+    // though no navigation took place.
+    UIBarButtonItem *appearanceItem = objc_getAssociatedObject(controller, &kLGAppearanceBarButtonKey);
+    if (!appearanceItem) {
+        appearanceItem = [[UIBarButtonItem alloc] initWithTitle:buttonTitle menu:menu];
+        appearanceItem.tag = kLGAppearanceBarButtonTag;
+        objc_setAssociatedObject(controller, &kLGAppearanceBarButtonKey, appearanceItem,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        appearanceItem.menu = menu;
     }
-    [items insertObject:appearanceItem atIndex:0];
-    controller.navigationItem.rightBarButtonItems = items;
+
+    LGUpdateAppearancePlacement(controller);
 }
 
 #pragma mark - Standard icon pack contents
@@ -3266,6 +3406,11 @@ static void LGNormalizeNativeIconCellBackground(UITableViewCell *cell,
     LGInstallAppearanceMenu(self, tableView, ^{ [weakTable reloadData]; });
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    LGScheduleAppearancePlacement(self);
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self lg_reloadAndReassertAfterNativeRefresh];
@@ -3729,6 +3874,7 @@ static void LGNormalizeNativeIconCellBackground(UITableViewCell *cell,
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    LGScheduleAppearancePlacement(self);
     if (_didRevealInitialSelection || CGRectIsEmpty(self.collectionView.bounds)) return;
     _didRevealInitialSelection = YES;
 
@@ -3929,6 +4075,75 @@ static UITableView *LGRememberedTableView(id viewController) {
     return objc_getAssociatedObject(viewController, &kLGRememberedTableViewKey);
 }
 
+static void LGRememberGridGeometry(UIView *view, NSMutableArray *geometry) {
+    if (!view.window) return;
+    CALayer *layer = view.layer;
+    CALayer *visible = layer.presentationLayer ?: layer;
+    [geometry addObject:@[layer, [NSValue valueWithCGPoint:visible.position],
+                          [NSValue valueWithCGRect:visible.bounds]]];
+    for (UIView *child in view.subviews) LGRememberGridGeometry(child, geometry);
+}
+
+static void LGAnimateGridGeometry(NSArray *geometry) {
+    for (NSArray *entry in geometry) {
+        CALayer *layer = entry[0];
+        CGPoint position = [entry[1] CGPointValue];
+        CGRect bounds = [entry[2] CGRectValue];
+        if (CGPointEqualToPoint(position, layer.position) && CGRectEqualToRect(bounds, layer.bounds)) continue;
+        CABasicAnimation *movement = [CABasicAnimation animationWithKeyPath:@"position"];
+        movement.fromValue = entry[1];
+        movement.toValue = [NSValue valueWithCGPoint:layer.position];
+        CABasicAnimation *resize = [CABasicAnimation animationWithKeyPath:@"bounds"];
+        resize.fromValue = entry[2];
+        resize.toValue = [NSValue valueWithCGRect:layer.bounds];
+        CAAnimationGroup *animation = [CAAnimationGroup animation];
+        animation.animations = @[movement, resize];
+        animation.duration = 0.3;
+        animation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [layer addAnimation:animation forKey:@"ApolloPackGridGeometry"];
+    }
+}
+
+static void LGUpdateMainPackColumns(UITableView *table, BOOL animated) {
+    if (!table) return;
+    NSInteger columns = LGMeasuredPackColumnCount(table);
+    if (columns == LGMainPackColumnCount(table)) return;
+
+    // Sidebar visibility changes the safe area, not necessarily the table's
+    // bounds. Keep both the cards and Daily Spotlight alive, and animate only
+    // their geometry. No row reload means there is no old/new image ghosting.
+    [table layoutIfNeeded];
+    BOOL animate = animated && table.window && !UIAccessibilityIsReduceMotionEnabled();
+    NSHashTable *cells = objc_getAssociatedObject(table, &kLGPreparedPackCellsKey);
+    NSMutableArray *geometry = [NSMutableArray array];
+    if (animate) {
+        for (LGPackGridRowCell *cell in cells) LGRememberGridGeometry(cell, geometry);
+        for (NSInteger section = LGPacksSectionIndex(); section <= LGStandardPacksSectionIndex(); section++) {
+            LGRememberGridGeometry([table headerViewForSection:section], geometry);
+        }
+    }
+    objc_setAssociatedObject(table, &kLGPackColumnsKey, @(columns), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [UIView performWithoutAnimation:^{
+        // UIKit can prepare Standard packs below the viewport before this
+        // resize makes them visible. Update those cells too, otherwise their
+        // old two-column constraints outlive the new single-row height.
+        for (LGPackGridRowCell *cell in cells) {
+            [cell setColumnCount:columns];
+        }
+        // Re-measure the section cells' heights without changing their identity.
+        [table beginUpdates];
+        [table endUpdates];
+        [table layoutIfNeeded];
+        for (LGPackGridRowCell *cell in cells) [cell layoutIfNeeded];
+    }];
+    // UITableView's row-height animation clips/reveals the old row while Auto
+    // Layout is also moving the cards. Commit the final layout once, then move
+    // the existing layers from their current presentation geometry instead.
+    // This also permits a rapid reversal without fading or duplicate cards.
+    if (animate) LGAnimateGridGeometry(geometry);
+    ApolloLog(@"[AppIcon] adapted pack grid to %ld columns animated=%d", (long)columns, animate);
+}
+
 static void LGReloadDailyFeaturedSection(UITableView *tableView, BOOL animated) {
     if (!tableView) return;
     void (^reload)(void) = ^{
@@ -3993,6 +4208,25 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
     });
 }
 
+- (void)viewDidLayoutSubviews {
+    %orig;
+    if (!LGAlternateIconsAvailable()) return;
+    LGScheduleAppearancePlacement((UIViewController *)self);
+    UITableView *table = LGRememberedTableView(self);
+    if (!table || LGMeasuredPackColumnCount(table) == LGMainPackColumnCount(table) ||
+        [objc_getAssociatedObject(table, &kLGPackColumnsUpdateKey) boolValue]) return;
+    // Safe-area changes also resize a split pane without changing the full
+    // table's bounds. Defer the constraint update out of UIKit's layout traversal.
+    objc_setAssociatedObject(table, &kLGPackColumnsUpdateKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UITableView *weakTable = table;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UITableView *table = weakTable;
+        if (!table) return;
+        objc_setAssociatedObject(table, &kLGPackColumnsUpdateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        LGUpdateMainPackColumns(table, ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsResizing());
+    });
+}
+
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
     NSTimer *timer = objc_getAssociatedObject(self, &kLGDailyRolloverTimerKey);
@@ -4016,9 +4250,8 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
         NSInteger forwardedSection = LGForwardedNativeSection(self);
         if (forwardedSection != NSNotFound) return %orig(tableView, forwardedSection);
         if (LGHasFeaturedSection() && section == LGFeaturedSectionIndex()) return 1;
-        NSInteger columnCount = LGMainPackColumnCount(CGRectGetWidth(tableView.bounds));
-        if (section == LGPacksSectionIndex()) return LGPacksSectionRowCount(columnCount);
-        if (section == LGStandardPacksSectionIndex()) return LGCardRowCount(LGStandardPackCount, columnCount);
+        if (section == LGPacksSectionIndex()) return LGNonEmptyGroupCount() > 0 ? 1 : 0;
+        if (section == LGStandardPacksSectionIndex()) return 1;
         return %orig(tableView, LGRemapSectionToOriginal(section));
     }
     NSInteger nativeCount = %orig;
@@ -4063,13 +4296,13 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
         LGPackGridRowCell *cell = (LGPackGridRowCell *)[tableView dequeueReusableCellWithIdentifier:kLGPackGridRowReuseID];
         if (![cell isMemberOfClass:[LGPackGridRowCell class]])
             cell = [[LGPackGridRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kLGPackGridRowReuseID];
+        LGRememberPreparedPackCell(tableView, cell);
 
-        NSInteger columnCount = LGMainPackColumnCount(CGRectGetWidth(tableView.bounds));
+        NSInteger columnCount = LGMainPackColumnCount(tableView);
         UITableView *sourceTable = ApolloInheritedSettingsThemeSourceTableView((UITableViewController *)(id)self);
         __weak UIViewController *weakController = (UIViewController *)self;
         LGStandardPack activeStandardPack = LGActiveStandardPack();
-        [cell configureWithGroupCardStartIndex:indexPath.row * columnCount
-                                   columnCount:columnCount
+        [cell configureWithGroupColumnCount:columnCount
                             selectedGroupIndex:activeStandardPack == LGStandardPackCount
                                 ? LGGroupIndexForIconID(LGActiveIconID()) : NSNotFound
                                    accentColor:ApolloThemeAccentColor() ?: tableView.tintColor
@@ -4084,8 +4317,9 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
         LGPackGridRowCell *cell = (LGPackGridRowCell *)[tableView dequeueReusableCellWithIdentifier:kLGStandardPackGridRowReuseID];
         if (![cell isMemberOfClass:[LGPackGridRowCell class]])
             cell = [[LGPackGridRowCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:kLGStandardPackGridRowReuseID];
+        LGRememberPreparedPackCell(tableView, cell);
 
-        NSInteger columnCount = LGMainPackColumnCount(CGRectGetWidth(tableView.bounds));
+        NSInteger columnCount = LGMainPackColumnCount(tableView);
         UITableView *sourceTable = ApolloInheritedSettingsThemeSourceTableView((UITableViewController *)(id)self);
         UIColor *cardBackgroundColor = LGThemedCardBackgroundColor(sourceTable);
         objc_setAssociatedObject(self, &kLGPickerCardBackgroundColorKey, cardBackgroundColor,
@@ -4093,8 +4327,7 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
         __weak UIViewController *weakController = (UIViewController *)self;
         __weak id weakSourceController = self;
         __weak UITableView *weakSourceTable = tableView;
-        [cell configureWithStandardCardStartIndex:indexPath.row * columnCount
-                                      columnCount:columnCount
+        [cell configureWithStandardColumnCount:columnCount
                               selectedStandardPack:LGDisplayedActiveStandardPack()
                                       accentColor:ApolloThemeAccentColor() ?: tableView.tintColor
                               cardBackgroundColor:cardBackgroundColor
@@ -4205,8 +4438,9 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
             return %orig(tableView, nativeIndexPath);
         }
         if (LGHasFeaturedSection() && indexPath.section == LGFeaturedSectionIndex()) return kLGFeaturedStripHeight;
-        if (indexPath.section == LGPacksSectionIndex()) return LGPackGridRowHeight();
-        if (indexPath.section == LGStandardPacksSectionIndex()) return LGPackGridRowHeight();
+        NSInteger columns = LGMainPackColumnCount(tableView);
+        if (indexPath.section == LGPacksSectionIndex()) return LGPackGridRowHeight() * LGPacksSectionRowCount(columns);
+        if (indexPath.section == LGStandardPacksSectionIndex()) return LGPackGridRowHeight() * LGCardRowCount(LGStandardPackCount, columns);
         NSIndexPath *r = LGRemapIndexPathToOriginal(indexPath);
         LG_REMAP_SCOPE(tableView, r.section, indexPath.section);
         return %orig(tableView, r);
@@ -4301,11 +4535,14 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     %orig;
-    // Featured previews and selection rings resolve eagerly, so rebuild the
-    // injected cards after a live system appearance change.
+    // Artwork and selection rings resolve eagerly. Pack cells also retain
+    // explicit card heights, so refresh those constraints and scaled fonts
+    // when Dynamic Type changes even if the column count stays the same.
     UIViewController *vc = (UIViewController *)self;
-    if (LGAlternateIconsAvailable()
-        && previousTraitCollection.userInterfaceStyle != vc.traitCollection.userInterfaceStyle) {
+    BOOL appearanceChanged = previousTraitCollection.userInterfaceStyle != vc.traitCollection.userInterfaceStyle;
+    BOOL textSizeChanged = ![previousTraitCollection.preferredContentSizeCategory
+        isEqualToString:vc.traitCollection.preferredContentSizeCategory];
+    if (LGAlternateIconsAvailable() && (appearanceChanged || textSizeChanged)) {
         UITableView *tableView = LGRememberedTableView(self);
         [tableView reloadData];
     }
@@ -4319,7 +4556,7 @@ static void LGScheduleDailyFeaturedRollover(id viewController) {
 
     UITableView *tableView = LGRememberedTableView(self);
     [coordinator animateAlongsideTransition:nil completion:^(__unused id context) {
-        [tableView reloadData];
+        LGUpdateMainPackColumns(tableView, NO);
     }];
 }
 
@@ -4401,6 +4638,11 @@ static void LGStyleCommunityIconCell(id controller,
     LGInstallAppearanceMenu((UIViewController *)self, tableView, ^{
         [weakTable reloadData];
     });
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    LGScheduleAppearancePlacement((UIViewController *)self);
 }
 
 %new

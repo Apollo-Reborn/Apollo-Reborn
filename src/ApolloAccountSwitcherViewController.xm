@@ -1,4 +1,5 @@
 #import "ApolloAccountSwitcherViewController.h"
+#import "ApolloDuoUIKitCompatibility.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloMessageDraftStore.h"
@@ -8,6 +9,8 @@
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
 #import "ApolloUserProfileCache.h"
+#import "ApolloDuoRail.h"
+#import "ApolloDuoCompatibility.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -389,7 +392,10 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
 @property (nonatomic) BOOL accountReorderFinishPending;
 @property (nonatomic) BOOL accountReorderFinishCancelled;
 @property (nonatomic, strong, nullable) UISelectionFeedbackGenerator *accountReorderFeedback;
+@property (nonatomic, strong, nullable) UIBarButtonItem *duoEditItem;
+@property (nonatomic) BOOL duoEditUpdateScheduled;
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
+- (void)updateDuoEditButton;
 @end
 
 // Fetches a private ivar of object type by name (e.g. the real `tableView`
@@ -698,10 +704,29 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [super viewDidLoad];
     self.title = @"Accounts";
     [self applyApolloThemeColors];
-    self.navigationItem.rightBarButtonItem = self.editButtonItem;
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+    UIBarButtonItem *addItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(presentAddAccountChooser)];
-    self.navigationItem.leftBarButtonItem.accessibilityLabel = @"Add Account";
+    addItem.accessibilityLabel = @"Add Account";
+    if (@available(iOS 27.1, *)) {
+        // This panel has its own horizontal navigation row. Without an axis
+        // preference, UIKit moves the add item into the Duo's trailing rail,
+        // leaving it halfway down the sheet instead of opposite Edit.
+        addItem.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+        self.editButtonItem.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+    }
+    if (@available(iOS 16.0, *)) {
+        // Explicit leading/trailing groups keep iOS 27's adaptive navigation
+        // bar from coalescing both controls on the trailing side of a wide
+        // Duo account sheet.
+        self.navigationItem.leadingItemGroups = @[[addItem creatingFixedGroup]];
+        self.navigationItem.trailingItemGroups = @[[self.editButtonItem creatingFixedGroup]];
+    } else {
+        self.navigationItem.leftBarButtonItem = addItem;
+        self.navigationItem.rightBarButtonItem = self.editButtonItem;
+    }
+    // Use the sheet's safe area for account rows, including the status
+    // controls when the user drags the native sheet to its large detent.
+    self.tableView.insetsContentViewsToSafeArea = YES;
     // Suppress the inset-grouped table's large automatic spacer before its
     // first section; the navigation bar already supplies the needed gap.
     self.tableView.tableHeaderView = [[UIView alloc]
@@ -714,9 +739,8 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.tableView.estimatedRowHeight = 0.0;
     self.tableView.estimatedSectionHeaderHeight = 0.0;
     self.tableView.estimatedSectionFooterHeight = 0.0;
-    // Short account lists fit the popup exactly and should not rubber-band.
-    // viewDidLayoutSubviews enables scrolling only if the presentation has
-    // reached the screen-height cap and can no longer fit all of its content.
+    // Scroll only when the account list exceeds the current sheet detent;
+    // UIKit's grabber owns expansion and interactive dismissal.
     self.tableView.scrollEnabled = NO;
     self.tableView.alwaysBounceVertical = NO;
     self.accountReorderGesture = [[UILongPressGestureRecognizer alloc]
@@ -736,6 +760,76 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // Apollo can change its stock or custom theme while this controller is
     // retained, so refresh the dynamic palette each time the panel appears.
     [self applyApolloThemeColors];
+
+    [self updateDuoEditButton];
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
+    UIView *header = self.tableView.tableHeaderView;
+    if (CGRectGetHeight(header.frame) > 0.5) {
+        header.frame = CGRectMake(0.0, 0.0, 1.0, CGFLOAT_MIN);
+        self.tableView.tableHeaderView = header;
+    }
+}
+
+- (void)duoEditButtonTapped:(id)sender {
+    [self setEditing:!self.isEditing animated:YES];
+}
+
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    [super setEditing:editing animated:animated];
+    [self updateDuoEditButton];
+}
+
+- (void)updateDuoEditButton {
+    BOOL duo = ApolloDuoCurrentMode() != ApolloDuoModePhone;
+    if (!duo) {
+        if (@available(iOS 16.0, *)) {
+            NSArray *items = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
+            if (items.count != 1 || items.firstObject != self.editButtonItem) {
+                self.navigationItem.trailingItemGroups = @[[self.editButtonItem creatingFixedGroup]];
+            }
+        } else if (self.navigationItem.rightBarButtonItem != self.editButtonItem) {
+            self.navigationItem.rightBarButtonItem = self.editButtonItem;
+        }
+        return;
+    }
+
+    UIBarButtonItem *item = self.duoEditItem;
+    if (!item) {
+        item = [[UIBarButtonItem alloc] initWithTitle:@"Edit" style:UIBarButtonItemStylePlain
+                                              target:self action:@selector(duoEditButtonTapped:)];
+        UIFont *font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline]
+            scaledFontForFont:[UIFont boldSystemFontOfSize:17.0]];
+        [item setTitleTextAttributes:@{NSFontAttributeName:font} forState:UIControlStateNormal];
+        if (@available(iOS 27.1, *)) item.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+        self.duoEditItem = item;
+    }
+    // Native bar items own their glass and sizing. A configured custom button
+    // is compressed to its text height by the adaptive sheet navigation bar.
+    if (self.isEditing && !item.image) {
+        item.title = nil;
+        item.image = [UIImage systemImageNamed:@"checkmark"
+            withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:19.0
+                                                                                 weight:UIImageSymbolWeightSemibold]];
+        item.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
+        if (@available(iOS 26.0, *)) item.style = UIBarButtonItemStyleProminent;
+        item.accessibilityLabel = @"Done";
+    } else if (!self.isEditing && ![item.title isEqualToString:@"Edit"]) {
+        item.image = nil;
+        item.title = @"Edit";
+        item.style = UIBarButtonItemStylePlain;
+        item.accessibilityLabel = @"Edit";
+    }
+    if (!self.isEditing && ![item.tintColor isEqual:UIColor.labelColor]) {
+        item.tintColor = UIColor.labelColor;
+    }
+    if (@available(iOS 16.0, *)) {
+        NSArray *items = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
+        if (items.count != 1 || items.firstObject != item) {
+            self.navigationItem.trailingItemGroups = @[[item creatingFixedGroup]];
+        }
+    } else if (self.navigationItem.rightBarButtonItem != item) {
+        self.navigationItem.rightBarButtonItem = item;
+    }
 }
 
 - (void)doneTapped:(id)sender {
@@ -823,6 +917,25 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     if (self.navigationController.topViewController != self) return;
+
+    // A fold can move this sheet between native and Duo controls. Defer that
+    // membership change rather than mutating the navigation bar during layout.
+    NSArray<UIBarButtonItem *> *trailingItems = self.navigationItem.rightBarButtonItems;
+    if (@available(iOS 16.0, *)) {
+        trailingItems = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
+    }
+    BOOL usesDuoItem = self.duoEditItem && [trailingItems containsObject:self.duoEditItem];
+    if (usesDuoItem != (ApolloDuoCurrentMode() != ApolloDuoModePhone) &&
+        !self.duoEditUpdateScheduled) {
+        self.duoEditUpdateScheduled = YES;
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) owner = weakSelf;
+            owner.duoEditUpdateScheduled = NO;
+            if (owner.viewIfLoaded.window) [owner updateDuoEditButton];
+        });
+    }
+
     CGFloat height = ceil(self.tableView.contentSize.height +
         self.tableView.adjustedContentInset.top);
     if (height > 0.0 && fabs(self.preferredContentSize.height - height) > 0.5) {
@@ -871,6 +984,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
         cell = [[ApolloSwitcherAccountCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                 reuseIdentifier:@"AccountRow"];
     }
+    cell.backgroundConfiguration = nil;
     cell.backgroundColor = ApolloThemeCardBackgroundColor()
         ?: [UIColor secondarySystemGroupedBackgroundColor];
     cell.contentView.backgroundColor = [UIColor clearColor];
@@ -1581,9 +1695,63 @@ static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINa
 // `host`'s own view; hides the real table view underneath so taps land only
 // on our overlay. Never touches how `host` itself was constructed.
 static const void *kApolloSwitcherInstalledKey = &kApolloSwitcherInstalledKey;
-static const void *kApolloAccountSwitcherPanelPanKey = &kApolloAccountSwitcherPanelPanKey;
-static const void *kApolloAccountSwitcherPanelDraggingKey = &kApolloAccountSwitcherPanelDraggingKey;
-static const void *kApolloAccountSwitcherPanelRestingFrameKey = &kApolloAccountSwitcherPanelRestingFrameKey;
+static char kApolloAccountSheetContentKey;
+
+// A native sheet covers the rail; it doesn't contain it. Closed Duo still
+// propagates the presenting window's rail reservation into the sheet. Scope
+// the correction to this owned navigation subtree, leaving the actual sheet
+// frame and its vertical safe areas under UIKit's control.
+static BOOL ApolloIsAccountSheetContent(UIView *view) {
+    if (ApolloDuoCurrentMode() == ApolloDuoModePhone) return NO;
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if (objc_getAssociatedObject(ancestor, &kApolloAccountSheetContentKey)) {
+            if (@available(iOS 15.0, *)) {
+                UIResponder *responder = ancestor.nextResponder;
+                if (![responder isKindOfClass:UIViewController.class]) return NO;
+                UIViewController *navigation = (UIViewController *)responder;
+                UISheetPresentationController *sheet = navigation.parentViewController.sheetPresentationController;
+                // At the large detent the Duo's status controls overlap the
+                // sheet. Retain UIKit's rail reservation there; the medium
+                // sheet sits entirely below those controls.
+                if ([sheet.selectedDetentIdentifier isEqualToString:
+                        UISheetPresentationControllerDetentIdentifierLarge]) return NO;
+            }
+            return YES;
+        }
+    }
+    return NO;
+}
+
+%hook UIView
+- (void)setSafeAreaInsets:(UIEdgeInsets)insets {
+    if ((insets.left > 0.0 || insets.right > 0.0) && ApolloIsAccountSheetContent(self)) {
+        // The horizontal bar on closed Duo normally ends directly at the
+        // rail boundary. Once that boundary is removed, retain the same
+        // ordinary button margin as its leading edge. Descendants inherit
+        // only the part of that margin intersecting their own bounds.
+        CGFloat trailingMargin = 0.0;
+        for (UIView *ancestor = (UIView *)self; ancestor; ancestor = ancestor.superview) {
+            if ([ancestor isKindOfClass:UINavigationBar.class]) {
+                trailingMargin = ancestor.layoutMargins.left;
+                break;
+            }
+        }
+        insets.left = 0.0;
+        insets.right = MIN(insets.right, trailingMargin);
+    }
+    %orig(insets);
+}
+%end
+
+%hook UIViewController
+- (NSDirectionalEdgeInsets)systemMinimumLayoutMargins {
+    NSDirectionalEdgeInsets margins = %orig;
+    if (self.isViewLoaded && ApolloIsAccountSheetContent(self.view)) {
+        margins.trailing = margins.leading;
+    }
+    return margins;
+}
+%end
 
 static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
     if (![ApolloAccountSwitcherViewController isAvailable]) return;
@@ -1597,6 +1765,8 @@ static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
         overlayNav.modalPresentationStyle = UIModalPresentationCurrentContext;
 
         [host addChildViewController:overlayNav];
+        objc_setAssociatedObject(overlayNav.view, &kApolloAccountSheetContentKey, @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         overlayNav.view.frame = host.view.bounds;
         overlayNav.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         overlayNav.view.backgroundColor = ApolloThemePageBackgroundColor()
@@ -1634,235 +1804,43 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     });
 }
 
-@interface ApolloAccountSwitcherSlideAnimator : NSObject <UIViewControllerAnimatedTransitioning>
-@property (nonatomic) BOOL presenting;
-@end
-
-@implementation ApolloAccountSwitcherSlideAnimator
-
-- (NSTimeInterval)transitionDuration:(id<UIViewControllerContextTransitioning>)transitionContext {
-    // Matches Apollo's native bottom popup used by the Theme Gallery.
-    return 0.30;
-}
-
-- (void)animateTransition:(id<UIViewControllerContextTransitioning>)transitionContext {
-    UIViewController *fromController =
-        [transitionContext viewControllerForKey:UITransitionContextFromViewControllerKey];
-    UIViewController *toController =
-        [transitionContext viewControllerForKey:UITransitionContextToViewControllerKey];
-    UIView *container = transitionContext.containerView;
-    NSTimeInterval duration = [self transitionDuration:transitionContext];
-
-    if (self.presenting) {
-        UIView *presentedView = toController.view;
-        CGRect finalFrame = [transitionContext finalFrameForViewController:toController];
-        presentedView.frame = finalFrame;
-        presentedView.transform = CGAffineTransformMakeTranslation(
-            0.0, CGRectGetHeight(container.bounds) - CGRectGetMinY(finalFrame));
-        [container addSubview:presentedView];
-        [UIView animateWithDuration:duration
-                              delay:0.0
-                            options:UIViewAnimationOptionCurveEaseOut |
-                                    UIViewAnimationOptionBeginFromCurrentState
-                         animations:^{
-            presentedView.transform = CGAffineTransformIdentity;
-        } completion:^(BOOL finished) {
-            BOOL completed = !transitionContext.transitionWasCancelled;
-            if (!completed) [presentedView removeFromSuperview];
-            [transitionContext completeTransition:completed];
-        }];
-    } else {
-        UIView *presentedView = fromController.view;
-        CGFloat distance = CGRectGetHeight(container.bounds) - CGRectGetMinY(presentedView.frame);
-        [UIView animateWithDuration:duration
-                              delay:0.0
-                            options:UIViewAnimationOptionCurveEaseIn | UIViewAnimationOptionBeginFromCurrentState
-                         animations:^{
-            presentedView.transform = CGAffineTransformMakeTranslation(0.0, distance);
-        } completion:^(BOOL finished) {
-            BOOL completed = !transitionContext.transitionWasCancelled;
-            if (!completed) presentedView.transform = CGAffineTransformIdentity;
-            [transitionContext completeTransition:completed];
-        }];
-    }
-}
-
-@end
-
-// Keep Apollo's dimming and tap-outside behavior, but turn its centered card
-// into a bottom-attached panel. The panel reaches both horizontal edges and
-// the bottom edge; only its top corners remain rounded.
-%hook _TtC6Apollo36AccountManagerPresentationController
-
-- (CGRect)frameOfPresentedViewInContainerView {
-    CGRect frame = %orig;
-    if ([objc_getAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey) boolValue]) {
-        UIView *presentedView = ((UIPresentationController *)self).presentedView;
-        if (presentedView) return presentedView.frame;
-    }
-    UIViewController *host = ((UIPresentationController *)self).presentedViewController;
-    for (UIViewController *child in host.childViewControllers) {
-        if (![child isKindOfClass:UINavigationController.class]) continue;
-        UINavigationController *navigation = (UINavigationController *)child;
-        // Pushing the credential editor must not restore Apollo's centered
-        // card frame on the next scroll/keyboard/layout pass. The switcher
-        // owns this whole navigation stack, not only its visible root page.
-        UIViewController *root = navigation.viewControllers.firstObject;
-        if (![root isKindOfClass:ApolloAccountSwitcherViewController.class]) continue;
-        CGFloat height = MAX(root.preferredContentSize.height,
-                             navigation.topViewController.preferredContentSize.height);
-        UIView *container = ((UIPresentationController *)self).containerView;
-        if (container) {
-            UIEdgeInsets safeInsets = container.safeAreaInsets;
-            CGFloat containerHeight = CGRectGetHeight(container.bounds);
-            CGFloat availableHeight = containerHeight - safeInsets.top;
-            CGFloat contentHeight = height > 0.0 ? height + safeInsets.bottom : 0.0;
-            CGFloat targetHeight = MIN(MAX(contentHeight, containerHeight * 0.5),
-                                       MAX(availableHeight, 0.0));
-            frame.origin.x = CGRectGetMinX(container.bounds);
-            frame.origin.y = CGRectGetMaxY(container.bounds) - targetHeight;
-            frame.size.width = CGRectGetWidth(container.bounds);
-            frame.size.height = targetHeight;
+// Keep Apollo's initialized account manager and its live account callbacks,
+// but let UIKit own the sheet's geometry, animation and interactive dismissal.
+// Configure at presentation time, after Apollo's Swift initializer has chosen
+// its custom presentation style and before UIKit creates a presentation owner.
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated
+                  completion:(void (^)(void))completion {
+    if (@available(iOS 15.0, *)) {
+        if ([ApolloAccountSwitcherViewController isAvailable] &&
+            [NSStringFromClass(controller.class) isEqualToString:@"Apollo.AccountManagerViewController"]) {
+            controller.transitioningDelegate = nil;
+            controller.modalPresentationStyle = UIModalPresentationFormSheet;
+            controller.preferredContentSize = CGSizeMake(540.0, 380.0);
+            UISheetPresentationController *sheet = controller.sheetPresentationController;
+            sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent,
+                              UISheetPresentationControllerDetent.largeDetent];
+            sheet.prefersGrabberVisible = YES;
+            sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
         }
     }
-    return frame;
-}
-
-- (void)containerViewWillLayoutSubviews {
-    %orig;
-    UIView *presentedView = ((UIPresentationController *)self).presentedView;
-    presentedView.layer.cornerRadius = 30.0;
-    presentedView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
-    presentedView.layer.masksToBounds = YES;
-
-    if (!objc_getAssociatedObject(self, kApolloAccountSwitcherPanelPanKey)) {
-        UIViewController *host = ((UIPresentationController *)self).presentedViewController;
-        UINavigationBar *navigationBar = nil;
-        for (UIViewController *child in host.childViewControllers) {
-            if ([child isKindOfClass:UINavigationController.class]) {
-                navigationBar = ((UINavigationController *)child).navigationBar;
-                break;
-            }
-        }
-        if (navigationBar) {
-            UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
-                initWithTarget:self action:@selector(apollo_handleAccountSwitcherPanelPan:)];
-            pan.cancelsTouchesInView = NO;
-            [navigationBar addGestureRecognizer:pan];
-            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelPanKey, pan,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-    }
-}
-
-%new
-- (void)apollo_handleAccountSwitcherPanelPan:(UIPanGestureRecognizer *)pan {
-    UIView *presentedView = ((UIPresentationController *)self).presentedView;
-    UIView *container = ((UIPresentationController *)self).containerView;
-    if (!presentedView || !container) return;
-
-    if (pan.state == UIGestureRecognizerStateBegan) {
-        objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, @YES,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey,
-                                 [NSValue valueWithCGRect:presentedView.frame],
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    } else if (pan.state == UIGestureRecognizerStateChanged) {
-        NSValue *storedFrame = objc_getAssociatedObject(
-            self, kApolloAccountSwitcherPanelRestingFrameKey);
-        CGRect restingFrame = storedFrame ? storedFrame.CGRectValue : presentedView.frame;
-        CGFloat translation = [pan translationInView:container].y;
-        CGFloat restingBottom = CGRectGetMaxY(restingFrame);
-        CGFloat minimumTop = container.safeAreaInsets.top;
-        CGFloat maximumTop = restingBottom - 220.0;
-        if (translation < 0.0) {
-            // UIKit-style rubber banding: movement starts one-to-one, then
-            // progressively loses distance as it approaches the upper limit.
-            CGFloat available = MAX(CGRectGetMinY(restingFrame) - minimumTop, 1.0);
-            CGFloat magnitude = -translation;
-            translation = -(available * magnitude * 0.55) /
-                (available + magnitude * 0.55);
-        }
-        CGFloat newTop = MAX(minimumTop,
-                             MIN(CGRectGetMinY(restingFrame) + translation, maximumTop));
-        CGRect draggedFrame = restingFrame;
-        draggedFrame.origin.y = newTop;
-        draggedFrame.size.height = restingBottom - newTop;
-        [UIView performWithoutAnimation:^{
-            presentedView.transform = CGAffineTransformIdentity;
-            presentedView.frame = draggedFrame;
-            [presentedView layoutIfNeeded];
-        }];
-    } else if (pan.state == UIGestureRecognizerStateEnded ||
-               pan.state == UIGestureRecognizerStateCancelled ||
-               pan.state == UIGestureRecognizerStateFailed) {
-        NSValue *storedFrame = objc_getAssociatedObject(
-            self, kApolloAccountSwitcherPanelRestingFrameKey);
-        CGRect restingFrame = storedFrame ? storedFrame.CGRectValue : presentedView.frame;
-        // The shared navigation bar remains available on Accounts, Edit,
-        // and the pushed API editor. A deliberate downward pull or flick
-        // dismisses that entire presentation; cancelled/short drags rebound.
-        CGFloat distance = [pan translationInView:container].y;
-        CGFloat velocity = [pan velocityInView:container].y;
-        CGFloat dismissDistance = MIN(120.0, CGRectGetHeight(restingFrame) * 0.25);
-        BOOL shouldDismiss = pan.state == UIGestureRecognizerStateEnded &&
-            (distance >= dismissDistance || (distance > 20.0 && velocity > 700.0));
-        if (shouldDismiss) {
-            UIViewController *host = ((UIPresentationController *)self).presentedViewController;
-            [host.view endEditing:YES];
-            // Keep the dragging flag until dismissal completes so a layout
-            // pass cannot snap the panel back before its exit animation.
-            [host dismissViewControllerAnimated:YES completion:^{
-                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, nil,
-                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
-                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }];
+    // Holding the Account tab invokes its native action without selecting it.
+    // After unfolding (or before Account's first visit), that action's navigation
+    // controller is offscreen. Present the same initialized manager from the
+    // visible tab controller; UIKit rejects a detached presenter.
+    if ([NSStringFromClass(controller.class) isEqualToString:@"Apollo.AccountManagerViewController"]
+        && !self.viewIfLoaded.window) {
+        UIViewController *tabs = ApolloMainTabBarController();
+        if (tabs != self && tabs.viewIfLoaded.window && !tabs.presentedViewController) {
+            [tabs presentViewController:controller animated:animated completion:completion];
             return;
         }
-        [UIView animateWithDuration:0.28
-                              delay:0.0
-             usingSpringWithDamping:0.86
-              initialSpringVelocity:0.0
-                            options:UIViewAnimationOptionBeginFromCurrentState |
-                                    UIViewAnimationOptionAllowUserInteraction
-                         animations:^{
-            presentedView.transform = CGAffineTransformIdentity;
-            presentedView.frame = restingFrame;
-            [presentedView layoutIfNeeded];
-        } completion:^(__unused BOOL finished) {
-            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, @NO,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            [container setNeedsLayout];
-        }];
     }
+    %orig(controller, animated, completion);
 }
-
 %end
 
 %hook _TtC6Apollo28AccountManagerViewController
-
-- (id)animationControllerForPresentedController:(UIViewController *)presented
-                           presentingController:(UIViewController *)presenting
-                               sourceController:(UIViewController *)source {
-    if ([ApolloAccountSwitcherViewController isAvailable]) {
-        ApolloAccountSwitcherSlideAnimator *animator = [ApolloAccountSwitcherSlideAnimator new];
-        animator.presenting = YES;
-        return animator;
-    }
-    return %orig(presented, presenting, source);
-}
-
-- (id)animationControllerForDismissedController:(UIViewController *)dismissed {
-    if ([ApolloAccountSwitcherViewController isAvailable]) {
-        ApolloAccountSwitcherSlideAnimator *animator = [ApolloAccountSwitcherSlideAnimator new];
-        animator.presenting = NO;
-        return animator;
-    }
-    return %orig(dismissed);
-}
 
 - (void)viewDidLoad {
     %orig;

@@ -1594,9 +1594,8 @@ static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
 UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
 UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
 
-// Dark-mode separator override for a non-tinted stock theme. One "on" value
-// covers both Pure Black tiers — PURER doesn't push the separator any
-// further than plain Pure Black does (unlike the card).
+// Share custom-token and stock Pure Black handling across the list's row,
+// section header, primary text, and secondary text roles.
 static UIColor *ApolloThemeSubredditListColor(NSUInteger role) {
     ApolloThemeToken token = role == 0 ? ApolloThemeTokenSecondaryBackground
         : role == 1 ? ApolloThemeTokenBackground
@@ -1627,6 +1626,9 @@ UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void) { return ApolloThem
 UIColor *ApolloThemeSubredditListTextColor(void) { return ApolloThemeSubredditListColor(2); }
 UIColor *ApolloThemeSubredditListSecondaryTextColor(void) { return ApolloThemeSubredditListColor(3); }
 
+// Dark-mode separator override for a non-tinted stock theme. One "on" value
+// covers both Pure Black tiers — PURER doesn't push the separator any
+// further than plain Pure Black does (unlike the card).
 static BOOL ApolloStockNonTintedDarkSeparatorRGB(uint32_t *outRGB) {
     NSUserDefaults *d = GroupDefaults();
     if (![d boolForKey:kUsePureBlackDarkModeKey]) return NO;

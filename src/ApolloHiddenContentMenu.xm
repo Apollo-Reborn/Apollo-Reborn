@@ -208,8 +208,13 @@ static char ApolloHiddenIconKey;
             [view addGestureRecognizer:tap];
         }];
         ASDisplayNode *wrapper = [NSClassFromString(@"ASCellNode") new];
+        wrapper.accessibilityLabel = insertionTitle;
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
+        // Expose the semantic rows before Texture lazily attaches subnodes.
+        // The Duo menu reads their native images even while these rows are hidden.
+        objc_setAssociatedObject(wrapper, NSSelectorFromString(@"apollo_profileShortcutChildren"),
+                                 @[original, shortcut], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         wrapper.layoutSpecBlock = ^id(id node, ApolloHiddenSizeRange range) {
             return [NSClassFromString(@"ASStackLayoutSpec") stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
         };

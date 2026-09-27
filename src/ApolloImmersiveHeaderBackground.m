@@ -1,4 +1,5 @@
 #import "ApolloImmersiveHeaderBackground.h"
+#import "ApolloDuoSplitView.h"
 
 #import <CoreImage/CoreImage.h>
 #import <QuartzCore/QuartzCore.h>
@@ -482,7 +483,13 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat width = self.bounds.size.width;
+    CGRect contentFrame = self.bounds;
+    CGRect column = ApolloDuoSplitContentFrame(self.contentViewController, self);
+    if (!CGRectIsNull(column) && column.size.width > 0) {
+        contentFrame.origin.x = CGRectGetMinX(column);
+        contentFrame.size.width = CGRectGetWidth(column);
+    }
+    CGFloat width = contentFrame.size.width;
     CGFloat totalHeight = MAX(1.0, self.bounds.size.height);
     CGFloat regionHeight = MIN(self.regionHeight, totalHeight);
     CGFloat extendedHeight = MIN(self.extendedHeight, totalHeight);
@@ -492,7 +499,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
     CGAffineTransform transform = self.contentContainer.transform;
     self.contentContainer.transform = CGAffineTransformIdentity;
-    self.contentContainer.frame = self.bounds;
+    self.contentContainer.frame = contentFrame;
     self.contentContainer.transform = transform;
 
     // Keep ambient artwork when Banner is off: regionHeight == topInset hides

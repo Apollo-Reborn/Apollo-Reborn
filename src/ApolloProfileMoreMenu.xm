@@ -1,3 +1,4 @@
+#import "ApolloDuoAccount.h"
 // ApolloProfileMoreMenu.xm
 //
 // A "..." for the signed-in user's own profile tab, so the button is universal
@@ -141,7 +142,7 @@ static void ApolloProfileMoreMenuShare(UIViewController *viewController) {
 
 #pragma mark - Menu construction
 
-static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
+UIMenu *ApolloProfileMoreMenuForController(UIViewController *viewController) {
     __weak UIViewController *weakVC = viewController;
 
     UIAction *gallery = [UIAction actionWithTitle:@"Gallery View"
@@ -190,8 +191,9 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
 
 // The single owner of a profile screen's rightBarButtonItems layout. Takes
 // whatever is currently installed (Apollo's own "..." included) and enforces
-// our own-profile "..." at index 0 (the trailing slot) — only on the
-// signed-in tab, where Apollo shows no menu of its own.
+// our own-profile "..." at index 0 (the trailing slot), unless the adaptive
+// navigation layout has explicitly placed it on the leading side. Never
+// publish the same item on both sides of the bar.
 //
 // Runs from the lifecycle hooks below AND from the UINavigationItem setter
 // hooks: Apollo rewrites a pushed profile's items outright when the user's
@@ -206,6 +208,8 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
     UIBarButtonItem *apolloItem = ApolloProfileMoreMenuApolloItem(viewController);
     NSArray<UIBarButtonItem *> *currentItems = navigationItem.rightBarButtonItems ?: @[];
     NSMutableArray<UIBarButtonItem *> *desired = [currentItems mutableCopy];
+    NSArray<UIBarButtonItem *> *currentLeadingItems = navigationItem.leftBarButtonItems ?: @[];
+    NSMutableArray<UIBarButtonItem *> *desiredLeading = [currentLeadingItems mutableCopy];
 
     UIBarButtonItem *ours = objc_getAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey);
 
@@ -245,19 +249,22 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
             // would need to refresh — and never reassigning .menu means a
             // normalize can't collapse or re-render the pull-down while the
             // user has it open.
-            ours.menu = ApolloProfileMoreMenuBuild(viewController);
+            ours.menu = ApolloProfileMoreMenuForController(viewController);
             objc_setAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey, ours,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[ProfileMoreMenu] Built own-profile '...' for u/%@ (glyph=%@)",
                       active, apolloItem.image ? @"Apollo's" : @"SF ellipsis");
         }
-        if (![desired containsObject:ours]) {
+        if ([desiredLeading containsObject:ours]) {
+            [desired removeObject:ours];
+        } else if (![desired containsObject:ours]) {
             // Index 0 = the trailing (rightmost) slot, exactly where Apollo
             // puts its "..." on other profiles.
             [desired insertObject:ours atIndex:0];
         }
-    } else if (ours && [desired containsObject:ours]) {
+    } else if (ours) {
         [desired removeObject:ours];
+        [desiredLeading removeObject:ours];
     }
 
     // Load-bearing, not just an optimization: our write below re-enters the
@@ -265,11 +272,14 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
     // that write by rewriting the items itself, that rewrite re-enters
     // normalize un-suppressed — this early-out is what makes the second pass
     // converge instead of ping-ponging setter → normalize → setter forever.
-    if ([desired isEqualToArray:currentItems]) return;
+    BOOL trailingChanged = ![desired isEqualToArray:currentItems];
+    BOOL leadingChanged = ![desiredLeading isEqualToArray:currentLeadingItems];
+    if (!trailingChanged && !leadingChanged) return;
 
     objc_setAssociatedObject(navigationItem, &kApolloProfileMoreMenuNormalizingKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    navigationItem.rightBarButtonItems = desired;
+    if (leadingChanged) navigationItem.leftBarButtonItems = desiredLeading;
+    if (trailingChanged) navigationItem.rightBarButtonItems = desired;
     objc_setAssociatedObject(navigationItem, &kApolloProfileMoreMenuNormalizingKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloLog(@"[ProfileMoreMenu] Normalized profile nav items (%lu → %lu; ours=%@ apollo=%@)",

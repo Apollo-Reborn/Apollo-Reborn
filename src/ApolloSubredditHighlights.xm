@@ -236,7 +236,11 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     // title fallback then always agree).
     NSString *derived = nil;
     NSString *normalized = ApolloHLNormalizedName(rawName);
-    if (normalized.length) {
+    // A named feed's title changes synchronously during the quick-switcher
+    // transition; its asynchronously loaded model may still name the old feed.
+    if (haveTag && tag == 0 && rawTitle.length) {
+        derived = ApolloHLNormalizedName(rawTitle).lowercaseString;
+    } else if (normalized.length) {
         derived = normalized.lowercaseString;
     } else if (haveTag) {
         derived = ApolloHLNormalizedName(rawTitle).lowercaseString;
@@ -1640,6 +1644,7 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
 @property (nonatomic) BOOL settingsPreview;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UIImageView *chevronView;
+@property (nonatomic, strong) UIImageView *pinView;
 @property (nonatomic, strong) UIView *headerTapView;
 - (void)ahlResizeToWidth:(CGFloat)width;
 @property (nonatomic, copy) NSArray<ApolloHLItem *> *items;
@@ -1734,16 +1739,31 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
     ApolloRouteResolvedURLViaApolloScheme(url);
 }
 
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self ahlResizeToWidth:CGRectGetWidth(self.bounds)];
+}
+- (void)safeAreaInsetsDidChange {
+    [super safeAreaInsetsDidChange];
+    [self setNeedsLayout];
+}
 - (void)ahlResizeToWidth:(CGFloat)width {
     if (width <= 0.0) return;
-    self.titleLabel.frame = CGRectMake(kApolloHLSidePadding + 18.0, 2.0,
-                                       width - kApolloHLSidePadding * 2 - 18.0 - 20.0,
+    // The table header spans the whole feed, including the Duo's rail.
+    // Keep both the collapse target and the carousel in its usable area.
+    UIEdgeInsets insets = self.settingsPreview ? UIEdgeInsetsZero : self.safeAreaInsets;
+    CGFloat leading = insets.left;
+    width = MAX(0.0, width - leading - insets.right);
+    self.pinView.frame = CGRectMake(leading + kApolloHLSidePadding, 6.0, 12.0, 14.0);
+    self.titleLabel.frame = CGRectMake(leading + kApolloHLSidePadding + 18.0, 2.0,
+                                       MAX(0.0, width - kApolloHLSidePadding * 2 - 18.0 - 20.0),
                                        kApolloHLTitleRowHeight - 2.0);
-    self.chevronView.frame = CGRectMake(width - kApolloHLSidePadding - 13.0, 7.0, 13.0, 11.0);
-    self.headerTapView.frame = CGRectMake(0.0, 0.0, width, kApolloHLTitleRowHeight);
+    self.chevronView.frame = CGRectMake(leading + width - kApolloHLSidePadding - 13.0, 7.0, 13.0, 11.0);
+    self.headerTapView.frame = CGRectMake(leading, 0.0, width, kApolloHLTitleRowHeight);
 
     if (self.scrollView) {
         CGRect scrollFrame = self.scrollView.frame;
+        scrollFrame.origin.x = leading;
         scrollFrame.size.width = width;
         self.scrollView.frame = scrollFrame;
         CGFloat maxOffset = MAX(0.0, self.scrollView.contentSize.width - width);
@@ -1829,6 +1849,7 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
     pin.contentMode = UIViewContentModeScaleAspectFit;
     pin.frame = CGRectMake(kApolloHLSidePadding, 6.0, 12.0, 14.0);
     [view addSubview:pin];
+    view.pinView = pin;
 
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(kApolloHLSidePadding + 18.0, 2.0, width - kApolloHLSidePadding * 2 - 18.0 - 20.0, kApolloHLTitleRowHeight - 2.0)];
     titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
@@ -1859,7 +1880,9 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
     UIScrollView *scroll = [[ApolloHLCarouselScrollView alloc] initWithFrame:CGRectMake(0, scrollY, width, kApolloHLCardHeight)];
     scroll.showsHorizontalScrollIndicator = NO;
     scroll.alwaysBounceHorizontal = YES;
-    scroll.clipsToBounds = NO;
+    scroll.clipsToBounds = YES;
+    // The carousel itself now owns safe-area placement; do not inset twice.
+    scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     scroll.delaysContentTouches = NO;
     scroll.directionalLockEnabled = YES;
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:view action:@selector(cardTapped:)];

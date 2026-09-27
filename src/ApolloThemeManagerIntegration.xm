@@ -13,11 +13,85 @@
 #import "ApolloThemeManagerViewController.h"
 #import "ApolloBoldPostTitles.h"
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
 static NSString * const kAppColorThemeKey = @"AppColorTheme";
+static char kThemePickerHiddenBoopItemsKeys[2];
+static char kThemePickerBoopRefreshScheduledKey;
+
+static BOOL ApolloThemePickerUsesDuoRail(void) {
+    if (!IsLiquidGlass()) return NO;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    return tabBar.window && !tabBar.hidden
+        && CGRectGetWidth(tabBar.bounds) < 100.0
+        && CGRectGetHeight(tabBar.bounds) > CGRectGetWidth(tabBar.bounds);
+}
+
+static BOOL ApolloThemePickerIsBoopButton(UIBarButtonItem *item) {
+    SEL boop = NSSelectorFromString(@"boopBarButtonItemTappedWithSender:");
+    return item.action == boop || [item.accessibilityLabel.lowercaseString containsString:@"boop"];
+}
+
+static void ApolloThemePickerUpdateBoopButton(UIViewController *controller) {
+    if (!controller) return;
+    BOOL usesRail = ApolloThemePickerUsesDuoRail();
+    for (NSInteger side = 0; side < 2; side++) {
+        BOOL rightSide = side == 1;
+        NSArray<UIBarButtonItem *> *source = rightSide
+            ? controller.navigationItem.rightBarButtonItems
+            : controller.navigationItem.leftBarButtonItems;
+        NSMutableArray<UIBarButtonItem *> *items;
+        if (usesRail) {
+            items = [NSMutableArray array];
+            NSMutableDictionary<NSNumber *, UIBarButtonItem *> *removed = [NSMutableDictionary dictionary];
+            [source enumerateObjectsUsingBlock:^(UIBarButtonItem *item, NSUInteger index, BOOL *stop) {
+                if (ApolloThemePickerIsBoopButton(item)) removed[@(index)] = item;
+                else [items addObject:item];
+            }];
+            if (!removed.count) continue;
+            // Keep only removed items and their positions. A native replacement
+            // becomes the saved item if Apollo rebuilds the bar while on the rail.
+            objc_setAssociatedObject(controller, &kThemePickerHiddenBoopItemsKeys[side],
+                                     removed, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            NSDictionary<NSNumber *, UIBarButtonItem *> *removed =
+                objc_getAssociatedObject(controller, &kThemePickerHiddenBoopItemsKeys[side]);
+            if (!removed.count) continue;
+            objc_setAssociatedObject(controller, &kThemePickerHiddenBoopItemsKeys[side],
+                                     nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            BOOL nativeReplacement = NO;
+            for (UIBarButtonItem *item in source) {
+                if (ApolloThemePickerIsBoopButton(item)) nativeReplacement = YES;
+            }
+            if (nativeReplacement) continue;
+            items = [source mutableCopy] ?: [NSMutableArray array];
+            for (NSNumber *position in [removed.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+                [items insertObject:removed[position] atIndex:MIN(position.unsignedIntegerValue, items.count)];
+            }
+        }
+        if (rightSide) controller.navigationItem.rightBarButtonItems = items;
+        else controller.navigationItem.leftBarButtonItems = items;
+    }
+}
+
+static void ApolloThemePickerRestoreDuoTabMetrics(void) {
+    if (!ApolloThemePickerUsesDuoRail()) return;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = tabs.tabBar;
+    void (^relayout)(void) = ^{
+        ApolloDuoRailRefreshGlyphs();
+        [tabBar setNeedsLayout];
+        [tabBar.superview setNeedsLayout];
+        [tabBar.superview layoutIfNeeded];
+    };
+    dispatch_async(dispatch_get_main_queue(), relayout);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), relayout);
+}
 
 // ---------------------------------------------------------------------------
 // Saved original IMPs for the Appearance VC.
@@ -656,6 +730,27 @@ static UIImage *CustomPickerSwatch(void) {
                                  @(sPendingNativeScreenMode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         sPendingNativeScreenMode = ApolloNativeThemeScreenFull;
     }
+    ApolloThemePickerUpdateBoopButton((UIViewController *)self);
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ApolloThemePickerUpdateBoopButton((UIViewController *)self);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    // Rotation does not call viewWillAppear. Coalesce the refresh outside the
+    // layout pass so updating native navigation items cannot recurse into it.
+    if ([objc_getAssociatedObject(self, &kThemePickerBoopRefreshScheduledKey) boolValue]) return;
+    objc_setAssociatedObject(self, &kThemePickerBoopRefreshScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakController = (UIViewController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *controller = weakController;
+        if (!controller) return;
+        objc_setAssociatedObject(controller, &kThemePickerBoopRefreshScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloThemePickerUpdateBoopButton(controller);
+    });
 }
 
 - (long long)numberOfSectionsInTableView:(UITableView *)tv {
@@ -821,12 +916,14 @@ static UIImage *CustomPickerSwatch(void) {
                            generation:nil];
         ApolloThemeRuntimeEnable();
         [tv reloadData];
+        ApolloThemePickerRestoreDuoTabMetrics();
         return;
     }
     if (ip.section == 0) {                           // stock theme selected
         if ([ApolloThemeStore shared].customThemeEnabled) ApolloThemeRuntimeDisable();
         %orig(tv, [NSIndexPath indexPathForRow:ip.row - 1 inSection:0]);
         [tv reloadData];
+        ApolloThemePickerRestoreDuoTabMetrics();
         return;
     }
     %orig;

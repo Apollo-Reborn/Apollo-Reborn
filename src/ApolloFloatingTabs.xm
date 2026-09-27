@@ -83,6 +83,8 @@
 #import "ApolloFloatingTabsCrests.h"
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceDisplay.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloState.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloThemeRuntime.h"
@@ -502,7 +504,9 @@ int64_t ApolloFloatingTabsPendingCommentSortForPost(NSString *postID) {
 @end
 
 @interface ApolloFloatingTabsRootViewController : UIViewController
-@property (nonatomic, copy) void (^onTransitionToSize)(void);
+@property (nonatomic, copy) void (^onGeometryChange)(void);
+@property (nonatomic, assign) CGSize lastLaidOutSize;
+@property (nonatomic, assign) BOOL geometryChangeScheduled;
 @end
 
 @implementation ApolloFloatingTabsRootViewController
@@ -510,12 +514,41 @@ int64_t ApolloFloatingTabsPendingCommentSortForPost(NSString *postID) {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 }
+- (void)apollo_notifyGeometryChange {
+    if (self.geometryChangeScheduled) return;
+    self.geometryChangeScheduled = YES;
+    __weak __typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloFloatingTabsRootViewController *controller = weakSelf;
+        if (!controller) return;
+        controller.geometryChangeScheduled = NO;
+        if (controller.onGeometryChange) controller.onGeometryChange();
+    });
+}
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     __weak __typeof(self) weakSelf = self;
     [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
-        if (weakSelf.onTransitionToSize) weakSelf.onTransitionToSize();
+        [weakSelf apollo_notifyGeometryChange];
     }];
+}
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self apollo_notifyGeometryChange];
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous];
+    if (previous.horizontalSizeClass != self.traitCollection.horizontalSizeClass
+        || previous.verticalSizeClass != self.traitCollection.verticalSizeClass) {
+        [self apollo_notifyGeometryChange];
+    }
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGSize size = self.view.bounds.size;
+    if (CGSizeEqualToSize(size, self.lastLaidOutSize)) return;
+    self.lastLaidOutSize = size;
+    [self apollo_notifyGeometryChange];
 }
 @end
 
@@ -617,6 +650,10 @@ static ApolloFloatingTabsController *sFTController = nil;
                                              selector:@selector(handleMemoryWarning)
                                                  name:UIApplicationDidReceiveMemoryWarningNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleSceneActivation:)
+                                                 name:UISceneDidActivateNotification
+                                               object:nil];
     return self;
 }
 
@@ -639,30 +676,53 @@ static ApolloFloatingTabsController *sFTController = nil;
 // MARK: Window lifecycle
 // =============================================================================
 
+- (void)bindOverlayToPreferredScene {
+    // Stay on the app window's scene so a full-size overlay cannot sit on
+    // the inner Duo panel while ThemeableWindow is letterboxed on the cover
+    // (or the other way around) and swallow hits on the unused chrome.
+    UIWindow *appWindow = ApolloDeviceAppWindow();
+    UIWindowScene *scene = appWindow.windowScene ?: ApolloDevicePreferredWindowScene();
+    if (!self.window || !scene || self.window.windowScene == scene) return;
+    self.window.windowScene = scene;
+    ApolloLog(@"[FloatingTabs] Overlay rebound to scene %p", scene);
+    [self layoutBubblesAnimated:NO];
+}
+
+- (void)handleSceneActivation:(NSNotification *)notification {
+    if (self.tabs.count == 0 || !self.window) return;
+    [self bindOverlayToPreferredScene];
+    self.window.hidden = NO;
+}
+
 - (void)ensureWindow {
     if (self.window) {
+        [self bindOverlayToPreferredScene];
         self.window.hidden = NO;
         return;
     }
-    UIWindowScene *scene = nil;
-    for (UIScene *candidate in [UIApplication sharedApplication].connectedScenes) {
-        if ([candidate isKindOfClass:[UIWindowScene class]]
-            && candidate.activationState == UISceneActivationStateForegroundActive) {
-            scene = (UIWindowScene *)candidate;
-            break;
-        }
+    UIWindow *appWindow = ApolloDeviceAppWindow();
+    UIWindowScene *scene = appWindow.windowScene ?: ApolloDevicePreferredWindowScene();
+    ApolloFloatingTabsWindow *window;
+    if (scene) {
+        window = [[ApolloFloatingTabsWindow alloc] initWithWindowScene:scene];
+    } else {
+        // No scene yet (very early launch). Bind on UISceneDidActivate.
+        // Do not size from UIScreen.mainScreen — that is the wrong panel
+        // on a foldable / dual-display host.
+        window = [[ApolloFloatingTabsWindow alloc] initWithFrame:CGRectZero];
+        ApolloLog(@"[FloatingTabs] Overlay created without a scene; waiting to bind");
     }
-    ApolloFloatingTabsWindow *window = scene
-        ? [[ApolloFloatingTabsWindow alloc] initWithWindowScene:scene]
-        : [[ApolloFloatingTabsWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     window.windowLevel = UIWindowLevelNormal + 50; // above app UI, below alerts/keyboard (PiP's slot)
     window.backgroundColor = [UIColor clearColor];
     window.interactiveViews = [NSHashTable weakObjectsHashTable];
 
     ApolloFloatingTabsRootViewController *rootVC = [[ApolloFloatingTabsRootViewController alloc] init];
     __weak __typeof(self) weakSelf = self;
-    rootVC.onTransitionToSize = ^{
+    rootVC.onGeometryChange = ^{
         [weakSelf layoutBubblesAnimated:NO];
+        if (weakSelf.closeTarget && !weakSelf.closeTarget.hidden) {
+            weakSelf.closeTarget.center = [weakSelf closeTargetCenter];
+        }
     };
     window.rootViewController = rootVC;
 
@@ -1351,7 +1411,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
 - (CGPoint)dockCenterForTab:(ApolloFloatingTab *)tab {
     UIView *container = self.rootViewController.view;
     CGRect bounds = container.bounds;
-    UIEdgeInsets insets = container.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(container);
     CGFloat r = kFTBubbleSize / 2.0;
 
     CGFloat minY = insets.top + kFTEdgeMargin + r;
@@ -1371,8 +1431,9 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
 
     CGFloat x;
     if (tab.tucked) {
-        // Sliver: only kFTTuckVisibleWidth points remain on screen.
-        x = (tab.side < 0) ? (kFTTuckVisibleWidth - r) : (bounds.size.width - kFTTuckVisibleWidth + r);
+        // Sliver stays in the scene's usable band (not under a hinge strip).
+        x = (tab.side < 0) ? (insets.left + kFTTuckVisibleWidth - r)
+                           : (bounds.size.width - insets.right - kFTTuckVisibleWidth + r);
     } else {
         x = (tab.side < 0) ? (insets.left + kFTEdgeMargin + r)
                            : (bounds.size.width - insets.right - kFTEdgeMargin - r);
@@ -1488,8 +1549,10 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
 - (CGPoint)closeTargetCenter {
     UIView *container = self.rootViewController.view;
     CGRect bounds = container.bounds;
-    return CGPointMake(bounds.size.width / 2.0,
-                       bounds.size.height - container.safeAreaInsets.bottom - 64.0);
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(container);
+    CGFloat usableWidth = bounds.size.width - insets.left - insets.right;
+    return CGPointMake(insets.left + usableWidth / 2.0,
+                       bounds.size.height - insets.bottom - 64.0);
 }
 
 - (void)showCloseTarget {
@@ -1659,6 +1722,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
 
     UIView *container = self.rootViewController.view;
     CGRect bounds = container.bounds;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(container);
     CGFloat speed = sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
     CGPoint projected = center;
     if (speed >= kFTFlingVelocityThreshold) {
@@ -1682,8 +1746,10 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
         }
     }
 
-    // 4) Dock: chat heads always live on an edge — snap to the nearer one.
-    side = (projected.x < bounds.size.width / 2.0) ? -1 : 1;
+    // 4) Dock: chat heads always live on an edge — snap to the nearer
+    //    usable edge (scene mid-point, not a hinge strip).
+    CGFloat usableMidX = insets.left + (bounds.size.width - insets.left - insets.right) / 2.0;
+    side = (projected.x < usableMidX) ? -1 : 1;
     CGFloat yFrac = projected.y / MAX(1.0, bounds.size.height);
 
     for (ApolloFloatingTab *tab in group) {
@@ -1741,7 +1807,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
     for (ApolloFloatingTab *member in members) member.tucked = NO;
     UIView *container = self.rootViewController.view;
     CGRect bounds = container.bounds;
-    UIEdgeInsets insets = container.safeAreaInsets;
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(container);
     CGFloat r = kFTBubbleSize / 2.0;
     CGFloat minY = insets.top + kFTEdgeMargin + r;
     CGFloat maxY = bounds.size.height - insets.bottom - kFTEdgeMargin - r;
@@ -2061,8 +2127,9 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
     self.previewDim = dim;
 
     // Card: the snapshot when we have one, otherwise icon + title placeholder.
-    UIEdgeInsets insets = container.safeAreaInsets;
-    CGFloat cardWidth = MIN(bounds.size.width - 56.0, 340.0);
+    UIEdgeInsets insets = ApolloDeviceChromeInsetsForView(container);
+    CGFloat usableWidth = bounds.size.width - insets.left - insets.right;
+    CGFloat cardWidth = MIN(MAX(0.0, usableWidth - 56.0), 340.0);
     CGFloat maxHeight = bounds.size.height - insets.top - insets.bottom - 180.0;
     UIImage *snapshot = tab.snapshot;
     CGFloat aspect = snapshot ? (snapshot.size.height / MAX(1.0, snapshot.size.width)) : 1.1;
@@ -2110,7 +2177,8 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
         [content addSubview:title];
     }
 
-    card.center = CGPointMake(bounds.size.width / 2.0, bounds.size.height / 2.0 - 24.0);
+    card.center = CGPointMake(insets.left + usableWidth / 2.0,
+                             insets.top + (bounds.size.height - insets.top - insets.bottom) / 2.0 - 24.0);
     [container addSubview:card];
     self.previewCard = card;
 
@@ -2133,8 +2201,9 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
     footer.layer.shadowRadius = 4.0;
     footer.layer.shadowOffset = CGSizeZero;
     CGSize footerSize = [footer sizeThatFits:CGSizeMake(cardWidth, 100)];
-    footer.frame = CGRectMake((bounds.size.width - cardWidth) / 2.0, CGRectGetMaxY(card.frame) + 14.0,
-                              cardWidth, footerSize.height);
+    footer.frame = CGRectMake(insets.left + (usableWidth - cardWidth) / 2.0,
+                             CGRectGetMaxY(card.frame) + 14.0,
+                             cardWidth, footerSize.height);
     footer.alpha = 0;
     [container addSubview:footer];
     self.previewFooter = footer;

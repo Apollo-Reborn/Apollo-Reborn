@@ -5,6 +5,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 #import "ApolloAutomaticBackupViewController.h"
 #import "ApolloReportViewController.h"
 #import "ApolloSettingsForm.h"
@@ -22,6 +24,16 @@ static void ApolloSettingsMenuHaptic(void) {
 // its selection callback after the hold recognizer has already ended.
 static char kApolloSettingsHoldConsumedTouch;
 static char kApolloSettingsShortcutRoot;
+static UITableViewCell *ApolloNativeSettingsRow(NSString *title, UIViewController **owner,
+                                                UITableView **sourceTable, NSIndexPath **path);
+
+// Duo keeps the original tab navigation controller but replaces its visible
+// stack with a split host. Identify the tab by its retained Apollo root.
+static UIViewController *ApolloSettingsTabRoot(UIViewController *controller) {
+    if (![controller isKindOfClass:UINavigationController.class]) return controller;
+    UINavigationController *navigation = (UINavigationController *)controller;
+    return ApolloDuoSplitRootController(navigation) ?: navigation.viewControllers.firstObject;
+}
 
 static UIScrollView *ApolloShortcutScrollView(UIView *view) {
     if (view.hidden || view.alpha < 0.01) return nil;
@@ -40,7 +52,8 @@ static UIScrollView *ApolloShortcutScrollView(UIView *view) {
 static BOOL ApolloHandleShortcutTabReselection(UITabBarController *controller, UIViewController *selected) {
     if (controller.selectedViewController != selected ||
         ![selected isKindOfClass:UINavigationController.class]) return NO;
-    UINavigationController *nav = (UINavigationController *)selected;
+    UINavigationController *outer = (UINavigationController *)selected;
+    UINavigationController *nav = ApolloDuoSplitDetailNavigation(outer);
     BOOL inShortcut = NO;
     for (UIViewController *screen in nav.viewControllers) {
         if ([objc_getAssociatedObject(screen, &kApolloSettingsShortcutRoot) boolValue]) {
@@ -49,7 +62,7 @@ static BOOL ApolloHandleShortcutTabReselection(UITabBarController *controller, U
         }
     }
     if (!inShortcut) return NO;
-    if (nav.transitionCoordinator) return YES;
+    if (outer.transitionCoordinator || nav.transitionCoordinator) return YES;
     UIScrollView *scroll = ApolloShortcutScrollView(nav.topViewController.view);
     CGFloat top = -scroll.adjustedContentInset.top;
     if (scroll && scroll.contentOffset.y > top + 1.0) {
@@ -72,37 +85,79 @@ static id ApolloSettingsObjectForSelector(id object, NSString *name) {
     return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
 }
 
-static UIView *ApolloFindSettingsItemView(UIView *view, UITabBarItem *settingsItem) {
+static BOOL ApolloSettingsTabViewIsVisible(UIView *view, UIWindow *window, UITouch *touch) {
+    if (![view isKindOfClass:UIView.class] || !window || view.window != window) return NO;
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if (ancestor.hidden || ancestor.alpha <= 0.01) return NO;
+    }
+    CGRect frame = [view convertRect:view.bounds toView:window];
+    return CGRectIntersectsRect(frame, window.bounds)
+        && (!touch || CGRectContainsPoint(frame, [touch locationInView:window]));
+}
+
+static BOOL ApolloSettingsRailButtonAtIndex(UIView *view, NSUInteger index, NSUInteger count) {
+    if (![NSStringFromClass(view.class) isEqualToString:@"_UITabButton"]
+        || CGRectGetHeight(view.bounds) <= CGRectGetWidth(view.bounds)) return NO;
+    // Some native rail copies do not expose their linked item. Their parent
+    // still owns one vertical button per tab; require that complete set.
+    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    for (UIView *sibling in view.superview.subviews) {
+        if ([sibling isMemberOfClass:view.class] && !sibling.hidden && sibling.alpha > 0.01
+            && CGRectGetHeight(sibling.bounds) > CGRectGetWidth(sibling.bounds)) {
+            [buttons addObject:sibling];
+        }
+    }
+    if (buttons.count != count || index >= count) return NO;
+    [buttons sortUsingComparator:^NSComparisonResult(UIView *left, UIView *right) {
+        CGFloat a = CGRectGetMidY(left.frame), b = CGRectGetMidY(right.frame);
+        return a < b ? NSOrderedAscending : (a > b ? NSOrderedDescending : NSOrderedSame);
+    }];
+    return buttons[index] == view;
+}
+
+static UIView *ApolloFindSettingsItemView(UIView *view, UITabBarItem *settingsItem,
+                                         UIWindow *window, UITouch *touch, NSUInteger railIndex,
+                                         NSUInteger itemCount) {
     if (view.hidden || view.alpha <= 0.01) return nil;
     id item = ApolloSettingsObjectForSelector(view, @"item");
-    if (item == settingsItem || ApolloSettingsObjectForSelector(item, @"_linkedTabBarItem") == settingsItem) return view;
+    BOOL matches = item == settingsItem
+        || ApolloSettingsObjectForSelector(item, @"_linkedTabBarItem") == settingsItem;
+    if (!matches && railIndex != NSNotFound) {
+        matches = ApolloSettingsRailButtonAtIndex(view, railIndex, itemCount);
+    }
+    if (matches && ApolloSettingsTabViewIsVisible(view, window, touch)) return view;
     for (UIView *child in view.subviews) {
-        UIView *match = ApolloFindSettingsItemView(child, settingsItem);
+        UIView *match = ApolloFindSettingsItemView(child, settingsItem, window, touch, railIndex, itemCount);
         if (match) return match;
     }
     return nil;
 }
 
-static UIView *ApolloSettingsTabView(UITabBarController *controller) {
+static UIView *ApolloSettingsTabView(UITabBarController *controller, UITouch *touch) {
+    UIWindow *window = controller.viewIfLoaded.window;
+    if (!window || (touch && touch.window != window)) return nil;
+    BOOL rail = ApolloDuoRailHasVisibleSideBar();
+    if (rail && touch && [touch locationInView:window].x < CGRectGetWidth(window.bounds) * 0.75) return nil;
     UITabBarItem *settingsItem = nil;
+    NSUInteger settingsIndex = NSNotFound;
     for (UIViewController *child in controller.viewControllers) {
-        UIViewController *root = [child isKindOfClass:UINavigationController.class]
-            ? ((UINavigationController *)child).viewControllers.firstObject : child;
+        UIViewController *root = ApolloSettingsTabRoot(child);
         if ([NSStringFromClass(root.class) containsString:@"SettingsViewController"]) {
-            NSUInteger index = [controller.viewControllers indexOfObjectIdenticalTo:child];
-            settingsItem = index < controller.tabBar.items.count ? controller.tabBar.items[index] : child.tabBarItem;
+            settingsIndex = [controller.viewControllers indexOfObjectIdenticalTo:child];
+            settingsItem = settingsIndex < controller.tabBar.items.count ? controller.tabBar.items[settingsIndex] : child.tabBarItem;
             break;
         }
     }
     if (!settingsItem) return nil;
     UIView *button = ApolloSettingsObjectForSelector(settingsItem, @"_tabBarButton");
-    if ([button isKindOfClass:UIView.class] && [button isDescendantOfView:controller.tabBar] &&
-        !button.hidden && button.alpha > 0.01) return button;
+    if (ApolloSettingsTabViewIsVisible(button, window, touch)
+        && (rail || [button isDescendantOfView:controller.tabBar])) return button;
     Ivar viewIvar = class_getInstanceVariable(settingsItem.class, "_view");
     UIView *itemView = viewIvar ? object_getIvar(settingsItem, viewIvar) : nil;
-    if ([itemView isKindOfClass:UIView.class] && [itemView isDescendantOfView:controller.tabBar] &&
-        !itemView.hidden && itemView.alpha > 0.01) return itemView;
-    return ApolloFindSettingsItemView(controller.tabBar, settingsItem);
+    if (ApolloSettingsTabViewIsVisible(itemView, window, touch)
+        && (rail || [itemView isDescendantOfView:controller.tabBar])) return itemView;
+    return ApolloFindSettingsItemView(rail ? window : controller.tabBar, settingsItem, window,
+        touch, rail ? settingsIndex : NSNotFound, controller.tabBar.items.count);
 }
 
 // All shortcut destinations belong to one stack, regardless of the tab
@@ -111,7 +166,7 @@ static UINavigationController *ApolloSettingsShortcutNavigation(UITabBarControll
     for (UIViewController *child in controller.viewControllers) {
         if (![child isKindOfClass:UINavigationController.class]) continue;
         UINavigationController *nav = (UINavigationController *)child;
-        if ([nav.viewControllers.firstObject isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return nav;
+        if ([ApolloSettingsTabRoot(nav) isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return nav;
     }
     return nil;
 }
@@ -119,20 +174,11 @@ static UINavigationController *ApolloSettingsShortcutNavigation(UITabBarControll
 static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewController *screen) {
     if (!controller) return;
     ApolloClearConsumedSettingsTouch(controller);
-    UINavigationController *nav = ApolloSettingsShortcutNavigation(controller);
-    if (!nav || !screen) return;
-    BOOL switchingTabs = controller.selectedViewController != nav;
+    UINavigationController *outer = ApolloSettingsShortcutNavigation(controller);
+    if (!outer || !screen) return;
+    BOOL switchingTabs = controller.selectedViewController != outer;
+    UINavigationController *nav = ApolloDuoSplitDetailNavigation(outer);
 
-    // Reuse a destination already in this navigation stack.
-    UIViewController *destination = screen;
-    for (UIViewController *existing in nav.viewControllers) {
-        if ([existing isMemberOfClass:screen.class]) {
-            destination = existing;
-            break;
-        }
-    }
-    objc_setAssociatedObject(destination, &kApolloSettingsShortcutRoot, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (nav.topViewController == destination && !switchingTabs) return;
     // Disabling the tab bar alone lets hit testing fall through to the page.
     // Consume touches at the window until the navigation transition finishes.
     UIWindow *window = controller.view.window;
@@ -144,12 +190,25 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
         // Select the owning stack and start its normal navigation transition
         // in the same run-loop turn. UIKit owns the page animation, just as
         // when a shortcut is opened while Settings is already selected.
-        controller.selectedViewController = nav;
-        [nav.view layoutIfNeeded];
-        if (nav.topViewController == destination) {
-            [transitionShield removeFromSuperview];
-            return;
+        controller.selectedViewController = outer;
+        [outer.view layoutIfNeeded];
+        // Selecting the tab can finish a pending fold/unfold adaptation.
+        nav = ApolloDuoSplitDetailNavigation(outer);
+    }
+    // Resolve reuse in the final stack. Selecting an offscreen tab may fold
+    // its detail pane back to the Settings root and retain the old pages only
+    // for a later unfold; those pages are not valid pop destinations now.
+    UIViewController *destination = screen;
+    for (UIViewController *existing in nav.viewControllers) {
+        if ([existing isMemberOfClass:screen.class]) {
+            destination = existing;
+            break;
         }
+    }
+    objc_setAssociatedObject(destination, &kApolloSettingsShortcutRoot, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (nav.topViewController == destination) {
+        [transitionShield removeFromSuperview];
+        return;
     }
     if (destination != screen) {
         [nav popToViewController:destination animated:YES];
@@ -210,6 +269,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 @property (nonatomic, copy) NSDictionary<NSString *, UIImage *> *menuImages;
 @property (nonatomic, strong) UITraitCollection *imageTraits;
 @property (nonatomic, strong) UILongPressGestureRecognizer *gesture;
+@property (nonatomic, weak) UIView *pressedTab;
 @property (nonatomic, strong) UIContextMenuInteraction *interaction;
 @property (nonatomic, copy) void (^pendingAction)(void);
 @property (nonatomic, strong) UIView *anchor;
@@ -222,6 +282,16 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 @property (nonatomic, strong) CADisplayLink *editPositionLink;
 @end
 @implementation ApolloSettingsTabHold
+- (void)updateGestureHost {
+    // UIKit's native rail lives outside UITabBar. The window recognizer only
+    // accepts a touch inside the visible Settings button, never a page hold.
+    UIView *host = ApolloDuoRailHasVisibleSideBar() ? self.controller.viewIfLoaded.window : self.controller.tabBar;
+    if (host && self.gesture.view != host
+        && self.gesture.state != UIGestureRecognizerStateBegan
+        && self.gesture.state != UIGestureRecognizerStateChanged) {
+        [host addGestureRecognizer:self.gesture];
+    }
+}
 - (void)positionEditButton {
     UIView *list = ApolloSettingsMenuList(self.menuContainer);
     if (!list.window || !self.editButton) return;
@@ -274,8 +344,11 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     ApolloClearConsumedSettingsTouch(self.controller);
-    UIView *tab = ApolloSettingsTabView(self.controller);
-    BOOL onSettings = tab.window && CGRectContainsPoint(tab.bounds, [touch locationInView:tab]);
+    self.pressedTab = nil;
+    if (self.anchor || self.controller.presentedViewController) return NO;
+    UIView *tab = ApolloSettingsTabView(self.controller, touch);
+    BOOL onSettings = tab != nil;
+    if (onSettings) self.pressedTab = tab;
     // Do glyph drawing during the hold threshold, not while UIKit opens the menu.
     if (onSettings) [self prepareMenuImages];
     return onSettings;
@@ -285,9 +358,9 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 }
 - (void)held:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController) return;
-    UIView *tab = ApolloSettingsTabView(self.controller);
-    UIWindow *window = tab.window;
-    if (!window) return;
+    UIView *tab = self.pressedTab;
+    UIWindow *window = self.controller.viewIfLoaded.window;
+    if (!ApolloSettingsTabViewIsVisible(tab, window, nil)) return;
     ApolloLog(@"[SettingsTabMenu] Recognized Settings hold");
     // Present from a proxy so the tab bar's glass selection gesture cannot
     // cancel the native menu on finger-up or lift the entire tab bar as a preview.
@@ -297,7 +370,13 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     UIView *container = self.controller.view;
     CGRect sourceFrame = [tab convertRect:tab.bounds toView:container];
     CGRect barFrame = [self.controller.tabBar convertRect:self.controller.tabBar.bounds toView:container];
-    self.menuContainer = [[ApolloSettingsMenuContainer alloc] initWithFrame:CGRectMake(0, 0, container.bounds.size.width, MAX(1, CGRectGetMinY(barFrame) - 12))];
+    // A bottom bar leaves room above it; Duo's trailing rail leaves room
+    // beside it. The rail's top edge cannot define the available menu height.
+    BOOL trailingRail = ApolloDuoRailHasVisibleSideBar();
+    CGSize menuSize = trailingRail
+        ? CGSizeMake(MAX(1, CGRectGetMinX(sourceFrame) - 12), container.bounds.size.height)
+        : CGSizeMake(container.bounds.size.width, MAX(1, CGRectGetMinY(barFrame) - 12));
+    self.menuContainer = [[ApolloSettingsMenuContainer alloc] initWithFrame:(CGRect){CGPointZero, menuSize}];
     self.menuContainer.userInteractionEnabled = YES;
     self.menuContainer.accessibilityViewIsModal = YES;
     [container addSubview:self.menuContainer];
@@ -340,7 +419,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
                             if (!nav) return;
                             ApolloClearConsumedSettingsTouch(weakController);
                             weakController.selectedViewController = nav;
-                            UIViewController *presenter = nav.topViewController;
+                            UIViewController *presenter = ApolloDuoSplitDetailNavigation(nav).topViewController;
                             if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
                         } else {
                             UIViewController *screen = [identifier isEqualToString:@"bug-reports"]
@@ -351,6 +430,10 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
                         }
                     };
                 }];
+            if ([identifier isEqualToString:@"pixel-pals"]
+                && !ApolloNativeSettingsRow(ApolloSettingsShortcutTitle(identifier), NULL, NULL, NULL).userInteractionEnabled) {
+                action.attributes |= UIMenuElementAttributesDisabled;
+            }
             UIMenu *group = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                 options:UIMenuOptionsDisplayInline children:@[action]];
             if (@available(iOS 16.0, *)) group.preferredElementSize = UIMenuElementSizeLarge;
@@ -414,7 +497,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     UIView *container = self.menuContainer;
     UIView *backdrop = self.backdrop;
     UIContextMenuInteraction *interaction = self.interaction;
-    UIView *settingsTab = ApolloSettingsTabView(self.controller);
+    UIView *settingsTab = ApolloSettingsTabView(self.controller, nil);
     CGPoint source = [settingsTab convertPoint:CGPointMake(CGRectGetMidX(settingsTab.bounds),
         CGRectGetMidY(settingsTab.bounds)) toView:container.superview];
     // Use the real tab item: UIKit can reposition the temporary preview anchor.
@@ -572,7 +655,13 @@ static char kApolloSettingsTabHold;
         hold.gesture.delegate = hold;
         objc_setAssociatedObject(self, &kApolloSettingsTabHold, hold, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if (hold.gesture.view != controller.tabBar) [controller.tabBar addGestureRecognizer:hold.gesture];
+    [hold updateGestureHost];
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    // Fold/unfold moves the native buttons without presenting this controller again.
+    ApolloSettingsTabHold *hold = objc_getAssociatedObject(self, &kApolloSettingsTabHold);
+    [hold updateGestureHost];
 }
 %end
 
@@ -580,8 +669,7 @@ static char kApolloSettingsTabHold;
 // selected Settings stack. Ordinary taps and intentional menu navigation pass.
 %hook _TtC6Apollo13SceneDelegate
 - (BOOL)tabBarController:(UITabBarController *)controller shouldSelectViewController:(UIViewController *)viewController {
-    UIViewController *root = [viewController isKindOfClass:UINavigationController.class]
-        ? ((UINavigationController *)viewController).viewControllers.firstObject : viewController;
+    UIViewController *root = ApolloSettingsTabRoot(viewController);
     if ([objc_getAssociatedObject(controller, &kApolloSettingsHoldConsumedTouch) boolValue]
         && [NSStringFromClass(root.class) containsString:@"SettingsViewController"]) {
         ApolloLog(@"[SettingsTabMenu] Consumed hold release without selecting Settings");
@@ -599,7 +687,8 @@ static UINavigationController *sShortcutCaptureNavigation;
 static UIViewController *sShortcutCapturedScreen;
 
 static UIViewController *ApolloFindNativeSettingsRoot(UIViewController *controller) {
-    if ([controller isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return controller;
+    UIViewController *root = ApolloSettingsTabRoot(controller);
+    if ([root isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return root;
     NSArray *children = [controller isKindOfClass:UITabBarController.class] ? ((UITabBarController *)controller).viewControllers
         : [controller isKindOfClass:UINavigationController.class] ? ((UINavigationController *)controller).viewControllers : controller.childViewControllers;
     for (UIViewController *child in children) {
@@ -640,7 +729,10 @@ UIViewController *ApolloSettingsNativeShortcutScreen(NSString *title) {
     UIViewController *root = nil;
     UITableView *table = nil;
     NSIndexPath *path = nil;
-    if (!ApolloNativeSettingsRow(title, &root, &table, &path) || !root.navigationController) return nil;
+    UITableViewCell *cell = ApolloNativeSettingsRow(title, &root, &table, &path);
+    // Calling the delegate directly must honor the native row's availability,
+    // including Pixel Pals being disabled on Duo.
+    if (!cell.userInteractionEnabled || !root.navigationController) return nil;
     sShortcutCaptureNavigation = root.navigationController;
     sShortcutCapturedScreen = nil;
     @try {
