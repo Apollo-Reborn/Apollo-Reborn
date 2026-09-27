@@ -1050,6 +1050,16 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // hid, while a list scrolled a little further came back untouched.
 @property (nonatomic) BOOL leftCollapsedAtRest;
 @property (nonatomic) BOOL keepCollapsedOnAppear;
+// The transition whose viewWillAppear: consumed the notes above. A swipe-back
+// out of a thread sends viewWillAppear: TWICE for one appearance:
+// ApolloVideoSwipeFix runs only UIKit's half when the swipe begins (so a
+// cancelled swipe leaves the thread's video where it is) and replays the whole
+// method once the swipe commits, inside the same transition. The replay found
+// the notes already spent and cleared keepCollapsedOnAppear, so viewDidAppear
+// armed the appearance reveal and a bar the user had scrolled away popped back
+// in a beat after the swipe landed (#1243; the back button sends no replay).
+// Weak: a finished transition reads as nil and never matches a later one.
+@property (nonatomic, weak) id notesTransition;
 // The palette's fully expanded height, learned from settled observations (60pt
 // on an iPhone). A refresh that ends on a full reload can leave the palette
 // parked PART way collapsed with the list resting flush under it — the same
@@ -1395,6 +1405,9 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     BOOL leavingRevealed = CGRectGetHeight([vc navigationItem].searchController.searchBar.bounds) > 1.0;
     leavingState.leftAtTop = leavingAtRest && leavingRevealed;
     leavingState.leftCollapsedAtRest = leavingAtRest && !leavingRevealed;
+    // Fresh notes: the next viewWillAppear: is a new appearance even if it
+    // arrives inside the transition this one ran in (a cancelled pop).
+    leavingState.notesTransition = nil;
     if (NSBTraceEnabled()) {
         ApolloLog(@"[NSBTrace] leaving: y=%.1f adjTop=%.1f bar=%.1f -> leftAtTop=%d leftCollapsedAtRest=%d",
                   leavingTable.contentOffset.y, leavingTable.adjustedContentInset.top,
@@ -1454,14 +1467,29 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // the dismissal and the policy application collapses it straight back —
     // the bar that flashed on closing an image after a subreddit-list round trip.
     ApolloNativeSearchRestingState *reappearState = NSBRestingStateForVC((UIViewController *)self);
-    BOOL leftAtTop = reappearState.leftAtTop;
-    reappearState.leftAtTop = NO;
-    // One-shot as well: a list that left with the bar scrolled away comes back
-    // that way (viewDidAppear skips the appearance reveal for this appearance).
-    reappearState.keepCollapsedOnAppear = reappearState.leftCollapsedAtRest;
-    reappearState.leftCollapsedAtRest = NO;
-    if (reappearState.keepCollapsedOnAppear && NSBTraceEnabled()) {
-        ApolloLog(@"[NSBTrace] re-appearance: left at the collapsed rest, keeping the bar away");
+    // A second viewWillAppear: inside the same transition replays this
+    // appearance (see notesTransition): the first call already consumed the
+    // notes and took the hold, so the replay leaves both as it set them.
+    id<UIViewControllerTransitionCoordinator> appearingTransition =
+        [(UIViewController *)self transitionCoordinator];
+    BOOL replayedAppearance = appearingTransition != nil &&
+                              appearingTransition == reappearState.notesTransition;
+    reappearState.notesTransition = appearingTransition;
+    BOOL leftAtTop = NO;
+    if (replayedAppearance) {
+        ApolloLog(@"[NativeSearch] viewWillAppear: replayed in the same transition: keeping this appearance's notes (keepCollapsed=%d hold=%d)",
+                  (int)reappearState.keepCollapsedOnAppear, (int)reappearState.reappearanceHold);
+    } else {
+        leftAtTop = reappearState.leftAtTop;
+        reappearState.leftAtTop = NO;
+        // One-shot as well: a list that left with the bar scrolled away comes
+        // back that way (viewDidAppear skips the appearance reveal for this
+        // appearance).
+        reappearState.keepCollapsedOnAppear = reappearState.leftCollapsedAtRest;
+        reappearState.leftCollapsedAtRest = NO;
+        if (reappearState.keepCollapsedOnAppear && NSBTraceEnabled()) {
+            ApolloLog(@"[NSBTrace] re-appearance: left at the collapsed rest, keeping the bar away");
+        }
     }
     UISearchController *reappearSC = navItem.searchController;
     if (reappearSC && !reappearSC.active && navItem.hidesSearchBarWhenScrolling &&
@@ -1514,6 +1542,8 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // The transition is over: release the re-appearance hold (viewWillAppear)
     // so the policy application scheduled below puts scroll-away back on.
     appearedState.reappearanceHold = NO;
+    // ...and the appearance a replayed viewWillAppear: could belong to.
+    appearedState.notesTransition = nil;
     UINavigationItem *navItem = [(UIViewController *)self navigationItem];
     if (!navItem.searchController) return;
     // Cancellation sends didAppear from inside completeTransition:, before
