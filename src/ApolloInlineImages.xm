@@ -281,6 +281,12 @@ static NSString *ApolloInlineSuppressionPathKey(NSURL *url) {
     NSString *host = [[url host] lowercaseString];
     NSString *path = [url path];
     if (host.length == 0 || path.length == 0) return nil;
+    // Apollo's link card shows a Reddit media link as "redd.it/<file>", and on
+    // iOS 26+ ApolloGetLinkButtonNodeURLString can only read that display text,
+    // so the card's URL comes back without the i./preview. subdomain. Key the
+    // three hosts alike so a card measured detached (an inserted or reloaded
+    // row) still matches the image the cell inlined.
+    if ([host isEqualToString:@"i.redd.it"] || [host isEqualToString:@"preview.redd.it"]) host = @"redd.it";
     return [NSString stringWithFormat:@"path:%@%@", host, path];
 }
 

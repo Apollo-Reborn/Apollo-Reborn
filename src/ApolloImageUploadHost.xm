@@ -1637,6 +1637,27 @@ static NSDictionary *ApolloRedditRichTextParagraphBlock(NSString *text) {
     return @{ @"e": @"par", @"c": @[ @{ @"e": @"text", @"t": trimmed } ] };
 }
 
+// Apollo's photo button inserts an upload into the editor as a markdown embed,
+// `![image](<url>)`. RTJSON has no markdown, so the img block stands in for the
+// whole embed (or link) around the URL; matching the bare URL alone sent the
+// `![image](` and `)` shell as literal text paragraphs on either side of the image.
+static NSRange ApolloMarkdownWrapperRangeAroundURL(NSString *text, NSRange urlRange) {
+    NSUInteger start = urlRange.location, end = NSMaxRange(urlRange);
+    if (start < 3 || end >= text.length) return urlRange;
+    if ([text characterAtIndex:start - 1] != '(' || [text characterAtIndex:start - 2] != ']' || [text characterAtIndex:end] != ')') return urlRange;
+
+    // Walk back from the `]` to its `[` on the same line.
+    for (NSUInteger i = start - 2; i > 0; ) {
+        i--;
+        unichar c = [text characterAtIndex:i];
+        if (c == '\n' || c == ']') break;
+        if (c != '[') continue;
+        NSUInteger wrapStart = (i > 0 && [text characterAtIndex:i - 1] == '!') ? i - 1 : i;
+        return NSMakeRange(wrapStart, end + 1 - wrapStart);
+    }
+    return urlRange;
+}
+
 static NSData *ApolloRedditRichTextJSONDataForText(NSString *text) {
     NSRegularExpression *regex = ApolloRedditUploadedMediaURLRegex();
     NSArray<NSTextCheckingResult *> *matches = regex ? [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)] : nil;
@@ -1645,8 +1666,10 @@ static NSData *ApolloRedditRichTextJSONDataForText(NSString *text) {
     NSMutableArray<NSDictionary *> *blocks = [NSMutableArray array];
     NSUInteger cursor = 0;
     for (NSTextCheckingResult *match in matches) {
-        if (match.range.location > cursor) {
-            NSDictionary *paragraph = ApolloRedditRichTextParagraphBlock([text substringWithRange:NSMakeRange(cursor, match.range.location - cursor)]);
+        NSRange blockRange = ApolloMarkdownWrapperRangeAroundURL(text, match.range);
+        if (blockRange.location < cursor) blockRange = match.range;
+        if (blockRange.location > cursor) {
+            NSDictionary *paragraph = ApolloRedditRichTextParagraphBlock([text substringWithRange:NSMakeRange(cursor, blockRange.location - cursor)]);
             if (paragraph) [blocks addObject:paragraph];
         }
         NSString *mediaURL = [text substringWithRange:match.range];
@@ -1656,7 +1679,7 @@ static NSData *ApolloRedditRichTextJSONDataForText(NSString *text) {
             return nil;
         }
         [blocks addObject:@{ @"e": @"img", @"id": assetID, @"c": @"" }];
-        cursor = NSMaxRange(match.range);
+        cursor = NSMaxRange(blockRange);
     }
     if (cursor < text.length) {
         NSDictionary *paragraph = ApolloRedditRichTextParagraphBlock([text substringFromIndex:cursor]);
@@ -2520,7 +2543,84 @@ static NSString *ApolloCanonicalDisplayURLForRedditMedia(NSString *assetID, NSSt
     return ApolloRedditMediaURLByStrippingQuery(decoded);
 }
 
-static NSString *ApolloCommentDisplayBodyByMergingMediaURL(NSString *body, NSString *mediaURL) {
+// Display URL for every upload a posted comment carries, keyed by the media id
+// Reddit writes into its native `![img](<id>)` token. The id the caller already
+// resolved keeps its URL; any other upload in the same comment gets its own
+// (valid metadata URL, else the i.redd.it fallback), so a comment with several
+// images never shows the first one twice. Giphy (`giphy|<id>`) and emote
+// (`emote|<sub>|<id>`) keys are skipped; they're never uploads.
+static NSDictionary<NSString *, NSString *> *ApolloCommentDisplayURLsByMediaID(NSDictionary *comment, NSString *primaryMediaID, NSString *primaryURL) {
+    NSDictionary *mediaMetadata = [comment[@"media_metadata"] isKindOfClass:[NSDictionary class]] ? comment[@"media_metadata"] : nil;
+    NSMutableDictionary<NSString *, NSString *> *urls = [NSMutableDictionary dictionary];
+    for (id key in mediaMetadata) {
+        if (![key isKindOfClass:[NSString class]] || [(NSString *)key length] == 0) continue;
+        NSString *mediaID = key;
+        if ([mediaID rangeOfString:@"|"].location != NSNotFound) continue;
+        if ([mediaID isEqualToString:primaryMediaID] && primaryURL.length > 0) {
+            urls[mediaID] = primaryURL;
+            continue;
+        }
+        NSString *status = nil;
+        NSString *metadataURL = ApolloMediaURLFromRedditMediaMetadata(mediaMetadata, mediaID, YES, &status);
+        NSString *displayURL = ApolloCanonicalDisplayURLForRedditMedia(mediaID, metadataURL ?: ApolloRedditUploadFallbackURLForAssetID(mediaID), status);
+        if (displayURL.length > 0) urls[mediaID] = displayURL;
+    }
+    return urls;
+}
+
+// `![alt](target)` / `![alt](target "title")`. Group 1 is the target.
+static NSRegularExpression *ApolloMarkdownImageEmbedRegex(void) {
+    static NSRegularExpression *regex;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        regex = [[NSRegularExpression alloc]
+                 initWithPattern:@"!\\[[^\\]\\n]*\\]\\(\\s*<?([^\\s()<>]+)>?(?:\\s+\"[^\"\\n]*\")?\\s*\\)"
+                         options:0
+                           error:nil];
+    });
+    return regex;
+}
+
+// Apollo's markdown renderer draws an image embed only by looking its target up
+// in the comment's media_metadata, and only valid entries are in that table. A
+// posted image comment comes back from /api/comment with Reddit's native token
+// `![img](<id>)` while the upload's entry is still "unprocessed", and a composer
+// embed kept as `![image](<url>)` has a URL target that is never a key, so both
+// render as a literal "[Unknown Image]" label. Reddit's own API body for the
+// processed comment is the bare preview URL, which the inline-image renderer
+// draws, so unwrap each embed that points at one of this comment's uploads to its
+// bare display URL. Embeds of anything else (emotes, giphy, other links) are left alone.
+static NSString *ApolloCommentDisplayBodyByUnwrappingMediaEmbeds(NSString *body, NSString *mediaURL, NSDictionary<NSString *, NSString *> *urlsByMediaID, NSUInteger *outNativeCount, NSUInteger *outURLCount) {
+    if (outNativeCount) *outNativeCount = 0;
+    if (outURLCount) *outURLCount = 0;
+    if (body.length == 0 || mediaURL.length == 0 || [body rangeOfString:@"!["].location == NSNotFound) return body;
+
+    NSRegularExpression *regex = ApolloMarkdownImageEmbedRegex();
+    NSArray<NSTextCheckingResult *> *matches = regex ? [regex matchesInString:body options:0 range:NSMakeRange(0, body.length)] : nil;
+    if (matches.count == 0) return body;
+
+    NSMutableString *rewritten = [body mutableCopy];
+    NSUInteger nativeCount = 0, urlCount = 0;
+    for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
+        NSString *target = [body substringWithRange:[match rangeAtIndex:1]];
+        NSString *replacement = urlsByMediaID[target];
+        if (replacement.length > 0) {
+            nativeCount++;
+        } else if (ApolloStringContainsRedditUploadedMedia(target) || ApolloStringIsRedditDisplayMediaURL(ApolloDecodedRedditMediaURLString(target))) {
+            // Same single-URL rule as the bare staged/display URL passes.
+            replacement = mediaURL;
+            urlCount++;
+        } else {
+            continue;
+        }
+        [rewritten replaceCharactersInRange:match.range withString:replacement];
+    }
+    if (outNativeCount) *outNativeCount = nativeCount;
+    if (outURLCount) *outURLCount = urlCount;
+    return (nativeCount + urlCount) > 0 ? rewritten : body;
+}
+
+static NSString *ApolloCommentDisplayBodyByMergingMediaURL(NSString *body, NSString *mediaURL, NSDictionary<NSString *, NSString *> *urlsByMediaID) {
     if (mediaURL.length == 0) return body;
     NSString *source = [body isKindOfClass:[NSString class]] ? body : @"";
     if (source.length == 0) return mediaURL;
@@ -2530,9 +2630,19 @@ static NSString *ApolloCommentDisplayBodyByMergingMediaURL(NSString *body, NSStr
     rewritten = ApolloStringByReplacingRegexMatches(rewritten, ApolloRedditProcessingImageRegex(), mediaURL);
     rewritten = ApolloStringByReplacingRegexMatches(rewritten, ApolloRedditDisplayMediaURLRegex(), mediaURL);
 
+    // After the URL passes, so they can't fold each upload's own URL into mediaURL.
+    NSUInteger nativeEmbeds = 0, urlEmbeds = 0;
+    rewritten = ApolloCommentDisplayBodyByUnwrappingMediaEmbeds(rewritten, mediaURL, urlsByMediaID, &nativeEmbeds, &urlEmbeds);
+    if (nativeEmbeds + urlEmbeds > 0) {
+        ApolloLog(@"[RedditUpload] Posted comment: unwrapped %lu native + %lu URL image embed(s) to display URLs",
+                  (unsigned long)nativeEmbeds, (unsigned long)urlEmbeds);
+    }
+
     if (![rewritten isEqualToString:source]) return rewritten.length > 0 ? rewritten : mediaURL;
     if ([source containsString:mediaURL]) return source;
 
+    ApolloLog(@"[RedditUpload] Posted comment body has no reference to its upload (len=%lu) — prepending the display URL",
+              (unsigned long)source.length);
     return [NSString stringWithFormat:@"%@\n\n%@", mediaURL, source];
 }
 
@@ -2602,7 +2712,8 @@ static void ApolloPopulateRedditCommentDisplayBody(NSMutableDictionary *comment,
     if (mediaURL.length == 0) return;
 
     NSString *body = [comment[@"body"] isKindOfClass:[NSString class]] ? comment[@"body"] : nil;
-    NSString *displayBody = ApolloCommentDisplayBodyByMergingMediaURL(body, mediaURL);
+    NSDictionary<NSString *, NSString *> *urlsByMediaID = ApolloCommentDisplayURLsByMediaID(comment, ApolloMediaAssetIDFromComment(comment), mediaURL);
+    NSString *displayBody = ApolloCommentDisplayBodyByMergingMediaURL(body, mediaURL, urlsByMediaID);
     BOOL changedBody = displayBody.length > 0 && ![displayBody isEqualToString:(body ?: @"")];
     if (changedBody) comment[@"body"] = displayBody;
 
