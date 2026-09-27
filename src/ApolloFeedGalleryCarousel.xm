@@ -1009,6 +1009,34 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     if (self.window && !self.contentIsObscured) [self apollo_loadNearIndex:self.currentIndex];
 }
 
+// The carousel owns every touch that lands inside it; none may reach the feed
+// cell. The page scroll view already keeps its own (UIScrollView does not
+// forward touches up the responder chain), but the page dots did not.
+// UIPageControl drives its taps and scrubbing with gesture recognizers and
+// opts out of UIControl tracking (shouldTrack is NO on iOS 26 and 27), and an
+// untracked UIControl passes touchesBegan/Moved/Ended to its next responder
+// but never touchesCancelled. So the feed's UITableView saw a touch start on
+// the dots, recorded this post as its pending selection, and was never told
+// when another gesture (the image context menu's long press, for one)
+// cancelled that touch. UITableView only records a new pending row while none
+// is set, so the next tap on ANY post opened this gallery's thread instead
+// (#949); a touch lifted on the dots also opened the post. Ending the chain
+// here leaves the dots' own gestures, which never depended on forwarding,
+// working as before.
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    ApolloLogDebug(@"[FeedGallery] kept a carousel touch from the feed row (%@)",
+                   NSStringFromClass(touches.anyObject.view.class));
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+}
+
 @end
 
 #pragma mark - Texture host and live setting refresh
