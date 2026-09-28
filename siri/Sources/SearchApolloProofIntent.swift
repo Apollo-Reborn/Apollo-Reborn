@@ -1,9 +1,14 @@
 import AppIntents
 import Foundation
 
+/// Siri's in-app search contract is NAVIGATION: Apple defines `searchInApp`
+/// as "navigates to search results" and notes Siri may not show dialog or
+/// snippet output. In-Siri post results come from the Spotlight semantic index
+/// (IndexedEntity + OpenApolloPostIntent), not from this action.
 @AppIntent(schema: .system.searchInApp)
-public struct SearchApolloProofIntent {
+public struct SearchApolloProofIntent: ShowInAppSearchResultsIntent {
     public static let title: LocalizedStringResource = "Search Apollo"
+    public static let searchScopes: [StringSearchScope] = [.general]
     public static var supportedModes: IntentModes { .foreground }
     public static var allowedExecutionTargets: IntentExecutionTargets { .main }
 

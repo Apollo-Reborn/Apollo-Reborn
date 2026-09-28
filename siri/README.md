@@ -16,6 +16,11 @@ Siri invocation and Spotlight, not triggering a registered shortcut phrase.
 Ordinary intent actions can still appear in the Shortcuts editor; this does not
 mean the removed phrase registrations have returned.
 
+**2026-09-28:** aligned with Apple's documented Siri AI model — see the
+[best-practice section](../docs/siri-ai-gap-assessment.md#2026-09-28-best-practice-alignment).
+In-Siri results come from the semantic index, not from the custom card action;
+the fixed proof no longer competes as a `.system.open` subreddit action.
+
 ## Current implementation (2026-09-19)
 
 The integration now has a bounded persistent content catalogue, native search,

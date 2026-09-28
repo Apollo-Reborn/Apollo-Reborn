@@ -5,7 +5,9 @@ import Foundation
 /// A deliberately bounded catalogue: no account credentials, network requests,
 /// subscriptions, or browsing history are read by this packaging proof.
 public struct ApolloProofSubredditEntity: IndexedEntity {
-    public static let typeDisplayRepresentation: TypeDisplayRepresentation = "Subreddit"
+    // Not "Subreddit": that name belongs to the real catalogue entity Siri
+    // should resolve spoken community names against.
+    public static let typeDisplayRepresentation: TypeDisplayRepresentation = "Apollo Reborn Community (Proof)"
     public static let defaultQuery = ApolloProofSubredditQuery()
 
     public let id: String

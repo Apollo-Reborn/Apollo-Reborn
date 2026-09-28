@@ -1,13 +1,17 @@
 import AppIntents
 import Foundation
 
-@AppIntent(schema: .system.open)
-public struct OpenApolloProofSubredditIntent {
+/// Fixed r/ApolloReborn packaging proof, kept only so existing user-authored
+/// shortcuts keep working. Deliberately NOT `.system.open`: Siri AI builds its
+/// toolbox from schema intents, and a second subreddit open action whose query
+/// only ever matches one community competed with `OpenApolloSubscribedSubredditIntent`
+/// ("open boutiquebluray" resolved no entity here and fell through to search).
+public struct OpenApolloProofSubredditIntent: AppIntent {
     public static let title: LocalizedStringResource = "Open Apollo Subreddit"
     public static var supportedModes: IntentModes { .foreground }
     public static var allowedExecutionTargets: IntentExecutionTargets { .main }
 
-    public var target: ApolloProofSubredditEntity
+    @Parameter(title: "Subreddit") public var target: ApolloProofSubredditEntity
 
     public init() {}
 

@@ -14,10 +14,8 @@ public struct ShowApolloSiriProofIntent: AppIntent {
         & ProvidesDialog & ShowsSnippetView {
         ApolloSiriLog.event("Community snippet intent performed")
         let entity = ApolloProofSubredditEntity.community
-        // One explicit action seeds one public item for the Spotlight proof.
-        // No background crawling, account data, or browsing-history donation.
-        try await CSSearchableIndex.default().indexAppEntities([entity])
-        ApolloSiriLog.event("Indexed fixed subreddit")
+        // No longer indexed: the fixed proof entity duplicated r/ApolloReborn
+        // in Spotlight/Siri next to the real subscribed-community entity.
         return .result(value: entity, dialog: "The Apollo Reborn community is r/ApolloReborn.",
                        view: ApolloProofSnippetView(subreddit: entity))
     }

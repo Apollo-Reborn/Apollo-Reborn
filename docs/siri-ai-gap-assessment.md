@@ -6,6 +6,61 @@ implementation, historical test evidence, and behavior that still needs testing
 on the real signed Apollo installation. Proposed limits below are starting
 budgets, not measured performance claims.
 
+## 2026-09-28 best-practice alignment
+
+Re-checked against Apple's current App Intents documentation ("Apple Intelligence
+and Siri AI", "Making app entities available in Spotlight", "Providing contextual
+cues", "Displaying static and interactive snippets", the `.system` search/open
+schema pages) and WWDC26 sessions 240/343/344. What the docs settle:
+
+- **Siri acts only through schemas.** Apple Intelligence builds its toolbox from
+  schema intents/entities and uses only schema-defined properties. The custom
+  `SearchApolloPostsIntent` card has no schema and will not be chosen
+  conversationally; there is no public "return search results" schema. Stop
+  treating that as a routing bug.
+- **`searchInApp` is navigation by contract** ("navigates to search results",
+  implemented as a `ShowInAppSearchResultsIntent`). "Find posts about X in
+  Apollo" opening native search is the correct, documented outcome.
+- **In-Siri results come from the Spotlight semantic index.** "Apple Intelligence
+  uses the semantic search capabilities of Spotlight to find your app's content,
+  even when someone describes it vaguely," then presents entities with their
+  `DisplayRepresentation` and opens them via the entity's `OpenIntent`. That is
+  the Things mechanism. Test phrasing must ask about content, not ask to search.
+- **Snippets are not guaranteed in Siri AI:** "the system might not display
+  IntentDialog or ShowsSnippetView." `SnippetIntent.reload()` *presents* a snippet
+  when absent and dismisses others, so never call it from generic refresh paths.
+- **Use `indexingKey`/synonyms** so the semantic index gets structured text and
+  spoken aliases; **make entities `Transferable`** for cross-app requests;
+  **honour targeted `reindexEntities(for:)`**; **donate** real user actions
+  through schema intents via `IntentDonationManager`, sparingly.
+
+Implemented in this pass:
+
+| Change | Why |
+| --- | --- |
+| Proof `OpenApolloProofSubredditIntent` no longer `.system.open`; proof entity renamed and removed from the default index | A second subreddit open action whose query only matched r/ApolloReborn competed with the real one — the most likely cause of "open boutiquebluray" falling through to search. Intent type/parameter IDs kept for existing shortcuts |
+| Community display title (`t5.title`) stored as `displayTitle`; used for `DisplayRepresentation.synonyms`, `alternateNames`, keywords and local spoken matching | Siri hears "Boutique Blu-ray", not "boutiquebluray"; the bridge already forwarded the field |
+| `TypeDisplayRepresentation` synonyms (Post/Thread, Subreddit/Community/Sub); "Subscribed Subreddit" → "Subreddit" | Matches how people name the type |
+| `@Property(indexingKey:)` for post text/date and community description | Documented path into the semantic index |
+| `Transferable` on post (HTTPS permalink, then title+link text) and subreddit (permalink) | "Send this post to …"; never exports `apollo://` |
+| `SearchApolloProofIntent` explicitly `ShowInAppSearchResultsIntent` with `.general` scope | Matches Apple's schema template |
+| Incremental Spotlight publication with a persisted SHA-256 checkpoint; batched upserts; no delete-and-rebuild on each launch; targeted reindex | Addresses finding 3 below; full rebuild only on scope/projection change or system reindex-all |
+| Removed `SnippetIntent.reload()` from refresh/suppress; suppress/experiment toggle revalidate bindings instead of `clear()` | Finding 5 and 7 below |
+| Detail-view open donates `OpenApolloPostIntent` once per post view | Behavioural signal for Apple Intelligence |
+
+Revised device test (after install, indexing on, browse, refresh subscriptions):
+
+1. "Open Boutique Blu-ray in Apollo Reborn" and "Open the boutiquebluray subreddit
+   in Apollo" — expect `Query started: Subscribed subreddit …` then
+   `Open subscribed subreddit action started` in the log.
+2. Content retrieval, not search: "Show me the Apollo post about <distinctive
+   words from a post you scrolled past>", "What was that Reddit post about
+   <topic> I saw in Apollo?" Expect Siri-presented post entities; tapping one
+   runs `Open post action`.
+3. "Search Apollo for mechanical keyboards" — native search (by design).
+4. In a post: "Send this to <contact>" — expect the reddit.com link.
+5. Spotlight: search a community by display title (e.g. "Boutique Blu-ray").
+
 ## Recommendation
 
 Keep one canonical content model for posts and communities, with a bounded local

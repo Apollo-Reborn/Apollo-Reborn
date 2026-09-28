@@ -14,6 +14,17 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
     var observedAt: Date
     let route: String
     let fullName: String?
+    /// Community display title (Reddit's t5 `title`, e.g. "Boutique Blu-ray").
+    /// Siri transcribes spoken names as words, so this is the natural alias for
+    /// a joined `display_name`. Optional so older catalogue snapshots decode.
+    var displayTitle: String? = nil
+
+    /// Public HTTPS equivalent of a validated native route, for sharing.
+    /// Routes are only ever built by `parse` from validated names.
+    static func webURL(forRoute route: String) -> URL {
+        let path = route.hasPrefix("apollo://reddit.com") ? String(route.dropFirst("apollo://reddit.com".count)) : "/"
+        return URL(string: "https://www.reddit.com" + path) ?? URL(string: "https://www.reddit.com/")!
+    }
 
     static func identifier(_ json: [String: Any]) -> String? {
         if json["kind"] as? String == "t3", let name = json["name"] as? String,
@@ -63,11 +74,13 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
         }
         let timestamp = (json["created_utc"] as? NSNumber)?.doubleValue ?? now.timeIntervalSince1970
         guard timestamp.isFinite else { return nil }
+        let communityTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return Self(id: id, kind: isPost ? .post : .subreddit,
                     title: String((isPost ? title : "r/\(subreddit)").prefix(512)),
                     subreddit: subreddit, author: String(author.prefix(64)),
                     text: String(text.prefix(2048)), createdAt: Date(timeIntervalSince1970: timestamp),
-                    observedAt: now, route: route, fullName: json["name"] as? String)
+                    observedAt: now, route: route, fullName: json["name"] as? String,
+                    displayTitle: isPost || communityTitle.isEmpty ? nil : String(communityTitle.prefix(128)))
     }
 }
 
@@ -210,12 +223,15 @@ final class ApolloContentCatalog {
             // match rather than arbitrarily selecting an ambiguous destination.
             let name = Self.spokenSubredditName(query)
             if !name.isEmpty {
-                matches = eligible.filter { Self.spokenSubredditName($0.subreddit) == name }
+                matches = eligible.filter {
+                    Self.spokenSubredditName($0.subreddit) == name
+                        || $0.displayTitle.map(Self.spokenSubredditName) == name
+                }
             }
         }
         if matches.isEmpty {
             matches = eligible.filter { record in
-                let haystack = "\(record.title) \(record.subreddit) \(record.author) \(record.text)"
+                let haystack = "\(record.title) \(record.displayTitle ?? "") \(record.subreddit) \(record.author) \(record.text)"
                     .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
                 return terms.allSatisfy { haystack.contains($0) }
             }

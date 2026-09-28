@@ -14,6 +14,7 @@ final class ApolloOnscreenBridge: NSObject {
         var ownsActivity = false
         var annotated = false
         var activityAnnotated = false
+        var donated = false
         var generation = 0
         init(id: String, account: String, detail: Bool, activity: NSUserActivity?) {
             self.id = id; self.account = account; self.detail = detail; self.activity = activity
@@ -53,10 +54,6 @@ final class ApolloOnscreenBridge: NSObject {
             removeAnnotation(view, binding: binding)
             update(view, binding: binding)
         }
-    }
-
-    static func clear() {
-        for view in bindings.keyEnumerator().allObjects.compactMap({ $0 as? UIView }) { hideView(view) }
     }
 
     private static func removeAnnotation(_ view: UIView, binding: Binding) {
@@ -114,6 +111,21 @@ final class ApolloOnscreenBridge: NSObject {
                 }
             }
             binding.annotated = true
+            // Opening a post is a meaningful user action; donate it through the
+            // schema-conforming open intent so Apple Intelligence learns what
+            // this person reads (Apple: donate accurately, not per feed row).
+            if binding.detail, !experimental, !binding.donated {
+                binding.donated = true
+                let intent = OpenApolloPostIntent(target: ApolloPostEntity(record))
+                Task {
+                    do {
+                        _ = try await IntentDonationManager.shared.donate(intent: intent)
+                        ApolloSiriLog.onscreen("Open-post interaction donated", detail: true)
+                    } catch {
+                        ApolloSiriLog.onscreen("Open-post donation failed", detail: true)
+                    }
+                }
+            }
         }
     }
 }

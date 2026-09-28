@@ -141,6 +141,21 @@ do {
           "Unmatched words were discarded")
     check(names.records(kind: .subreddit, query: "boutique blu-ray", now: now.addingTimeInterval(102)).isEmpty,
           "Spoken matching resurrected expired records")
+    // A community's display title is its spoken alias ("Criterion Collection"
+    // for r/criterion); a legacy snapshot without the field still decodes.
+    var titled = community("criterion")
+    titled["title"] = "The Criterion Collection"
+    try names.ingest(data([titled]), account: account, now: now)
+    check(names.records(kind: .subreddit, query: "the criterion collection", limit: 1, now: now).map(\.id) == ["reddit:subreddit:criterion"],
+          "Community display title was not a spoken alias")
+    check(names.resolve(["reddit:subreddit:criterion"], now: now).first?.displayTitle == "The Criterion Collection",
+          "Community display title was not stored")
+    let legacy = try JSONDecoder().decode(ApolloContentRecord.self, from: Data(#"{"id":"reddit:subreddit:x","kind":"subreddit","title":"r/x","subreddit":"x","author":"","text":"","createdAt":0,"observedAt":0,"route":"apollo://reddit.com/r/x/"}"#.utf8))
+    check(legacy.displayTitle == nil, "Legacy record without display title failed to decode")
+    check(ApolloContentRecord.webURL(forRoute: "apollo://reddit.com/r/apple/comments/abc123/").absoluteString
+              == "https://www.reddit.com/r/apple/comments/abc123/", "Post share URL was not the HTTPS permalink")
+    check(ApolloContentRecord.webURL(forRoute: "https://evil.example/x").absoluteString == "https://www.reddit.com/",
+          "Share URL escaped reddit.com")
     try names.suppress(["reddit:subreddit:boutiquebluray"], account: account, now: now)
     check(!names.records(kind: .subreddit, query: "boutique blu-ray", now: now).contains { $0.id == "reddit:subreddit:boutiquebluray" },
           "Spoken matching resurrected a suppressed community")
