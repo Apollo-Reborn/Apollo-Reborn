@@ -560,6 +560,10 @@ static const void *kApolloPostInfoMarkerSizeKey = &kApolloPostInfoMarkerSizeKey;
 // can be recomputed when the marker font changes without a re-parent — e.g. when
 // the post-mount heal resizes a marker that first built at a fallback size.
 static const void *kApolloPostInfoMarkerBaselineKey = &kApolloPostInfoMarkerBaselineKey;
+// How far past the age view's trailing edge the marker was last pinned (see
+// ApolloPostInfoMarkerLeadForAgeView), so a later pass can tell when the stats
+// after the age have moved and re-pin it.
+static const void *kApolloPostInfoMarkerLeadKey = &kApolloPostInfoMarkerLeadKey;
 // Weak set of all live PostInfoNode marker labels, so a globe toggle-to-original
 // can hide them all at once (they're separate UILabels, not owned text nodes).
 static NSHashTable *sPostInfoMarkerLabels = nil;
@@ -6592,10 +6596,71 @@ static UIFont *ApolloStatFontFromPostInfoNode(id postInfoNode, id ageNode) {
     return nil;
 }
 
+// The stats PostInfoNode lays out AFTER the age stat, in row order
+// (-[PostInfoNode layoutSpecThatFits:] builds the row as points, %, comments,
+// age, then these). Apollo only creates the edited pencil in the thread header,
+// and only for an edited post. Nil ivars and nodes the layout left out are not
+// mounted and get skipped.
+static const char *const kApolloPostInfoStatsAfterAge[] = {
+    "editedButtonNode", "awardsNode", "modButtonNode",
+    "moreOptionsButtonNode", "modOptionsNode", "approvedButton",
+};
+
+// Where the marker starts, in points past the age view's trailing edge: 6pt
+// after the LAST stat that follows the age in this row. A fixed 6pt after the
+// age drew the marker on top of the edited pencil in every edited post's thread
+// header, and the pencil's tap then won over the marker's (#1255). Compact rows
+// stop at the ⋯ button: ApolloReserveMarkerSlotInCompactRow reserves the
+// marker's slot right after it, and mod options / approved move over to make
+// room. Measured from laid-out layers, so a stat that hasn't been laid out yet
+// is skipped; the didEnterVisibleState heal measures again once the row is on
+// screen (ApolloReanchorPostInfoMarkerIfFallback).
+static CGFloat ApolloPostInfoMarkerLeadForAgeView(id postInfoNode, UIView *ageView) {
+    CGFloat lead = 6.0;
+    CALayer *ageLayer = [ageView isKindOfClass:[UIView class]] ? ageView.layer : nil;
+    if (!postInfoNode || !ageLayer) return lead;
+    BOOL infoIsCompact = NO;
+    Ivar civ = NULL;
+    for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
+        civ = class_getInstanceVariable(c, "isCompact");
+    }
+    if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
+    CGFloat ageWidth = ageView.bounds.size.width;
+    for (size_t i = 0; i < sizeof(kApolloPostInfoStatsAfterAge) / sizeof(kApolloPostInfoStatsAfterAge[0]); i++) {
+        const char *name = kApolloPostInfoStatsAfterAge[i];
+        id node = GetIvarObjectQuiet(postInfoNode, name);
+        if (!node) continue;
+        // Never load a node just to measure it: an unloaded node isn't on screen.
+        BOOL loaded = NO;
+        @try { loaded = [node respondsToSelector:@selector(isNodeLoaded)] && ((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded)); } @catch (__unused NSException *e) {}
+        CALayer *layer = nil;
+        if (loaded) {
+            @try { if ([node respondsToSelector:@selector(layer)]) layer = [node layer]; } @catch (__unused NSException *e) {}
+        }
+        // Same row container as the age stat (both are direct subnodes of the
+        // PostInfoNode), visible, and laid out.
+        CGRect r = CGRectNull;
+        BOOL usable = layer && !layer.hidden && layer.superlayer && layer.superlayer == ageLayer.superlayer;
+        if (usable) {
+            r = [layer convertRect:layer.bounds toLayer:ageLayer];
+            usable = !CGRectIsNull(r) && !CGRectIsInfinite(r) && !CGRectIsEmpty(r);
+        }
+        if (usable) {
+            CGFloat past = CGRectGetMaxX(r) - ageWidth + 6.0;
+            // Sanity cap against a bogus frame (the whole run after the age is
+            // well under 200pt of stat-font text and icons).
+            if (past > lead && past < 200.0) lead = past;
+        }
+        if (infoIsCompact && strcmp(name, "moreOptionsButtonNode") == 0) break;
+    }
+    return lead;
+}
+
 // Show/hide the compact "🌐 PT" marker overlaid on the metadata-row PostInfoNode
 // reachable from `anyNode` (a header cell node, a title node, etc.). The label
-// is pinned to the PostInfoNode's OWN view (bottom-trailing), so it tracks the
-// metadata row regardless of cell height — no fragile fixed offset.
+// is a child of the age stat's view, placed past the last stat in the row, so it
+// tracks the metadata row regardless of cell height — no fragile fixed offset.
+// Before the row is mounted it falls back to the PostInfoNode's own view.
 static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, BOOL show, id toggleNode) {
     id postInfoNode = ApolloPostInfoNodeForAnyNode(anyNode);
     if (!postInfoNode) return;
@@ -6613,10 +6678,11 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     // its tintColor is the effective accent.
     @try { UIColor *t = piView.tintColor; if ([t isKindOfClass:[UIColor class]]) sCachedThemeTint = t; } @catch (__unused NSException *e) {}
 
-    // Anchor the marker right AFTER the age/time node so it sits consistently at
-    // the end of the "↑ 💬 🕐" stats. The PostInfoNode's own bounds vary per cell
-    // (sometimes content-width, sometimes full-width), which made a trailing-edge
-    // pin land all over the place — so pin to the ageButtonNode instead.
+    // Anchor the marker to the age/time node so it sits consistently at the end
+    // of the "↑ 💬 🕐" stats (past any stat Apollo draws after the age — see
+    // ApolloPostInfoMarkerLeadForAgeView). The PostInfoNode's own bounds vary per
+    // cell (sometimes content-width, sometimes full-width), which made a
+    // trailing-edge pin land all over the place — so pin to the ageButtonNode.
     id ageNode = nil;
     UIView *ageView = nil;
     {
@@ -6675,9 +6741,21 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
         [sPostInfoMarkerLabels addObject:label];
     }
     host.clipsToBounds = NO;   // marker extends past the age view's right edge (re-assert each call in case ASDK reset it)
+    // Start the marker past whatever Apollo draws after the age stat in this row
+    // (the edited pencil in an edited post's thread header, the ⋯ button in
+    // compact rows) instead of on top of it. Measured every call: the stats after
+    // the age may not have been laid out on an earlier pass.
+    CGFloat markerLead = (host == ageView) ? ApolloPostInfoMarkerLeadForAgeView(postInfoNode, ageView) : 0.0;
+    NSNumber *pinnedLead = objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey);
+    BOOL leadMoved = host == ageView && label.superview == host &&
+                     (![pinnedLead isKindOfClass:[NSNumber class]] || fabs(pinnedLead.doubleValue - markerLead) >= 0.5);
+    if (leadMoved) {
+        ApolloLog(@"[Translation] marker lead %.1f -> %.1f", [pinnedLead doubleValue], markerLead);
+    }
     // (Re)parent under the current host each call — the age node re-mounts its view
-    // on re-processing, so re-add to the live one and drop stale constraints.
-    if (label.superview != host) {
+    // on re-processing, so re-add to the live one and drop stale constraints. A
+    // moved lead re-pins the same way, with fresh constraints.
+    if (label.superview != host || leadMoved) {
         NSArray *oldC = objc_getAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey);
         if ([oldC isKindOfClass:[NSArray class]]) [NSLayoutConstraint deactivateConstraints:oldC];
         [label removeFromSuperview];
@@ -6690,30 +6768,6 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // ↑ 💬 🕐 icons. This is now safe: the label is a CHILD of the age
             // view, so it's in a stable coordinate space (no cross-boundary drift
             // that made firstBaselineAnchor unreliable before).
-            //
-            // COMPACT rows draw the ⋯ more-options button immediately after the
-            // age stat — a 6pt lead put the marker right on top of it. When this
-            // is a compact PostInfoNode and the dots are mounted, start the
-            // marker just past their trailing edge instead (…🕐18h ⋯ 🌐PT).
-            CGFloat markerLead = 6.0;
-            {
-                BOOL infoIsCompact = NO;
-                Ivar civ = NULL;
-                for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
-                    civ = class_getInstanceVariable(c, "isCompact");
-                }
-                if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
-                if (infoIsCompact) {
-                    id dotsNode = GetIvarObjectQuiet(postInfoNode, "moreOptionsButtonNode");
-                    CALayer *dotsLayer = nil;
-                    @try { if ([dotsNode respondsToSelector:@selector(layer)]) dotsLayer = [dotsNode layer]; } @catch (__unused NSException *e) {}
-                    if (dotsLayer && dotsLayer.superlayer && !dotsLayer.hidden && ageView.layer) {
-                        CGRect dotsInAge = [dotsLayer convertRect:dotsLayer.bounds toLayer:ageView.layer];
-                        CGFloat pastDots = CGRectGetMaxX(dotsInAge) - ageView.bounds.size.width + 6.0;
-                        if (pastDots > markerLead && pastDots < 120.0) markerLead = pastDots;
-                    }
-                }
-            }
             NSLayoutConstraint *baseline = [label.firstBaselineAnchor constraintEqualToAnchor:ageView.topAnchor constant:markerFont.ascender];
             fresh = @[
                 [label.leadingAnchor constraintEqualToAnchor:ageView.trailingAnchor constant:markerLead],
@@ -6723,12 +6777,14 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // path) can re-point its constant to the new font's ascender without a
             // full re-parent.
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, baseline, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, @(markerLead), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else {
             fresh = @[
                 [label.trailingAnchor constraintEqualToAnchor:piView.trailingAnchor constant:-2.0],
                 [label.centerYAnchor constraintEqualToAnchor:piView.centerYAnchor constant:0.0],
             ];
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         [NSLayoutConstraint activateConstraints:fresh];
         objc_setAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey, fresh, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -6838,15 +6894,24 @@ static void ApolloReanchorPostInfoMarkerIfFallback(id postInfoNode, BOOL allowRe
     // which is exactly when the "🌐 PT" showed up oversized). Now that the row is
     // on screen the stats are bound, so re-read the real stat font: if it differs
     // from the size the marker was last built at, fall through and re-run the
-    // updater to resize it to match the stats. Only when the anchor is fine AND
-    // the size already matches (or the real font still isn't readable) do we bail.
+    // updater to resize it to match the stats. The marker's lead gets the same
+    // check: the stats after the age (the edited pencil in a thread header, ⋯ in
+    // compact rows) may not have been laid out when it was pinned, so measure
+    // again against the label's superview (anchored means that IS the live age
+    // view) and re-pin if it moved. Only when the anchor is fine, the size matches
+    // (or the real font still isn't readable) AND the lead matches do we bail.
     NSString *reason = anchored ? @"detached" : @"fallback-pin";
     if (anchored && label.window) {
         id ageNode = GetIvarObjectQuiet(postInfoNode, "ageButtonNode");
         UIFont *realFont = ApolloStatFontFromPostInfoNode(postInfoNode, ageNode);
         CGFloat builtAt = [objc_getAssociatedObject(label, kApolloPostInfoMarkerSizeKey) doubleValue];
-        if (![realFont isKindOfClass:[UIFont class]] || fabs(realFont.pointSize - builtAt) < 0.5) return;
-        reason = [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize];
+        BOOL sizeStale = [realFont isKindOfClass:[UIFont class]] && fabs(realFont.pointSize - builtAt) >= 0.5;
+        CGFloat pinnedLead = [objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey) doubleValue];
+        CGFloat wantLead = ApolloPostInfoMarkerLeadForAgeView(postInfoNode, label.superview);
+        BOOL leadStale = fabs(wantLead - pinnedLead) >= 0.5;
+        if (!sizeStale && !leadStale) return;
+        reason = sizeStale ? [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize]
+                           : [NSString stringWithFormat:@"lead %.1f→%.1f", pinnedLead, wantLead];
     }
     NSString *code = objc_getAssociatedObject(label, kApolloPostInfoMarkerCodeKey);
     if (![code isKindOfClass:[NSString class]] || code.length == 0) return;
