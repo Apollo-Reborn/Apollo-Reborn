@@ -286,6 +286,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSimDebugTap.xm \
     $(SRC_DIR)/ApolloManualSignInViewController.m \
     $(SRC_DIR)/ApolloAccountCredentials.m \
+    $(SRC_DIR)/ApolloAccountSubscriptions.m \
     $(SRC_DIR)/ApolloPerAccountFavorites.m \
     $(SRC_DIR)/ApolloFavoritesSorting.m \
     $(SRC_DIR)/ApolloAccountSwitcherViewController.xm \
