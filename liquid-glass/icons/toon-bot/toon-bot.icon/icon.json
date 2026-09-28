@@ -1,0 +1,125 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.32885,0.66187,0.97270,1.00000",
+      "display-p3:0.42550,0.35501,0.96490,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "toon-bot-hands.png",
+          "name" : "toon-bot-hands",
+          "position" : {
+            "scale" : 0.78,
+            "translation-in-points" : [
+              8.840000000000032,
+              8.18999999999994
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "toon-apollo-face.png",
+          "name" : "toon-apollo-face",
+          "position" : {
+            "scale" : 0.86,
+            "translation-in-points" : [
+              22.360000000000014,
+              9.889999999999986
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.64345,0.77546,0.98294,1.00000",
+                  "display-p3:0.33027,0.57278,0.96978,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5000000000000001,
+                    "y" : 0.06431027379896061
+                  },
+                  "stop" : {
+                    "x" : 0.5000000000000001,
+                    "y" : 1
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "extended-gray:1.00000,1.00000",
+                  "display-p3:0.10266,0.10577,0.10406,1.00000"
+                ]
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.64345,0.77546,0.98294,1.00000",
+                  "display-p3:0.47266,0.47266,0.47266,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5000000000000001,
+                    "y" : 0.06431027379896061
+                  },
+                  "stop" : {
+                    "x" : 0.5000000000000001,
+                    "y" : 1.1955135314995569
+                  }
+                }
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "half-circle.svg",
+          "name" : "half-circle",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.17
+            },
+            {
+              "appearance" : "tinted",
+              "value" : 0.22
+            }
+          ],
+          "position" : {
+            "scale" : 1.15,
+            "translation-in-points" : [
+              -3,
+              -344
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
