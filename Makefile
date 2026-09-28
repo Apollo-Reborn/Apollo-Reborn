@@ -149,6 +149,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloStatsRowTouch.xm \
     $(SRC_DIR)/ApolloCommentVoteFlicker.xm \
     $(SRC_DIR)/ApolloPostedCommentInsert.xm \
+    $(SRC_DIR)/ApolloCommentSubmitFailure.xm \
     $(SRC_DIR)/ApolloLiveCommentsFollow.xm \
     $(SRC_DIR)/settings/ApolloSettingsGeneralTable.xm \
     $(SRC_DIR)/settings/ApolloSettingsNativeInjections.xm \
