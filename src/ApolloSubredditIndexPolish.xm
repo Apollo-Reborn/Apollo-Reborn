@@ -814,6 +814,24 @@ static BOOL ApolloSubredditIndexLooksLikeSubredditsTable(UITableView *tableView,
     return hasA && (hasZ || hasHash);
 }
 
+// layoutMargins includes safe-area and inherited padding. Capturing that value
+// near a scroll edge and writing it back during reuse turns the bar's inset into
+// permanent row padding. Read the authored vertical margins while inheritance
+// is temporarily disabled; retain the effective horizontal edges used below.
+static UIEdgeInsets ApolloSubredditIndexRestorableMargins(UIView *view) {
+    UIEdgeInsets margins = view.layoutMargins;
+    BOOL safeMargins = view.insetsLayoutMarginsFromSafeArea;
+    BOOL preservesMargins = view.preservesSuperviewLayoutMargins;
+    if (safeMargins) view.insetsLayoutMarginsFromSafeArea = NO;
+    if (preservesMargins) view.preservesSuperviewLayoutMargins = NO;
+    UIEdgeInsets authoredMargins = view.layoutMargins;
+    if (preservesMargins) view.preservesSuperviewLayoutMargins = YES;
+    if (safeMargins) view.insetsLayoutMarginsFromSafeArea = YES;
+    margins.top = authoredMargins.top;
+    margins.bottom = authoredMargins.bottom;
+    return margins;
+}
+
 // Capture the table's native separator/margin/index chrome exactly once, before the
 // enhancement suite first mutates it, so the master toggle can revert live.
 static void ApolloSubredditIndexCaptureTableNativeState(UITableView *tableView) {
@@ -822,7 +840,7 @@ static void ApolloSubredditIndexCaptureTableNativeState(UITableView *tableView) 
     NSMutableDictionary *state = [NSMutableDictionary dictionary];
     state[@"separatorInset"] = [NSValue valueWithUIEdgeInsets:tableView.separatorInset];
     state[@"separatorStyle"] = @(tableView.separatorStyle);
-    state[@"layoutMargins"] = [NSValue valueWithUIEdgeInsets:tableView.layoutMargins];
+    state[@"layoutMargins"] = [NSValue valueWithUIEdgeInsets:ApolloSubredditIndexRestorableMargins(tableView)];
     state[@"sectionIndexColor"] = tableView.sectionIndexColor ?: (id)[NSNull null];
     state[@"sectionIndexBackgroundColor"] = tableView.sectionIndexBackgroundColor ?: (id)[NSNull null];
     state[@"sectionIndexTrackingBackgroundColor"] = tableView.sectionIndexTrackingBackgroundColor ?: (id)[NSNull null];
@@ -844,6 +862,10 @@ static void ApolloSubredditIndexApplySeparatorInsets(UITableView *tableView) {
 
     UIEdgeInsets margins = tableView.layoutMargins;
     if (margins.right < ApolloSubredditIndexRightInset) {
+        NSDictionary *native = objc_getAssociatedObject(tableView, &kApolloSubredditTableNativeStateKey);
+        UIEdgeInsets nativeMargins = [native[@"layoutMargins"] UIEdgeInsetsValue];
+        margins.top = nativeMargins.top;
+        margins.bottom = nativeMargins.bottom;
         margins.right = ApolloSubredditIndexRightInset;
         tableView.layoutMargins = margins;
     }
@@ -1027,7 +1049,7 @@ static NSMutableDictionary *ApolloSubredditIndexCaptureCellNativeState(UITableVi
     if (state) return state;
     state = [NSMutableDictionary dictionary];
     UIEdgeInsets separatorInset = cell.separatorInset;
-    UIEdgeInsets layoutMargins = cell.layoutMargins;
+    UIEdgeInsets layoutMargins = ApolloSubredditIndexRestorableMargins(cell);
     // Apollo's list cells preserve their superview's layout margins and
     // inherit the table's separator inset, and the suite widens both on the
     // TABLE (ApplySeparatorInsets, before any cell displays). So a cell first
@@ -1037,7 +1059,7 @@ static NSMutableDictionary *ApolloSubredditIndexCaptureCellNativeState(UITableVi
     // leaving the favourite stars inset on exactly the cells that had been
     // on screen (#1010). Substitute the table's captured native right edge,
     // which is what the cell would have shown with the suite off.
-    UIEdgeInsets contentMargins = cell.contentView.layoutMargins;
+    UIEdgeInsets contentMargins = ApolloSubredditIndexRestorableMargins(cell.contentView);
     UITableView *tableView = ApolloSubredditIndexTableForCell(cell);
     NSDictionary *tableState = tableView ? objc_getAssociatedObject(tableView, &kApolloSubredditTableNativeStateKey) : nil;
     if (tableState) {
@@ -1146,6 +1168,9 @@ static void ApolloSubredditIndexApplyCellMarginsOnce(UITableViewCell *cell) {
 
     UIEdgeInsets margins = cell.layoutMargins;
     if (margins.right < ApolloSubredditIndexRightInset) {
+        UIEdgeInsets nativeMargins = [native[@"layoutMargins"] UIEdgeInsetsValue];
+        margins.top = nativeMargins.top;
+        margins.bottom = nativeMargins.bottom;
         margins.right = ApolloSubredditIndexRightInset;
         cell.layoutMargins = margins;
     }
@@ -3320,9 +3345,12 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
         // one-shot preparation only when its geometry/context actually changes,
         // outside layoutSubviews, so UIKit can settle without a layout loop.
         NSMutableDictionary *state = enhanced ? ApolloSubredditIndexCaptureCellNativeState(cell) : nil;
-        NSArray *geometry = @[[NSValue valueWithCGSize:cell.bounds.size],
-                              [NSValue valueWithCGRect:cell.contentView.frame],
-                              [NSValue valueWithUIEdgeInsets:cell.safeAreaInsets],
+        // Vertical safe areas change while scrolling, and row height is an
+        // output of self-sizing. Neither should re-arm horizontal preparation.
+        NSArray *geometry = @[@(CGRectGetWidth(cell.bounds)),
+                              @(CGRectGetMinX(cell.contentView.frame)),
+                              @(CGRectGetWidth(cell.contentView.frame)),
+                              @(cell.safeAreaInsets.left), @(cell.safeAreaInsets.right),
                               @(drawer), @(ApolloDuoRailHasVisibleSideBar()),
                               @(tableView.editing), @(cell.editing)];
         if (state && ![state[@"rowGeometry"] isEqual:geometry]) {
@@ -3667,6 +3695,9 @@ static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *c
     if (!skipLeadingMarginClamp) {
         UIEdgeInsets margins = cell.contentView.layoutMargins;
         if (margins.left < ApolloSubredditRowBalancedLeadingMargin) {
+            UIEdgeInsets nativeMargins = [nativeState[@"contentMargins"] UIEdgeInsetsValue];
+            margins.top = nativeMargins.top;
+            margins.bottom = nativeMargins.bottom;
             margins.left = ApolloSubredditRowBalancedLeadingMargin;
             cell.contentView.layoutMargins = margins;
         }
