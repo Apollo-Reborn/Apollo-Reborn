@@ -684,19 +684,25 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
     NSString *name = isModeratorRow ? ApolloHideModLeftmostLabelText(cell.contentView ?: cell) : nil;
 
-    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, tableView.isEditing, name, NO);
+    // A row's swipe-to-delete also reports isEditing; only Edit mode gets the control.
+    BOOL editing = tableView.isEditing && !ApolloSubredditListIsSwipeEditing(tableView);
+    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, editing, name, NO);
     return cell;
 }
 
 // Show hidden moderator rows while editing without rebuilding the other sections.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
-    if (wasEditing == editing) {
+    UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
+    // Swiping a row to Unsubscribe/Unfavorite lands here too: Apollo's
+    // willBeginEditingRow calls setEditing:YES animated:YES. That is not Edit
+    // mode (UIKit only sets up the swiped row), so reveal no hidden rows and
+    // add no controls; the swipe's closing setEditing:NO then has nothing to undo.
+    if (wasEditing == editing || (editing && ApolloSubredditListIsSwipeEditing(tableView))) {
         %orig;
         return;
     }
 
-    UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
     UIViewPropertyAnimator *transition = objc_getAssociatedObject(tableView, &kApolloHideModTransitionKey);
     if (transition) {
         [transition startAnimation];

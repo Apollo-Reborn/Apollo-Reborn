@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFavoriteConfirm.h"
+#import "ApolloFollowingSection.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
@@ -154,6 +155,12 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 - (void)apollo_updateClassicIcon:(UIImage *)image atIndex:(NSInteger)index;
 - (void)apollo_updateEditingStateAnimated:(BOOL)animated;
 @end
+
+// Edit mode proper. A row's swipe-to-delete also makes the table report
+// isEditing (see ApolloSubredditListIsSwipeEditing).
+static BOOL ApolloMetaFeedTableIsInEditMode(UITableView *tableView) {
+    return tableView.isEditing && !ApolloSubredditListIsSwipeEditing(tableView);
+}
 
 @interface ApolloSubredditIndexOverlayView : UIView
 @property (nonatomic, weak) UITableView *tableView;
@@ -581,7 +588,8 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
 }
 
 - (void)apollo_updateEditingStateAnimated:(BOOL)animated {
-    BOOL editing = self.tableView.isEditing;
+    // A row's swipe-to-delete also sets isEditing; the remove badges are for Edit mode only.
+    BOOL editing = ApolloMetaFeedTableIsInEditMode(self.tableView);
     for (ApolloMetaFeedShortcutControl *shortcut in self.shortcuts) {
         UIButton *button = shortcut.editDeleteButton;
         BOOL shouldShow = editing && shortcut.feedIndex != 0;
@@ -604,7 +612,7 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
                                 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState
                              animations:changes
                              completion:^(__unused BOOL finished) {
-                if (!shouldShow && !self.tableView.isEditing) {
+                if (!shouldShow && !ApolloMetaFeedTableIsInEditMode(self.tableView)) {
                     button.hidden = YES;
                     badge.hidden = YES;
                 }

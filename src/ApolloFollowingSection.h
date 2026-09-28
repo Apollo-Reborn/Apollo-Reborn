@@ -46,6 +46,15 @@ NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, 
 // "MULTIREDDITS" / "MODERATOR" / "FOLLOWING", or @"" for any other section.
 NSString *ApolloFollowingCanonicalTitleForVisibleSection(UITableView *tableView, NSInteger visibleSection);
 
+// YES while the list is in a row's swipe-to-delete rather than Edit mode. A
+// swipe makes UIKit report -isEditing for the whole table (only the swiped row
+// is set up for editing), and Apollo's tableView:willBeginEditingRowAtIndexPath:
+// calls the list's setEditing:YES animated:YES, so Edit-mode decorations (the
+// moderator hide controls, the feed-shortcut remove badges) must check this
+// before showing. Already YES inside that setEditing: call; NO again once
+// didEndEditingRowAtIndexPath: has run.
+BOOL ApolloSubredditListIsSwipeEditing(UITableView *tableView);
+
 // Section-header half of the list's snapshot-then-animate updates (the Edit
 // toggle, the confirmed removal), in three steps. `offsetDelta` is always the
 // table's contentOffset change since the snapshot. See the .xm for why headers

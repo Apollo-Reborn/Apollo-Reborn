@@ -912,6 +912,25 @@ NSString *ApolloFollowingCanonicalTitleForVisibleSection(UITableView *tableView,
     return nativeSection == NSNotFound ? @"" : ApolloFollowingCanonicalTitle(nativeSection);
 }
 
+// Swipe-to-delete state — see ApolloFollowingSection.h. UIKit sends
+// willBegin/didEndEditingRowAtIndexPath: only for a swipe, so the flag lives
+// between those two hooks below. The list's own setEditing:NO drops it too,
+// so a swipe that ever ended without didEnd can't make the next Edit look
+// like a swipe.
+static char kApolloSubredditListSwipeEditingKey;
+
+static void ApolloSubredditListSetSwipeEditing(UITableView *tableView, BOOL swiping) {
+    if (!tableView) return;
+    if (swiping == ApolloSubredditListIsSwipeEditing(tableView)) return;
+    objc_setAssociatedObject(tableView, &kApolloSubredditListSwipeEditingKey, swiping ? @YES : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[FollowingSection] swipe-to-delete editing %@", swiping ? @"began" : @"ended");
+}
+
+BOOL ApolloSubredditListIsSwipeEditing(UITableView *tableView) {
+    return tableView && objc_getAssociatedObject(tableView, &kApolloSubredditListSwipeEditingKey) != nil;
+}
+
 // Subreddit name for a VISIBLE Subreddits-list row — see ApolloFollowingSection.h.
 // Walks FavoriteSubreddits for native section 1 and sectionedSubreddits for the
 // A–Z collation sections. Returns nil for feed / multireddit / moderator rows.
@@ -1190,7 +1209,11 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     %orig(tableView, editingStyle, nativePath);
 }
 
+// UIKit sends these two only for a row's swipe-to-delete. Mark the swipe
+// before Apollo's own willBegin runs, since that is what calls the list's
+// setEditing:YES animated:YES (see ApolloSubredditListIsSwipeEditing).
 - (void)tableView:(UITableView *)tableView willBeginEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    ApolloSubredditListSetSwipeEditing(tableView, YES);
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
     if (!map.active) {
         %orig;
@@ -1204,18 +1227,23 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     %orig(tableView, nativePath);
 }
 
+// Apollo's didEnd ends editing with setEditing:NO, so clear the swipe after it.
 - (void)tableView:(UITableView *)tableView didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloFollowingMap *map = ApolloFollowingMapFor((UIViewController *)self);
-    if (!map.active || !indexPath) {
+    NSIndexPath *nativePath = map.active && indexPath ? ApolloFollowingNativePathForVisible(map, indexPath) : nil;
+    if (nativePath) {
+        %orig(tableView, nativePath);
+    } else {
         %orig;
-        return;
     }
-    NSIndexPath *nativePath = ApolloFollowingNativePathForVisible(map, indexPath);
-    if (!nativePath) {
-        %orig;
-        return;
-    }
-    %orig(tableView, nativePath);
+    ApolloSubredditListSetSwipeEditing(tableView, NO);
+}
+
+// Backstop for the swipe flag: leaving editing always ends any swipe, even one
+// UIKit closed without sending didEndEditingRow.
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    %orig;
+    if (!editing) ApolloSubredditListSetSwipeEditing(ApolloFollowingTableViewOf((UIViewController *)self), NO);
 }
 
 // ---- Reordering --------------------------------------------------------------
