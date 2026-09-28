@@ -1,11 +1,8 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloManualSignInViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
-#import "ApolloAccountCredentials.h"
-#import "ApolloWebSessionStore.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
-#import "Defaults.h"
 
 #import <WebKit/WebKit.h>
 
@@ -216,53 +213,38 @@
     return [self _isRedditHost:url.host] && [url.path hasPrefix:@"/api/v1/authorize"];
 }
 
-// The auth URL's client_id/redirect_uri come from ApolloEffectiveRedditClientId()
-// and ApolloEffectiveRedirectURI(): the ACTIVE account's saved key when it has
-// one, else the default in Settings. Every account is auto-pinned to the default
-// in effect when it first signed in (ApolloUserAvatars.xm), so once the default
-// changes (e.g. to Dystopia after an old key was revoked), a sign-in started
-// while that account is active still sends its old key. Returns that account's
-// username when the request didn't use the default, nil otherwise.
-- (NSString *)_accountWhoseSavedKeyWasUsed {
-    NSString *clientId = @"", *redirect = @"";
-    for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:self.authURL resolvingAgainstBaseURL:NO].queryItems) {
-        if ([item.name isEqualToString:@"client_id"]) clientId = item.value ?: @"";
-        else if ([item.name isEqualToString:@"redirect_uri"]) redirect = item.value ?: @"";
-    }
-    NSString *defaultRedirect = sRedirectURI.length > 0 ? sRedirectURI : defaultRedirectURI;
-    if ([clientId isEqualToString:(sRedditClientId ?: @"")] && [redirect isEqualToString:defaultRedirect]) {
-        return nil;
-    }
-    NSString *active = ApolloActiveAccountUsername();
-    if (active.length == 0) return nil;
-    return ApolloAccountCredentialsFor(active).hasCustomCredentials ? active : nil;
-}
-
 - (void)_explainRejectedSignInWithStatus:(NSInteger)status offerOldReddit:(BOOL)offerOldReddit {
     if (self.finished || self.presentedViewController) return;
     self.explainedRejectedSignIn = YES;
 
+    // A sign-in sends the default key from Settings, whichever account is
+    // active (ApolloAccountCredentialsBeginInteractiveSignIn, #1237). Only with
+    // no default set does it fall back to the active account's saved key, or to
+    // Apollo's own client id, so point at Settings either way.
+    BOOL hasDefaultKey = sRedditClientId.length > 0;
+    ApolloLog(@"[WebAuth] Sign-in failed (HTTP %ld); its key came from %@", (long)status,
+              hasDefaultKey ? @"the default in Settings" : @"a fallback, no default API key is set");
+    NSString *settingsFix = hasDefaultKey
+        ? @"check the Reddit API Key and Redirect URI in Settings → Apollo Reborn → Accounts & API Keys"
+        : @"add your Reddit API Key in Settings → Apollo Reborn → Accounts & API Keys (none is set there)";
+
     NSString *title = nil;
     NSString *message = nil;
     if (status == 400) {
-        NSString *account = [self _accountWhoseSavedKeyWasUsed];
-        ApolloLog(@"[WebAuth] Rejected key came from %@", account.length > 0 ? [@"the saved key for u/" stringByAppendingString:account] : @"the default in Settings");
         title = @"Reddit Didn't Accept This API Key";
-        NSString *base = @"The Reddit API Key and Redirect URI used for this sign-in don't match a Reddit app, so Reddit won't connect your account. Both have to match the app exactly (for Dystopia, the Redirect URI is dystopia://response).";
-        if (account.length > 0) {
-            // The switcher's ⋯ only opens the key editor for API-key rows; an
-            // API-Key-Free row gets the web-session sheet instead (same test as
-            // -[ApolloAccountSwitcherViewController editButtonTapped:]).
-            NSString *fix = ApolloWebSessionFor(account) != nil
-                ? [NSString stringWithFormat:@"u/%@ signs in without an API key, so that key can't be edited. To fix it, cancel, long-press the Profile tab, swipe left on u/%@ and tap Remove, then add it back.", account, account]
-                : [NSString stringWithFormat:@"To fix it, cancel, long-press the Profile tab, tap ⋯ next to u/%@, then tap Clear Custom Key for This Account.", account];
-            message = [NSString stringWithFormat:@"%@\n\nThis sign-in used the key saved for u/%@, not your default key. %@", base, account, fix];
-        } else {
-            message = [base stringByAppendingString:@"\n\nCheck them in Settings → Apollo Reborn → Accounts & API Keys, or sign in without an API key instead."];
-        }
+        message = [NSString stringWithFormat:@"The Reddit API Key and Redirect URI used for this sign-in don't match a Reddit app, so Reddit won't connect your account. Both have to match the app exactly (for Dystopia, the Redirect URI is dystopia://response).\n\nTo fix it, %@, or sign in without an API key instead.", settingsFix];
     } else {
+        // Can be an outage, but Old Reddit also answers some malformed client
+        // ids with a 500 "you broke reddit" page instead of its 400 one: any id
+        // whose length is one more than a multiple of 4, e.g. a 14- or
+        // 22-character key missing its last character (checked 2026-09-28).
+        // Only mention Old Reddit when the alert offers it: the authorize page
+        // path may already be on Old Reddit.
         title = @"Reddit Couldn't Finish Signing In";
-        message = [NSString stringWithFormat:@"Reddit returned an error (HTTP %ld). Wait a few minutes and try again, or switch to Old Reddit and accept there.", (long)status];
+        NSString *retry = offerOldReddit
+            ? @"Wait a few minutes and try again, or switch to Old Reddit and accept there."
+            : @"Wait a few minutes and try again.";
+        message = [NSString stringWithFormat:@"Reddit returned an error (HTTP %ld). %@\n\nIf it keeps happening, %@.", (long)status, retry, settingsFix];
     }
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
@@ -380,7 +362,7 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
 
     if ([self _isAuthorizePageURL:http.URL]) {
         // Reddit's error page names the bad field itself; let it render and
-        // add the saved-key context once, unless that was already explained.
+        // add where to fix it once, unless that was already explained.
         ApolloLog(@"[WebAuth] Reddit rejected the authorize request on %@ (HTTP %ld)", http.URL.host, (long)status);
         decisionHandler(WKNavigationResponsePolicyAllow);
         if (!self.explainedRejectedSignIn) {
