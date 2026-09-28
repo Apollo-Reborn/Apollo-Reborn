@@ -38,15 +38,19 @@ struct ApolloDuoSizeRange { CGSize min; CGSize max; };
 @property (nonatomic, readonly) id delegate;
 @end
 
-static BOOL ApolloDuoIsAccountFeedTable(UITableView *table) {
-    if (!table) return NO;
-    if (ApolloDuoAccountIsOverviewTable(table)) return YES;
+static UIViewController *ApolloDuoTableController(UITableView *table) {
     for (UIResponder *responder = table; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:UIViewController.class]) {
-            return ApolloDuoSplitIsAccountFeedController((UIViewController *)responder);
+            return (UIViewController *)responder;
         }
     }
-    return NO;
+    return nil;
+}
+
+static BOOL ApolloDuoIsAccountFeedTable(UITableView *table) {
+    if (!table) return NO;
+    return ApolloDuoAccountIsOverviewTable(table)
+        || ApolloDuoSplitIsAccountFeedController(ApolloDuoTableController(table));
 }
 
 static void ApolloDuoSyncOuterCellBackground(_ASTableViewCell *cell) {
@@ -63,9 +67,20 @@ static void ApolloDuoSyncOuterCellBackground(_ASTableViewCell *cell) {
     // The card node is constrained to the Overview column. Its UIKit wrapper
     // still spans the table, including the area behind the rail. That outer
     // surface belongs to the page, including for separators and headings.
-    UIColor *background = ApolloDuoIsAccountFeedTable(table)
+    BOOL accountFeed = ApolloDuoIsAccountFeedTable(table);
+    UIColor *background = accountFeed
         ? (ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor)
         : cell.node.backgroundColor;
+    UIViewController *controller = ApolloDuoTableController(table);
+    if (!accountFeed && !ApolloDuoSplitIsSidebarController(controller)
+        && [NSStringFromClass(controller.class) isEqualToString:@"Apollo.ProfileViewController"]) {
+        // The unsplit profile (including closed-landscape Duo) owns a full-width
+        // ambient backdrop. NavigationActions draws each row's native fill only
+        // inside the content column. Keep the outer cell transparent here too:
+        // restoring its node color during reuse/layout flashes card-colored bands
+        // behind the rail between scroll callbacks.
+        background = UIColor.clearColor;
+    }
     if (cell.backgroundColor != background && ![cell.backgroundColor isEqual:background]) {
         cell.backgroundColor = background;
     }

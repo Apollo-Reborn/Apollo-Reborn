@@ -801,6 +801,21 @@ static void ApolloActionsRestoreProfileSelection(UITableViewCell *cell) {
     objc_setAssociatedObject(selection, &kActionsDuoProfileOriginalSelectionMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+static UIColor *ApolloActionsProfileCellNativeColor(UITableViewCell *cell) {
+    SEL nodeSelector = NSSelectorFromString(@"node");
+    id node = [cell respondsToSelector:nodeSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector) : nil;
+    if ([node respondsToSelector:@selector(backgroundColor)]) {
+        // The UIKit wrapper is deliberately clear beside a Duo rail. Texture's
+        // current node color remains the source of truth, also after reuse or a
+        // theme change. Transparent headers must keep their transparency.
+        return ((UIColor *(*)(id, SEL))objc_msgSend)(node, @selector(backgroundColor))
+            ?: UIColor.clearColor;
+    }
+    return objc_getAssociatedObject(cell, &kActionsDuoProfileCellColorKey)
+        ?: cell.backgroundColor ?: UIColor.clearColor;
+}
+
 static void ApolloActionsClipProfileSelection(UITableViewCell *cell) {
     UIView *selection = cell.selectedBackgroundView;
     if (!selection) return;
@@ -839,7 +854,7 @@ static void ApolloActionsClipProfileSelection(UITableViewCell *cell) {
 static void ApolloActionsRestoreProfileCellBackground(UITableViewCell *cell) {
     UIView *background = objc_getAssociatedObject(cell, &kActionsDuoProfileCellBackgroundKey);
     if (!background) return;
-    cell.backgroundColor = objc_getAssociatedObject(cell, &kActionsDuoProfileCellColorKey);
+    cell.backgroundColor = ApolloActionsProfileCellNativeColor(cell);
     id original = objc_getAssociatedObject(cell, &kActionsDuoProfileBackgroundColorKey);
     cell.backgroundView.backgroundColor = original == NSNull.null ? nil : original;
     [background removeFromSuperview];
@@ -877,10 +892,9 @@ static void ApolloActionsClearDuoProfileTrailingCells(UIViewController *controll
             }
         }
 
-        UIColor *original = objc_getAssociatedObject(cell, &kActionsDuoProfileCellColorKey);
-        if (!original) {
-            original = cell.backgroundColor ?: UIColor.clearColor;
-            objc_setAssociatedObject(cell, &kActionsDuoProfileCellColorKey, original,
+        UIColor *nativeColor = ApolloActionsProfileCellNativeColor(cell);
+        if (!objc_getAssociatedObject(cell, &kActionsDuoProfileCellColorKey)) {
+            objc_setAssociatedObject(cell, &kActionsDuoProfileCellColorKey, nativeColor,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(cell, &kActionsDuoProfileBackgroundColorKey,
                                      cell.backgroundView.backgroundColor ?: NSNull.null,
@@ -894,7 +908,7 @@ static void ApolloActionsClearDuoProfileTrailingCells(UIViewController *controll
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [cell insertSubview:background atIndex:0];
         }
-        background.backgroundColor = original;
+        background.backgroundColor = nativeColor;
         background.frame = CGRectMake(0.0, 0.0, surfaceWidth, CGRectGetHeight(cell.bounds));
         background.layer.cornerRadius = 16.0;
         background.layer.masksToBounds = YES;
