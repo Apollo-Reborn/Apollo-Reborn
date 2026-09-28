@@ -118,6 +118,7 @@ static UIView *ApolloPFSectionHeaderView(NSString *title) {
     UILabel *label = [[UILabel alloc] init];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.text = title.uppercaseString;
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     ApolloSettingsApplySectionHeaderTypography(label);
     label.textColor = [UIColor secondaryLabelColor];
     label.numberOfLines = 0;

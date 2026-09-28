@@ -646,7 +646,16 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    titleLabel.text = @"Preview";
+    if (liquidGlass) {
+        titleLabel.text = @"Preview";
+        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
+        titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+            scaledFontForFont:titleFont];
+    } else {
+        titleLabel.text = @"PREVIEW";
+        titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    }
+    titleLabel.adjustsFontForContentSizeCategory = YES;
     ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
     titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
@@ -829,6 +838,9 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     self.pinnedCoverView.backgroundColor = backgroundColor;
     self.previewCardView.backgroundColor = ApolloThemeCardBackgroundColor()
         ?: UIColor.secondarySystemGroupedBackgroundColor;
+    self.previewTitleLabel.textColor =
+        ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
+        ?: UIColor.secondaryLabelColor;
     // This heading lives outside the form table, so table reloads do not
     // refresh it. Reapply the effective text size and native theme palette
     // on appearance and Dynamic Type changes, before preview measurement.

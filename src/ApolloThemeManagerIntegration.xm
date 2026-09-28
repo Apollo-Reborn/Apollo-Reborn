@@ -854,6 +854,7 @@ static void ApolloNativeThemeHeaderDisplay(id owner, SEL selector, UITableView *
     ApolloSettingsApplySectionHeaderTypography(view);
 }
 static void InstallNativeThemeHeaderTypography(void) {
+    if (@available(iOS 26.0, *)) {} else { return; }
     sSettingsHeaderDisplayOriginals = [NSMutableDictionary dictionary];
     for (NSString *name in @[@"Apollo.SettingsThemeViewController",
                              @"Apollo.SettingsAppIconViewController",

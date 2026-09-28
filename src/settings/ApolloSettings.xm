@@ -677,7 +677,9 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 %end
 
 %ctor {
-    %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = NSClassFromString(@"Apollo.SettingsGesturesViewController"));
+    if (@available(iOS 26.0, *)) {
+        %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = NSClassFromString(@"Apollo.SettingsGesturesViewController"));
+    }
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
           SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"));
 
