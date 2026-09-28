@@ -630,7 +630,15 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // ones that fell outside the window.
 @property (nonatomic) NSInteger prefetchRadius;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, ApolloGalleryImageRequest *> *viewerPrefetches;
-@property (nonatomic) CGSize lastLaidOutSize;
+// The PAGER's size as of the last layout pass: one page, and what all the
+// page math divides by. Deliberately the collection view's own bounds, not
+// self.view's. UIKit snaps an autoresized subview to whole device pixels, so
+// when a host gives the viewer a size that isn't on that grid the pager ends
+// up a fraction of a point smaller than self.view for good. Comparing the two
+// then never matched, so every page change was dropped and only the first
+// video ever played (issue #1104: Gallery View shown on CarPlay through
+// CarBridge/CarCast).
+@property (nonatomic) CGSize lastLaidOutPageSize;
 @end
 
 @implementation ApolloGalleryImageViewer
@@ -780,11 +788,16 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGSize size = self.view.bounds.size;
+    // Page geometry comes from the pager itself (see lastLaidOutPageSize).
+    // It has already followed self.view here: autoresizing runs as soon as
+    // the view's bounds change, ahead of this layout pass.
+    CGSize size = self.collectionView.bounds.size;
     if (size.width <= 0.0 || size.height <= 0.0) return;
 
-    if (!CGSizeEqualToSize(size, self.lastLaidOutSize)) {
-        self.lastLaidOutSize = size;
+    if (!CGSizeEqualToSize(size, self.lastLaidOutPageSize)) {
+        ApolloLog(@"[Gallery] viewer page size %.3fx%.3f (view %.3fx%.3f)",
+                  size.width, size.height, self.view.bounds.size.width, self.view.bounds.size.height);
+        self.lastLaidOutPageSize = size;
         [self.layout invalidateLayout];
     }
     [self apollo_layoutChrome];
@@ -1497,7 +1510,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 - (CGSize)collectionView:(UICollectionView *)collectionView
                   layout:(UICollectionViewLayout *)collectionViewLayout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
-    CGSize size = self.view.bounds.size;
+    // Exactly one page: the pager's own bounds, which is also the distance
+    // pagingEnabled moves per swipe. Sized from self.view instead, each item
+    // came out a fraction of a point wider than a page whenever the two
+    // differ, so the pictures crept off-center a little more every swipe.
+    CGSize size = collectionView.bounds.size;
     return CGSizeMake(MAX(size.width, 1.0), MAX(size.height, 1.0));
 }
 
@@ -1508,9 +1525,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     // Mid-rotation this fires with transitional geometry — the old offset
     // divided by the new width — which lands on an unrelated page and clobbers
     // currentIndex before viewDidLayoutSubviews can re-anchor on it. Page math
-    // is only meaningful once the bounds match the size the layout was
-    // prepared for; until then, keep the page the user was on.
-    if (!CGSizeEqualToSize(scrollView.bounds.size, self.lastLaidOutSize)) return;
+    // is only meaningful once the pager's bounds match the page size the
+    // layout was prepared for; until then, keep the page the user was on.
+    // Both sides of this check are the pager's own bounds, so they can only
+    // disagree between a resize and the layout pass that follows it.
+    if (!CGSizeEqualToSize(scrollView.bounds.size, self.lastLaidOutPageSize)) return;
     CGFloat width = MAX(self.collectionView.bounds.size.width, 1.0);
     NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / width);
     page = MAX(0, MIN(page, (NSInteger)self.feed.items.count - 1));
