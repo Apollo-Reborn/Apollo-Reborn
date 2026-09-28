@@ -1652,13 +1652,29 @@ typedef void (^ApolloSubredditSourceRefreshCompletion)(NSString *content, NSErro
 
 static const NSUInteger kApolloSubredditSourceMaximumBytes = 1024 * 1024;
 
+static BOOL ApolloSubredditSourceLineIsValid(NSString *subreddit) {
+    // Reddit community names are 3-21 ASCII letters, digits, or underscores.
+    // Source files sometimes include dates, headings, or other prose; routing
+    // those lines as subreddit names can leave Apollo building a malformed
+    // listing whose row factories later trap during Texture allocation.
+    if (![subreddit isKindOfClass:[NSString class]] ||
+        subreddit.length < 3 || subreddit.length > 21) return NO;
+    static NSCharacterSet *invalidCharacters;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        invalidCharacters = [[NSCharacterSet characterSetWithCharactersInString:
+            @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"] invertedSet];
+    });
+    return [subreddit rangeOfCharacterFromSet:invalidCharacters].location == NSNotFound;
+}
+
 static NSArray<NSString *> *ApolloSubredditListLines(NSString *content) {
     if (![content isKindOfClass:[NSString class]] || content.length == 0) return @[];
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
     [content enumerateLinesUsingBlock:^(NSString *line, __unused BOOL *stop) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:whitespace];
-        if (trimmed.length > 0) [lines addObject:trimmed];
+        if (ApolloSubredditSourceLineIsValid(trimmed)) [lines addObject:trimmed];
     }];
     return lines;
 }
