@@ -219,44 +219,52 @@ static void ApolloPFWriteDimension(id style, SEL selector, ApolloPFDim value) {
     }
 }
 
-static BOOL ApolloPFSetNodeCollapsed(id node, BOOL collapsed) {
-    if (!node) return NO;
-    // Texture measures off-main while targeted lifecycle reconciliation runs on
-    // main. Keep the check, snapshot, style writes, and marker update atomic per
-    // node so a second caller can never replace the native snapshot with zeros.
-    @synchronized(node) {
-        id style = [node respondsToSelector:@selector(style)] ? ((id (*)(id, SEL))objc_msgSend)(node, @selector(style)) : nil;
-        if (!style) return NO;
-        BOOL wasCollapsed = [objc_getAssociatedObject(node, &kApolloPFCollapsedKey) boolValue];
-        if (wasCollapsed == collapsed) return NO;
+static BOOL ApolloPFSetNodeCollapsedLocked(id node, BOOL collapsed) {
+    id style = [node respondsToSelector:@selector(style)] ? ((id (*)(id, SEL))objc_msgSend)(node, @selector(style)) : nil;
+    if (!style) return NO;
+    BOOL wasCollapsed = [objc_getAssociatedObject(node, &kApolloPFCollapsedKey) boolValue];
+    if (wasCollapsed == collapsed) return NO;
 
-        if (collapsed) {
-            ApolloPFHeightSnapshot snapshot = {0};
-            if (ApolloPFReadDimension(style, @selector(height), &snapshot.height)) snapshot.available |= 1;
-            if (ApolloPFReadDimension(style, @selector(minHeight), &snapshot.minHeight)) snapshot.available |= 2;
-            if (ApolloPFReadDimension(style, @selector(maxHeight), &snapshot.maxHeight)) snapshot.available |= 4;
-            objc_setAssociatedObject(node, &kApolloPFHeightSnapshotKey,
-                                     [NSValue valueWithBytes:&snapshot objCType:@encode(ApolloPFHeightSnapshot)],
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloPFDim zero = {1, 0.0}; // ASDimensionUnitPoints
-            if (snapshot.available & 1) ApolloPFWriteDimension(style, @selector(setHeight:), zero);
-            if (snapshot.available & 2) ApolloPFWriteDimension(style, @selector(setMinHeight:), zero);
-            if (snapshot.available & 4) ApolloPFWriteDimension(style, @selector(setMaxHeight:), zero);
-            objc_setAssociatedObject(node, &kApolloPFCollapsedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            return YES;
-        }
-
-        NSValue *boxed = objc_getAssociatedObject(node, &kApolloPFHeightSnapshotKey);
-        if (boxed) {
-            ApolloPFHeightSnapshot snapshot = {0};
-            [boxed getValue:&snapshot size:sizeof(snapshot)];
-            if (snapshot.available & 1) ApolloPFWriteDimension(style, @selector(setHeight:), snapshot.height);
-            if (snapshot.available & 2) ApolloPFWriteDimension(style, @selector(setMinHeight:), snapshot.minHeight);
-            if (snapshot.available & 4) ApolloPFWriteDimension(style, @selector(setMaxHeight:), snapshot.maxHeight);
-        }
-        objc_setAssociatedObject(node, &kApolloPFHeightSnapshotKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(node, &kApolloPFCollapsedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (collapsed) {
+        ApolloPFHeightSnapshot snapshot = {0};
+        if (ApolloPFReadDimension(style, @selector(height), &snapshot.height)) snapshot.available |= 1;
+        if (ApolloPFReadDimension(style, @selector(minHeight), &snapshot.minHeight)) snapshot.available |= 2;
+        if (ApolloPFReadDimension(style, @selector(maxHeight), &snapshot.maxHeight)) snapshot.available |= 4;
+        objc_setAssociatedObject(node, &kApolloPFHeightSnapshotKey,
+                                 [NSValue valueWithBytes:&snapshot objCType:@encode(ApolloPFHeightSnapshot)],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloPFDim zero = {1, 0.0}; // ASDimensionUnitPoints
+        if (snapshot.available & 1) ApolloPFWriteDimension(style, @selector(setHeight:), zero);
+        if (snapshot.available & 2) ApolloPFWriteDimension(style, @selector(setMinHeight:), zero);
+        if (snapshot.available & 4) ApolloPFWriteDimension(style, @selector(setMaxHeight:), zero);
+        objc_setAssociatedObject(node, &kApolloPFCollapsedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return YES;
+    }
+
+    NSValue *boxed = objc_getAssociatedObject(node, &kApolloPFHeightSnapshotKey);
+    if (boxed) {
+        ApolloPFHeightSnapshot snapshot = {0};
+        [boxed getValue:&snapshot size:sizeof(snapshot)];
+        if (snapshot.available & 1) ApolloPFWriteDimension(style, @selector(setHeight:), snapshot.height);
+        if (snapshot.available & 2) ApolloPFWriteDimension(style, @selector(setMinHeight:), snapshot.minHeight);
+        if (snapshot.available & 4) ApolloPFWriteDimension(style, @selector(setMaxHeight:), snapshot.maxHeight);
+    }
+    objc_setAssociatedObject(node, &kApolloPFHeightSnapshotKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(node, &kApolloPFCollapsedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return YES;
+}
+
+static BOOL ApolloPFSetNodeCollapsed(id node, BOOL collapsed) {
+    if (!node || ![node respondsToSelector:@selector(lock)] ||
+        ![node respondsToSelector:@selector(unlock)]) return NO;
+    // Texture already holds this recursive lock while measuring a node. Use the
+    // same lock for main-queue reconciliation so the two paths have one lock
+    // order, and always release it when a style accessor raises or we return.
+    ((void (*)(id, SEL))objc_msgSend)(node, @selector(lock));
+    @try {
+        return ApolloPFSetNodeCollapsedLocked(node, collapsed);
+    } @finally {
+        ((void (*)(id, SEL))objc_msgSend)(node, @selector(unlock));
     }
 }
 

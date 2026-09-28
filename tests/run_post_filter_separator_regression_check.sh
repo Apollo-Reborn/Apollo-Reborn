@@ -24,8 +24,16 @@ reject_source() {
 
 require_source 'static BOOL ApolloPFSetNodeCollapsed(id node, BOOL collapsed)' \
     'separator collapse has a reversible state transition'
-require_source '@synchronized(node) {' \
-    'separator transition is atomic across Texture and main-queue callers'
+require_source 'ApolloPFSetNodeCollapsedLocked(node, collapsed)' \
+    'separator transition uses a helper while holding Texture node lock'
+require_source '((void (*)(id, SEL))objc_msgSend)(node, @selector(lock));' \
+    'separator transition enters the Texture recursive node lock'
+require_source '} @finally {' \
+    'separator transition guarantees Texture node unlock'
+require_source '((void (*)(id, SEL))objc_msgSend)(node, @selector(unlock));' \
+    'separator transition releases the Texture recursive node lock'
+reject_source '@synchronized(node)' \
+    'separator transition does not introduce a second node lock order'
 require_source 'ApolloPFHeightSnapshot snapshot = {0};' \
     'normal separator dimensions are captured before collapse'
 require_source 'ApolloPFWriteDimension(style, @selector(setHeight:), snapshot.height);' \

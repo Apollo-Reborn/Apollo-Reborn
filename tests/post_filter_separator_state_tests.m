@@ -10,8 +10,37 @@
 
 @interface TestSeparatorNode : NSObject
 @property (nonatomic, strong) TestSeparatorStyle *style;
+@property (nonatomic, strong) NSRecursiveLock *recursiveLock;
+@property (nonatomic) NSUInteger lockCalls;
+@property (nonatomic) NSUInteger unlockCalls;
+@property (nonatomic) NSUInteger lockDepth;
+@property (nonatomic) NSUInteger maximumLockDepth;
 @end
 @implementation TestSeparatorNode
+- (instancetype)init {
+    self = [super init];
+    if (self) _recursiveLock = [NSRecursiveLock new];
+    return self;
+}
+- (void)lock {
+    [self.recursiveLock lock];
+    self.lockCalls += 1;
+    self.lockDepth += 1;
+    self.maximumLockDepth = MAX(self.maximumLockDepth, self.lockDepth);
+}
+- (void)unlock {
+    self.unlockCalls += 1;
+    self.lockDepth -= 1;
+    [self.recursiveLock unlock];
+}
+@end
+
+@interface TestThrowingSeparatorNode : TestSeparatorNode
+@end
+@implementation TestThrowingSeparatorNode
+- (TestSeparatorStyle *)style {
+    @throw [NSException exceptionWithName:@"TestStyleFailure" reason:nil userInfo:nil];
+}
 @end
 
 static void Require(BOOL condition, NSString *message) {
@@ -37,7 +66,11 @@ int main(void) {
         TestSeparatorNode *node = [TestSeparatorNode new];
         node.style = style;
 
+        [node lock];
         Require(ApolloPFSetNodeCollapsed(node, YES), @"first collapse changes state");
+        [node unlock];
+        Require(node.maximumLockDepth == 2,
+                @"collapse re-enters Texture's recursive node lock during measurement");
         Require(DimensionEqual(style.height, (ApolloPFDim){1, 0.0}), @"height collapses");
         Require(DimensionEqual(style.minHeight, (ApolloPFDim){1, 0.0}), @"minimum collapses");
         Require(DimensionEqual(style.maxHeight, (ApolloPFDim){1, 0.0}), @"maximum collapses");
@@ -61,6 +94,19 @@ int main(void) {
         ApolloPFSetNodeCollapsed(node, NO);
         Require(DimensionEqual(style.height, (ApolloPFDim){1, 12.0}),
                 @"concurrent layout and lifecycle transitions preserve native height");
+        Require(node.lockDepth == 0 && node.lockCalls == node.unlockCalls,
+                @"concurrent transitions balance every recursive node lock");
+
+        TestThrowingSeparatorNode *throwingNode = [TestThrowingSeparatorNode new];
+        @try {
+            ApolloPFSetNodeCollapsed(throwingNode, YES);
+            Require(NO, @"throwing style accessor propagates its exception");
+        } @catch (NSException *exception) {
+            Require([exception.name isEqualToString:@"TestStyleFailure"],
+                    @"unexpected style accessor exception");
+        }
+        Require(throwingNode.lockDepth == 0 && throwingNode.lockCalls == throwingNode.unlockCalls,
+                @"exceptional transitions still release the recursive node lock");
 
         NSUInteger separatorIndexes[] = {3, 5};
         NSIndexPath *separator = [NSIndexPath indexPathWithIndexes:separatorIndexes length:2];
