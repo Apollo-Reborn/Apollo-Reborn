@@ -467,6 +467,97 @@ NSString *ApolloEffectiveRedirectURI(void) {
     return sRedirectURI.length > 0 ? sRedirectURI : defaultRedirectURI;
 }
 
+#pragma mark - Interactive sign-in credentials
+
+// Both live on the sign-in's RDKOAuthCredential, so they are released with it.
+// The snapshot is fully built before it is attached and never mutated after,
+// so background readers (token refresh runs off AFNetworking's queues) only
+// ever see a complete, immutable entry.
+static const void *kApolloInteractiveSignInCredentialsKey = &kApolloInteractiveSignInCredentialsKey;
+static const void *kApolloInteractiveSignInPinnedUsernameKey = &kApolloInteractiveSignInPinnedUsernameKey;
+
+void ApolloAccountCredentialsBeginInteractiveSignIn(id credential) {
+    if (!credential) return;
+    NSString *active = ApolloActiveAccountUsername();
+    ApolloAccountCredentialEntry *activeEntry = active ? ApolloAccountCredentialsFor(active) : nil;
+
+    ApolloAccountCredentialEntry *snapshot = [ApolloAccountCredentialEntry new];
+    BOOL usesDefault = sRedditClientId.length > 0 || activeEntry.clientId.length == 0;
+    if (usesDefault) {
+        snapshot.clientId = sRedditClientId ?: @"";
+        snapshot.clientSecret = sRedditClientSecret ?: @"";
+        snapshot.redirectURI = sRedirectURI ?: @"";
+    } else {
+        // No default key in Settings at all: send what this sign-in always
+        // sent then (the active account's saved key, as
+        // ApolloEffectiveRedditClientId() resolves it) instead of Apollo's own
+        // client id, but still pin the new account to the key it really used.
+        snapshot.clientId = activeEntry.clientId;
+        snapshot.clientSecret = activeEntry.clientSecret ?: @"";
+        snapshot.redirectURI = activeEntry.redirectURI.length > 0 ? activeEntry.redirectURI : (sRedirectURI ?: @"");
+    }
+    objc_setAssociatedObject(credential, kApolloInteractiveSignInCredentialsKey, snapshot,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    // Name the active account's own key too, so an exported log shows whether
+    // it differed (the #1232 trap: the sign-in used to send it).
+    ApolloLog(@"[AccountCredentials] New sign-in uses %@ (clientId=%@, redirect=%@); active account %@ keeps its own (clientId=%@)",
+              usesDefault ? @"the default API key" : @"the active account's key (no default API key set)",
+              snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>",
+              snapshot.redirectURI.length > 0 ? snapshot.redirectURI : defaultRedirectURI,
+              active.length > 0 ? [@"u/" stringByAppendingString:active] : @"<none>",
+              activeEntry.clientId.length > 0 ? activeEntry.clientId : @"<default>");
+}
+
+ApolloAccountCredentialEntry *ApolloInteractiveSignInCredentialsFor(id credential) {
+    if (!credential) return nil;
+    id snapshot = objc_getAssociatedObject(credential, kApolloInteractiveSignInCredentialsKey);
+    return [snapshot isKindOfClass:[ApolloAccountCredentialEntry class]] ? snapshot : nil;
+}
+
+NSString *ApolloRedditClientIdForCredential(id credential) {
+    ApolloAccountCredentialEntry *signIn = ApolloInteractiveSignInCredentialsFor(credential);
+    return signIn ? signIn.clientId : ApolloEffectiveRedditClientId();
+}
+
+NSString *ApolloRedirectURIForCredential(id credential) {
+    ApolloAccountCredentialEntry *signIn = ApolloInteractiveSignInCredentialsFor(credential);
+    if (!signIn) return ApolloEffectiveRedirectURI();
+    return signIn.redirectURI.length > 0 ? signIn.redirectURI : defaultRedirectURI;
+}
+
+BOOL ApolloAccountCredentialsPinInteractiveSignIn(id client, NSString *username) {
+    // A plain ivar getter, also safe mid-NSKeyedUnarchiver decode (which is
+    // where most -setCurrentUser: calls come from; those credentials never
+    // carry a snapshot).
+    id credential = [client respondsToSelector:@selector(authorizationCredential)]
+        ? [(RDKClient *)client authorizationCredential] : nil;
+    ApolloAccountCredentialEntry *snapshot = ApolloInteractiveSignInCredentialsFor(credential);
+    if (!snapshot) return NO;
+    NSString *key = ApolloNormalizeUsername(username);
+    if (key.length == 0) return YES;
+    // -setCurrentUser: and -updateCurrentUserWithNewUser: both land here for the
+    // same client; only the first install for this username writes.
+    NSString *pinned = objc_getAssociatedObject(credential, kApolloInteractiveSignInPinnedUsernameKey);
+    if ([pinned isKindOfClass:[NSString class]] && [pinned isEqualToString:key]) return YES;
+
+    ApolloAccountCredentialEntry *previous = ApolloAccountCredentialsFor(username);
+    ApolloAccountCredentialsSet(username, snapshot.clientId, snapshot.clientSecret, snapshot.redirectURI);
+    objc_setAssociatedObject(credential, kApolloInteractiveSignInPinnedUsernameKey, key,
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+    if (previous && (![previous.clientId isEqualToString:snapshot.clientId] ||
+                     ![previous.clientSecret isEqualToString:snapshot.clientSecret] ||
+                     ![previous.redirectURI isEqualToString:snapshot.redirectURI])) {
+        ApolloLog(@"[AccountCredentials] u/%@ signed in with clientId=%@; saved that key for it, replacing clientId=%@",
+                  username, snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>",
+                  previous.clientId.length > 0 ? previous.clientId : @"<empty>");
+    } else {
+        ApolloLog(@"[AccountCredentials] u/%@ signed in with clientId=%@; saved that key for it",
+                  username, snapshot.clientId.length > 0 ? snapshot.clientId : @"<empty>");
+    }
+    return YES;
+}
+
 #pragma mark - Interactive OAuth sign-in tracking
 
 // Arm/consume with a TTL, bound to the signed-in identity. The consume site

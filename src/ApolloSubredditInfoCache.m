@@ -3,6 +3,8 @@
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — userIsSubscriber stamping
 #import "ApolloCommon.h"               // ApolloLog
 #import "ApolloState.h"
+#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
+#import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoUpdatedNotification";
 NSString * const ApolloSubredditNameKey = @"subredditName";
@@ -362,7 +364,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
 - (NSURLRequest *)requestForSubreddit:(NSString *)subredditName {
     NSString *escaped = [self escapedSubredditForPath:subredditName];
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloActiveAccountRedditBearerToken();
     NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/about.json?raw_json=1", escaped]
         : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", escaped];
@@ -508,6 +510,20 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     }
 
+    // With no bearer (an API-Key-Free account) the chokepoint signs this in
+    // with the web session cookie. While Reddit has that session rate-limited,
+    // fall back to the cached entry (or nothing) instead of adding to it; the
+    // subreddit's own posts are waiting on the same window to reset.
+    NSString *webSessionUsername = ([request valueForHTTPHeaderField:@"Authorization"].length == 0 &&
+                                    ApolloWebJSONHasUsableSession()) ? ApolloActiveWebSessionUsername() : nil;
+    NSTimeInterval budgetWait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
+    if (budgetWait > 0) {
+        ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while Reddit rate-limits u/%@",
+                  key, budgetWait, webSessionUsername);
+        [self finishRequestForKey:key info:cached];
+        return;
+    }
+
     __weak typeof(self) weakSelf = self;
     void (^retryOrGiveUp)(NSString *) = ^(NSString *reason) {
         typeof(self) strongSelf = weakSelf;
@@ -539,6 +555,13 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSInteger statusCode = http ? http.statusCode : 200;
+        // A web session's 429 lasts until Reddit's window resets; a retry in
+        // a few seconds just hits it again.
+        if (statusCode == 429 && webSessionUsername.length > 0) {
+            ApolloLog(@"[SubredditHeaders] Info fetch r/%@ HTTP 429 on u/%@'s web session — not retrying", key, webSessionUsername);
+            [strongSelf finishRequestForKey:key info:cached];
+            return;
+        }
         if (statusCode == 429 || statusCode >= 500) {
             retryOrGiveUp([NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
             return;

@@ -2,6 +2,7 @@
 
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
 
 #import <ImageIO/ImageIO.h>
@@ -9,9 +10,20 @@
 
 // Decoded-image cache budget, in bytes of backing store. Grid thumbnails are
 // small; a handful of fullscreen originals is what actually fills this.
+//
+// This is pinned to kApolloGalleryStillMaxPixels below, not chosen freely: a
+// full-tier still keeps every pixel up to that 24MP cap, so one is worth up to
+// ~96MB of backing store and any smaller budget would evict a legitimate large
+// original the instant it was inserted, re-decoding it on every page flip. The
+// budget can only come down by lowering that pixel cap, which costs pinch-zoom
+// sharpness — a separate call from bounding memory.
 static NSUInteger const kApolloGalleryImageCacheCostLimit = 96 * 1024 * 1024;
 // Original-bytes cache. Smaller: it only has to survive long enough for the
-// user to hit Save/Share on something they're looking at.
+// user to hit Save/Share on something they're looking at, but it has to fit
+// that one original whole. An entry over the limit is evicted on insertion,
+// and without the bytes Save writes a PNG of the frame on screen (a GIF stops
+// animating) and Share hands over the URL instead of the file; one GIF or large
+// PNG original is often bigger than 8MB on its own.
 static NSUInteger const kApolloGalleryDataCacheCostLimit = 32 * 1024 * 1024;
 
 static NSTimeInterval const kApolloGalleryImageTimeout = 30.0;
@@ -266,20 +278,10 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
         configuration.timeoutIntervalForRequest = kApolloGalleryImageTimeout;
         _session = [NSURLSession sessionWithConfiguration:configuration];
 
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(apollo_didReceiveMemoryWarning)
-                                                     name:UIApplicationDidReceiveMemoryWarningNotification
-                                                   object:nil];
+        ApolloMemoryRegisterPurgableCache(@"gallery-images", _imageCache);
+        ApolloMemoryRegisterPurgableCache(@"gallery-data", _dataCache);
     }
     return self;
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-- (void)apollo_didReceiveMemoryWarning {
-    [self purge];
 }
 
 - (void)purge {

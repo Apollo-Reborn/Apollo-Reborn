@@ -5,6 +5,7 @@
 #import <stdint.h>
 #import <stdlib.h>
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconIDs.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
@@ -336,7 +337,13 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
 
     static NSCache<NSString *, UIImage *> *sDecodedCache;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ sDecodedCache = [[NSCache alloc] init]; });
+    dispatch_once(&once, ^{
+        // 52pt previews, one picker screenful at a time.
+        sDecodedCache = [[NSCache alloc] init];
+        sDecodedCache.countLimit = 60;
+        sDecodedCache.totalCostLimit = 4 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"icon-picker-previews", sDecodedCache);
+    });
 
     UIImage *cached = [sDecodedCache objectForKey:name];
     if (cached) return cached;
@@ -351,7 +358,7 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
         [image drawAtPoint:CGPointZero];
     }];
 
-    [sDecodedCache setObject:decoded forKey:name];
+    [sDecodedCache setObject:decoded forKey:name cost:ApolloImageByteCost(decoded)];
     return decoded;
 }
 
@@ -2942,7 +2949,12 @@ static UIImage *LGNormalizedUltraThumbnail(NSString *baseName) {
 static UIImage *LGAddedUltraThumbnail(NSString *iconID) {
     static NSCache<NSString *, UIImage *> *cache;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ cache = [[NSCache alloc] init]; });
+    dispatch_once(&onceToken, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 60;
+        cache.totalCostLimit = 2 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"icon-picker-ultra-thumbs", cache);
+    });
 
     UIImage *cached = [cache objectForKey:iconID];
     if (cached) return cached;
@@ -2959,7 +2971,7 @@ static UIImage *LGAddedUltraThumbnail(NSString *iconID) {
     UIImage *thumbnail = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
         [source drawInRect:(CGRect){ CGPointZero, size }];
     }];
-    if (thumbnail) [cache setObject:thumbnail forKey:iconID];
+    if (thumbnail) [cache setObject:thumbnail forKey:iconID cost:ApolloImageByteCost(thumbnail)];
     return thumbnail;
 }
 

@@ -38,6 +38,13 @@ NSString *ApolloNormalizedLibreTranslateURLSetting(NSString *stored);
 // self-hosted instances return NO. Shared by the request leg's fail-fast, the
 // cross-provider fallback chooser, and the settings screen's key warning.
 BOOL ApolloLibreTranslateNeedsAPIKey(void);
+
+// `text` without the per-item translation line ("Translated from …" / "Show
+// translation" / "Translate") appended under a comment body, or nil when
+// `text` doesn't end with one. Lets a module that rebuilds a comment body on
+// every measure (deleted comments) leave that line alone instead of stripping
+// it and racing translation's re-add.
+NSAttributedString *ApolloTranslationTextByRemovingTrailingMarker(NSAttributedString *text);
 __END_DECLS
 
 #if APOLLO_SIM_BUILD

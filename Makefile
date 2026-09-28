@@ -113,6 +113,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSaveAllMediaBridge.swift \
     $(SRC_DIR)/ApolloSaveAllMediaMenus.xm \
     $(SRC_DIR)/ApolloGIFSaveActivity.xm \
+    $(SRC_DIR)/ApolloShareMediaHandoff.xm \
     $(SRC_DIR)/ApolloMediaDownloadActions.xm \
     $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
     $(SRC_DIR)/ApolloFeedAlbumMenus.xm \
@@ -162,6 +163,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
     $(SRC_DIR)/ApolloModmailLayout.xm \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
+    $(SRC_DIR)/ApolloMessagesKeyboardInset.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
     $(SRC_DIR)/ApolloListBottomInsetGuard.xm \
@@ -195,6 +197,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloActionMenu.xm \
     $(SRC_DIR)/ApolloActionMenuLayout.m \
     $(SRC_DIR)/ApolloHostedVideo.m \
+    $(SRC_DIR)/ApolloRedgifsTokenRefresh.m \
     $(SRC_DIR)/ApolloSportsClipResolver.m \
     $(SRC_DIR)/ApolloSportsClips.xm \
     $(SRC_DIR)/ApolloRedgifsSubdomainFix.xm \
@@ -219,6 +222,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFloatingTabs.xm \
     $(SRC_DIR)/ApolloFloatingTabsCrests.m \
     $(SRC_DIR)/ApolloMediaPreviewErrorFix.xm \
+    $(SRC_DIR)/ApolloRedgifsMissingDuration.m \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloSubredditListEditing.xm \
@@ -264,6 +268,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloChatInlineImages.xm \
     $(SRC_DIR)/ApolloChatComposer.xm \
     $(SRC_DIR)/ApolloMessageDraftStore.m \
+    $(SRC_DIR)/ApolloMessagesReplyBarRestore.xm \
     $(SRC_DIR)/ApolloChatsFilter.xm \
     $(SRC_DIR)/ApolloDirectChatWeb.xm \
     $(SRC_DIR)/ApolloLinkCardTitleFallback.xm \
@@ -274,6 +279,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloVisionOSMultiwindow.xm \
     $(SRC_DIR)/ApolloWebAuthViewController.m \
     $(SRC_DIR)/ApolloWebJSON.m \
+    $(SRC_DIR)/ApolloWebJSONWriteRepair.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloWebSessionStore.m \
@@ -288,6 +294,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloAccountSwitcherViewController.xm \
     $(SRC_DIR)/ApolloSignInSplash.xm \
     $(SRC_DIR)/ApolloHideSubscribePrompt.xm \
+    $(SRC_DIR)/ApolloPixelPals.xm \
     $(SRC_DIR)/settings/CustomAPIViewController.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutViewController.m \

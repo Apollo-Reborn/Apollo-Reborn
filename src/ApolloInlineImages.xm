@@ -281,6 +281,12 @@ static NSString *ApolloInlineSuppressionPathKey(NSURL *url) {
     NSString *host = [[url host] lowercaseString];
     NSString *path = [url path];
     if (host.length == 0 || path.length == 0) return nil;
+    // Apollo's link card shows a Reddit media link as "redd.it/<file>", and on
+    // iOS 26+ ApolloGetLinkButtonNodeURLString can only read that display text,
+    // so the card's URL comes back without the i./preview. subdomain. Key the
+    // three hosts alike so a card measured detached (an inserted or reloaded
+    // row) still matches the image the cell inlined.
+    if ([host isEqualToString:@"i.redd.it"] || [host isEqualToString:@"preview.redd.it"]) host = @"redd.it";
     return [NSString stringWithFormat:@"path:%@%@", host, path];
 }
 
@@ -861,16 +867,16 @@ static void ApolloDashPosterInit(void) {
     dispatch_once(&once, ^{
         sApolloDashPosterCache = [NSCache new];
         sApolloDashPosterCache.name = @"ApolloDashPosterCache";
-        sApolloDashPosterCache.totalCostLimit = 32 * 1024 * 1024;
-        sApolloDashPosterCache.countLimit = 40;
+        // A poster is generated at feed-cell pixel size, so ~3MB each at @3x.
+        // This holds roughly seven video posts of scrollback.
+        sApolloDashPosterCache.totalCostLimit = 24 * 1024 * 1024;
+        sApolloDashPosterCache.countLimit = 24;
         sApolloDashPosterFailures = [NSMutableDictionary dictionary];
         sApolloDashPosterFailureOrder = [NSMutableOrderedSet orderedSet];
         sApolloDashPosterPending = [NSMutableDictionary dictionary];
         sApolloDashPosterQueuedStarts = [NSMutableArray array];
         sApolloDashPosterQueue = dispatch_queue_create("ca.jeffrey.apollo.dashposter", DISPATCH_QUEUE_SERIAL);
-        ApolloMemoryRegisterPurgeHandler(@"dash-posters", ^{
-            [sApolloDashPosterCache removeAllObjects];
-        });
+        ApolloMemoryRegisterPurgableCache(@"dash-posters", sApolloDashPosterCache);
     });
 }
 

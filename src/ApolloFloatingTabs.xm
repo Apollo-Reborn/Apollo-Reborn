@@ -83,6 +83,7 @@
 #import "ApolloFloatingTabsCrests.h"
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloThemeRuntime.h"
@@ -606,9 +607,17 @@ static ApolloFloatingTabsController *sFTController = nil;
     if (!self) return nil;
     _tabs = [NSMutableArray array];
     _bubbles = [NSMapTable strongToStrongObjectsMapTable];
+    // Bubble icons draw at ~28pt and thumbnails at ~44pt, so a couple of MB
+    // each covers every tab the user can have.
     _iconCache = [[NSCache alloc] init];
+    _iconCache.countLimit = 60;
+    _iconCache.totalCostLimit = 2 * 1024 * 1024;
+    ApolloMemoryRegisterPurgableCache(@"floating-tab-icons", _iconCache);
     _iconFetchesInFlight = [NSMutableSet set];
     _thumbCache = [[NSCache alloc] init];
+    _thumbCache.countLimit = 60;
+    _thumbCache.totalCostLimit = 3 * 1024 * 1024;
+    ApolloMemoryRegisterPurgableCache(@"floating-tab-thumbs", _thumbCache);
     _thumbFetchesInFlight = [NSMutableSet set];
     _crestCache = [[NSCache alloc] init];
     _crestCache.countLimit = kFTMaxTabs * 2;
@@ -1286,7 +1295,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
             [innerSelf.iconFetchesInFlight removeObject:key];
             UIImage *image = data ? [UIImage imageWithData:data] : nil;
             if (!image) return;
-            [innerSelf.iconCache setObject:image forKey:key];
+            [innerSelf.iconCache setObject:image forKey:key cost:ApolloImageByteCost(image)];
             [innerSelf refreshAllIdentities];
         });
     }];
@@ -1309,7 +1318,7 @@ static UIImage *ApolloFTComposeCrestPair(UIImage *home, UIImage *away) {
         [strongSelf.thumbFetchesInFlight removeObject:urlString];
         UIImage *image = data ? [UIImage imageWithData:data] : nil;
         if (!image) return; // face falls back to the subreddit icon
-        [strongSelf.thumbCache setObject:image forKey:urlString];
+        [strongSelf.thumbCache setObject:image forKey:urlString cost:ApolloImageByteCost(image)];
         [strongSelf refreshAllIdentities];
     });
 }

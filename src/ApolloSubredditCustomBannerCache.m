@@ -1,6 +1,7 @@
 #import "ApolloSubredditCustomBannerCache.h"
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 
 NSString *const ApolloSubredditCustomBannerChangedNotification = @"ApolloSubredditCustomBannerChangedNotification";
 NSString *const ApolloSubredditCustomBannerSubredditNameKey = @"subredditName";
@@ -38,9 +39,12 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
     self = [super init];
     if (self) {
         _ioQueue = dispatch_queue_create("com.apollofix.subredditCustomBannerCache.io", DISPATCH_QUEUE_SERIAL);
+        // One custom header is on screen at a time and each is stored on
+        // disk, so the memory copy only has to cover recent scrollback.
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 200;
-        _imageCache.totalCostLimit = 30 * 1024 * 1024;
+        _imageCache.countLimit = 80;
+        _imageCache.totalCostLimit = 10 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"subreddit-banners", _imageCache);
         _storedKeysLock = [NSObject new];
         _storedKeys = [NSSet set];
 
@@ -98,8 +102,7 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
 
 - (void)cacheImage:(UIImage *)image forKey:(NSString *)key {
     if (!image || key.length == 0) return;
-    NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4);
-    [self.imageCache setObject:image forKey:key cost:cost];
+    [self.imageCache setObject:image forKey:key cost:ApolloImageByteCost(image)];
 }
 
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {

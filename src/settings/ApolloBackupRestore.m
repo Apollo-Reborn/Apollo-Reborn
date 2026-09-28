@@ -158,6 +158,51 @@ static NSArray<NSDictionary *> *ApolloBackupValidatedKeychainItems(id rawItems) 
     return rawItems;
 }
 
+// Exporters before 3.8.0 captured every generic password whose service merely
+// contained "com.christianselig.Apollo" (recording a missing account as ""). Besides
+// the Valet and web-session rows restore replays, that swept in the usage-heartbeat
+// seed (com.christianselig.Apollo.heartbeat, written on every default install since
+// 3.4.1), so rejecting the archive over unowned rows made nearly every pre-3.8
+// backup unrestorable (#1209, #1214). Drop them instead: restore never writes them,
+// just as the current exporter never captures them. A corrupt file still rejects: a
+// non-dictionary entry, or an Apollo-owned record whose contents are not data or
+// whose identity appears twice.
+static NSArray<NSDictionary *> *ApolloBackupRestorableKeychainItems(id rawItems) {
+    if (![rawItems isKindOfClass:NSArray.class]) return nil;
+    NSMutableArray<NSDictionary *> *owned = [NSMutableArray array];
+    NSMutableOrderedSet<NSString *> *skippedServices = [NSMutableOrderedSet orderedSet];
+    NSUInteger skipped = 0;
+    for (id item in rawItems) {
+        if (![item isKindOfClass:NSDictionary.class]) {
+            ApolloLog(@"[BackupRestore] keychain.plist has a non-dictionary entry");
+            return nil;
+        }
+        if (ApolloBackupOwnsKeychainIdentity(item[@"service"], item[@"account"])) {
+            [owned addObject:item];
+            continue;
+        }
+        skipped++;
+        // Name a few distinct services for triage. The archive is untrusted, so
+        // the log line stays short and single-line whatever the rows hold.
+        if (skippedServices.count >= 4) continue;
+        id service = item[@"service"];
+        NSString *name = [service isKindOfClass:NSString.class] ? service : @"(no service)";
+        if (name.length > 96) {
+            name = [[name substringWithRange:[name rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 96)]]
+                    stringByAppendingString:@"…"];
+        }
+        [skippedServices addObject:[[name componentsSeparatedByCharactersInSet:NSCharacterSet.controlCharacterSet]
+                                    componentsJoinedByString:@"?"]];
+    }
+    if (skipped > 0) {
+        ApolloLog(@"[BackupRestore] Skipping %lu keychain record(s) this version does not restore: %@",
+                  (unsigned long)skipped, [skippedServices.array componentsJoinedByString:@", "]);
+    }
+    NSArray<NSDictionary *> *validated = ApolloBackupValidatedKeychainItems(owned);
+    if (!validated) ApolloLog(@"[BackupRestore] keychain.plist has an Apollo record with non-data contents or a duplicate identity");
+    return validated;
+}
+
 // Read every original before changing any item. An unreadable old credential is
 // not absence: abort rather than risking an update we cannot safely roll back.
 static NSArray<NSDictionary *> *ApolloBackupCaptureReplayOriginals(NSArray<NSDictionary *> *items, OSStatus *outStatus) {
@@ -539,28 +584,50 @@ static BOOL ApolloBackupArchiveHasSafeEntries(NSURL *url) {
 
 // Missing optional files are valid old backups; a present unreadable, malformed
 // or wrongly typed file rejects the whole backup before defaults/keychain change.
+// Each rejection names the file (never its contents) so a report's debug log
+// says which check refused the archive.
 static id ApolloBackupReadRestorePlist(NSString *path, Class expectedClass, BOOL required, BOOL *valid) {
     NSError *error = nil;
     NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&error];
     if (!attributes) {
-        if (required || ![error.domain isEqualToString:NSCocoaErrorDomain] || error.code != NSFileReadNoSuchFileError) *valid = NO;
+        if (required || ![error.domain isEqualToString:NSCocoaErrorDomain] || error.code != NSFileReadNoSuchFileError) {
+            ApolloLog(@"[BackupRestore] %@ is missing or unreadable", path.lastPathComponent);
+            *valid = NO;
+        }
         return nil;
     }
-    if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) { *valid = NO; return nil; }
+    if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) {
+        ApolloLog(@"[BackupRestore] %@ is not a regular file", path.lastPathComponent);
+        *valid = NO;
+        return nil;
+    }
     NSData *data = [NSData dataWithContentsOfFile:path];
     id contents = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:nil error:nil] : nil;
-    if (![contents isKindOfClass:expectedClass]) { *valid = NO; return nil; }
+    if (![contents isKindOfClass:expectedClass]) {
+        ApolloLog(@"[BackupRestore] %@ is not a readable %@ property list", path.lastPathComponent, NSStringFromClass(expectedClass));
+        *valid = NO;
+        return nil;
+    }
     return contents;
 }
 
-static BOOL ApolloBackupPreferencesMatchSchema(NSDictionary *preferences, NSDictionary *schema) {
+// Schema keys are fixed setting names (registered defaults or Apollo's account
+// keys), so naming the mismatched key logs no account data.
+static BOOL ApolloBackupPreferencesMatchSchema(NSDictionary *preferences, NSDictionary *schema, NSString *filename) {
     NSArray<Class> *types = @[NSString.class, NSNumber.class, NSArray.class, NSDictionary.class, NSData.class, NSDate.class];
     for (id key in preferences) {
-        if (![key isKindOfClass:NSString.class]) return NO;
+        if (![key isKindOfClass:NSString.class]) {
+            ApolloLog(@"[BackupRestore] %@ has a non-string key", filename);
+            return NO;
+        }
         id expected = schema[key];
         if (!expected) continue;
         for (Class type in types) {
-            if ([expected isKindOfClass:type] && ![preferences[key] isKindOfClass:type]) return NO;
+            if ([expected isKindOfClass:type] && ![preferences[key] isKindOfClass:type]) {
+                ApolloLog(@"[BackupRestore] %@ value for %@ is %@, expected %@", filename, key,
+                          NSStringFromClass([preferences[key] class]), NSStringFromClass(type));
+                return NO;
+            }
         }
     }
     return YES;
@@ -568,7 +635,7 @@ static BOOL ApolloBackupPreferencesMatchSchema(NSDictionary *preferences, NSDict
 
 static BOOL ApolloBackupValidMainPreferences(NSDictionary *preferences) {
     NSDictionary *registered = [NSUserDefaults.standardUserDefaults volatileDomainForName:NSRegistrationDomain];
-    if (!ApolloBackupPreferencesMatchSchema(preferences, registered)) return NO;
+    if (!ApolloBackupPreferencesMatchSchema(preferences, registered, kMainPlistFilename)) return NO;
     // Some settings have no registered default but are read as strings during
     // restore's immediate in-memory synchronization. Validate those too.
     NSArray *stringKeys = @[
@@ -582,7 +649,10 @@ static BOOL ApolloBackupValidMainPreferences(NSDictionary *preferences) {
         UDKeyTrendingSubredditsSource, UDKeyUserAgent,
     ];
     for (NSString *key in stringKeys) {
-        if (preferences[key] && ![preferences[key] isKindOfClass:NSString.class]) return NO;
+        if (preferences[key] && ![preferences[key] isKindOfClass:NSString.class]) {
+            ApolloLog(@"[BackupRestore] %@ value for %@ is not a string", kMainPlistFilename, key);
+            return NO;
+        }
     }
     return YES;
 }
@@ -590,7 +660,7 @@ static BOOL ApolloBackupValidMainPreferences(NSDictionary *preferences) {
 static BOOL ApolloBackupValidGroupPreferences(NSDictionary *preferences) {
     NSDictionary *schema = @{@"LoggedInAccountDetails": @{}, @"CurrentRedditAccountIndex": @0,
         @"RedditAccounts2": [NSData data], @"RedditApplicationOnlyAccount2": [NSData data]};
-    return ApolloBackupPreferencesMatchSchema(preferences, schema);
+    return ApolloBackupPreferencesMatchSchema(preferences, schema, kGroupPlistFilename);
 }
 
 BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitle, NSString **outErrorMessage) {
@@ -625,14 +695,16 @@ BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitl
     NSDictionary *mainPrefs = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kMainPlistFilename], NSDictionary.class, YES, &valid);
     NSDictionary *groupPrefs = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kGroupPlistFilename], NSDictionary.class, NO, &valid);
     NSArray *rawKeychain = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kKeychainPlistFilename], NSArray.class, NO, &valid);
-    NSArray *keychainItems = rawKeychain ? ApolloBackupValidatedKeychainItems(rawKeychain) : @[];
+    NSArray *keychainItems = rawKeychain ? ApolloBackupRestorableKeychainItems(rawKeychain) : @[];
     if (!valid || !mainPrefs || !ApolloBackupValidMainPreferences(mainPrefs) ||
         (groupPrefs && !ApolloBackupValidGroupPreferences(groupPrefs)) || !keychainItems) {
         [fileManager removeItemAtPath:extractDir error:nil];
         if (outErrorTitle) *outErrorTitle = @"Invalid Backup";
-        if (outErrorMessage) *outErrorMessage = @"A settings or credentials file is malformed or contains unsupported keychain records. Nothing was restored.";
+        if (outErrorMessage) *outErrorMessage = @"A settings or credentials file in the backup is malformed. Nothing was restored.";
         return NO;
     }
+    ApolloLog(@"[BackupRestore] Backup validated: %lu settings, %lu shared settings, %lu keychain record(s) to restore",
+              (unsigned long)mainPrefs.count, (unsigned long)groupPrefs.count, (unsigned long)keychainItems.count);
 
     OSStatus replayStatus = errSecSuccess;
     NSArray *originalItems = ApolloBackupCaptureReplayOriginals(keychainItems, &replayStatus);

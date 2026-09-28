@@ -44,6 +44,13 @@ NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, 
 // favoritable name (feed shortcuts, multireddits, moderator) or on failure.
 NSString *ApolloSubredditListNameAtIndexPath(UITableView *tableView, NSIndexPath *visiblePath);
 
+// Native -> visible, for a module whose hook received one of this module's
+// translated (NATIVE) index paths and then has to address the table itself
+// (-cellForRowAtIndexPath:, -deselectRowAtIndexPath:…), which speaks the
+// VISIBLE layout. Returns the path unchanged when the remap is not engaged,
+// nil when the presented layout has no row for it.
+NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NSIndexPath *nativePath);
+
 #ifdef __cplusplus
 }
 #endif
