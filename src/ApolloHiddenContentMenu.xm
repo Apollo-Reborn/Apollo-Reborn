@@ -2,6 +2,7 @@
 #import "ApolloHiddenContentViewController.h"
 #import "ApolloAccountCredentials.h"
 #import <dlfcn.h>
+#import <objc/message.h>
 
 // Defined in ApolloUserAvatars.xm -- more reliable than reading "userInfo"
 // directly, which can be nil for the signed-in user's own profile.

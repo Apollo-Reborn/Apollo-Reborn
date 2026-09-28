@@ -17,7 +17,10 @@ int main(void) {
                            "two words\n"
                            "r/prefixed\n"
                            "emoji_🚫\n"
+                           "a\n"
                            "ab\n"
+                           "de\n"
+                           "it\n"
                            "abcdefghijklmnopqrstu\n"
                            "abcdefghijklmnopqrstuv\n"
                            "\n";
@@ -25,6 +28,9 @@ int main(void) {
         NSArray<NSString *> *expected = @[
             @"18_19",
             @"valid_name",
+            @"ab",
+            @"de",
+            @"it",
             @"abcdefghijklmnopqrstu",
         ];
         Check([parsed isEqualToArray:expected],
