@@ -822,11 +822,18 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
         return;
     }
 
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    // indexPath arrives in Apollo's NATIVE section space (ApolloFollowingSection
+    // translates before calling through), which is what the section-title check
+    // below wants. The table itself speaks the visible layout, so its own calls
+    // get the visible path back: with Multireddits moved from its default slot,
+    // the native path looked up some other row's cell (no bound model, so the
+    // editor never opened).
+    NSIndexPath *visiblePath = ApolloFollowingVisibleIndexPathForNative(tableView, indexPath);
+    if (visiblePath) [tableView deselectRowAtIndexPath:visiblePath animated:YES];
 
     if (![ApolloMultiEditSectionTitle(self, tableView, indexPath.section) isEqualToString:@"MULTIREDDITS"]) return;
 
-    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    UITableViewCell *cell = visiblePath ? [tableView cellForRowAtIndexPath:visiblePath] : nil;
     NSString *title = ApolloMultiEditTrim(ApolloMultiEditCellLabel(cell, "redditTitleLabel").text);
     // The model this exact row was built from — never a fresh title match,
     // which would resolve two same-titled rows to the same multireddit and

@@ -885,6 +885,17 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     return map.active ? map : nil;
 }
 
+// Native -> visible bridge for the other list modules — see
+// ApolloFollowingSection.h. Translates through the PRESENTED snapshot: the one
+// this module's own hooks just used on the way in, so a hook's native path
+// round-trips to the row that was actually touched.
+NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NSIndexPath *nativePath) {
+    if (!nativePath) return nil;
+    ApolloFollowingMap *map = ApolloFollowingPresentedMapForTable(tableView);
+    if (!map) return nativePath;
+    return ApolloFollowingVisiblePathForNative(map, nativePath);
+}
+
 #pragma mark - The list VC hooks
 
 %group ApolloFollowingList
