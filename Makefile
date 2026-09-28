@@ -255,6 +255,9 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloJumpBarSuggestionTint.xm \
     $(SRC_DIR)/ApolloSearchHeaderOverlapFix.xm \
     $(SRC_DIR)/ApolloSearchTabFixes.xm \
+    $(SRC_DIR)/ApolloGoogleSearch.m \
+    $(SRC_DIR)/ApolloGoogleSearchViewController.m \
+    $(SRC_DIR)/ApolloGoogleSearchTab.m \
     $(SRC_DIR)/ApolloImageChestResolver.m \
     $(SRC_DIR)/ApolloImgChestUpload.m \
     $(SRC_DIR)/ApolloLinkPreviewModel.m \

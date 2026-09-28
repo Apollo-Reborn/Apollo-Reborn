@@ -45,6 +45,14 @@ static NSString *const UDKeyCrashPromptedReportIDs = @"CrashPromptedReportIDs";
 static NSString *const UDKeyDebugForceAccountReadMiss = @"ApolloDebugForceAccountReadMiss";
 static NSString *const UDKeyDebugDisableKeychainRecovery = @"ApolloDebugDisableKeychainRecovery";
 static NSString *const UDKeyShowRandNsfw = @"ShowRandNsfwButton";
+// Search tab engine (ApolloGoogleSearchTab.m): 0 = Reddit (Apollo's own
+// search), 1 = Google (Reddit results found through Google). Remembered across
+// launches; picked from the search field's magnifier, not in Settings.
+static NSString *const UDKeySearchEngine = @"SearchEngine";
+// Google mode filters, set from the chips above the Google results: an
+// ApolloGoogleSearchTimeRange raw value, and Google's "Verbatim" mode.
+static NSString *const UDKeyGoogleSearchTimeRange = @"GoogleSearchTimeRange";
+static NSString *const UDKeyGoogleSearchExactWords = @"GoogleSearchExactWords";
 static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsSource = @"TrendingSubredditsSource";

@@ -36,6 +36,15 @@
 // only by SearchViewController's cell provider (xrefs: 0x1002b3ab4 / 0x1002b4d58 /
 // 0x1002b50e8), so patching it at the cell is complete coverage.
 //
+// ── Reddit / Google search engine (feature request "In-app Google Search") ──
+//
+// This is the Search tab's one hook module, so Google mode rides on the hooks
+// below instead of hooking SearchViewController a second time: viewDidLoad /
+// viewDidAppear install and refresh the engine button (the field's magnifier)
+// and the Google list, text changes and Cancel update that list, the keyboard's
+// Search button is taken over only in Google mode, and a Search-tab re-select
+// scrolls the Google list when it's up (ApolloGoogleSearchTab.{h,m}).
+//
 // ── Trending pull-to-refresh + Random NSFW action ──
 //
 // Hopper confirms the default state is section 2 = the Swift Optional<[String]>
@@ -50,6 +59,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloGoogleSearchTab.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
 #import "Tweak.h"
@@ -425,12 +435,14 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     objc_setAssociatedObject(self, kApolloSearchRandomNSFWSuppressedKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabViewDidLoad(self);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloSearchTabSyncRandomNSFWSection(self);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabViewDidAppear(self);
 }
 
 %new
@@ -496,6 +508,15 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabFinishModeTransition(self, nextDefaultState);
     ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    // Google mode: Apollo's own suggestions above still update (hidden under
+    // the Google list), so switching back to Reddit shows current ones.
+    ApolloGoogleSearchTabTextDidChange(self, text);
+}
+
+// Google mode runs its own search; Reddit mode is Apollo's, untouched.
+- (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
+    if (ApolloGoogleSearchTabHandleSearchButton(self, bar)) return;
+    %orig;
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)bar {
@@ -504,6 +525,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabFinishModeTransition(self, YES);
     ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabDidCancel(self);
 }
 
 // MARK: Random action group
@@ -616,6 +638,8 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     if (tabs.presentedViewController || nav.presentedViewController ||
         root.presentedViewController || nav.transitionCoordinator ||
         !root.viewIfLoaded.window) return NO;
+    // Google mode's result list sits over Apollo's table; it gets the reselect.
+    if (ApolloGoogleSearchTabHandleReselect(root)) return NO;
 
     UITableView *table = ApolloSearchTabTableView(root);
     UISearchBar *bar = ApolloSearchTabSearchBar(root);
