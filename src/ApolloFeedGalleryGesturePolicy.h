@@ -14,11 +14,16 @@ typedef enum ApolloFeedGalleryPanDisposition {
 // rejecting on a low or vertically-dominant velocity permanently gives away
 // a touch that may still have been intended to scroll the feed.
 static const double kApolloFeedGalleryPanMinimumVelocity = 150.0;
-static const double kApolloFeedGalleryScreenEdgeWidth = 24.0;
 
-// gestureRecognizerShouldBegin: runs after UIKit's pan hysteresis. Recover the
-// touch origin from the current centroid and accumulated translation so a real
-// edge gesture does not stop counting merely because it moved before recognition.
+// UIKit removes its roughly 10pt pan hysteresis from translationInView: before
+// gestureRecognizerShouldBegin: runs. That means current minus translation
+// still lands about 10pt inside the true touch-down point. Include that missing
+// distance here so the physical edge zone remains approximately 24pt wide.
+static const double kApolloFeedGalleryScreenEdgeWidth = 34.0;
+
+// Undo the movement that remains in UIKit's translation after its hysteresis
+// has been removed. The widened edge comparison above accounts for the part
+// UIKit removed before this callback.
 static inline double ApolloFeedGalleryGestureOriginX(double currentX, double translationX) {
     return currentX - translationX;
 }
