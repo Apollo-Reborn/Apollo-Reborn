@@ -1,5 +1,6 @@
 #import "ApolloGoogleSearchViewController.h"
 
+#import <CoreText/CoreText.h>
 #import <WebKit/WebKit.h>
 
 #import "ApolloCommon.h"
@@ -173,13 +174,96 @@ static void ApolloGoogleStyleChip(UIButton *chip, NSString *title, NSString *sym
 
 #pragma mark - Engine button (the search field's magnifier)
 
+// The magnifier's slot, then the chevron, overlapping it by 1 pt.
+static const CGFloat kEngineButtonWidth = 30.0;
+static const CGFloat kEngineButtonHeight = 28.0;
+static const CGFloat kEngineChevronWidth = 8.0;
+
+// Google mode's mark: a plain capital "G", filled from the system font's own
+// glyph outline so it draws like the magnifier symbol it replaces (a template
+// image in the same tint). It keeps the default SF design whatever font the
+// theme sets for text, as the magnifier symbol does: the theme runtime turns
+// +systemFontOfSize:weight: calls from the tweak into the theme's design, so
+// the design is set back explicitly. `inkHeight` is the letter's drawn height;
+// it is centered vertically in a `canvas`-sized image, and horizontally too
+// unless `right` > 0 puts its right edge there. nil only if the font has no
+// "G".
+static UIImage *ApolloSearchEngineGoogleMark(CGFloat inkHeight, CGSize canvas, CGFloat right) {
+    UIFont *font = [UIFont systemFontOfSize:100 weight:UIFontWeightSemibold];
+    UIFontDescriptor *plain = [font.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignDefault];
+    if (plain) font = [UIFont fontWithDescriptor:plain size:100];
+    CTFontRef ctFont = (__bridge CTFontRef)font;
+    UniChar character = 'G';
+    CGGlyph glyph = 0;
+    if (!CTFontGetGlyphsForCharacters(ctFont, &character, &glyph, 1)) return nil;
+    CGPathRef path = CTFontCreatePathForGlyph(ctFont, glyph, NULL);
+    if (!path) return nil;
+    CGRect ink = CGPathGetPathBoundingBox(path);
+    CGFloat scale = inkHeight / CGRectGetHeight(ink);
+    CGFloat width = CGRectGetWidth(ink) * scale;
+    CGFloat left = right > 0 ? right - width : (canvas.width - width) / 2.0;
+    CGFloat top = (canvas.height - inkHeight) / 2.0;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvas];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextRef cg = context.CGContext;
+        // Glyph outlines are y-up: flip while mapping the ink box onto
+        // (left, top, width, inkHeight).
+        CGContextTranslateCTM(cg, left, top + inkHeight);
+        CGContextScaleCTM(cg, scale, -scale);
+        CGContextTranslateCTM(cg, -CGRectGetMinX(ink), -CGRectGetMinY(ink));
+        CGContextAddPath(cg, path);
+        CGContextFillPath(cg);
+    }];
+    CGPathRelease(path);
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
+// The "G" in the search field, drawn into the magnifier's slot. The magnifier
+// only reaches toward the chevron with its handle, below the chevron's
+// height; level with the chevron its ring ends 5 pt before the chevron's ink.
+// A "G" is widest at that height, so its right edge goes at that same x:
+// 15.35 pt into the slot (the chevron's ink starts at 20.35 pt). Measured on
+// device pixels, as is the 13 pt height that matches the magnifier's weight
+// (the whole magnifier glyph is 15.7 pt).
+static const CGFloat kEngineGoogleMarkRight = 15.35;
+static const CGFloat kEngineGoogleMarkHeight = 13.0;
+// The menu draws this image at its own size, in the default magnifier
+// symbol's box. At 0.72 of that box the menu's "G" is 13.3 pt tall beside the
+// menu's 16.3 pt magnifier, about the field's 13.3 pt beside 15.7 pt
+// (measured on screen).
+static const CGFloat kEngineMenuMarkScale = 0.72;
+
+static UIImage *ApolloSearchEngineGoogleFieldMark(void) {
+    static UIImage *mark;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGSize slot = CGSizeMake(kEngineButtonWidth - kEngineChevronWidth - 1, kEngineButtonHeight);
+        mark = ApolloSearchEngineGoogleMark(kEngineGoogleMarkHeight, slot, kEngineGoogleMarkRight);
+    });
+    return mark;
+}
+
+// The same "G" for the engine menu, in the box the menu's magnifier symbol
+// gets, at the field mark's height relative to the magnifier.
+static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
+    static UIImage *mark;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGSize box = [UIImage systemImageNamed:@"magnifyingglass"].size;
+        if (box.width > 0 && box.height > 0) {
+            mark = ApolloSearchEngineGoogleMark(box.height * kEngineMenuMarkScale, box, 0);
+        }
+    });
+    return mark;
+}
+
 @implementation ApolloSearchEngineButton {
     UIImageView *_iconView;
     UIImageView *_chevronView;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    if ((self = [super initWithFrame:CGRectMake(0, 0, 30, 28)])) {
+    if ((self = [super initWithFrame:CGRectMake(0, 0, kEngineButtonWidth, kEngineButtonHeight)])) {
         _iconView = [[UIImageView alloc] init];
         _iconView.contentMode = UIViewContentModeCenter;
         _iconView.userInteractionEnabled = NO;
@@ -203,7 +287,7 @@ static void ApolloGoogleStyleChip(UIButton *chip, NSString *title, NSString *sym
 }
 
 - (CGSize)intrinsicContentSize {
-    return CGSizeMake(30, 28);
+    return CGSizeMake(kEngineButtonWidth, kEngineButtonHeight);
 }
 
 - (CGSize)sizeThatFits:(CGSize)size {
@@ -228,20 +312,22 @@ static void ApolloGoogleStyleChip(UIButton *chip, NSString *title, NSString *sym
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
-    CGFloat chevronWidth = 8;
-    _iconView.frame = CGRectMake(0, 0, CGRectGetWidth(bounds) - chevronWidth - 1, CGRectGetHeight(bounds));
-    _chevronView.frame = CGRectMake(CGRectGetMaxX(_iconView.frame) - 1, 1, chevronWidth, CGRectGetHeight(bounds));
+    _iconView.frame = CGRectMake(0, 0, CGRectGetWidth(bounds) - kEngineChevronWidth - 1, CGRectGetHeight(bounds));
+    _chevronView.frame = CGRectMake(CGRectGetMaxX(_iconView.frame) - 1, 1, kEngineChevronWidth, CGRectGetHeight(bounds));
 }
 
 - (void)reloadFromDefaults {
     BOOL google = ApolloSearchEngineCurrent() == ApolloSearchEngineGoogle;
     UIColor *iconColor = self.iconColor ?: UIColor.secondaryLabelColor;
-    // Reddit keeps Apollo's magnifier exactly; Google swaps in the outlined
-    // "G" from the menu, in the same color and sized to the magnifier's
-    // footprint, so both sit the same distance from the chevron.
-    UIImageSymbolConfiguration *iconConfig =
-        [UIImageSymbolConfiguration configurationWithPointSize:google ? 15 : 16 weight:UIImageSymbolWeightMedium];
-    UIImage *icon = [UIImage systemImageNamed:google ? @"g.circle" : @"magnifyingglass" withConfiguration:iconConfig];
+    // Reddit keeps Apollo's magnifier exactly; Google shows a plain capital
+    // "G" in the same color, as far from the chevron as the magnifier is
+    // (ApolloSearchEngineGoogleFieldMark).
+    UIImage *icon = google ? ApolloSearchEngineGoogleFieldMark() : nil;
+    if (!icon) {
+        UIImageSymbolConfiguration *iconConfig =
+            [UIImageSymbolConfiguration configurationWithPointSize:google ? 15 : 16 weight:UIImageSymbolWeightMedium];
+        icon = [UIImage systemImageNamed:google ? @"g.circle" : @"magnifyingglass" withConfiguration:iconConfig];
+    }
     _iconView.image = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     _iconView.tintColor = iconColor;
     UIImageSymbolConfiguration *chevronConfig =
@@ -262,7 +348,7 @@ static void ApolloGoogleStyleChip(UIButton *chip, NSString *title, NSString *sym
                                       identifier:nil
                                          handler:^(__kindof UIAction *a) { [weakSelf apollo_choose:ApolloSearchEngineReddit]; }];
     UIAction *google = [UIAction actionWithTitle:@"Google"
-                                           image:[UIImage systemImageNamed:@"g.circle"]
+                                           image:ApolloSearchEngineGoogleMenuMark() ?: [UIImage systemImageNamed:@"g.circle"]
                                       identifier:nil
                                          handler:^(__kindof UIAction *a) { [weakSelf apollo_choose:ApolloSearchEngineGoogle]; }];
     if (@available(iOS 15.0, *)) {
