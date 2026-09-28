@@ -15,6 +15,7 @@
 #import "ApolloImageUploadHost.h"
 #import "ApolloImgChestUpload.h"
 #import "ApolloMediaAutoplay.h"
+#import "ApolloRedgifsTokenRefresh.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloUsageHeartbeat.h"
 #import "ApolloPushNotifications.h"
@@ -2883,6 +2884,10 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                 NSError *jsonError = nil;
                 NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
                 if (!jsonError && json[@"token"]) {
+                    // Apollo keeps this token for the 23 hours below, but RedGIFs
+                    // stops accepting it as soon as the device's IP address
+                    // changes; ApolloRedgifsTokenRefresh.m swaps in a fresh one.
+                    ApolloRedgifsNoteTokenIssuedToApollo(json[@"token"]);
                     // Transform response to match Apollo's format from '/v2/oauth/client'
                     NSDictionary *oauthResponse = @{
                         @"access_token": json[@"token"],
@@ -2898,6 +2903,15 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
             completionHandler(data, response, error);
         };
         return %orig(modifiedRequest, newCompletionHandler);
+    } else if ([host isEqualToString:@"api.redgifs.com"] && completionHandler) {
+        // Apollo's own RedGIFs API calls: re-mint the token and retry once when
+        // RedGIFs rejects it with a 401 (see ApolloRedgifsTokenRefresh.h).
+        // Returns nil for any request that doesn't carry Apollo's token.
+        NSURLSessionDataTask *redgifsTask = ApolloRedgifsDataTaskWithTokenRefresh(request, completionHandler,
+            ^NSURLSessionDataTask *(NSURLRequest *redgifsRequest, ApolloRedgifsTaskCompletion redgifsCompletion) {
+                return %orig(redgifsRequest, redgifsCompletion);
+            });
+        if (redgifsTask) return redgifsTask;
     }
     return %orig(request, ApolloDeletedCommentsMaybeWrapCompletion(request, completionHandler));
 }

@@ -197,6 +197,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloActionMenu.xm \
     $(SRC_DIR)/ApolloActionMenuLayout.m \
     $(SRC_DIR)/ApolloHostedVideo.m \
+    $(SRC_DIR)/ApolloRedgifsTokenRefresh.m \
     $(SRC_DIR)/ApolloSportsClipResolver.m \
     $(SRC_DIR)/ApolloSportsClips.xm \
     $(SRC_DIR)/ApolloRedgifsSubdomainFix.xm \
