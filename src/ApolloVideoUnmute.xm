@@ -974,9 +974,10 @@ static void ScheduleFeedUnmuteAfterFullscreen(void) {
 }
 
 // Apollo's midpoint check just stopped the holder inside the holder's own tick.
-// Offer the sound to the other playing videos in its table now: the one that
-// should take over may already have ticked (and waited) in this scroll pass,
-// and if the scroll ends here no further tick comes. Goes through
+// Offer the sound to the other playing videos in its table right after this
+// scroll pass (ScheduleFeedSoundHandoff): the one that should take over may
+// already have ticked (and waited) in the pass, and if the scroll ends here no
+// further tick comes. Goes through
 // ApplyFeedUnmuteIfNeeded, so every gate still applies; the first visible video
 // that takes it wins (visibleCells is top to bottom). If none is playing, the
 // stopped video stays the holder — it keeps its sound if it resumes, and the
@@ -987,6 +988,9 @@ static void HandFeedSoundToNextPlayingVideo(id scrollView) {
     if (![scrollView isKindOfClass:[UITableView class]] || ![(UITableView *)scrollView window]) return;
 
     id stopped = sFeedAudibleRichMediaNode;
+    // Settled since the tick that scheduled this: the holder resumed, another
+    // video took the sound, or the holder left the screen.
+    if (!stopped || FeedAudibleVideoHoldingSound()) return;
     __block id taker = nil;
     EnumerateVisibleRichMediaNodes((UITableView *)scrollView, ^(id richMediaNode) {
         if (taker || ObjectsMatch(richMediaNode, stopped)) return;
@@ -998,6 +1002,20 @@ static void HandFeedSoundToNextPlayingVideo(id scrollView) {
     ApolloLog(@"[VideoUnmute] Feed video with the sound stopped playing - %@",
               taker ? @"handed the sound to the next playing video"
                     : @"no other video is playing, it keeps the sound in case it resumes");
+}
+
+// Never from inside the tick itself: ASTableView sends these ticks while it
+// enumerates its visibility hash table (-scrollViewDidScroll:), and
+// -visibleCells can lay cells out, which adds and removes cells from that same
+// table ("Collection <NSConcreteHashTable> was mutated while being
+// enumerated", SIGABRT). The next main-queue turn comes after that pass, so a
+// scroll that ends right here still gets its handoff.
+static void ScheduleFeedSoundHandoff(id scrollView) {
+    __weak id weakScrollView = scrollView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id strongScrollView = weakScrollView;
+        if (strongScrollView) HandFeedSoundToNextPlayingVideo(strongScrollView);
+    });
 }
 
 // Feed cell visibility → apply or release. Covers the cell's own media and a
@@ -1021,7 +1039,7 @@ static void HandleFeedCellVisibilityEvent(id cellNode, unsigned long long event,
 
     // This tick's midpoint check stopped the video that has the sound.
     if (heldSound && !FeedAudibleVideoHoldingSound()) {
-        HandFeedSoundToNextPlayingVideo(scrollView);
+        ScheduleFeedSoundHandoff(scrollView);
     }
 
     BOOL applied = ApplyFeedUnmuteIfNeeded(richMediaNode, @"visible");
