@@ -6,6 +6,7 @@
 #import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
@@ -337,7 +338,11 @@ static NSCache<NSString *, UIImage *> *RecentlyReadThumbnailCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        // Rows show Reddit's own thumbnails (up to 140px, ~78KB decoded), so
+        // this holds about sixty: several screens of the list.
+        cache.countLimit = 150;
+        cache.totalCostLimit = 5 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"recently-read-thumbs", cache);
     });
     return cache;
 }
@@ -1068,7 +1073,7 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
                                          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         UIImage *image = (!error && data.length > 0) ? [UIImage imageWithData:data] : nil;
         if (image) {
-            [cache setObject:image forKey:urlString];
+            [cache setObject:image forKey:urlString cost:ApolloImageByteCost(image)];
         }
         finish(image);
     }];

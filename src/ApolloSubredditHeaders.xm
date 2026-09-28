@@ -6,6 +6,7 @@
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloAccountSubscriptions.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
 #import "ApolloSubredditDefaultAssets.h"
@@ -132,6 +133,10 @@ typedef NS_ENUM(NSInteger, ApolloSubredditHeaderAssetKind) {
 @property(nonatomic) BOOL subscriptionStateKnown;
 @property(nonatomic) BOOL subscribed;
 @property(nonatomic) BOOL subscriptionRequestInFlight;
+// The known state came from (or was written onto) the controller's own
+// currentSubreddit. Until it does, the install pass re-resolves once that
+// ivar lands: the fallbacks answered first only because it wasn't there yet.
+@property(nonatomic) BOOL subscriptionFromCurrentSubreddit;
 // Grace window so a fresh tap's optimistic state wins over the native
 // `currentSubreddit.isSubscriber` re-sync (see apollo_applySubscriptionState:
 // known: callers in ApolloSubredditInstallOrUpdateHeader) until a fetch has
@@ -197,6 +202,10 @@ static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, U
 static void ApolloSubredditUpdateAmbientScroll(UIViewController *viewController, UIScrollView *scrollView);
 static void ApolloSubredditStyleSearchBar(UIViewController *viewController);
 static void ApolloSubredditRestoreSearchBar(UIViewController *viewController);
+static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName);
+static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *viewController,
+                                                           NSString *subredditName,
+                                                           BOOL subscribed);
 
 // Accent tint strong enough to read as a filled pill over busy banner art —
 // 0.30 was nearly invisible against bright/noisy banners.
@@ -908,6 +917,11 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     }
 
     NSString *subredditName = [self.subredditName copy];
+    // Apollo's subscription list stores names as Reddit spells them.
+    id currentSubreddit = ApolloSubredditCurrentSubredditObject(self.hostViewController, subredditName);
+    NSString *displayName = currentSubreddit
+        ? ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name)) : nil;
+    NSString *listName = displayName.length > 0 ? [displayName copy] : subredditName;
     __weak typeof(self) weakSelf = self;
     // RDKClient mutation completions are `^(NSError *error)`. Verified from
     // Apollo's native subscribe/unsubscribe implementations: both forward the
@@ -915,20 +929,29 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     // with nil or the NSError respectively.
     void (^completion)(NSError *error) = ^(NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL succeeded = ![error isKindOfClass:[NSError class]];
+            // The name-based call changed Reddit and nothing on Apollo's side.
+            // Its ⋯ menu (Subscribe/Unsubscribe) and the Subscriptions list
+            // read the account's subscription list, so apply the change there
+            // too; that posts Apollo's subscriptions notification, which every
+            // other screen showing this subreddit follows. This is account
+            // state, so it happens even if this header has moved on, but only
+            // for the account that made the request.
+            if (succeeded && ApolloActiveAccountClient() == client) {
+                ApolloAccountApplySubscriptionChange(listName, desiredState);
+            }
             ApolloSubredditHeaderView *strongSelf = weakSelf;
             if (!strongSelf || !ApolloSubredditNamesEqual(strongSelf.subredditName, subredditName)) return;
             strongSelf.subscriptionRequestInFlight = NO;
-            BOOL succeeded = ![error isKindOfClass:[NSError class]];
             BOOL finalState = succeeded ? desiredState : oldState;
             if (!succeeded) {
                 ApolloLog(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
                           desiredState ? @"subscribe" : @"unsubscribe", subredditName, error);
             }
             // Grace window: our own confirmed outcome (success or rollback)
-            // wins over the native currentSubreddit.isSubscriber re-sync that
-            // ApolloSubredditInstallOrUpdateHeader runs on every layout pass,
-            // which reads a stale ivar our name-based RDKClient call never
-            // updates directly.
+            // wins over the other sources for a moment (see
+            // ApolloSubredditRefreshSubscriptionState); on success it is also
+            // written onto currentSubreddit below.
             strongSelf.subscribeIntentValue = finalState;
             strongSelf.subscribeIntentDate = [NSDate date];
             [strongSelf apollo_applySubscriptionState:finalState known:YES];
@@ -942,6 +965,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
                 }
                 [[ApolloSubredditInfoCache sharedCache] refetchInfoForSubreddit:subredditName
                                                                       completion:^(__unused ApolloSubredditInfo *info) {}];
+                ApolloSubredditWriteCurrentSubredditSubscribed(strongSelf.hostViewController, subredditName, finalState);
             }
         });
     };
@@ -1282,7 +1306,7 @@ static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClas
 // silently swallowing every tap. These fallbacks answer the same question
 // without depending on that ivar.
 
-// Tier 1: the VC's own RDKSubreddit. Free when it's there, and the freshest
+// The VC's own RDKSubreddit. Free when it's there, and the freshest
 // thing available — but only trusted when its name matches the subreddit we're
 // actually drawing, since a recycled controller can still hold the previous
 // one. A missing name on either side is not treated as a mismatch.
@@ -1302,36 +1326,31 @@ static BOOL ApolloSubredditSubscribedFromCurrentSubreddit(UIViewController *view
     return YES;
 }
 
-// Tier 3: the signed-in account's own subscription list. Only a POSITIVE match
-// counts: the list can legitimately be empty or half-loaded early in a launch,
-// and answering "not subscribed" from an incomplete list would put a wrong
-// "Join" on a subreddit the user is already in. Absence just means "still
-// unknown", which leaves the pill in the state it was already in.
+// The signed-in account's own subscription list. Only a POSITIVE match counts:
+// the list can legitimately be empty or half-loaded early in a launch, and
+// answering "not subscribed" from an incomplete list would put a wrong "Join"
+// on a subreddit the user is already in. Absence just means "still unknown",
+// which leaves the answer to the next source.
 static BOOL ApolloSubredditSubscribedFromAccountList(NSString *subredditName, BOOL *outSubscribed) {
-    if (subredditName.length == 0) return NO;
-    id client = ApolloActiveAccountClient();
-    if (!client) return NO;
-    if (![client respondsToSelector:@selector(currentUser)]) return NO;
-    id currentUser = ((id (*)(id, SEL))objc_msgSend)(client, @selector(currentUser));
-    if (![currentUser respondsToSelector:@selector(subscribedSubreddits)]) return NO;
-    id subscribed = ((id (*)(id, SEL))objc_msgSend)(currentUser, @selector(subscribedSubreddits));
-    if (![subscribed isKindOfClass:[NSArray class]]) return NO;
+    BOOL listed = NO;
+    if (!ApolloAccountSubscriptionListState(subredditName, &listed) || !listed) return NO;
+    *outSubscribed = YES;
+    return YES;
+}
 
-    for (id entry in (NSArray *)subscribed) {
-        // Entries are RDKSubreddit objects, but mirror ApolloHideModSubreddits'
-        // defensive shape and accept a bare name string too.
-        NSString *name = nil;
-        if ([entry isKindOfClass:[NSString class]]) {
-            name = entry;
-        } else if ([entry respondsToSelector:@selector(name)]) {
-            name = ((NSString * (*)(id, SEL))objc_msgSend)(entry, @selector(name));
-        }
-        if (name.length > 0 && ApolloSubredditNamesEqual(name, subredditName)) {
-            *outSubscribed = YES;
-            return YES;
-        }
+typedef NS_ENUM(NSInteger, ApolloSubredditSubscriptionSource) {
+    ApolloSubredditSubscriptionSourceCurrentSubreddit,
+    ApolloSubredditSubscriptionSourceAccountList,
+    ApolloSubredditSubscriptionSourceInfoCache,
+};
+
+static NSString *ApolloSubredditSubscriptionSourceName(ApolloSubredditSubscriptionSource source) {
+    switch (source) {
+        case ApolloSubredditSubscriptionSourceCurrentSubreddit: return @"currentSubreddit";
+        case ApolloSubredditSubscriptionSourceAccountList: return @"accountList";
+        case ApolloSubredditSubscriptionSourceInfoCache: return @"infoCache";
     }
-    return NO;
+    return @"?";
 }
 
 // Resolves the subscription state from the best source that actually knows.
@@ -1339,20 +1358,32 @@ static BOOL ApolloSubredditSubscribedFromAccountList(NSString *subredditName, BO
 // (visibly disabled) state rather than guessing.
 static BOOL ApolloSubredditResolveSubscribed(UIViewController *viewController,
                                              NSString *subredditName,
-                                             BOOL *outSubscribed) {
+                                             BOOL *outSubscribed,
+                                             ApolloSubredditSubscriptionSource *outSource) {
     if (!outSubscribed) return NO;
     if (ApolloSubredditSubscribedFromCurrentSubreddit(viewController, subredditName, outSubscribed)) {
+        if (outSource) *outSource = ApolloSubredditSubscriptionSourceCurrentSubreddit;
         return YES;
     }
-    // Tier 2: `user_is_subscriber` from the subreddit's own about.json, which
-    // this header already fetches and disk-caches for the banner/description.
-    // Per-subreddit and authoritative in BOTH directions (unlike tier 3), and
+    // The account's own list, positive matches only (see its comment). It
+    // comes before the info cache below because it is the fresher of the two:
+    // Apollo reloads it from Reddit on every launch and changes it on every
+    // subscribe/unsubscribe it hears about, while a cached flag can be days
+    // old. Checked the other way round, a subreddit joined since the cache
+    // was written (from an interactive post, on the web) opened as "Join".
+    if (ApolloSubredditSubscribedFromAccountList(subredditName, outSubscribed)) {
+        if (outSource) *outSource = ApolloSubredditSubscriptionSourceAccountList;
+        return YES;
+    }
+    // `user_is_subscriber` from the subreddit's own about.json, which this
+    // header already fetches and disk-caches for the banner/description.
+    // Per-subreddit and authoritative in BOTH directions (unlike the list), and
     // refetched right after our own subscribe/unsubscribe. nil = the fetch was
     // unauthenticated or predates the field, i.e. unknown. The flag is
     // ACCOUNT-SPECIFIC while the cache entry is shared and persists for days,
     // so it only counts when it was fetched AS the currently active account —
-    // an unstamped (pre-stamp build) or other-account flag reads as unknown,
-    // falling through to tier 3 rather than showing another account's answer.
+    // an unstamped (pre-stamp build) or other-account flag reads as unknown
+    // rather than showing another account's answer.
     ApolloSubredditInfo *cachedInfo = [[ApolloSubredditInfoCache sharedCache]
         cachedInfoForSubreddit:subredditName];
     if (cachedInfo.userIsSubscriber != nil) {
@@ -1361,10 +1392,11 @@ static BOOL ApolloSubredditResolveSubscribed(UIViewController *viewController,
         if (flagAccount.length > 0 && activeAccount.length > 0 &&
             [flagAccount caseInsensitiveCompare:activeAccount] == NSOrderedSame) {
             *outSubscribed = cachedInfo.userIsSubscriber.boolValue;
+            if (outSource) *outSource = ApolloSubredditSubscriptionSourceInfoCache;
             return YES;
         }
     }
-    return ApolloSubredditSubscribedFromAccountList(subredditName, outSubscribed);
+    return NO;
 }
 
 // Pushes the resolved state into the header, honouring the same in-flight and
@@ -1379,22 +1411,54 @@ static void ApolloSubredditRefreshSubscriptionState(ApolloSubredditHeaderView *h
         [[NSDate date] timeIntervalSinceDate:header.subscribeIntentDate] < 30.0;
     if (recentIntent) {
         // Our own tap-confirmed state wins over every source below for a grace
-        // window — subscribeToSubredditWithName: is name-based and has no
-        // confirmed path that updates this VC's already-cached currentSubreddit
-        // object, so reading it right after a successful tap can otherwise flip
-        // the button straight back.
+        // window. The result is written onto currentSubreddit when the
+        // controller has one; without it the next answer can come from the
+        // info cache, and the about.json refetched right after the tap can
+        // still carry the old flag, which would flip the button straight back.
         [header apollo_applySubscriptionState:header.subscribeIntentValue known:YES];
         return;
     }
     header.subscribeIntentDate = nil;
 
     BOOL subscribed = NO;
-    if (!ApolloSubredditResolveSubscribed(viewController, subredditName, &subscribed)) return;
-    if (!header.subscriptionStateKnown) {
-        ApolloLog(@"[SubredditHeaders] subscription state resolved subreddit=%@ subscribed=%d",
-                  subredditName ?: @"nil", subscribed);
+    ApolloSubredditSubscriptionSource source = ApolloSubredditSubscriptionSourceInfoCache;
+    if (!ApolloSubredditResolveSubscribed(viewController, subredditName, &subscribed, &source)) return;
+    BOOL fromCurrentSubreddit = (source == ApolloSubredditSubscriptionSourceCurrentSubreddit);
+    if (!header.subscriptionStateKnown || fromCurrentSubreddit != header.subscriptionFromCurrentSubreddit ||
+        subscribed != header.subscribed) {
+        ApolloLog(@"[SubredditHeaders] subscription state resolved subreddit=%@ subscribed=%d source=%@",
+                  subredditName ?: @"nil", subscribed, ApolloSubredditSubscriptionSourceName(source));
     }
+    header.subscriptionFromCurrentSubreddit = fromCurrentSubreddit;
     [header apollo_applySubscriptionState:subscribed known:YES];
+}
+
+// The controller's own RDKSubreddit, when it is the subreddit being drawn.
+static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName) {
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    if (!currentSubreddit || ![currentSubreddit respondsToSelector:@selector(name)]) return nil;
+    NSString *name = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
+    return ApolloSubredditNamesEqual(name, subredditName) ? currentSubreddit : nil;
+}
+
+// The resolver's first source is the controller's currentSubreddit, loaded
+// with the screen and never updated afterwards, so a confirmed subscription
+// change (the pill's request returned, or Apollo's subscription list just
+// changed) has to be written onto it or the next resolve reads the old answer
+// back. Its readonly `subscriber` is backed by `_subscriber`, which KVC sets
+// directly. Returns NO when the controller has no currentSubreddit for this
+// name.
+static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *viewController,
+                                                           NSString *subredditName,
+                                                           BOOL subscribed) {
+    id currentSubreddit = ApolloSubredditCurrentSubredditObject(viewController, subredditName);
+    if (!currentSubreddit) return NO;
+    @try {
+        [currentSubreddit setValue:@(subscribed) forKey:@"subscriber"];
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+    return YES;
 }
 
 // Prefer Apollo's live subreddit model, then the same can_assign_user_flair
@@ -2705,6 +2769,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         header.usesCustomIcon = NO;
         header.usesCustomBanner = NO;
         header.subscriptionStateKnown = NO;
+        header.subscriptionFromCurrentSubreddit = NO;
         header.subscriptionRequestInFlight = NO;
         header.userFlairAvailabilityKnown = NO;
         header.userCanSetFlair = NO;
@@ -2720,8 +2785,14 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     }
     // Once one of the sources has resolved the state, do not rescan the active
     // account's complete subscription list on every viewDidLayoutSubviews pass.
-    // Account/subscription notifications below explicitly invalidate it.
-    if (!header.subscriptionStateKnown) {
+    // Account/subscription notifications below explicitly invalidate it. The
+    // one exception is an answer that came from a fallback because the
+    // controller's currentSubreddit had not landed yet: when it does, it is
+    // this screen's own fresh fetch, so let it have the final say (a cached
+    // flag answered first and was never looked at again).
+    if (!header.subscriptionStateKnown ||
+        (!header.subscriptionFromCurrentSubreddit &&
+         ApolloSubredditCurrentSubredditObject(viewController, header.subredditName))) {
         ApolloSubredditRefreshSubscriptionState(header, viewController);
     }
     if (!header.userFlairAvailabilityKnown) {
@@ -3078,6 +3149,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     ApolloSubredditHeaderView *header =
         objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
     header.subscriptionStateKnown = NO;
+    header.subscriptionFromCurrentSubreddit = NO;
     header.subscribeIntentDate = nil;
     header.userFlairAvailabilityKnown = NO;
     header.userCanSetFlair = NO;
@@ -3089,6 +3161,29 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     ApolloSubredditHeaderView *header =
         objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
     if (!header || header.subscriptionRequestInFlight) return;
+    // Apollo posts this right after it changes the account's subscription
+    // list (the ⋯ menu's Subscribe/Unsubscribe, the Join pill, an interactive
+    // post subscribing the user), so the list is the freshest answer here.
+    // Re-resolving through the usual sources instead read the controller's
+    // currentSubreddit first, which was loaded with the screen and never
+    // follows those changes: a menu Subscribe put "Join" straight back.
+    // Take the list's answer and write it through to the stale sources.
+    // Without a currentSubreddit, the list's absence falls through to the
+    // info cache: refetch it, or its account-stamped flag keeps the old
+    // answer for days.
+    BOOL subscribed = NO;
+    if (ApolloAccountSubscriptionListState(header.subredditName, &subscribed)) {
+        BOOL wrote = ApolloSubredditWriteCurrentSubredditSubscribed((UIViewController *)self,
+                                                                    header.subredditName, subscribed);
+        if (!wrote) {
+            [[ApolloSubredditInfoCache sharedCache] refetchInfoForSubreddit:header.subredditName
+                                                                  completion:^(__unused ApolloSubredditInfo *info) {}];
+        }
+        header.subscribeIntentDate = nil;
+        header.subscriptionFromCurrentSubreddit = wrote;
+        [header apollo_applySubscriptionState:subscribed known:YES];
+        return;
+    }
     header.subscriptionStateKnown = NO;
     ApolloSubredditRefreshSubscriptionState(header, (UIViewController *)self);
 }

@@ -29,6 +29,13 @@ static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled"
 static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
 // Legacy destination value retained for compatibility with older builds.
 static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
+// Version stamps for Apollo's own sideload-unlock flags, which the constructor
+// writes into two preference domains. Each stamp lives in the SAME domain as
+// the flags it guards, so anything that resets a domain (fresh install, a
+// settings restore, Apollo wiping the group container) takes the stamp with it
+// and the flags are rewritten on the next launch.
+static NSString *const UDKeySideloadFlagsStamp = @"ApolloRebornSideloadFlagsStamp";
+static NSString *const UDKeyGroupUnlockFlagsStamp = @"ApolloRebornGroupUnlockFlagsStamp";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -45,6 +52,14 @@ static NSString *const UDKeyCrashPromptedReportIDs = @"CrashPromptedReportIDs";
 static NSString *const UDKeyDebugForceAccountReadMiss = @"ApolloDebugForceAccountReadMiss";
 static NSString *const UDKeyDebugDisableKeychainRecovery = @"ApolloDebugDisableKeychainRecovery";
 static NSString *const UDKeyShowRandNsfw = @"ShowRandNsfwButton";
+// Search tab engine (ApolloGoogleSearchTab.m): 0 = Reddit (Apollo's own
+// search), 1 = Google (Reddit results found through Google). Remembered across
+// launches; picked from the search field's magnifier, not in Settings.
+static NSString *const UDKeySearchEngine = @"SearchEngine";
+// Google mode filters, set from the chips above the Google results: an
+// ApolloGoogleSearchTimeRange raw value, and Google's "Verbatim" mode.
+static NSString *const UDKeyGoogleSearchTimeRange = @"GoogleSearchTimeRange";
+static NSString *const UDKeyGoogleSearchExactWords = @"GoogleSearchExactWords";
 static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsSource = @"TrendingSubredditsSource";
