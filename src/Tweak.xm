@@ -1655,9 +1655,8 @@ static const NSUInteger kApolloSubredditSourceMaximumBytes = 1024 * 1024;
 static BOOL ApolloSubredditSourceLineIsValid(NSString *subreddit) {
     // Reddit community names are 3-21 ASCII letters, digits, or underscores
     // (a few grandfathered ones like r/de are 2). Source files sometimes
-    // include dates, headings, or other prose; routing those lines as
-    // subreddit names can leave Apollo building a malformed listing whose row
-    // factories later trap during Texture allocation.
+    // include dates, headings, or other prose; routing one of those lines as a
+    // subreddit name opens a listing that never loads, so skip them.
     if (![subreddit isKindOfClass:[NSString class]] ||
         subreddit.length < 2 || subreddit.length > 21) return NO;
     static NSCharacterSet *invalidCharacters;
