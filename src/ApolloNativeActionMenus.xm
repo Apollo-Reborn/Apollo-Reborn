@@ -23,6 +23,7 @@ static char kApolloNativeActionMenuWrappedSourceActionKey;
 static char kApolloNativeActionMenuWindowPresenterKey;
 static char kApolloNativeActionMenuWindowRequestKey;
 static char kApolloNativeActionMenuSurfaceStateKey;
+static char kApolloMediaMenuPressLocationKey;
 
 static __weak UIView *sApolloNativeActionMenuSourceView = nil;
 static __weak UIView *sApolloNativeActionMenuConfigurationSourceView = nil;
@@ -141,6 +142,7 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @interface ApolloNativeActionMenuPresenter : NSObject <UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UIMenu *menu;
 @property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic, strong) NSValue *sourcePoint;
 // The tapped control supplies its strip's entire glass surface when owned;
 // otherwise it supplies only geometry, never an arbitrary ancestor.
 @property (nonatomic, weak) UIView *morphSourceView;
@@ -1169,7 +1171,13 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
 }
 
 - (id)_contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
-    return ApolloNativeActionMenuCompactMenuStyle();
+    id style = ApolloNativeActionMenuCompactMenuStyle();
+    // A finger location has no visible control to morph into the menu.
+    SEL overlap = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+    if (self.sourcePoint && [style respondsToSelector:overlap]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
+    }
+    return style;
 }
 
 - (UITargetedPreview *)previewForCurrentSource {
@@ -1381,11 +1389,14 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     BOOL removeAnchor = NO;
     UIView *anchor = ApolloNativeActionMenuCreateProxyAnchorView(source, &removeAnchor);
     if (!anchor.window) return NO;
+    if (self.sourcePoint) {
+        anchor.center = [source convertPoint:self.sourcePoint.CGPointValue toView:anchor.superview];
+    }
     self.sourceView = anchor;
-    self.morphSourceView = ApolloNativeActionMenuViewShouldMorph(source) ? source : nil;
+    self.morphSourceView = !self.sourcePoint && ApolloNativeActionMenuViewShouldMorph(source) ? source : nil;
     self.presentationWindow = window;
-    self.presentationAnchorCenter = [source convertPoint:CGPointMake(CGRectGetMidX(source.bounds),
-        CGRectGetMidY(source.bounds)) toView:window];
+    self.presentationAnchorCenter = [anchor convertPoint:CGPointMake(CGRectGetMidX(anchor.bounds),
+        CGRectGetMidY(anchor.bounds)) toView:window];
     self.removeSourceViewOnEnd = removeAnchor;
     self.interaction = interaction;
     [anchor addInteraction:interaction];
@@ -1481,27 +1492,65 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 }
 %end
 
+// Store the press per configuration so highlighting and dismissal use the
+// same point. UIKit handles screen-edge avoidance.
+static UITargetedPreview *ApolloMediaMenuPressPreview(UIContextMenuInteraction *interaction,
+                                                     UIContextMenuConfiguration *configuration) {
+    NSValue *location = objc_getAssociatedObject(configuration, &kApolloMediaMenuPressLocationKey);
+    UIView *source = interaction.view;
+    if (!location || !source.window) return nil;
+
+    UIView *anchor = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
+    anchor.userInteractionEnabled = NO;
+    UIPreviewParameters *parameters = [UIPreviewParameters new];
+    parameters.backgroundColor = UIColor.clearColor;
+    parameters.visiblePath = [UIBezierPath bezierPathWithRect:anchor.bounds];
+    UIPreviewTarget *target = [[UIPreviewTarget alloc] initWithContainer:source center:location.CGPointValue];
+    // Only the target container needs a window; the preview view may be detached.
+    return [[UITargetedPreview alloc] initWithView:anchor parameters:parameters target:target];
+}
+
+void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point) {
+    if (!configuration || !ApolloNativeActionMenusEnabled()) return;
+    objc_setAssociatedObject(configuration, &kApolloMediaMenuPressLocationKey,
+                             [NSValue valueWithCGPoint:point], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[NativeActionMenus] media menu anchored at press (%.0f, %.0f)", point.x, point.y);
+}
+
 %hook _TtC6Apollo21MediaViewerController
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
     UIView *previousSourceView = sApolloNativeActionMenuConfigurationSourceView;
     sApolloNativeActionMenuConfigurationSourceView = interaction.view;
     UIContextMenuConfiguration *configuration = %orig;
     sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+    ApolloNativeActionMenuAnchorMediaConfiguration(configuration, location);
     return configuration;
 }
 
-// Issue #249 follow-up: the media viewer's long-press menu has no preview
-// platter (the media is already fullscreen), so it can adopt the compact
-// glass style and grow in liquid-style like a button menu instead of
-// popping in. Previewed menus keep the native rich style — layout 3 would
-// drop their preview platter.
+- (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    UITargetedPreview *preview = ApolloMediaMenuPressPreview(interaction, configuration);
+    return preview ?: %orig;
+}
+
+- (UITargetedPreview *)contextMenuInteraction:(UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    UITargetedPreview *preview = ApolloMediaMenuPressPreview(interaction, configuration);
+    return preview ?: %orig;
+}
+
+// Fullscreen media needs only actions, even when Apollo supplies a preview
+// provider. Feed preview platters keep their existing presentation.
 %new
 - (id)_contextMenuInteraction:(UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
     if (!ApolloNativeActionMenusEnabled()) return nil;
-    id previewProvider = nil;
-    @try { previewProvider = [configuration valueForKey:@"previewProvider"]; } @catch (__unused NSException *exception) {}
-    if (previewProvider) return nil;
-    return ApolloNativeActionMenuCompactMenuStyle();
+    id style = ApolloNativeActionMenuCompactMenuStyle();
+    if (objc_getAssociatedObject(configuration, &kApolloMediaMenuPressLocationKey)) {
+        // Avoid stretching the menu through a one-point bubble.
+        SEL overlap = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+        if ([style respondsToSelector:overlap]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
+        }
+    }
+    return style;
 }
 %end
 
@@ -1620,6 +1669,18 @@ BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id cont
     presenter.menu = menu;
     presenter.actionController = controller;
     presenter.didEnd = didEnd;
+    return [presenter presentFromView:source completion:nil];
+}
+
+BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
+                                                 id controller, dispatch_block_t didEnd) {
+    if (!menu.children.count || !source.window) return NO;
+    ApolloNativeActionMenuPresenter *presenter = [ApolloNativeActionMenuPresenter new];
+    presenter.menu = menu;
+    presenter.actionController = controller;
+    presenter.didEnd = didEnd;
+    presenter.sourcePoint = [NSValue valueWithCGPoint:point];
+    ApolloLog(@"[NativeActionMenus] captured media menu at press (%.0f, %.0f)", point.x, point.y);
     return [presenter presentFromView:source completion:nil];
 }
 
