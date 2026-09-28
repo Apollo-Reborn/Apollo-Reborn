@@ -176,7 +176,7 @@ typedef void (^ApolloGoogleSearchCompletion)(NSArray<ApolloGoogleSearchResult *>
 // last results page (kept alive in sim builds for exactly this).
 FOUNDATION_EXPORT void ApolloGoogleSearchDebugRun(NSString *query);
 FOUNDATION_EXPORT void ApolloGoogleSearchDebugEvaluateJS(NSString *js);
-// "gsearchdebug verify=consent|sorry|off info=0|1 fail fixture=<path>|off followdelay=<s>":
+// "gsearchdebug verify=consent|sorry|off info=0|1 fail fixture=<path>|off followdelay=<s> stall=0|1":
 // test knobs, see ApolloGoogleSearch.m.
 FOUNDATION_EXPORT void ApolloGoogleSearchDebugConfigure(NSString *arguments);
 #endif

@@ -19,6 +19,9 @@ static const CGFloat kFilterBottomGap = 2.0;
 static const CGFloat kCardPadding = 14.0;
 static const NSUInteger kExpandedBodyCharacterLimit = 1200;
 static const NSUInteger kMaxPages = 10;
+// A first page still loading after this long says so under the spinner (a
+// normal Google page takes 2-4 s; the search itself gives up at 25 s).
+static const NSTimeInterval kSlowSearchHintDelay = 8.0;
 
 #pragma mark - Engine + filter state
 
@@ -831,6 +834,8 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     NSUInteger _nextPage;
     BOOL _mayHaveMore;
     BOOL _loadingFirstPage;
+    BOOL _slowFirstPage;          // the first page passed kSlowSearchHintDelay
+    NSUInteger _searchGeneration;
     BOOL _loadingMore;
     NSError *_error;
     NSError *_moreError;
@@ -972,6 +977,15 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     _submittedQuery = trimmed;
     _typedText = trimmed;
     _loadingFirstPage = YES;
+    NSUInteger generation = ++_searchGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kSlowSearchHintDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf->_searchGeneration || !strongSelf->_loadingFirstPage) return;
+        strongSelf->_slowFirstPage = YES;
+        [strongSelf->_tableView reloadData];
+    });
     [_tableView reloadData];
     [self scrollToTopAnimated:NO];
     [self apollo_loadPage:0];
@@ -1010,6 +1024,7 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     _nextPage = 0;
     _mayHaveMore = NO;
     _loadingFirstPage = NO;
+    _slowFirstPage = NO;
     _loadingMore = NO;
     _error = nil;
     _moreError = nil;
@@ -1186,7 +1201,9 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
         ApolloGoogleStatusCell *cell = [tableView dequeueReusableCellWithIdentifier:kStatusCellID forIndexPath:indexPath];
         __weak typeof(self) weakSelf = self;
         if (_loadingFirstPage) {
-            [cell configureSpinning:YES title:@"Searching Google…" detail:nil action:nil];
+            [cell configureSpinning:YES title:@"Searching Google…"
+                             detail:_slowFirstPage ? @"Google is taking longer than usual." : nil
+                             action:nil];
             cell.action = nil;
         } else if (_error) {
             BOOL cancelled = _error.code == ApolloGoogleSearchErrorVerificationCancelled;

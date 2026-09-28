@@ -718,6 +718,9 @@ static BOOL sApolloGoogleSearchDebugFailNext;
 static NSString *sApolloGoogleSearchDebugFixturePath;
 // The page currently loading (e.g. sitting on a verification page), for "gsearchjs".
 static __weak WKWebView *sApolloGoogleSearchDebugLiveWeb;
+// "stall=1": polls never get an answer, like a WebKit process that stopped
+// responding, to exercise the deadline watchdog.
+static BOOL sApolloGoogleSearchDebugStall;
 #endif
 
 @implementation ApolloGoogleSearchSession {
@@ -787,6 +790,7 @@ static __weak WKWebView *sApolloGoogleSearchDebugLiveWeb;
     _stablePolls = 0;
     _deadline = CACurrentMediaTime() + kApolloGoogleSearchPageTimeout;
     ApolloLog(@"[GoogleSearch] search page %lu: %@", (unsigned long)page, url.absoluteString);
+    [self armDeadlineWatchdog:generation];
 
     BOOL desktop = ApolloGoogleSearchUsesDesktopLayout();
     _desktop = desktop;
@@ -867,6 +871,32 @@ static __weak WKWebView *sApolloGoogleSearchDebugLiveWeb;
     }
 }
 
+// The deadline runs on its own timer rather than inside the polls: a page
+// whose WebKit process stops answering never completes a poll, and the search
+// must still end with Try Again instead of spinning forever.
+- (void)armDeadlineWatchdog:(NSUInteger)generation {
+    NSTimeInterval wait = MAX(0.0, _deadline - CACurrentMediaTime()) + 0.05;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf deadlineWatchdogFired:generation];
+    });
+}
+
+- (void)deadlineWatchdogFired:(NSUInteger)generation {
+    if (generation != _generation || !_loading) return;
+    if (CACurrentMediaTime() < _deadline) {
+        // Moved out since: a verification page is up, or the results are in
+        // and the Reddit read is running.
+        [self armDeadlineWatchdog:generation];
+        return;
+    }
+    ApolloLog(@"[GoogleSearch] timed out after %ld polls (verifying=%d) at %@",
+              (long)_polls, _verifying, _web.URL.absoluteString);
+    [self finishWithResults:nil mayHaveMore:NO
+                      error:ApolloGoogleSearchError(ApolloGoogleSearchErrorTimedOut,
+                                                    @"Google took too long to respond.")];
+}
+
 - (void)schedulePoll:(NSUInteger)generation after:(NSTimeInterval)delay {
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -876,16 +906,13 @@ static __weak WKWebView *sApolloGoogleSearchDebugLiveWeb;
 
 - (void)pollGeneration:(NSUInteger)generation {
     if (generation != _generation || !_loading || !_web) return;
-
-    if (CACurrentMediaTime() > _deadline) {
-        ApolloLog(@"[GoogleSearch] timed out after %ld polls (verifying=%d) at %@",
-                  (long)_polls, _verifying, _web.URL.absoluteString);
-        [self finishWithResults:nil mayHaveMore:NO
-                          error:ApolloGoogleSearchError(ApolloGoogleSearchErrorTimedOut,
-                                                        @"Google took too long to respond.")];
+    _polls++;
+#if APOLLO_SIM_BUILD
+    if (sApolloGoogleSearchDebugStall) {
+        ApolloLog(@"[GoogleSearch][debug] stall: poll %ld gets no answer", (long)_polls);
         return;
     }
-    _polls++;
+#endif
 
     __weak typeof(self) weakSelf = self;
     [_web evaluateJavaScript:kApolloGoogleExtractorJS completionHandler:^(id value, NSError *error) {
@@ -1408,12 +1435,14 @@ void ApolloGoogleSearchDebugConfigure(NSString *arguments) {
             sApolloGoogleSearchDebugFixturePath = [path isEqualToString:@"off"] ? nil : path;
         } else if ([token hasPrefix:@"followdelay="]) {
             sApolloGoogleSearchDebugFollowDelay = MAX(0.0, [token substringFromIndex:12].doubleValue);
+        } else if ([token hasPrefix:@"stall="]) {
+            sApolloGoogleSearchDebugStall = [[token substringFromIndex:6] isEqualToString:@"1"];
         }
     }
-    ApolloLog(@"[GoogleSearch][debug] verify=%@ redditInfo=%d failNext=%d fixture=%@ followDelay=%.1f",
+    ApolloLog(@"[GoogleSearch][debug] verify=%@ redditInfo=%d failNext=%d fixture=%@ followDelay=%.1f stall=%d",
               sApolloGoogleSearchDebugVerifyPage ?: @"off", !sApolloGoogleSearchDebugSkipRedditInfo,
               sApolloGoogleSearchDebugFailNext, sApolloGoogleSearchDebugFixturePath ?: @"off",
-              sApolloGoogleSearchDebugFollowDelay);
+              sApolloGoogleSearchDebugFollowDelay, sApolloGoogleSearchDebugStall);
 }
 
 void ApolloGoogleSearchDebugEvaluateJS(NSString *js) {
