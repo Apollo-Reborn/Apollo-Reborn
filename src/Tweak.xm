@@ -22,6 +22,7 @@
 #import "ApolloLiquidGlassIconSelectionState.h"
 #import "ApolloState.h"
 #import "ApolloTranslation.h"
+#import "ApolloRedgifsMissingDuration.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloAutomaticBackup.h"
@@ -2849,6 +2850,18 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
             ApolloUploadRegistryHandleImgurDelete(request, completionHandler);
         };
         return %orig(ApolloLocalFastFailRequest(@"apollo-upload-registry-delete"), wrappedHandler);
+    }
+
+    // RedGIFs gif lookups: RedGIFs leaves "duration" null on some videos, and
+    // Apollo's decoder then rejects the whole record and shows its error card,
+    // so fill the duration in before Apollo parses the response (see
+    // ApolloRedgifsMissingDuration.h). Rebinding the parameter hands the
+    // repaired completion to every RedGIFs path below.
+    if (completionHandler && [host isEqualToString:@"api.redgifs.com"] && [path hasPrefix:@"/v2/gifs/"]) {
+        completionHandler = ApolloRedgifsCompletionFillingMissingDuration(self, request, completionHandler,
+            ^NSURLSessionDataTask *(NSURLRequest *headerRequest, ApolloRedgifsLookupCompletion headerCompletion) {
+                return %orig(headerRequest, headerCompletion);
+            });
     }
 
     if ([host isEqualToString:@"imgur-apiv3.p.rapidapi.com"] && [path hasPrefix:@"/3/album"]) {
