@@ -39,10 +39,15 @@ opening and this extension is the manual recovery path.
 The `legacy/` assets preserve the automatic Apollo-bundled approach that this
 change replaces. That extension:
 
-- Uses the same strict Reddit URL validation and Apollo Reborn Universal Link
-  endpoint as the manual fallback.
+- Uses the same strict Reddit URL validation as the manual fallback, then opens
+  the destination through Apollo's `apollo://reddit.com/...` custom scheme.
 - Redirects an eligible Reddit page automatically when its popup toggle is on.
-- Retains the Worker's fallback-loop protection.
+- Preserves path, query, and fragment data, and expands bare `redd.it` links to
+  Apollo's `/comments/<id>` route.
+- May show iOS's confirmation prompt before switching to Apollo. Link Companion
+  remains the recommended automatic path when a prompt-free handoff is wanted.
+- Retains fallback-marker loop protection if another opener already returned the
+  page to Safari.
 - Is packaged under the unique bundle identifier suffix
   `.ApollofariLegacy` and display name **Open in Apollo (Legacy)**.
 
@@ -67,5 +72,5 @@ node --test safari-extension/link-utils.test.js safari-extension/content.test.js
 
 The test suite executes the content script in a stub document and verifies that
 the manual extension never navigates, the legacy extension does navigate when
-enabled, both handle the Worker fallback marker, and both manifests remain
-Reddit-only.
+enabled through the direct Apollo scheme, both handle the Worker fallback
+marker, and both manifests remain Reddit-only.

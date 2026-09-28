@@ -21,6 +21,8 @@ __END_DECLS
 @interface RDKClient : NSObject
 + (instancetype)sharedClient;
 - (id)currentUser;
+- (id)authorizationCredential;
+- (void)setAuthorizationCredential:(id)credential;
 - (void)thingsByFullNames:(NSArray *)fullNames completion:(void(^)(NSArray *, NSError *))completion;
 - (NSArray *)objectsFromListingResponse:(id)response;
 @end

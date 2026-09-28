@@ -1,10 +1,10 @@
 // Apollo-Reborn — legacy automatic "Open in Apollo" Safari content script.
 //
-// This preserves the automatic behavior shipped before Link Companion became
-// the preferred owner of Safari routing. It is packaged under a separate,
-// clearly labelled extension so users can opt into it without losing the safe
-// manual fallback. Do not enable it alongside the Companion extension: both
-// would try to handle the same navigation.
+// This preserves the direct apollo:// handoff shipped before Link Companion
+// became the preferred owner of Safari routing. It is packaged under a
+// separate, clearly labelled extension so users can opt into it without losing
+// the safe manual fallback. Do not enable it alongside the Companion extension:
+// both would try to handle the same navigation.
 
 (function () {
     "use strict";
@@ -40,7 +40,7 @@
             return;
         }
 
-        var openerURL = links.toOpenerURL(href);
+        var openerURL = links.toApolloURL(href);
         if (!openerURL) {
             return;
         }

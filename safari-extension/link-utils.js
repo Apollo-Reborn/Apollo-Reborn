@@ -59,11 +59,33 @@
         return url ? universalLinkOrigin + "/open?url=" + encodeURIComponent(url.href) : null;
     }
 
+    // The opt-in legacy extension runs inside Apollo's own signed container,
+    // so it can hand the validated destination to Apollo's registered custom
+    // scheme directly. Keep this separate from toOpenerURL(): the manual
+    // fallback and Link Companion intentionally retain the Universal Link.
+    function toApolloURL(value) {
+        var url = redditURL(value);
+        if (!url) {
+            return null;
+        }
+
+        var path = url.pathname;
+        if (isRedditShortHost(url.hostname)) {
+            var postID = path.split("/").filter(Boolean)[0];
+            path = "/comments/" + postID;
+        }
+
+        // Normalize every accepted Reddit web host to the canonical host that
+        // Apollo's URL router expects. Preserve path, query, and fragment.
+        return "apollo://reddit.com" + path + url.search + url.hash;
+    }
+
     return {
         fallbackMarker: fallbackMarker,
         isRedditWebHost: isRedditWebHost,
         isRedditShortHost: isRedditShortHost,
         redditURL: redditURL,
-        toOpenerURL: toOpenerURL
+        toOpenerURL: toOpenerURL,
+        toApolloURL: toApolloURL
     };
 });
