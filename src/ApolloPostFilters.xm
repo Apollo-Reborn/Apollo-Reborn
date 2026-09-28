@@ -226,7 +226,7 @@ static BOOL ApolloPFSetNodeCollapsedLocked(id node, BOOL collapsed) {
     if (wasCollapsed == collapsed) return NO;
 
     if (collapsed) {
-        ApolloPFHeightSnapshot snapshot = {0};
+        ApolloPFHeightSnapshot snapshot = {};
         if (ApolloPFReadDimension(style, @selector(height), &snapshot.height)) snapshot.available |= 1;
         if (ApolloPFReadDimension(style, @selector(minHeight), &snapshot.minHeight)) snapshot.available |= 2;
         if (ApolloPFReadDimension(style, @selector(maxHeight), &snapshot.maxHeight)) snapshot.available |= 4;
@@ -243,7 +243,7 @@ static BOOL ApolloPFSetNodeCollapsedLocked(id node, BOOL collapsed) {
 
     NSValue *boxed = objc_getAssociatedObject(node, &kApolloPFHeightSnapshotKey);
     if (boxed) {
-        ApolloPFHeightSnapshot snapshot = {0};
+        ApolloPFHeightSnapshot snapshot = {};
         [boxed getValue:&snapshot size:sizeof(snapshot)];
         if (snapshot.available & 1) ApolloPFWriteDimension(style, @selector(setHeight:), snapshot.height);
         if (snapshot.available & 2) ApolloPFWriteDimension(style, @selector(setMinHeight:), snapshot.minHeight);
@@ -266,6 +266,10 @@ static BOOL ApolloPFSetNodeCollapsed(id node, BOOL collapsed) {
     } @finally {
         ((void (*)(id, SEL))objc_msgSend)(node, @selector(unlock));
     }
+}
+
+static BOOL ApolloPFNodeIsCollapsed(id node) {
+    return [objc_getAssociatedObject(node, &kApolloPFCollapsedKey) boolValue];
 }
 
 static NSIndexPath *ApolloPFPostPathForSeparatorPath(NSIndexPath *separatorPath) {
@@ -296,10 +300,6 @@ static id ApolloPFOwningTableNode(id cellNode) {
 static NSIndexPath *ApolloPFNodeIndexPath(id cellNode) {
     if (![cellNode respondsToSelector:@selector(indexPath)]) return nil;
     return ((NSIndexPath *(*)(id, SEL))objc_msgSend)(cellNode, @selector(indexPath));
-}
-static NSInteger ApolloPFNodeRow(id cellNode) {
-    NSIndexPath *ip = ApolloPFNodeIndexPath(cellNode);
-    return ip ? ip.row : -1;
 }
 // Caller holds @synchronized(owningTable). The set is associated with the stable
 // owning table node and only mutated/emptied (never niled), so it can't be freed
@@ -447,10 +447,10 @@ static void ApolloPFReloadTableNodeOfVC(id vc) {
 %end
 
 // Collapse the separator trailing a hidden post. calculateLayoutThatFits: is
-// where ThickSeparatorCellNode bakes its 8pt height, so override the measured
-// size there; layoutSpecThatFits: is a backup. (Composes with Community
-// Highlights' hooks on the same class — both call %orig, and either wanting to
-// collapse wins.)
+// where ThickSeparatorCellNode bakes its 8pt height, so it owns the decision
+// for the pass; layoutSpecThatFits: only follows that recorded decision.
+// (Composes with Community Highlights' hooks on the same class — both call
+// %orig, and either wanting to collapse wins.)
 %hook _TtC6Apollo22ThickSeparatorCellNode
 - (id)calculateLayoutThatFits:(struct ApolloPFSizeRange)constrainedSize {
     BOOL collapse = ApolloPFSeparatorShouldCollapse(self);
@@ -470,9 +470,10 @@ static void ApolloPFReloadTableNodeOfVC(id vc) {
     return layout;
 }
 - (id)layoutSpecThatFits:(struct ApolloPFSizeRange)constrainedSize {
-    BOOL collapse = ApolloPFSeparatorShouldCollapse(self);
-    ApolloPFSetNodeCollapsed(self, collapse);
-    if (collapse) {
+    // calculateLayoutThatFits: already decided this pass under the same node
+    // lock. Re-checking the hidden rows here can disagree when the post
+    // publishes in between, leaving the flag collapsed on an 8pt layout.
+    if (ApolloPFNodeIsCollapsed(self)) {
         id empty = ApolloPFEmptySpec();
         if (empty) return empty;
     }
@@ -491,10 +492,34 @@ static void ApolloPFReloadTableNodeOfVC(id vc) {
 }
 %end
 
+// Main queue only. Ask the post node that sits above this separator right now
+// instead of the row-keyed set: hiding a post deletes its two rows, which shifts
+// every row below it while the set still holds the old row numbers.
+static BOOL ApolloPFSeparatorShouldCollapseOnMain(id separatorNode) {
+    if (sPostFilterSubreddits.count == 0 && sPostFilterNameSubstrings.count == 0) return NO;
+    id owning = ApolloPFOwningTableNode(separatorNode);
+    NSIndexPath *postPath = ApolloPFPostPathForSeparatorPath(ApolloPFNodeIndexPath(separatorNode));
+    SEL nodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    if (!owning || !postPath || ![owning respondsToSelector:nodeSelector]) return NO;
+    id postNode = ((id (*)(id, SEL, id))objc_msgSend)(owning, nodeSelector, postPath);
+    NSString *postClass = NSStringFromClass([postNode class]);
+    BOOL hidden = ([postClass isEqualToString:@"Apollo.LargePostCellNode"] ||
+                   [postClass isEqualToString:@"Apollo.CompactPostCellNode"]) &&
+                  ApolloPFCellShouldHide(postNode);
+    // Put this row back in step so the next off-main measurement agrees with
+    // the current table geometry rather than a pre-deletion index path.
+    @synchronized(owning) {
+        NSMutableSet *set = ApolloPFHiddenRowsSet(owning, hidden);
+        if (hidden) [set addObject:[postPath copy]];
+        else [set removeObject:postPath];
+    }
+    return hidden;
+}
+
 static void ApolloPFRefreshSeparatorNode(id separatorNode) {
     if (!separatorNode) return;
     BOOL changed = ApolloPFSetNodeCollapsed(separatorNode,
-                                            ApolloPFSeparatorShouldCollapse(separatorNode));
+                                            ApolloPFSeparatorShouldCollapseOnMain(separatorNode));
     if (!changed) return;
     if ([separatorNode respondsToSelector:@selector(invalidateCalculatedLayout)]) {
         ((void (*)(id, SEL))objc_msgSend)(separatorNode, @selector(invalidateCalculatedLayout));

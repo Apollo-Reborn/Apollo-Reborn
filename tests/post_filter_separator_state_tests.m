@@ -71,12 +71,16 @@ int main(void) {
         [node unlock];
         Require(node.maximumLockDepth == 2,
                 @"collapse re-enters Texture's recursive node lock during measurement");
+        Require(ApolloPFNodeIsCollapsed(node),
+                @"layout spec observes calculate-layout's existing collapse decision");
         Require(DimensionEqual(style.height, (ApolloPFDim){1, 0.0}), @"height collapses");
         Require(DimensionEqual(style.minHeight, (ApolloPFDim){1, 0.0}), @"minimum collapses");
         Require(DimensionEqual(style.maxHeight, (ApolloPFDim){1, 0.0}), @"maximum collapses");
         Require(!ApolloPFSetNodeCollapsed(node, YES), @"repeat collapse is idempotent");
 
         Require(ApolloPFSetNodeCollapsed(node, NO), @"restore changes state");
+        Require(!ApolloPFNodeIsCollapsed(node),
+                @"layout spec observes calculate-layout's existing restore decision");
         Require(DimensionEqual(style.height, (ApolloPFDim){1, 8.0}), @"height restores");
         Require(DimensionEqual(style.minHeight, (ApolloPFDim){0, 0.0}), @"minimum restores");
         Require(DimensionEqual(style.maxHeight, (ApolloPFDim){0, INFINITY}), @"maximum restores");

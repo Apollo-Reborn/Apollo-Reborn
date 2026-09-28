@@ -19,13 +19,13 @@ prefix = (
     "#import <objc/runtime.h>\n"
     "#import <math.h>\n"
 )
-(output / "separator_state_tests.m").write_text(
+(output / "separator_state_tests.mm").write_text(
     prefix + source[start:end] + (root / "tests/post_filter_separator_state_tests.m").read_text()
 )
 PY
 
-xcrun --sdk macosx clang -fobjc-arc -fmodules -Wall -Wextra -Werror \
+xcrun --sdk macosx clang++ -fobjc-arc -fmodules -Wall -Wextra -Werror \
     -fsanitize=address,undefined \
-    -framework Foundation "$test_build/separator_state_tests.m" \
+    -framework Foundation "$test_build/separator_state_tests.mm" \
     -o "$test_build/separator_state_tests"
 "$test_build/separator_state_tests"
