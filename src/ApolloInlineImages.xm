@@ -12,6 +12,7 @@
 #import "ApolloCommon.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloImageChestResolver.h"
+#import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
@@ -4564,6 +4565,16 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 
     CGFloat ratio = ApolloAspectRatioFromURL(normalizedURL);
     if (ratio <= 0) {
+        // Reddit includes authoritative source dimensions in media_metadata.
+        // Use them during the first Texture measurement so a comment reserves
+        // the image's final space before the network image finishes loading.
+        // The helper requires a matching Reddit asset and deliberately ignores
+        // external hosts, whose existing load-then-layout behavior is unchanged.
+        NSDictionary *mediaMetadata = ApolloMediaMetadataForHost(hostMarkdownNode);
+        ratio = (CGFloat)ApolloInlineImageAspectRatioFromMediaMetadata(normalizedURL,
+                                                                       mediaMetadata);
+    }
+    if (ratio <= 0) {
         // A previous node instance already loaded this image and recorded its
         // real ratio — reuse it so a rebuilt cell measures the row
         // correctly on the FIRST pass instead of hiding the image and growing
@@ -4572,7 +4583,8 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         if (known) ratio = known.doubleValue;
     }
     // kApolloAspectRatioKey is only set when we have real ratio info (URL
-    // query params now, a prior load's cached ratio, or didLoadImage later).
+    // query params now, matching Reddit media_metadata, a prior load's cached
+    // ratio, or didLoadImage later).
     // Nil means "unknown" → the wrapper omits the image from layout to avoid
     // wrong-ratio races.
 
