@@ -4573,6 +4573,12 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         NSDictionary *mediaMetadata = ApolloMediaMetadataForHost(hostMarkdownNode);
         ratio = (CGFloat)ApolloInlineImageAspectRatioFromMediaMetadata(normalizedURL,
                                                                        mediaMetadata);
+        // That first measurement normally runs before the MarkdownNode joins
+        // its CommentCellNode, so the host lookup above cannot reach the model.
+        // Fall back to dimensions captured when Reddit parsed that model.
+        if (ratio <= 0) {
+            ratio = (CGFloat)ApolloInlineImageAspectRatioFromRegisteredMetadata(normalizedURL);
+        }
     }
     if (ratio <= 0) {
         // A previous node instance already loaded this image and recorded its

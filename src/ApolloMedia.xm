@@ -8,6 +8,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloGiphyClient.h"
+#import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "ApolloMediaMetadata.h"
@@ -1018,6 +1019,7 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
     NSUInteger giphyCount = 0, redditGifCount = 0;
     NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
     %orig(fixed);
+    ApolloInlineImageRegisterMediaMetadata(fixed);
 }
 
 - (NSString *)body {
@@ -1035,6 +1037,7 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
     NSUInteger giphyCount = 0, redditGifCount = 0;
     NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
     %orig(fixed);
+    ApolloInlineImageRegisterMediaMetadata(fixed);
 }
 
 - (NSString *)selfText {

@@ -1,5 +1,6 @@
 #import "ApolloInlineImageMetadata.h"
 
+#import <dispatch/dispatch.h>
 #import <math.h>
 
 static BOOL ApolloInlineMetadataIsRedditImageHost(NSString *host) {
@@ -128,4 +129,48 @@ double ApolloInlineImageAspectRatioFromMediaMetadata(NSURL *url, NSDictionary *m
         matchedEntry = entry;
     }
     return ApolloInlineMetadataRatioFromEntry(matchedEntry);
+}
+
+// Asset ID -> height / width. An asset's dimensions do not depend on which
+// comment, post, or account loaded it. NSCache is thread-safe (models parse off
+// the main thread while Texture measures on background threads) and bounded so
+// browsing cannot grow this process-wide lookup indefinitely.
+static NSCache<NSString *, NSNumber *> *ApolloInlineMetadataRegisteredRatios(void) {
+    static NSCache<NSString *, NSNumber *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 1024;
+    });
+    return cache;
+}
+
+void ApolloInlineImageRegisterMediaMetadata(NSDictionary *mediaMetadata) {
+    if (![mediaMetadata isKindOfClass:[NSDictionary class]]) return;
+
+    for (id key in mediaMetadata) {
+        if (![key isKindOfClass:[NSString class]] || [key length] == 0) continue;
+        NSDictionary *entry = [mediaMetadata[key] isKindOfClass:[NSDictionary class]]
+            ? mediaMetadata[key] : nil;
+        if (!ApolloInlineMetadataEntryCanDescribeImage(entry)) continue;
+
+        double ratio = ApolloInlineMetadataRatioFromEntry(entry);
+        if (ratio > 0.0) {
+            // Reddit asset IDs are stable. If a later parse supplies different
+            // valid dimensions for the same ID, prefer the latest authoritative
+            // metadata; malformed/invalid entries never erase a known ratio.
+            [ApolloInlineMetadataRegisteredRatios() setObject:@(ratio) forKey:key];
+        }
+    }
+}
+
+double ApolloInlineImageAspectRatioFromRegisteredMetadata(NSURL *url) {
+    if (![url isKindOfClass:[NSURL class]] ||
+        !ApolloInlineMetadataIsRedditImageHost(url.host)) {
+        return 0.0;
+    }
+
+    NSString *assetID = [url.lastPathComponent stringByDeletingPathExtension];
+    if (assetID.length == 0) return 0.0;
+    return [[ApolloInlineMetadataRegisteredRatios() objectForKey:assetID] doubleValue];
 }

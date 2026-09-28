@@ -1,9 +1,11 @@
 #import <Foundation/Foundation.h>
 #import "ApolloInlineImageMetadata.h"
 
+#import <dispatch/dispatch.h>
 #import <math.h>
+#import <stdatomic.h>
 
-static NSUInteger checks;
+static _Atomic NSUInteger checks;
 
 static void Check(BOOL condition, NSString *message) {
     checks++;
@@ -131,7 +133,74 @@ int main(void) {
                    0.0,
                    @"failed metadata is not trusted for first layout");
 
-        NSLog(@"PASS: %lu inline image metadata checks", (unsigned long)checks);
+        ApolloInlineImageRegisterMediaMetadata(nativeImage);
+        ApolloInlineImageRegisterMediaMetadata(invalid);
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://preview.redd.it/asset.jpeg?width=640&crop=smart"]),
+                   0.75,
+                   @"registered parse-time metadata sizes an image without a reachable host");
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://i.redd.it/bad.jpg"]),
+                   0.0,
+                   @"failed metadata is never registered");
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://i.redd.it/never-registered.jpg"]),
+                   0.0,
+                   @"unregistered assets keep the load-then-layout behavior");
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://images.example.com/asset.jpeg"]),
+                   0.0,
+                   @"registered asset IDs never size external hosts");
+
+        NSDictionary *replacement = @{
+            @"asset": @{
+                @"status": @"valid",
+                @"e": @"Image",
+                @"s": @{ @"x": @400, @"y": @800 },
+            },
+        };
+        ApolloInlineImageRegisterMediaMetadata(replacement);
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://i.redd.it/asset.png"]),
+                   2.0,
+                   @"a later valid parse deterministically replaces stale dimensions");
+
+        NSDictionary *invalidReplacement = @{
+            @"asset": @{
+                @"status": @"failed",
+                @"e": @"Image",
+                @"s": @{ @"x": @100, @"y": @100 },
+            },
+        };
+        ApolloInlineImageRegisterMediaMetadata(invalidReplacement);
+        CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(
+                       [NSURL URLWithString:@"https://i.redd.it/asset.png"]),
+                   2.0,
+                   @"invalid later metadata cannot erase or replace a known ratio");
+
+        // Model parsing and Texture layout both occur off-main. Exercise the
+        // public registry concurrently with unique asset IDs so the test does
+        // not depend on scheduling order while still covering read/write races.
+        dispatch_apply(64, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t index) {
+            NSString *assetID = [NSString stringWithFormat:@"concurrent-%zu", index];
+            ApolloInlineImageRegisterMediaMetadata(@{
+                assetID: @{
+                    @"status": @"valid",
+                    @"e": @"Image",
+                    @"s": @{ @"x": @200, @"y": @(100 + index) },
+                },
+            });
+            NSURL *url = [NSURL URLWithString:
+                [NSString stringWithFormat:@"https://i.redd.it/%@.jpg", assetID]];
+            double expected = (100.0 + (double)index) / 200.0;
+            CheckRatio(ApolloInlineImageAspectRatioFromRegisteredMetadata(url),
+                       expected,
+                       @"concurrent registration is immediately visible to lookup");
+        });
+
+        NSLog(@"PASS: %lu inline image metadata checks",
+              (unsigned long)atomic_load(&checks));
     }
     return 0;
 }
