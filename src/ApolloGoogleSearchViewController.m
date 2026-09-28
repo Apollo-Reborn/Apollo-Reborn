@@ -236,13 +236,14 @@ static void ApolloGoogleStyleChip(UIButton *chip, NSString *title, NSString *sym
 - (void)reloadFromDefaults {
     BOOL google = ApolloSearchEngineCurrent() == ApolloSearchEngineGoogle;
     UIColor *iconColor = self.iconColor ?: UIColor.secondaryLabelColor;
-    // Reddit keeps Apollo's magnifier exactly; Google swaps in a "G" in the
-    // accent color, so the mode reads at a glance.
+    // Reddit keeps Apollo's magnifier exactly; Google swaps in the outlined
+    // "G" from the menu, in the same color and sized to the magnifier's
+    // footprint, so both sit the same distance from the chevron.
     UIImageSymbolConfiguration *iconConfig =
-        [UIImageSymbolConfiguration configurationWithPointSize:google ? 18 : 16 weight:UIImageSymbolWeightMedium];
-    UIImage *icon = [UIImage systemImageNamed:google ? @"g.circle.fill" : @"magnifyingglass" withConfiguration:iconConfig];
+        [UIImageSymbolConfiguration configurationWithPointSize:google ? 15 : 16 weight:UIImageSymbolWeightMedium];
+    UIImage *icon = [UIImage systemImageNamed:google ? @"g.circle" : @"magnifyingglass" withConfiguration:iconConfig];
     _iconView.image = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    _iconView.tintColor = google ? ApolloGoogleAccentColor(self) : iconColor;
+    _iconView.tintColor = iconColor;
     UIImageSymbolConfiguration *chevronConfig =
         [UIImageSymbolConfiguration configurationWithPointSize:8 weight:UIImageSymbolWeightBold];
     _chevronView.image = [[UIImage systemImageNamed:@"chevron.down" withConfiguration:chevronConfig]
