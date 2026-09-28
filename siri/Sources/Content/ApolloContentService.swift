@@ -58,6 +58,35 @@ public final class ApolloContentBridge: NSObject {
         }
     }
 
+    /// A post the person opened (detail screen), from the tweak's RDKLink.
+    /// Memory-only session context so onscreen annotations resolve even when
+    /// no listing captured the post (opened from a link, inbox, etc.).
+    @objc public static func observePost(_ data: Data, account: String) {
+        enqueue(account: account) { service, expected in
+            try await service.observePost(data, account: expected)
+        }
+    }
+
+    /// Comments Apollo already loaded for an opened post. Memory-only.
+    @objc public static func observeComments(_ data: Data, account: String) {
+        enqueue(account: account) { service, expected in
+            try await service.observeComments(data, account: expected)
+        }
+    }
+
+    private static func enqueue(account: String,
+                                _ work: @escaping @Sendable (ApolloContentService, String) async throws -> Void) {
+        let expected = fingerprint(account)
+        let previous = contentEvents
+        contentEvents = Task {
+            await previous?.value
+            do { try await work(ApolloContentService.shared, expected) }
+            catch { ApolloSiriLog.event("Session context update failed; no payload logged") }
+            // Bindings created before this context arrived can now resolve.
+            ApolloOnscreenBridge.refresh()
+        }
+    }
+
     @objc public static func allowIdentifiers(_ identifiers: [String], account: String) {
         let expected = fingerprint(account)
         let previous = contentEvents
@@ -164,6 +193,8 @@ actor ApolloContentService {
     static let shared = ApolloContentService()
     static let indexName = "ApolloReborn.Content.v1"
     private var catalog: ApolloContentCatalog?
+    /// Viewed posts + loaded comments; never persisted or indexed.
+    private let session = ApolloSessionContext()
     private var dirty = false
     private var resetIndex = false // Forces a full delete/rebuild (recovery, reindex-all, scope change).
     /// What Core Spotlight is known to hold: id → content signature, per scope.
@@ -226,7 +257,13 @@ actor ApolloContentService {
         guard account.ready || !enabled else { throw Failure.accountUnavailable }
         let catalog = try store()
         let changed = try catalog.configure(enabled: enabled, account: account.fingerprint)
-        if changed { resetIndex = true }
+        session.configure(account: catalog.state.enabled ? catalog.state.account : nil)
+        if changed {
+            resetIndex = true
+            // Apple: remove donations that no longer apply. A different account
+            // or an opt-out makes every prior Apollo open-content donation stale.
+            Self.deleteAllDonations()
+        }
         let count = catalog.state.records.count
         try catalog.expire()
         if changed || toggled || resetIndex || loadCheckpoint() == nil || count != catalog.state.records.count { scheduleSync() }
@@ -241,7 +278,10 @@ actor ApolloContentService {
     func suppress(_ identifiers: [String], account: String) async throws {
         try await refresh()
         let catalog = try store()
-        try catalog.suppress(catalog.canonicalIdentifiers(identifiers), account: account)
+        let canonical = catalog.canonicalIdentifiers(identifiers)
+        try catalog.suppress(canonical, account: account)
+        session.suppress(canonical)
+        Self.deleteDonations(forPosts: canonical.filter { $0.hasPrefix("reddit:post:") })
         scheduleSync()
         try await syncTask?.value
     }
@@ -340,7 +380,84 @@ actor ApolloContentService {
 
     func resolve(_ identifiers: [String], kind: ApolloContentRecord.Kind) async throws -> [ApolloContentRecord] {
         try await refresh()
-        return try store().resolve(identifiers).filter { $0.kind == kind }
+        let catalogued = try store().resolve(identifiers).filter { $0.kind == kind }
+        guard kind == .post else { return catalogued }
+        // Viewed-but-uncatalogued posts resolve too, so an annotated detail
+        // screen and its open action work for posts opened from a link.
+        let found = Set(catalogued.map(\.id))
+        return catalogued + identifiers.filter { !found.contains($0) }.compactMap(session.post)
+    }
+
+    // MARK: - Session context (viewed posts, loaded comments)
+
+    func observePost(_ payload: Data, account: String) async throws {
+        try await refresh()
+        let catalog = try store()
+        guard catalog.state.enabled, catalog.state.account == account, payload.count <= 64 * 1024,
+              let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let record = ApolloContentRecord.parse(json, now: Date()),
+              !catalog.isSuppressed(record.id) else { return }
+        session.observe(post: record, account: account)
+    }
+
+    func observeComments(_ payload: Data, account: String) async throws {
+        try await refresh()
+        let catalog = try store()
+        guard catalog.state.enabled, catalog.state.account == account, payload.count <= 2 * 1024 * 1024,
+              let rows = try JSONSerialization.jsonObject(with: payload) as? [[String: Any]] else { return }
+        let comments = rows.prefix(500).compactMap { row -> ApolloCommentRecord? in
+            ApolloCommentRecord.parse(row, order: (row["order"] as? NSNumber)?.intValue ?? Int.max)
+        }.filter { !catalog.isSuppressed($0.postID) }
+        session.observe(comments: comments, account: account)
+        ApolloSiriLog.event("Loaded comments added to session context", count: comments.count)
+    }
+
+    /// Onscreen lookup: catalogue first, then this session's viewed posts.
+    /// Never renders a prior account's content after switching.
+    func onscreenPost(_ id: String, account: String) async throws -> ApolloContentRecord? {
+        try await refresh()
+        let catalog = try store()
+        guard catalog.state.enabled, catalog.state.account == account else { return nil }
+        return catalog.resolve([id]).first { $0.kind == .post } ?? session.post(id)
+    }
+
+    func onscreenComment(_ id: String, account: String) async throws -> ApolloCommentRecord? {
+        try await refresh()
+        guard session.account == account else { return nil }
+        return session.comments([id]).first
+    }
+
+    func comments(_ identifiers: [String]) async throws -> [ApolloCommentRecord] {
+        try await refresh()
+        return session.comments(identifiers)
+    }
+
+    func comments(forPost postID: String, limit: Int) async throws -> [ApolloCommentRecord] {
+        try await refresh()
+        return session.comments(forPost: postID, limit: limit)
+    }
+
+    func searchComments(_ query: String, limit: Int) async throws -> [ApolloCommentRecord] {
+        try await refresh()
+        return session.search(query, limit: limit)
+    }
+
+    // MARK: - Donation hygiene
+
+    private nonisolated static func deleteAllDonations() {
+        Task {
+            for type in [OpenApolloPostIntent.self, OpenApolloCommentIntent.self,
+                         OpenApolloSubscribedSubredditIntent.self] as [any AppIntent.Type] {
+                _ = try? await IntentDonationManager.shared.deleteDonations(matching: .intentType(type))
+            }
+            ApolloSiriLog.event("Cleared Apollo intent donations after scope change")
+        }
+    }
+
+    private nonisolated static func deleteDonations(forPosts ids: [String]) {
+        guard !ids.isEmpty else { return }
+        let entities = ids.map { EntityIdentifier(for: ApolloPostEntity.self, identifier: $0) }
+        Task { try? await IntentDonationManager.shared.deleteDonations(matching: .entityIdentifiers(entities)) }
     }
 
     func setEnabled(_ enabled: Bool) async throws {
@@ -418,9 +535,24 @@ actor ApolloContentService {
     /// Changes whenever indexed text changes. The week bucket re-upserts a
     /// still-observed record at most weekly so its Spotlight expiry keeps
     /// pace with catalogue retention, without republishing on every scroll.
+    /// 32-byte digest of a checkpoint, committed atomically with each Spotlight
+    /// batch (CoreSpotlight's client-state contract; limit 250 bytes).
+    private static func clientState(_ checkpoint: PublishCheckpoint) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: Data((checkpoint.account ?? "-").utf8))
+        hasher.update(data: Data([checkpoint.experimental ? 1 : 0]))
+        for map in [checkpoint.posts, checkpoint.subreddits] {
+            for key in map.keys.sorted() { hasher.update(data: Data("\(key)=\(map[key] ?? "")\n".utf8)) }
+            hasher.update(data: Data([0]))
+        }
+        return Data(hasher.finalize())
+    }
+
     private static func signature(_ record: ApolloContentRecord) -> String {
         let week = Int(record.observedAt.timeIntervalSince1970 / (7 * 24 * 60 * 60))
-        let content = [record.title, record.text, record.author, record.subreddit, record.displayTitle ?? "", String(week)]
+        let content = [record.title, record.text, record.author, record.subreddit, record.displayTitle ?? "",
+                       record.score.map(String.init) ?? "", record.commentCount.map(String.init) ?? "",
+                       record.linkDomain ?? "", String(week)]
             .joined(separator: "\u{1F}")
         return SHA256.hash(data: Data(content.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
@@ -455,11 +587,23 @@ actor ApolloContentService {
                     guard reset || !changedPosts.isEmpty || !changedSubs.isEmpty || !removePosts.isEmpty || !removeSubs.isEmpty else {
                         continue
                     }
-                    try await Self.publish(reset: reset, posts: changedPosts, subreddits: changedSubs,
-                                           removePosts: Array(removePosts), removeSubreddits: Array(removeSubs),
-                                           protectionClass: protectionClass, experimental: experimental)
-                    try saveCheckpoint(PublishCheckpoint(account: account, experimental: experimental,
-                                                         posts: postSigs, subreddits: subSigs))
+                    let next = PublishCheckpoint(account: account, experimental: experimental,
+                                                 posts: postSigs, subreddits: subSigs)
+                    do {
+                        try await Self.publish(reset: reset, posts: changedPosts, subreddits: changedSubs,
+                                               removePosts: Array(removePosts), removeSubreddits: Array(removeSubs),
+                                               protectionClass: protectionClass, experimental: experimental,
+                                               expectedState: reset ? nil : Self.clientState(previous),
+                                               newState: Self.clientState(next))
+                    } catch let error as CSIndexError where error.code == .mismatchedClientState {
+                        // Spotlight doesn't hold what our checkpoint says (index
+                        // wiped/restored). Rebuild once instead of trusting it.
+                        ApolloSiriLog.event("Spotlight client state mismatch; full rebuild")
+                        resetIndex = true
+                        dirty = true
+                        continue
+                    }
+                    try saveCheckpoint(next)
                     ApolloSiriLog.event("Content index synchronized; upserts", count: changedPosts.count + changedSubs.count)
                 }
             } catch {
@@ -477,8 +621,13 @@ actor ApolloContentService {
     private nonisolated static func publish(reset: Bool, posts: [ApolloContentRecord],
                                             subreddits: [ApolloContentRecord],
                                             removePosts: [String], removeSubreddits: [String],
-                                            protectionClass: FileProtectionType?, experimental: Bool) async throws {
+                                            protectionClass: FileProtectionType?, experimental: Bool,
+                                            expectedState: Data? = nil, newState: Data? = nil) async throws {
         let index = CSSearchableIndex(name: indexName, protectionClass: protectionClass)
+        // Canonical-index work is one batch whose client state commits only if
+        // every call lands (Apple's CosmoTunes pattern). Targeted reindex passes
+        // no state and stays outside the batch contract.
+        if newState != nil { index.beginBatch() }
         let experimentIndex = CSSearchableIndex(name: "ApolloReborn.SchemaExperiment.v1", protectionClass: protectionClass)
         if reset {
             try await index.deleteAppEntities(ofType: ApolloPostEntity.self)
@@ -508,6 +657,9 @@ actor ApolloContentService {
         // Bounded batches keep a first full build from being one huge request.
         for start in stride(from: 0, to: items.count, by: 200) {
             try await index.indexSearchableItems(Array(items[start..<min(start + 200, items.count)]))
+        }
+        if let newState {
+            try await index.endIndexBatch(expectedClientState: expectedState, newClientState: newState)
         }
         if experimental, !posts.isEmpty {
             let noteItems = posts.map { record in

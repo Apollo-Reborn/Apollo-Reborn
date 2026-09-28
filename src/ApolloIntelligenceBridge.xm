@@ -91,7 +91,8 @@ static NSData *ApolloSiriListingData(id response) {
     // credentials, private messages or arbitrary server dictionaries.
     NSArray *keys = @[@"name", @"title", @"subreddit", @"author", @"selftext", @"permalink",
                       @"created_utc", @"over_18", @"over18", @"hidden", @"subreddit_type", @"removed_by_category",
-                      @"display_name", @"public_description", @"user_is_subscriber"];
+                      @"display_name", @"public_description", @"user_is_subscriber",
+                      @"score", @"num_comments", @"domain"];
     NSMutableArray *records = [NSMutableArray array];
     for (id child in children) {
         if (![child isKindOfClass:NSDictionary.class]) continue;
@@ -234,6 +235,129 @@ static void ApolloSiriAnnotateNode(id node, BOOL visible) {
     ApolloSiriAnnotateView(view, visible ? ApolloSiriPostFullName(node) : nil, nil, NO);
 }
 
+// MARK: - Session context (opened post + loaded comments)
+//
+// Memory-only context in the Siri framework so onscreen annotations resolve for
+// ANY post the person opens (not only ones a listing captured) and for the
+// comments Apollo already loaded. Nothing here makes a network request; values
+// come from Apollo's own model objects and mirror Reddit's JSON keys so the
+// Swift side reuses one parser with the same eligibility rules.
+
+static id ApolloSiriSend(id object, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+static void ApolloSiriSetString(NSMutableDictionary *dict, NSString *key, id value, NSUInteger limit) {
+    if (![value isKindOfClass:NSString.class]) return;
+    dict[key] = [value length] > limit ? [value substringToIndex:limit] : value;
+}
+
+static void ApolloSiriSetInteger(NSMutableDictionary *dict, NSString *key, id object, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    if ([object respondsToSelector:selector]) dict[key] = @(((long long (*)(id, SEL))objc_msgSend)(object, selector));
+}
+
+static void ApolloSiriSetBool(NSMutableDictionary *dict, NSString *key, id object, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    if ([object respondsToSelector:selector]) dict[key] = @(((BOOL (*)(id, SEL))objc_msgSend)(object, selector));
+}
+
+static void ApolloSiriSetCreated(NSMutableDictionary *dict, id object) {
+    id created = ApolloSiriSend(object, @"createdUTC");
+    if ([created isKindOfClass:NSDate.class]) dict[@"created_utc"] = @([(NSDate *)created timeIntervalSince1970]);
+}
+
+static void ApolloSiriForward(NSString *selectorName, id payloadObject) {
+    Class bridge = NSClassFromString(@"ApolloContentBridge");
+    SEL selector = NSSelectorFromString(selectorName);
+    if (!bridge || ![bridge respondsToSelector:selector]) return;
+    NSString *account = ApolloSiriCurrentAccount();
+    if (!account.length) return; // No context during anonymous browsing.
+    NSData *payload = [NSJSONSerialization dataWithJSONObject:payloadObject options:0 error:nil];
+    if (payload) ((void (*)(id, SEL, id, id))objc_msgSend)(bridge, selector, payload, account);
+}
+
+static void ApolloSiriObserveOpenedPost(id link) {
+    if (![NSThread isMainThread] || !link || ![[NSUserDefaults standardUserDefaults] boolForKey:ApolloSiriEnabledKey]) return;
+    NSString *fullName = ApolloSiriSend(link, @"fullName");
+    if (![fullName isKindOfClass:NSString.class] || !fullName.length) return;
+    NSMutableDictionary *post = [@{@"kind": @"t3", @"name": fullName} mutableCopy];
+    ApolloSiriSetString(post, @"title", ApolloSiriSend(link, @"title"), 512);
+    ApolloSiriSetString(post, @"selftext", ApolloSiriSend(link, @"selfText"), 2048);
+    ApolloSiriSetString(post, @"author", ApolloSiriSend(link, @"author"), 64);
+    ApolloSiriSetString(post, @"subreddit", ApolloSiriSend(link, @"subreddit"), 64);
+    ApolloSiriSetString(post, @"subreddit_type", ApolloSiriSend(link, @"subredditType"), 32);
+    ApolloSiriSetString(post, @"domain", ApolloSiriSend(link, @"domain"), 253);
+    ApolloSiriSetBool(post, @"over_18", link, @"NSFW");
+    ApolloSiriSetBool(post, @"hidden", link, @"hidden");
+    ApolloSiriSetInteger(post, @"score", link, @"score");
+    ApolloSiriSetInteger(post, @"num_comments", link, @"totalComments");
+    ApolloSiriSetCreated(post, link);
+    ApolloSiriForward(@"observePost:account:", post);
+}
+
+// Section controllers are created from the loaded CommentTree before cells
+// exist (see ApolloAISummary), so this sees the whole fetched thread. Coalesce
+// a burst into one hand-off; cap per flush like the listing allowlist.
+static NSMutableArray *sApolloSiriPendingComments;
+static NSUInteger sApolloSiriCommentOrder;
+static BOOL sApolloSiriCommentFlushScheduled;
+
+static void ApolloSiriFlushComments(void) {
+    sApolloSiriCommentFlushScheduled = NO;
+    NSArray *batch = [sApolloSiriPendingComments copy];
+    [sApolloSiriPendingComments removeAllObjects];
+    for (NSUInteger start = 0; start < batch.count; start += 500) {
+        ApolloSiriForward(@"observeComments:account:", [batch subarrayWithRange:NSMakeRange(start, MIN(500, batch.count - start))]);
+    }
+}
+
+static void ApolloSiriObserveComment(id comment) {
+    if (![NSThread isMainThread] || !comment || !NSClassFromString(@"ApolloContentBridge") ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:ApolloSiriEnabledKey]) return;
+    NSString *fullName = ApolloSiriSend(comment, @"fullName");
+    NSString *linkID = ApolloSiriSend(comment, @"linkID");
+    if (![fullName isKindOfClass:NSString.class] || ![linkID isKindOfClass:NSString.class]) return;
+    NSMutableDictionary *record = [@{@"name": fullName, @"link_id": linkID,
+                                     @"order": @(sApolloSiriCommentOrder++)} mutableCopy];
+    ApolloSiriSetString(record, @"subreddit", ApolloSiriSend(comment, @"subreddit"), 64);
+    ApolloSiriSetString(record, @"author", ApolloSiriSend(comment, @"author"), 64);
+    ApolloSiriSetString(record, @"body", ApolloSiriSend(comment, @"body"), 2000);
+    ApolloSiriSetInteger(record, @"score", comment, @"score");
+    ApolloSiriSetInteger(record, @"depth", comment, @"depth");
+    ApolloSiriSetCreated(record, comment);
+    NSString *author = record[@"author"], *linkAuthor = ApolloSiriSend(comment, @"linkAuthor");
+    record[@"is_submitter"] = @([linkAuthor isKindOfClass:NSString.class] && author.length &&
+                                [author caseInsensitiveCompare:linkAuthor] == NSOrderedSame);
+    if (!sApolloSiriPendingComments) sApolloSiriPendingComments = [NSMutableArray array];
+    if (sApolloSiriPendingComments.count >= 2000) return;
+    [sApolloSiriPendingComments addObject:record];
+    if (sApolloSiriCommentFlushScheduled) return;
+    sApolloSiriCommentFlushScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ApolloSiriFlushComments();
+    });
+}
+
+static void ApolloSiriAnnotateCommentNode(id node, BOOL visible) {
+    Class bridge = NSClassFromString(@"ApolloOnscreenBridge");
+    if (![NSThread isMainThread] || !bridge) return;
+    SEL loaded = NSSelectorFromString(@"isNodeLoaded");
+    if (![node respondsToSelector:loaded] || !((BOOL (*)(id, SEL))objc_msgSend)(node, loaded)) return;
+    UIView *view = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
+    Ivar ivar = class_getInstanceVariable(object_getClass(node), "comment");
+    id comment = ivar ? object_getIvar(node, ivar) : nil;
+    NSString *fullName = visible ? ApolloSiriSend(comment, @"fullName") : nil;
+    if (![fullName isKindOfClass:NSString.class]) {
+        SEL hide = NSSelectorFromString(@"hideView:");
+        if (view && [bridge respondsToSelector:hide]) ((void (*)(id, SEL, id))objc_msgSend)(bridge, hide, view);
+        return;
+    }
+    SEL show = NSSelectorFromString(@"showComment:inView:");
+    if (view && [bridge respondsToSelector:show]) ((void (*)(id, SEL, id, id))objc_msgSend)(bridge, show, fullName, view);
+}
+
 static char ApolloSiriDetailVisibleKey;
 static void ApolloSiriAnnotateDetail(UIViewController *controller) {
     if (![NSThread isMainThread] || ![objc_getAssociatedObject(controller, &ApolloSiriDetailVisibleKey) boolValue]) return;
@@ -295,6 +419,8 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     objc_setAssociatedObject(self, &ApolloSiriDetailVisibleKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    Ivar linkIvar = class_getInstanceVariable(object_getClass(self), "link");
+    ApolloSiriObserveOpenedPost(linkIvar ? object_getIvar(self, linkIvar) : nil);
     ApolloSiriAnnotateDetail((UIViewController *)self);
 }
 - (void)viewDidLayoutSubviews {
@@ -306,6 +432,32 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
     objc_setAssociatedObject(self, &ApolloSiriDetailVisibleKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSiriAnnotateView(((UIViewController *)self).viewIfLoaded, nil, nil, YES);
     %orig;
+}
+%end
+// The post header row in the detail screen (Apple: annotate the header with
+// the container entity, separately from the comment rows below it).
+%hook _TtC6Apollo22CommentsHeaderCellNode
+- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateNode(self, YES); }
+- (void)didExitVisibleState { ApolloSiriAnnotateNode(self, NO); %orig; }
+%end
+%hook _TtC6Apollo15CommentCellNode
+- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateCommentNode(self, YES); }
+- (void)didExitVisibleState { ApolloSiriAnnotateCommentNode(self, NO); %orig; }
+%end
+%hook _TtC6Apollo24CommentSectionController
+- (id)init {
+    id result = %orig;
+    if (NSClassFromString(@"ApolloContentBridge") && [[NSUserDefaults standardUserDefaults] boolForKey:ApolloSiriEnabledKey]) {
+        // The comment ivar is populated after init returns (same as the AI
+        // summary capture); a weak ref avoids touching a torn-down controller.
+        __weak id weakResult = result;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id controller = weakResult;
+            Ivar ivar = controller ? class_getInstanceVariable(object_getClass(controller), "comment") : NULL;
+            ApolloSiriObserveComment(ivar ? object_getIvar(controller, ivar) : nil);
+        });
+    }
+    return result;
 }
 %end
 %hook _TtC6Apollo17LargePostCellNode

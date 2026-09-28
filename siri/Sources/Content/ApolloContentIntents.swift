@@ -37,7 +37,9 @@ struct FindApolloIndexedPostsIntent: AppIntent {
         let snapshot = try await ApolloContentService.shared.searchSnapshot(query: query)
         ApolloSiriLog.event("Indexed post search returning snippet", count: snapshot.records.count)
         return .result(value: snapshot.records.map(ApolloPostEntity.init),
-                       dialog: "Found \(snapshot.records.count) indexed posts in Apollo.",
+                       dialog: IntentDialog(full: snapshot.records.first.map { "Found \(snapshot.records.count) posts. The top one is \($0.title), in r/\($0.subreddit)." }
+                                                ?? "I didn't find any matching posts you've seen in Apollo.",
+                                            supporting: "Found \(snapshot.records.count) indexed posts in Apollo."),
                        snippetIntent: ApolloPostResultsSnippetIntent(records: snapshot.records, account: snapshot.account))
     }
 }

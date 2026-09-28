@@ -162,6 +162,67 @@ do {
     try names.configure(enabled: false, account: account)
     check(names.records(kind: .subreddit, query: "boutique blu-ray", now: now).isEmpty,
           "Spoken matching bypassed opt-out")
+    // Listing metadata Siri can answer from, with legacy/self-post handling.
+    let meta = try ApolloContentCatalog(file: directory.appendingPathComponent("meta.json"))
+    try meta.configure(enabled: true, account: account)
+    try meta.ingest(data([["kind": "t3", "name": "t3_meta1", "title": "Link", "subreddit": "apple", "author": "a",
+                           "selftext": "", "subreddit_type": "public", "over_18": false, "hidden": false,
+                           "score": 1234, "num_comments": 56, "domain": "TheVerge.com"],
+                          ["kind": "t3", "name": "t3_meta2", "title": "Self", "subreddit": "apple", "author": "a",
+                           "selftext": "x", "subreddit_type": "public", "over_18": false, "hidden": false,
+                           "domain": "self.apple"]]), account: account, now: now)
+    let link = meta.resolve(["reddit:post:t3_meta1"], now: now).first
+    check(link?.score == 1234 && link?.commentCount == 56 && link?.linkDomain == "theverge.com", "Post metadata not captured")
+    let selfPost = meta.resolve(["reddit:post:t3_meta2"], now: now).first
+    check(selfPost?.linkDomain == nil && selfPost?.score == nil, "Self-post domain or absent score was stored")
+    check(!meta.isSuppressed("reddit:post:t3_meta1"), "Unsuppressed post reported as suppressed")
+    try meta.suppress(["reddit:post:t3_meta1"], account: account, now: now)
+    check(meta.isSuppressed("reddit:post:t3_meta1"), "Suppressed post not reported")
+
+    // Session context: viewed posts and loaded comments, memory-only.
+    func comment(_ id: String, link: String = "t3_meta1", body: String = "A useful comment body", score: Int = 1,
+                 depth: Int = 0, op: Bool = false, author: String = "someone") -> [String: Any] {
+        ["name": id, "link_id": link, "subreddit": "apple", "author": author, "body": body,
+         "score": score, "depth": depth, "is_submitter": op, "created_utc": 1_700_000_000]
+    }
+    check(ApolloCommentRecord.parse(comment("t1_ok"), order: 0)?.postID == "reddit:post:t3_meta1", "Comment did not parse")
+    check(ApolloCommentRecord.parse(comment("t1_ok", link: "meta1"), order: 0)?.postID == "reddit:post:t3_meta1",
+          "Unprefixed link id not normalized")
+    check(ApolloCommentRecord.parse(comment("t1_x", body: "[removed]"), order: 0) == nil, "Removed comment accepted")
+    check(ApolloCommentRecord.parse(comment("t1_x", author: "[deleted]"), order: 0) == nil, "Deleted author accepted")
+    check(ApolloCommentRecord.parse(comment("t3_notacomment"), order: 0) == nil, "Non-comment fullname accepted")
+    check(ApolloCommentRecord.parse(comment("t1_abc"), order: 0)?.route == "apollo://reddit.com/r/apple/comments/meta1/_/abc/",
+          "Comment route incorrect")
+
+    let session = ApolloSessionContext(postLimit: 2, threadLimit: 2, commentsPerThread: 3)
+    session.configure(account: account)
+    let parsed = [comment("t1_low", score: 1), comment("t1_top", score: 900), comment("t1_op", score: 2, op: true),
+                  comment("t1_deep", score: 950, depth: 12), comment("t1_over", score: 5000)]
+        .enumerated().compactMap { ApolloCommentRecord.parse($0.element, order: $0.offset) }
+    session.observe(comments: parsed, account: account)
+    check(session.comments(forPost: "reddit:post:t3_meta1", limit: 10).count == 3, "Per-thread comment cap ignored")
+    check(session.comments(forPost: "reddit:post:t3_meta1", limit: 2).map(\.id) == ["reddit:comment:t1_op", "reddit:comment:t1_top"],
+          "Comment ranking should favour OP and score")
+    check(session.comments(["reddit:comment:t1_top"]).first?.score == 900, "Comment resolve failed")
+    check(session.search("useful", limit: 5).count == 3, "Comment search failed")
+    session.observe(comments: parsed, account: "other-account")
+    check(session.comments(forPost: "reddit:post:t3_meta1", limit: 10).count == 3, "Wrong-account comments accepted")
+    for id in ["t1_a2", "t1_a3"] {
+        session.observe(comments: [ApolloCommentRecord.parse(comment(id, link: "t3_\(id.dropFirst(3))"), order: 0)!], account: account)
+    }
+    check(session.comments(forPost: "reddit:post:t3_meta1", limit: 10).isEmpty, "Oldest comment thread not evicted")
+    let viewed = ["t3_v1", "t3_v2", "t3_v3"].compactMap {
+        ApolloContentRecord.parse(["kind": "t3", "name": $0, "title": "T", "subreddit": "apple", "author": "a",
+                                   "selftext": "", "subreddit_type": "public", "over_18": false, "hidden": false], now: now)
+    }
+    viewed.forEach { session.observe(post: $0, account: account) }
+    check(session.post("reddit:post:t3_v1") == nil && session.post("reddit:post:t3_v3") != nil, "Viewed-post cap not LRU")
+    session.suppress(["reddit:post:t3_v3", "reddit:post:t3_a3"])
+    check(session.post("reddit:post:t3_v3") == nil && session.comments(forPost: "reddit:post:t3_a3", limit: 5).isEmpty,
+          "Suppression kept session content")
+    session.configure(account: nil)
+    check(session.post("reddit:post:t3_v2") == nil && session.comments(forPost: "reddit:post:t3_a2", limit: 5).isEmpty,
+          "Scope change kept session content")
     print("PASS: \(assertions) catalogue assertions (persistence, privacy, account isolation, search, retention, routing)")
 } catch {
     fatalError("Catalogue test failed: \(error)")

@@ -13,7 +13,10 @@ struct SearchApolloPostsIntent: AppIntent {
         let result = try await ApolloContentService.shared.liveSearch(query: query)
         ApolloSiriLog.event("Live post search returning snippet", count: result.records.count)
         return .result(value: result.records.map(ApolloPostEntity.init),
-                       dialog: "Found \(result.records.count) eligible posts from Reddit.",
+                       // Full text for voice-only contexts; supporting text sits beside the snippet.
+                       dialog: IntentDialog(full: result.records.first.map { "Found \(result.records.count) posts. The top one is \($0.title), in r/\($0.subreddit)." }
+                                                ?? "I didn't find any matching posts in Apollo.",
+                                            supporting: "Found \(result.records.count) posts from Reddit."),
                        snippetIntent: ApolloPostResultsSnippetIntent(records: result.records, account: result.account))
     }
 }

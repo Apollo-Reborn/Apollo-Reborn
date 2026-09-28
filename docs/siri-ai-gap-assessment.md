@@ -6,6 +6,54 @@ implementation, historical test evidence, and behavior that still needs testing
 on the real signed Apollo installation. Proposed limits below are starting
 budgets, not measured performance claims.
 
+## 2026-09-28 deep dive: Apple sample code patterns
+
+Downloaded and read all five Apple sample projects for App Intents/Siri AI:
+UnicornChat (messages, session 240), CometCal (calendar, code-along 344),
+CosmoTunes (music/clock, session 343), PhotosDomainExample and
+AppIntentsTravelTracking. Reddit posts have no schema domain (Messages requires
+the whole send/draft/edit/unsend group; Browser/Reader/Journaling are
+Shortcuts-only), so the canonical entities stay custom `IndexedEntity` types
+reached through `.system.open`; the notes projection stays an opt-in experiment.
+
+| Sample pattern | Where Apple shows it | Applied here |
+| --- | --- | --- |
+| Child content reached through parent + annotations, not indexed separately | UnicornChat `MessageRow`, blog note on attendees | New `ApolloCommentEntity` (plain `AppEntity`) + `OpenApolloCommentIntent` (`.system.open`); comment cells annotated |
+| Lazily loaded large values | `LandmarkEntity.crowdStatus` (`@DeferredProperty`) | `ApolloPostEntity.loadedComments`: top 40 comments Apollo already loaded, from memory, never a network call |
+| Header annotated with the container entity, rows annotated separately, single focus on `NSUserActivity` | CosmoTunes `PlaylistDetailView`, `NowPlayingView`, Photos `AssetDetailView` | Detail screen: post on its user activity only; `CommentsHeaderCellNode` annotated as the post; each comment row annotated |
+| Annotate whatever is on screen | All samples | Memory-only `ApolloSessionContext` makes posts opened from links/inbox resolvable (previously required a captured listing) |
+| Spotlight client state committed with the batch | CosmoTunes `CoreSpotlightWrapper` | `beginBatch` + `endIndexBatch(expectedClientState:newClientState:)`; mismatch (wiped/restored index) forces one rebuild |
+| Donate from UI tap sites only; delete stale donations | CosmoTunes `DonationManager`, `IntentDonationManager` docs | Donation skipped when an intent drove navigation (10s window); donations deleted on hide/delete and on account/opt-out change |
+| `requestValueDialog` on open targets | `OpenPlaylistIntent`, `OpenLandmarkIntent` | Post/subreddit/comment open intents |
+| `numericFormat`, supported property types (`URL`, `Int?`) | TrailEntity, LandmarkEntity | Types have numeric formats; post adds link, score, comment count, linked site |
+| Plain-text `DataRepresentation` alongside richer representations | LandmarkEntity, SongEntity | Post/comment export URL first, then full readable text |
+| `IntentDialog(full:supporting:)` for voice-only devices | ClosestLandmarkIntent | Both post-result actions |
+| `searchKeywords` in descriptions | CosmoTunes intents | In-app search intent |
+
+Deliberately not copied: CosmoTunes uses `.system.search`, which the iOS 27 SDK
+deprecates for `.system.searchInApp` (kept). Samples index into
+`CSSearchableIndex.default()`, contradicting Apple's own "named index outside
+prototyping" guidance (kept the named index). Apollo inbox notifications are
+delivered by the remote push service, so the notification `appEntityIdentifiers`
+pattern has no local hook yet.
+
+Privacy scope of the new context: gated by the same content opt-in and account
+fingerprint; public, non-NSFW, non-hidden posts only; deleted/removed comments
+excluded; memory-only (50 posts, 5 threads × 500 comments), cleared on account
+change, opt-out, hide/delete; never persisted, indexed or logged.
+
+Device test additions (with indexing on):
+
+1. Open a post from a link (not a feed), ask "what is this post about?". Log:
+   `Owned activity annotated` without a prior listing capture.
+2. On a thread, scroll so only a few comments show, ask "what are people saying
+   in the comments?" — compare against comments not on screen. Logs:
+   `Loaded comments added to session context count=…`.
+3. Ask "send this comment to <contact>" while one
+   comment dominates the screen; expect its text and reddit.com link.
+4. Open a post from Siri ("open <post>"), then check logs show
+   `Donation skipped; navigation came from an intent`.
+
 ## 2026-09-28 best-practice alignment
 
 Re-checked against Apple's current App Intents documentation ("Apple Intelligence

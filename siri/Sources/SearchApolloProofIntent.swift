@@ -8,6 +8,9 @@ import Foundation
 @AppIntent(schema: .system.searchInApp)
 public struct SearchApolloProofIntent: ShowInAppSearchResultsIntent {
     public static let title: LocalizedStringResource = "Search Apollo"
+    public static let description = IntentDescription(
+        "Searches Reddit in Apollo and shows the results in Apollo's search screen.",
+        searchKeywords: ["search", "find", "look up", "reddit", "posts", "subreddit"])
     public static let searchScopes: [StringSearchScope] = [.general]
     public static var supportedModes: IntentModes { .foreground }
     public static var allowedExecutionTargets: IntentExecutionTargets { .main }

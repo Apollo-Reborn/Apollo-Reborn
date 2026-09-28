@@ -18,6 +18,12 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
     /// Siri transcribes spoken names as words, so this is the natural alias for
     /// a joined `display_name`. Optional so older catalogue snapshots decode.
     var displayTitle: String? = nil
+    /// Post-only listing metadata Siri can answer from ("how many comments").
+    /// Optional so older snapshots decode; nil when Reddit omitted the field.
+    var score: Int? = nil
+    var commentCount: Int? = nil
+    /// Outbound link host for link posts (e.g. "theverge.com"); nil for self posts.
+    var linkDomain: String? = nil
 
     /// Public HTTPS equivalent of a validated native route, for sharing.
     /// Routes are only ever built by `parse` from validated names.
@@ -37,7 +43,15 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
         return nil
     }
 
-    private static func validName(_ value: String) -> Bool {
+    /// Hostname only; self posts ("self.apple") and anything malformed are dropped.
+    private static func linkDomain(_ value: String?) -> String? {
+        guard let value = value?.lowercased(), !value.hasPrefix("self."), (1...253).contains(value.count),
+              value.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "-" })
+        else { return nil }
+        return value
+    }
+
+    static func validName(_ value: String) -> Bool {
         !value.isEmpty && value.count <= 64 && value.unicodeScalars.allSatisfy {
             (65...90).contains($0.value) || (97...122).contains($0.value) ||
             (48...57).contains($0.value) || $0.value == 95
@@ -80,7 +94,10 @@ struct ApolloContentRecord: Codable, Sendable, Equatable, Identifiable {
                     subreddit: subreddit, author: String(author.prefix(64)),
                     text: String(text.prefix(2048)), createdAt: Date(timeIntervalSince1970: timestamp),
                     observedAt: now, route: route, fullName: json["name"] as? String,
-                    displayTitle: isPost || communityTitle.isEmpty ? nil : String(communityTitle.prefix(128)))
+                    displayTitle: isPost || communityTitle.isEmpty ? nil : String(communityTitle.prefix(128)),
+                    score: isPost ? (json["score"] as? NSNumber)?.intValue : nil,
+                    commentCount: isPost ? (json["num_comments"] as? NSNumber)?.intValue : nil,
+                    linkDomain: isPost ? linkDomain(json["domain"] as? String) : nil)
     }
 }
 
@@ -188,6 +205,8 @@ final class ApolloContentCatalog {
         // Never resurrect cached text here. A fresh eligible listing is required.
         try commit(next)
     }
+
+    func isSuppressed(_ id: String) -> Bool { state.suppressed?[id] != nil }
 
     func canonicalIdentifiers(_ nativeIdentifiers: [String]) -> [String] {
         nativeIdentifiers.prefix(2000).compactMap { raw in

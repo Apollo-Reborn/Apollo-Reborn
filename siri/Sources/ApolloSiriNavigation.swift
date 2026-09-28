@@ -13,6 +13,7 @@ enum ApolloSiriNavigation {
             throw ApolloSiriNavigationError.emptyQuery
         }
         try await waitForScene()
+        lastIntentNavigation = Date()
         guard let handle = dlopen(nil, RTLD_LAZY) else { throw ApolloSiriNavigationError.routerUnavailable }
         defer { dlclose(handle) }
         guard let symbol = dlsym(handle, "ApolloSiriOpenNativeSearch"),
@@ -65,11 +66,20 @@ enum ApolloSiriNavigation {
         throw ApolloSiriNavigationError.sceneUnavailable
     }
 
+    /// When an intent last drove navigation. Apple: donate only interactions
+    /// people start in the app's own UI, never ones Siri/Shortcuts started
+    /// (the system already donates those), so the onscreen bridge checks this.
+    private(set) static var lastIntentNavigation: Date?
+    static var intentNavigationIsRecent: Bool {
+        lastIntentNavigation.map { Date().timeIntervalSince($0) < 10 } ?? false
+    }
+
     static func open(_ url: URL) async throws {
         // Apollo's native Reddit route requires the canonical host (no www).
         guard url.scheme == "apollo", url.host == "reddit.com" else {
             throw ApolloSiriNavigationError.invalidRoute
         }
+        lastIntentNavigation = Date()
         // Reuse the tweak's exported router, which handles Apollo's scene-owned
         // tab controller before invoking its URL-scheme handler. The browsing-web
         // activity handler is a DIFFERENT route and ignores ordinary Reddit URLs.

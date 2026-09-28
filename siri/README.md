@@ -20,6 +20,9 @@ mean the removed phrase registrations have returned.
 [best-practice section](../docs/siri-ai-gap-assessment.md#2026-09-28-best-practice-alignment).
 In-Siri results come from the semantic index, not from the custom card action;
 the fixed proof no longer competes as a `.system.open` subreddit action.
+A follow-up [sample-code deep dive](../docs/siri-ai-gap-assessment.md#2026-09-28-deep-dive-apple-sample-code-patterns)
+added comment entities, memory-only session context for opened posts/loaded
+comments, Spotlight client-state batching and UI-only donations.
 
 ## Current implementation (2026-09-19)
 
