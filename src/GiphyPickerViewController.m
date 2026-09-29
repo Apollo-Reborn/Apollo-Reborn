@@ -380,13 +380,22 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
     self.loadingIndicator.color = accent;
 
     UISearchBar *searchBar = self.searchController.searchBar;
-    searchBar.barTintColor = background;
-    searchBar.backgroundColor = background;
     searchBar.tintColor = accent;
     if (@available(iOS 13.0, *)) {
-        searchBar.searchTextField.backgroundColor = cellBackground;
         searchBar.searchTextField.textColor = [UIColor labelColor];
         searchBar.searchTextField.tintColor = accent;
+    }
+    // Under Liquid Glass UIKit draws the field's surface itself: in this sheet
+    // the field is lifted out of the bar into a glass capsule in the floating
+    // bar at the bottom, taller than the field. Any fill on the field showed
+    // as a second, smaller shape inside that capsule (the tint on iOS 26, a
+    // grey band on iOS 27), so the themed fills stay on the legacy bar only.
+    if (!IsLiquidGlass()) {
+        searchBar.barTintColor = background;
+        searchBar.backgroundColor = background;
+        if (@available(iOS 13.0, *)) {
+            searchBar.searchTextField.backgroundColor = cellBackground;
+        }
     }
 
     UINavigationController *nav = self.navigationController;

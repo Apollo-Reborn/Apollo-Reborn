@@ -1,5 +1,6 @@
 import ActivityKit
 import SwiftUI
+import UIKit
 import WidgetKit
 
 /// The "follow thread" Live Activity UI, restored into the Reborn widget
@@ -82,6 +83,9 @@ private struct DynamicIslandRecentTopCommentView: View {
                 .lineLimit(1)
             if let info = ThreadCommentInfo(state) {
                 HStack(spacing: 4) {
+                    if let avatar = info.avatar {
+                        AuthorAvatar(image: avatar, size: 14)
+                    }
                     Text("u/\(info.author)").fontWeight(.semibold).foregroundStyle(apolloBlue)
                     Text(info.body).foregroundStyle(.secondary)
                 }
@@ -123,6 +127,9 @@ private struct FollowThreadLockScreenView: View {
             if let info {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
+                        if let avatar = info.avatar {
+                            AuthorAvatar(image: avatar, size: 16)
+                        }
                         Text("u/\(info.author)")
                             .fontWeight(.semibold).foregroundStyle(apolloBlue)
                         if let score = info.score {
@@ -174,6 +181,22 @@ private struct ApolloMark: View {
     }
 }
 
+/// The comment author's profile picture, clipped to a circle: the Profile
+/// Picture Shape default for Apollo's inline avatars (the widget can't read
+/// the app's settings). Decorative: the username next to it is what VoiceOver
+/// reads.
+private struct AuthorAvatar: View {
+    let image: UIImage
+    let size: CGFloat
+    var body: some View {
+        Image(uiImage: image)
+            .resizable().scaledToFill()
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .accessibilityHidden(true)
+    }
+}
+
 /// Normalized "latest comment" view model. `nil` when no comment has been
 /// surfaced yet (the backend sends only post stats until a fresh top-level
 /// comment turns up), so call sites can branch on presence cleanly.
@@ -182,6 +205,9 @@ private struct ThreadCommentInfo {
     let body: String
     let score: Int?
     let age: Date?
+    /// The author's picture, when the push carried one (see
+    /// `ContentState.commentAuthorAvatar`); `nil` keeps the text-only layout.
+    let avatar: UIImage?
 
     init?(_ state: FollowThreadActivityAttributes.ContentState) {
         let body = state.commentBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -192,6 +218,19 @@ private struct ThreadCommentInfo {
         self.score = state.commentScore
         // `commentAge` is a Unix timestamp in seconds (see ContentState).
         self.age = state.commentAge.map { Date(timeIntervalSince1970: $0) }
+        self.avatar = state.commentAuthorAvatar.flatMap(Self.decodeAvatar)
+    }
+
+    /// Decodes the base64 JPEG. Anything that isn't a small image is ignored:
+    /// the system can refuse to render a Live Activity whose images are larger
+    /// than its presentation, and the backend never sends more than 48x48.
+    private static func decodeAvatar(_ base64: String) -> UIImage? {
+        guard base64.utf8.count <= 16_384,
+              let data = Data(base64Encoded: base64),
+              let image = UIImage(data: data) else { return nil }
+        let pixels = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+        guard pixels.width >= 1, pixels.height >= 1, pixels.width <= 256, pixels.height <= 256 else { return nil }
+        return image
     }
 }
 

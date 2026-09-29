@@ -101,6 +101,21 @@ NSString *_Nullable ApolloActionMenuItemIDForKind(ApolloActionMenuContext contex
 // The item id a tweak row (ApolloActionMenuSpec) is stored under.
 NSString *ApolloActionMenuItemIDForSpec(NSString *specIdentifier);
 
+// Touch-and-hold menus. Apollo builds the UIActions of a post's, a comment's
+// and the comments header's long-press menu itself, straight from its own
+// strings — no Action kind travels with them — so a row is matched to its
+// item by what it shows: `imageName` is the row icon's asset or SF Symbol
+// name, `title` its title. The author and subreddit rows are titled with the
+// user's / subreddit's NAME, so those two are matched by icon only; every
+// other row by Apollo's own Action titles (ApolloNativeActionMetadata.h,
+// trailing ellipsis ignored), then by an icon the long-press menus were seen
+// to use for that item. nil for a row this context doesn't catalogue.
+NSString *_Nullable ApolloActionMenuItemIDForContextMenuRow(ApolloActionMenuContext context,
+                                                           NSString *_Nullable title,
+                                                           NSString *_Nullable imageName);
+// The long-press menus' Moderator row (it opens the object's moderator menu).
+BOOL ApolloActionMenuContextMenuRowIsModerator(NSString *_Nullable title, NSString *_Nullable imageName);
+
 #pragma mark - Saved layout
 
 // The saved order, with any catalogue item missing from it (a row added after
