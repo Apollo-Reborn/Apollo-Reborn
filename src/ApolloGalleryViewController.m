@@ -5,6 +5,7 @@
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
 #import "ApolloCommon.h"
+#import "ApolloDeviceGeometry.h"
 #import "ApolloTagFilters.h"
 #import "ApolloThemeRuntime.h"
 #import "TagFiltersViewController.h"
@@ -961,8 +962,8 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                                         CGRectGetMaxY(self.messageLabel.frame) + 12.0,
                                         160.0, 40.0);
 
-    CGFloat safeBottom = 0.0;
-    if (@available(iOS 11.0, *)) safeBottom = self.view.safeAreaInsets.bottom;
+    UIEdgeInsets media = ApolloDeviceChromeInsetsForView(self.view);
+    CGFloat safeBottom = media.bottom;
     self.footerLabel.frame = CGRectMake((bounds.size.width - 150.0) / 2.0,
                                         bounds.size.height - safeBottom - 46.0,
                                         150.0, 26.0);

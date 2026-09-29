@@ -3,6 +3,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloThemeRuntime.h"
 #import "settings/ApolloLinkCompanionIconData.h"
 
@@ -404,6 +405,9 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
 
 #pragma mark - Screen
 
+@interface ApolloLinkCompanionViewController () <UIScrollViewDelegate>
+@end
+
 @implementation ApolloLinkCompanionViewController {
     ApolloLinkCompanionHeroView *_heroView;
     LinkCompanionGradientButton *_installButton;
@@ -412,6 +416,11 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
     UILabel *_shortcutTitle;
     UILabel *_shortcutSubtitle;
     UIImageView *_shortcutChevron;
+    UIScrollView *_scrollView;
+    NSLayoutConstraint *_cardsWidthConstraint;
+    NSLayoutConstraint *_cardsCenterXConstraint;
+    NSLayoutConstraint *_cardsMaxWidthConstraint;
+    BOOL _cardsLayoutUpdateScheduled;
 }
 
 - (void)viewDidLoad {
@@ -422,7 +431,12 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
     UIScrollView *scrollView = [[UIScrollView alloc] init];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     scrollView.alwaysBounceVertical = YES;
+    scrollView.alwaysBounceHorizontal = NO;
+    scrollView.directionalLockEnabled = YES;
+    scrollView.showsHorizontalScrollIndicator = NO;
+    scrollView.delegate = self;
     scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAlways;
+    _scrollView = scrollView;
     [self.view addSubview:scrollView];
 
     UIView *content = [[UIView alloc] init];
@@ -597,9 +611,13 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
 
     // ---- Layout ------------------------------------------------------------
 
-    NSLayoutConstraint *cardsWidth = [cards.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-32.0];
-    cardsWidth.priority = UILayoutPriorityRequired - 1;
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    _cardsWidthConstraint = [cards.widthAnchor constraintEqualToAnchor:safe.widthAnchor constant:-32.0];
+    _cardsWidthConstraint.priority = UILayoutPriorityRequired - 1;
+    _cardsCenterXConstraint = [cards.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor];
 
+    _cardsMaxWidthConstraint =
+        [cards.widthAnchor constraintLessThanOrEqualToConstant:kLinkCompanionMaxContentWidth];
     [NSLayoutConstraint activateConstraints:@[
         [scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -614,9 +632,9 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
 
         [cards.topAnchor constraintEqualToAnchor:content.topAnchor constant:14.0],
         [cards.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-14.0],
-        [cards.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
-        cardsWidth,
-        [cards.widthAnchor constraintLessThanOrEqualToConstant:kLinkCompanionMaxContentWidth],
+        _cardsCenterXConstraint,
+        _cardsWidthConstraint,
+        _cardsMaxWidthConstraint,
 
         // Hero card internals
         [_heroView.topAnchor constraintEqualToAnchor:heroCard.topAnchor constant:16.0],
@@ -670,6 +688,56 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
                                              selector:@selector(reinstallHeroAnimations)
                                                  name:UIApplicationDidBecomeActiveNotification
                                                object:nil];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    BOOL duoRail = ApolloDuoRailHasVisibleSideBar();
+    CGFloat maxWidth = duoRail ? CGRectGetWidth(self.view.bounds) : kLinkCompanionMaxContentWidth;
+    CGFloat widthAdjustment = duoRail ? -10.0 : -32.0;
+    CGFloat centerAdjustment = duoRail ? 11.0 : 0.0;
+    CGFloat restingX = -_scrollView.adjustedContentInset.left;
+    if (_cardsLayoutUpdateScheduled ||
+        (fabs(_cardsMaxWidthConstraint.constant - maxWidth) < 0.5 &&
+         fabs(_cardsWidthConstraint.constant - widthAdjustment) < 0.5 &&
+         fabs(_cardsCenterXConstraint.constant - centerAdjustment) < 0.5 &&
+         fabs(_scrollView.contentOffset.x - restingX) < 0.5)) return;
+
+    _cardsLayoutUpdateScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloLinkCompanionViewController *owner = weakSelf;
+        if (!owner) return;
+        owner->_cardsLayoutUpdateScheduled = NO;
+        [owner updateCardsLayout];
+    });
+}
+
+- (void)updateCardsLayout {
+    BOOL duoRail = ApolloDuoRailHasVisibleSideBar();
+    _cardsMaxWidthConstraint.constant = duoRail ? CGRectGetWidth(self.view.bounds)
+                                                : kLinkCompanionMaxContentWidth;
+    // Native grouped settings rows extend a few points past UIKit's reported
+    // trailing safe-area edge on Duo. Match that column while preserving the
+    // normal 16pt leading margin: width -10 and center +11 resolves to a 16pt
+    // leading inset and a 6pt extension beyond safe.trailing.
+    _cardsWidthConstraint.constant = duoRail ? -10.0 : -32.0;
+    _cardsCenterXConstraint.constant = duoRail ? 11.0 : 0.0;
+    // A vertical-only feature page. UIKit can otherwise accumulate a small
+    // horizontal offset during a diagonal drag even though the content guide
+    // itself is viewport-width.
+    CGFloat restingX = -_scrollView.adjustedContentInset.left;
+    if (fabs(_scrollView.contentOffset.x - restingX) > 0.5) {
+        _scrollView.contentOffset = CGPointMake(restingX, _scrollView.contentOffset.y);
+    }
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != _scrollView) return;
+    CGFloat restingX = -scrollView.adjustedContentInset.left;
+    if (fabs(scrollView.contentOffset.x - restingX) > 0.5) {
+        scrollView.contentOffset = CGPointMake(restingX, scrollView.contentOffset.y);
+    }
 }
 
 - (void)dealloc {

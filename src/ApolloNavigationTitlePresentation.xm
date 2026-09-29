@@ -1,3 +1,4 @@
+#import "ApolloDuoSplitView.h"
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloCommon.h"
@@ -57,6 +58,9 @@ static BOOL ApolloTitlePresentationAvailable(void) {
 @property (nonatomic, strong) NSArray<NSLayoutConstraint *> *placementConstraints;
 @property (nonatomic, strong) NSLayoutConstraint *topConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *heightConstraint;
+@property (nonatomic, strong) UILayoutGuide *columnGuide;
+@property (nonatomic, strong) NSLayoutConstraint *columnLeading;
+@property (nonatomic) BOOL usesSplitColumn;
 @property (nonatomic, strong) UIView *customView;
 @property (nonatomic) CGRect customOriginalFrame;
 @property (nonatomic) BOOL customOriginalTAMIC;
@@ -321,6 +325,9 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     ApolloTitlePresentationDetachCustom(self.control);
     [NSLayoutConstraint deactivateConstraints:self.placementConstraints];
     self.placementConstraints = nil;
+    [self.columnGuide.owningView removeLayoutGuide:self.columnGuide];
+    self.columnGuide = nil;
+    self.columnLeading = nil;
     self.topConstraint = nil;
     self.heightConstraint = nil;
     [self.control removeFromSuperview];
@@ -541,13 +548,27 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
         }
     }
     CGFloat topOffset = centerY - CGRectGetMinY(bar.bounds) - height / 2.0;
+    CGRect column = ApolloDuoSplitContentFrame(navigation, bar);
+    BOOL splitColumn = !CGRectIsNull(column);
+    if (!self.columnGuide) {
+        self.columnGuide = [UILayoutGuide new];
+        [bar addLayoutGuide:self.columnGuide];
+        [self.columnGuide.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor].active = YES;
+    }
+    if (!self.columnLeading || self.usesSplitColumn != splitColumn) {
+        self.columnLeading.active = NO;
+        self.columnLeading = [self.columnGuide.leadingAnchor constraintEqualToAnchor:
+            splitColumn ? bar.safeAreaLayoutGuide.leadingAnchor : bar.leadingAnchor];
+        self.columnLeading.active = YES;
+        self.usesSplitColumn = splitColumn;
+    }
     if (self.control.superview != presentationHost) {
         [NSLayoutConstraint deactivateConstraints:self.placementConstraints];
         [presentationHost addSubview:self.control];
         self.topConstraint = [self.control.topAnchor constraintEqualToAnchor:bar.topAnchor constant:topOffset];
         self.heightConstraint = [self.control.heightAnchor constraintEqualToConstant:height];
         self.placementConstraints = @[
-            [self.control.centerXAnchor constraintEqualToAnchor:bar.centerXAnchor],
+            [self.control.centerXAnchor constraintEqualToAnchor:self.columnGuide.centerXAnchor],
             self.topConstraint, self.heightConstraint
         ];
         // The glass controller's priority-999 constraint owns the fitted width.
@@ -563,6 +584,10 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
             changed = YES;
         }
     }
+
+    // The safe-area guide animates with UIKit's sidebar transition. Computing
+    // a fresh center constant in this deferred refresh would jump to its final
+    // position after the content animation had already started.
 
     // Reattaching the hosted plane can deactivate bar constraints without
     // changing this control's parent. Restore missing constraints outside layout.
