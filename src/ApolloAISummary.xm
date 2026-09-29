@@ -3380,25 +3380,12 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
 
 %end
 
-// Apollo creates comment section controllers from the loaded CommentTree before
-// Texture necessarily creates their cells. Capturing here removes the multi-
-// second dependency on scrolling/preloading and is the primary fast path.
+// Apollo posts ModelObjectUpdated when a comment changes (a vote, for one);
+// re-capture that row's comment. Don't hook -init here: Apollo builds section
+// controllers through Swift's designated initializer, which never dispatches
+// the ObjC -init (0 calls on a 45-comment thread), so comments are captured by
+// the CommentCellNode hooks below.
 %hook _TtC6Apollo24CommentSectionController
-
-- (id)init {
-    id result = %orig;
-    if (sEnableAISummaries) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UIViewController *vc = sVisibleCommentsController;
-            id comment = MSHookIvar<id>((id)result, "comment");
-            if (!vc || !ApolloAICommentIsEligible(comment)) return;
-            if (ApolloAICaptureCommentForController(comment, vc)) {
-                ApolloAIScheduleCommentGeneration(vc);
-            }
-        });
-    }
-    return result;
-}
 
 - (void)modelObjectUpdatedNotificationReceived:(id)notification {
     %orig;
