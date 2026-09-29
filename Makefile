@@ -167,6 +167,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \
     $(SRC_DIR)/ApolloMessagesKeyboardInset.xm \
+    $(SRC_DIR)/ApolloTrueBlackKeyboard.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
     $(SRC_DIR)/ApolloListBottomInsetGuard.xm \

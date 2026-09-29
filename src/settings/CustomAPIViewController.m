@@ -2087,9 +2087,27 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
+    NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
+    ApolloSettingsRow *trueBlackKeyboard =
+        [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
+                                    title:@"True Black Keyboard"
+                                   detail:^NSString * {
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            return trueBlackTitles[MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1))];
+        }
+                                 onSelect:^{
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.trueBlackKeyboard"],
+                @"True Black Keyboard", trueBlackTitles, MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1)),
+                ^(NSInteger picked) {
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyTrueBlackKeyboardMode];
+                    [weakSelf reloadRowWithID:@"interface.trueBlackKeyboard"];
+                });
+        }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. True Black Keyboard paints the keyboard background pure black in the chosen appearance (takes effect the next time the keyboard appears). Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
