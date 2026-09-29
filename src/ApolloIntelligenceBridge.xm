@@ -134,9 +134,11 @@ static void ApolloSiriCaptureListing(id client, id response) {
 }
 
 // One bounded read through Apollo's own authenticated RDK client. getPath is
-// the GET specialization of taskWithMethod:path:parameters:completion:; its
-// raw response/error ABI is the one used by native listing wrappers. Keep
-// authentication/token refresh inside Apollo, never copy credentials to Swift.
+// the GET specialization of taskWithMethod:path:parameters:completion:, whose
+// completion is ^(NSHTTPURLResponse *, id responseObject, NSError *) — THREE
+// arguments (same ABI ApolloCommentSubmitFailure.xm uses). A two-argument block
+// here reads the JSON dictionary as the error and crashes on `error.code`.
+// Keep authentication/token refresh inside Apollo, never copy credentials to Swift.
 extern "C" id ApolloSiriFetchContent(NSString *kind, NSString *query, NSString *after,
                                       void (^completion)(NSData *, NSString *, NSInteger)) {
     if (![NSThread isMainThread] || !completion) return nil;
@@ -173,15 +175,21 @@ extern "C" id ApolloSiriFetchContent(NSString *kind, NSString *query, NSString *
             parameters[@"after"] = after;
         }
     } else { completion(nil, nil, 4); return nil; }
-    void (^callback)(id, NSError *) = ^(id response, NSError *error) {
+    void (^callback)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *http, id response, NSError *error) {
+        NSInteger status = [http isKindOfClass:NSHTTPURLResponse.class] ? http.statusCode : 0;
+        BOOL failed = error != nil || (status != 0 && (status < 200 || status >= 300));
         dispatch_async(dispatch_get_main_queue(), ^{
             if (client != ApolloActiveAccountClient() || ![account isEqualToString:ApolloSiriCurrentAccount()]) {
                 completion(nil, nil, 5); return;
             }
-            if (error) { completion(nil, nil, error.code == 429 ? 2 : 3); return; }
+            if (failed) {
+                BOOL limited = status == 429 || ([error isKindOfClass:NSError.class] && error.code == 429);
+                completion(nil, nil, limited ? 2 : 3); return;
+            }
             NSData *payload = ApolloSiriListingData(response);
             if (!payload) { completion(nil, nil, 4); return; }
-            id next = response[@"data"][@"after"];
+            // ApolloSiriListingData validated response and response[@"data"] as dictionaries.
+            id next = ((NSDictionary *)response)[@"data"][@"after"];
             completion(payload, [next isKindOfClass:NSString.class] ? next : nil, 0);
         });
     };
