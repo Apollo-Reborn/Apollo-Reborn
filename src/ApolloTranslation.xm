@@ -3895,6 +3895,18 @@ static void ApolloTranslateViaApple(NSString *text,
         ApolloDetectSourceLanguageForApple(text), completion);
 }
 
+// YES when the Apple leg failed only because its download prompt was held back (a
+// transition in flight, the asking screen dismissed) or cut off before the user
+// answered. The prompt is offered again on the next text in that language.
+static BOOL ApolloTranslationErrorIsAppleRetrySoon(NSError *error) {
+#if APOLLO_HAS_APPLE_TRANSLATE
+    return [error.userInfo[ApolloAppleTranslator.retrySoonErrorKey] boolValue];
+#else
+    (void)error;
+    return NO;
+#endif
+}
+
 // Max encoded size (in `q=` percent-encoded characters) of a single request sent to a
 // network translation provider. The public Google endpoint is a GET with the whole text
 // in the URL query param; a long post body overflows the server's URL length limit
@@ -4512,7 +4524,10 @@ static void ApolloRequestTranslation(NSString *cacheKey,
             }
             if (providerRoundTrip) ApolloNoteTranslationSuccessForToast();
         } else if (error) {
-            ApolloRecordTranslationFailure(cacheKey, error);
+            // A held-back or cut-off Apple download prompt isn't a verdict on this text; a
+            // cooldown would stop its next display from raising the prompt (the Swift side
+            // rate-limits the prompt itself).
+            if (!ApolloTranslationErrorIsAppleRetrySoon(error)) ApolloRecordTranslationFailure(cacheKey, error);
             ApolloNoteTranslationFailureForToast(error);
         }
 
@@ -10704,6 +10719,29 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
                                                             object:nil
                                                           userInfo:@{@"reason": @"lifecycle"}];
     }];
+
+#if APOLLO_HAS_APPLE_TRANSLATE
+    // An Apple language pair became usable mid-session (the user accepted Apple's
+    // download sheet, or downloaded the language in Settings). Text in that language
+    // failed while the model was missing and sits in the per-key cooldown, so clear it
+    // and re-run the visible passes — otherwise only the text that raised the sheet
+    // translates and the rest waits for a scroll.
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloAppleTranslator.languageReadyNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *note) {
+        ApolloLog(@"[Translation] Apple %@ ready; retranslating what's on screen", note.userInfo[@"source"] ?: @"language");
+        ApolloClearTranslationFailureCooldowns();
+        UIViewController *feedVC = ApolloFindTopmostVisibleFeedVC();
+        if (feedVC) ApolloRescanTitleNodesForController(feedVC);
+        ApolloReapplyTranslationOnAppResume();
+        UIViewController *commentsVC = sVisibleCommentsViewController;
+        if (commentsVC.isViewLoaded && commentsVC.view.window && ApolloControllerIsInTranslatedMode(commentsVC)) {
+            NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:256];
+            ApolloRescanTitleNodesInTree(commentsVC.view, 16, visited);
+        }
+    }];
+#endif
 
     // When the user changes the "Don't Translate" language list, blow away every
     // translation cache so previously-skipped (and cached as source==translation)
