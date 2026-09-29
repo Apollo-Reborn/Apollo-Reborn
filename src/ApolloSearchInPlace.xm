@@ -1047,100 +1047,7 @@ static void recenterCancelButton(void) {
 @interface _TtC6Apollo19ApolloSearchToolbar : UIView
 @end
 
-// MARK: - Classic feed toolbar theme surface (#787)
-//
-// Apollo paints both the search field and its surrounding feed toolbar from
-// the Raised role. Stock themes keep Raised close enough to Bars that the two
-// read as one piece; custom palettes can make them deliberately different,
-// exposing the whole Raised band under the Bars-coloured navigation chrome.
-// Keep the field Raised (the Theme Runtime owns that sink) but paint only the
-// CLASSIC feed toolbar band as Bars. Liquid Glass uses the native nav-hosted
-// UISearchController instead, and comments' keyboard-docked find bar has its
-// own material treatment above.
-static const void *kApolloClassicFeedToolbarSurfaceKey = &kApolloClassicFeedToolbarSurfaceKey;
-
-static BOOL ApolloReadBoolIvar(id object, const char *name, BOOL *value) {
-    if (!object || !name || !value) return NO;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            *value = *(BOOL *)((char *)(__bridge void *)object + ivar_getOffset(ivar));
-            return YES;
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return NO;
-}
-
-static UIViewController *ApolloFeedControllerForSearchToolbar(UIView *toolbar) {
-    UIResponder *responder = toolbar.nextResponder;
-    for (NSUInteger depth = 0; responder && depth < 40; depth++, responder = responder.nextResponder) {
-        if (![responder isKindOfClass:[UIViewController class]]) continue;
-        UIViewController *controller = (UIViewController *)responder;
-        if (![controller isKindOfClass:objc_getClass("_TtC6Apollo21ASTableViewController")]) continue;
-        BOOL sticksToKeyboard = NO;
-        if (ApolloReadBoolIvar(controller, "searchBarShouldStickToKeyboard", &sticksToKeyboard) &&
-            sticksToKeyboard) return nil;
-        return ApolloObjectIvar(controller, "upperToolbar") == toolbar ? controller : nil;
-    }
-    // During active classic search Apollo can reparent the toolbar outside the
-    // controller's responder chain. The session capture is exact and feed-only.
-    return toolbar == sFeedSearchToolbar ? sFeedSearchOwner : nil;
-}
-
-static void ApolloApplyClassicFeedToolbarSurface(UIView *toolbar) {
-    UIView *surface = objc_getAssociatedObject(toolbar, kApolloClassicFeedToolbarSurfaceKey);
-    BOOL wantsSurface = !IsLiquidGlass() && ApolloThemeRuntimeIsActive() &&
-        ApolloFeedControllerForSearchToolbar(toolbar) != nil;
-    if (!wantsSurface) {
-        // Explicit teardown matters for a live custom-theme disable and for a
-        // reused toolbar that moves to a comments/non-feed owner.
-        [surface removeFromSuperview];
-        return;
-    }
-
-    UIColor *bars = ApolloThemeRuntimeColor(ApolloThemeTokenBarBackground);
-    if (!bars) {
-        [surface removeFromSuperview];
-        return;
-    }
-    if (!surface) {
-        surface = [[UIView alloc] initWithFrame:toolbar.bounds];
-        surface.userInteractionEnabled = NO;
-        surface.accessibilityElementsHidden = YES;
-        surface.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        objc_setAssociatedObject(toolbar, kApolloClassicFeedToolbarSurfaceKey,
-                                 surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    surface.frame = toolbar.bounds;
-    surface.backgroundColor = [bars resolvedColorWithTraitCollection:toolbar.traitCollection];
-
-    // Cover UIKit's own Raised-painted _UIBarBackground, but stay below the
-    // search field and toolbar controls. Reassert the ordering because UIKit
-    // can rebuild its background during a live theme change.
-    UIView *systemBackground = nil;
-    for (UIView *subview in toolbar.subviews) {
-        if (subview == surface) continue;
-        NSString *className = NSStringFromClass(subview.class);
-        if ([className containsString:@"BarBackground"]) {
-            systemBackground = subview;
-            break;
-        }
-    }
-    if (systemBackground) [toolbar insertSubview:surface aboveSubview:systemBackground];
-    else [toolbar insertSubview:surface atIndex:0];
-}
-
 %hook _TtC6Apollo19ApolloSearchToolbar
-
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
-    %orig;
-    // Theme Runtime's live repaint deliberately drives a window trait flip.
-    // Re-enter here so a Bars edit updates immediately and disabling the custom
-    // theme removes the overlay without waiting for an unrelated scroll/layout.
-    ApolloApplyClassicFeedToolbarSurface((UIView *)self);
-}
 
 - (void)setFrame:(CGRect)frame {
     if (!IsLiquidGlass() || !sKeepSearchBarInPlace ||
@@ -1174,7 +1081,6 @@ static void ApolloApplyClassicFeedToolbarSurface(UIView *toolbar) {
 // flies in from the docked-top geometry.
 - (void)layoutSubviews {
     %orig;
-    ApolloApplyClassicFeedToolbarSurface((UIView *)self);
     // "Find in Comments" bar (in-thread search, excluded from the feed handling above): when it's docked
     // (active find-in-page) it's transparent, so the comments behind it bleed through Done / the chevrons.
     // Back it with a blur material (frosted glass) while docked so it's legible but still translucent — it
