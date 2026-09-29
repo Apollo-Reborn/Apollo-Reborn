@@ -123,7 +123,7 @@ static const void *kApolloHLHeaderChangePendingKey = &kApolloHLHeaderChangePendi
 static char kApolloHLHiddenRowsKey;            // NSMutableSet<NSNumber*> of de-duped sticky rows, per ASTableNode
 static char kApolloHLStickyCountKey;           // NSNumber (REST sticky count N) per feed ASTableNode — breaker rule
 static char kApolloHLFeedOwnedMaskKey;         // NSNumber (bitmask of sticky rows the feed keeps) per feed ASTableNode
-static char kApolloHLSwitchPendingKey;         // BOOL on the VC — an in-place-switch re-install is already scheduled
+static char kApolloHLFeedWatchKey;             // ApolloHLFeedWatch on a PostsViewController's feed UITableView (in-place switch watcher)
 
 #pragma mark - Subreddit detection (adapted from ApolloSubredditHeaders.xm)
 
@@ -171,14 +171,16 @@ static BOOL ApolloHLPostsTypeTag(id viewController, uint8_t *tag) {
 
 static NSString *ApolloHLNormalizedName(NSString *subredditName) {
     if (![subredditName isKindOfClass:[NSString class]]) return nil;
-    // These are queried on scrolling hot paths (the managed-table layoutSubviews
-    // hook re-derives the name every layout) — build them once.
+    // These are queried on scrolling hot paths (the feed-table layoutSubviews
+    // watcher re-derives the name every layout) — build them once.
     static NSArray<NSString *> *blocked;
     static NSCharacterSet *invalid;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // "random"/"randnsfw" are the titles Apollo gives a random feed until its
+        // listing names the subreddit it landed on; they are not subreddits.
         blocked = @[@"home", @"popular", @"all", @"search", @"profile",
-                    @"settings", @"inbox", @"friends", @"mod"];
+                    @"settings", @"inbox", @"friends", @"mod", @"random", @"randnsfw"];
         invalid = [[NSCharacterSet characterSetWithCharactersInString:
                     @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
     });
@@ -191,10 +193,10 @@ static NSString *ApolloHLNormalizedName(NSString *subredditName) {
     return clean;
 }
 
-// Memo of the last derivation, stored on the VC. The managed-table
-// layoutSubviews hook calls ApolloHLSubredditName every scroll frame; the raw
-// inputs (subreddit ivar's name + nav title) almost never change, so the
-// normalization string churn is skipped whenever they're unchanged.
+// Memo of the last derivation, stored on the VC. The feed-table layoutSubviews
+// watcher calls ApolloHLSubredditName every scroll frame; the raw inputs (nav
+// title, or the subreddit ivar's name while there is no title) almost never
+// change, so the normalization string churn is skipped whenever they're unchanged.
 @interface ApolloHLNameMemo : NSObject
 @property(nonatomic, copy) NSString *rawName;
 @property(nonatomic, copy) NSString *rawTitle;
@@ -213,16 +215,24 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     uint8_t tag = 0;
     BOOL haveTag = ApolloHLPostsTypeTag(viewController, &tag);
     if (haveTag && tag != 0 && tag != 5) return nil; // multireddit / special feed
-    id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
-    NSString *rawName = nil;
-    if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
-        id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
-        if ([nameValue isKindOfClass:[NSString class]]) rawName = nameValue;
-    }
     NSString *rawTitle = nil;
     if (haveTag) {
         rawTitle = viewController.navigationItem.title;
         if (rawTitle.length == 0) rawTitle = viewController.title;
+    }
+    // The title decides whenever the feed has one. Apollo writes it synchronously on
+    // every path that changes what this controller shows, including the nav-title
+    // jump bar's in-place switch, which reuses the controller. `currentSubreddit` is
+    // only replaced when the new subreddit's about.json lands, so for about a second
+    // after a switch (and for good if that fetch fails) it still names the PREVIOUS
+    // subreddit. It is only read for a feed with no title yet.
+    NSString *rawName = nil;
+    if (rawTitle.length == 0) {
+        id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+        if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
+            id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
+            if ([nameValue isKindOfClass:[NSString class]]) rawName = nameValue;
+        }
     }
 
     ApolloHLNameMemo *memo = objc_getAssociatedObject(viewController, &kApolloHLNameMemoKey);
@@ -230,17 +240,11 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
         return memo.derived;
     }
 
-    // Reddit subreddit names are canonically lowercase; the nav-title fallback can
-    // carry display casing ("Apple"). Lowercase the result so every comparison and
-    // cache key is consistent (the authoritative `currentSubreddit.name` and the
-    // title fallback then always agree).
-    NSString *derived = nil;
-    NSString *normalized = ApolloHLNormalizedName(rawName);
-    if (normalized.length) {
-        derived = normalized.lowercaseString;
-    } else if (haveTag) {
-        derived = ApolloHLNormalizedName(rawTitle).lowercaseString;
-    }
+    // Reddit subreddit names are canonically lowercase; the title carries display
+    // casing ("Apple"). Lowercase the result so every comparison and cache key is
+    // consistent whichever source produced it.
+    NSString *derived = rawTitle.length ? ApolloHLNormalizedName(rawTitle).lowercaseString
+                                        : ApolloHLNormalizedName(rawName).lowercaseString;
 
     if (!memo) {
         memo = [ApolloHLNameMemo new];
@@ -289,6 +293,38 @@ static void ApolloHLReloadFeed(UIViewController *vc) {
         ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
     }
 }
+
+// Whether the rows on screen are `subreddit`'s listing. Right after a jump-bar
+// switch (see ApolloHLFeedWatch) the table keeps the previous feed's rows until the
+// new listing lands and replaces all of them. Re-measuring those rows under the new
+// subreddit's de-dup state only brings the previous subreddit's pinned posts back
+// for that moment, so every re-measure checks this first; the new listing is
+// measured under the new state when it lands anyway. A subreddit's listing only
+// holds its own posts (Home mixes subreddits), so the first few post rows decide.
+// Reads the displayed rows (ASTableView's visible map), and no table or no posts
+// yet counts as yes.
+static BOOL ApolloHLFeedRowsBelongTo(UIViewController *vc, NSString *subreddit) {
+    NSString *sub = subreddit.lowercaseString;
+    UITableView *tableView = ApolloHLFindTableView(vc);
+    if (sub.length == 0 || ![tableView respondsToSelector:@selector(nodeForRowAtIndexPath:)] ||
+        tableView.numberOfSections == 0) return YES;
+    NSInteger rows = [tableView numberOfRowsInSection:0];
+    Class linkClass = objc_getClass("RDKLink");
+    NSInteger posts = 0;
+    for (NSInteger row = 0; row < rows && row < 12 && posts < 3; row++) {
+        id node = ((id (*)(id, SEL, NSIndexPath *))objc_msgSend)(tableView, @selector(nodeForRowAtIndexPath:),
+                                                                [NSIndexPath indexPathForRow:row inSection:0]);
+        RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(node, @"link", linkClass);
+        if (![link respondsToSelector:@selector(subreddit)]) continue;
+        posts++;
+        if (![link.subreddit.lowercaseString isEqualToString:sub]) return NO;
+    }
+    return YES;
+}
+
+// Set while ApolloHLFeedSwitchedInPlace installs for rows it reloads itself right
+// after, so the sticky-count publish doesn't reload them first.
+static BOOL sApolloHLFeedReloadFollows = NO;
 
 #pragma mark - Data model
 
@@ -1970,10 +2006,11 @@ static void ApolloHLPreserveCarouselPosition(UIView *oldView, ApolloHLCarouselVi
 }
 
 static void ApolloHLForEachPostsVC(void (^block)(UIViewController *postsVC)); // fwd
+static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
 
 // A subreddit turned out to have nothing to show (no pinned posts, or the fetch
-// failed): stop de-duplicating it and, only if we'd actually collapsed cells,
-// reload the feed to restore them.
+// failed): stop de-duplicating it and reload its feeds where their rows measured
+// under the wrong assumption.
 static void ApolloHLClearDeDup(NSString *subreddit) {
     NSString *sub = subreddit.lowercaseString;
     if (!ApolloHLHideSubsContains(sub)) return;
@@ -1982,12 +2019,18 @@ static void ApolloHLClearDeDup(NSString *subreddit) {
     // collapsed any. Each set op is individually locked (no corruption), but the
     // contains-then-remove isn't atomic across calls, so a rare main/background interleave
     // could skip this one reload — harmless, the next relayout/teardown self-heals it.
-    if (ApolloHLDidCollapseContains(sub)) {
-        ApolloHLDidCollapseRemove(sub);
-        ApolloHLForEachPostsVC(^(UIViewController *postsVC) {
-            if ([ApolloHLSubredditName(postsVC) isEqualToString:sub]) ApolloHLReloadFeed(postsVC);
-        });
-    }
+    BOOL collapsedPosts = ApolloHLDidCollapseContains(sub);
+    if (collapsedPosts) ApolloHLDidCollapseRemove(sub);
+    ApolloHLForEachPostsVC(^(UIViewController *postsVC) {
+        if (![ApolloHLSubredditName(postsVC) isEqualToString:sub]) return;
+        // A successful fetch also recorded how many sticky rows the feed has (0 when
+        // nothing is pinned). Separators that measured before it landed used the
+        // cold-load rule, or after a jump-bar switch the previous subreddit's count,
+        // and can have collapsed a breaker these posts need: publishing the real
+        // count reloads the feed when it differs.
+        BOOL reloaded = ApolloHLApplyStickyCountToTable(postsVC, sub);
+        if (collapsedPosts && !reloaded && ApolloHLFeedRowsBelongTo(postsVC, sub)) ApolloHLReloadFeed(postsVC);
+    });
 }
 
 #pragma mark - Coexistence: host the carousel inside the subreddit-header wrapper
@@ -2030,7 +2073,7 @@ static void ApolloHLClearDeDup(NSString *subreddit) {
 }
 @end
 
-static void ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
+static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
 static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
 static void ApolloHLInstall(UIViewController *vc); // defined with the PostsViewController hooks
 
@@ -2949,19 +2992,20 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc); // defined w
 // keep exactly the LAST orphan as the breaker (race-free; see ShouldCollapse). When N
 // first becomes known (or changes), force a re-measure so a cold-load fallback that
 // collapsed the wrong separator is corrected. No-op when N is unchanged, so warm loads
-// (N already published before cells measure) never re-measure.
-static void ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit) {
+// (N already published before cells measure) never re-measure. Returns YES when it
+// reloaded the feed.
+static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit) {
     id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
     NSString *subKey = subreddit.lowercaseString;
     NSNumber *stickyN = ApolloHLStickyCount()[subKey];
-    if (!tableNode || !stickyN) return;
+    if (!tableNode || !stickyN) return NO;
     // The mask travels with N: both describe the same sticky run, and a change to
     // either one changes which separators are orphaned.
     NSNumber *ownedMask = ApolloDevvitFeedOwnsInteractivePosts() ? (ApolloHLFeedOwnedMask()[subKey] ?: @0) : @0;
     NSNumber *prev = objc_getAssociatedObject(tableNode, &kApolloHLStickyCountKey);
     NSNumber *prevMask = objc_getAssociatedObject(tableNode, &kApolloHLFeedOwnedMaskKey);
     BOOL maskChanged = ![(prevMask ?: @0) isEqualToNumber:ownedMask];
-    if ([prev isEqualToNumber:stickyN] && !maskChanged) return;
+    if ([prev isEqualToNumber:stickyN] && !maskChanged) return NO;
     objc_setAssociatedObject(tableNode, &kApolloHLStickyCountKey, stickyN, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(tableNode, &kApolloHLFeedOwnedMaskKey, ownedMask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // The cold-load fallback collapses exactly the first separator (row 1) — correct
@@ -2979,11 +3023,20 @@ static void ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subr
     // fallback's assumed 2 — or when the feed keeps a sticky row visible, which
     // the all-collapsed fallback never accounts for.
     BOOL needsReload = (prev != nil) || stickyN.integerValue != 2 || ownedMask.unsignedIntegerValue != 0;
+    if (needsReload && (sApolloHLFeedReloadFollows || !ApolloHLFeedRowsBelongTo(vc, subreddit))) {
+        // Published: whichever reload comes next (the caller's, or the new listing
+        // replacing the previous feed's rows) measures under it.
+        ApolloLog(@"[Highlights] r/%@ sticky count N=%@ (was %@) published; %@", subreddit, stickyN, prev ?: @"unknown",
+                  sApolloHLFeedReloadFollows ? @"the caller reloads next" : @"the new listing measures under it");
+        return NO;
+    }
     if (needsReload && [tableNode respondsToSelector:@selector(reloadData)]) {
         ApolloLog(@"[Highlights] r/%@ sticky count N=%@ (was %@) feedOwned=0x%lx → reload to fix breaker",
                   subreddit, stickyN, prev ?: @"unknown", (unsigned long)ownedMask.unsignedIntegerValue);
         ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
+        return YES;
     }
+    return NO;
 }
 
 static void ApolloHLInstall(UIViewController *vc) {
@@ -3096,7 +3149,7 @@ static void ApolloHLInstall(UIViewController *vc) {
             if (ApolloHLShouldSkipViewController(postsVC)) return;
             if (![ApolloHLSubredditName(postsVC) isEqualToString:subreddit]) return;
             ApolloHLInstall(postsVC);
-            ApolloHLReloadFeed(postsVC);
+            if (ApolloHLFeedRowsBelongTo(postsVC, subreddit)) ApolloHLReloadFeed(postsVC);
         });
         if (sShowSubredditHeaders) {
             [[NSNotificationCenter defaultCenter]
@@ -3260,6 +3313,9 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
     if (cells.count == 0) return;
     NSInteger firstRow = [tv indexPathForCell:cells.firstObject].row;
     if (firstRow != 0) return; // only when the feed top is visible
+    // Only the subreddit's own listing; right after a jump-bar switch these are
+    // still the previous feed's rows (see ApolloHLFeedRowsBelongTo).
+    if (!ApolloHLFeedRowsBelongTo(vc, ApolloHLSubredditName(vc))) return;
 
     // Re-run the exact same rule the first measure used, now that N (and which of
     // those sticky rows the feed kept) is known — the whole point of this pass is
@@ -3301,43 +3357,124 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
     }
 }
 
+#pragma mark - In-place subreddit switch (the nav-title jump bar)
+
+// Apollo's nav-title jump bar (tap the title, then pick a favorite or type a name)
+// switches subreddits IN PLACE. sub_10059e424 — reached from -[PostsViewController
+// tableView:didSelectRowAtIndexPath:] for a dropdown row and from -[JumpBar
+// textFieldShouldReturn:] for a typed name — rewrites the reused controller's title
+// and currentPostsType and starts loading the new listing, and no view-controller
+// lifecycle callback follows. So nothing re-ran ApolloHLInstall: the previous
+// subreddit's carousel, hide-set entry and sticky count stayed on the new feed, and
+// a switch away from Home installed nothing at all.
+//
+// Each PostsViewController's feed table carries a watch that remembers which
+// subreddit Highlights last installed for. The two entry points re-sync as soon as
+// they return: the new posts are measured (and their pinned rows and breakers
+// collapsed or not) when the listing lands, so the de-dup state has to be the new
+// subreddit's by then. The table's layoutSubviews re-checks as a backstop for a
+// title that changes later on its own, like a random feed's "Random" becoming the
+// subreddit its listing landed on.
+@interface ApolloHLFeedWatch : NSObject
+@property (nonatomic, weak) UIViewController *viewController;
+@property (nonatomic, copy) NSString *subreddit; // @"" for Home and the other non-subreddit feeds
+@property (nonatomic) BOOL resyncScheduled;
+@end
+@implementation ApolloHLFeedWatch
+@end
+
+// Attach the watch, or refresh it after a lifecycle install, recording the
+// subreddit that install just resolved so only a later in-place change fires it.
+static void ApolloHLWatchFeed(UIViewController *vc) {
+    if (!sCommunityHighlights || !vc) return;
+    UITableView *tableView = ApolloHLFindTableView(vc);
+    if (!tableView) return;
+    ApolloHLFeedWatch *watch = objc_getAssociatedObject(tableView, &kApolloHLFeedWatchKey);
+    if (watch.viewController != vc) {
+        watch = [ApolloHLFeedWatch new];
+        watch.viewController = vc;
+        objc_setAssociatedObject(tableView, &kApolloHLFeedWatchKey, watch, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    watch.subreddit = ApolloHLSubredditName(vc) ?: @"";
+}
+
+// This controller moved off `previous`. ApolloHLInstall retires the old subreddit
+// through its teardown, which is keyed on the controller's de-dup owner
+// (kApolloHLActiveSubKey). The jump bar's entry points get here before anything
+// else reacts to the switch, but a change only the layoutSubviews backstop sees
+// arrives after the new listing's reload, whose Subreddit Headers repair pass has
+// already moved the owner to the new subreddit through
+// ApolloHLHeaderOriginalSubstitute. Release the previous subreddit here in that
+// case, or it stays in the global hide set.
+static void ApolloHLFeedSwitchedInPlace(UIViewController *vc, NSString *previous) {
+    NSString *owner = objc_getAssociatedObject(vc, kApolloHLActiveSubKey);
+    if (previous.length && owner.length && ![owner isEqualToString:previous]) {
+        ApolloHLHideSubsRemove(previous);
+        ApolloHLDidCollapseRemove(previous);
+        ApolloLog(@"[Highlights] released r/%@ (Subreddit Headers already moved this feed to r/%@)", previous, owner);
+    }
+    // Rows that are already the new subreddit's (a random feed's listing lands, then
+    // renames the feed after the subreddit it landed on) were measured under the
+    // previous state: install, then re-measure them once. Rows still from the
+    // previous listing are left alone.
+    NSString *current = ApolloHLSubredditName(vc);
+    BOOL remeasure = current.length > 0 && ApolloHLFeedRowsBelongTo(vc, current);
+    sApolloHLFeedReloadFollows = remeasure;
+    @try {
+        ApolloHLInstall(vc);
+    } @finally {
+        sApolloHLFeedReloadFollows = NO;
+    }
+    ApolloHLWatchFeed(vc);
+    if (remeasure) ApolloHLReloadFeed(vc);
+}
+
+// Re-sync `vc` now if it shows a different subreddit than its watch recorded; a
+// pick that didn't change the feed (the subreddit already shown, a u/ row that
+// pushes a profile instead) is a no-op.
+static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
+    if (!sCommunityHighlights || !vc) return;
+    UITableView *tableView = ApolloHLFindTableView(vc);
+    ApolloHLFeedWatch *watch = tableView ? objc_getAssociatedObject(tableView, &kApolloHLFeedWatchKey) : nil;
+    if (watch.viewController != vc) return;
+    NSString *current = ApolloHLSubredditName(vc) ?: @"";
+    if ([current isEqualToString:watch.subreddit]) return;
+    NSString *previous = watch.subreddit;
+    watch.subreddit = current;
+    ApolloLog(@"[Highlights] jump bar switched the feed r/%@ -> r/%@, re-installing",
+              previous.length ? previous : @"-", current.length ? current : @"-");
+    ApolloHLFeedSwitchedInPlace(vc, previous);
+}
+
 #pragma mark - Hooks
 
 %hook UITableView
 
-// Catch an in-place subreddit switch (the nav-title "jump bar": tap the sub name,
-// type another sub) under a REUSED PostsViewController. On that path Apollo swaps
-// the feed's contents in place — the table re-lays-out repeatedly — but the VC's
-// viewDidLayoutSubviews (which drives ApolloHLInstall) does NOT fire, so the
-// standalone carousel keeps showing the PREVIOUS sub's highlights on the new feed.
-// The feed table's own layoutSubviews DOES fire throughout the switch, so detect
-// the stale carousel here and re-run install. Only managed feed tables (those
-// currently hosting our carousel) are inspected — a single associated-object read
-// short-circuits every other UITableView in the app.
+// The in-place switch backstop (see ApolloHLFeedWatch). Only the feed tables of
+// PostsViewControllers carry a watch; one associated-object read ends every other
+// table in the app.
 - (void)layoutSubviews {
     %orig;
-    if (!sCommunityHighlights || sShowSubredditHeaders) return;
-    if (![objc_getAssociatedObject(self, kApolloHLManagedTableKey) boolValue]) return;
-    ApolloHLCarouselView *carousel = objc_getAssociatedObject(self, kApolloHLCarouselKey);
-    UIViewController *vc = carousel.hostViewController;
+    if (!sCommunityHighlights) return;
+    ApolloHLFeedWatch *watch = objc_getAssociatedObject(self, &kApolloHLFeedWatchKey);
+    if (!watch || watch.resyncScheduled) return;
+    UIViewController *vc = watch.viewController;
     if (!vc) return;
-    NSString *installed = objc_getAssociatedObject(vc, kApolloHLSubredditKey); // carousel's sub
-    if (installed.length == 0) return;
-    NSString *current = ApolloHLSubredditName(vc); // nil for special feeds (all/home/popular/…)
-    if ([installed isEqualToString:current]) return; // still the same sub → nothing to do
-    // The VC now shows a different sub (or a special feed) than the installed carousel.
-    // Re-run install on the next runloop turn — NOT inline: ApolloHLInstall sets
-    // tableHeaderView, which would re-enter layoutSubviews. Guard so a single
-    // re-install is scheduled per switch rather than one per layout pass.
-    if ([objc_getAssociatedObject(vc, &kApolloHLSwitchPendingKey) boolValue]) return;
-    objc_setAssociatedObject(vc, &kApolloHLSwitchPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSString *current = ApolloHLSubredditName(vc) ?: @"";
+    if ([current isEqualToString:watch.subreddit]) return;
+    NSString *previous = watch.subreddit;
+    watch.subreddit = current;
+    watch.resyncScheduled = YES;
+    // Next runloop turn, not inline: ApolloHLInstall sets tableHeaderView, which
+    // would re-enter layoutSubviews. One re-install per switch, not per layout pass.
     __weak UIViewController *weakVC = vc;
     dispatch_async(dispatch_get_main_queue(), ^{
+        watch.resyncScheduled = NO;
         UIViewController *strongVC = weakVC;
         if (!strongVC) return;
-        objc_setAssociatedObject(strongVC, &kApolloHLSwitchPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLog(@"[Highlights] in-place subreddit switch → rebuilding carousel for %@", ApolloHLSubredditName(strongVC) ?: @"(special feed)");
-        ApolloHLInstall(strongVC);
+        ApolloLog(@"[Highlights] feed now shows r/%@ (was r/%@), re-installing",
+                  current.length ? current : @"-", previous.length ? previous : @"-");
+        ApolloHLFeedSwitchedInPlace(strongVC, previous);
     });
 }
 
@@ -3469,16 +3606,27 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
 - (void)viewDidLoad {
     %orig;
     ApolloHLInstall((UIViewController *)self);
+    ApolloHLWatchFeed((UIViewController *)self);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
     ApolloHLInstall((UIViewController *)self); // also runs the stale-cache freshness check
+    ApolloHLWatchFeed((UIViewController *)self);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
     ApolloHLInstall((UIViewController *)self);
+    ApolloHLWatchFeed((UIViewController *)self);
+}
+
+// A jump-bar dropdown row (a favorite or a search suggestion): the in-place
+// switch has run by the time %orig returns. ApolloScrollToTop observes this same
+// selection to drop its saved position; both hooks only act around %orig.
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    %orig;
+    ApolloHLSyncSwitchedFeed((UIViewController *)self);
 }
 
 // Pull-to-refresh: always force a fresh fetch of the highlights (REST + re-harvest the
@@ -3497,6 +3645,7 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
 - (void)viewDidLayoutSubviews {
     %orig;
     ApolloHLInstall((UIViewController *)self);
+    ApolloHLWatchFeed((UIViewController *)self);
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -3507,6 +3656,21 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
 
 %end
 
+// A name typed into the jump bar: Return runs the in-place switch before this
+// returns. The bar's delegate is a Swift-only property, so find the feed that owns
+// it by its jumpBar ivar.
+%hook _TtC6Apollo7JumpBar
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    BOOL result = %orig;
+    if (!sCommunityHighlights) return result;
+    id jumpBar = self;
+    ApolloHLForEachPostsVC(^(UIViewController *postsVC) {
+        if (ApolloHLTypedIvar(postsVC, @"jumpBar", [jumpBar class]) == jumpBar) ApolloHLSyncSwitchedFeed(postsVC);
+    });
+    return result;
+}
+%end
+
 #pragma mark - Constructor
 
 %ctor {
@@ -3514,6 +3678,14 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
     // of a launch — which can start within a couple of seconds — is already
     // covered rather than racing the compile.
     ApolloScrapeWebViewPrewarmBlocker();
+
+    // The jump-bar re-sync hangs off two @objc thunks of Swift classes; a binary
+    // that drops either one would silently fall back to the layout backstop.
+    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class jumpBarClass = objc_getClass("_TtC6Apollo7JumpBar");
+    ApolloLog(@"[Highlights] jump-bar switch hook installed (dropdown=%d return=%d)",
+              postsClass && class_getInstanceMethod(postsClass, @selector(tableView:didSelectRowAtIndexPath:)) != NULL,
+              jumpBarClass && class_getInstanceMethod(jumpBarClass, @selector(textFieldShouldReturn:)) != NULL);
 
     // Apollo's theme colors capture the active theme when created. Reapply them
     // to long-lived carousel surfaces after a theme change.
