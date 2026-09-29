@@ -20,6 +20,7 @@ static const ApolloWhatsNewReleaseEntry kWhatsNewReleases[] = {
     { "3.7.0", "What's New in Apollo Reborn" },
     { "3.7.1", "What's New in Apollo Reborn" },
     { "3.8.0", "What's New in Apollo Reborn" },
+    { "3.8.5", "What's New in Apollo Reborn" },
 };
 
 static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
@@ -64,6 +65,13 @@ static const ApolloWhatsNewItemEntry kWhatsNewItems[] = {
     { "3.8.0", "arrow.uturn.backward.circle.fill", "Back to Where You Were", "After a status-bar tap takes you to the top, tap the Return Button or the status bar again to jump back." },
     { "3.8.0", "person.crop.circle.fill", "Profiles, Refreshed", "Pick a profile picture shape, see Immersive profile art behind the bars, and browse Hidden & Deleted as one feed." },
     { "3.8.0", "checkmark.shield.fill", "Smoother and Steadier", "Video-heavy feeds scroll smoother and albums zoom open, plus fixes for crashes, widget sign-in, and glass search." },
+    { "3.8.5", "magnifyingglass.circle.fill", "Search With Google", "Tap the Search tab's magnifier and pick Google to find Reddit threads, then open them right in Apollo." },
+    { "3.8.5", "bolt.fill", "Lighter and Faster", "Apollo uses less memory, frees it when iOS runs low, and does less work at launch." },
+    { "3.8.5", "checkmark.shield.fill", "Crash Fixes", "Fixes a feed crash when RedGIFs posts load together, and a crash tapping a translated deleted comment." },
+    { "3.8.5", "play.rectangle.fill", "RedGIFs Keeps Playing", "Posts keep working after switching Wi-Fi, cellular, or VPN, and older videos play instead of showing an error." },
+    { "3.8.5", "speaker.wave.2.fill", "Video Sound Behaves", "Feed sound stays on one video, doesn't start on screens you've left, and mutes while another video is fullscreen." },
+    { "3.8.5", "person.2.fill", "Accounts and Sign-In", "API-Key-Free feeds stop stalling on a spinner, avatars load for the right account, and Add Account uses your Settings key." },
+    { "3.8.5", "text.bubble.fill", "Comments", "A comment that can't post now says why, image comments post cleanly, and inline images don't jump when they load." },
 };
 
 static NSString *S(const char *value) { return [NSString stringWithUTF8String:value]; }

@@ -138,6 +138,7 @@ require_safari_extensions() {
     local ipa="$1"
     local name="$2"
     local work app_dir app_id manual legacy manual_id legacy_id manual_name legacy_name
+    local legacy_utils legacy_script
 
     if ! contains_path "$ipa" '^Payload/[^/]+\.app/PlugIns/Apollofari\.appex/'; then
         echo "Error: $name is missing Apollofari.appex" >&2
@@ -153,6 +154,8 @@ require_safari_extensions() {
     app_dir="$(find "$work/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)"
     manual="$app_dir/PlugIns/Apollofari.appex"
     legacy="$app_dir/PlugIns/ApollofariLegacy.appex"
+    legacy_utils="$legacy/link-utils.js"
+    legacy_script="$legacy/content.js"
 
     app_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_dir/Info.plist" 2>/dev/null || true)"
     manual_id="$(plutil -extract CFBundleIdentifier raw -o - "$manual/Info.plist" 2>/dev/null || true)"
@@ -174,6 +177,14 @@ require_safari_extensions() {
         echo "Error: $name has invalid Safari extension display names:" >&2
         echo "  manual: $manual_name" >&2
         echo "  legacy: $legacy_name" >&2
+        rm -rf "$work"
+        exit 1
+    fi
+    if [[ ! -f "$legacy_utils" || ! -f "$legacy_script" ]] ||
+       ! grep -F 'function toApolloURL' "$legacy_utils" >/dev/null ||
+       ! grep -F 'links.toApolloURL(href)' "$legacy_script" >/dev/null ||
+       grep -F 'links.toOpenerURL(href)' "$legacy_script" >/dev/null; then
+        echo "Error: $name Legacy Safari extension does not use the direct Apollo URL scheme" >&2
         rm -rf "$work"
         exit 1
     fi

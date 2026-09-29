@@ -276,28 +276,62 @@ static NSMutableDictionary *ApolloSLFetchers(void) {
     return d;
 }
 
-// Build ApolloSocialLink objects from the scraper's parsed JSON dicts.
-static NSArray<ApolloSocialLink *> *ApolloSLLinksFromJSON(NSArray *raw) {
+// Reddit's own site chrome: the legal/footer links on every shreddit page
+// ("Reddit, Inc. © 2026. All rights reserved." -> redditinc.com; Reddit Rules /
+// User Agreement / Privacy Policy -> www.redditinc.com/policies/...;
+// Accessibility -> support.reddithelp.com) and old reddit's footer
+// (redditblog.com). None of these is a redditor's own social link, so one in a
+// result means the page chrome was scraped, not the profile's social links. The
+// WebView fallback did exactly that when Reddit served a page without the
+// profile's social-link markup: the footer's copyright line showed up as a chip.
+// reddit.com / redd.it are deliberately NOT listed: users do link their own
+// subreddit or profile.
+static BOOL ApolloSLIsRedditChromeLink(NSString *urlString, NSString *title) {
+    NSString *host = [NSURL URLWithString:urlString].host.lowercaseString ?: @"";
+    for (NSString *domain in @[@"redditinc.com", @"reddithelp.com", @"redditblog.com"]) {
+        if ([host isEqualToString:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]]) return YES;
+    }
+    return title && [title rangeOfString:@"all rights reserved" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+// Build ApolloSocialLink objects from the scraper's parsed JSON dicts. Every
+// source funnels through here (both direct GETs, the WebView fallback, the disk
+// cache), so Reddit chrome is dropped here once; outDropped reports how many.
+static NSArray<ApolloSocialLink *> *ApolloSLLinksFromJSON(NSArray *raw, NSUInteger *outDropped) {
     NSMutableArray<ApolloSocialLink *> *links = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    NSUInteger dropped = 0;
     for (id obj in (raw ?: @[])) {
         if (![obj isKindOfClass:[NSDictionary class]]) continue;
         NSString *urlString = obj[@"url"];
         if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) continue;
         if ([seen containsObject:urlString]) continue;
         [seen addObject:urlString];
+        NSString *title = [obj[@"title"] isKindOfClass:[NSString class]] ? [obj[@"title"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : nil;
+        if (ApolloSLIsRedditChromeLink(urlString, title)) { dropped++; continue; }
         NSURL *url = [NSURL URLWithString:urlString];
         ApolloSocialLink *link = [ApolloSocialLink new];
         link.urlString = urlString;
         link.url = url;
         NSString *host = [urlString hasPrefix:@"mailto:"] ? @"mailto:" : (url.host ?: @"");
         link.type = ApolloSLTypeForHost(host);
-        NSString *title = [obj[@"title"] isKindOfClass:[NSString class]] ? [obj[@"title"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : nil;
         link.title = title.length > 0 ? title : ApolloSLDisplayNameForType(link.type);
         [links addObject:link];
         if (links.count >= 12) break;
     }
+    if (outDropped) *outDropped = dropped;
     return links;
+}
+
+// `host "title", ...` for log lines, so a result shows exactly what the band
+// will render (a scraped footer line is obvious at a glance).
+static NSString *ApolloSLLinksSummary(NSArray<ApolloSocialLink *> *links) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    for (ApolloSocialLink *link in links) {
+        NSString *title = link.title.length > 32 ? [[link.title substringToIndex:32] stringByAppendingString:@"…"] : (link.title ?: @"");
+        [parts addObject:[NSString stringWithFormat:@"%@ \"%@\"", link.url.host ?: link.urlString, title]];
+    }
+    return [parts componentsJoinedByString:@", "];
 }
 
 #pragma mark - Disk cache (TTL)
@@ -367,14 +401,20 @@ static void ApolloSLDiskSweepOnce(void) {
     });
 }
 
-static void ApolloSLDiskSave(NSString *key, NSArray<ApolloSocialLink *> *links) {
+// v2: v1 entries could hold whatever the old WebView heuristic scraped (Reddit's
+// footer, ad-slot links), so they are ignored and refetched once. v2 also
+// records which path produced the entry ("src") for the disk-hit log line.
+static NSInteger const kApolloSLDiskVersion = 2;
+
+static void ApolloSLDiskSave(NSString *key, NSArray<ApolloSocialLink *> *links, NSString *source) {
     if (key.length == 0 || !links) return;
     NSMutableArray *raw = [NSMutableArray array];
     for (ApolloSocialLink *link in links) {
         if (link.urlString.length == 0) continue;
         [raw addObject:@{ @"url": link.urlString, @"title": link.title ?: @"" }];
     }
-    NSDictionary *doc = @{ @"v": @1, @"ts": @([NSDate date].timeIntervalSince1970), @"links": raw };
+    NSDictionary *doc = @{ @"v": @(kApolloSLDiskVersion), @"ts": @([NSDate date].timeIntervalSince1970),
+                           @"src": source ?: @"", @"links": raw };
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSData *data = [NSJSONSerialization dataWithJSONObject:doc options:0 error:nil];
         if (data) [data writeToFile:ApolloSLDiskPath(key) atomically:YES];
@@ -384,14 +424,15 @@ static void ApolloSLDiskSave(NSString *key, NSArray<ApolloSocialLink *> *links) 
 
 // Returns the stored raw link dicts (possibly empty — "confirmed none" is a
 // cacheable answer), or nil when there is no fresh entry.
-static NSArray<NSDictionary *> *ApolloSLDiskLoadRaw(NSString *key, double *outAgeHours) {
+static NSArray<NSDictionary *> *ApolloSLDiskLoadRaw(NSString *key, double *outAgeHours, NSString **outSource) {
     NSData *data = [NSData dataWithContentsOfFile:ApolloSLDiskPath(key)];
     if (!data) return nil;
     NSDictionary *doc = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![doc isKindOfClass:[NSDictionary class]] || [doc[@"v"] integerValue] != 1) return nil;
+    if (![doc isKindOfClass:[NSDictionary class]] || [doc[@"v"] integerValue] != kApolloSLDiskVersion) return nil;
     NSTimeInterval age = [NSDate date].timeIntervalSince1970 - [doc[@"ts"] doubleValue];
     if (age < 0 || age > kApolloSLDiskTTL) return nil;
     if (outAgeHours) *outAgeHours = age / 3600.0;
+    if (outSource) *outSource = [doc[@"src"] isKindOfClass:[NSString class]] ? doc[@"src"] : @"?";
     return [doc[@"links"] isKindOfClass:[NSArray class]] ? doc[@"links"] : @[];
 }
 
@@ -437,12 +478,13 @@ static NSString *ApolloSLTagAttr(NSString *tag, NSString *name) {
 //     data-faceplate-tracking-context="{"social_link":{"type":"BUY_ME_A_COFFEE",
 //     "url":"https://...","name":"...","position":0}}">
 // (context JSON entity-encoded; verified against live markup 2026-07-21). The
-// live page upgrades these into shadow DOM, but a direct GET sees the raw
-// light-DOM markup for free — and the tracking context carries a cleaner
-// url+name than the anchor markup does. Returns the same {url, title} dicts the
-// WebView extraction JS produces, in page order. NOTE the exact match on noun:
-// the owner's own profile also carries a noun="add_social_link" tracker (the
-// "Add Social Link" button) that must not count as a link.
+// tracking context carries a cleaner url+name than the anchor markup does, and
+// the hydrated page keeps these trackers in the light DOM (WebView-verified
+// 2026-09-25), so the WebView fallback's extraction JS reads the very same
+// context. Returns the same {url, title} dicts that JS produces, in page order.
+// NOTE the exact match on noun: the owner's own profile also carries a
+// noun="add_social_link" tracker (the "Add Social Link" button) that must not
+// count as a link.
 static NSArray<NSDictionary *> *ApolloSLParseSocialLinkTrackers(NSString *html) {
     static NSRegularExpression *tagRE; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -783,19 +825,39 @@ static NSMutableArray<ApolloSLWebFetch *> *ApolloSLWebFetchQueue(void) {
     });
 }
 
-// JS: extract social links from the public profile page, with diagnostics so the
-// selector can be refined against real markup (logged via [SocialLinks][web]).
+// JS: read the profile's social links from Reddit's own social-link markup ONLY.
+// Every link on both profile page shapes is wrapped in
+//   <faceplate-tracker noun="social_link" data-faceplate-tracking-context=
+//     '{"social_link":{"url":"https://...","name":"...",...}}'>
+// — the marker ApolloSLParseSocialLinkTrackers trusts on the direct path, read
+// from the same tracking context (so both paths yield the same url/name), with
+// the tracker's own anchor as the fallback when the context is missing. The
+// noun match is exact: the owner's own profile also carries
+// noun="add_social_link" (the "Add Social Link" button).
+//
+// No page-wide fallback. This used to fall back to "any non-reddit anchor in
+// the first aside / main / body" when no marker matched, and on a page without
+// the profile's links (a block/challenge page, the non-profile variant Reddit
+// sometimes serves, a profile with no links) that returned Reddit's footer
+// ("Reddit, Inc. © 2026. All rights reserved." on www.redditinc.com) or the
+// "Promotion" ad aside. No marker, no link.
 - (NSString *)extractionJS {
     return
     @"(function(){"
-    "function reddit(h){h=(h||'').toLowerCase();return h.indexOf('reddit.com')>=0||h.indexOf('redd.it')>=0||h.indexOf('redditstatic')>=0||h.indexOf('redditmedia')>=0||h.indexOf('reddithelp')>=0||h==='';}"
-    "function inFeed(a){try{return !!(a.closest&&a.closest('shreddit-feed,article,shreddit-post,[data-testid=\"post-container\"],nav,header'));}catch(e){return false;}}"
+    "var SEL='faceplate-tracker[noun=\"social_link\"]';"
+    "var trackers=Array.prototype.slice.call(document.querySelectorAll(SEL)),inShadow=0;"
+    // querySelectorAll doesn't pierce shadow roots: if hydration ever moves the
+    // chips under a component's OPEN shadow root, walk them (only when the light
+    // DOM has none, so the common path stays one query).
+    "if(trackers.length===0){var stack=[document];while(stack.length){var els=stack.pop().querySelectorAll('*');for(var i=0;i<els.length;i++){var sr=els[i].shadowRoot;if(!sr)continue;var hits=sr.querySelectorAll(SEL);for(var h=0;h<hits.length;h++){trackers.push(hits[h]);inShadow++;}stack.push(sr);}}}"
     "var out=[],seen={};"
-    "function push(a,scoped){try{var href=a.href||a.getAttribute('href');if(!href)return;if(href.indexOf('javascript:')===0)return;if(seen[href])return;var host=a.hostname||'';if(!scoped){if(reddit(host))return;if(inFeed(a))return;}var txt=(a.textContent||'').trim().replace(/\\s+/g,' ');out.push({url:href,title:txt});seen[href]=1;}catch(e){}}"
-    "var sels=['shreddit-social-links a','customizable-social-links a','profile-social-links a','a[data-testid=\"social-link\"]','faceplate-tracker[noun=\"social_link\"] a','[slot=\"social-links\"] a','[bundlename*=\"social\"] a'];"
-    "for(var s=0;s<sels.length;s++){var els=document.querySelectorAll(sels[s]);for(var j=0;j<els.length;j++)push(els[j],true);}"
-    "if(out.length===0){var scope=document.querySelector('shreddit-async-loader[bundlename*=\"profile\"]')||document.querySelector('aside')||document.querySelector('main')||document.body;if(scope){var as=scope.querySelectorAll('a[href]');for(var k=0;k<as.length;k++)push(as[k],false);}}"
-    "var diag=[];var all=document.querySelectorAll('a[href]');for(var m=0;m<all.length&&diag.length<24;m++){var a2=all[m];if(!reddit(a2.hostname)&&!inFeed(a2)){var p=a2.parentElement;diag.push({h:a2.href,t:(a2.textContent||'').trim().slice(0,28),pt:p?p.tagName.toLowerCase():'',pc:p?(((p.getAttribute('class')||'')+'|'+(p.getAttribute('slot')||''))).slice(0,46):''});}}"
+    "for(var t=0;t<trackers.length;t++){var el=trackers[t],url='',title='',src='context';"
+    "try{var c=JSON.parse(el.getAttribute('data-faceplate-tracking-context')||'{}');var sl=c&&c.social_link;if(sl&&typeof sl.url==='string'){url=sl.url;title=typeof sl.name==='string'?sl.name:'';}}catch(e){}"
+    "if(!url){var a=el.querySelector('a[href]');if(a){url=a.href;title=(a.textContent||'').trim().replace(/\\s+/g,' ');src='anchor';}}"
+    "if(!url||url.indexOf('javascript:')===0||seen[url])continue;seen[url]=1;out.push({url:url,title:title,src:src});}"
+    // Diagnostics: the tracker nouns present (a renamed social_link noun shows
+    // up here) and the page title (names an interstitial).
+    "var nouns={},ft=document.querySelectorAll('faceplate-tracker[noun]');for(var n=0;n<ft.length;n++)nouns[ft[n].getAttribute('noun')]=1;"
     // `profile` must mean PROFILE CONTENT RENDERED, not just the app chrome:
     // gated profiles (NSFW consent gate) serve a content-free shell that
     // already carries <shreddit-app>, and counting that as "loaded" is how a
@@ -805,7 +867,7 @@ static NSMutableArray<ApolloSLWebFetch *> *ApolloSLWebFetchQueue(void) {
     // client-hydrated DOM. `shell` is reported separately for diagnostics.
     "var shell=!!document.querySelector('shreddit-app');"
     "var profile=!!document.querySelector('[data-testid=\"profile-main\"]')&&(document.title||'').toLowerCase().indexOf('verification')<0;"
-    "return JSON.stringify({links:out,total:all.length,diag:diag,ready:document.readyState,shell:shell,profile:profile});"
+    "return JSON.stringify({links:out,trackers:trackers.length,shadow:inShadow,nouns:Object.keys(nouns).slice(0,24),total:document.querySelectorAll('a[href]').length,ready:document.readyState,shell:shell,profile:profile,title:(document.title||'').slice(0,60)});"
     "})()";
 }
 
@@ -834,6 +896,7 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
         if (![j isKindOfClass:[NSDictionary class]]) j = @{};
         NSArray *rawLinks = [j[@"links"] isKindOfClass:[NSArray class]] ? j[@"links"] : @[];
         NSString *ready = [j[@"ready"] isKindOfClass:[NSString class]] ? j[@"ready"] : @"";
+        NSString *title = [j[@"title"] isKindOfClass:[NSString class]] ? j[@"title"] : @"";
         double elapsed = CFAbsoluteTimeGetCurrent() - ss.startedAt;
         // Only the REAL profile page counts — not Reddit's "please wait for verification"
         // interstitial (which is itself a fully-loaded page with no links).
@@ -841,21 +904,34 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
         if (profileLoaded) ss.sawProfile = YES;
 
         if (rawLinks.count > 0) {
-            NSArray<ApolloSocialLink *> *links = ApolloSLLinksFromJSON(rawLinks);
-            ApolloLog(@"[SocialLinks][web] u/%@ found %lu link(s) (poll#%d, %.2fs)",
-                      ss.username, (unsigned long)links.count, ss.polls, elapsed);
-            [ss finish:links];
-            return;
+            NSUInteger dropped = 0;
+            NSArray<ApolloSocialLink *> *links = ApolloSLLinksFromJSON(rawLinks, &dropped);
+            if (dropped > 0) {
+                ApolloLog(@"[SocialLinks][web] u/%@ dropped %lu Reddit footer/legal link(s) from the social-link markers",
+                          ss.username, (unsigned long)dropped);
+            }
+            if (links.count > 0) {
+                // "light"/"shadow" = where the markers were found; "context"/"anchor"
+                // (per link, first one shown) = which part of the marker was read.
+                NSDictionary *first = [rawLinks.firstObject isKindOfClass:[NSDictionary class]] ? rawLinks.firstObject : nil;
+                ApolloLog(@"[SocialLinks][web] u/%@ found %lu link(s) in the page's social-link markers (poll#%d, %.2fs, %@ DOM, %@, profile=%d): %@",
+                          ss.username, (unsigned long)links.count, ss.polls, elapsed,
+                          [j[@"shadow"] integerValue] > 0 ? @"shadow" : @"light", first[@"src"] ?: @"?",
+                          profileLoaded, ApolloSLLinksSummary(links));
+                [ss finish:links];
+                return;
+            }
+            // Every marker was Reddit chrome — same as finding none.
         }
 
         if (profileLoaded) {
             ss.emptyAfterReady++;
-            // Diagnostics on the first empty pass over the loaded profile — this is what
-            // we read to lock the real selector against live markup if extraction misses.
-            id diag = j[@"diag"];
-            if (ss.emptyAfterReady == 1 && [diag isKindOfClass:[NSArray class]]) {
-                ApolloLog(@"[SocialLinks][web] u/%@ no links yet (ready=%@ anchors=%@). external-anchor diag: %@",
-                          ss.username, ready, j[@"total"], diag);
+            // First empty pass over the loaded profile: which tracker nouns the
+            // page does carry — a renamed social_link noun would show up here.
+            if (ss.emptyAfterReady == 1) {
+                NSArray *nouns = [j[@"nouns"] isKindOfClass:[NSArray class]] ? j[@"nouns"] : @[];
+                ApolloLog(@"[SocialLinks][web] u/%@ profile rendered, no social-link markers yet (ready=%@ anchors=%@ trackers=%@ nouns=%@)",
+                          ss.username, ready, j[@"total"], j[@"trackers"], [nouns componentsJoinedByString:@","]);
             }
             // Give hydration a few empty passes AND a minimum wall-clock past the
             // loaded profile, then accept "none".
@@ -867,14 +943,15 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
         } else if (ss.polls == 4 || ss.polls == 10) {
             // Still waiting on profile content — say what we're looking at (bare
             // consent-gate shell? challenge page?) so a stuck state is diagnosable.
-            ApolloLog(@"[SocialLinks][web] u/%@ waiting on profile content (poll#%d %.1fs ready=%@ shell=%d anchors=%@)",
-                      ss.username, ss.polls, elapsed, ready, [j[@"shell"] boolValue], j[@"total"]);
+            ApolloLog(@"[SocialLinks][web] u/%@ waiting on profile content (poll#%d %.1fs ready=%@ shell=%d anchors=%@ title=\"%@\")",
+                      ss.username, ss.polls, elapsed, ready, [j[@"shell"] boolValue], j[@"total"], title);
         }
 
         if (elapsed >= kApolloSLWebPollTimeout) {
             // Saw the real profile but no links → cache "none" (don't re-scrape every visit).
             // Never reached the profile (stuck on interstitial / load failure) → nil so it retries.
-            ApolloLog(@"[SocialLinks][web] u/%@ timed out (ready=%@ sawProfile=%d)", ss.username, ready, ss.sawProfile);
+            ApolloLog(@"[SocialLinks][web] u/%@ timed out (ready=%@ sawProfile=%d title=\"%@\")",
+                      ss.username, ready, ss.sawProfile, title);
             [ss finish:(ss.sawProfile ? @[] : nil)];
             return;
         }
@@ -930,17 +1007,19 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
 
 @end
 
+// Every stage ends in deliver(links, source): links as documented on
+// ApolloSLFetchLinks, source = the stage that produced them ("header-details",
+// "profile page", "WebView fallback"). The source goes on the final log line
+// and into the disk-cache entry, so it's always clear which path a band came from.
+typedef void (^ApolloSLDeliverBlock)(NSArray<ApolloSocialLink *> *links, NSString *source);
+
 // Hand the scrape to the hidden-WKWebView fallback (rare path — see
 // ApolloSLStartDirectAttempt for when it's reached).
-static void ApolloSLStartWebFallback(NSString *username, NSString *key, CFAbsoluteTime t0,
-                                     void (^deliver)(NSArray<ApolloSocialLink *> *links)) {
+static void ApolloSLStartWebFallback(NSString *username, NSString *key, ApolloSLDeliverBlock deliver) {
     ApolloSLWebFetch *fetch = [[ApolloSLWebFetch alloc] init];
     ApolloSLFetchers()[key] = fetch;
     [fetch startForUsername:username completion:^(NSArray<ApolloSocialLink *> *links) {
-        ApolloLog(@"[SocialLinks][perf] u/%@ complete in %.2fs (WebView fallback: %@)",
-                  username, CFAbsoluteTimeGetCurrent() - t0,
-                  links ? [NSString stringWithFormat:@"%lu link(s)", (unsigned long)links.count] : @"failed");
-        deliver(links);
+        deliver(links, @"WebView fallback");
     }];
 }
 
@@ -953,30 +1032,34 @@ static void ApolloSLStartWebFallback(NSString *username, NSString *key, CFAbsolu
 // HTML back (no shreddit markup at all), so retry once logged out before
 // burning a WebView on it.
 static void ApolloSLStartPageAttempt(NSString *username, NSString *key, BOOL allowCookies,
-                                     CFAbsoluteTime t0, void (^deliver)(NSArray<ApolloSocialLink *> *links)) {
+                                     CFAbsoluteTime t0, ApolloSLDeliverBlock deliver) {
     NSString *cookieHeader = allowCookies ? ApolloSLScrapeCookieHeader() : nil;
     NSString *urlString = [NSString stringWithFormat:@"https://www.reddit.com/user/%@/", ApolloSLEscapedUsername(username)];
     ApolloSLGetHTML(urlString, cookieHeader, ^(NSString *html, NSInteger status, NSInteger errorCode, double elapsed, long bytes) {
         // Parse + classify here on the background queue; main gets results only.
         NSArray<NSDictionary *> *raw = html ? ApolloSLParseSocialLinkTrackers(html) : nil;
-        NSArray<ApolloSocialLink *> *links = (raw.count > 0) ? ApolloSLLinksFromJSON(raw) : nil;
+        NSUInteger dropped = 0;
+        NSArray<ApolloSocialLink *> *links = (raw.count > 0) ? ApolloSLLinksFromJSON(raw, &dropped) : nil;
         BOOL realProfile = html && ApolloSLLooksLikeRealProfile(html);
         BOOL rightRail = html && ApolloSLHasRightRail(html);   // logged for shape-drift diagnostics
         BOOL gone = (status == 404) || (html && ApolloSLLooksLikeUserGone(html));
         BOOL definitiveNone = realProfile;
         BOOL oldReddit = html && ApolloSLLooksLikeOldReddit(html);
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (dropped > 0) {
+                ApolloLog(@"[SocialLinks][perf] u/%@ page: dropped %lu Reddit footer/legal link(s)", username, (unsigned long)dropped);
+            }
             if (links.count > 0) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: %lu link(s) in %.2fs (%ldKB)",
                           username, (unsigned long)links.count, elapsed, bytes / 1024);
-                deliver(links);
+                deliver(links, @"profile page");
             } else if (gone) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: user not found (%.2fs) — no links", username, elapsed);
-                deliver(@[]);
+                deliver(@[], @"profile page");
             } else if (definitiveNone) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: profile has no social links (%.2fs, %ldKB)",
                           username, elapsed, bytes / 1024);
-                deliver(@[]);
+                deliver(@[], @"profile page");
             } else if (oldReddit && cookieHeader.length > 0) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: old-reddit layout logged in — retrying logged out", username);
                 ApolloSLStartPageAttempt(username, key, NO, t0, deliver);
@@ -984,19 +1067,19 @@ static void ApolloSLStartPageAttempt(NSString *username, NSString *key, BOOL all
                 // No connectivity — a WebView can't do better. Fail fast (nil is
                 // not cached, so the next visit retries).
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: offline (err=%ld) — giving up for now", username, (long)errorCode);
-                deliver(nil);
+                deliver(nil, @"profile page");
             } else if (CFAbsoluteTimeGetCurrent() - t0 > 30.0) {
                 // Both direct legs crawled to their timeouts — a network this
                 // slow won't finish a full WebView render either.
                 ApolloLog(@"[SocialLinks][perf] u/%@ page: %.0fs elapsed already — skipping WebView fallback",
                           username, CFAbsoluteTimeGetCurrent() - t0);
-                deliver(nil);
+                deliver(nil, @"profile page");
             } else {
                 // The marker booleans say WHY classification failed — that's what
                 // to read when a page shape changes out from under us.
                 ApolloLog(@"[SocialLinks][perf] u/%@ page GET not usable (http=%ld err=%ld %ldKB %.2fs profile=%d rightRail=%d oldReddit=%d) — WebView fallback",
                           username, (long)status, (long)errorCode, bytes / 1024, elapsed, realProfile, rightRail, oldReddit);
-                ApolloSLStartWebFallback(username, key, t0, deliver);
+                ApolloSLStartWebFallback(username, key, deliver);
             }
         });
     });
@@ -1021,29 +1104,43 @@ static BOOL ApolloSLHeaderDetailsRendered(NSString *html) {
 }
 
 static void ApolloSLStartDirectAttempt(NSString *username, NSString *key,
-                                       CFAbsoluteTime t0, void (^deliver)(NSArray<ApolloSocialLink *> *links)) {
+                                       CFAbsoluteTime t0, ApolloSLDeliverBlock deliver) {
+#if APOLLO_SIM_BUILD
+    // Sim-only: go straight to the WebView fallback, which is otherwise reached
+    // only when Reddit serves a page neither direct GET can classify (not
+    // reproducible on demand). Launch with SIMCTL_CHILD_APOLLO_SL_FORCE_WEB_FALLBACK=1.
+    if (getenv("APOLLO_SL_FORCE_WEB_FALLBACK")) {
+        ApolloLog(@"[SocialLinks][perf] u/%@ APOLLO_SL_FORCE_WEB_FALLBACK set — skipping the direct GETs", username);
+        ApolloSLStartWebFallback(username, key, deliver);
+        return;
+    }
+#endif
     NSString *cookieHeader = ApolloSLScrapeCookieHeader();
     NSString *urlString = [NSString stringWithFormat:@"https://www.reddit.com/svc/shreddit/profiles/profile-header-details/%@",
                            ApolloSLEscapedUsername(username)];
     ApolloSLGetHTML(urlString, cookieHeader, ^(NSString *html, NSInteger status, NSInteger errorCode, double elapsed, long bytes) {
         // Parse + classify here on the background queue; main gets results only.
         NSArray<NSDictionary *> *raw = html ? ApolloSLParseSocialLinkTrackers(html) : nil;
-        NSArray<ApolloSocialLink *> *links = (raw.count > 0) ? ApolloSLLinksFromJSON(raw) : nil;
+        NSUInteger dropped = 0;
+        NSArray<ApolloSocialLink *> *links = (raw.count > 0) ? ApolloSLLinksFromJSON(raw, &dropped) : nil;
         BOOL rendered = html && ApolloSLHeaderDetailsRendered(html);
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (dropped > 0) {
+                ApolloLog(@"[SocialLinks][perf] u/%@ header-details: dropped %lu Reddit footer/legal link(s)", username, (unsigned long)dropped);
+            }
             if (links.count > 0) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ header-details: %lu link(s) in %.2fs (%ldKB)",
                           username, (unsigned long)links.count, elapsed, bytes / 1024);
-                deliver(links);
+                deliver(links, @"header-details");
             } else if (rendered) {
                 ApolloLog(@"[SocialLinks][perf] u/%@ header-details: profile has no social links (%.2fs, %ldKB)",
                           username, elapsed, bytes / 1024);
-                deliver(@[]);
+                deliver(@[], @"header-details");
             } else if (ApolloSLIsOfflineErrorCode(errorCode)) {
                 // No connectivity — the page GET and WebView would fail the same
                 // way. Fail fast (nil is not cached, so the next visit retries).
                 ApolloLog(@"[SocialLinks][perf] u/%@ header-details: offline (err=%ld) — giving up for now", username, (long)errorCode);
-                deliver(nil);
+                deliver(nil, @"header-details");
             } else {
                 // Deleted user / blocked / endpoint drift — the page attempt
                 // tells those apart.
@@ -1082,11 +1179,16 @@ static void ApolloSLFetchLinks(NSString *username, void (^completion)(NSArray<Ap
 
     // Fresh disk-cached result (tiny JSON, sub-ms read) → zero network.
     double ageHours = 0.0;
-    NSArray<NSDictionary *> *disk = ApolloSLDiskLoadRaw(key, &ageHours);
+    NSString *diskSource = nil;
+    NSArray<NSDictionary *> *disk = ApolloSLDiskLoadRaw(key, &ageHours, &diskSource);
     if (disk) {
-        NSArray<ApolloSocialLink *> *links = ApolloSLLinksFromJSON(disk);
+        NSUInteger dropped = 0;
+        NSArray<ApolloSocialLink *> *links = ApolloSLLinksFromJSON(disk, &dropped);
         [ApolloSLLinksCache() setObject:links forKey:key];
-        ApolloLog(@"[SocialLinks][perf] u/%@ served from disk cache (age %.1fh)", username, ageHours);
+        ApolloLog(@"[SocialLinks][perf] u/%@ served from disk cache (age %.1fh, originally via %@%@): %@",
+                  username, ageHours, diskSource,
+                  dropped ? [NSString stringWithFormat:@", dropped %lu Reddit footer/legal", (unsigned long)dropped] : @"",
+                  links.count ? ApolloSLLinksSummary(links) : @"no links");
         if (completion) completion(links);
         return;
     }
@@ -1097,17 +1199,18 @@ static void ApolloSLFetchLinks(NSString *username, void (^completion)(NSArray<Ap
 
     ApolloLog(@"[SocialLinks][perf] u/%@ fetch begin (no cache)", username);
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
-    void (^deliver)(NSArray<ApolloSocialLink *> *) = ^(NSArray<ApolloSocialLink *> *links) {
+    ApolloSLDeliverBlock deliver = ^(NSArray<ApolloSocialLink *> *links, NSString *source) {
         // The one line every path ends on — total wall-clock from fetch begin to
-        // the UI callback, whichever route (direct / logged-out retry / WebView)
-        // resolved it.
-        ApolloLog(@"[SocialLinks][perf] u/%@ resolved in %.2fs total: %@",
-                  username, CFAbsoluteTimeGetCurrent() - t0,
-                  links ? [NSString stringWithFormat:@"%lu link(s)", (unsigned long)links.count]
-                        : @"failed (will retry on next visit)");
+        // the UI callback, WHICH route (header-details / profile page / WebView
+        // fallback) produced the result, and exactly what the band will show.
+        ApolloLog(@"[SocialLinks][perf] u/%@ resolved in %.2fs total via %@: %@",
+                  username, CFAbsoluteTimeGetCurrent() - t0, source,
+                  !links ? @"failed (will retry on next visit)"
+                  : links.count == 0 ? @"no links"
+                  : [NSString stringWithFormat:@"%lu link(s): %@", (unsigned long)links.count, ApolloSLLinksSummary(links)]);
         if (links) {                                            // cache success (incl. empty)
             [ApolloSLLinksCache() setObject:links forKey:key];
-            ApolloSLDiskSave(key, links);
+            ApolloSLDiskSave(key, links, source);
         }
         NSArray *toNotify = ApolloSLPending()[key];
         [ApolloSLPending() removeObjectForKey:key];

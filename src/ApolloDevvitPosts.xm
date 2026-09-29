@@ -59,6 +59,14 @@
 // (verified in the simulator: the widget renders logged-out), only
 // write-actions inside the widget are inert.
 //
+// User actions: an app acting AS the user (Subscriber Goal's "Subscribe to
+// r/X", posting or commenting) first needs Reddit's one-time permission
+// prompt, which the page draws outside the devvit element; the crop lets it
+// through and the probe sizes the widget for it. A subscription the app then
+// makes server-side is mirrored into Apollo's own account state (see
+// "Subscription sync") so the Join pill, the ⋯ menu and the Subscriptions
+// list agree with Reddit.
+//
 // Height: devvit posts render at a fixed CSS height chosen by the app
 // ("tall" = 512pt for matchpal; a finished match card collapses to ~100pt).
 // The last measured height per post persists across launches; a post never
@@ -88,6 +96,9 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloDirectChatWeb.h"
 #import "ApolloDevvitPosts.h"
+#import "ApolloAccountCredentials.h"
+#import "ApolloAccountSubscriptions.h"
+#import "ApolloWebJSON.h"
 
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName);
 static void ApolloDevvitScheduleStaleSweep(void);
@@ -425,11 +436,24 @@ static NSString *const kApolloDevvitCropScript = @""
        devvit elements' shadow trees are untouched by document styles. */
 "    + 'body *:not(devvit2-custom-post):not(devvit2-custom-post *)'"
 "    + ':not(shreddit-devvit-ui-loader):not(shreddit-devvit-ui-loader *)'"
-"    + ':not(devvit-blocks-renderer):not(devvit-blocks-renderer *) { visibility: hidden !important; }'"
+"    + ':not(devvit-blocks-renderer):not(devvit-blocks-renderer *)'"
+"    + ':not([id^=\"devvit-app-permission-consent-dialog\"])'"
+"    + ':not([id^=\"devvit-app-permission-consent-dialog\"] *) { visibility: hidden !important; }'"
 "    + 'devvit2-custom-post, shreddit-devvit-ui-loader, devvit-blocks-renderer {'"
 "    + '  visibility: visible !important; position: fixed !important;'"
 "    + '  top: 0 !important; left: 0 !important; right: 0 !important; width: 100vw !important;'"
 "    + '  margin: 0 !important; z-index: 2147483000 !important; }'"
+    /* Reddit's one-time "Give <app> limited access to your Reddit Account"
+       prompt (Deny / Allow). An app asks for it (canRunAsUser) before it first
+       acts as the user — Subscriber Goal's "Subscribe to r/X", posting or
+       commenting as them — and the page shows it OUTSIDE the devvit element:
+       <devvit-app-permissions-consent-dialog> is only a placeholder, the sheet
+       itself is portaled to div#devvit-app-permission-consent-dialog-<post>
+       under <shreddit-app>. Crop-hidden, the app just waited on a prompt
+       nobody could see, so the button "did nothing". Shown here, it opens as
+       a modal over the widget, which the probe grows to the tall size while
+       it is up. */
+"    + '[id^=\"devvit-app-permission-consent-dialog\"] { visibility: visible !important; }'"
 "    + '#credential_picker_container, #credential_picker_iframe { display: none !important; }'"
     /* Overlays that escape the visibility crop by promoting into the top
        layer (dialog.showModal): the "View in Reddit App" xpromo sheet and
@@ -514,6 +538,17 @@ static NSString *const kApolloDevvitProbeScript = @""
 "      }"
 "    })(el, 0);"
 "  } catch (e) {}"
+    /* Reddit's app-permission prompt (see the crop CSS) is a modal too, but
+       it renders outside the devvit element, where the walk above never
+       looks. The placeholder's rpl-dialog carries the open attribute for as
+       long as the sheet is up (dropped on Allow, Deny or close), so read
+       that; the sheet needs the tall size to show its text and both buttons. */
+"  var consent = 0;"
+"  try {"
+"    var cd = document.querySelector('devvit-app-permissions-consent-dialog');"
+"    var rd = cd && cd.shadowRoot ? cd.shadowRoot.querySelector('rpl-dialog') : null;"
+"    if (rd && rd.hasAttribute('open')) { consent = 1; modal = 1; }"
+"  } catch (e) {}"
     /* Offsite-link confirmation fix (#959): tapping an external link makes
        the devvit platform show devvit2-navigate-offsite-dialog, which is
        broken twice over on narrow viewports (both halves reproduce on mobile
@@ -596,7 +631,7 @@ static NSString *const kApolloDevvitProbeScript = @""
 "      }"
 "    })(el, 0);"
 "  } catch (e) {}"
-"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
+"  return JSON.stringify({ found: 1, h: h, w: Math.round(r.width), hostH: Math.round(r.height), deep: Math.round(deep), modal: modal, consent: consent, err: err, frames: frames, blocks: blocks, tag: el.tagName.toLowerCase() });"
 "})();";
 
 // Click the page's own retry control inside the devvit surface (the error
@@ -805,6 +840,136 @@ static NSString *ApolloDevvitCurrentIdentity(NSString **cookieHeaderOut) {
             username.lowercaseString ?: @"<anon>", (unsigned long)cookieHeader.hash];
 }
 
+#pragma mark - Subscription sync
+
+// A Devvit app can subscribe the user to the subreddit it is installed in
+// (reddit.subscribeToCurrentSubreddit(): Subscriber Goal's "Subscribe to r/X",
+// games' join buttons). That runs on Reddit's servers as the user, so nothing
+// on Apollo's side hears about it: the Join pill, the ⋯ menu's
+// Subscribe/Unsubscribe row and the Subscriptions list all kept saying "not
+// subscribed", with no way to leave again short of a relaunch. After a tap in
+// a widget whose subreddit the account's list doesn't include, ask Reddit (as
+// the active account) whether that changed, and file a new subscription into
+// Apollo's state the way its own Subscribe does. Apps cannot unsubscribe a
+// user, so only this direction exists.
+//
+// Each tap re-arms the sequence (the permission prompt's Allow is a tap too),
+// so a burst of taps in a game costs one short sequence after the last one,
+// and a rolling cap bounds a subreddit that never changes.
+static const NSTimeInterval kApolloDevvitSubscriptionCheckDelays[] = {2.0, 5.0, 12.0};
+static const NSUInteger kApolloDevvitSubscriptionChecksPerWindow = 12;
+static const NSTimeInterval kApolloDevvitSubscriptionCheckWindow = 600.0;
+// Main thread only. Keyed by lowercased subreddit name; an entry lives only
+// while its sequence is pending (generations come from one serial, so a
+// removed-and-re-armed key can never match a stale block).
+static NSInteger sDevvitSubscriptionCheckSerial;
+static NSMutableDictionary<NSString *, NSNumber *> *sDevvitSubscriptionCheckGenerations;
+static NSMutableDictionary<NSString *, NSMutableArray<NSNumber *> *> *sDevvitSubscriptionCheckTimes;
+
+// "/r/<name>/comments/<id>/…" → <name>; nil for anything else.
+static NSString *ApolloDevvitSubredditOfPermalink(NSURL *permalink) {
+    NSArray<NSString *> *parts = permalink.pathComponents;
+    NSUInteger index = [parts indexOfObject:@"r"];
+    if (index == NSNotFound || index + 1 >= parts.count) return nil;
+    NSString *name = parts[index + 1];
+    return name.length > 0 ? name : nil;
+}
+
+// Spends one check from the subreddit's rolling window, or returns NO.
+// Windows that have fully aged out are dropped on the way.
+static BOOL ApolloDevvitTakeSubscriptionCheck(NSString *key) {
+    if (!sDevvitSubscriptionCheckTimes) sDevvitSubscriptionCheckTimes = [NSMutableDictionary dictionary];
+    CFTimeInterval now = CACurrentMediaTime();
+    for (NSString *other in sDevvitSubscriptionCheckTimes.allKeys) {
+        NSNumber *newest = sDevvitSubscriptionCheckTimes[other].lastObject;
+        if (!newest || now - newest.doubleValue > kApolloDevvitSubscriptionCheckWindow) {
+            [sDevvitSubscriptionCheckTimes removeObjectForKey:other];
+        }
+    }
+    NSMutableArray<NSNumber *> *times = sDevvitSubscriptionCheckTimes[key];
+    if (!times) {
+        times = [NSMutableArray array];
+        sDevvitSubscriptionCheckTimes[key] = times;
+    }
+    while (times.count > 0 && now - times.firstObject.doubleValue > kApolloDevvitSubscriptionCheckWindow) {
+        [times removeObjectAtIndex:0];
+    }
+    if (times.count >= kApolloDevvitSubscriptionChecksPerWindow) return NO;
+    [times addObject:@(now)];
+    return YES;
+}
+
+static BOOL ApolloDevvitSubscriptionCheckIsCurrent(NSString *key, NSInteger generation) {
+    return sDevvitSubscriptionCheckGenerations[key].integerValue == generation;
+}
+
+static void ApolloDevvitEndSubscriptionChecks(NSString *key, NSInteger generation) {
+    if (ApolloDevvitSubscriptionCheckIsCurrent(key, generation)) {
+        [sDevvitSubscriptionCheckGenerations removeObjectForKey:key];
+    }
+}
+
+static void ApolloDevvitRunSubscriptionCheck(NSString *subreddit, NSString *key, NSInteger generation,
+                                             BOOL lastCheck, id client) {
+    if (!ApolloDevvitSubscriptionCheckIsCurrent(key, generation)) return;  // re-armed or done
+    if (lastCheck) ApolloDevvitEndSubscriptionChecks(key, generation);
+    if (ApolloActiveAccountClient() != client) return;  // account switched since the tap
+    BOOL subscribed = NO;
+    if (ApolloAccountSubscriptionListState(subreddit, &subscribed) && subscribed) {
+        ApolloDevvitEndSubscriptionChecks(key, generation);  // Apollo knows already
+        return;
+    }
+    // An optional read, like the header's info fetch: while Reddit is
+    // rate-limiting the web session (API-Key-Free accounts sign these with
+    // it), stand down rather than add to the window everything else waits on.
+    if (ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0) return;
+    if (!ApolloDevvitTakeSubscriptionCheck(key)) return;
+    SEL fetch = NSSelectorFromString(@"subredditWithName:completion:");
+    if (![client respondsToSelector:fetch]) return;
+    // RDKClient's completion: ^(RDKSubreddit *subreddit, NSError *error), with
+    // `subscriber` (getter isSubscriber) as the account that asked sees it.
+    void (^completion)(id, NSError *) = ^(id fetched, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || ![fetched respondsToSelector:@selector(isSubscriber)]) return;
+            if (!((BOOL (*)(id, SEL))objc_msgSend)(fetched, @selector(isSubscriber))) return;
+            if (ApolloActiveAccountClient() != client) return;
+            // The last check ends the sequence before its request goes out,
+            // so an answer from it still counts; a newer tap's sequence wins.
+            NSNumber *current = sDevvitSubscriptionCheckGenerations[key];
+            if (current && current.integerValue != generation) return;
+            [sDevvitSubscriptionCheckGenerations removeObjectForKey:key];
+            ApolloLog(@"[Devvit] an interactive post subscribed the account to r/%@; updating Apollo", subreddit);
+            // The list stores names as Reddit spells them; the permalink's
+            // spelling is only a fallback.
+            id displayName = [fetched respondsToSelector:@selector(name)]
+                ? ((id (*)(id, SEL))objc_msgSend)(fetched, @selector(name)) : nil;
+            ApolloAccountApplySubscriptionChange([displayName isKindOfClass:[NSString class]] && [displayName length] > 0
+                                                     ? displayName : subreddit, YES);
+        });
+    };
+    ((id (*)(id, SEL, id, id))objc_msgSend)(client, fetch, subreddit, [completion copy]);
+}
+
+static void ApolloDevvitScheduleSubscriptionCheck(NSURL *permalink) {
+    NSString *subreddit = ApolloDevvitSubredditOfPermalink(permalink);
+    id client = ApolloActiveAccountClient();
+    if (subreddit.length == 0 || !client) return;  // logged out: nobody an app could subscribe
+    BOOL subscribed = NO;
+    if (ApolloAccountSubscriptionListState(subreddit, &subscribed) && subscribed) return;
+    NSString *key = subreddit.lowercaseString;
+    if (!sDevvitSubscriptionCheckGenerations) sDevvitSubscriptionCheckGenerations = [NSMutableDictionary dictionary];
+    NSInteger generation = ++sDevvitSubscriptionCheckSerial;
+    sDevvitSubscriptionCheckGenerations[key] = @(generation);
+    size_t count = sizeof(kApolloDevvitSubscriptionCheckDelays) / sizeof(kApolloDevvitSubscriptionCheckDelays[0]);
+    for (size_t i = 0; i < count; i++) {
+        BOOL lastCheck = (i + 1 == count);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloDevvitSubscriptionCheckDelays[i] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloDevvitRunSubscriptionCheck(subreddit, key, generation, lastCheck, client);
+        });
+    }
+}
+
 #pragma mark - ApolloDevvitWidgetView
 
 // The embedded widget: WKWebView cropped to the devvit element + a native
@@ -870,6 +1035,8 @@ static NSString *ApolloDevvitCurrentIdentity(NSString **cookieHeaderOut) {
 // the retry cover rather than reloading on every scroll pass.
 @property (nonatomic) CFTimeInterval failedAt;
 @property (nonatomic, strong) UIImageView *retryIcon;
+// Reddit's app-permission prompt was open at the last probe (log transitions).
+@property (nonatomic) BOOL consentShowing;
 // In the keep-alive pool (no host; page still live) — see ApolloDevvitParkWidget.
 @property (nonatomic) BOOL parked;
 @property (nonatomic) CFTimeInterval parkedAt;
@@ -1069,6 +1236,8 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     // polling briskly while the height is still settling.
     NSInteger gen = ++self.pollGeneration;
     [self pollAfter:kApolloDevvitTapProbeDelay attempt:0 generation:gen];
+    // Any tap can be the one that subscribes the user (Subscription sync).
+    ApolloDevvitScheduleSubscriptionCheck(self.permalinkURL);
 }
 
 - (void)coverTapped {
@@ -1283,6 +1452,11 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     // A viewport-filling dialog is only as tall as we let the page be — give
     // it the "tall" size so the expanded view actually fits (see the probe).
     if (found && [info[@"modal"] boolValue] && h < kApolloDevvitModalHeight) h = kApolloDevvitModalHeight;
+    BOOL consent = found && [info[@"consent"] boolValue];
+    if (consent != self.consentShowing) {
+        self.consentShowing = consent;
+        ApolloLog(@"[Devvit] %@ app permission prompt %@", self.fullName, consent ? @"opened" : @"closed");
+    }
 
     if (!self.revealed) {
         // "Prove your humanity" interstitial: its clearance cookie lands in

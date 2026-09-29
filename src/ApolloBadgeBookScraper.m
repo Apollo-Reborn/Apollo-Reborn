@@ -1,7 +1,7 @@
 #import "ApolloBadgeBookScraper.h"
 #import "ApolloCommon.h"
 #import "ApolloScrapeWebView.h"   // off-screen scrape web view + ad/media blocker
-#import "ApolloState.h"                // sLatestRedditBearerToken, sUserAgent
+#import "ApolloState.h"                // ApolloActiveAccountRedditBearerToken, sUserAgent
 #import "ApolloProfileSocialLinks.h"   // ApolloSharedScrapeDataStore()
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSession() — logged-in scrape cookies
 #import "ApolloWebJSON.h"              // ApolloWebJSONProbeURL() — opt-out of the Web JSON rewrite
@@ -547,9 +547,9 @@ static ApolloBadgeItem *ApolloBBItemFromAPITrophyDict(NSDictionary *data) {
 }
 
 // Fetch trophies straight from oauth.reddit.com with the bearer token the tweak
-// already captures from Apollo's own traffic (sLatestRedditBearerToken — the same
-// proven pattern ApolloUserProfileCache / SubredditInfoCache / LinkPreviewFetcher
-// use). NOTE: this endpoint currently answers third-party bearers with an HTML
+// already captures from Apollo's own traffic (ApolloActiveAccountRedditBearerToken —
+// the same pattern ApolloUserProfileCache / SubredditInfoCache / LinkPreviewFetcher
+// use; nil for an API-Key-Free account, which skips this try). NOTE: this endpoint currently answers third-party bearers with an HTML
 // "forbidden" page (the reason Apollo's native Trophy Case broke) — kept as a
 // zero-cost parallel try in case Reddit revives it. NOT RDKClient: `+sharedClient`
 // turned out to be an unauthenticated instance in Apollo's multi-account setup.
@@ -560,7 +560,7 @@ static ApolloBadgeItem *ApolloBBItemFromAPITrophyDict(NSDictionary *data) {
 static int sApolloBBAPIFailStreak = 0;
 
 static void ApolloBBFetchTrophiesViaAPI(NSString *username, void (^completion)(NSArray<ApolloBadgeItem *> *items, BOOL ok)) {
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloActiveAccountRedditBearerToken();
     if (token.length == 0 || sApolloBBAPIFailStreak >= 2) {
         completion(nil, NO);
         return;

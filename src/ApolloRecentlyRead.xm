@@ -6,12 +6,13 @@
 #import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
-#import "fishhook.h"
+#import "ApolloSwiftSingletonCapture.h"
 
 // MARK: - Recently Read Posts
 //
@@ -25,10 +26,9 @@
 // so our reads are ordered after any pending native mark and never race the
 // barrier writers.
 
-// Direct access to ReadPostsTracker's in-memory ordered set via fishhook + ObjC runtime
+// Direct access to ReadPostsTracker's in-memory ordered set via the ObjC runtime
 static __unsafe_unretained id sReadPostsTracker = nil;
 static Ivar sReadPostIDsIvar = NULL;
-static void *sTrackerTypeMetadata = NULL;
 // Cached resolved values - both ivars are assigned once in the tracker's init
 // and never replaced, and the tracker itself lives for the app's lifetime.
 static __unsafe_unretained NSMutableOrderedSet *sTrackerReadPostIDsCached = nil;
@@ -87,16 +87,10 @@ static Ivar ApolloTrackerIvarNamed(const char *nameSubstr) {
     return found;
 }
 
-// fishhook: briefly hook swift_allocObject to capture the ReadPostsTracker singleton
-static void *(*orig_swift_allocObject)(void *type, size_t size, size_t alignMask);
-static void *hooked_swift_allocObject(void *type, size_t size, size_t alignMask) {
-    void *obj = orig_swift_allocObject(type, size, alignMask);
-    if (type == sTrackerTypeMetadata && !sReadPostsTracker) {
-        sReadPostsTracker = (__bridge id)obj;
-        // Unhook immediately – only need one capture
-        rebind_symbols((struct rebinding[1]){{"swift_allocObject", (void *)orig_swift_allocObject, NULL}}, 1);
-    }
-    return obj;
+// Captured at allocation by ApolloSwiftSingletonCapture (the shared owner of
+// the swift_allocObject hook).
+static void ApolloRecentlyReadCaptureTracker(void *object) {
+    sReadPostsTracker = (__bridge id)object;
 }
 
 // Retrieve the in-memory NSMutableOrderedSet of read post IDs from the tracker
@@ -344,7 +338,11 @@ static NSCache<NSString *, UIImage *> *RecentlyReadThumbnailCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        // Rows show Reddit's own thumbnails (up to 140px, ~78KB decoded), so
+        // this holds about sixty: several screens of the list.
+        cache.countLimit = 150;
+        cache.totalCostLimit = 5 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"recently-read-thumbs", cache);
     });
     return cache;
 }
@@ -1075,7 +1073,7 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
                                          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         UIImage *image = (!error && data.length > 0) ? [UIImage imageWithData:data] : nil;
         if (image) {
-            [cache setObject:image forKey:urlString];
+            [cache setObject:image forKey:urlString cost:ApolloImageByteCost(image)];
         }
         finish(image);
     }];
@@ -1617,11 +1615,8 @@ static void ApolloCommentsVCTryMarkRead(id commentsVC, const char *trigger) {
 %end
 
 %ctor {
-    // Hook swift_allocObject to capture the ReadPostsTracker singleton
-    sTrackerTypeMetadata = (__bridge void *)objc_getClass("_TtC6Apollo16ReadPostsTracker");
-    if (sTrackerTypeMetadata) {
-        rebind_symbols((struct rebinding[1]){{"swift_allocObject", (void *)hooked_swift_allocObject, (void **)&orig_swift_allocObject}}, 1);
-    }
+    // Capture the ReadPostsTracker singleton when Apollo allocates it
+    ApolloCaptureFirstSwiftAllocation(objc_getClass("_TtC6Apollo16ReadPostsTracker"), ApolloRecentlyReadCaptureTracker);
 
     // Native save completes (including its defaults write) before posting this.
     // In particular it arrives after a comments controller's viewDidDisappear,

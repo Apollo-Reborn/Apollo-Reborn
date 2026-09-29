@@ -962,11 +962,20 @@ static NSString *SpacedThemeName(NSString *raw) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
-    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
-    header.textLabel.textColor = [self themeColorForToken:ApolloThemeTokenSecondaryLabel
-                                                 fallback:UIColor.secondaryLabelColor];
-    header.contentView.backgroundColor = UIColor.clearColor;
+    if (@available(iOS 26.0, *)) {
+        [super tableView:tableView willDisplayHeaderView:view forSection:section];
+        if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        // The shared header callback owns typography and the native/custom
+        // settings palette; keep its color for both labels and configurations.
+        header.contentView.backgroundColor = UIColor.clearColor;
+    } else {
+        if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        header.textLabel.textColor = [self themeColorForToken:ApolloThemeTokenSecondaryLabel
+                                                     fallback:UIColor.secondaryLabelColor];
+        header.contentView.backgroundColor = UIColor.clearColor;
+    }
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {

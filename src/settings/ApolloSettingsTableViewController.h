@@ -7,6 +7,7 @@ extern "C" {
 UIColor *ApolloSettingsPrimaryTextColor(void);
 UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits);
 void ApolloSettingsApplyCellTypography(UITableViewCell *cell);
+void ApolloSettingsApplySectionHeaderTypography(UIView *view);
 #ifdef __cplusplus
 }
 #endif

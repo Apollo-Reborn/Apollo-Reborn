@@ -26,28 +26,12 @@ static BOOL ApolloEditingIsList(UITableView *table) {
     return ApolloShortcutEditingOwner(table) != nil;
 }
 
-// The confirmation draws over the grip without moving it. Preserve native
-// dragging through the grip's original hit target; other taps hit Remove.
-@interface ApolloShortcutConfirmationPanel : UIView
-@property(nonatomic, weak) UIView *reorderControl;
-@end
-@implementation ApolloShortcutConfirmationPanel
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *grip = self.reorderControl;
-    if (!self.hidden && self.alpha > 0.01 && self.userInteractionEnabled && grip.window) {
-        CGPoint gripPoint = [self convertPoint:point toView:grip];
-        if ([grip pointInside:gripPoint withEvent:event]) {
-            return [grip hitTest:gripPoint withEvent:event];
-        }
-    }
-    return [super hitTest:point withEvent:event];
-}
-@end
-
 @interface ApolloShortcutEditConfirmation : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UITableView *table;
 @property(nonatomic, weak) UITableViewCell *cell;
 @property(nonatomic, strong) UIView *panel;
+@property(nonatomic, weak) UIView *reorderControl;
+@property(nonatomic) BOOL reorderControlWasEnabled;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
 @property(nonatomic) BOOL closing;
 - (void)dismiss;
@@ -57,6 +41,8 @@ static BOOL ApolloEditingIsList(UITableView *table) {
 
 @implementation ApolloShortcutEditConfirmation
 - (void)dismiss {
+    self.reorderControl.userInteractionEnabled = self.reorderControlWasEnabled;
+    self.reorderControl = nil;
     objc_setAssociatedObject(self.cell, &kCellConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (self.panel) ApolloLog(@"[ShortcutEditing] dismiss");
     [self.panel removeFromSuperview];
@@ -148,7 +134,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.layer.cornerCurve = kCACornerCurveContinuous;
     button.accessibilityIdentifier = @"ApolloShortcutEditConfirmation";
     [button addTarget:state action:@selector(confirm) forControlEvents:UIControlEventTouchUpInside];
-    ApolloShortcutConfirmationPanel *panel = [ApolloShortcutConfirmationPanel new];
+    UIView *panel = [UIView new];
     // Overlay the confirmation inside the existing row; leave its left edge fixed.
     panel.clipsToBounds = YES;
     UIView *surface = [UIView new];
@@ -189,13 +175,16 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
     [cell layoutIfNeeded];
-    // Keep the covered grip stationary and available for native dragging.
+    // The grip lies behind Remove. Disable it until the confirmation closes
+    // so its hit target cannot steal taps from the visible button.
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithArray:cell.subviews];
     while (pending.count) {
         UIView *view = pending.lastObject;
         [pending removeLastObject];
         if ([NSStringFromClass(view.class) containsString:@"ReorderControl"]) {
-            panel.reorderControl = view;
+            state.reorderControl = view;
+            state.reorderControlWasEnabled = view.userInteractionEnabled;
+            view.userInteractionEnabled = NO;
             break;
         } else {
             [pending addObjectsFromArray:view.subviews];

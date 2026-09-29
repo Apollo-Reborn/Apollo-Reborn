@@ -1,6 +1,7 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloManualSignInViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
+#import "ApolloState.h"
 #import "ApolloCommon.h"
 
 #import <WebKit/WebKit.h>
@@ -13,6 +14,9 @@
 @property (nonatomic, copy) NSURL *redirectURL;
 @property (nonatomic, copy) ASWebAuthenticationSessionCompletionHandler completion;
 @property (nonatomic) BOOL finished;
+// Set once a rejected-sign-in alert has been shown, so Reddit's own 400
+// authorize page (Old Reddit's names the bad field) doesn't stack a second one.
+@property (nonatomic) BOOL explainedRejectedSignIn;
 @end
 
 @implementation ApolloWebAuthViewController
@@ -99,7 +103,11 @@
 }
 
 - (void)_switchToOldReddit {
-    NSURL *rewritten = [self _rewriteToOldReddit:self.webView.URL ?: self.authURL];
+    // The grant endpoint has no Old Reddit equivalent, so restart from the
+    // authorize request if the web view ever ends up sitting on it.
+    NSURL *current = self.webView.URL;
+    NSURL *base = (current && ![self _isGrantEndpointURL:current]) ? current : self.authURL;
+    NSURL *rewritten = [self _rewriteToOldReddit:base];
     ApolloLog(@"[WebAuth] Switching to old Reddit: %@", rewritten);
     [self.webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
     // didFinishNavigation rebuilds the menu, disabling this action once loaded.
@@ -178,6 +186,82 @@
     }];
 }
 
+#pragma mark - Rejected sign-in
+
+// Reddit's new consent page (www.reddit.com/api/v1/authorize) no longer checks
+// client_id/redirect_uri when it renders. For a key + redirect URI that don't
+// match a registered Reddit app it still shows Accept/Decline (with no app name
+// and no permission list), and only the POST to /svc/shreddit/oauth-grant
+// fails, with a bare HTTP 400 "{}" body — which used to be all the user saw
+// (#1232). Old Reddit rejects the same request up front with a 400 page naming
+// the bad field ("invalid client id" / "invalid redirect_uri parameter").
+// Both verified against reddit.com on 2026-09-25.
+- (BOOL)_isRedditHost:(NSString *)host {
+    NSString *lower = host.lowercaseString;
+    return [lower isEqualToString:@"reddit.com"] || [lower hasSuffix:@".reddit.com"];
+}
+
+- (BOOL)_isGrantEndpointURL:(NSURL *)url {
+    return [self _isRedditHost:url.host] && [url.path isEqualToString:@"/svc/shreddit/oauth-grant"];
+}
+
+// Old Reddit's consent page answers a bad key with a 400 page here. The new
+// page currently returns 200 regardless, but is matched on any reddit.com host
+// in case Reddit moves that check up front too. Apollo requests either
+// /api/v1/authorize or /api/v1/authorize.compact.
+- (BOOL)_isAuthorizePageURL:(NSURL *)url {
+    return [self _isRedditHost:url.host] && [url.path hasPrefix:@"/api/v1/authorize"];
+}
+
+- (void)_explainRejectedSignInWithStatus:(NSInteger)status offerOldReddit:(BOOL)offerOldReddit {
+    if (self.finished || self.presentedViewController) return;
+    self.explainedRejectedSignIn = YES;
+
+    // A sign-in sends the default key from Settings, whichever account is
+    // active (ApolloAccountCredentialsBeginInteractiveSignIn, #1237). Only with
+    // no default set does it fall back to the active account's saved key, or to
+    // Apollo's own client id, so point at Settings either way.
+    BOOL hasDefaultKey = sRedditClientId.length > 0;
+    ApolloLog(@"[WebAuth] Sign-in failed (HTTP %ld); its key came from %@", (long)status,
+              hasDefaultKey ? @"the default in Settings" : @"a fallback, no default API key is set");
+    NSString *settingsFix = hasDefaultKey
+        ? @"check the Reddit API Key and Redirect URI in Settings → Apollo Reborn → Accounts & API Keys"
+        : @"add your Reddit API Key in Settings → Apollo Reborn → Accounts & API Keys (none is set there)";
+
+    NSString *title = nil;
+    NSString *message = nil;
+    if (status == 400) {
+        title = @"Reddit Didn't Accept This API Key";
+        message = [NSString stringWithFormat:@"The Reddit API Key and Redirect URI used for this sign-in don't match a Reddit app, so Reddit won't connect your account. Both have to match the app exactly (for Dystopia, the Redirect URI is dystopia://response).\n\nTo fix it, %@, or sign in without an API key instead.", settingsFix];
+    } else {
+        // Can be an outage, but Old Reddit also answers some malformed client
+        // ids with a 500 "you broke reddit" page instead of its 400 one: any id
+        // whose length is one more than a multiple of 4, e.g. a 14- or
+        // 22-character key missing its last character (checked 2026-09-28).
+        // Only mention Old Reddit when the alert offers it: the authorize page
+        // path may already be on Old Reddit.
+        title = @"Reddit Couldn't Finish Signing In";
+        NSString *retry = offerOldReddit
+            ? @"Wait a few minutes and try again, or switch to Old Reddit and accept there."
+            : @"Wait a few minutes and try again.";
+        message = [NSString stringWithFormat:@"Reddit returned an error (HTTP %ld). %@\n\nIf it keeps happening, %@.", (long)status, retry, settingsFix];
+    }
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    if (offerOldReddit) {
+        __weak typeof(self) weakSelf = self;
+        [alert addAction:[UIAlertAction actionWithTitle:@"Switch to Old Reddit"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [weakSelf _switchToOldReddit];
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)_finishWithURL:(NSURL *)url error:(NSError *)error {
     if (self.finished) return;
     self.finished = YES;
@@ -249,6 +333,45 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     }
 
     decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+// A successful Accept never gets here: Reddit answers with a redirect to the
+// callback URI, which decidePolicyForNavigationAction intercepts. Only error
+// responses from the two consent endpoints are handled; every other response
+// (including errors on login/challenge pages) loads exactly as before.
+- (void)webView:(WKWebView *)webView
+decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
+decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
+    NSHTTPURLResponse *http = [navigationResponse.response isKindOfClass:[NSHTTPURLResponse class]]
+        ? (NSHTTPURLResponse *)navigationResponse.response : nil;
+    NSInteger status = http.statusCode;
+    if (!navigationResponse.isForMainFrame || status < 400) {
+        decisionHandler(WKNavigationResponsePolicyAllow);
+        return;
+    }
+
+    if ([self _isGrantEndpointURL:http.URL]) {
+        // Keep the consent page on screen instead of committing the bare "{}"
+        // body. The cancel surfaces as WebKitErrorDomain 102 in
+        // didFailProvisionalNavigation, which already ignores it.
+        ApolloLog(@"[WebAuth] Reddit rejected the consent grant (HTTP %ld)", (long)status);
+        decisionHandler(WKNavigationResponsePolicyCancel);
+        [self _explainRejectedSignInWithStatus:status offerOldReddit:YES];
+        return;
+    }
+
+    if ([self _isAuthorizePageURL:http.URL]) {
+        // Reddit's error page names the bad field itself; let it render and
+        // add where to fix it once, unless that was already explained.
+        ApolloLog(@"[WebAuth] Reddit rejected the authorize request on %@ (HTTP %ld)", http.URL.host, (long)status);
+        decisionHandler(WKNavigationResponsePolicyAllow);
+        if (!self.explainedRejectedSignIn) {
+            [self _explainRejectedSignInWithStatus:status offerOldReddit:NO];
+        }
+        return;
+    }
+
+    decisionHandler(WKNavigationResponsePolicyAllow);
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {

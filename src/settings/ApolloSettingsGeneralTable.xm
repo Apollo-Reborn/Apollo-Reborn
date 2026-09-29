@@ -54,6 +54,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloSettingsGeneralTable.h"
+#import "ApolloSettingsTableViewController.h"
 
 @interface SettingsGeneralViewController : UIViewController
 @end
@@ -328,6 +329,14 @@ static void ApolloGTZeroReturn(NSInvocation *inv) {
         return;
     }
     SEL sel = inv.selector;
+
+    if (sel == @selector(tableView:willDisplayHeaderView:forSection:)) {
+        [inv invokeWithTarget:vc];
+        __unsafe_unretained UIView *header = nil;
+        [inv getArgument:&header atIndex:3];
+        ApolloSettingsApplySectionHeaderTypography(header);
+        return;
+    }
 
     // Row counts come straight from the map for modified sections.
     if (sel == @selector(tableView:numberOfRowsInSection:)) {

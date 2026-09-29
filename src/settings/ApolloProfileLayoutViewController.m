@@ -435,6 +435,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
         ?: ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
     self.pinnedPreviewTitleLabel.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
         ?: UIColor.secondaryLabelColor;
+    ApolloSettingsApplySectionHeaderTypography(self.pinnedPreviewTitleLabel);
     [self.pinnedPreviewCard apollo_applyCurrentAppearance];
 }
 
@@ -448,12 +449,17 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if (tableView != self.tableView || ![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
-    UIFont *font = ((UITableViewHeaderFooterView *)view).textLabel.font;
-    if (font && ![self.pinnedPreviewTitleLabel.font isEqual:font]) {
-        // Match the real settings section headings, including Apollo fonts.
-        self.pinnedPreviewTitleLabel.font = font;
-        [self apollo_updatePinnedPreviewLayoutPreservingScroll:YES];
+    if (@available(iOS 26.0, *)) {
+        [super tableView:tableView willDisplayHeaderView:view forSection:section];
+        ApolloSettingsApplySectionHeaderTypography(self.pinnedPreviewTitleLabel);
+    } else {
+        if (tableView != self.tableView || ![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+        UIFont *font = ((UITableViewHeaderFooterView *)view).textLabel.font;
+        if (font && ![self.pinnedPreviewTitleLabel.font isEqual:font]) {
+            // Match the real settings section headings, including Apollo fonts.
+            self.pinnedPreviewTitleLabel.font = font;
+            [self apollo_updatePinnedPreviewLayoutPreservingScroll:YES];
+        }
     }
 }
 
@@ -670,6 +676,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     self.pinnedPreviewTitleLabel.text = @"Preview";
     self.pinnedPreviewTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
     self.pinnedPreviewTitleLabel.adjustsFontForContentSizeCategory = YES;
+    ApolloSettingsApplySectionHeaderTypography(self.pinnedPreviewTitleLabel);
     self.pinnedPreviewTitleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     [self.pinnedPreviewHost addSubview:self.pinnedPreviewTitleLabel];
 

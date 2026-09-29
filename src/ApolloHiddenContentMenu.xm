@@ -1,6 +1,8 @@
 #import "ApolloCommon.h"
 #import "ApolloHiddenContentViewController.h"
 #import "ApolloAccountCredentials.h"
+#import <dlfcn.h>
+#import <objc/message.h>
 
 // Defined in ApolloUserAvatars.xm -- more reliable than reading "userInfo"
 // directly, which can be nil for the signed-in user's own profile.
@@ -69,27 +71,38 @@ static id ApolloHiddenObjectIvar(id object, const char *name) {
     return ivar ? object_getIvar(object, ivar) : nil;
 }
 
-static UIViewController *ApolloHiddenProfileControllerForTableNode(ASDisplayNode *tableNode) {
-    UIResponder *responder = tableNode.view;
+static UIViewController *ApolloHiddenListAdapterController(id adapter) {
+    Ivar ivar = class_getInstanceVariable([adapter class], "viewController");
+    if (!ivar) return nil;
+    typedef void *(*ApolloHiddenWeakLoadStrongFunction)(void *slot);
+    static ApolloHiddenWeakLoadStrongFunction weakLoadStrong;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        weakLoadStrong = (ApolloHiddenWeakLoadStrongFunction)dlsym(
+            RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
+    });
+    if (!weakLoadStrong) return nil;
+    void *slot = (uint8_t *)(__bridge void *)adapter + ivar_getOffset(ivar);
+    void *value = weakLoadStrong(slot);
+    return value ? CFBridgingRelease(value) : nil;
+}
+
+static UIViewController *ApolloHiddenProfileControllerForAdapter(id adapter, ASDisplayNode *tableNode) {
+    Class profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
+    UIViewController *owner = ApolloHiddenListAdapterController(adapter);
+    if (owner) return [owner isKindOfClass:profileClass] ? owner : nil;
+
+    // A missing weak owner is unusual, but an attached table's responder chain
+    // is still authoritative. Stop at the first owning controller so a feed
+    // below a visible profile can never borrow that profile's identity.
+    BOOL tableLoaded = [tableNode respondsToSelector:@selector(isNodeLoaded)] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(tableNode, @selector(isNodeLoaded));
+    UIResponder *responder = tableLoaded ? tableNode.view : nil;
     while (responder) {
-        if ([responder isKindOfClass:NSClassFromString(@"_TtC6Apollo21ProfileViewController")]) {
-            return (UIViewController *)responder;
+        if ([responder isKindOfClass:UIViewController.class]) {
+            return [responder isKindOfClass:profileClass] ? (UIViewController *)responder : nil;
         }
         responder = responder.nextResponder;
-    }
-    // A Texture node block can be evaluated before its table has joined the
-    // responder chain. The visible Posts navigation stack is authoritative in
-    // that short window and keeps own-profile placement deterministic.
-    for (UIWindow *window in [ApolloAllWindows() reverseObjectEnumerator]) {
-        UIViewController *candidate = window.rootViewController;
-        while (candidate.presentedViewController) candidate = candidate.presentedViewController;
-        if ([candidate isKindOfClass:UITabBarController.class]) {
-            candidate = ((UITabBarController *)candidate).selectedViewController;
-        }
-        if ([candidate isKindOfClass:UINavigationController.class]) {
-            candidate = ((UINavigationController *)candidate).topViewController;
-        }
-        if ([candidate isKindOfClass:NSClassFromString(@"_TtC6Apollo21ProfileViewController")]) return candidate;
     }
     return nil;
 }
@@ -165,7 +178,11 @@ static char ApolloHiddenIconKey;
 - (id)tableNode:(id)tableNode nodeBlockForRowAtIndexPath:(NSIndexPath *)indexPath {
     id (^originalBlock)(void) = %orig;
     if (!originalBlock) return nil;
-    UIViewController *profileController = ApolloHiddenProfileControllerForTableNode((ASDisplayNode *)tableNode);
+    UIViewController *profileController = ApolloHiddenProfileControllerForAdapter(self, (ASDisplayNode *)tableNode);
+    // ListAdapter backs feeds and many other lists in addition to profiles.
+    // Returning Apollo's factory unchanged outside a profile keeps this hook
+    // out of Texture's asynchronous node-allocation path for those lists.
+    if (!profileController) return originalBlock;
     NSString *profileUsername = ApolloUsernameFromProfileViewController(profileController);
     NSString *activeUsername = ApolloActiveAccountUsername();
     BOOL ownProfile = profileUsername.length > 0 && activeUsername.length > 0 &&
@@ -173,7 +190,7 @@ static char ApolloHiddenIconKey;
     // Profile rows alternate with native separator rows. Reuse the preceding
     // factory so the inserted divider retains Apollo's insets and live themes.
     id (^separatorBlock)(void) = nil;
-    if (profileController && indexPath.row > 0) {
+    if (indexPath.row > 0) {
         NSIndexPath *previous = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
         separatorBlock = %orig(tableNode, previous);
     }

@@ -14,6 +14,7 @@
 #import "ApolloBoldPostTitles.h"
 #import "ApolloCommon.h"
 #import "settings/ApolloSettingsForm.h"
+#import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -549,6 +550,7 @@ static CGFloat HeightForHeader(id self, SEL _cmd, UITableView *tv, NSInteger sec
 
 static void WillDisplayHeader(id self, SEL _cmd, UITableView *tv, UIView *view, NSInteger section) {
     if (sWillDisplayHeaderOrig) sWillDisplayHeaderOrig(self, _cmd, tv, view, section);
+    ApolloSettingsApplySectionHeaderTypography(view);
     if (section != 0 || view.bounds.size.height <= 0) return;
     NSString *category = tv.traitCollection.preferredContentSizeCategory ?: @"";
     NSDictionary *pin = objc_getAssociatedObject(self, kThemesHeaderPinKey);
@@ -842,8 +844,34 @@ static UIImage *CustomPickerSwatch(void) {
 
 %end
 
+// Install explicitly even when the native class inherits (or omits) the
+// optional delegate callback; Logos cannot replace a nonexistent method.
+static NSMutableDictionary<NSString *, NSValue *> *sSettingsHeaderDisplayOriginals;
+static void ApolloNativeThemeHeaderDisplay(id owner, SEL selector, UITableView *table, UIView *view, NSInteger section) {
+    void (*original)(id, SEL, UITableView *, UIView *, NSInteger) =
+        (void (*)(id, SEL, UITableView *, UIView *, NSInteger))[sSettingsHeaderDisplayOriginals[NSStringFromClass([owner class])] pointerValue];
+    if (original) original(owner, selector, table, view, section);
+    ApolloSettingsApplySectionHeaderTypography(view);
+}
+static void InstallNativeThemeHeaderTypography(void) {
+    if (@available(iOS 26.0, *)) {} else { return; }
+    sSettingsHeaderDisplayOriginals = [NSMutableDictionary dictionary];
+    for (NSString *name in @[@"Apollo.SettingsThemeViewController",
+                             @"Apollo.SettingsAppIconViewController",
+                             @"Apollo.SettingsCommunityIconPackViewController"]) {
+        Class cls = NSClassFromString(name);
+        if (!cls) continue;
+        SEL selector = @selector(tableView:willDisplayHeaderView:forSection:);
+        Method method = class_getInstanceMethod(cls, selector);
+        if (method) sSettingsHeaderDisplayOriginals[name] = [NSValue valueWithPointer:(const void *)method_getImplementation(method)];
+        if (!class_addMethod(cls, selector, (IMP)ApolloNativeThemeHeaderDisplay, "v@:@@q"))
+            class_replaceMethod(cls, selector, (IMP)ApolloNativeThemeHeaderDisplay, "v@:@@q");
+    }
+}
+
 %ctor {
     @autoreleasepool {
         InstallAppearanceHooks();
+        InstallNativeThemeHeaderTypography();
     }
 }

@@ -656,6 +656,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
         titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     }
     titleLabel.adjustsFontForContentSizeCategory = YES;
+    ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
     titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     self.previewTitleLabel = titleLabel;
@@ -840,6 +841,10 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     self.previewTitleLabel.textColor =
         ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
         ?: UIColor.secondaryLabelColor;
+    // This heading lives outside the form table, so table reloads do not
+    // refresh it. Reapply the effective text size and native theme palette
+    // on appearance and Dynamic Type changes, before preview measurement.
+    ApolloSettingsApplySectionHeaderTypography(self.previewTitleLabel);
     self.scrollBoundaryView.backgroundColor = ApolloThemeSeparatorColor()
         ?: self.formViewController.tableView.separatorColor
         ?: UIColor.separatorColor;

@@ -47,6 +47,47 @@ UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits) {
               compatibleWithTraitCollection:ApolloSettingsTextTraits(traits)];
 }
 
+static UIFont *ApolloSettingsSectionHeaderFont(UITraitCollection *traits) {
+    return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
+        scaledFontForFont:[UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]
+        compatibleWithTraitCollection:ApolloSettingsTextTraits(traits)];
+}
+
+static NSString *ApolloSettingsTitleCaseHeader(NSString *text) {
+    return text.capitalizedString;
+}
+
+void ApolloSettingsApplySectionHeaderTypography(UIView *view) {
+    // Older iOS versions retain their original casing, fonts, and theme setup.
+    if (@available(iOS 26.0, *)) {} else { return; }
+    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        // UIKit owns standard form headers. Configure their source of truth,
+        // rather than only modifying labels that UIKit can recreate on update.
+        if ([header.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
+            UIListContentConfiguration *configuration = [(UIListContentConfiguration *)header.contentConfiguration copy];
+            configuration.text = ApolloSettingsTitleCaseHeader(configuration.text);
+            configuration.textProperties.font = ApolloSettingsSectionHeaderFont(view.traitCollection);
+            configuration.textProperties.adjustsFontForContentSizeCategory = NO;
+            configuration.textProperties.color = ApolloThemeSettingsSecondaryTextColor()
+                ?: UIColor.secondaryLabelColor;
+            header.contentConfiguration = configuration;
+            return;
+        }
+        // Legacy title-based headers create their label lazily; force its
+        // creation before walking subviews in willDisplayHeaderView.
+        ApolloSettingsApplySectionHeaderTypography(header.textLabel);
+    }
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label = (UILabel *)view;
+        label.text = ApolloSettingsTitleCaseHeader(label.text);
+        label.textColor = ApolloThemeSettingsSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+        label.font = ApolloSettingsSectionHeaderFont(view.traitCollection);
+        label.adjustsFontForContentSizeCategory = NO;
+    }
+    for (UIView *child in view.subviews) ApolloSettingsApplySectionHeaderTypography(child);
+}
+
 static void ApolloSettingsApplyTextTypography(UIView *view) {
     // Only semantic text participates: fixed artwork/preview typography stays
     // with its owner. Keep the descriptor's family and weight, changing size
@@ -188,11 +229,15 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
-        UITableViewHeaderFooterView *sectionView = (UITableViewHeaderFooterView *)view;
-        sectionView.textLabel.font = ApolloSettingsFont(UIFontTextStyleCaption1, view.traitCollection);
+    if (@available(iOS 26.0, *)) {
+        ApolloSettingsApplySectionHeaderTypography(view);
+    } else {
+        if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+            UITableViewHeaderFooterView *sectionView = (UITableViewHeaderFooterView *)view;
+            sectionView.textLabel.font = ApolloSettingsFont(UIFontTextStyleCaption1, view.traitCollection);
+        }
+        ApolloSettingsApplyTextTypography(view);
     }
-    ApolloSettingsApplyTextTypography(view);
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {

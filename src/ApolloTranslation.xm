@@ -334,10 +334,26 @@ static NSString *ApolloCachedLinkTranslationForKey(NSString *key) {
     return hit;
 }
 
+// Bumped by every full flush below. A disk hydrate that was already in flight
+// compares it before inserting anything, so a "forget everything" landing
+// mid-launch is not quietly undone by a snapshot read before it. Main-thread
+// only: the flush runs from a main-queue observer and the hydrate reads it on
+// main.
+static uint32_t sTranslationCacheGeneration = 0;
+
+// YES from the moment the launch hydrate is dispatched until its main-queue
+// insert has run (or it gave up). The persist checks it before touching the
+// file: with the hydrate asynchronous, a background transition that lands
+// before the read has been folded into the mirrors would otherwise snapshot
+// empty mirrors and delete the very file it was still reading. Main-thread
+// only, like the generation above.
+static BOOL sTranslationDiskHydratePending = NO;
+
 // Full flush — caches AND mirrors. For "forget everything" flows (the
 // skip-language list changed). Clearing only the NSCaches would leave the
 // mirror fallbacks above serving the stale entries right back.
 static void ApolloClearAllTranslationCaches(void) {
+    sTranslationCacheGeneration++;
     [sTranslationCache removeAllObjects];
     [sCommentTranslationByFullName removeAllObjects];
     [sLinkTranslationByFullName removeAllObjects];
@@ -560,6 +576,10 @@ static const void *kApolloPostInfoMarkerSizeKey = &kApolloPostInfoMarkerSizeKey;
 // can be recomputed when the marker font changes without a re-parent — e.g. when
 // the post-mount heal resizes a marker that first built at a fallback size.
 static const void *kApolloPostInfoMarkerBaselineKey = &kApolloPostInfoMarkerBaselineKey;
+// How far past the age view's trailing edge the marker was last pinned (see
+// ApolloPostInfoMarkerLeadForAgeView), so a later pass can tell when the stats
+// after the age have moved and re-pin it.
+static const void *kApolloPostInfoMarkerLeadKey = &kApolloPostInfoMarkerLeadKey;
 // Weak set of all live PostInfoNode marker labels, so a globe toggle-to-original
 // can hide them all at once (they're separate UILabels, not owned text nodes).
 static NSHashTable *sPostInfoMarkerLabels = nil;
@@ -6130,6 +6150,17 @@ static BOOL ApolloAttributedStringEndsWithMarker(NSAttributedString *attr) {
     return [attr attribute:ApolloTranslationMarkerAttributeName atIndex:attr.length - 1 effectiveRange:NULL] != nil;
 }
 
+// See ApolloTranslation.h. The appended line is one run tagged with the marker
+// attribute, leading newline included, so cutting that run restores the body.
+NSAttributedString *ApolloTranslationTextByRemovingTrailingMarker(NSAttributedString *text) {
+    if (!ApolloAttributedStringEndsWithMarker(text)) return nil;
+    NSRange markerRange = NSMakeRange(NSNotFound, 0);
+    [text attribute:ApolloTranslationMarkerAttributeName atIndex:text.length - 1
+        longestEffectiveRange:&markerRange inRange:NSMakeRange(0, text.length)];
+    if (markerRange.location == NSNotFound) return nil;
+    return [text attributedSubstringFromRange:NSMakeRange(0, markerRange.location)];
+}
+
 // Tap-to-translate: append the "🌐 Translate" affordance under a comment that is
 // still showing its ORIGINAL text (a translation exists and is cached; the swap
 // is held until the user taps). No ownership is taken — the text stays original.
@@ -6581,10 +6612,71 @@ static UIFont *ApolloStatFontFromPostInfoNode(id postInfoNode, id ageNode) {
     return nil;
 }
 
+// The stats PostInfoNode lays out AFTER the age stat, in row order
+// (-[PostInfoNode layoutSpecThatFits:] builds the row as points, %, comments,
+// age, then these). Apollo only creates the edited pencil in the thread header,
+// and only for an edited post. Nil ivars and nodes the layout left out are not
+// mounted and get skipped.
+static const char *const kApolloPostInfoStatsAfterAge[] = {
+    "editedButtonNode", "awardsNode", "modButtonNode",
+    "moreOptionsButtonNode", "modOptionsNode", "approvedButton",
+};
+
+// Where the marker starts, in points past the age view's trailing edge: 6pt
+// after the LAST stat that follows the age in this row. A fixed 6pt after the
+// age drew the marker on top of the edited pencil in every edited post's thread
+// header, and the pencil's tap then won over the marker's (#1255). Compact rows
+// stop at the ⋯ button: ApolloReserveMarkerSlotInCompactRow reserves the
+// marker's slot right after it, and mod options / approved move over to make
+// room. Measured from laid-out layers, so a stat that hasn't been laid out yet
+// is skipped; the didEnterVisibleState heal measures again once the row is on
+// screen (ApolloReanchorPostInfoMarkerIfFallback).
+static CGFloat ApolloPostInfoMarkerLeadForAgeView(id postInfoNode, UIView *ageView) {
+    CGFloat lead = 6.0;
+    CALayer *ageLayer = [ageView isKindOfClass:[UIView class]] ? ageView.layer : nil;
+    if (!postInfoNode || !ageLayer) return lead;
+    BOOL infoIsCompact = NO;
+    Ivar civ = NULL;
+    for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
+        civ = class_getInstanceVariable(c, "isCompact");
+    }
+    if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
+    CGFloat ageWidth = ageView.bounds.size.width;
+    for (size_t i = 0; i < sizeof(kApolloPostInfoStatsAfterAge) / sizeof(kApolloPostInfoStatsAfterAge[0]); i++) {
+        const char *name = kApolloPostInfoStatsAfterAge[i];
+        id node = GetIvarObjectQuiet(postInfoNode, name);
+        if (!node) continue;
+        // Never load a node just to measure it: an unloaded node isn't on screen.
+        BOOL loaded = NO;
+        @try { loaded = [node respondsToSelector:@selector(isNodeLoaded)] && ((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded)); } @catch (__unused NSException *e) {}
+        CALayer *layer = nil;
+        if (loaded) {
+            @try { if ([node respondsToSelector:@selector(layer)]) layer = [node layer]; } @catch (__unused NSException *e) {}
+        }
+        // Same row container as the age stat (both are direct subnodes of the
+        // PostInfoNode), visible, and laid out.
+        CGRect r = CGRectNull;
+        BOOL usable = layer && !layer.hidden && layer.superlayer && layer.superlayer == ageLayer.superlayer;
+        if (usable) {
+            r = [layer convertRect:layer.bounds toLayer:ageLayer];
+            usable = !CGRectIsNull(r) && !CGRectIsInfinite(r) && !CGRectIsEmpty(r);
+        }
+        if (usable) {
+            CGFloat past = CGRectGetMaxX(r) - ageWidth + 6.0;
+            // Sanity cap against a bogus frame (the whole run after the age is
+            // well under 200pt of stat-font text and icons).
+            if (past > lead && past < 200.0) lead = past;
+        }
+        if (infoIsCompact && strcmp(name, "moreOptionsButtonNode") == 0) break;
+    }
+    return lead;
+}
+
 // Show/hide the compact "🌐 PT" marker overlaid on the metadata-row PostInfoNode
 // reachable from `anyNode` (a header cell node, a title node, etc.). The label
-// is pinned to the PostInfoNode's OWN view (bottom-trailing), so it tracks the
-// metadata row regardless of cell height — no fragile fixed offset.
+// is a child of the age stat's view, placed past the last stat in the row, so it
+// tracks the metadata row regardless of cell height — no fragile fixed offset.
+// Before the row is mounted it falls back to the PostInfoNode's own view.
 static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, BOOL show, id toggleNode) {
     id postInfoNode = ApolloPostInfoNodeForAnyNode(anyNode);
     if (!postInfoNode) return;
@@ -6602,10 +6694,11 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     // its tintColor is the effective accent.
     @try { UIColor *t = piView.tintColor; if ([t isKindOfClass:[UIColor class]]) sCachedThemeTint = t; } @catch (__unused NSException *e) {}
 
-    // Anchor the marker right AFTER the age/time node so it sits consistently at
-    // the end of the "↑ 💬 🕐" stats. The PostInfoNode's own bounds vary per cell
-    // (sometimes content-width, sometimes full-width), which made a trailing-edge
-    // pin land all over the place — so pin to the ageButtonNode instead.
+    // Anchor the marker to the age/time node so it sits consistently at the end
+    // of the "↑ 💬 🕐" stats (past any stat Apollo draws after the age — see
+    // ApolloPostInfoMarkerLeadForAgeView). The PostInfoNode's own bounds vary per
+    // cell (sometimes content-width, sometimes full-width), which made a
+    // trailing-edge pin land all over the place — so pin to the ageButtonNode.
     id ageNode = nil;
     UIView *ageView = nil;
     {
@@ -6664,9 +6757,21 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
         [sPostInfoMarkerLabels addObject:label];
     }
     host.clipsToBounds = NO;   // marker extends past the age view's right edge (re-assert each call in case ASDK reset it)
+    // Start the marker past whatever Apollo draws after the age stat in this row
+    // (the edited pencil in an edited post's thread header, the ⋯ button in
+    // compact rows) instead of on top of it. Measured every call: the stats after
+    // the age may not have been laid out on an earlier pass.
+    CGFloat markerLead = (host == ageView) ? ApolloPostInfoMarkerLeadForAgeView(postInfoNode, ageView) : 0.0;
+    NSNumber *pinnedLead = objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey);
+    BOOL leadMoved = host == ageView && label.superview == host &&
+                     (![pinnedLead isKindOfClass:[NSNumber class]] || fabs(pinnedLead.doubleValue - markerLead) >= 0.5);
+    if (leadMoved) {
+        ApolloLog(@"[Translation] marker lead %.1f -> %.1f", [pinnedLead doubleValue], markerLead);
+    }
     // (Re)parent under the current host each call — the age node re-mounts its view
-    // on re-processing, so re-add to the live one and drop stale constraints.
-    if (label.superview != host) {
+    // on re-processing, so re-add to the live one and drop stale constraints. A
+    // moved lead re-pins the same way, with fresh constraints.
+    if (label.superview != host || leadMoved) {
         NSArray *oldC = objc_getAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey);
         if ([oldC isKindOfClass:[NSArray class]]) [NSLayoutConstraint deactivateConstraints:oldC];
         [label removeFromSuperview];
@@ -6679,30 +6784,6 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // ↑ 💬 🕐 icons. This is now safe: the label is a CHILD of the age
             // view, so it's in a stable coordinate space (no cross-boundary drift
             // that made firstBaselineAnchor unreliable before).
-            //
-            // COMPACT rows draw the ⋯ more-options button immediately after the
-            // age stat — a 6pt lead put the marker right on top of it. When this
-            // is a compact PostInfoNode and the dots are mounted, start the
-            // marker just past their trailing edge instead (…🕐18h ⋯ 🌐PT).
-            CGFloat markerLead = 6.0;
-            {
-                BOOL infoIsCompact = NO;
-                Ivar civ = NULL;
-                for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
-                    civ = class_getInstanceVariable(c, "isCompact");
-                }
-                if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
-                if (infoIsCompact) {
-                    id dotsNode = GetIvarObjectQuiet(postInfoNode, "moreOptionsButtonNode");
-                    CALayer *dotsLayer = nil;
-                    @try { if ([dotsNode respondsToSelector:@selector(layer)]) dotsLayer = [dotsNode layer]; } @catch (__unused NSException *e) {}
-                    if (dotsLayer && dotsLayer.superlayer && !dotsLayer.hidden && ageView.layer) {
-                        CGRect dotsInAge = [dotsLayer convertRect:dotsLayer.bounds toLayer:ageView.layer];
-                        CGFloat pastDots = CGRectGetMaxX(dotsInAge) - ageView.bounds.size.width + 6.0;
-                        if (pastDots > markerLead && pastDots < 120.0) markerLead = pastDots;
-                    }
-                }
-            }
             NSLayoutConstraint *baseline = [label.firstBaselineAnchor constraintEqualToAnchor:ageView.topAnchor constant:markerFont.ascender];
             fresh = @[
                 [label.leadingAnchor constraintEqualToAnchor:ageView.trailingAnchor constant:markerLead],
@@ -6712,12 +6793,14 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // path) can re-point its constant to the new font's ascender without a
             // full re-parent.
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, baseline, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, @(markerLead), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else {
             fresh = @[
                 [label.trailingAnchor constraintEqualToAnchor:piView.trailingAnchor constant:-2.0],
                 [label.centerYAnchor constraintEqualToAnchor:piView.centerYAnchor constant:0.0],
             ];
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         [NSLayoutConstraint activateConstraints:fresh];
         objc_setAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey, fresh, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -6827,15 +6910,24 @@ static void ApolloReanchorPostInfoMarkerIfFallback(id postInfoNode, BOOL allowRe
     // which is exactly when the "🌐 PT" showed up oversized). Now that the row is
     // on screen the stats are bound, so re-read the real stat font: if it differs
     // from the size the marker was last built at, fall through and re-run the
-    // updater to resize it to match the stats. Only when the anchor is fine AND
-    // the size already matches (or the real font still isn't readable) do we bail.
+    // updater to resize it to match the stats. The marker's lead gets the same
+    // check: the stats after the age (the edited pencil in a thread header, ⋯ in
+    // compact rows) may not have been laid out when it was pinned, so measure
+    // again against the label's superview (anchored means that IS the live age
+    // view) and re-pin if it moved. Only when the anchor is fine, the size matches
+    // (or the real font still isn't readable) AND the lead matches do we bail.
     NSString *reason = anchored ? @"detached" : @"fallback-pin";
     if (anchored && label.window) {
         id ageNode = GetIvarObjectQuiet(postInfoNode, "ageButtonNode");
         UIFont *realFont = ApolloStatFontFromPostInfoNode(postInfoNode, ageNode);
         CGFloat builtAt = [objc_getAssociatedObject(label, kApolloPostInfoMarkerSizeKey) doubleValue];
-        if (![realFont isKindOfClass:[UIFont class]] || fabs(realFont.pointSize - builtAt) < 0.5) return;
-        reason = [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize];
+        BOOL sizeStale = [realFont isKindOfClass:[UIFont class]] && fabs(realFont.pointSize - builtAt) >= 0.5;
+        CGFloat pinnedLead = [objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey) doubleValue];
+        CGFloat wantLead = ApolloPostInfoMarkerLeadForAgeView(postInfoNode, label.superview);
+        BOOL leadStale = fabs(wantLead - pinnedLead) >= 0.5;
+        if (!sizeStale && !leadStale) return;
+        reason = sizeStale ? [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize]
+                           : [NSString stringWithFormat:@"lead %.1f→%.1f", pinnedLead, wantLead];
     }
     NSString *code = objc_getAssociatedObject(label, kApolloPostInfoMarkerCodeKey);
     if (![code isKindOfClass:[NSString class]] || code.length == 0) return;
@@ -9891,6 +9983,26 @@ static NSString *ApolloCurrentTranslationTag(void) {
     return [NSString stringWithFormat:@"%@|%@", provider, language];
 }
 
+// Every touch of the cache file goes through one serial queue: the hydrate's
+// read at launch, and each background's write-or-delete. Two background
+// transitions close together used to be impossible to interleave because the
+// persist ran inline on main; now that it is asynchronous, a concurrent queue
+// would let one job unlink the file another had just written, or let an older
+// snapshot land after a newer one. Serial submission also means each job takes
+// its mirror snapshot after the previous job finished, so the last write always
+// reflects the newest state.
+static dispatch_queue_t ApolloTranslationDiskQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create_with_target(
+            "com.apolloreborn.translation-disk-cache",
+            DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL,
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
+
 static void ApolloPersistTranslationCachesToDisk(void) {
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
@@ -9907,6 +10019,16 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     }
     @synchronized (sLinkTranslationMirror) {
         linkSnapshot = [sLinkTranslationMirror copy];
+    }
+
+    // Nothing cached: drop the file instead of serializing an empty one. It has
+    // to go rather than just be skipped — a skip-language change flushes the
+    // mirrors but the on-disk tag only covers provider and target language, so
+    // leaving the old file would rehydrate exactly the entries the user asked
+    // to forget.
+    if (commentSnapshot.count == 0 && linkSnapshot.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtURL:url error:NULL];
+        return;
     }
 
     NSMutableArray *commentEntries = [NSMutableArray array];
@@ -9944,53 +10066,108 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     ApolloLog(@"[translation/persist] wrote %lu comment + %lu link entries", (unsigned long)commentEntries.count, (unsigned long)linkEntries.count);
 }
 
+static void ApolloPersistTranslationCachesInBackground(void) {
+    // The mirrors are not authoritative until the launch hydrate has folded the
+    // file in; writing (or deleting) now would lose everything still on disk.
+    // Nothing new can have been lost either way: the next background persists.
+    if (sTranslationDiskHydratePending) {
+        ApolloLog(@"[translation/persist] skipped: disk hydrate still in flight");
+        return;
+    }
+    UIApplication *app = [UIApplication sharedApplication];
+    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+    void (^endTask)(void) = ^{
+        if (task == UIBackgroundTaskInvalid) return;
+        UIBackgroundTaskIdentifier finished = task;
+        task = UIBackgroundTaskInvalid;
+        [app endBackgroundTask:finished];
+    };
+    // Expiration handlers are delivered on the main thread, so ending from a
+    // main hop too keeps `task` single-threaded without a lock.
+    task = [app beginBackgroundTaskWithName:@"ApolloTranslationPersist" expirationHandler:endTask];
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        ApolloPersistTranslationCachesToDisk();
+        dispatch_async(dispatch_get_main_queue(), endTask);
+    });
+}
+
+// Filters one persisted section (comments or links) down to the entries that
+// are still valid for `tag` at `now`. Pure — runs on whatever queue calls it.
+static NSDictionary<NSString *, NSString *> *ApolloTranslationEntriesStillValid(id section, NSString *tag, NSDate *now) {
+    NSMutableDictionary<NSString *, NSString *> *valid = [NSMutableDictionary dictionary];
+    if (![section isKindOfClass:[NSArray class]]) return valid;
+    for (NSDictionary *entry in (NSArray *)section) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSString *key = entry[@"k"];
+        NSString *text = entry[@"v"];
+        NSDate *t = entry[@"t"];
+        NSString *entryTag = entry[@"tag"];
+        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
+        if (![entryTag isEqualToString:tag]) continue;
+        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
+        valid[key] = text;
+    }
+    return valid;
+}
+
+// The file holds up to 2048 comment + 256 link entries, so reading and parsing
+// it belongs off the launch thread; only the cache/mirror inserts hop back to
+// main, where every other reader of those caches lives. It runs whether or not
+// bulk translation is on: Tap to Translate fills the same caches with it off,
+// and the persist on background writes whatever the mirrors hold, so skipping
+// the hydrate in a bulk-off session would replace the file with that session's
+// handful of entries (or delete it) and lose the cache the user built up.
 static void ApolloHydrateTranslationCachesFromDisk(void) {
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
-    NSData *data = [NSData dataWithContentsOfURL:url];
-    if (!data) return;
-
-    NSError *err = nil;
-    id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
-    if (![root isKindOfClass:[NSDictionary class]]) {
-        ApolloLog(@"[translation/hydrate] bad plist: %@", err);
-        return;
-    }
-    NSString *version = root[@"version"];
-    if (![version isEqualToString:kApolloTranslationDiskCacheVersion]) return;
-
     NSString *currentTag = ApolloCurrentTranslationTag();
-    NSDate *now = [NSDate date];
+    uint32_t generation = sTranslationCacheGeneration;
+    sTranslationDiskHydratePending = YES;
 
-    NSUInteger restored = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"comments"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sCommentTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetComment(key, text);
-        restored++;
-    }
-    NSUInteger restoredLinks = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"links"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sLinkTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetLink(key, text);
-        restoredLinks++;
-    }
-    ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)", (unsigned long)restored, (unsigned long)restoredLinks, currentTag);
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        NSDictionary<NSString *, NSString *> *comments = nil;
+        NSDictionary<NSString *, NSString *> *links = nil;
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        if (data) {
+            NSError *err = nil;
+            id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
+            if (![root isKindOfClass:[NSDictionary class]]) {
+                ApolloLog(@"[translation/hydrate] bad plist: %@", err);
+            } else if ([root[@"version"] isEqualToString:kApolloTranslationDiskCacheVersion]) {
+                NSDate *now = [NSDate date];
+                comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
+                links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
+            }
+        }
+
+        // Always hop back, even with nothing to insert: the persist waits on the
+        // pending flag, and only the main thread may clear it.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sTranslationDiskHydratePending = NO;
+            if (comments.count == 0 && links.count == 0) return;
+            // This snapshot is only good if nothing invalidated it while the
+            // read was in flight, and it must never win over a translation the
+            // running app already produced for the same key.
+            if (generation != sTranslationCacheGeneration) return;
+            if (![currentTag isEqualToString:ApolloCurrentTranslationTag()]) return;
+
+            NSUInteger restoredComments = 0, restoredLinks = 0;
+            for (NSString *key in comments) {
+                if (ApolloCachedCommentTranslationForFullName(key).length > 0) continue;
+                [sCommentTranslationByFullName setObject:comments[key] forKey:key];
+                ApolloMirrorSetComment(key, comments[key]);
+                restoredComments++;
+            }
+            for (NSString *key in links) {
+                if (ApolloCachedLinkTranslationForKey(key).length > 0) continue;
+                [sLinkTranslationByFullName setObject:links[key] forKey:key];
+                ApolloMirrorSetLink(key, links[key]);
+                restoredLinks++;
+            }
+            ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)",
+                      (unsigned long)restoredComments, (unsigned long)restoredLinks, currentTag);
+        });
+    });
 }
 
 // Re-runs the cache-only translation reapply path for the currently-visible
@@ -10496,12 +10673,15 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
     // never comes before suspension: the snapshot silently slipped to the
     // following resume (visible in user logs as "[translation/persist]
     // wrote …" milliseconds after the foreground heal) and was lost
-    // entirely when the app was jetsam-killed while suspended.
+    // entirely when the app was jetsam-killed while suspended. The background
+    // task preserves that "finishes before suspension" guarantee now that the
+    // serialize + write themselves run on a utility queue instead of blocking
+    // the main thread through the whole transition.
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(__unused NSNotification *note) {
-        ApolloPersistTranslationCachesToDisk();
+        ApolloPersistTranslationCachesInBackground();
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
                                                       object:nil

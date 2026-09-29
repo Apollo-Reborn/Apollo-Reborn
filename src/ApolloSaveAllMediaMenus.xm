@@ -516,7 +516,8 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
     }
     if (recognizer.state == UIGestureRecognizerStateBegan) {
         __weak ApolloFullScreenImageMenu *weakContext = context;
-        ApolloNativeActionMenuPresentCaptured(ApolloFullScreenImageMenuBuild(context, NO), recognizer.view, context, ^{
+        ApolloNativeActionMenuPresentCapturedAtPoint(ApolloFullScreenImageMenuBuild(context, NO), recognizer.view,
+                                                     [recognizer locationInView:recognizer.view], context, ^{
             weakContext.ended = YES;
         });
     }
@@ -528,6 +529,9 @@ static UIMenu *ApolloFullScreenWithoutSharing(UIMenu *menu) {
         UIContextMenuConfiguration *config = [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
             actionProvider:^UIMenu *(__unused NSArray *suggested) { return ApolloFullScreenImageMenuBuild(image, NO); }];
         objc_setAssociatedObject(config, &kApolloFullScreenImageMenuKey, image, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // This path constructs its own configuration without calling %orig,
+        // so explicitly share the viewer's press-location preview anchor.
+        ApolloNativeActionMenuAnchorMediaConfiguration(config, location);
         return config;
     }
     ApolloSaveAllMenuContext *previous = sApolloSaveAllConfigContext;

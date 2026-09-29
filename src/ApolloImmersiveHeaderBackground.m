@@ -6,6 +6,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloThemeRuntime.h"
 
 static CGFloat const ApolloImmersiveBackdropBlurSigma = 28.0;
@@ -198,8 +199,9 @@ void ApolloImmersiveBannerIsLightAsync(UIImage *banner, void (^completion)(BOOL 
 static CGFloat const ApolloImmersiveBackdropMaxDimension = 640.0;
 // Defense-in-depth alongside countLimit below — bounds the cache by actual
 // decoded bytes, not just entry count, so a handful of huge banners can't
-// blow past a reasonable memory budget.
-static NSUInteger const ApolloImmersiveBackdropCacheByteBudget = 32 * 1024 * 1024;
+// blow past a reasonable memory budget. Every entry is downsampled to the
+// 640px cap above first (~1.6MB), so this holds five headers.
+static NSUInteger const ApolloImmersiveBackdropCacheByteBudget = 8 * 1024 * 1024;
 
 static UIImage *ApolloImmersiveDownsampledImage(UIImage *image, CGFloat maxDimension) {
     CGSize size = image.size;
@@ -250,19 +252,14 @@ static UIImage *ApolloImmersiveGaussianBlurredImage(UIImage *image) {
     return result;
 }
 
-static NSUInteger ApolloImmersiveImageByteCost(UIImage *image) {
-    if (!image) return 0;
-    CGFloat scale = MAX((CGFloat)1.0, image.scale);
-    return (NSUInteger)(image.size.width * scale * image.size.height * scale * 4.0);
-}
-
 static NSCache<NSString *, UIImage *> *ApolloImmersiveBackdropCache(void) {
     static NSCache<NSString *, UIImage *> *cache = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 12;
+        cache.countLimit = 8;
         cache.totalCostLimit = ApolloImmersiveBackdropCacheByteBudget;
+        ApolloMemoryRegisterPurgableCache(@"immersive-backdrops", cache);
     });
     return cache;
 }
@@ -319,7 +316,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
                 if (backdrop) {
                     [ApolloImmersiveBackdropCache() setObject:backdrop
                                                        forKey:key
-                                                         cost:ApolloImmersiveImageByteCost(backdrop)];
+                                                         cost:ApolloImageByteCost(backdrop)];
                 }
                 waiters = [ApolloImmersiveBackdropWaiters()[key] copy];
                 [ApolloImmersiveBackdropWaiters() removeObjectForKey:key];

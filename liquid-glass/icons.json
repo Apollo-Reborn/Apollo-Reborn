@@ -18,7 +18,7 @@
     },
     {
       "id": "concepts", "title": "Concepts",
-      "coverIconIDs": ["paulo1manso-modern", "synthwave", "bajader-rtr"],
+      "coverIconIDs": ["paulo1manso-modern", "bajader-rtr", "toon-bot-2"],
       "description": "A mix of standalone icon concepts, including small thematic sets too short for their own pack."
     }
   ],
@@ -91,6 +91,8 @@
     { "id": "paulo1manso-modern",       "displayName": "Modern",              "designer": "paulo1manso",     "group": "concepts" },
     { "id": "paulo1manso-modern-alt",   "displayName": "Modern Alt",          "designer": "paulo1manso",     "group": "concepts" },
     { "id": "synthwave",                "displayName": "Synthwave",           "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "toon-bot",                 "displayName": "Toon Bot",            "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "toon-bot-2",               "displayName": "Happy Toon Bot",      "designer": "IllIIllIllIllII", "group": "concepts" },
     { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng",           "group": "concepts" },
 
     
