@@ -13,6 +13,7 @@ video = (root / "src/ApolloShareAsVideo.xm").read_text()
 makefile = (root / "Makefile").read_text()
 
 required = {
+    "the Link menu uses the Apollo theme accent helper": "button.tintColor = ApolloThemeAccentColor() ?: [(UIViewController *)vc view].tintColor;",
     "comment availability gates the third menu choice": "BOOL hasComment = ApolloShareLinkHasComment(vc);",
     "comment choice is exposed": "@(ApolloShareLinkModeComment)",
     "the selected mode is captured at the share boundary": "sActiveShareLinkMode = ApolloShareLinkModeRead",

@@ -22,8 +22,10 @@ ApolloShareLinkMode ApolloShareLinkModeRead(NSUserDefaults *defaults, BOOL hasCo
 /// the Share as Video module and older builds continue to attach a post link.
 void ApolloShareLinkModeWrite(NSUserDefaults *defaults, ApolloShareLinkMode mode);
 
-/// Resolves `-[RDKComment urlWithContext:]` with zero context. A missing,
-/// malformed, or throwing comment object safely falls back to the post URL.
+/// Resolves `-[RDKComment urlWithContext:]`. Apollo ignores the argument and
+/// always builds reddit.com/r/<sub>/comments/<post>/_/<comment>/?context=1, the
+/// same link its own comment Share uses. A missing, malformed, or throwing
+/// comment object safely falls back to the post URL.
 NSURL *ApolloShareLinkCommentURL(id comment, NSURL *postURL);
 
 /// Makes Apollo's relative Reddit permalinks suitable for external share targets.

@@ -44,6 +44,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloShareAsImageLinkMode.h"
+#import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
 
 // Display text for the new options row.
@@ -371,7 +372,7 @@ static void ApolloShareLinkInstallRow(id vc) {
     // sheet affordance. A comment share gets the third Comment Link choice.
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.titleLabel.font = watermarkLabel.font;
-    button.tintColor = watermarkSwitch.onTintColor ?: [(UIViewController *)vc view].tintColor;
+    button.tintColor = ApolloThemeAccentColor() ?: [(UIViewController *)vc view].tintColor;
     button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
     button.showsMenuAsPrimaryAction = YES;
     [container addSubview:button];
