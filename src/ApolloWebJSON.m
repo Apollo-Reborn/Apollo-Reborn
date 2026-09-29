@@ -290,9 +290,11 @@ static ApolloWebJSONPathKind ApolloWebJSONClassifyReadPath(NSString *path) {
     return ApolloWebJSONPathUnsupported;
 }
 
-// Whitelist a write (POST/PUT/DELETE). Apollo's write actions all POST to
+// Whitelist a write (POST/PUT/DELETE). Apollo's write actions nearly all POST to
 // oauth.reddit.com/api/<action>; the web mirror at www.reddit.com/api/<action>
-// accepts the same body with cookie + modhash auth. We allow the whole /api/
+// accepts the same body with cookie + modhash auth (the few subreddit-scoped
+// /r/<sub>/api/<action> ones are mapped onto that first, see
+// ApolloWebJSONSubredditWriteAPIPath). We allow the whole /api/
 // surface but exclude the OAuth token endpoints (those are the identity layer's
 // job, not a content write) and media uploads (multipart, handled elsewhere).
 static BOOL ApolloWebJSONWritePathIsRoutable(NSString *path) {
@@ -313,6 +315,55 @@ static BOOL ApolloWebJSONWritePathIsRoutable(NSString *path) {
     // authenticates itself (cookie + X-Modhash, probe fragment). Leave it alone.
     if ([path isEqualToString:@"/api/image_upload_s3.json"]) return NO;
     return YES;
+}
+
+// Subreddit-scoped writes Apollo sends as POST /r/<sub>/api/<action>: a post's
+// flair (selectflair, from Set Post Flair), your own flair's visibility
+// (setflairenabled) and wiki page saves (wiki/edit, from the AutoModerator
+// editor's Save). www.reddit.com 404s that form for cookie requests, so they
+// used to stay on oauth.reddit.com with the placeholder bearer and draw a 403
+// that RedditKit reports as success. www serves the same action as POST
+// /api/<action> with the subreddit in an `r` form field, the way old reddit's
+// own pages send it (checked live 2026-09-29: selectflair set and cleared a
+// post's flair and your own flair, setflairenabled wrote its current value, and
+// wiki/edit got as far as Reddit's INVALID_PAGE_NAME). Returns that /api/ path
+// and sets *subreddit, or nil when `path` isn't one of these writes.
+static NSString *ApolloWebJSONSubredditWriteAPIPath(NSString *path, NSString **subreddit) {
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:@"^/r/([^/]+)/api/(selectflair|setflairenabled|wiki/edit)/?$"
+                                                         options:NSRegularExpressionCaseInsensitive error:NULL];
+    });
+    NSTextCheckingResult *m = [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)];
+    if (!m) return nil;
+    if (subreddit) *subreddit = [path substringWithRange:[m rangeAtIndex:1]];
+    return [@"/api/" stringByAppendingString:[[path substringWithRange:[m rangeAtIndex:2]] lowercaseString]];
+}
+
+// `request`'s form body with an `r` field naming `subreddit` appended (kept as
+// is when it already has one), or nil when the body isn't a plain url-encoded
+// form this can extend (JSON, multipart, a stream).
+static NSData *ApolloWebJSONFormBodyAddingSubreddit(NSURLRequest *request, NSString *subreddit) {
+    NSString *contentType = [[request valueForHTTPHeaderField:@"Content-Type"] lowercaseString] ?: @"";
+    if (contentType.length > 0 && ![contentType hasPrefix:@"application/x-www-form-urlencoded"]) return nil;
+    if (request.HTTPBody.length == 0 && request.HTTPBodyStream) return nil;
+    NSString *body = request.HTTPBody.length > 0
+        ? [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding] : @"";
+    if (!body || subreddit.length == 0) return nil;
+    for (NSString *pair in [body componentsSeparatedByString:@"&"]) {
+        if ([pair isEqualToString:@"r"] || [pair hasPrefix:@"r="]) return request.HTTPBody;
+    }
+    static NSCharacterSet *unreserved;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        unreserved = [NSCharacterSet characterSetWithCharactersInString:
+            @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"];
+    });
+    NSString *field = [@"r=" stringByAppendingString:
+        [subreddit stringByAddingPercentEncodingWithAllowedCharacters:unreserved] ?: @""];
+    return [(body.length > 0 ? [body stringByAppendingFormat:@"&%@", field] : field)
+            dataUsingEncoding:NSUTF8StringEncoding];
 }
 
 // GET /api/v1/<subreddit>/moderators is the modern moderator-list endpoint —
@@ -507,6 +558,22 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         return modMutable;
     }
 
+    // A subreddit-scoped write goes to www as /api/<action> with an `r` form
+    // field instead (ApolloWebJSONSubredditWriteAPIPath). Without a body we can
+    // extend it's left on its old route: sent without `r`, Reddit would apply
+    // it outside the subreddit.
+    NSString *writeSubreddit = nil;
+    NSString *subredditWritePath = isWrite ? ApolloWebJSONSubredditWriteAPIPath(path, &writeSubreddit) : nil;
+    NSData *subredditWriteBody = nil;
+    if (subredditWritePath) {
+        subredditWriteBody = ApolloWebJSONFormBodyAddingSubreddit(request, writeSubreddit);
+        if (!subredditWriteBody) {
+            ApolloLog(@"[WebJSON] Can't add r=%@ to the body of %@ %@ — leaving it on oauth", writeSubreddit, method, path);
+            return nil;
+        }
+        path = subredditWritePath;
+    }
+
     ApolloWebJSONPathKind kind = ApolloWebJSONPathUnsupported;
     if (isWrite) {
         if (!ApolloWebJSONWritePathIsRoutable(path)) return nil;
@@ -530,6 +597,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (!components) return nil;
     components.host = @"www.reddit.com";
+    if (subredditWritePath) components.path = subredditWritePath;
 
     // Listing/page URLs must carry ".json"; /api endpoints are already JSON.
     if (kind == ApolloWebJSONPathListing) {
@@ -549,6 +617,16 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 
     NSMutableURLRequest *mutable = [request mutableCopy];
     mutable.URL = rewrittenURL;
+    if (subredditWriteBody) {
+        mutable.HTTPBody = subredditWriteBody;
+        [mutable setValue:[NSString stringWithFormat:@"%lu", (unsigned long)subredditWriteBody.length]
+       forHTTPHeaderField:@"Content-Length"];
+        if ([mutable valueForHTTPHeaderField:@"Content-Type"].length == 0) {
+            [mutable setValue:@"application/x-www-form-urlencoded; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+        }
+        ApolloLog(@"[WebJSON] Sent %@ %@ as %@ with r=%@ (www only serves this write in that form)",
+                  method, url.path, subredditWritePath, writeSubreddit);
+    }
 
     // Cookie auth replaces the bearer token outright.
     [mutable setValue:nil forHTTPHeaderField:@"Authorization"];

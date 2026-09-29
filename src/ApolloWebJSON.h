@@ -18,7 +18,9 @@ extern "C" {
 // Coverage (see docs/web-json-spike-findings.md → "Deferred work"):
 //   • Reads  — listings, comments, user pages, search, multis, subscriptions,
 //              inbox/messages, "about", and every /api/* GET endpoint.
-//   • Writes — vote/comment/save/submit/subscribe/… POST/PUT/DELETE to /api/*,
+//   • Writes — vote/comment/save/submit/subscribe/… POST/PUT/DELETE to /api/*
+//              (post flair, flair visibility and wiki saves, which Apollo sends
+//              to /r/<sub>/api/<action>, go to /api/<action> with an `r` field),
 //              authenticated with the session cookie + X-Modhash.
 //   • OAuth-only moderator endpoints (removal reasons, /api/v1/modactions/*) —
 //              the cookie can't authenticate these at all, so they go to
