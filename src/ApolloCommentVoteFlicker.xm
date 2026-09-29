@@ -52,10 +52,128 @@
 @property (nonatomic) BOOL neverShowPlaceholders;
 @property (nonatomic) BOOL displaysAsynchronously;
 - (NSArray<ASDisplayNode *> *)subnodes;
+- (void)didEnterHierarchy;
+- (void)didExitHierarchy;
 - (void)setNeedsLayout;
 - (void)layoutIfNeeded;
 - (void)recursivelyEnsureDisplaySynchronously:(BOOL)sync;
 @end
+
+// MARK: - macOS Texture focus redraw
+//
+// The iOS-on-Mac compatibility layer changes window tint/focus state whenever
+// Apollo gains or loses key-window status, including when UIKit presents an
+// alert. Texture responds by invalidating tinted ASTextNode/ASImageNode leaves,
+// then redraws them asynchronously. Track only those leaves while they are in
+// the hierarchy and synchronously finish their pending display at each Mac
+// focus boundary. Normal scrolling and ordinary redraws remain asynchronous.
+static BOOL ApolloVFIsMacRuntime(void) {
+    static BOOL result = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+        NSArray<NSString *> *selectorNames = @[ @"isiOSAppOnMac", @"isMacCatalystApp" ];
+        for (NSString *selectorName in selectorNames) {
+            SEL selector = NSSelectorFromString(selectorName);
+            if ([processInfo respondsToSelector:selector] &&
+                ((BOOL (*)(id, SEL))objc_msgSend)(processInfo, selector)) {
+                result = YES;
+                break;
+            }
+        }
+    });
+    return result;
+}
+
+static BOOL ApolloVFNeedsMacSynchronousDisplay(id node) {
+    if (!node) return NO;
+    const char *classNames[] = { "ASTextNode", "ASTextNode2", "ASImageNode" };
+    for (size_t i = 0; i < sizeof(classNames) / sizeof(classNames[0]); i++) {
+        Class nodeClass = objc_getClass(classNames[i]);
+        if (nodeClass && [node isKindOfClass:nodeClass]) return YES;
+    }
+    return NO;
+}
+
+static NSHashTable *ApolloVFMacDisplayLeaves(void) {
+    static NSHashTable *leaves = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ leaves = [NSHashTable weakObjectsHashTable]; });
+    return leaves;
+}
+
+static void ApolloVFTrackMacDisplayLeaf(id node, BOOL inHierarchy) {
+    if (!ApolloVFNeedsMacSynchronousDisplay(node)) return;
+    NSHashTable *leaves = ApolloVFMacDisplayLeaves();
+    @synchronized (leaves) {
+        if (inHierarchy) [leaves addObject:node];
+        else [leaves removeObject:node];
+    }
+}
+
+static void ApolloVFFlushTrackedMacDisplayLeaves(void) {
+    NSHashTable *leaves = ApolloVFMacDisplayLeaves();
+    NSArray *snapshot = nil;
+    @synchronized (leaves) { snapshot = leaves.allObjects; }
+    for (ASDisplayNode *node in snapshot) {
+        @try {
+            if ([node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
+                [node recursivelyEnsureDisplaySynchronously:YES];
+            }
+        } @catch (__unused NSException *e) {}
+    }
+}
+
+static void ApolloVFScheduleMacFocusFlush(void) {
+    ApolloVFFlushTrackedMacDisplayLeaves();
+    dispatch_async(dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
+                   dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(); });
+}
+
+%group ApolloVFMacTextureSync
+
+%hook ASDisplayNode
+
+- (void)didEnterHierarchy {
+    %orig;
+    ApolloVFTrackMacDisplayLeaf(self, YES);
+}
+
+- (void)didExitHierarchy {
+    ApolloVFTrackMacDisplayLeaf(self, NO);
+    %orig;
+}
+
+%end
+
+%end
+
+static void ApolloVFInstallMacTextureSync(void) {
+    Class displayNodeClass = objc_getClass("ASDisplayNode");
+    if (!displayNodeClass) return;
+    %init(ApolloVFMacTextureSync, ASDisplayNode = displayNodeClass);
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    NSArray<NSNotificationName> *focusNotifications = @[
+        UIApplicationWillResignActiveNotification,
+        UIApplicationDidBecomeActiveNotification,
+        UIWindowDidResignKeyNotification,
+        UIWindowDidBecomeKeyNotification,
+    ];
+    for (NSNotificationName name in focusNotifications) {
+        [center addObserverForName:name object:nil queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(__unused NSNotification *notification) {
+            ApolloVFScheduleMacFocusFlush();
+        }];
+    }
+    ApolloLog(@"[VoteFlicker] Mac focus redraw guard enabled");
+}
+
+static void ApolloVFInstallMacTextureSyncIfNeeded(void) {
+    if (ApolloVFIsMacRuntime()) ApolloVFInstallMacTextureSync();
+}
+
+// MARK: - end macOS Texture focus redraw
 
 // Weak set of comment/header cells currently on screen. Only consulted when a
 // model-update notification arrives, so the bookkeeping cost is two hash-table
@@ -484,6 +602,7 @@ static void ApolloVFForegroundHeal(const char *stage) {
 
 %ctor {
     %init;
+    ApolloVFInstallMacTextureSyncIfNeeded();
 
     // Vote-window height quiesce (see sApolloVFHeightQuiesceUntil above).
     // Manual swizzle with an existence guard: requeryNodeHeights is a Texture
