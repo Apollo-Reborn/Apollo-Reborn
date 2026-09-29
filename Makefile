@@ -205,6 +205,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloRedgifsQueuedFetchesLock.m \
     $(SRC_DIR)/ApolloSwiftSingletonCapture.m \
     $(SRC_DIR)/ApolloShareAsImageGallery.xm \
+    $(SRC_DIR)/ApolloShareAsImageLinkMode.m \
     $(SRC_DIR)/ApolloShareAsImageLink.xm \
     $(SRC_DIR)/ApolloShareAsVideo.xm \
     $(SRC_DIR)/ApolloShareAsImagePreviewFix.xm \
