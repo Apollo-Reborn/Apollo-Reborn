@@ -1612,7 +1612,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
             return [weakSelf switchCellWithIdentifier:@"Cell_API_ModernModmail"
                                                 label:@"Use Modern Moderator Mail"
-                                               detail:@"On uses Reddit's current Modmail with the active web-session account. Off keeps Apollo's native Moderator Mail, which only works for accounts signed in with an API key."
+                                               detail:@"On uses Reddit's current Modmail with the active web-session account. Off keeps Apollo's native Moderator Mail."
                                                    on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditModmail]
                                               enabled:YES
                                                action:@selector(modernRedditModmailSwitchToggled:)]

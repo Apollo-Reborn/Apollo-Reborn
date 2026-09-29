@@ -24,6 +24,8 @@ extern "C" {
 //              the cookie can't authenticate these at all, so they go to
 //              oauth.reddit.com with the account's web-session bearer
 //              (ApolloWebJSONPathNeedsWebBearer).
+//   • New modmail (/api/mod/conversations and everything under it) — OAuth-only
+//              as well, so it takes the same web-bearer route.
 //   • Session lifecycle — a 403 HTML "block page" on a previously-good request
 //              is detected (ApolloWebJSONNoteResponse) and surfaced as a
 //              "session expired" prompt so the user can re-harvest.

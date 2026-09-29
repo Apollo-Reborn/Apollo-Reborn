@@ -352,6 +352,25 @@ static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
 // "api/v1/..." path, with or without a query.
 BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
     if (path.length == 0) return NO;
+    // New modmail: /api/mod/conversations and everything under it (the list, a
+    // thread, reply, create, archive/highlight/mute and their undos,
+    // read/unread/bulk read, search). www answers any cookie request there with
+    // its 403 HTML page, so Apollo's native Moderator Mail, Unify Modmail in
+    // Inbox and the inbox's modmail refresh never worked for a keyless account;
+    // oauth.reddit.com accepts the account's web bearer (checked live
+    // 2026-09-29: list and thread 200, and writes aimed at a conversation or
+    // subreddit that doesn't exist get Reddit's own not-found and validation
+    // errors, never a refusal). RedditKit's 14
+    // new-modmail methods are the only code that builds these paths, and every
+    // caller in Apollo 1.15.11 discards the returned task, which the RedditKit
+    // hook's mint-before-send deferral relies on (ApolloWebJSONIdentity.xm).
+    static NSRegularExpression *modmailRE;
+    static dispatch_once_t modmailOnce;
+    dispatch_once(&modmailOnce, ^{
+        modmailRE = [NSRegularExpression regularExpressionWithPattern:@"^/?api/mod/conversations(/|\\?|$)"
+                                                               options:NSRegularExpressionCaseInsensitive error:NULL];
+    });
+    if ([modmailRE firstMatchInString:path options:0 range:NSMakeRange(0, path.length)]) return YES;
     static NSRegularExpression *re;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
