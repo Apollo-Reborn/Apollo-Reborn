@@ -63,6 +63,10 @@ extern void ApolloVideoUnmute_SyncMuteButtonIcon(id richMediaNode, BOOL isMuted)
 extern void ApolloVideoUnmute_ClearProtectionIfPlayer(AVPlayer *player);
 extern BOOL ApolloVideoUnmute_IsNavigatingBack(void);
 extern void ApolloVideoUnmute_NotePlayerDeliberatelyStopped(AVPlayer *player);
+// Exported from ApolloSwipeUpComments.xm. A media pane leaves the fullscreen
+// pager visible, so hidden comments-header lifecycle callbacks must not pause
+// or tear down the exact player that page still owns.
+extern BOOL ApolloSwipeCommentsProtectsFullscreenPlayer(AVPlayer *player);
 
 // Defined in PictureInPictureViewController.m (plain global — not mangled).
 extern NSString *const ApolloPictureInPictureChangedNotification;
@@ -3047,9 +3051,11 @@ void ApolloPiP_YieldAudioToPlayer(AVPlayer *newAudiblePlayer) {
 }
 
 static BOOL PiPShouldSuppressVideoNodeExit(id videoNode) {
-    ApolloPiPController *controller = sPiPSharedController;
-    if (!controller || !videoNode) return NO;
+    if (!videoNode) return NO;
     AVPlayer *player = ApolloVideoUnmute_GetPlayerFromVideoNode(videoNode);
+    if (player && ApolloSwipeCommentsProtectsFullscreenPlayer(player)) return YES;
+    ApolloPiPController *controller = sPiPSharedController;
+    if (!controller) return NO;
     if (controller.active) {
         if (videoNode == controller.videoNode) return YES;
         if (player && player == controller.player) return YES;
@@ -3521,8 +3527,9 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
     id videoNode = PiPGetIvar(self, "videoNode");
     if (videoNode) {
         AVPlayer *player = ApolloVideoUnmute_GetPlayerFromVideoNode(videoNode);
-        if (player && (ApolloPiP_IsOwnedPlayer(player) || PiPInlineShieldEngaged(player))) {
-            ApolloLog(@"[PiP] Suppressing pauseAllAVPlayers for owned/shielded video");
+        if (player && (ApolloPiP_IsOwnedPlayer(player) || PiPInlineShieldEngaged(player) ||
+                       ApolloSwipeCommentsProtectsFullscreenPlayer(player))) {
+            ApolloLog(@"[PiP] Suppressing pauseAllAVPlayers for owned/shielded/pane video");
             return;
         }
     }
@@ -3533,8 +3540,9 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
     id videoNode = PiPGetIvar(self, "videoNode");
     if (videoNode && !PiPNodeIsShareable(videoNode)) {
         AVPlayer *player = ApolloVideoUnmute_GetPlayerFromVideoNode(videoNode);
-        if (player && ApolloPiP_IsOwnedPlayer(player)) {
-            ApolloLog(@"[PiP] Suppressing didExitPreloadState teardown for owned non-shareable video");
+        if (player && (ApolloPiP_IsOwnedPlayer(player) ||
+                       ApolloSwipeCommentsProtectsFullscreenPlayer(player))) {
+            ApolloLog(@"[PiP] Suppressing didExitPreloadState teardown for owned/pane non-shareable video");
             return;
         }
     }
