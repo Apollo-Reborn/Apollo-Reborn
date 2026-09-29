@@ -740,6 +740,174 @@ static NSString *ApolloNormalizeTextForCompare(NSString *text) {
     return [nonEmpty componentsJoinedByString:@" "];
 }
 
+// Body matching compares what a text node SHOWS against the markdown SOURCE the
+// translation was made from (comment.body, the raw translated text). Those differ
+// in ways whitespace/case folding can't see: Apollo renders a blockquote line as
+// "\t<text>" and a bullet as "\t•\t<text>", shows [label](url) as label, drops
+// **, ~~ and \ markup, and its markdown compiler curls quotes and turns "..."
+// into "…". A comment whose first ~24 characters carried any of that (a leading
+// quote, list or link) and that also differed anywhere else never matched its own
+// body node, so its translation was fetched and then silently never applied
+// (r/de t1_pcknfzt: "> quote … [Quelle](url)" + reply). Fold both sides to one
+// form before comparing. Symmetric by design: marker characters are dropped from
+// BOTH strings, so a literal '*' or '_' can't make equal bodies compare unequal.
+
+// Cheap single pass: does the text contain anything the fold below would change?
+// Most comments don't, and they skip the regex work entirely. '>', '#', '+' and
+// '-' only count at the start of a line (block markers), '-' also as "--".
+static BOOL ApolloTextNeedsMarkdownFold(NSString *text) {
+    NSUInteger length = text.length;
+    if (length == 0) return NO;
+    unichar stackBuffer[1024];
+    unichar *chars = length <= 1024 ? stackBuffer : (unichar *)malloc(length * sizeof(unichar));
+    if (!chars) return YES;
+    [text getCharacters:chars range:NSMakeRange(0, length)];
+    BOOL needs = NO;
+    BOOL atLineStart = YES;
+    for (NSUInteger i = 0; i < length && !needs; i++) {
+        unichar c = chars[i];
+        unichar next = i + 1 < length ? chars[i + 1] : 0;
+        switch (c) {
+            case '[': case '*': case '_': case '~': case '^': case '`': case '\\': case '&':
+            case 0x2022: case 0x2018: case 0x2019: case 0x201A: case 0x201B: case 0x201C: case 0x201D:
+            case 0x201E: case 0x201F: case 0x2026: case 0x2013: case 0x2014: case 0x00A0: case 0x202F:
+            case 0x2009: case 0x200B:
+                needs = YES;
+                break;
+            case '>':
+                needs = atLineStart || next == '!';
+                break;
+            case '#': case '+':
+                needs = atLineStart;
+                break;
+            case '-':
+                needs = atLineStart || next == '-';
+                break;
+            case '!':
+                needs = next == '<';
+                break;
+            default:
+                break;
+        }
+        if (c == '\n') atLineStart = YES;
+        else if (c != ' ' && c != '\t') atLineStart = NO;
+    }
+    if (chars != stackBuffer) free(chars);
+    return needs;
+}
+
+static NSString *ApolloCanonicalizeMarkdownForCompare(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return @"";
+    if (!ApolloTextNeedsMarkdownFold(text)) return text;
+
+    static NSRegularExpression *linkRegex;
+    static NSRegularExpression *thematicBreakRegex;
+    static NSRegularExpression *blockMarkerRegex;
+    static NSRegularExpression *escapeRegex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // [label](target) / [label](target "title") → label, for any target (https, /r/…, /u/…).
+        linkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]\\n]*)\\]\\([^()\\s]*(?:\\s+\"[^\"\\n]*\")?\\)"
+                                                              options:0 error:NULL];
+        // "---", "* * *", "___" on their own line.
+        thematicBreakRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*([-*_])(?:[ \\t]*\\1){2,}[ \\t]*$"
+                                                                       options:NSRegularExpressionAnchorsMatchLines error:NULL];
+        // Line-start block markers, possibly stacked ("> * item"): quote (not ">!spoiler"),
+        // bullet (source "* "/"- "/"+ " and Apollo's rendered "•"), ATX heading.
+        blockMarkerRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*(?:>(?!!)[ \\t]?|[*+\\-\u2022][ \\t]+|#{1,6}[ \\t]+)+"
+                                                                     options:NSRegularExpressionAnchorsMatchLines error:NULL];
+        // Backslash escapes of markdown punctuation ("full\_moon" renders as "full_moon").
+        escapeRegex = [NSRegularExpression regularExpressionWithPattern:@"\\\\([\\\\`*_{}\\[\\]()#+\\-.!>~^|])"
+                                                                options:0 error:NULL];
+    });
+
+    NSMutableString *s = [text mutableCopy];
+    if ([s rangeOfString:@"&"].location != NSNotFound) {
+        NSDictionary<NSString *, NSString *> *entities = @{ @"&amp;": @"&", @"&lt;": @"<", @"&gt;": @">", @"&quot;": @"\"",
+                                                            @"&#39;": @"'", @"&#x27;": @"'", @"&nbsp;": @" " };
+        for (NSString *entity in entities) {
+            [s replaceOccurrencesOfString:entity withString:entities[entity] options:0 range:NSMakeRange(0, s.length)];
+        }
+    }
+    if ([s rangeOfString:@"["].location != NSNotFound) {
+        [linkRegex replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@"$1"];
+    }
+    [thematicBreakRegex replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@""];
+    [blockMarkerRegex replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@""];
+    if ([s rangeOfString:@"\\"].location != NSNotFound) {
+        [escapeRegex replaceMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:@"$1"];
+    }
+
+    // One pass for the rest: drop inline markers (* _ ~ ^ `) and spoiler markers
+    // (">!" / "!<"), fold the typography the renderer applies (and translators
+    // sometimes emit), and collapse "--" runs to one "-".
+    NSUInteger length = s.length;
+    unichar *in = (unichar *)malloc(MAX(length, (NSUInteger)1) * sizeof(unichar));
+    unichar *out = (unichar *)malloc(MAX(length * 3, (NSUInteger)1) * sizeof(unichar)); // "…" expands to "..."
+    if (!in || !out) {
+        free(in);
+        free(out);
+        return s;
+    }
+    [s getCharacters:in range:NSMakeRange(0, length)];
+    NSUInteger n = 0;
+    for (NSUInteger i = 0; i < length; i++) {
+        unichar c = in[i];
+        unichar next = i + 1 < length ? in[i + 1] : 0;
+        if ((c == '>' && next == '!') || (c == '!' && next == '<')) { i++; continue; }
+        switch (c) {
+            case '*': case '_': case '~': case '^': case '`': case 0x200B:
+                continue;
+            case 0x201C: case 0x201D: case 0x201E: case 0x201F:
+                c = '"';
+                break;
+            case 0x2018: case 0x2019: case 0x201A: case 0x201B:
+                c = '\'';
+                break;
+            case 0x2013: case 0x2014:
+                c = '-';
+                break;
+            case 0x00A0: case 0x202F: case 0x2009:
+                c = ' ';
+                break;
+            case 0x2026:
+                out[n++] = '.';
+                out[n++] = '.';
+                c = '.';
+                break;
+            default:
+                break;
+        }
+        if (c == '-' && n > 0 && out[n - 1] == '-') continue;
+        out[n++] = c;
+    }
+    NSString *folded = [NSString stringWithCharacters:out length:n];
+    free(in);
+    free(out);
+    return folded;
+}
+
+// Whitespace/case normalization on top of the markdown fold above. Use for any
+// comparison between rendered node text and markdown source. The same bodies and
+// translations are compared over and over (every candidate node, every reapply),
+// so folded forms are cached; plain text skips the fold and the cache.
+static NSString *ApolloNormalizeBodyTextForCompare(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || text.length == 0) return @"";
+    if (!ApolloTextNeedsMarkdownFold(text)) return ApolloNormalizeTextForCompare(text);
+
+    static NSCache<NSString *, NSString *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 512;
+    });
+    NSString *cached = [cache objectForKey:text];
+    if (cached) return cached;
+    NSString *normalized = ApolloNormalizeTextForCompare(ApolloCanonicalizeMarkdownForCompare(text));
+    [cache setObject:normalized forKey:[text copy]];
+    return normalized;
+}
+
 static NSString *ApolloTrimmedString(NSString *text) {
     if (![text isKindOfClass:[NSString class]]) return @"";
     return [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -766,19 +934,22 @@ static BOOL ApolloTextLooksLikePreviewExcerptOfBody(NSString *candidateText, NSS
     NSString *body = ApolloTrimmedString(bodyText);
     if (candidate.length == 0 || body.length == 0 || candidate.length >= body.length) return NO;
 
-    NSString *candidateNorm = ApolloNormalizeTextForCompare(candidate);
-    NSString *bodyNorm = ApolloNormalizeTextForCompare(body);
+    NSString *candidateNorm = ApolloNormalizeBodyTextForCompare(candidate);
+    NSString *bodyNorm = ApolloNormalizeBodyTextForCompare(body);
     if (candidateNorm.length == 0 || bodyNorm.length == 0 || ![bodyNorm containsString:candidateNorm]) return NO;
 
-    BOOL visiblyTruncated = [candidate containsString:@"..."] || [candidate containsString:@"…"];
-    BOOL markdownExcerpt = ([candidate containsString:@"**"] || [candidate containsString:@"*"]) && visiblyTruncated;
     CGFloat ratio = (CGFloat)candidateNorm.length / (CGFloat)bodyNorm.length;
+    BOOL visiblyTruncated = [candidate containsString:@"..."] || [candidate containsString:@"…"];
+    // A raw-markdown excerpt is a SHORTENED copy. Since the fold above makes a full
+    // rendered body contain-match its source, a whole comment that merely has a
+    // literal '*' and a "[…]" must not read as an excerpt of itself.
+    BOOL markdownExcerpt = ([candidate containsString:@"**"] || [candidate containsString:@"*"]) && visiblyTruncated && ratio < 0.95;
     return ApolloTextLooksLikeURLPreview(candidate) || markdownExcerpt || ratio < 0.60;
 }
 
 static BOOL ApolloTextQualifiesAsBodyCandidate(NSString *candidateText, NSString *bodyText) {
-    NSString *candidateNorm = ApolloNormalizeTextForCompare(candidateText);
-    NSString *bodyNorm = ApolloNormalizeTextForCompare(bodyText);
+    NSString *candidateNorm = ApolloNormalizeBodyTextForCompare(candidateText);
+    NSString *bodyNorm = ApolloNormalizeBodyTextForCompare(bodyText);
     if (candidateNorm.length == 0 || bodyNorm.length == 0) return NO;
     if ([candidateNorm isEqualToString:bodyNorm]) return YES;
 
@@ -1560,6 +1731,60 @@ static void ApolloApplyLinkAttributes(NSMutableAttributedString *attributedStrin
     [attributedString addAttributes:attributes range:range];
 }
 
+// Markdown backslash escapes ("\_", "\*", "\[" …): Apollo renders the bare
+// character. The regex matches only the backslash.
+static NSRegularExpression *ApolloMarkdownEscapeRegex(void) {
+    static NSRegularExpression *regex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:@"\\\\(?=[\\\\`*_{}\\[\\]()#+\\-.!>~^|])" options:0 error:NULL];
+    });
+    return regex;
+}
+
+static NSString *ApolloStringByRemovingMarkdownEscapes(NSString *text) {
+    if (![text isKindOfClass:[NSString class]] || [text rangeOfString:@"\\"].location == NSNotFound) return text;
+    NSRegularExpression *regex = ApolloMarkdownEscapeRegex();
+    return regex ? [regex stringByReplacingMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@""] : text;
+}
+
+// Links every bare http(s) URL that isn't already inside a converted markdown
+// link. `baseAttributes` nil = style each URL from the attributes already at its
+// location (the per-line body builder below). `markdownSource`: the text still
+// carries markdown escapes, so link to the unescaped address.
+static void ApolloLinkifyBareURLs(NSMutableAttributedString *attributed,
+                                  NSArray<NSDictionary *> *markdownLinks,
+                                  NSDictionary *baseAttributes,
+                                  NSDictionary *sourceLinkAttributes,
+                                  BOOL markdownSource) {
+    NSError *regexError = nil;
+    NSRegularExpression *bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
+                                                                                options:0
+                                                                                  error:&regexError];
+    if (regexError || !bareURLRegex || attributed.length == 0) return;
+
+    NSArray<NSTextCheckingResult *> *matches = [bareURLRegex matchesInString:attributed.string options:0 range:NSMakeRange(0, attributed.length)];
+    for (NSTextCheckingResult *match in matches) {
+        NSRange range = ApolloRangeByTrimmingTrailingURLPunctuation(attributed.string, match.range);
+        if (range.length == 0 || NSMaxRange(range) > attributed.length) continue;
+
+        BOOL overlapsMarkdownLink = NO;
+        for (NSDictionary *linkInfo in markdownLinks) {
+            NSValue *rangeValue = linkInfo[@"range"];
+            if ([rangeValue isKindOfClass:[NSValue class]] && ApolloRangeIntersectsRange(range, rangeValue.rangeValue)) {
+                overlapsMarkdownLink = YES;
+                break;
+            }
+        }
+        if (overlapsMarkdownLink) continue;
+
+        NSString *urlString = [attributed.string substringWithRange:range];
+        if (markdownSource) urlString = ApolloStringByRemovingMarkdownEscapes(urlString);
+        NSDictionary *base = baseAttributes ?: ApolloAttributesWithoutLinkAttribute([attributed attributesAtIndex:range.location effectiveRange:NULL]);
+        ApolloApplyLinkAttributes(attributed, range, urlString, base, sourceLinkAttributes);
+    }
+}
+
 static NSAttributedString *ApolloTranslatedAttributedStringPreservingVisualLinks(NSAttributedString *visualBase,
                                                                                  NSString *translatedText) {
     if (![translatedText isKindOfClass:[NSString class]]) translatedText = @"";
@@ -1577,30 +1802,284 @@ static NSAttributedString *ApolloTranslatedAttributedStringPreservingVisualLinks
         ApolloApplyLinkAttributes(attributed, rangeValue.rangeValue, urlString, baseAttributes, sourceLinkAttributes);
     }
 
-    NSError *regexError = nil;
-    NSRegularExpression *bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
-                                                                                options:0
-                                                                                  error:&regexError];
-    if (!regexError && bareURLRegex && attributed.length > 0) {
-        NSArray<NSTextCheckingResult *> *matches = [bareURLRegex matchesInString:attributed.string options:0 range:NSMakeRange(0, attributed.length)];
-        for (NSTextCheckingResult *match in matches) {
-            NSRange range = ApolloRangeByTrimmingTrailingURLPunctuation(attributed.string, match.range);
-            if (range.length == 0 || NSMaxRange(range) > attributed.length) continue;
+    ApolloLinkifyBareURLs(attributed, markdownLinks, baseAttributes ?: @{}, sourceLinkAttributes, NO);
 
-            BOOL overlapsMarkdownLink = NO;
-            for (NSDictionary *linkInfo in markdownLinks) {
-                NSValue *rangeValue = linkInfo[@"range"];
-                if ([rangeValue isKindOfClass:[NSValue class]] && ApolloRangeIntersectsRange(range, rangeValue.rangeValue)) {
-                    overlapsMarkdownLink = YES;
-                    break;
-                }
+    return [attributed copy];
+}
+
+#pragma mark - Markdown-aware translated bodies
+
+// Apollo's MarkdownTextNode renders a whole comment/post body into ONE attributed
+// string: a blockquote paragraph as "\t<text>" (quote paragraph style, muted
+// colour, left bar), a bullet item as "\t•\t<text>" (list paragraph style), and
+// emphasis as font traits. The translator hands back MARKDOWN, and the generic
+// builder above only converts links, so a translated quote showed a literal ">",
+// a comment that opened with a quote rendered its whole reply in the quote's
+// style (every line took the FIRST run's attributes), bullets showed "* ", and
+// "**word**" kept its asterisks. This builder renders those forms the way Apollo
+// does and styles each line from the same kind of line in the original render.
+// Bodies only: titles and feed previews are plain text and keep the builder above.
+
+typedef NS_ENUM(NSInteger, ApolloBodyLineKind) {
+    ApolloBodyLineKindNormal = 0,
+    ApolloBodyLineKindQuote,
+    ApolloBodyLineKindBullet,
+};
+
+// Kind of a RENDERED line (Apollo's own output, or ours below). A tab followed by
+// a digit is a numbered-list item, not a quote.
+static ApolloBodyLineKind ApolloRenderedBodyLineKind(NSString *line) {
+    if ([line hasPrefix:@"\t•"]) return ApolloBodyLineKindBullet;
+    if (line.length >= 2 && [line characterAtIndex:0] == '\t' &&
+        ![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:[line characterAtIndex:1]]) {
+        return ApolloBodyLineKindQuote;
+    }
+    return ApolloBodyLineKindNormal;
+}
+
+// Attributes of each line kind in the original render. Apollo puts a quote's or
+// list item's paragraph style (head indent, tab stops) and its own Indent /
+// BlockQuote / QuoteDepth / ListDepth keys on the line's LEADING TAB only; the
+// text carries font and colour (plus BlockQuote/QuoteDepth for quotes). So record
+// both: "<kind>" = the line's first visible non-link run (a line that opens with a
+// link must not hand the link colour to the whole translated line), "<kind>Lead" =
+// the leading tab, and "bulletDot" = the "•". Our own "Translated from" marker line
+// starts with the globe attachment and is skipped.
+static NSDictionary<NSString *, NSDictionary *> *ApolloCaptureBodyLineAttributes(NSAttributedString *visualBase) {
+    NSMutableDictionary<NSString *, NSDictionary *> *captured = [NSMutableDictionary dictionary];
+    if (![visualBase isKindOfClass:[NSAttributedString class]] || visualBase.length == 0) return captured;
+
+    NSString *string = visualBase.string;
+    NSCharacterSet *indent = [NSCharacterSet characterSetWithCharactersInString:@"\t •"];
+    [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
+                               options:NSStringEnumerationByLines
+                            usingBlock:^(NSString *line, NSRange lineRange, __unused NSRange enclosingRange, BOOL *stop) {
+        if (line.length == 0 || [line characterAtIndex:0] == NSAttachmentCharacter) return;
+        ApolloBodyLineKind kind = ApolloRenderedBodyLineKind(line);
+        // A tab-led line that is neither a quote nor a bullet is a numbered-list item:
+        // its text carries the list's paragraph style, which must not become the
+        // style of every plain line in the translation.
+        if (kind == ApolloBodyLineKindNormal && [line hasPrefix:@"\t"]) return;
+        NSString *key = kind == ApolloBodyLineKindQuote ? @"quote" : (kind == ApolloBodyLineKindBullet ? @"bullet" : @"normal");
+        if (captured[key]) return;
+
+        NSDictionary *firstVisible = nil;
+        NSDictionary *firstNonLink = nil;
+        for (NSUInteger i = 0; i < line.length && !firstNonLink; i++) {
+            if ([indent characterIsMember:[line characterAtIndex:i]]) continue;
+            NSRange run = NSMakeRange(0, 0);
+            NSDictionary *attrs = [visualBase attributesAtIndex:lineRange.location + i effectiveRange:&run];
+            if (!firstVisible) firstVisible = attrs;
+            if (!attrs[NSLinkAttributeName]) firstNonLink = attrs;
+            else if (NSMaxRange(run) > lineRange.location + i + 1) i = MIN(line.length, NSMaxRange(run) - lineRange.location) - 1;
+        }
+        captured[key] = ApolloAttributesWithoutLinkAttribute(firstNonLink ?: firstVisible ?: @{});
+        if (kind != ApolloBodyLineKindNormal) {
+            captured[[key stringByAppendingString:@"Lead"]] =
+                ApolloAttributesWithoutLinkAttribute([visualBase attributesAtIndex:lineRange.location effectiveRange:NULL]);
+        }
+        if (kind == ApolloBodyLineKindBullet) {
+            NSUInteger dot = [line rangeOfString:@"•"].location;
+            if (dot != NSNotFound) {
+                captured[@"bulletDot"] = ApolloAttributesWithoutLinkAttribute([visualBase attributesAtIndex:lineRange.location + dot effectiveRange:NULL]);
             }
-            if (overlapsMarkdownLink) continue;
+        }
+        if (captured[@"normal"] && captured[@"quote"] && captured[@"bullet"]) *stop = YES;
+    }];
+    return captured;
+}
 
-            NSString *urlString = [attributed.string substringWithRange:range];
-            ApolloApplyLinkAttributes(attributed, range, urlString, baseAttributes, sourceLinkAttributes);
+// Block-level markdown → Apollo's rendered line forms. Lines already in rendered
+// form (a post body translated from its visible text) pass through unchanged.
+static NSString *ApolloRenderMarkdownBodyBlocks(NSString *markdown) {
+    if (![markdown isKindOfClass:[NSString class]] || markdown.length == 0) return @"";
+
+    static NSRegularExpression *quoteRegex;
+    static NSRegularExpression *bulletRegex;
+    static NSRegularExpression *headingRegex;
+    static NSRegularExpression *thematicBreakRegex;
+    static NSRegularExpression *relativeLinkRegex;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        quoteRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*(?:>(?!!)[ \\t]?)+" options:0 error:NULL]; // not ">!spoiler!<"
+        bulletRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*[*+\\-][ \\t]+(?=\\S)" options:0 error:NULL];
+        headingRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*#{1,6}[ \\t]+" options:0 error:NULL];
+        thematicBreakRegex = [NSRegularExpression regularExpressionWithPattern:@"^[ \\t]*([-*_])(?:[ \\t]*\\1){2,}[ \\t]*$" options:0 error:NULL];
+        // [label](/r/…) → absolute, so the link converter (https only) picks it up.
+        relativeLinkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]\\n]+)\\]\\((/[^\\s)]*)\\)" options:0 error:NULL];
+    });
+
+    NSMutableString *text = [markdown mutableCopy];
+    NSDictionary<NSString *, NSString *> *entities = @{ @"&gt;": @">", @"&lt;": @"<", @"&quot;": @"\"", @"&#39;": @"'", @"&#x27;": @"'",
+                                                        @"&nbsp;": @"\u00A0", @"&amp;": @"&" };
+    for (NSString *entity in @[ @"&gt;", @"&lt;", @"&quot;", @"&#39;", @"&#x27;", @"&nbsp;", @"&amp;" ]) {
+        [text replaceOccurrencesOfString:entity withString:entities[entity] options:0 range:NSMakeRange(0, text.length)];
+    }
+    [relativeLinkRegex replaceMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@"[$1](https://www.reddit.com$2)"];
+
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    for (NSString *rawLine in [text componentsSeparatedByString:@"\n"]) {
+        NSString *line = rawLine;
+        NSRange full = NSMakeRange(0, line.length);
+        if ([thematicBreakRegex firstMatchInString:line options:0 range:full]) {
+            [out addObject:@""];
+            continue;
+        }
+        NSTextCheckingResult *quote = [quoteRegex firstMatchInString:line options:0 range:full];
+        if (quote) {
+            NSString *rest = [line substringFromIndex:NSMaxRange(quote.range)];
+            NSTextCheckingResult *nested = [bulletRegex firstMatchInString:rest options:0 range:NSMakeRange(0, rest.length)];
+            if (nested) rest = [@"•\t" stringByAppendingString:[rest substringFromIndex:NSMaxRange(nested.range)]];
+            // A bare ">" separates quote paragraphs: keep it as a blank line.
+            [out addObject:[rest stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]].length > 0
+                               ? [@"\t" stringByAppendingString:rest] : @""];
+            continue;
+        }
+        NSTextCheckingResult *bullet = [bulletRegex firstMatchInString:line options:0 range:full];
+        if (bullet) {
+            [out addObject:[@"\t•\t" stringByAppendingString:[line substringFromIndex:NSMaxRange(bullet.range)]]];
+            continue;
+        }
+        NSTextCheckingResult *heading = [headingRegex firstMatchInString:line options:0 range:full];
+        [out addObject:heading ? [line substringFromIndex:NSMaxRange(heading.range)] : line];
+    }
+
+    // Blank lines the way Apollo lays them out: a run of blank (or whitespace-only)
+    // lines is one paragraph break, and list items sit on consecutive lines even
+    // when the source separates them with blank lines ("loose" list). Keeping the
+    // source's spacing made a translated list twice as tall as the original.
+    NSMutableArray<NSString *> *spaced = [NSMutableArray arrayWithCapacity:out.count];
+    NSCharacterSet *whitespace = [NSCharacterSet whitespaceCharacterSet];
+    for (NSUInteger i = 0; i < out.count; i++) {
+        NSString *line = out[i];
+        if ([line stringByTrimmingCharactersInSet:whitespace].length > 0) {
+            [spaced addObject:line];
+            continue;
+        }
+        NSString *previous = spaced.lastObject;
+        if (previous.length == 0) continue; // leading blank, or a run of blanks
+        NSString *next = nil;
+        for (NSUInteger j = i + 1; j < out.count && !next; j++) {
+            if ([out[j] stringByTrimmingCharactersInSet:whitespace].length > 0) next = out[j];
+        }
+        if (!next) continue; // trailing blank
+        if (ApolloRenderedBodyLineKind(previous) == ApolloBodyLineKindBullet &&
+            ApolloRenderedBodyLineKind(next) == ApolloBodyLineKindBullet) continue;
+        [spaced addObject:@""];
+    }
+
+    // Backslash escapes stay in until the builder has applied emphasis, so an
+    // escaped "\*" never pairs up into italics.
+    return [spaced componentsJoinedByString:@"\n"];
+}
+
+static void ApolloAddFontTraitInRange(NSMutableAttributedString *attributed, NSRange range, UIFontDescriptorSymbolicTraits trait) {
+    [attributed enumerateAttribute:NSFontAttributeName inRange:range options:0 usingBlock:^(id value, NSRange sub, __unused BOOL *stop) {
+        if (![value isKindOfClass:[UIFont class]]) return;
+        UIFont *font = (UIFont *)value;
+        UIFontDescriptor *descriptor = [font.fontDescriptor fontDescriptorWithSymbolicTraits:(font.fontDescriptor.symbolicTraits | trait)];
+        UIFont *styled = descriptor ? [UIFont fontWithDescriptor:descriptor size:font.pointSize] : nil;
+        if (styled) [attributed addAttribute:NSFontAttributeName value:styled range:sub];
+    }];
+}
+
+// Inline markdown → attributes: **bold**/__bold__, ~~strike~~, *italic*/_italic_,
+// ^(super)/^super. Matches that touch a link are left alone (URLs keep their _ and *),
+// and a backslash-escaped marker never opens or closes one.
+static void ApolloApplyInlineMarkdownEmphasis(NSMutableAttributedString *attributed) {
+    static NSArray<NSRegularExpression *> *patterns;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSArray<NSString *> *sources = @[
+            @"(?<!\\\\)(\\*\\*|__)(?=\\S)([^\\n]+?)(?<=[^\\s\\\\])\\1",                 // 0 bold (inner = group 2)
+            @"(?<!\\\\)~~(?=\\S)([^\\n]+?)(?<=[^\\s\\\\])~~",                           // 1 strike
+            @"(?<![\\w*\\\\])\\*(?=[^\\s*])([^\\n*]+?)(?<=[^\\s*\\\\])\\*(?![\\w*])",     // 2 italic
+            @"(?<![\\w_\\\\])_(?=[^\\s_])([^\\n_]+?)(?<=[^\\s_\\\\])_(?![\\w_])",         // 3 italic
+            @"(?<!\\\\)\\^\\(([^)\\n]+)\\)",                                              // 4 superscript, parenthesised
+            @"(?<!\\\\)\\^(?=[^\\s(^])()",                                                // 5 superscript caret (inner empty)
+        ];
+        NSMutableArray *compiled = [NSMutableArray array];
+        for (NSString *source in sources) {
+            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:source options:0 error:NULL];
+            [compiled addObject:regex ?: (id)[NSNull null]];
+        }
+        patterns = [compiled copy];
+    });
+
+    for (NSUInteger p = 0; p < patterns.count; p++) {
+        NSRegularExpression *regex = [patterns[p] isKindOfClass:[NSRegularExpression class]] ? patterns[p] : nil;
+        if (!regex || attributed.length == 0) continue;
+        NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:attributed.string options:0 range:NSMakeRange(0, attributed.length)];
+        for (NSTextCheckingResult *match in matches.reverseObjectEnumerator) {
+            __block BOOL touchesLink = NO;
+            [attributed enumerateAttribute:NSLinkAttributeName inRange:match.range options:0 usingBlock:^(id value, __unused NSRange r, BOOL *stop) {
+                if (value) { touchesLink = YES; *stop = YES; }
+            }];
+            if (touchesLink) continue;
+
+            NSRange inner = [match rangeAtIndex:(p == 0 ? 2 : 1)];
+            NSAttributedString *innerText = inner.location != NSNotFound ? [attributed attributedSubstringFromRange:inner]
+                                                                          : [[NSAttributedString alloc] initWithString:@""];
+            [attributed replaceCharactersInRange:match.range withAttributedString:innerText];
+            NSRange styled = NSMakeRange(match.range.location, innerText.length);
+            if (styled.length == 0) continue;
+            if (p == 0) ApolloAddFontTraitInRange(attributed, styled, UIFontDescriptorTraitBold);
+            else if (p == 1) [attributed addAttribute:NSStrikethroughStyleAttributeName value:@(NSUnderlineStyleSingle) range:styled];
+            else if (p == 2 || p == 3) ApolloAddFontTraitInRange(attributed, styled, UIFontDescriptorTraitItalic);
         }
     }
+}
+
+// Last step, after emphasis: show "\_" / "\*" / "\[" … as the bare character, the
+// way Apollo renders them. (Link targets were unescaped when they were linked.)
+static void ApolloRemoveMarkdownEscapes(NSMutableAttributedString *attributed) {
+    NSRegularExpression *regex = ApolloMarkdownEscapeRegex();
+    if (!regex || [attributed.string rangeOfString:@"\\"].location == NSNotFound) return;
+    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:attributed.string options:0 range:NSMakeRange(0, attributed.length)];
+    for (NSTextCheckingResult *match in matches.reverseObjectEnumerator) {
+        [attributed deleteCharactersInRange:match.range];
+    }
+}
+
+static NSAttributedString *ApolloTranslatedMarkdownBodyAttributedString(NSAttributedString *visualBase, NSString *translatedText) {
+    if (![translatedText isKindOfClass:[NSString class]]) translatedText = @"";
+
+    NSDictionary *baseAttributes = ApolloVisualBaseAttributesFromAttributedString(visualBase);
+    NSDictionary *sourceLinkAttributes = ApolloFirstLinkAttributesFromAttributedString(visualBase);
+    NSDictionary<NSString *, NSDictionary *> *lineAttributes = ApolloCaptureBodyLineAttributes(visualBase);
+    NSDictionary *normal = lineAttributes[@"normal"];
+
+    NSMutableArray<NSDictionary *> *markdownLinks = nil;
+    NSString *displayText = ApolloDisplayStringByConvertingMarkdownLinks(ApolloRenderMarkdownBodyBlocks(translatedText), &markdownLinks) ?: @"";
+    NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:displayText
+                                                                                   attributes:normal ?: baseAttributes ?: @{}];
+    if (displayText.length > 0) {
+        [displayText enumerateSubstringsInRange:NSMakeRange(0, displayText.length)
+                                        options:NSStringEnumerationByLines
+                                     usingBlock:^(NSString *line, NSRange lineRange, NSRange enclosingRange, __unused BOOL *stop) {
+            ApolloBodyLineKind kind = ApolloRenderedBodyLineKind(line ?: @"");
+            NSString *key = kind == ApolloBodyLineKindQuote ? @"quote" : (kind == ApolloBodyLineKindBullet ? @"bullet" : @"normal");
+            [attributed setAttributes:(lineAttributes[key] ?: baseAttributes ?: @{}) range:enclosingRange];
+            // The leading tab carries the paragraph style, so it decides the line's indent.
+            NSDictionary *lead = kind == ApolloBodyLineKindNormal ? nil : lineAttributes[[key stringByAppendingString:@"Lead"]];
+            if (lead && lineRange.length > 0) [attributed setAttributes:lead range:NSMakeRange(lineRange.location, 1)];
+            NSDictionary *dot = kind == ApolloBodyLineKindBullet ? lineAttributes[@"bulletDot"] : nil;
+            if (dot && lineRange.length >= 3) [attributed setAttributes:dot range:NSMakeRange(lineRange.location + 1, 2)];
+        }];
+    }
+
+    for (NSDictionary *linkInfo in markdownLinks) {
+        NSValue *rangeValue = linkInfo[@"range"];
+        NSString *urlString = linkInfo[@"url"];
+        if (![rangeValue isKindOfClass:[NSValue class]] || ![urlString isKindOfClass:[NSString class]]) continue;
+        NSRange range = rangeValue.rangeValue;
+        if (range.length == 0 || NSMaxRange(range) > attributed.length) continue;
+        NSDictionary *linkBase = ApolloAttributesWithoutLinkAttribute([attributed attributesAtIndex:range.location effectiveRange:NULL]);
+        ApolloApplyLinkAttributes(attributed, range, ApolloStringByRemovingMarkdownEscapes(urlString), linkBase, sourceLinkAttributes);
+    }
+    ApolloLinkifyBareURLs(attributed, markdownLinks, nil, sourceLinkAttributes, YES);
+    ApolloApplyInlineMarkdownEmphasis(attributed);
+    ApolloRemoveMarkdownEscapes(attributed);
 
     return [attributed copy];
 }
@@ -1871,10 +2350,10 @@ static id ApolloKnownBodyTextNode(id commentCellNode) {
 static NSInteger ApolloCandidateScore(NSAttributedString *candidateText, NSString *commentBody) {
     if (![candidateText isKindOfClass:[NSAttributedString class]]) return NSIntegerMin;
 
-    NSString *candidate = ApolloNormalizeTextForCompare(candidateText.string);
+    NSString *candidate = ApolloNormalizeBodyTextForCompare(candidateText.string);
     if (candidate.length == 0) return NSIntegerMin;
 
-    NSString *body = ApolloNormalizeTextForCompare(commentBody ?: @"");
+    NSString *body = ApolloNormalizeBodyTextForCompare(commentBody ?: @"");
     if (body.length == 0) return NSIntegerMin;
 
     if ([candidate isEqualToString:body]) {
@@ -1913,6 +2392,12 @@ static id ApolloBestCommentTextNode(id commentCellNode, RDKComment *comment) {
 
     id bestNode = nil;
     NSInteger bestScore = NSIntegerMin;
+    // Candidates arrive in subnode order, and the byline (author, points, flair,
+    // age) comes before the body. On an exact tie (a short body that reads the
+    // same as the flair or the author once markup is folded away) prefer Apollo's
+    // body text node, so the translation never lands in the byline.
+    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    BOOL bestIsBody = NO;
 
     for (id candidateNode in candidates) {
         NSAttributedString *attr = nil;
@@ -1922,9 +2407,11 @@ static id ApolloBestCommentTextNode(id commentCellNode, RDKComment *comment) {
             continue;
         }
         NSInteger score = ApolloCandidateScore(attr, comment.body);
-        if (score > bestScore) {
+        BOOL isBody = markdownTextNode && [candidateNode isKindOfClass:markdownTextNode];
+        if (score > bestScore || (score == bestScore && score != NSIntegerMin && isBody && !bestIsBody)) {
             bestScore = score;
             bestNode = candidateNode;
+            bestIsBody = isBody;
         }
     }
 
@@ -2074,6 +2561,40 @@ static void ApolloTranslationHealCellDisplaySync(id cellNode) {
     } @catch (__unused NSException *e) {}
 }
 
+// Tripwire, once per comment: a translation arrived for a laid-out comment cell
+// (its MarkdownTextNode exists) but no text node matched the body, so nothing was
+// applied. That used to be completely silent, which is how quote-first comments
+// stayed untranslated with no trace in the logs. Stays quiet before layout (the
+// markdown node has no text yet; the display-state reapply retries) and when the
+// cell already shows our translation (a reapply over translated text finds no
+// ORIGINAL-body node by design).
+static void ApolloLogUnmatchedCommentBodyOnce(id commentCellNode, RDKComment *comment) {
+    if (!commentCellNode || objc_getAssociatedObject(commentCellNode, kApolloTranslatedTextNodeKey)) return;
+    NSString *fullName = ApolloCommentFullName(comment);
+    if (fullName.length == 0) return;
+
+    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    NSMutableArray *candidates = [NSMutableArray array];
+    NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:32];
+    ApolloCollectAttributedTextNodes(commentCellNode, 5, visited, candidates);
+    NSUInteger bodyTextNodes = 0;
+    for (id candidate in candidates) {
+        if (markdownTextNode && [candidate isKindOfClass:markdownTextNode]) bodyTextNodes++;
+    }
+    if (bodyTextNodes == 0) return;
+
+    static NSMutableSet<NSString *> *logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ logged = [NSMutableSet set]; });
+    @synchronized (logged) {
+        if ([logged containsObject:fullName]) return;
+        if (logged.count >= 256) [logged removeAllObjects]; // a log throttle, not a registry
+        [logged addObject:fullName];
+    }
+    ApolloLog(@"[Translation] No text node matched comment %@ (body %lu chars, %lu markdown text node(s)); translation not applied",
+              fullName, (unsigned long)comment.body.length, (unsigned long)bodyTextNodes);
+}
+
 static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *comment, NSString *translatedText) {
     if (!commentCellNode || ![translatedText isKindOfClass:[NSString class]] || translatedText.length == 0) return;
     if (!ApolloControllerIsInTranslatedMode(sVisibleCommentsViewController)) return;
@@ -2133,7 +2654,10 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
     }
 
     id textNode = ApolloBestCommentTextNode(commentCellNode, comment);
-    if (!textNode) return;
+    if (!textNode) {
+        ApolloLogUnmatchedCommentBodyOnce(commentCellNode, comment);
+        return;
+    }
 
     NSAttributedString *current = nil;
     @try {
@@ -2173,7 +2697,7 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
         objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [current copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
+    NSAttributedString *translatedAttr = ApolloTranslatedMarkdownBodyAttributedString(current, translatedText);
 
     // Optional per-item "Translated from <Language>" marker line (gated on the
     // Show Translation Details setting). Only the DISPLAY string carries it; the
@@ -2305,7 +2829,7 @@ static void ApolloRestoreOriginalForCellNode(id commentCellNode, RDKComment *com
     if (![original isKindOfClass:[NSAttributedString class]]) {
         NSString *modelBody = [comment.body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (modelBody.length == 0) return;
-        original = ApolloTranslatedAttributedStringPreservingVisualLinks(currentAttr, modelBody);
+        original = ApolloTranslatedMarkdownBodyAttributedString(currentAttr, modelBody);
         originalFromCommentModel = [original isKindOfClass:[NSAttributedString class]];
         if (!originalFromCommentModel) return;
     }
@@ -2881,7 +3405,7 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
         return;
     }
 
-    NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
+    NSAttributedString *translatedAttr = ApolloTranslatedMarkdownBodyAttributedString(current, translatedText);
 
     // Same vote-resilience marker pattern as comment cells.
     objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -2999,7 +3523,7 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
         objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [current copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
+    NSAttributedString *translatedAttr = ApolloTranslatedMarkdownBodyAttributedString(current, translatedText);
     objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
@@ -6109,7 +6633,7 @@ static void ApolloShowOriginalWithRetranslateAffordanceForCellNode(id cellNode, 
     if (![original isKindOfClass:[NSAttributedString class]]) {
         NSString *body = [comment.body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (body.length == 0 || ![cur isKindOfClass:[NSAttributedString class]]) return;
-        original = ApolloTranslatedAttributedStringPreservingVisualLinks(cur, body);
+        original = ApolloTranslatedMarkdownBodyAttributedString(cur, body);
     }
     if (![original isKindOfClass:[NSAttributedString class]]) return;
 
@@ -7790,8 +8314,15 @@ static void ApolloToggleFeedTitleTranslationForController(UIViewController *vc) 
 // Helper: rebuild a translated NSAttributedString preserving the attributes of
 // `incoming` (which carries Apollo's freshly-computed score color, font size,
 // link styles, etc.) but using our cached translated string.
-static NSAttributedString *ApolloRebuildTranslatedAttrPreservingAttrs(NSAttributedString *incoming, NSString *translatedText) {
-    return ApolloTranslatedAttributedStringPreservingVisualLinks(incoming, translatedText);
+static NSAttributedString *ApolloRebuildTranslatedAttrPreservingAttrs(id textNode, NSAttributedString *incoming, NSString *translatedText) {
+    // Must match the builder the node's first apply used, or a vote-time rebuild
+    // renders the translation differently from what was on screen: titles (and
+    // feed previews, which apply through the title path) are plain text; every
+    // other owned node is a markdown body.
+    if ([objc_getAssociatedObject(textNode, kApolloTitleOwnedTextNodeKey) boolValue]) {
+        return ApolloTranslatedAttributedStringPreservingVisualLinks(incoming, translatedText);
+    }
+    return ApolloTranslatedMarkdownBodyAttributedString(incoming, translatedText);
 }
 
 static BOOL ApolloTextMatchesSourceOrVisualDisplay(NSString *incomingText, NSString *targetText) {
@@ -8091,7 +8622,7 @@ static BOOL ApolloPrepareTranslatedSwapForTextNode(id textNode,
         ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: incoming==original → SWAPPING to translated node=%p (incomingLen=%lu)",
                                     textNode, (unsigned long)incomingText.length);
         if (swapOut) {
-            NSAttributedString *rebuilt = ApolloRebuildTranslatedAttrPreservingAttrs(incomingAttributedText, translatedText);
+            NSAttributedString *rebuilt = ApolloRebuildTranslatedAttrPreservingAttrs(textNode, incomingAttributedText, translatedText);
             // Re-append the "Translated from <Language>" marker line for COMMENT
             // bodies (the builder self-gates on the details/tap settings and on
             // source-language detection). Without this, the vote-time swap
@@ -8229,7 +8760,7 @@ static BOOL ApolloPreemptUnownedCommentTextNode(id textNode, NSAttributedString 
     NSString *translated = ApolloStripInlineMediaTokens([sCommentTranslationByFullName objectForKey:fullName]);
     if (![translated isKindOfClass:[NSString class]] || translated.length == 0) return NO;
 
-    NSAttributedString *rebuilt = ApolloRebuildTranslatedAttrPreservingAttrs(incoming, translated);
+    NSAttributedString *rebuilt = ApolloRebuildTranslatedAttrPreservingAttrs(textNode, incoming, translated);
     if (!rebuilt) return NO;
     // Marker parity with the apply path (builder self-gates on settings +
     // source-language detection) so the swap is height-identical.
@@ -8343,7 +8874,7 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     NSString *incomingText = incoming.string;
     if (incomingText.length != body.length) return NO; // cheap reject
     if (!ApolloTextMatchesSourceOrVisualDisplay(incomingText, body)) return NO;
-    NSAttributedString *swap = ApolloRebuildTranslatedAttrPreservingAttrs(incoming, translated);
+    NSAttributedString *swap = ApolloRebuildTranslatedAttrPreservingAttrs(textNode, incoming, translated);
     if (!swap) return NO;
     // Adopt ownership so the normal prepareSwap path handles future updates.
     objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
