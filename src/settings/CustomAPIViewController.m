@@ -1862,6 +1862,11 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf iconOnlyTabBarSwitchToggled:sender]; }];
 
+    // iPad horizontal bars deliberately preserve labels in both positions.
+    iconOnlyTabBar.visible = ^BOOL {
+        return !(IsLiquidGlass() && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
+    };
+
     // Icon-Only already hides every tab label. Hide the narrower profile-only
     // option while it is active, then reinsert it with its remembered value.
     ApolloSettingsRow *hideUsernameTab =
@@ -1943,10 +1948,19 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     // Temporary iPad stopgap (#387): only show it where the option can work.
     ApolloSettingsRow *iPadTabBarBottom =
-        [ApolloSettingsRow switchRowWithID:@"gen.iPadTabBarBottom"
-                                     title:@"Move Tab Bar to Bottom"
-                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom]; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf iPadTabBarBottomSwitchToggled:sender]; }];
+        [ApolloSettingsRow valueRowWithID:@"gen.iPadTabBarBottom"
+                                   title:@"Tab Bar Position"
+                                  detail:^NSString * { return sIPadTabBarBottom ? @"Bottom" : @"Top"; }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"gen.iPadTabBarBottom"],
+                @"Tab Bar Position", @[@"Top", @"Bottom"], sIPadTabBarBottom ? 1 : 0,
+                ^(NSInteger index) {
+                    sIPadTabBarBottom = index == 1;
+                    [NSUserDefaults.standardUserDefaults setBool:sIPadTabBarBottom forKey:UDKeyIPadTabBarBottom];
+                    [NSNotificationCenter.defaultCenter postNotificationName:ApolloIPadTabBarBottomChangedNotification object:nil];
+                    [weakSelf reloadRowWithID:@"gen.iPadTabBarBottom"];
+                });
+        }];
     iPadTabBarBottom.visible = ^BOOL {
         return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && IsLiquidGlass();
     };
@@ -4438,12 +4452,6 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
     }
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
-}
-
-- (void)iPadTabBarBottomSwitchToggled:(UISwitch *)sender {
-    sIPadTabBarBottom = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sIPadTabBarBottom forKey:UDKeyIPadTabBarBottom];
-    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloIPadTabBarBottomChangedNotification object:nil];
 }
 
 // Takes effect on next relaunch — see ApolloLiquidGlass.xm.

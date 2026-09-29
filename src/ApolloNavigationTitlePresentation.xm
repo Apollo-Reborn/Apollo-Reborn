@@ -540,6 +540,9 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
             [queue addObjectsFromArray:view.subviews];
         }
     }
+    // Keep the title on its own row beneath the native iPad tab pill.
+    CGRect floatingTabs = ApolloIPadFloatingTabsFrame(bar, top);
+    if (!CGRectIsNull(floatingTabs)) centerY = CGRectGetMaxY(floatingTabs) + 30.0;
     CGFloat topOffset = centerY - CGRectGetMinY(bar.bounds) - height / 2.0;
     if (self.control.superview != presentationHost) {
         [NSLayoutConstraint deactivateConstraints:self.placementConstraints];

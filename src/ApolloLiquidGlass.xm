@@ -1746,6 +1746,34 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
     }
 }
 
+// Locate the floating iPad tab pill so the page title can sit on its own
+// centered row while Back and the action buttons keep their native positions.
+// Read the selection container, not _UIFloatingTabBar (which spans the screen).
+static char kApolloIPadTitleContentInset;
+
+CGRect ApolloIPadFloatingTabsFrame(UINavigationBar *bar, UIViewController *top) {
+    UINavigationController *nav = top.navigationController;
+    UITabBarController *tabs = nav.tabBarController;
+    if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad ||
+        !IsLiquidGlass() || sIPadTabBarBottom || !tabs || nav.parentViewController != tabs ||
+        nav.traitCollection.horizontalSizeClass != UIUserInterfaceSizeClassRegular) return CGRectNull;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:tabs.view];
+    for (NSUInteger index = 0; index < queue.count; index++) {
+        UIView *view = queue[index];
+        if (view.hidden || view.alpha < 0.01) continue;
+        if ([NSStringFromClass(view.class) isEqualToString:@"_UIFloatingTabBarSelectionContainerView"]) {
+            if (view.window == bar.window && !CGRectIsEmpty(view.bounds)) {
+                return [view convertRect:view.bounds toView:bar];
+            }
+        }
+        // The tab host is a sibling of the navigation controller. Its content
+        // subtree cannot contain the floating tabs and can be large.
+        if (view == nav.view) continue;
+        [queue addObjectsFromArray:view.subviews];
+    }
+    return CGRectNull;
+}
+
 // Returns whether the recenter actually ran to a decision. NO means it bailed
 // before evaluating (mid push/pop animation, bar not resolvable, zero width) —
 // callers must NOT latch "geometry unchanged" observations against a bail, or
@@ -1899,13 +1927,28 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     CGFloat capsulePadding = !searching &&
         ApolloResolvedScrollEdgeEffectStyle() != ApolloScrollEdgeEffectStyleHard
         ? kApolloTitleCapsuleHorizontalPadding : 0.0;
+    CGRect floatingTabs = ApolloIPadFloatingTabsFrame(bar, topVC);
+    BOOL lowerIPadTitle = !CGRectIsNull(floatingTabs);
+    // Short bars (e.g. Settings) have no search/large-title space beneath the
+    // buttons. Reserve only the missing space in the CONTENT controller; the
+    // navigation bar and its Back/More buttons must stay on the top row.
+    CGFloat contentInset = lowerIPadTitle
+        ? MAX(0, CGRectGetMaxY(floatingTabs) + 60.0 - CGRectGetMaxY(bar.bounds)) : 0;
+    CGFloat previousInset = [objc_getAssociatedObject(topVC, &kApolloIPadTitleContentInset) doubleValue];
+    if (fabs(contentInset - previousInset) > 0.5) {
+        UIEdgeInsets insets = topVC.additionalSafeAreaInsets;
+        insets.top += contentInset - previousInset;
+        objc_setAssociatedObject(topVC, &kApolloIPadTitleContentInset, @(contentInset), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        topVC.additionalSafeAreaInsets = insets;
+        ApolloLog(@"[IPadTitleRow] content reservation %.0fpt", contentInset);
+    }
     ApolloNavigationTitleGeometry geometry = ApolloNavigationTitleCenteredGeometry(
         bar.bounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
 
     CGRect actions = ApolloNavigationActionsExpandedFrame(bar);
     // The preference centers between actual controls, never an empty edge.
     // Settings screens with only Back keep their title at the bar midpoint.
-    BOOL centerBetweenButtons = sCenterTitleBetweenButtons && !sCollapseNavigationActions &&
+    BOOL centerBetweenButtons = !lowerIPadTitle && sCenterTitleBetweenButtons && !sCollapseNavigationActions &&
         !searching && !CGRectIsNull(actions) && !CGRectIsEmpty(actions) &&
         leftLimit > CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left + 0.5;
     if (centerBetweenButtons) {
@@ -1919,6 +1962,11 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // truncation. Priority 999 yields to required transition constraints.
     // This deferred pass never writes from layoutSubviews, and expanding the
     // actions does not change the fitted width.
+    if (lowerIPadTitle) {
+        geometry.center = CGRectGetMidX(floatingTabs);
+        geometry.maximumContentWidth = MAX(0, CGRectGetWidth(floatingTabs) -
+            2 * (capsulePadding + kEdgePadding));
+    }
     CGFloat maximumWidth = geometry.maximumContentWidth;
     CGFloat fittedWidth = searching ? maximumWidth : MIN(maximumWidth, [controller naturalContentWidth]);
     BOOL widthChanged = !controller.fittedWidthConstraint ||
@@ -1948,7 +1996,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     }
     CGFloat targetCenter = geometry.center;
     CGRect expandedActions = ApolloNavigationActionsExpandedFrame(bar);
-    if (!centerBetweenButtons && ApolloNavigationTitlePresentationOwnsControl(titleControl) &&
+    if (!lowerIPadTitle && !centerBetweenButtons && ApolloNavigationTitlePresentationOwnsControl(titleControl) &&
         !CGRectIsNull(expandedActions) && !CGRectIsEmpty(expandedActions) &&
         CGRectGetMaxX(expandedActions) > geometry.center &&
         CGRectGetMaxY(expandedActions) > CGRectGetMinY(titleBand) &&

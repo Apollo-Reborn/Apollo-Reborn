@@ -9,4 +9,6 @@ BOOL ApolloNavigationTitlePresentationOwnsControl(UIView *titleControl);
 BOOL ApolloNavigationTitlePresentationSuppressesControl(UIView *titleControl);
 BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view);
 
+CGRect ApolloIPadFloatingTabsFrame(UINavigationBar *bar, UIViewController *top);
+
 __END_DECLS

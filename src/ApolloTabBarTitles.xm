@@ -23,6 +23,11 @@
 // shared definitions in UserDefaultConstants.h (UDKeyNativeHideUsernameOnTabBar)
 // — the Interface settings screen mirrors the same key.
 
+static BOOL ApolloTabBarIconOnlyEnabled(void) {
+    return sHideTabBarTitles && !(IsLiquidGlass() &&
+        UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
+}
+
 static char kApolloTabBarTitleStateCapturedKey;
 static char kApolloTabBarOriginalTitleKey;
 static char kApolloTabBarOriginalImageInsetsKey;
@@ -51,7 +56,7 @@ static void ApolloTabBarConfigureNativeUsernameSubviews(UIView *view, BOOL enabl
 
 static void ApolloTabBarConfigureNativeUsernameCell(UITableViewCell *cell) {
     if (!cell) return;
-    BOOL enabled = !sHideTabBarTitles;
+    BOOL enabled = !ApolloTabBarIconOnlyEnabled();
     ApolloTabBarConfigureNativeUsernameSubviews(cell.contentView, enabled);
     if (cell.accessoryView && ![cell.accessoryView isDescendantOfView:cell.contentView]) {
         ApolloTabBarConfigureNativeUsernameSubviews(cell.accessoryView, enabled);
@@ -76,7 +81,7 @@ static void ApolloSetNativeHideUsernamePreference(BOOL enabled) {
 }
 
 void ApolloNormalizeNativeHideUsernameForIconOnlyTabBar(void) {
-    if (!sHideTabBarTitles) return;
+    if (!ApolloTabBarIconOnlyEnabled()) return;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if (!ApolloRememberedHideUsernamePreference()) {
         [defaults setBool:[defaults boolForKey:UDKeyNativeHideUsernameOnTabBar]
@@ -164,7 +169,7 @@ static void ApolloTabBarPreserveAccessibilityName(UITabBarItem *item, NSString *
 static void ApolloTabBarApplyIconOnlyToItem(UITabBarItem *item) {
     if (!item) return;
 
-    if (!sHideTabBarTitles) {
+    if (!ApolloTabBarIconOnlyEnabled()) {
         if (!ApolloTabBarTitleStateWasCaptured(item)) return;
 
         NSString *storedTitle = ApolloTabBarStoredTitle(item);
@@ -248,7 +253,7 @@ static void ApolloTabBarRefreshVisibleBars(NSString *reason) {
         return;
     }
 
-    if (!sHideTabBarTitles) {
+    if (!ApolloTabBarIconOnlyEnabled()) {
         // An off-screen item may have missed the live window walk. Restore its
         // other state before accepting Apollo's newest title.
         if (ApolloTabBarTitleStateWasCaptured(self)) {
@@ -280,7 +285,7 @@ static void ApolloTabBarRefreshVisibleBars(NSString *reason) {
         return;
     }
 
-    if (!sHideTabBarTitles) {
+    if (!ApolloTabBarIconOnlyEnabled()) {
         if (ApolloTabBarTitleStateWasCaptured(self)) {
             ApolloTabBarApplyIconOnlyToItem(self);
         }
