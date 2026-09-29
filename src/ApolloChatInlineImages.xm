@@ -17,6 +17,7 @@
 // `messageContainerSize` (so MessageKit positions/aligns the bubble itself).
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloState.h"
 #import "ApolloImageChestResolver.h"
@@ -222,21 +223,19 @@ static Class ApolloFLAnimatedImageViewClass(void) {
 
 // URL -> loaded media (an FLAnimatedImage for animated GIFs, else UIImage).
 // NSCache makes decoded residency pressure-aware and bounds the normal case.
+// Entries are charged their decoded bytes, and a still is decoded at up to
+// kApolloChatStaticDecodeMaximumPixelSize on the long side, so one photo can be
+// several MB. This holds a handful of them; a pathological 4096px source
+// exceeds the whole budget on its own and is deliberately not kept.
 static NSCache<NSString *, id> *ApolloChatMediaCache(void) {
     static NSCache<NSString *, id> *cache; static dispatch_once_t once;
     dispatch_once(&once, ^{
         cache = [NSCache new];
-        cache.totalCostLimit = 64 * 1024 * 1024;
-        cache.countLimit = 60;
+        cache.totalCostLimit = 20 * 1024 * 1024;
+        cache.countLimit = 40;
+        ApolloMemoryRegisterPurgableCache(@"chat-media", cache);
     });
     return cache;
-}
-
-static NSUInteger ApolloChatApproximateBitmapCost(UIImage *image) {
-    CGImageRef cgImage = image.CGImage;
-    if (cgImage) return CGImageGetBytesPerRow(cgImage) * CGImageGetHeight(cgImage);
-    CGFloat scale = image.scale > 0 ? image.scale : UIScreen.mainScreen.scale;
-    return (NSUInteger)ceil(image.size.width * scale) * (NSUInteger)ceil(image.size.height * scale) * 4;
 }
 
 static NSUInteger ApolloChatSaturatingAdd(NSUInteger left, NSUInteger right) {
@@ -249,7 +248,7 @@ static NSUInteger ApolloChatSaturatingAdd(NSUInteger left, NSUInteger right) {
 // animated image object. Static images are charged by decoded bitmap bytes.
 static NSUInteger ApolloChatDecodedMediaCost(id media, NSUInteger sourceBytes) {
     if ([media isKindOfClass:[UIImage class]]) {
-        return ApolloChatApproximateBitmapCost((UIImage *)media);
+        return ApolloImageByteCost((UIImage *)media);
     }
     Class animatedClass = ApolloFLAnimatedImageClass();
     if (!animatedClass || ![media isKindOfClass:animatedClass]) return sourceBytes;
@@ -258,7 +257,7 @@ static NSUInteger ApolloChatDecodedMediaCost(id media, NSUInteger sourceBytes) {
         ? ((NSUInteger (*)(id, SEL))objc_msgSend)(media, @selector(frameCount)) : 1;
     UIImage *firstFrame = [media respondsToSelector:@selector(imageLazilyCachedAtIndex:)]
         ? ((id (*)(id, SEL, NSUInteger))objc_msgSend)(media, @selector(imageLazilyCachedAtIndex:), (NSUInteger)0) : nil;
-    NSUInteger frameBytes = firstFrame ? ApolloChatApproximateBitmapCost(firstFrame) : sourceBytes;
+    NSUInteger frameBytes = firstFrame ? ApolloImageByteCost(firstFrame) : sourceBytes;
     NSUInteger residentFrames = MAX((NSUInteger)1, MIN(frameCount, (NSUInteger)10));
     NSUInteger decodedBytes = frameBytes > NSUIntegerMax / residentFrames
         ? NSUIntegerMax : frameBytes * residentFrames;
@@ -350,7 +349,7 @@ static NSURL *ApolloChatEmojiStickerURL(NSString *emoji) {
     if (![ApolloChatMediaCache() objectForKey:key]) {
         UIImage *img = ApolloChatRasterizeEmoji(emoji);
         if (!img) return nil;
-        [ApolloChatMediaCache() setObject:img forKey:key cost:ApolloChatApproximateBitmapCost(img)];
+        [ApolloChatMediaCache() setObject:img forKey:key cost:ApolloImageByteCost(img)];
     }
     return url;
 }

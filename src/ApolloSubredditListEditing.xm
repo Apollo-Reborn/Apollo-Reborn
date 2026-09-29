@@ -23,18 +23,26 @@ static id ApolloEditingIvar(id object, const char *name) {
     return ivar ? object_getIvar(object, ivar) : nil;
 }
 
-// Use a consistent editing margin; restore it on exit. Apply at lifecycle
+// Keep the stars in place while editing; restore on exit. Apply at lifecycle
 // entry points to avoid layoutSubviews recursion.
+//
+// Only rows with a reorder grip get the fixed 23pt gap before it. A row
+// without one keeps UIKit's own margin, which is where its star rests: the
+// content view still ends at the section index, so the star stays put. The
+// resting margin depends on the setup (about 23pt with Subreddit List
+// Enhancements' wider inset, 8pt without it), so a fixed 23pt there moved the
+// non-Favorites stars 15pt left on some lists.
 static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     NSNumber *original = objc_getAssociatedObject(cell, &kEditingRightMargin);
-    BOOL editingList = editing && ApolloEditingIsList(ApolloEditingTable(cell));
+    NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
+    UITableView *table = editing ? ApolloEditingTable(cell) : nil;
+    // A row's swipe-to-delete is not Edit mode: the swiped row slides as it is.
+    BOOL editingList = editing && ApolloEditingIsList(table) && !ApolloSubredditListIsSwipeEditing(table);
     // These lifecycle hooks also run for unrelated UIKit cells. Do not probe
     // Apollo's ivars unless this is an editing list row or a row we modified.
-    if (!editingList && !original) return;
+    if (!editingList && !original && !priorities) return;
     UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
     if (![star isKindOfClass:UIButton.class]) return;
-    NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
-    UIEdgeInsets margins = cell.contentView.layoutMargins;
     if (editingList) {
         // Keep the star button from stretching and shifting its glyph.
         if (!priorities) {
@@ -44,18 +52,22 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
         }
         [star setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
         [star setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    } else if (priorities.count == 2) {
+        [star setContentHuggingPriority:priorities[0].floatValue forAxis:UILayoutConstraintAxisHorizontal];
+        [star setContentCompressionResistancePriority:priorities[1].floatValue forAxis:UILayoutConstraintAxisHorizontal];
+        objc_setAssociatedObject(cell, &kEditingStarPriorities, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // UIKit sets the row's grip (showsReorderControl) before calling setEditing:.
+    UIEdgeInsets margins = cell.contentView.layoutMargins;
+    if (editingList && cell.showsReorderControl) {
         if (!original) objc_setAssociatedObject(cell, &kEditingRightMargin, @(margins.right), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        if (!objc_getAssociatedObject(cell, &kCellConfirmation)) margins.right = 23.0;
-    } else if (original) {
-        margins.right = original.doubleValue;
-        if (priorities.count == 2) {
-            [star setContentHuggingPriority:priorities[0].floatValue forAxis:UILayoutConstraintAxisHorizontal];
-            [star setContentCompressionResistancePriority:priorities[1].floatValue forAxis:UILayoutConstraintAxisHorizontal];
-            objc_setAssociatedObject(cell, &kEditingStarPriorities, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        objc_setAssociatedObject(cell, &kEditingRightMargin, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (objc_getAssociatedObject(cell, &kCellConfirmation)) return;
+        margins.right = 23.0;
     } else {
-        return;
+        // Leaving Edit mode, or a row that lost its grip while editing.
+        if (!original) return;
+        margins.right = original.doubleValue;
+        objc_setAssociatedObject(cell, &kEditingRightMargin, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     cell.contentView.layoutMargins = margins;
 }

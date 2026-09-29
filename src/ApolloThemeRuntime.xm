@@ -2156,11 +2156,11 @@ void ApolloThemeRuntimeInvalidate(void) {
         sources[@(state)] = title ? [title copy] : NSNull.null;
         UIView *control = NavigationTitleControlForDescendant(self);
         // Recoloring this system button after attachment triggers UIKit's title
-        // fade-out/in. Apply the glass appearance on its first assignment;
-        // classic builds retain their attach path and the original button.
-        BOOL prepareGlassDualTitle = dualTitle && IsLiquidGlass() &&
-            NSClassFromString(@"UIGlassEffect") != Nil;
-        if (prepareGlassDualTitle ||
+        // fade-out/in. Apollo assigns the comments title before the button
+        // reaches the title control, so the attach path can only correct it
+        // afterwards — one white frame, then a 600ms fade, on every refresh
+        // that changes the count. Color it on its first assignment instead.
+        if (dualTitle ||
             (control && ChromeBarLooksApolloOwned(NavigationBarForDescendant(control)))) {
             %orig(NavigationTitleAttributedText(title, self, NavigationTitlePrimaryColor()), state);
             return;
@@ -2260,7 +2260,20 @@ static ASImageNodeTintColorModificationBlockFn ASImageNodeTintColorModificationB
 %hook UINavigationItem
 
 - (void)setTitleView:(UIView *)view {
-    if (IsLiquidGlass() && view) {
+    if (IsLiquidGlass() && [view isKindOfClass:[UITextField class]]) {
+        // A text field is never a title. UIKit lends a titleView UISearchBar's
+        // own search field to its private _UISearchBarNavigationItem the first
+        // time the bar shows Cancel (setShowsCancelButton:animated: ->
+        // displayNavBarCancelButton:animated: -> searchNavigationItem ->
+        // setUpSearchNavigationItem -> setTitleView:field). The Search tab's
+        // bar is one: Apollo shows Cancel when editing begins, and the prep
+        // below baked the chrome colour into the field's placeholder label and
+        // tagged the field as a neutral title for good, so the dim placeholder
+        // came back in the title colour after Cancel until the screen was
+        // rebuilt.
+        ApolloLog(@"ThemeRuntime: setTitleView: %@ on %@ is a text field; skipping neutral title prep",
+                  NSStringFromClass(view.class), NSStringFromClass(object_getClass(self)));
+    } else if (IsLiquidGlass() && view) {
         // Prepare custom titles before UIKit snapshots the incoming page.
         objc_setAssociatedObject(view, &kApolloNeutralNavigationTitleKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         view.tintColor = ApolloNavigationChromeColor();
@@ -2517,7 +2530,7 @@ static char kApolloNavigationDualTitleTintPinnedKey;
 
 - (void)setTintColor:(UIColor *)color {
     // System-button vibrancy uses tint even when attributed text is neutral.
-    UIColor *chrome = ApolloNavigationChromeColor();
+    UIColor *chrome = NavigationTitlePrimaryColor();
     // Install an explicit tint once; later native nil resets must not restart
     // UIKit's title transition or return the button to its inherited accent.
     if (objc_getAssociatedObject(self, &kApolloNavigationDualTitleTintPinnedKey) &&
@@ -2539,11 +2552,9 @@ static char kApolloNavigationDualTitleTintPinnedKey;
         FindRuntimeImages();
         BuildByteFilter();
         %init(ApolloThemeRuntimeHooks);
-        if (IsLiquidGlass() && NSClassFromString(@"UIGlassEffect")) {
-            Class dualTitleButton = NSClassFromString(@"Apollo.DualLabelTitleButton");
-            if (dualTitleButton) {
-                %init(ApolloNavigationDualTitleChrome, ApolloDualLabelTitleButton = dualTitleButton);
-            }
+        Class dualTitleButton = NSClassFromString(@"Apollo.DualLabelTitleButton");
+        if (dualTitleButton) {
+            %init(ApolloNavigationDualTitleChrome, ApolloDualLabelTitleButton = dualTitleButton);
         }
         BOOL haveTM = objc_getClass("_TtC6Apollo12ThemeManager") != nil;
         if (haveTM) %init(ApolloThemeRuntimeManagerHook);

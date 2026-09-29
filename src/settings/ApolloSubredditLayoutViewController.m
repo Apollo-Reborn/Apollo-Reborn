@@ -76,15 +76,20 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
 - (void)tableView:(UITableView *)tableView
         willDisplayHeaderView:(UIView *)view
                    forSection:(NSInteger)section {
-    if (tableView != self.tableView || section != 0 ||
-        ![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    if (@available(iOS 26.0, *)) {
+        [super tableView:tableView willDisplayHeaderView:view forSection:section];
+        ApolloSettingsApplySectionHeaderTypography(self.pinnedPreviewTitleLabel);
+    } else {
+        if (tableView != self.tableView || section != 0 ||
+            ![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
 
-    // Borrow the live Layout section header font so Preview stays identical
-    // across iOS versions, Dynamic Type sizes, and Apollo font customizations.
-    UIFont *layoutHeaderFont = ((UITableViewHeaderFooterView *)view).textLabel.font;
-    if (layoutHeaderFont && ![self.pinnedPreviewTitleLabel.font isEqual:layoutHeaderFont]) {
-        self.pinnedPreviewTitleLabel.font = layoutHeaderFont;
-        [self apollo_updatePinnedPreviewLayoutPreservingScroll:YES];
+        // Borrow the live Layout section header font so Preview stays identical
+        // across iOS versions, Dynamic Type sizes, and Apollo font customizations.
+        UIFont *layoutHeaderFont = ((UITableViewHeaderFooterView *)view).textLabel.font;
+        if (layoutHeaderFont && ![self.pinnedPreviewTitleLabel.font isEqual:layoutHeaderFont]) {
+            self.pinnedPreviewTitleLabel.font = layoutHeaderFont;
+            [self apollo_updatePinnedPreviewLayoutPreservingScroll:YES];
+        }
     }
 }
 
@@ -106,6 +111,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
     [self.pinnedPreviewCard apollo_applyCurrentAppearance];
     self.pinnedPreviewTitleLabel.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
         ?: UIColor.secondaryLabelColor;
+    ApolloSettingsApplySectionHeaderTypography(self.pinnedPreviewTitleLabel);
     [self.layoutPreviewView apollo_applyCurrentAppearance];
     ApolloCommunityHighlightsPreviewView *highlightsPreview =
         (ApolloCommunityHighlightsPreviewView *)
@@ -133,6 +139,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
     titleLabel.text = @"Preview";
     titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
     titleLabel.adjustsFontForContentSizeCategory = YES;
+    ApolloSettingsApplySectionHeaderTypography(titleLabel);
     titleLabel.isAccessibilityElement = YES;
     titleLabel.accessibilityTraits = UIAccessibilityTraitHeader;
     self.pinnedPreviewTitleLabel = titleLabel;

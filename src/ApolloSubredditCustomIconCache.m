@@ -1,6 +1,7 @@
 #import "ApolloSubredditCustomIconCache.h"
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 
 NSString *const ApolloSubredditCustomIconChangedNotification = @"ApolloSubredditCustomIconChangedNotification";
 NSString *const ApolloSubredditCustomIconSubredditNameKey = @"subredditName";
@@ -37,9 +38,14 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     self = [super init];
     if (self) {
         _ioQueue = dispatch_queue_create("com.apollofix.subredditCustomIconCache.io", DISPATCH_QUEUE_SERIAL);
+        // Entries are the stored icons themselves (up to 512px, 1MB or more
+        // decoded), not ~40pt thumbnails. Inbox and multireddit rows treat a
+        // miss as "no custom icon" and don't repaint when the disk copy lands,
+        // so this has to hold every custom icon on screen at once.
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 200;
+        _imageCache.countLimit = 120;
         _imageCache.totalCostLimit = 20 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"subreddit-icons", _imageCache);
         _storedKeysLock = [NSObject new];
         _storedKeys = [NSSet set];
 
@@ -97,8 +103,7 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
 
 - (void)cacheImage:(UIImage *)image forKey:(NSString *)key {
     if (!image || key.length == 0) return;
-    NSUInteger cost = (NSUInteger)(image.size.width * image.size.height * image.scale * image.scale * 4);
-    [self.imageCache setObject:image forKey:key cost:cost];
+    [self.imageCache setObject:image forKey:key cost:ApolloImageByteCost(image)];
 }
 
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {

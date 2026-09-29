@@ -250,15 +250,9 @@ static NSString *ApolloHideModLeftmostLabelText(UIView *root) {
 }
 
 // Resolves a section's header title (uppercased) by checking the visible
-// header first, then asking the delegate to build one.
-// While ApolloFollowingSection's section remap is engaged, the index paths
-// reaching this module's hooks are already in Apollo's NATIVE section space,
-// where the on-screen header walk (visible space) would lie — ask that module
-// for the canonical native title instead.
-static NSString *ApolloHideModSectionTitle(id delegate, UITableView *tableView, NSInteger section) {
-    NSString *canonical = ApolloFollowingCanonicalTitleForNativeSection(tableView, section);
-    if (canonical) return canonical.length > 0 ? canonical : nil;
-
+// header first, then asking the delegate to build one. Speaks the table's own
+// (visible) section space.
+static NSString *ApolloHideModHeaderWalkTitle(id delegate, UITableView *tableView, NSInteger section) {
     if (!tableView || section < 0 || section >= tableView.numberOfSections) return nil;
 
     UIView *header = [tableView headerViewForSection:section];
@@ -267,6 +261,29 @@ static NSString *ApolloHideModSectionTitle(id delegate, UITableView *tableView, 
     }
     NSString *text = ApolloHideModLeftmostLabelText(header);
     return text.length > 0 ? text.uppercaseString : nil;
+}
+
+// Title for a section as this module's data-source HOOKS see it. While
+// ApolloFollowingSection's section remap is engaged, the index paths reaching
+// those hooks are already in Apollo's NATIVE section space, where the
+// on-screen header walk (visible space) would lie — ask that module for the
+// canonical native title instead.
+static NSString *ApolloHideModSectionTitle(id delegate, UITableView *tableView, NSInteger section) {
+    NSString *canonical = ApolloFollowingCanonicalTitleForNativeSection(tableView, section);
+    if (canonical) return canonical.length > 0 ? canonical : nil;
+    return ApolloHideModHeaderWalkTitle(delegate, tableView, section);
+}
+
+// Title for a section of the table's OWN index space (-visibleCells,
+// -indexPathForCell:), which never passes through the remap's translating
+// hooks. Handing those sections to ApolloHideModSectionTitle mislabels rows
+// under a custom order: with FOLLOWING above MODERATOR, visible 3 is FOLLOWING
+// but native 3 is MODERATOR, so Edit put the hide control on the followed
+// user's row and stripped it from the real moderator rows.
+static NSString *ApolloHideModVisibleSectionTitle(id delegate, UITableView *tableView, NSInteger section) {
+    NSString *canonical = ApolloFollowingCanonicalTitleForVisibleSection(tableView, section);
+    if (canonical) return canonical.length > 0 ? canonical : nil;
+    return ApolloHideModHeaderWalkTitle(delegate, tableView, section);
 }
 
 static id ApolloHideModObjectIvar(id object, const char *name) {
@@ -386,16 +403,20 @@ static NSString *ApolloHideModRowKey(UITableView *table, UITableViewCell *cell) 
 
 static void ApolloHideModReloadSections(UITableView *table, NSIndexSet *sections, BOOL animated) {
     NSMutableDictionary *before = [NSMutableDictionary new];
-    NSMutableDictionary *headers = [NSMutableDictionary new];
+    NSDictionary<NSString *, NSValue *> *headers = nil;
     CGPoint offset = table.contentOffset;
     if (animated) {
         for (UITableViewCell *cell in table.visibleCells) {
             UIView *snapshot = [cell snapshotViewAfterScreenUpdates:NO];
             before[ApolloHideModRowKey(table, cell)] = @[[NSValue valueWithCGRect:cell.frame], snapshot ?: [UIView new]];
         }
-        for (NSInteger section = 0; section < table.numberOfSections; section++) {
-            headers[@(section)] = [NSValue valueWithCGRect:[table rectForHeaderInSection:section]];
-        }
+        // Header frames from the views on screen, keyed by title — never
+        // -rectForHeaderInSection:, which forces the real height of each header
+        // it names. The PREVIOUS toggle's reloadSections left the off-screen
+        // ones at UIKit's estimate, and correcting them here jumped the list up
+        // ~30pt on every Edit/Done after the first (see
+        // ApolloSubredditListSectionHeaderFrames).
+        headers = ApolloSubredditListSectionHeaderFrames(table);
     }
     [UIView performWithoutAnimation:^{
         [table reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
@@ -418,13 +439,9 @@ static void ApolloHideModReloadSections(UITableView *table, NSIndexSet *sections
             cell.alpha = 0;
         }
     }
-    for (NSNumber *section in headers) {
-        UIView *header = [table headerViewForSection:section.integerValue];
-        if (!header) continue;
-        [rows addObject:@[header, [NSValue valueWithCGAffineTransform:header.transform], @(header.alpha)]];
-        CGFloat delta = CGRectGetMidY([headers[section] CGRectValue]) - CGRectGetMidY([table rectForHeaderInSection:section.integerValue]) + offsetDelta;
-        header.transform = CGAffineTransformTranslate(header.transform, 0, delta);
-    }
+    // Headers stay parked at their old place until the animator starts (see
+    // ApolloSubredditListParkSectionHeaders).
+    ApolloSubredditListParkSectionHeaders(table, headers, offsetDelta);
     NSMutableArray *departing = [NSMutableArray new];
     for (NSArray *old in before.allValues) {
         UIView *snapshot = old[1];
@@ -455,8 +472,12 @@ static void ApolloHideModReloadSections(UITableView *table, NSIndexSet *sections
         objc_setAssociatedObject(table, &kApolloHideModTransitionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }];
     // Start after the edit controls have been configured, outside disabled-animation scopes.
+    // Headers get their animator offset only here: setEditing:'s own layout
+    // pass runs between this helper and the start, and re-frames every header.
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (objc_getAssociatedObject(table, &kApolloHideModTransitionKey) == animator) [animator startAnimation];
+        BOOL current = objc_getAssociatedObject(table, &kApolloHideModTransitionKey) == animator;
+        ApolloSubredditListStartSectionHeaders(table, headers, table.contentOffset.y - offset.y, current ? rows : nil);
+        if (current) [animator startAnimation];
     });
 }
 
@@ -663,19 +684,25 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
     NSString *name = isModeratorRow ? ApolloHideModLeftmostLabelText(cell.contentView ?: cell) : nil;
 
-    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, tableView.isEditing, name, NO);
+    // A row's swipe-to-delete also reports isEditing; only Edit mode gets the control.
+    BOOL editing = tableView.isEditing && !ApolloSubredditListIsSwipeEditing(tableView);
+    ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, editing, name, NO);
     return cell;
 }
 
 // Show hidden moderator rows while editing without rebuilding the other sections.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
-    if (wasEditing == editing) {
+    UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
+    // Swiping a row to Unsubscribe/Unfavorite lands here too: Apollo's
+    // willBeginEditingRow calls setEditing:YES animated:YES. That is not Edit
+    // mode (UIKit only sets up the swiped row), so reveal no hidden rows and
+    // add no controls; the swipe's closing setEditing:NO then has nothing to undo.
+    if (wasEditing == editing || (editing && ApolloSubredditListIsSwipeEditing(tableView))) {
         %orig;
         return;
     }
 
-    UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
     UIViewPropertyAnimator *transition = objc_getAssociatedObject(tableView, &kApolloHideModTransitionKey);
     if (transition) {
         [transition startAnimation];
@@ -699,8 +726,9 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     }
     %orig;
     for (UITableViewCell *cell in tableView.visibleCells) {
+        // indexPathForCell: speaks the table's own (visible) section space.
         NSIndexPath *path = [tableView indexPathForCell:cell];
-        BOOL moderator = [ApolloHideModSectionTitle(self, tableView, path.section) isEqualToString:@"MODERATOR"];
+        BOOL moderator = [ApolloHideModVisibleSectionTitle(self, tableView, path.section) isEqualToString:@"MODERATOR"];
         NSString *name = moderator ? ApolloHideModLeftmostLabelText(cell.contentView) : nil;
         ApolloHideModDecorateCell((UIViewController *)self, cell, moderator, editing, name, animated && !UIAccessibilityIsReduceMotionEnabled());
     }

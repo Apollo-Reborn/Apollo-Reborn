@@ -1,0 +1,93 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.32885,0.66187,0.97270,1.00000",
+      "display-p3:0.42550,0.35501,0.96490,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "hidden" : false,
+          "image-name" : "toon-bot-fists.png",
+          "name" : "toon-bot-fists",
+          "position" : {
+            "scale" : 0.83,
+            "translation-in-points" : [
+              -1.1100000000000136,
+              141
+            ]
+          }
+        },
+        {
+          "hidden" : false,
+          "image-name" : "toon-apollo-happy.png",
+          "name" : "toon-apollo-happy",
+          "position" : {
+            "scale" : 0.93,
+            "translation-in-points" : [
+              6,
+              5
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.64345,0.77546,0.98294,1.00000",
+                  "display-p3:0.33027,0.57278,0.96978,1.00000"
+                ]
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "extended-gray:1.00000,1.00000",
+                  "extended-gray:0.00000,1.00000"
+                ]
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "half-circle.svg",
+          "name" : "half-circle",
+          "opacity-specializations" : [
+            {
+              "value" : 1
+            },
+            {
+              "appearance" : "dark",
+              "value" : 0.17
+            }
+          ],
+          "position" : {
+            "scale" : 1.15,
+            "translation-in-points" : [
+              4,
+              -354
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -650,25 +650,34 @@ static void ApolloChatPollTick(void) {
     // Feature gates: modern Chat surface in use AND a stored web session for
     // the active account. With the toggle off this never fires, keeping the
     // API-key path's stock Direct Chat / Modmail behavior byte-identical.
-    // Resolve the account identity ONCE per tick: ApolloActiveWebSessionUsername
-    // unarchives the RedditAccounts2 blob and ApolloWebSessionPollFor hits the
-    // keychain, so calling the three self-contained gate helpers here used to
-    // cost ~3 unarchives + ~6 synchronous keychain reads every 30s on the main
-    // thread — for every user, modern Chat or not.
+    //
+    // Ask the toggle first. It is one NSUserDefaults read, while the identity
+    // below unarchives the RedditAccounts2 blob (ApolloActiveWebSessionUsername)
+    // and hits the keychain (ApolloWebSessionPollFor) — work that was being paid
+    // every 30 s on the main thread by every user, including everyone with
+    // modern Chat off, before anything looked at whether it mattered. Resolve
+    // the identity ONCE per tick when it does.
     // Log the gate verdict, but only when it changes — not every 30 s.
     if (!ApolloModernMailboxOSSupported()) return;
+    static NSString *sLastGateState = nil;
+    BOOL shouldOpen = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat];
+    if (!shouldOpen) {
+        if (![sLastGateState isEqualToString:@"open=0"]) {
+            sLastGateState = @"open=0";
+            ApolloLog(@"[ChatPoller] Gates: open=0");
+        }
+        return;
+    }
     NSString *username = ApolloActiveWebSessionUsername();
     ApolloWebSessionEntry *entry = username.length > 0 ? ApolloWebSessionPollFor(username) : nil;
     BOOL available = username.length > 0 && entry != nil;
-    BOOL shouldOpen = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat];
-    NSString *gateState = [NSString stringWithFormat:@"open=%d avail=%d user=%@ cookie=%d",
-                           shouldOpen, available, username ?: @"-", entry.cookieHeader.length > 0];
-    static NSString *sLastGateState = nil;
+    NSString *gateState = [NSString stringWithFormat:@"open=1 avail=%d user=%@ cookie=%d",
+                           available, username ?: @"-", entry.cookieHeader.length > 0];
     if (![gateState isEqualToString:sLastGateState]) {
         sLastGateState = [gateState copy];
         ApolloLog(@"[ChatPoller] Gates: %@", gateState);
     }
-    if (!shouldOpen || !available) return;
+    if (!available) return;
     if (username.length == 0 || entry.cookieHeader.length == 0) return;
 
     if (![username isEqualToString:sChatPollUsername]) {

@@ -17,6 +17,7 @@
 #import "ApolloImageUploadHost.h"
 #import "ApolloImgChestUpload.h"
 #import "ApolloMediaAutoplay.h"
+#import "ApolloRedgifsTokenRefresh.h"
 #import "ApolloNotificationBackend.h"
 #import "ApolloUsageHeartbeat.h"
 #import "ApolloPushNotifications.h"
@@ -26,6 +27,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloTranslation.h"
+#import "ApolloRedgifsMissingDuration.h"
 #import "Tweak.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloAutomaticBackup.h"
@@ -880,12 +882,9 @@ static NSString *const kApolloGroupSuite = @"group.com.christianselig.apollo";
 // reports the status and the item's protection class (kSecAttrAccessible) out-params. The
 // protection class matters for the warm-signout theory: a WhenUnlocked item cannot be read
 // while the device is locked in the background, which would present exactly as "signed out
-// after idling". Enumerates generic passwords and filters, so no exact Valet service string
+// after idling". Filters the caller's generic-password sweep, so no exact Valet service string
 // is needed. -34018 distinguishes an entitlement rejection from a genuine not-found.
-static long ApolloRealAccountsBlobLength(OSStatus *outStatus, NSString **outAccessible) {
-    OSStatus st = errSecSuccess;
-    NSArray *found = ApolloCopyAllGenericPasswords(&st);
-    if (outStatus) *outStatus = st;
+static long ApolloRealAccountsBlobLength(NSArray *found, OSStatus st, NSString **outAccessible) {
     if (!found) return (st == errSecItemNotFound) ? -1 : -2;
     long len = -1;
     for (NSDictionary *item in found) {
@@ -927,11 +926,9 @@ static NSString *ApolloProtectedDataString(void) {
 // Every physical copy of the account item across access groups, with each copy's group, byte
 // length, protection class, and synchronizable flag. This is the direct test of the root-cause
 // theory: if the account is split across drawers, this shows >1 copy in different groups (and/or
-// a copy whose group differs from what Valet's scoped query targets). One enumeration; only runs
-// at snapshot time (lifecycle transitions), so it's low-frequency.
-static NSString *ApolloAccountsBlobGroupBreakdown(void) {
-    OSStatus st = errSecSuccess;
-    NSArray *found = ApolloCopyAllGenericPasswords(&st);
+// a copy whose group differs from what Valet's scoped query targets). Reads the caller's sweep,
+// shared with the blob-length helper above.
+static NSString *ApolloAccountsBlobGroupBreakdown(NSArray *found, OSStatus st) {
     if (!found) return [NSString stringWithFormat:@"enum-status=%d", (int)st];
     NSMutableArray<NSString *> *copies = [NSMutableArray array];
     for (NSDictionary *item in found) {
@@ -955,7 +952,8 @@ static NSString *ApolloAccountsBlobGroupBreakdown(void) {
 // Exported for the dev-only debug screen: a human-readable report of where the account item
 // lives (each copy's access group / size / protection class), plus the current defaults state.
 NSString *ApolloDebugAccountKeychainReport(void) {
-    NSString *breakdown = ApolloAccountsBlobGroupBreakdown();
+    OSStatus enumStatus = errSecSuccess;
+    NSString *breakdown = ApolloAccountsBlobGroupBreakdown(ApolloCopyAllGenericPasswords(&enumStatus), enumStatus);
     ApolloLoginDiag(@"[DebugReport] %@", breakdown);
     return breakdown;
 }
@@ -1085,16 +1083,19 @@ static void ApolloLogAccountSnapshot(NSString *reason) {
     NSInteger acctCount = 0, acctWithUser = 0;
     ApolloPersistedAccountStats(&acctCount, &acctWithUser);
 
+    // One sweep feeds both lines below. Two independent enumerations made
+    // securityd decrypt every generic password twice per lifecycle transition.
     OSStatus kcStatus = errSecSuccess;
+    NSArray *keychainItems = ApolloCopyAllGenericPasswords(&kcStatus);
     NSString *accessible = nil;
-    long kcLen = ApolloRealAccountsBlobLength(&kcStatus, &accessible);
+    long kcLen = ApolloRealAccountsBlobLength(keychainItems, kcStatus, &accessible);
     long mirrorLen = ApolloMirrorAccountsBlobLength();
 
     ApolloLoginDiag(@"[AccountSnapshot] %@ | device=%@ | keychain: len=%ld status=%d accessible=%@ | defaults: len=%ld index=%ld accounts=%ld withUser=%ld | mirror: len=%ld | active=%@",
                     reason, ApolloProtectedDataString(), kcLen, (int)kcStatus, accessible ?: @"?",
                     defaultsLen, (long)index, (long)acctCount, (long)acctWithUser, mirrorLen, active ?: @"(nil)");
     // The access-group breakdown (root-cause confirmation) — separate line to keep both legible.
-    ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown());
+    ApolloLoginDiag(@"[AccountBlobGroups] %@ | %@", reason, ApolloAccountsBlobGroupBreakdown(keychainItems, kcStatus));
 }
 
 // Account snapshots reconstruct Apollo's archived RDKClient objects and inspect
@@ -1131,7 +1132,12 @@ static void ApolloScheduleAccountSnapshot(NSString *reason) {
         return;
     }
     BOOL firstActivation = didBecomeActive && !sApolloAccountSnapshotCompletedFirstActivation;
+    // A snapshot unarchives the whole account blob and sweeps the keychain, and
+    // the warm sign-out it was written to catch is fixed. One baseline per
+    // launch is enough to place a report in a session; the per-transition trail
+    // stays available to anyone actually re-investigating, behind the debug flag.
     if (didBecomeActive) sApolloAccountSnapshotCompletedFirstActivation = YES;
+    if (!firstActivation && ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) return;
 
     // didBecomeActive is delivered while the process-launch watchdog can still
     // be sensitive on older devices. Give Apollo's first frame and native
@@ -1541,14 +1547,11 @@ static OSStatus SecItemDelete_replacement(CFDictionaryRef query) {
     return status;
 }
 
-// --- Device detection (for Pixel Pals and Dynamic Island behaviour) ---
-// Apollo's device model mapper (sub_1007a3cdc) only recognizes models up to
-// iPhone 14 Pro Max. Newer models return "unknown" (0x3f) and get no Pixel
-// Pals. Remap unrecognized iPhone* identifiers to a model Apollo already
-// understands (14 Pro = island, 14 = notch). See ApolloDeviceIdentity.h —
-// unknown future phones (Duo / 19+) default to island; only known
-// notch-only models stay on the notch identity. Per-window chrome uses live
-// cutout geometry (ApolloDeviceGeometry), not this process-wide string.
+// --- Device detection (for media chrome, Pixel Pals and Dynamic Island behaviour) ---
+// Apollo's model mapper only recognizes devices through iPhone 14 Pro Max.
+// Map newer models through ApolloDeviceIdentity.h (14 Pro = island, 14 = notch),
+// preserving media chrome and Pixel Pals on regular phones. ApolloPixelPals.xm
+// follows the real island's size and position and suppresses pals on Duo.
 static void *uname_orig;
 static int uname_replacement(struct utsname *buf) {
     int ret = ((int (*)(struct utsname *))uname_orig)(buf);
@@ -1635,13 +1638,29 @@ typedef void (^ApolloSubredditSourceRefreshCompletion)(NSString *content, NSErro
 
 static const NSUInteger kApolloSubredditSourceMaximumBytes = 1024 * 1024;
 
+static BOOL ApolloSubredditSourceLineIsValid(NSString *subreddit) {
+    // Reddit community names are 3-21 ASCII letters, digits, or underscores
+    // (a few grandfathered ones like r/de are 2). Source files sometimes
+    // include dates, headings, or other prose; routing one of those lines as a
+    // subreddit name opens a listing that never loads, so skip them.
+    if (![subreddit isKindOfClass:[NSString class]] ||
+        subreddit.length < 2 || subreddit.length > 21) return NO;
+    static NSCharacterSet *invalidCharacters;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        invalidCharacters = [[NSCharacterSet characterSetWithCharactersInString:
+            @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"] invertedSet];
+    });
+    return [subreddit rangeOfCharacterFromSet:invalidCharacters].location == NSNotFound;
+}
+
 static NSArray<NSString *> *ApolloSubredditListLines(NSString *content) {
     if (![content isKindOfClass:[NSString class]] || content.length == 0) return @[];
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
     [content enumerateLinesUsingBlock:^(NSString *line, __unused BOOL *stop) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:whitespace];
-        if (trimmed.length > 0) [lines addObject:trimmed];
+        if (ApolloSubredditSourceLineIsValid(trimmed)) [lines addObject:trimmed];
     }];
     return lines;
 }
@@ -1960,11 +1979,13 @@ void ApolloPrepareRandomNSFWSubredditSource(
             });
         });
 }
-// Replace Reddit API client ID. Resolved per-account (see
-// ApolloAccountCredentials.{h,m}): a pending add-account choice, else the
-// active account's stored override, else the global default — instead of
-// unconditionally forcing the single global client id/redirect URI onto every
-// account, which broke a second account's login/refresh under a different key.
+// Replace Reddit API client ID. Resolved per credential (see
+// ApolloAccountCredentials.{h,m}): a credential created by an interactive
+// sign-in (Add Account) keeps the default key it started with, every other one
+// follows the active account's stored override, else the global default —
+// instead of unconditionally forcing the single global client id/redirect URI
+// onto every account, which broke a second account's login/refresh under a
+// different key.
 %hook RDKOAuthCredential
 
 // Fall back to %orig (the credential's REAL stored value) when nothing is
@@ -1974,12 +1995,12 @@ void ApolloPrepareRandomNSFWSubredditSource(
 // hardcoded fallback constant, unlike the redirect URI below), breaking token
 // refresh for exactly that account with a blank, unmatchable client_id.
 - (NSString *)clientIdentifier {
-    NSString *effective = ApolloEffectiveRedditClientId();
+    NSString *effective = ApolloRedditClientIdForCredential(self);
     return effective.length > 0 ? effective : %orig;
 }
 
 - (NSURL *)redirectURI {
-    NSString *effective = ApolloEffectiveRedirectURI();
+    NSString *effective = ApolloRedirectURIForCredential(self);
     return effective.length > 0 ? [NSURL URLWithString:effective] : %orig;
 }
 
@@ -2132,6 +2153,33 @@ static const char kARCompletion = '\0';
 - (NSString *)userAgent {
     NSString *customUA = [sUserAgent length] > 0 ? sUserAgent : defaultUserAgent;
     return customUA;
+}
+
+// Every interactive sign-in (Add Account, the signed-out splash) starts here:
+// AccountManager's beginAuthenticationOfNewUser(_:completion:) — and its
+// SFSafariViewController variant — allocates a fresh RDKClient and calls this
+// with Apollo's own client id + redirect URI, then asks the same client for
+// -authenticationURLWithScope:. RDK creates a new RDKOAuthCredential here and
+// installs it with -setAuthorizationCredential:, which already bakes the Basic
+// auth header for the later authorization_code exchange from -clientIdentifier.
+// So the credential gets the default key attached (see
+// ApolloAccountCredentialsBeginInteractiveSignIn) and is installed again so
+// that header is rebuilt from it: the authorize URL, the exchange's Basic auth
+// and its redirect_uri then all carry the default, while every other account's
+// credential (the active one keeps refreshing meanwhile) is untouched. The
+// app-only bootstrap arrives through -authenticateWithClientIdentifier:, which
+// passes a nil redirect URI; a client that already has a user is never an
+// Add Account sign-in. Both keep the old resolution.
+- (void)authenticateWithClientIdentifier:(NSString *)identifier redirectURI:(NSURL *)redirectURI {
+    %orig;
+    if (!redirectURI || [self currentUser]) return;
+    id credential = [self authorizationCredential];
+    if (!credential) {
+        ApolloLog(@"[AccountCredentials] New sign-in: RDKClient has no credential after authenticate; default key not applied");
+        return;
+    }
+    ApolloAccountCredentialsBeginInteractiveSignIn(credential);
+    [self setAuthorizationCredential:credential];
 }
 
 // #785: "Go to user" with a trailing space after the username crashes. Apollo
@@ -2834,6 +2882,18 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
         return %orig(ApolloLocalFastFailRequest(@"apollo-upload-registry-delete"), wrappedHandler);
     }
 
+    // RedGIFs gif lookups: RedGIFs leaves "duration" null on some videos, and
+    // Apollo's decoder then rejects the whole record and shows its error card,
+    // so fill the duration in before Apollo parses the response (see
+    // ApolloRedgifsMissingDuration.h). Rebinding the parameter hands the
+    // repaired completion to every RedGIFs path below.
+    if (completionHandler && [host isEqualToString:@"api.redgifs.com"] && [path hasPrefix:@"/v2/gifs/"]) {
+        completionHandler = ApolloRedgifsCompletionFillingMissingDuration(self, request, completionHandler,
+            ^NSURLSessionDataTask *(NSURLRequest *headerRequest, ApolloRedgifsLookupCompletion headerCompletion) {
+                return %orig(headerRequest, headerCompletion);
+            });
+    }
+
     if ([host isEqualToString:@"imgur-apiv3.p.rapidapi.com"] && [path hasPrefix:@"/3/album"]) {
         // Album creation needs body format conversion (form-urlencoded → JSON)
         // URL redirect and auth are handled by _onqueue_resume
@@ -2866,6 +2926,10 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
                 NSError *jsonError = nil;
                 NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
                 if (!jsonError && json[@"token"]) {
+                    // Apollo keeps this token for the 23 hours below, but RedGIFs
+                    // stops accepting it as soon as the device's IP address
+                    // changes; ApolloRedgifsTokenRefresh.m swaps in a fresh one.
+                    ApolloRedgifsNoteTokenIssuedToApollo(json[@"token"]);
                     // Transform response to match Apollo's format from '/v2/oauth/client'
                     NSDictionary *oauthResponse = @{
                         @"access_token": json[@"token"],
@@ -2881,6 +2945,15 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
             completionHandler(data, response, error);
         };
         return %orig(modifiedRequest, newCompletionHandler);
+    } else if ([host isEqualToString:@"api.redgifs.com"] && completionHandler) {
+        // Apollo's own RedGIFs API calls: re-mint the token and retry once when
+        // RedGIFs rejects it with a 401 (see ApolloRedgifsTokenRefresh.h).
+        // Returns nil for any request that doesn't carry Apollo's token.
+        NSURLSessionDataTask *redgifsTask = ApolloRedgifsDataTaskWithTokenRefresh(request, completionHandler,
+            ^NSURLSessionDataTask *(NSURLRequest *redgifsRequest, ApolloRedgifsTaskCompletion redgifsCompletion) {
+                return %orig(redgifsRequest, redgifsCompletion);
+            });
+        if (redgifsTask) return redgifsTask;
     }
     return %orig(request, ApolloDeletedCommentsMaybeWrapCompletion(request, completionHandler));
 }
@@ -3168,212 +3241,6 @@ static void ApolloImgurRetryAlbumViaTextProxy(NSString *albumID,
 
 %end
 
-// Unlock "Artificial Superintelligence" Pixel Pal (normally requires Carrot Weather app installed)
-%hook UIApplication
-- (BOOL)canOpenURL:(NSURL *)url {
-    if ([[url scheme] isEqualToString:@"carrotweather"]) {
-        return YES;
-    }
-    return %orig;
-}
-%end
-
-// --- Dynamic Island frame correction for newer devices ---
-// Apollo hardcodes every DI element for iPhone 14 Pro (safeAreaInsets.top=59):
-//   sub_10030afa0: FauxCutOutView y=11.5, w=125, h=37
-//   sub_10030c880: PixelPalView y=-2.0
-//   sub_10030d6c4: tap overlay y=11.0, w=125, h=37, cornerRadius=18.5
-// The island's real position varies per device AND per iOS release, and the
-// safe-area top is not a reliable proxy for it (issue #826: iPhone Air on
-// iOS 27 reports a taller safe area while the physical island stayed put, so
-// the old proportional model over-shifted the whole pal cluster down behind
-// the island pill). ApolloDeviceGeometry reads the physical cutout the same
-// way UIKit's status bar does (-[UIScreen _exclusionArea] on the window
-// scene's screen). There is no 59pt fallback — if the current screen has
-// no pill-shaped cutout, hide the faux chrome instead of guessing.
-//
-// --- Pixel Pals freeze guard (issue #305) ---
-// Tapping the Dynamic Island Pixel Pals area (pixelPalTappedWithTapGestureRecognizer:)
-// or a pal barking for attention (dogBarkedWithNotification:) both present the
-// PixelPalOverlayViewController on the *topmost* currently-presented view
-// controller — Apollo's presenter (sub_1002cd660) walks rootViewController's
-// presentedViewController chain to the end and presents there. When a fullscreen
-// media viewer or the in-app web browser is open — especially mid-interactive
-// swipe-dismiss — that races the in-flight transition: the overlay is presented
-// onto a controller that is being torn down, leaving an orphaned fullscreen
-// transition view that swallows every touch. The app looks frozen (the video's
-// audio keeps playing underneath) and has to be force-quit.
-//
-// Fix: refuse to open the Pixel Pals menu whenever any non-Pixel-Pals modal is
-// presented, or any present/dismiss transition is in flight, anywhere in the
-// window's view-controller chain. This matches the reporters' own diagnosis
-// ("preventing the pixel pal menu from opening with any media or website open
-// should fix everything") and is a strict superset of Apollo's intended
-// behaviour (the menu is already meant to be unreachable while media is open).
-static char kApolloHidIslandChromeKey;
-
-static BOOL ApolloIsPixelPalTapOverlay(UIView *view) {
-    if (![view isMemberOfClass:[UIView class]]) return NO;
-    CGRect frame = view.frame;
-    if (fabs(frame.size.width - 125.0) > 0.5 || fabs(frame.size.height - 37.0) > 0.5) return NO;
-    return view.clipsToBounds && view.layer.cornerRadius >= 18.0;
-}
-
-// Hide tweak-owned island chrome when this window's screen has no pill cutout
-// (Duo inner panel). Only restore views we hid, so Apollo's own hidden state
-// (Pixel Pals off, etc.) is left alone.
-static void ApolloApplyIslandChromeHidden(UIView *view, BOOL showChrome) {
-    if (!view) return;
-    if (!showChrome) {
-        if (!view.hidden) {
-            objc_setAssociatedObject(view, &kApolloHidIslandChromeKey, @YES,
-                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            view.hidden = YES;
-        }
-        return;
-    }
-    if (objc_getAssociatedObject(view, &kApolloHidIslandChromeKey)) {
-        view.hidden = NO;
-        objc_setAssociatedObject(view, &kApolloHidIslandChromeKey, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
-static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
-    Class overlayCls = objc_getClass("_TtC6Apollo29PixelPalOverlayViewController");
-    UIViewController *vc = window.rootViewController;
-    while (vc) {
-        UIViewController *presented = vc.presentedViewController;
-        if (!presented) break;  // nothing modally presented here — safe to open
-        // A modal present/dismiss is animating at this level — the mid-swipe media
-        // dismiss in the repro. We only consult the coordinator once we know a modal
-        // is actually presented: on iOS 26 the transitionCoordinator getter recurses
-        // into child view controllers, so the root tab controller reports a live
-        // coordinator during ordinary feed push/pop too, and checking it
-        // unconditionally would wrongly swallow taps during normal navigation.
-        if (vc.transitionCoordinator) return YES;
-        // The overlay already being up is harmless — Apollo no-ops a re-tap; descend
-        // past it and keep checking the rest of the chain.
-        if (overlayCls && [presented isKindOfClass:overlayCls]) {
-            vc = presented;
-            continue;
-        }
-        // Some other modal (media viewer, in-app web browser, share/settings sheet)
-        // is on top — presenting the menu over it is exactly what wedges UIKit.
-        return YES;
-    }
-    return NO;
-}
-
-%hook _TtC6Apollo15ThemeableWindow
-
-- (void)layoutSubviews {
-    %orig;
-
-    UIWindow *window = (UIWindow *)self;
-    BOOL duo = ApolloDuoRailHasVisibleSideBar()
-        || ApolloDuoCurrentMode() != ApolloDuoModePhone;
-    BOOL showChrome = !duo && ApolloShouldShowDynamicIslandChromeInWindow(window);
-    CGFloat shift = showChrome ? ApolloPixelPalShiftForWindow(window) : 0.0;
-    CGFloat correctY = 11.5 + shift;
-
-    // Shift FauxCutOutView — %orig sets y=11.5 via sub_10030afa0
-    Ivar fauxIvar = class_getInstanceVariable(object_getClass(self), "fauxCutOutView");
-    UIView *fauxView = fauxIvar ? object_getIvar(self, fauxIvar) : nil;
-    ApolloApplyIslandChromeHidden(fauxView, showChrome);
-    if (showChrome && fauxView && !CGRectIsEmpty(fauxView.frame) && shift != 0.0) {
-        CGRect fauxFrame = fauxView.frame;
-        if (fabs(fauxFrame.origin.y - 11.5) < 0.5) {
-            fauxFrame.origin.y = correctY;
-            fauxView.frame = fauxFrame;
-
-            // Clip to continuous (squircle) corners to match hardware DI shape
-            fauxView.clipsToBounds = YES;
-            fauxView.layer.cornerRadius = CGRectGetHeight(fauxView.bounds) * 0.5;
-            fauxView.layer.cornerCurve = kCACornerCurveContinuous;
-
-            ApolloLog(@"[PixelPals] FauxCutOutView y: 11.5 → %.3f (safeTop=%.1f, shift=%.3f)",
-                      correctY, window.safeAreaInsets.top, shift);
-        }
-    }
-
-    // Shift PixelPalView — %orig sets y=-2.0 via sub_10030c880
-    Ivar palIvar = class_getInstanceVariable(object_getClass(self), "pixelPalView");
-    UIView *palView = palIvar ? object_getIvar(self, palIvar) : nil;
-    ApolloApplyIslandChromeHidden(palView, showChrome);
-    if (showChrome && palView && shift != 0.0 && !CGRectIsEmpty(palView.frame)) {
-        CGRect palFrame = palView.frame;
-        if (fabs(palFrame.origin.y - (-2.0)) < 0.5) {
-            palFrame.origin.y = -2.0 + shift;
-            palView.frame = palFrame;
-            ApolloLog(@"[PixelPals] PixelPalView y: -2.0 → %.3f", palFrame.origin.y);
-        }
-    }
-
-    for (UIView *subview in window.subviews) {
-        if (!ApolloIsPixelPalTapOverlay(subview)) continue;
-        ApolloApplyIslandChromeHidden(subview, showChrome);
-        if (!showChrome || shift == 0.0) continue;
-        CGRect overlayFrame = subview.frame;
-        if (fabs(overlayFrame.origin.y - 11.0) < 0.5) {
-            overlayFrame.origin.y += shift;
-            subview.frame = overlayFrame;
-        }
-    }
-}
-
-// Tap overlay (sub_10030d6c4) — created at y=11.0, 125×37, cornerRadius=18.5
-- (void)addSubview:(UIView *)view {
-    %orig;
-
-    if (!ApolloIsPixelPalTapOverlay(view)) return;
-
-    UIWindow *window = (UIWindow *)self;
-    if (!ApolloShouldShowDynamicIslandChromeInWindow(window)) {
-        ApolloApplyIslandChromeHidden(view, NO);
-        return;
-    }
-
-    CGFloat shift = ApolloPixelPalShiftForWindow(window);
-    if (shift == 0.0) return;
-
-    CGRect overlayFrame = view.frame;
-    ApolloLog(@"[PixelPals] Tap overlay y: %.1f → %.3f", overlayFrame.origin.y, overlayFrame.origin.y + shift);
-    overlayFrame.origin.y += shift;
-    view.frame = overlayFrame;
-}
-
-// Suppress the Pixel Pals menu while media / a website / any modal is open or
-// mid-transition — opening it then races UIKit and freezes the app (issue #305).
-- (void)pixelPalTappedWithTapGestureRecognizer:(id)recognizer {
-    if (ApolloDuoRailHasVisibleSideBar()
-        || ApolloDuoCurrentMode() != ApolloDuoModePhone) {
-        ApolloLog(@"[PixelPals] Tap ignored — Pixel Pals are disabled on iPhone Duo");
-        return;
-    }
-    if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
-        ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
-        return;
-    }
-    %orig;
-}
-
-// Same guard for the auto-open path when a pal barks for attention.
-- (void)dogBarkedWithNotification:(id)notification {
-    if (ApolloDuoRailHasVisibleSideBar()
-        || ApolloDuoCurrentMode() != ApolloDuoModePhone) {
-        ApolloLog(@"[PixelPals] Bark menu suppressed — Pixel Pals are disabled on iPhone Duo");
-        return;
-    }
-    if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
-        ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
-        return;
-    }
-    %orig;
-}
-
-%end
-
 // Sideloaded builds have no App Store receipt, so SKReceiptRefreshRequest always
 // fails and Apollo shows "Unable to retrieve receipt information..." when the user
 // tries to enable notifications. Intercept start and immediately call the success
@@ -3580,6 +3447,54 @@ static BOOL ApolloDefaultsKeyChangesSelectedAccount(NSString *key) {
 
 static BOOL ApolloDefaultsKeyChangesAccountCollection(NSString *key) {
     return [key isEqualToString:@"RedditAccounts2"];
+}
+
+// Apollo's group-suite unlock flags. One table so the launch verification and
+// the launch write cannot drift apart — a key present in only one of them would
+// either be written and never checked, or checked and never written.
+static NSString *const kApolloGroupUnlockFlags[] = {
+    // Ultra/Pro flags
+    @"UMigrationOccurred",
+    @"ProMigrationOccurred",
+    @"SPMigrationOccurred",
+    @"CommMigrationOccurred",
+    // Secret icon flags
+    @"HasUnlockedBeanVault",  // Beans (Black Friday 2022)
+    @"SlothkunUnlocked",      // Slothkun
+    @"iJustineUnlocked",      // iJustine (sekrit: wrappingpaper)
+    @"UnitedStatesUnlocked",  // America! (sekrit: america)
+    @"UnitedStates2Unlocked", // Super America (sekrit: superamerica)
+    @"UnitedKingdomUnlocked", // UK (sekrit: hughlaurie)
+    @"TLDTodayUnlocked",      // Yo. Jonathan Here. (sekrit: tld/jellyfish/crispy)
+    @"ApolloBookProUnlocked", // ApolloBook Pro (sekrit: apollobookpro)
+    @"UnlockedWallpapers",    // Wallpapers
+    @"ATPUnlocked",           // ATP (sekrit: atp)
+    @"PhilUnlocked",          // Phil Schiller (sekrit: phil/throatpunch)
+    @"CanadaUnlocked",        // Canada D'Eh (sekrit: canadadeh)
+    @"UkraineUnlocked",       // Ukraine (sekrit: ukraine)
+    @"ErnestUnlocked",        // Ernest (sekrit: ernest)
+    @"SusUnlocked",           // Sus/Among Us (sekrit: sus)
+    @"Dave2DUnlocked",        // Dave2D (sekrit: dave2d)
+    @"MKBHDUnlocked",         // MKBHD (sekrit: keith)
+    @"PeachyUnlocked",        // Peachy (sekrit: neonpeach)
+    @"LinusUnlocked",         // Linus Tech Tips (sekrit: livelaughliao)
+    @"AndruUnlocked",         // Andru Edwards (sekrit: andru/prowrestler)
+    @"EAPUnlocked",           // Icons Drop Test (sekrit: everythingapplepro)
+    @"ReneUnlocked",          // Rene Ritchie (sekrit: rene/montrealbagels)
+    @"SnazzyUnlocked",        // Snazzy Labs (sekrit: margaret)
+};
+static const size_t kApolloGroupUnlockFlagCount =
+    sizeof(kApolloGroupUnlockFlags) / sizeof(kApolloGroupUnlockFlags[0]);
+
+// The version stamp alone is not enough to skip the writes: anything that clears
+// one flag without clearing the stamp would leave that unlock off until the next
+// tweak version. Reads of an already-loaded preferences domain are cheap, so
+// verify every flag and let a cleared one heal itself on the next launch.
+static BOOL ApolloGroupUnlockFlagsAllSet(NSUserDefaults *suite) {
+    for (size_t i = 0; i < kApolloGroupUnlockFlagCount; i++) {
+        if (![suite boolForKey:kApolloGroupUnlockFlags[i]]) return NO;
+    }
+    return YES;
 }
 
 static BOOL ApolloDefaultsKeyChangesNativeFavorites(NSString *key) {
@@ -4384,60 +4299,64 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
 
     ApolloMarkdownGifInstall();
 
-    // Ultra pre-migration
-    [[NSUserDefaults standardUserDefaults] setObject:@"ya" forKey:@"awesome_notifications"];
-
-    NSUserDefaults *sharedSuite = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
-    if (sharedSuite) {
-        // Ultra/Pro flags
-        [sharedSuite setBool:YES forKey:@"UMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"ProMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"SPMigrationOccurred"];
-        [sharedSuite setBool:YES forKey:@"CommMigrationOccurred"];
-
-        // Secret icon flags
-        [sharedSuite setBool:YES forKey:@"HasUnlockedBeanVault"];  // Beans (Black Friday 2022)
-        [sharedSuite setBool:YES forKey:@"SlothkunUnlocked"];      // Slothkun
-        [sharedSuite setBool:YES forKey:@"iJustineUnlocked"];      // iJustine (sekrit: wrappingpaper)
-        [sharedSuite setBool:YES forKey:@"UnitedStatesUnlocked"];  // America! (sekrit: america)
-        [sharedSuite setBool:YES forKey:@"UnitedStates2Unlocked"]; // Super America (sekrit: superamerica)
-        [sharedSuite setBool:YES forKey:@"UnitedKingdomUnlocked"]; // UK (sekrit: hughlaurie)
-        [sharedSuite setBool:YES forKey:@"TLDTodayUnlocked"];      // Yo. Jonathan Here. (sekrit: tld/jellyfish/crispy)
-        [sharedSuite setBool:YES forKey:@"ApolloBookProUnlocked"]; // ApolloBook Pro (sekrit: apollobookpro)
-        [sharedSuite setBool:YES forKey:@"UnlockedWallpapers"];    // Wallpapers
-        [sharedSuite setBool:YES forKey:@"ATPUnlocked"];           // ATP (sekrit: atp)
-        [sharedSuite setBool:YES forKey:@"PhilUnlocked"];          // Phil Schiller (sekrit: phil/throatpunch)
-        [sharedSuite setBool:YES forKey:@"CanadaUnlocked"];        // Canada D'Eh (sekrit: canadadeh)
-        [sharedSuite setBool:YES forKey:@"UkraineUnlocked"];       // Ukraine (sekrit: ukraine)
-        [sharedSuite setBool:YES forKey:@"ErnestUnlocked"];        // Ernest (sekrit: ernest)
-        [sharedSuite setBool:YES forKey:@"SusUnlocked"];           // Sus/Among Us (sekrit: sus)
-        [sharedSuite setBool:YES forKey:@"Dave2DUnlocked"];        // Dave2D (sekrit: dave2d)
-        [sharedSuite setBool:YES forKey:@"MKBHDUnlocked"];         // MKBHD (sekrit: keith)
-        [sharedSuite setBool:YES forKey:@"PeachyUnlocked"];        // Peachy (sekrit: neonpeach)
-        [sharedSuite setBool:YES forKey:@"LinusUnlocked"];         // Linus Tech Tips (sekrit: livelaughliao)
-        [sharedSuite setBool:YES forKey:@"AndruUnlocked"];         // Andru Edwards (sekrit: andru/prowrestler)
-        [sharedSuite setBool:YES forKey:@"EAPUnlocked"];           // Icons Drop Test (sekrit: everythingapplepro)
-        [sharedSuite setBool:YES forKey:@"ReneUnlocked"];          // Rene Ritchie (sekrit: rene/montrealbagels)
-        [sharedSuite setBool:YES forKey:@"SnazzyUnlocked"];        // Snazzy Labs (sekrit: margaret)
+    // Apollo's sideload-unlock flags only ever go absent -> YES, so re-writing
+    // every one of them on each launch just dirties two cfprefsd domains and
+    // makes it rewrite both plists. A stamp per domain re-runs the writes
+    // whenever the tweak version changes and whenever that domain is reset,
+    // which is the only way the flags can go missing again.
+    NSString *sideloadStamp = @TWEAK_VERSION;
+    NSUserDefaults *appDefaults = [NSUserDefaults standardUserDefaults];
+    if (![[appDefaults stringForKey:UDKeySideloadFlagsStamp] isEqualToString:sideloadStamp] ||
+        ![@"ya" isEqual:[appDefaults objectForKey:@"awesome_notifications"]] ||
+        ![appDefaults boolForKey:@"airprint-active"]) {
+        // Ultra pre-migration
+        [appDefaults setObject:@"ya" forKey:@"awesome_notifications"];
+        // Unlock Chumbus theme (normally requires 1000 boop button taps in Theme Settings)
+        [appDefaults setBool:YES forKey:@"airprint-active"];
+        [appDefaults setObject:sideloadStamp forKey:UDKeySideloadFlagsStamp];
     }
 
-    // Unlock Chumbus theme (normally requires 1000 boop button taps in Theme Settings)
-    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"airprint-active"];
+    NSUserDefaults *sharedSuite = [[NSUserDefaults alloc] initWithSuiteName:@"group.com.christianselig.apollo"];
+    if (sharedSuite && (![[sharedSuite stringForKey:UDKeyGroupUnlockFlagsStamp] isEqualToString:sideloadStamp] ||
+                        !ApolloGroupUnlockFlagsAllSet(sharedSuite))) {
+        for (size_t i = 0; i < kApolloGroupUnlockFlagCount; i++) {
+            [sharedSuite setBool:YES forKey:kApolloGroupUnlockFlags[i]];
+        }
+        [sharedSuite setObject:sideloadStamp forKey:UDKeyGroupUnlockFlagsStamp];
+    }
 
-    // Suppress wallpaper prompt
-    NSDate *dateIn90d = [NSDate dateWithTimeIntervalSinceNow:60*60*24*90];
-    [[NSUserDefaults standardUserDefaults] setObject:dateIn90d forKey:@"WallpaperPromptMostRecent2"];
+    // Suppress wallpaper prompt. Apollo only compares this date against now, so
+    // one far-future value keeps the prompt away for months; writing a fresh
+    // NSDate every launch made the main preferences plist dirty every launch
+    // even when nothing else had changed.
+    id wallpaperPromptDate = [appDefaults objectForKey:@"WallpaperPromptMostRecent2"];
+    if (![wallpaperPromptDate isKindOfClass:[NSDate class]] ||
+        [(NSDate *)wallpaperPromptDate timeIntervalSinceNow] < 60*60*24*30) {
+        [appDefaults setObject:[NSDate dateWithTimeIntervalSinceNow:60*60*24*90]
+                        forKey:@"WallpaperPromptMostRecent2"];
+    }
 
     // Sideload fixes. SecItemDelete is hooked on device too now (not just the simulator): the
     // keychain self-heal and container mirror need it to sweep synced shadow items on sign-out,
     // so a subsequent sign-in isn't re-broken by a stale synced copy.
-    rebind_symbols((struct rebinding[5]) {
+    //
+    // Every module's fishhook bindings go through this ONE call: rebind_symbols
+    // walks all ~2k loaded images per call, and four separate calls paid that
+    // walk four times. The Security bindings have to be installed here, before
+    // the Web JSON keychain hydration below, so this is the call the others join.
+    // (ApolloSwiftSingletonCapture and ApolloRedgifsQueuedFetchesLock rebind
+    // only Apollo's own image with rebind_symbols_image, which skips that walk.)
+    struct rebinding rebindings[5 + 2 * ApolloRebornMaxAppendedRebindings] = {
         {"SecItemAdd", (void *)SecItemAdd_replacement, (void **)&SecItemAdd_orig},
         {"SecItemCopyMatching", (void *)SecItemCopyMatching_replacement, (void **)&SecItemCopyMatching_orig},
         {"SecItemUpdate", (void *)SecItemUpdate_replacement, (void **)&SecItemUpdate_orig},
         {"SecItemDelete", (void *)SecItemDelete_replacement, (void **)&SecItemDelete_orig},
-        {"uname", (void *)uname_replacement, (void **)&uname_orig}
-    }, 5);
+        {"uname", (void *)uname_replacement, (void **)&uname_orig},
+    };
+    size_t rebindingCount = 5;
+    rebindingCount += ApolloImageUploadHostAppendRebindings(&rebindings[rebindingCount]);
+    rebindingCount += ApolloPhotoComposerAppendRebindings(&rebindings[rebindingCount]);
+    rebind_symbols(rebindings, rebindingCount);
 
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) {
         if (!%c(FLEXManager)) {

@@ -918,11 +918,15 @@ static NSString *ApolloAIFullNameForController(UIViewController *vc) {
     return fullName;
 }
 
-static void ApolloAICaptureCommentForController(id comment, UIViewController *vc) {
-    if (!ApolloAICommentIsEligible(comment) || !vc) return;
+// Set on a comments controller once a capture-driven pass has been scheduled
+// for it (see ApolloAIScheduleCommentGeneration).
+static char kApolloAIControllerPassScheduledKey;
+
+static BOOL ApolloAICaptureCommentForController(id comment, UIViewController *vc) {
+    if (!ApolloAICommentIsEligible(comment) || !vc) return NO;
     NSString *fullName = ApolloAIFullNameForController(vc);
     NSString *key = ApolloAICommentDedupKey(comment);
-    if (fullName.length == 0 || key.length == 0) return;
+    if (fullName.length == 0 || key.length == 0) return NO;
 
     NSMutableArray *comments = sCapturedComments[fullName];
     if (!comments) {
@@ -934,7 +938,12 @@ static void ApolloAICaptureCommentForController(id comment, UIViewController *vc
         keys = [NSMutableSet set];
         sCapturedCommentKeys[fullName] = keys;
     }
-    if ([keys containsObject:key]) return;
+    // A duplicate is not new work, except as this controller's first pass. On
+    // a revisit whose thread loads after viewDidAppear's last retry (8 s), every
+    // comment is a duplicate of the earlier visit; without that one pass the
+    // restored card never starts (auto mode: "Summarizing…" forever).
+    if ([keys containsObject:key] && !objc_getAssociatedObject(vc, &kApolloAIControllerPassScheduledKey)) return YES;
+    if ([keys containsObject:key]) return NO;
     [keys addObject:key];
     [comments addObject:comment];
     // Do not show a discussion card until there is enough material to synthesize.
@@ -946,6 +955,7 @@ static void ApolloAICaptureCommentForController(id comment, UIViewController *vc
         ApolloAIShowLoadingIfIdle(fullName, NO);
     }
     ApolloLog(@"[AISummary] captured comment %lu for %@", (unsigned long)comments.count, fullName);
+    return YES;
 }
 
 static void ApolloAIAppendCommentText(id comment,
@@ -2415,7 +2425,29 @@ static void ApolloAIScheduleCommentGeneration(UIViewController *vc) {
     if (!vc || !sEnableAISummaries) return;
     NSString *fullName = ApolloAIFullNameForController(vc);
     if (fullName.length == 0 || [sCommentGenerationScheduled containsObject:fullName]) return;
+
+    // In tap mode the first eligible pass installs the idle card without
+    // starting a request. Once that card exists, repeated Texture lifecycle
+    // callbacks have nothing to do until the user taps it. Re-gathering the
+    // same model here used to force a full header remeasure on every scroll
+    // callback, feeding the comment-section hitch reported in #863.
+    // A controller's first pass still runs: when the thread loaded after
+    // viewDidAppear's retries, it is the pass that installs the post card.
+    BOOL controllerHadPass = objc_getAssociatedObject(vc, &kApolloAIControllerPassScheduledKey) != nil;
+    if (sEnableTapToSummarize && controllerHadPass) {
+        NSString *tapKey = [@"comment|" stringByAppendingString:fullName];
+        if (![sTapRequested containsObject:tapKey]) {
+            for (id headerNode in sHeaderNodes.allObjects) {
+                NSString *headerFullName = objc_getAssociatedObject(headerNode, &kApolloAIHeaderFullNameKey);
+                if ([headerFullName isEqualToString:fullName] &&
+                    ApolloAIGetBoxState(headerNode, NO) == ApolloAIBoxStateTapToSummarize) {
+                    return;
+                }
+            }
+        }
+    }
     [sCommentGenerationScheduled addObject:fullName];
+    objc_setAssociatedObject(vc, &kApolloAIControllerPassScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     __weak UIViewController *weakVC = vc;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -2979,8 +3011,9 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                ![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
         // Tap-to-Summarize is on and the user hasn't tapped this card yet: show the
         // idle "Tap to summarize" prompt instead of generating automatically.
-        ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateTapToSummarize, nil);
-        ApolloAIForceHeaderRemeasure(fullName);
+        if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateTapToSummarize, nil)) {
+            ApolloAIForceHeaderRemeasure(fullName);
+        }
     } else if (![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
         // Do NOT consume the tap request here — see the matching note in the comment
         // branch below. A concurrency-deferred retry must still re-drive generation
@@ -3130,8 +3163,9 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             if (sEnableTapToSummarize && ![sTapRequested containsObject:commentTapKey]) {
             // Tap-to-Summarize is on and the user hasn't tapped: show the idle
             // "Tap to summarize" prompt instead of generating automatically.
-            ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateTapToSummarize, nil);
-            ApolloAIForceHeaderRemeasure(fullName);
+            if (ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateTapToSummarize, nil)) {
+                ApolloAIForceHeaderRemeasure(fullName);
+            }
             } else {
             // Do NOT consume the tap request here. A transient-concurrency (code 9)
             // deferral clears sCommentInFlight and re-enters this function ~0.75s later;
@@ -3358,8 +3392,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
             UIViewController *vc = sVisibleCommentsController;
             id comment = MSHookIvar<id>((id)result, "comment");
             if (!vc || !ApolloAICommentIsEligible(comment)) return;
-            ApolloAICaptureCommentForController(comment, vc);
-            ApolloAIScheduleCommentGeneration(vc);
+            if (ApolloAICaptureCommentForController(comment, vc)) {
+                ApolloAIScheduleCommentGeneration(vc);
+            }
         });
     }
     return result;
@@ -3380,8 +3415,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         Ivar commentIvar = class_getInstanceVariable(object_getClass(sectionController), "comment");
         id comment = commentIvar ? object_getIvar(sectionController, commentIvar) : nil;
         if (!vc || !ApolloAICommentIsEligible(comment)) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 
@@ -3401,8 +3437,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);
         if (!vc || !comment) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 
@@ -3416,8 +3453,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);
         if (!vc || !comment) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 

@@ -164,16 +164,18 @@ the Companion extension. The fallback is included in the **standard** and
 
 Those IPAs also retain the former automatic implementation as **Open in Apollo
 (Legacy)**. It is an opt-in alternative for people who prefer Apollo's bundled
-extension and do not want to install Link Companion. Enable either **Legacy** or
-**Companion**, never both: two automatic extensions can compete for the same
-navigation. The manual fallback is passive and is safe to leave enabled with
-either choice.
+extension and do not want to install Link Companion. Legacy opens the validated
+Reddit destination through Apollo's `apollo://` URL scheme, so iOS may ask for
+confirmation before switching apps. Enable either **Legacy** or **Companion**,
+never both: two automatic extensions can compete for the same navigation. The
+manual fallback is passive and is safe to leave enabled with either choice.
 
 > [!IMPORTANT]
 > Install and launch the project-signed Link Companion before enabling its
 > automatic extension. Apollo itself can keep any sideloaded bundle ID and
 > signing team; it does not need an Associated Domains entitlement. Without the
-> companion, the Worker safely returns to Reddit instead of looping.
+> companion, the Universal Link used by Companion and Manual Fallback safely
+> returns to Reddit instead of looping. Legacy does not use that Universal Link.
 
 Supported link families include canonical post/comment/subreddit/profile/wiki
 URLs on `reddit.com`, `www`, `old`, `new`, `np`, `m`, and language subdomains;
@@ -353,6 +355,7 @@ Thank you to these wonderful people:
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/JamesLautner"><img src="https://avatars.githubusercontent.com/u/198249797?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="JamesLautner"/></a><br /><sub><b>JamesLautner</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=JamesLautner" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/Thetromboneman1"><img src="https://avatars.githubusercontent.com/u/38571121?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="Thetromboneman1"/></a><br /><sub><b>Thetromboneman1</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=Thetromboneman1" title="Code">Code</a></td>
       <td align="center" valign="top" width="14.29%"><a href="https://github.com/jaredrossberg"><img src="https://avatars.githubusercontent.com/u/45674604?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="jaredrossberg"/></a><br /><sub><b>jaredrossberg</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=jaredrossberg" title="Code">Code</a></td>
+      <td align="center" valign="top" width="14.29%"><a href="https://github.com/paradoxally"><img src="https://avatars.githubusercontent.com/u/1304041?v=4&amp;s=100" width="100px;" height="100px;" style="object-fit: cover;" alt="paradoxally"/></a><br /><sub><b>paradoxally</b></sub><br /><a href="https://github.com/Apollo-Reborn/Apollo-Reborn/commits?author=paradoxally" title="Code">Code</a></td>
     </tr>
   </tbody>
 </table>

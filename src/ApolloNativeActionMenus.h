@@ -1,7 +1,9 @@
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 @class UIView;
 @class UIViewController;
 @class UIMenu;
+@class UIContextMenuConfiguration;
 
 NS_ASSUME_NONNULL_BEGIN
 __BEGIN_DECLS
@@ -15,6 +17,10 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
 UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller,
                                            dispatch_block_t _Nullable didEnd);
+// Gesture menus use a point in source coordinates instead of the source centre.
+BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
+                                                  id controller, dispatch_block_t _Nullable didEnd);
+void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built
 // from `actionController` has completely dismissed. Returns NO when the
