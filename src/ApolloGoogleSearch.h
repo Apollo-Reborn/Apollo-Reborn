@@ -62,6 +62,9 @@ typedef NS_ENUM(NSInteger, ApolloGoogleSearchErrorCode) {
     ApolloGoogleSearchErrorNetwork = 2,
     ApolloGoogleSearchErrorVerificationCancelled = 3,
     ApolloGoogleSearchErrorUnreadable = 4,
+    // Kagi: the saved Session Link was rejected (expired, revoked, or never
+    // valid). The user has to paste a new one.
+    ApolloGoogleSearchErrorSessionExpired = 5,
 };
 
 FOUNDATION_EXPORT NSString *const ApolloGoogleSearchErrorDomain;
@@ -86,13 +89,15 @@ FOUNDATION_EXPORT NSString *const ApolloGoogleSearchErrorDomain;
 @property (nonatomic, copy, nullable) NSString *postID;      // base36, no "t3_"
 @property (nonatomic, copy, nullable) NSString *commentID;   // base36, no "t1_"
 
-// From Google.
+// From the search engine's results page.
 @property (nonatomic, copy) NSString *title;
 // Plain snippet text; runs Google bolded (the query terms) are in snippetBoldRanges.
 @property (nonatomic, copy) NSString *snippet;
 @property (nonatomic, copy) NSArray<NSValue *> *snippetBoldRanges;
-// Google's forum line ("30+ comments · 2 weeks ago"), nil when absent.
-@property (nonatomic, copy, nullable) NSString *googleMeta;
+// The engine's own line for the result, shown until Reddit's numbers are in:
+// Google's forum line ("30+ comments · 2 weeks ago"), Kagi's date
+// ("Mar 27, 2025"). nil when absent.
+@property (nonatomic, copy, nullable) NSString *engineMeta;
 
 // From Reddit (/api/info.json), after -resolveResult:withRedditInfo:YES.
 // hasRedditInfo stays NO when that read failed.
@@ -134,11 +139,43 @@ FOUNDATION_EXPORT ApolloGoogleSearchResult *_Nullable ApolloGoogleSearchResultFo
 // Markdown source → readable plain text for the "Read more" preview.
 FOUNDATION_EXPORT NSString *ApolloGoogleSearchPlainTextFromMarkdown(NSString *markdown);
 
+// Strips the site suffix search engines put on Reddit page titles
+// ("Title : r/PTCGP", "Title - Reddit", "r/PTCGP - Title").
+FOUNDATION_EXPORT NSString *ApolloGoogleSearchCleanTitle(NSString *title);
+
+// One batched /api/info.json read for the results' posts and comments, applied
+// onto them (hasRedditInfo, score, author, body, ...). Runs on the account's
+// usual path for tweak-authored reads. Completion on main; nil task (and an
+// async completion) when there is nothing to read.
+FOUNDATION_EXPORT NSURLSessionDataTask *_Nullable ApolloGoogleSearchFetchRedditInfo(
+    NSArray<ApolloGoogleSearchResult *> *results,
+    void (^completion)(NSUInteger applied, NSInteger status, NSError *_Nullable error));
+
 typedef void (^ApolloGoogleSearchCompletion)(NSArray<ApolloGoogleSearchResult *> *results,
                                              BOOL mayHaveMore,
                                              NSError *_Nullable error);
 
-@interface ApolloGoogleSearchSession : NSObject
+// What the Search tab's results list needs from an external engine (Google,
+// Kagi). Results are ApolloGoogleSearchResult whichever engine found them.
+@protocol ApolloExternalSearchSession <NSObject>
+@property (nonatomic, readonly, getter=isLoading) BOOL loading;
+// One search at a time: starting a new one cancels the previous one silently
+// (its completion is never called). Completion always runs on the main queue.
+- (void)searchQuery:(NSString *)query
+            options:(nullable ApolloGoogleSearchOptions *)options
+               page:(NSUInteger)page
+         completion:(ApolloGoogleSearchCompletion)completion;
+// Makes sure result.URL is known and, with `withRedditInfo`, reads the post or
+// comment from Reddit. Completion on the main queue; `error` only when the
+// Reddit URL couldn't be recovered.
+- (void)resolveResult:(ApolloGoogleSearchResult *)result
+       withRedditInfo:(BOOL)withRedditInfo
+           completion:(void (^)(NSError *_Nullable error))completion;
+// Cancels silently (no completion).
+- (void)cancel;
+@end
+
+@interface ApolloGoogleSearchSession : NSObject <ApolloExternalSearchSession>
 // Called when Google shows a challenge or consent page. Present `webView`
 // (reparent it into a visible view) so the user can answer it; the pending
 // search completes on its own when Google returns to the results.
