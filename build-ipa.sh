@@ -124,6 +124,7 @@ if command -v azule >/dev/null 2>&1; then
             rm -rf "$scratch_dir"
             exit 1
         fi
+        python3 "$SCRIPT_DIR/scripts/register-backup-document.py" "$generated"
         mv -f "$generated" "$abs_out_dir/$(basename "$OUTPUT_IPA")"
         rm -rf "$scratch_dir"
         echo "Injected IPA created at: $OUTPUT_IPA"
@@ -146,6 +147,7 @@ if command -v cyan >/dev/null 2>&1; then
             echo "Error: arm64e strip failed after cyan injection."
             exit 1
         fi
+        python3 "$SCRIPT_DIR/scripts/register-backup-document.py" "$OUTPUT_IPA"
         echo "Injected IPA created at: $OUTPUT_IPA"
         exit 0
     fi

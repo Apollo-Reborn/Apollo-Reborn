@@ -22,6 +22,10 @@ static CGFloat const kApolloGalleryViewerDismissVelocity = 850.0;
 // Start pulling the next batch once the user is within this many pictures of
 // the end, so paging rarely stalls on the network.
 static NSInteger const kApolloGalleryViewerLoadAheadSlack = 4;
+// On a video page a hold first arms hold-and-drag scrubbing; left still this
+// much longer (seconds), it opens the actions sheet instead. Pictures, which
+// can't scrub, open it the moment the hold registers.
+static NSTimeInterval const kApolloGalleryViewerHoldActionsDelay = 0.3;
 
 static NSString *const kApolloGalleryViewerCellID = @"ApolloGalleryViewerCell";
 
@@ -595,12 +599,17 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // Hold-and-drag scrubbing on the video itself (Apollo's MediaViewer has the
 // same gesture as scrubPanGestureRecognizer): the long-press arms on a video
 // page, and horizontal movement past a small slop turns it into a scrub. A
-// press that never moves falls through to the old actions sheet on release.
+// press that stays still opens the actions sheet instead — while the finger is
+// still down, kApolloGalleryViewerHoldActionsDelay after arming, or on release
+// if it lifts sooner.
 @property (nonatomic) BOOL gestureScrubArmed;
 @property (nonatomic) BOOL gestureScrubActive;
 @property (nonatomic) CGFloat gestureScrubStartX;
 @property (nonatomic) NSTimeInterval gestureScrubStartTime;
 @property (nonatomic) BOOL gestureScrubWasPlaying;
+// Bumped by every hold that arms and every hold that ends, so the delayed
+// hold-to-actions check only acts for the hold that scheduled it.
+@property (nonatomic) NSUInteger gestureScrubHoldGeneration;
 
 // Smart Rotation Lock (Apollo's `SmartRotationLockEnabled` setting): with
 // iOS's own Portrait Orientation Lock on, UIKit will not auto-rotate no
@@ -621,7 +630,15 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // ones that fell outside the window.
 @property (nonatomic) NSInteger prefetchRadius;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, ApolloGalleryImageRequest *> *viewerPrefetches;
-@property (nonatomic) CGSize lastLaidOutSize;
+// The PAGER's size as of the last layout pass: one page, and what all the
+// page math divides by. Deliberately the collection view's own bounds, not
+// self.view's. UIKit snaps an autoresized subview to whole device pixels, so
+// when a host gives the viewer a size that isn't on that grid the pager ends
+// up a fraction of a point smaller than self.view for good. Comparing the two
+// then never matched, so every page change was dropped and only the first
+// video ever played (issue #1104: Gallery View shown on CarPlay through
+// CarBridge/CarCast).
+@property (nonatomic) CGSize lastLaidOutPageSize;
 @end
 
 @implementation ApolloGalleryImageViewer
@@ -771,11 +788,16 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGSize size = self.view.bounds.size;
+    // Page geometry comes from the pager itself (see lastLaidOutPageSize).
+    // It has already followed self.view here: autoresizing runs as soon as
+    // the view's bounds change, ahead of this layout pass.
+    CGSize size = self.collectionView.bounds.size;
     if (size.width <= 0.0 || size.height <= 0.0) return;
 
-    if (!CGSizeEqualToSize(size, self.lastLaidOutSize)) {
-        self.lastLaidOutSize = size;
+    if (!CGSizeEqualToSize(size, self.lastLaidOutPageSize)) {
+        ApolloLog(@"[Gallery] viewer page size %.3fx%.3f (view %.3fx%.3f)",
+                  size.width, size.height, self.view.bounds.size.width, self.view.bounds.size.height);
+        self.lastLaidOutPageSize = size;
         [self.layout invalidateLayout];
     }
     [self apollo_layoutChrome];
@@ -1488,7 +1510,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 - (CGSize)collectionView:(UICollectionView *)collectionView
                   layout:(UICollectionViewLayout *)collectionViewLayout
   sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
-    CGSize size = self.view.bounds.size;
+    // Exactly one page: the pager's own bounds, which is also the distance
+    // pagingEnabled moves per swipe. Sized from self.view instead, each item
+    // came out a fraction of a point wider than a page whenever the two
+    // differ, so the pictures crept off-center a little more every swipe.
+    CGSize size = collectionView.bounds.size;
     return CGSizeMake(MAX(size.width, 1.0), MAX(size.height, 1.0));
 }
 
@@ -1499,9 +1525,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     // Mid-rotation this fires with transitional geometry — the old offset
     // divided by the new width — which lands on an unrelated page and clobbers
     // currentIndex before viewDidLayoutSubviews can re-anchor on it. Page math
-    // is only meaningful once the bounds match the size the layout was
-    // prepared for; until then, keep the page the user was on.
-    if (!CGSizeEqualToSize(scrollView.bounds.size, self.lastLaidOutSize)) return;
+    // is only meaningful once the pager's bounds match the page size the
+    // layout was prepared for; until then, keep the page the user was on.
+    // Both sides of this check are the pager's own bounds, so they can only
+    // disagree between a resize and the layout pass that follows it.
+    if (!CGSizeEqualToSize(scrollView.bounds.size, self.lastLaidOutPageSize)) return;
     CGFloat width = MAX(self.collectionView.bounds.size.width, 1.0);
     NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / width);
     page = MAX(0, MIN(page, (NSInteger)self.feed.items.count - 1));
@@ -1652,7 +1680,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
                 return;
             }
             // Arm, but don't commit: a hold that never moves is still the
-            // actions sheet (on release), so the old gesture isn't lost.
+            // actions sheet, so the old gesture isn't lost.
             self.gestureScrubArmed = YES;
             self.gestureScrubActive = NO;
             self.gestureScrubStartX = [recognizer locationInView:self.view].x;
@@ -1664,6 +1692,16 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
             // had started on this touch, so the horizontal scrub can't also
             // turn the page.
             self.collectionView.scrollEnabled = NO;
+            // The sheet opens while the finger is still down, like a
+            // picture's hold and Apollo's own viewer, once the hold has
+            // stayed still a moment past arming; that moment is the window
+            // for starting a scrub. It used to wait for the lift (#1176).
+            NSUInteger generation = ++self.gestureScrubHoldGeneration;
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloGalleryViewerHoldActionsDelay * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakSelf apollo_holdStayedStillForGeneration:generation];
+            });
             break;
         }
         case UIGestureRecognizerStateChanged: {
@@ -1693,10 +1731,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
             BOOL wasActive = self.gestureScrubActive;
             self.gestureScrubArmed = NO;
             self.gestureScrubActive = NO;
+            self.gestureScrubHoldGeneration += 1;   // this hold is over
             if (!wasArmed) return;
             self.collectionView.scrollEnabled = YES;
             if (!wasActive) {
-                // Held without dragging: the original actions sheet.
+                // Lifted without dragging before the sheet opened on its own.
                 if (recognizer.state == UIGestureRecognizerStateEnded) {
                     [self apollo_presentActionsFromView:self.view];
                 }
@@ -1726,6 +1765,20 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
         default:
             break;
     }
+}
+
+// The delayed half of a video-page hold: still armed and never dragged, so it
+// was a hold for the actions sheet after all.
+- (void)apollo_holdStayedStillForGeneration:(NSUInteger)generation {
+    // A newer hold, or this one already lifted, was cancelled, or became a scrub.
+    if (generation != self.gestureScrubHoldGeneration) return;
+    if (!self.gestureScrubArmed || self.gestureScrubActive || self.presentedViewController) return;
+    // Disarm before presenting: the rest of this touch belongs to the sheet,
+    // so a drag now can't start scrubbing and the lift can't open a second one.
+    self.gestureScrubArmed = NO;
+    self.collectionView.scrollEnabled = YES;
+    ApolloLog(@"[Gallery] viewer hold stayed still; opening the actions sheet");
+    [self apollo_presentActionsFromView:self.view];
 }
 
 - (ApolloGalleryViewerCell *)apollo_currentCell {
@@ -1828,6 +1881,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
         return fabs(velocity.x) > fabs(velocity.y);
     }
     if (gestureRecognizer != self.dismissPan) return YES;
+    // A hold that opened the actions sheet keeps its touch, and that drag must
+    // not start closing the viewer under the sheet: the flick's dismiss would
+    // take down the sheet (our presented child) instead of the viewer, leaving
+    // it black with isDismissing stuck and Done dead.
+    if (self.presentedViewController) return NO;
     // A zoomed-in page pans its own content instead.
     if ([self apollo_currentCell].isZoomed) return NO;
     // A hold-scrub in progress owns the drag; a stray vertical drift must not
@@ -2042,6 +2100,11 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)apollo_presentActionsFromView:(UIView *)sourceView {
+    // Never over a swipe-to-close already under way, for the same reason the
+    // dismiss pan won't start under a presented sheet.
+    UIGestureRecognizerState dismissState = self.dismissPan.state;
+    if (self.isDismissing || dismissState == UIGestureRecognizerStateBegan ||
+        dismissState == UIGestureRecognizerStateChanged) return;
     ApolloGalleryItem *item = [self apollo_currentItem];
     if (!item) return;
 

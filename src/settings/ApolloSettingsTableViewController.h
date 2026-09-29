@@ -1,5 +1,17 @@
 #import <UIKit/UIKit.h>
 
+// Apollo's in-app slider overrides the system category only inside settings.
+#ifdef __cplusplus
+extern "C" {
+#endif
+UIColor *ApolloSettingsPrimaryTextColor(void);
+UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits);
+void ApolloSettingsApplyCellTypography(UITableViewCell *cell);
+void ApolloSettingsApplySectionHeaderTypography(UIView *view);
+#ifdef __cplusplus
+}
+#endif
+
 @interface ApolloSettingsTableViewController : UITableViewController
 - (UITableView *)apollo_sourceThemeTableView;
 - (UIColor *)apollo_themeCellBackgroundColor;

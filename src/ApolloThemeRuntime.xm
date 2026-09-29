@@ -3,6 +3,7 @@
 #import "ApolloThemeCompiler.h"
 #import "ApolloThemeGalleryCatalog.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import <CoreText/CoreText.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -403,6 +404,9 @@ static const void *kApolloThemeBackgroundColorPassthroughKey = &kApolloThemeBack
 static const void *kApolloThemeOriginalAttributedTextKey =
     &kApolloThemeOriginalAttributedTextKey;
 static __thread NSInteger sAttributedTextAssignmentBypass;
+static const void *kApolloThemeNavigationButtonTitlesKey =
+    &kApolloThemeNavigationButtonTitlesKey;
+static __thread NSInteger sNavigationButtonTitleAssignmentBypass;
 
 void ApolloThemeRuntimeSetFontPinned(id view, BOOL pinned) {
     if (!view) return;
@@ -787,8 +791,109 @@ static void SetLabelAttributedTextWithoutRecapture(UILabel *label,
     sAttributedTextAssignmentBypass--;
 }
 
+static UIView *NavigationTitleControlForDescendant(UIView *view) {
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if ([NSStringFromClass(ancestor.class) isEqualToString:@"_UINavigationBarTitleControl"]) return ancestor;
+    }
+    return nil;
+}
+
+static BOOL NavigationTitleOwnsButtonLabel(UIView *view) {
+    // Asking UIButton for titleLabel from a label setter re-enters its lazy
+    // title update. Identify the existing generated label without that getter.
+    Class buttonLabelClass = objc_getClass("UIButtonLabel");
+    if (!buttonLabelClass || ![view isKindOfClass:buttonLabelClass]) return NO;
+    for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:UIButton.class]) {
+            // Retain ownership while UIKit moves the title between adaptors.
+            return NavigationTitleControlForDescendant(ancestor) != nil ||
+                (!ancestor.window && objc_getAssociatedObject(ancestor, kApolloThemeNavigationButtonTitlesKey) != nil);
+        }
+    }
+    return NO;
+}
+
+static NSMutableDictionary<NSNumber *, id> *NavigationButtonTitleSources(UIButton *button,
+                                                                       BOOL create) {
+    NSMutableDictionary *sources = objc_getAssociatedObject(button, kApolloThemeNavigationButtonTitlesKey);
+    if (!sources && create) {
+        sources = [NSMutableDictionary dictionary];
+        // iOS 27 getters fall back to Normal for unset states. Adopt Normal
+        // only; the setter hook captures explicit states without inventing copies.
+        NSAttributedString *normal = [button attributedTitleForState:UIControlStateNormal];
+        if (normal) sources[@(UIControlStateNormal)] = [normal copy];
+        objc_setAssociatedObject(button, kApolloThemeNavigationButtonTitlesKey,
+                                 sources, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return sources;
+}
+
+static __thread NSUInteger sNavigationChromeColorReadDepth;
+
+UIColor *ApolloNavigationChromeColor(void) {
+    sNavigationChromeColorReadDepth++;
+    UIColor *color = UIColor.labelColor;
+    sNavigationChromeColorReadDepth--;
+    return color;
+}
+
+UIColor *ApolloModeratorColor(void) {
+    return [UIColor colorWithRed:(48.0 / 255.0) green:(209.0 / 255.0) blue:(88.0 / 255.0) alpha:1.0];
+}
+
+static BOOL ApolloUsesLegacyModeratorColor(CGFloat r, CGFloat g, CGFloat b, uintptr_t caller) {
+    // Scope the exact palette replacement to Apollo, not UIKit or other libraries.
+    return r == 0.0 && fabs(g - 148.0 / 255.0) < 0.00001 &&
+        fabs(b - 15.0 / 255.0) < 0.00001 &&
+        sApolloStart && caller >= sApolloStart && caller < sApolloEnd;
+}
+
+static UIColor *NavigationTitlePrimaryColor(void) {
+    if (IsLiquidGlass()) return ApolloNavigationChromeColor();
+    return ApolloThemeCurrentSnapshot()->enabled
+        ? ApolloThemeRuntimeColor(ApolloThemeTokenLabel) : UIColor.labelColor;
+}
+
+static NSAttributedString *NavigationTitleAttributedText(NSAttributedString *source,
+                                                        id owner, UIColor *primaryColor) {
+    if (!source.length) return source;
+    NSAttributedString *base = ApolloThemeCurrentSnapshot()->enabled
+        ? ThemedAttributedText(source, owner, (uintptr_t)&NavigationTitleAttributedText) : source;
+    if (!primaryColor) return base;
+    NSMutableAttributedString *colored = [base mutableCopy];
+    [colored addAttribute:NSForegroundColorAttributeName value:primaryColor
+                    range:NSMakeRange(0, colored.length)];
+    return colored;
+}
+
+static void ApplyThemeToNavigationTitleControl(UIView *titleControl);
+
+static char kApolloNeutralNavigationTitleKey;
+
+static BOOL ApolloNeutralNavigationTitle(UIView *view) {
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if (objc_getAssociatedObject(ancestor, &kApolloNeutralNavigationTitleKey)) return YES;
+    }
+    return NO;
+}
+
+static CGSize ApolloNavigationTitleFittingSize(UIButton *button, CGSize size) {
+    if (!IsLiquidGlass() || (!ApolloNeutralNavigationTitle(button) &&
+        ![NSStringFromClass(button.class) isEqualToString:@"Apollo.DualLabelTitleButton"])) return size;
+    if (!isfinite(size.height) || size.height <= 44.0 || !isfinite(size.width) || size.width <= 0) return size;
+    NSAttributedString *title = button.currentAttributedTitle;
+    if (!title.length) return size;
+    CGFloat textHeight = ceil([title boundingRectWithSize:CGSizeMake(size.width, CGFLOAT_MAX)
+        options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading context:nil].size.height);
+    // Keep larger accessibility titles intact; remove only surplus button padding.
+    if (isfinite(textHeight) && textHeight > 0 && textHeight <= 44.0) size.height = 44.0;
+    return size;
+}
+
 static void RefreshFontOnTextControl(UIView *view, ApolloThemeFont target) {
     if (FontPinned(view)) return;
+    // UIButton owns this label; theme its state table so updates persist.
+    if (NavigationTitleOwnsButtonLabel(view)) return;
     if ([view isKindOfClass:[UILabel class]] &&
         AttributedTextSuppliesAllTextFonts(((UILabel *)view).attributedText)) {
         UILabel *label = (UILabel *)view;
@@ -826,6 +931,11 @@ static BOOL ViewIsFontRefreshable(UIView *view) {
 // bar's labels never chain back to Apollo classes individually). Outside a
 // vetted subtree, each text control is gated exactly like the sink hooks.
 static void RefreshFontsInViewTree(UIView *view, ApolloThemeFont target, BOOL vetted) {
+    if ([NSStringFromClass(view.class) isEqualToString:@"_UINavigationBarTitleControl"]) {
+        // Apply font and color together to avoid briefly restoring old colors.
+        ApplyThemeToNavigationTitleControl(view);
+        return;
+    }
     if (!vetted && ([view isKindOfClass:[UINavigationBar class]] || [view isKindOfClass:[UITabBar class]])) {
         if (!ChromeBarLooksApolloOwned(view)) return; // foreign chrome: leave the whole subtree alone
         vetted = YES;
@@ -864,6 +974,7 @@ static void RethemeFontOnAttach(UIView *view) {
     if (!snapshot->enabled || sFontBypass) return;
     if (!view.window) return;
     if (FontPinned(view)) return;
+    if (NavigationTitleOwnsButtonLabel(view)) return;
     // An attributed label's visible font and color come from its string, while
     // UILabel.font remains the backing line-box font. Theme the attributed
     // runs in place, but leave that backing font untouched: replacing it can
@@ -894,31 +1005,57 @@ static void RethemeFontOnAttach(UIView *view) {
     sFontBypass--;
 }
 
-static void ApplyThemeColorToNavigationTitleLabels(UIView *view, UIColor *primaryColor) {
-    const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
+static void ApplyThemeToNavigationTitleContent(UIView *view, ApolloThemeFont target,
+                                              UIColor *primaryColor) {
+    if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button = (UIButton *)view;
+        NSMutableDictionary<NSNumber *, id> *sources = NavigationButtonTitleSources(button, YES);
+        for (NSNumber *state in sources.allKeys) {
+            id source = sources[state];
+            if (source == NSNull.null) continue;
+            NSAttributedString *themed = NavigationTitleAttributedText(source, button, primaryColor);
+            if ([themed isEqualToAttributedString:[button attributedTitleForState:state.unsignedIntegerValue]]) continue;
+            sNavigationButtonTitleAssignmentBypass++;
+            [button setAttributedTitle:themed forState:state.unsignedIntegerValue];
+            sNavigationButtonTitleAssignmentBypass--;
+        }
+        if (![button attributedTitleForState:UIControlStateNormal].length) {
+            // Plain titles use titleLabel.font but button-state colors.
+            UILabel *label = button.titleLabel;
+            UIFont *font = label.font;
+            if (!FontPinned(label) && FontIsThemeable(font)) {
+                sFontBypass++;
+                UIFont *themed = ApolloThemeFontApply(target, font);
+                if (themed && ![themed.fontName isEqualToString:font.fontName]) label.font = themed;
+                sFontBypass--;
+            }
+            if (primaryColor && ![[button titleColorForState:UIControlStateNormal] isEqual:primaryColor]) {
+                [button setTitleColor:primaryColor forState:UIControlStateNormal];
+            }
+        }
+    }
     if ([view isKindOfClass:[UILabel class]]) {
+        if (NavigationTitleOwnsButtonLabel(view)) return;
         UILabel *label = (UILabel *)view;
         NSAttributedString *original =
             objc_getAssociatedObject(label, kApolloThemeOriginalAttributedTextKey);
         NSAttributedString *source = original ?: label.attributedText;
         if (source.length > 0) {
-            NSAttributedString *base = snapshot->enabled
-                ? ThemedAttributedText(source, label,
-                                       (uintptr_t)&ApplyThemeColorToNavigationTitleLabels)
-                : source;
-            NSMutableAttributedString *colored = [base mutableCopy];
-            [colored addAttribute:NSForegroundColorAttributeName
-                            value:primaryColor
-                            range:NSMakeRange(0, colored.length)];
+            // A separate font pass would restore old colors and restart the
+            // two-line comments title's content transitions on every layout.
+            NSAttributedString *colored = NavigationTitleAttributedText(source, label, primaryColor);
             if (![colored isEqualToAttributedString:label.attributedText]) {
                 SetLabelAttributedTextWithoutRecapture(label, colored);
             }
-        } else if (![label.textColor isEqual:primaryColor]) {
-            label.textColor = primaryColor;
+        } else {
+            RefreshFontOnTextControl(view, target);
+            if (primaryColor && ![label.textColor isEqual:primaryColor]) label.textColor = primaryColor;
         }
+    } else if (ViewIsFontRefreshable(view)) {
+        RefreshFontOnTextControl(view, target);
     }
     for (UIView *subview in view.subviews) {
-        ApplyThemeColorToNavigationTitleLabels(subview, primaryColor);
+        ApplyThemeToNavigationTitleContent(subview, target, primaryColor);
     }
 }
 
@@ -929,11 +1066,7 @@ static void ApplyThemeToNavigationTitleControl(UIView *titleControl) {
     ApolloThemeFont target = snapshot->enabled
         ? snapshot->fontChoices[CurrentRuntimeMode()]
         : ApolloThemeFontSystem;
-    RefreshFontsInViewTree(titleControl, target, YES);
-    UIColor *primary = snapshot->enabled
-        ? ApolloThemeRuntimeColor(ApolloThemeTokenLabel)
-        : [UIColor labelColor];
-    if (primary) ApplyThemeColorToNavigationTitleLabels(titleControl, primary);
+    ApplyThemeToNavigationTitleContent(titleControl, target, NavigationTitlePrimaryColor());
 }
 
 // Per-thread text-sink bypass (ASDK builds nodes off the main thread, so a
@@ -1334,6 +1467,16 @@ UIColor *ApolloThemeAccentColor(void) {
     return custom ?: ApolloThemeStockAccentColor();
 }
 
+// Stock tap feedback is independent of the selected accent (#743).
+UIColor *ApolloThemeRowHighlightColor(void) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenRowHighlight);
+    if (custom) return custom;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return ApolloThemeUIColorFromRGB(traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? 0x34373F : 0xF0F1F3);
+    }];
+}
+
 // Dark-mode card override for a non-tinted stock theme, per Apollo's Pure
 // Black tier. PURER is only consulted when Pure Black is also on — Apollo
 // hides its toggle (and ignores the stored value) once Pure Black is off,
@@ -1426,9 +1569,64 @@ UIColor *ApolloThemePageBackgroundColor(void) {
     return custom ?: ApolloThemeStockPageBackgroundColor();
 }
 
+// Settings labels share Apollo's stock text palette. Keep this in the theme
+// runtime so custom themes and both Pure Black modes follow the same rules as
+// native rows, without copying a possibly stale on-screen label color.
+static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
+    UIColor *custom = ApolloThemeRuntimeColor(secondary ? ApolloThemeTokenSecondaryLabel : ApolloThemeTokenLabel);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+        uint32_t black = 0;
+        BOOL pure = dark && !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        uint32_t rgb = secondary ? (dark ? 0x94969D : 0x666666)
+            : (dark ? (pure ? 0xD0D1D6 : 0xEEEFF5) : 0x000000);
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
+UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
+
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).
+static UIColor *ApolloThemeSubredditListColor(NSUInteger role) {
+    ApolloThemeToken token = role == 0 ? ApolloThemeTokenSecondaryBackground
+        : role == 1 ? ApolloThemeTokenBackground
+        : role == 2 ? ApolloThemeTokenLabel : ApolloThemeTokenSecondaryLabel;
+    UIColor *custom = ApolloThemeRuntimeColor(token);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    BOOL tinted = kStockThemes[raw].tinted;
+    UIColor *surface = role == 0 ? ApolloThemeCardBackgroundColor() : ApolloThemePageBackgroundColor();
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+        uint32_t black = 0;
+        BOOL pure = dark && !tinted && ApolloStockNonTintedDarkPageRGB(&black);
+        if (role < 2 && !pure) return [surface resolvedColorWithTraitCollection:traits];
+        uint32_t rgb = role == 0 ? black : role == 1 ? 0x1A1A1A
+            : role == 2 ? (dark ? (pure ? 0xD0D1D6 : 0xEEEFF5) : 0x000000)
+            : (dark ? 0x94969D : 0x666666);
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+UIColor *ApolloThemeSubredditListBackgroundColor(void) { return ApolloThemeSubredditListColor(0); }
+UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void) { return ApolloThemeSubredditListColor(1); }
+UIColor *ApolloThemeSubredditListTextColor(void) { return ApolloThemeSubredditListColor(2); }
+UIColor *ApolloThemeSubredditListSecondaryTextColor(void) { return ApolloThemeSubredditListColor(3); }
+
 static BOOL ApolloStockNonTintedDarkSeparatorRGB(uint32_t *outRGB) {
     NSUserDefaults *d = GroupDefaults();
     if (![d boolForKey:kUsePureBlackDarkModeKey]) return NO;
@@ -1577,6 +1775,9 @@ void ApolloThemeRuntimeInvalidate(void) {
 // sink hooks below, not by this constructor path.
 
 + (UIColor *)colorWithRed:(CGFloat)r green:(CGFloat)g blue:(CGFloat)b alpha:(CGFloat)a {
+    if (ApolloUsesLegacyModeratorColor(r, g, b, (uintptr_t)__builtin_return_address(0))) {
+        return %orig(48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, a);
+    }
     const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
     if (snapshot->enabled && !sBypassHook) {
         uint32_t rgb = ApolloThemeRGBKeyFromComponents(r, g, b);
@@ -1594,6 +1795,9 @@ void ApolloThemeRuntimeInvalidate(void) {
 // Apollo is Swift: UIColor(red:green:blue:alpha:) compiles to this instance
 // initialiser, so this is the primary donor entry point.
 - (UIColor *)initWithRed:(CGFloat)r green:(CGFloat)g blue:(CGFloat)b alpha:(CGFloat)a {
+    if (ApolloUsesLegacyModeratorColor(r, g, b, (uintptr_t)__builtin_return_address(0))) {
+        return %orig(48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, a);
+    }
     const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
     if (snapshot->enabled && !sBypassHook) {
         uint32_t rgb = ApolloThemeRGBKeyFromComponents(r, g, b);
@@ -1658,6 +1862,7 @@ void ApolloThemeRuntimeInvalidate(void) {
 }
 
 + (UIColor *)labelColor {
+    if (sNavigationChromeColorReadDepth) return %orig;
     UIColor *c = SemColor(ApolloThemeTokenLabel, (uintptr_t)__builtin_return_address(0));
     if (c) return c;
     return %orig;
@@ -1879,13 +2084,28 @@ void ApolloThemeRuntimeInvalidate(void) {
 }
 
 - (void)setTextColor:(UIColor *)textColor {
+    if (ApolloNeutralNavigationTitle(self)) {
+        %orig(ApolloNavigationChromeColor());
+        return;
+    }
+    if (ApolloThemeCurrentSnapshot()->enabled && NavigationTitleOwnsButtonLabel(self)) {
+        %orig(textColor);
+        return;
+    }
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     %orig(ThemedTextColorForSourceColor(textColor, (id)self, caller));
 }
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    if (sAttributedTextAssignmentBypass) {
+    // Navigation buttons already theme their state table. Do not recolor the
+    // generated label again, undoing its native chrome color.
+    if (sAttributedTextAssignmentBypass ||
+        (ApolloThemeCurrentSnapshot()->enabled && NavigationTitleOwnsButtonLabel(self))) {
         %orig(attributedText);
+        return;
+    }
+    if (ApolloNeutralNavigationTitle(self)) {
+        %orig(NavigationTitleAttributedText(attributedText, self, ApolloNavigationChromeColor()));
         return;
     }
     objc_setAssociatedObject(self, kApolloThemeOriginalAttributedTextKey,
@@ -1903,7 +2123,47 @@ void ApolloThemeRuntimeInvalidate(void) {
 
 %hook UIButton
 
+- (CGSize)intrinsicContentSize {
+    CGSize nativeSize = %orig;
+    return ApolloNavigationTitleFittingSize(self, nativeSize);
+}
+
+- (CGSize)sizeThatFits:(CGSize)size {
+    CGSize nativeSize = %orig(size);
+    return ApolloNavigationTitleFittingSize(self, nativeSize);
+}
+
+- (void)setTitleColor:(UIColor *)color forState:(UIControlState)state {
+    if (ApolloNeutralNavigationTitle(self)) color = ApolloNavigationChromeColor();
+    %orig(color, state);
+}
+
 - (void)setAttributedTitle:(NSAttributedString *)title forState:(UIControlState)state {
+    if (sNavigationButtonTitleAssignmentBypass) {
+        %orig(title, state);
+        return;
+    }
+    // Capture both title lines before attachment so retheming uses the raw source.
+    if (ApolloNeutralNavigationTitle(self)) {
+        %orig(NavigationTitleAttributedText(title, self, ApolloNavigationChromeColor()), state);
+        return;
+    }
+    BOOL dualTitle = [NSStringFromClass(self.class) isEqualToString:@"Apollo.DualLabelTitleButton"];
+    NSMutableDictionary<NSNumber *, id> *sources = NavigationButtonTitleSources(self, dualTitle);
+    if (sources) {
+        sources[@(state)] = title ? [title copy] : NSNull.null;
+        UIView *control = NavigationTitleControlForDescendant(self);
+        // Recoloring this system button after attachment triggers UIKit's title
+        // fade-out/in. Apollo assigns the comments title before the button
+        // reaches the title control, so the attach path can only correct it
+        // afterwards — one white frame, then a 600ms fade, on every refresh
+        // that changes the count. Color it on its first assignment instead.
+        if (dualTitle ||
+            (control && ChromeBarLooksApolloOwned(NavigationBarForDescendant(control)))) {
+            %orig(NavigationTitleAttributedText(title, self, NavigationTitlePrimaryColor()), state);
+            return;
+        }
+    }
     uintptr_t caller = (uintptr_t)__builtin_return_address(0);
     %orig(ThemedAttributedText(title, (id)self, caller), state);
 }
@@ -1975,6 +2235,65 @@ static ASImageNodeTintColorModificationBlockFn ASImageNodeTintColorModificationB
         }
     }
     %orig;
+}
+
+%end
+
+%hook UITabBar
+- (void)didMoveToWindow {
+    %orig;
+    if (IsLiquidGlass() && self.window) {
+        UIColor *accent = ApolloThemeAccentColor();
+        if (accent) self.tintColor = accent;
+    }
+}
+
+- (void)setTintColor:(UIColor *)color {
+    // Moderator pages change their navigation accent, not the selected tab's identity.
+    if (IsLiquidGlass()) color = ApolloThemeAccentColor() ?: color;
+    %orig(color);
+}
+%end
+
+%hook UINavigationItem
+
+- (void)setTitleView:(UIView *)view {
+    if (IsLiquidGlass() && [view isKindOfClass:[UITextField class]]) {
+        // A text field is never a title. UIKit lends a titleView UISearchBar's
+        // own search field to its private _UISearchBarNavigationItem the first
+        // time the bar shows Cancel (setShowsCancelButton:animated: ->
+        // displayNavBarCancelButton:animated: -> searchNavigationItem ->
+        // setUpSearchNavigationItem -> setTitleView:field). The Search tab's
+        // bar is one: Apollo shows Cancel when editing begins, and the prep
+        // below baked the chrome colour into the field's placeholder label and
+        // tagged the field as a neutral title for good, so the dim placeholder
+        // came back in the title colour after Cancel until the screen was
+        // rebuilt.
+        ApolloLog(@"ThemeRuntime: setTitleView: %@ on %@ is a text field; skipping neutral title prep",
+                  NSStringFromClass(view.class), NSStringFromClass(object_getClass(self)));
+    } else if (IsLiquidGlass() && view) {
+        // Prepare custom titles before UIKit snapshots the incoming page.
+        objc_setAssociatedObject(view, &kApolloNeutralNavigationTitleKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        view.tintColor = ApolloNavigationChromeColor();
+        ApplyThemeToNavigationTitleContent(view, ApolloThemeCurrentSnapshot()->enabled
+            ? ApolloThemeCurrentSnapshot()->fontChoices[CurrentRuntimeMode()] : ApolloThemeFontSystem,
+            ApolloNavigationChromeColor());
+    }
+    %orig(view);
+}
+
+%end
+
+%hook _TtC6Apollo27AutoModeratorViewController
+
+- (void)viewDidLoad {
+    %orig;
+    if (IsLiquidGlass()) {
+        UIBarButtonItem *close = ((UIViewController *)self).navigationItem.leftBarButtonItem;
+        close.tintColor = ApolloNavigationChromeColor();
+        if (close.image) close.image = [close.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        close.customView.tintColor = ApolloNavigationChromeColor();
+    }
 }
 
 %end
@@ -2150,6 +2469,9 @@ static void ApolloThemeRestoreOverlayPillText(id node) {
 - (void)didMoveToWindow {
     %orig;
     ApplyThemeSearchFieldBackground(self);
+    // Header Style (ApolloScrollEdgeEffect.xm) shares this hook rather than
+    // adding a second UISearchBar didMoveToWindow.
+    ApolloHeaderStyleSearchBarDidMoveToWindow(self);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -2199,6 +2521,26 @@ static void ApolloThemeRestoreOverlayPillText(id node) {
 
 %end // ApolloThemeRuntimeHooks
 
+static char kApolloNavigationDualTitleTintPinnedKey;
+
+%group ApolloNavigationDualTitleChrome
+%hook ApolloDualLabelTitleButton
+
+- (void)setTintColor:(UIColor *)color {
+    // System-button vibrancy uses tint even when attributed text is neutral.
+    UIColor *chrome = NavigationTitlePrimaryColor();
+    // Install an explicit tint once; later native nil resets must not restart
+    // UIKit's title transition or return the button to its inherited accent.
+    if (objc_getAssociatedObject(self, &kApolloNavigationDualTitleTintPinnedKey) &&
+        [((UIView *)self).tintColor isEqual:chrome]) return;
+    objc_setAssociatedObject(self, &kApolloNavigationDualTitleTintPinnedKey,
+        @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig(chrome);
+}
+
+%end
+%end
+
 // ===========================================================================
 // Constructor
 // ===========================================================================
@@ -2208,6 +2550,10 @@ static void ApolloThemeRestoreOverlayPillText(id node) {
         FindRuntimeImages();
         BuildByteFilter();
         %init(ApolloThemeRuntimeHooks);
+        Class dualTitleButton = NSClassFromString(@"Apollo.DualLabelTitleButton");
+        if (dualTitleButton) {
+            %init(ApolloNavigationDualTitleChrome, ApolloDualLabelTitleButton = dualTitleButton);
+        }
         BOOL haveTM = objc_getClass("_TtC6Apollo12ThemeManager") != nil;
         if (haveTM) %init(ApolloThemeRuntimeManagerHook);
         ApolloLog(@"ThemeRuntime: ctor — UIColor hooks installed, ThemeManager hook=%d", haveTM);

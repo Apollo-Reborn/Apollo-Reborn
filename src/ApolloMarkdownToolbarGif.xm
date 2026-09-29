@@ -35,6 +35,7 @@ static __weak UIViewController *sApolloMarkdownGifActiveComposeController = nil;
 static char kApolloMarkdownGifToolbarRootKey;
 static char kApolloMarkdownGifSessionInjectedKey;
 static char kApolloMarkdownGifLayoutLoggedKey;
+static char kApolloMarkdownGifKeyboardGuideOffsetKey;
 static char kApolloMarkdownGifPendingInjectionBlocksKey;
 static NSString *const kApolloMarkdownGifButtonIdentifier = @"apollo-tweak-gif-button";
 static NSString *const kApolloMarkdownGifImageGateIdentifier = @"apollo-tweak-image-gate";
@@ -248,6 +249,17 @@ static UIStackView *ApolloMarkdownGifFindBestToolbarStack(NSArray<UIView *> *too
 
 static UIView *ApolloMarkdownGifFindToolbarRowContainer(UIView *imageView, NSArray<UIView *> *toolbarViews) {
     if (!imageView) return nil;
+
+    // Keep GIF in the native shortcut container so it hides with the other
+    // buttons when suggestions or link actions appear.
+    SEL actionsSelector = NSSelectorFromString(@"mainActionButtonsView");
+    for (UIView *ancestor = imageView.superview; ancestor; ancestor = ancestor.superview) {
+        if (![ancestor respondsToSelector:actionsSelector]) continue;
+        UIView *actions = ((id (*)(id, SEL))objc_msgSend)(ancestor, actionsSelector);
+        if ([actions isKindOfClass:[UIView class]] && [imageView isDescendantOfView:actions]) {
+            return actions;
+        }
+    }
 
     CGFloat referenceWidth = 0.0;
     for (UIView *walker = imageView; walker; walker = walker.superview) {
@@ -1582,6 +1594,15 @@ void ApolloMarkdownGifInstall(void) {
 
 %hook _TtC6Apollo21ComposeViewController
 
+- (void)viewDidLoad {
+    %orig;
+    // Start tracking before the keyboard opens. The guide uses the composer's
+    // coordinates, avoiding mismatched keyboard notifications in standard builds.
+    if (@available(iOS 15.0, *)) {
+        if (!IsLiquidGlass()) (void)((UIViewController *)self).view.keyboardLayoutGuide;
+    }
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloMarkdownGifScheduleInjection((UIViewController *)self, @"compose-viewDidAppear");
@@ -1619,6 +1640,34 @@ void ApolloMarkdownGifInstall(void) {
 // a comment/reply; clear any stale window otherwise (the post composer's body
 // editor and the fullscreen chat editor share this toolbar).
 %hook _TtC6Apollo20QuickBarKeyboardView
+
+- (void)setFrame:(CGRect)frame {
+    UIView *toolbar = (UIView *)self;
+    UIView *container = toolbar.superview;
+    // Only adjust the composer toolbar; UIKit positions other input accessories.
+    UIResponder *owner = container.nextResponder;
+    if (@available(iOS 15.0, *)) {
+        if (!IsLiquidGlass() && [owner isKindOfClass:objc_getClass("_TtC6Apollo21ComposeViewController")] &&
+            ((UIViewController *)owner).viewIfLoaded == container) {
+            CGRect keyboard = container.keyboardLayoutGuide.layoutFrame;
+            CGFloat restingBottom = CGRectGetMaxY(container.bounds) - container.safeAreaInsets.bottom;
+            // Adjust only for a visible, full-width keyboard.
+            if (!CGRectIsEmpty(keyboard) && CGRectGetWidth(keyboard) >= CGRectGetWidth(container.bounds) - 1.0 &&
+                CGRectGetMinY(keyboard) < restingBottom - 1.0 && frame.size.height > 0.0) {
+                CGFloat y = CGRectGetMinY(keyboard) - frame.size.height;
+                CGFloat offset = frame.origin.y - y;
+                NSNumber *lastOffset = objc_getAssociatedObject(toolbar, &kApolloMarkdownGifKeyboardGuideOffsetKey);
+                if (fabs(offset) > 0.5 && (!lastOffset || fabs(lastOffset.doubleValue - offset) > 0.5)) {
+                    ApolloLog(@"[MarkdownGif] keyboard guide toolbar y=%.1f -> %.1f", frame.origin.y, y);
+                }
+                objc_setAssociatedObject(toolbar, &kApolloMarkdownGifKeyboardGuideOffsetKey, @(offset), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                frame.origin.y = y;
+            }
+        }
+    }
+    // Adjust the frame here to avoid layout loops in layoutSubviews.
+    %orig(frame);
+}
 
 - (void)cameraButtonTapped:(id)sender {
     if (sCommentLinkHost != CommentLinkHostOff) {

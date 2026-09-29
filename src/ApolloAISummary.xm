@@ -30,6 +30,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
 #import "ApolloTextureDecls.h"
+#import "ApolloDevvitPosts.h"
 #import "Tweak.h"
 
 #pragma mark - FoundationModels bridge (declared, resolved at runtime)
@@ -917,11 +918,15 @@ static NSString *ApolloAIFullNameForController(UIViewController *vc) {
     return fullName;
 }
 
-static void ApolloAICaptureCommentForController(id comment, UIViewController *vc) {
-    if (!ApolloAICommentIsEligible(comment) || !vc) return;
+// Set on a comments controller once a capture-driven pass has been scheduled
+// for it (see ApolloAIScheduleCommentGeneration).
+static char kApolloAIControllerPassScheduledKey;
+
+static BOOL ApolloAICaptureCommentForController(id comment, UIViewController *vc) {
+    if (!ApolloAICommentIsEligible(comment) || !vc) return NO;
     NSString *fullName = ApolloAIFullNameForController(vc);
     NSString *key = ApolloAICommentDedupKey(comment);
-    if (fullName.length == 0 || key.length == 0) return;
+    if (fullName.length == 0 || key.length == 0) return NO;
 
     NSMutableArray *comments = sCapturedComments[fullName];
     if (!comments) {
@@ -933,7 +938,12 @@ static void ApolloAICaptureCommentForController(id comment, UIViewController *vc
         keys = [NSMutableSet set];
         sCapturedCommentKeys[fullName] = keys;
     }
-    if ([keys containsObject:key]) return;
+    // A duplicate is not new work, except as this controller's first pass. On
+    // a revisit whose thread loads after viewDidAppear's last retry (8 s), every
+    // comment is a duplicate of the earlier visit; without that one pass the
+    // restored card never starts (auto mode: "Summarizing…" forever).
+    if ([keys containsObject:key] && !objc_getAssociatedObject(vc, &kApolloAIControllerPassScheduledKey)) return YES;
+    if ([keys containsObject:key]) return NO;
     [keys addObject:key];
     [comments addObject:comment];
     // Do not show a discussion card until there is enough material to synthesize.
@@ -945,6 +955,7 @@ static void ApolloAICaptureCommentForController(id comment, UIViewController *vc
         ApolloAIShowLoadingIfIdle(fullName, NO);
     }
     ApolloLog(@"[AISummary] captured comment %lu for %@", (unsigned long)comments.count, fullName);
+    return YES;
 }
 
 static void ApolloAIAppendCommentText(id comment,
@@ -1128,10 +1139,36 @@ static NSUInteger ApolloAIWordCount(NSString *text) {
     return words;
 }
 
+// A live interactive (Devvit) post renders as its widget, not as its body:
+// the selftext is Reddit's old-Reddit fallback plus whatever the app appended
+// (match data, rules), none of which the user sees once the widget stands in
+// for it — so there is nothing to post- or link-summarize, and attempting it
+// only ever produced an error card above the widget. Every body-derived path
+// (post text, article link, the discussion summary's grounding context) asks
+// here. Logged once per post; the callers run several times per viewing.
+static BOOL ApolloAILinkIsDevvitWidgetPost(id link) {
+    if (!link || !ApolloDevvitLinkShowsWidget(link)) return NO;
+    static NSMutableSet<NSString *> *logged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ logged = [NSMutableSet set]; });
+    NSString *fullName = ApolloAILinkFullName(link) ?: @"?";
+    @synchronized (logged) {
+        if (![logged containsObject:fullName]) {
+            [logged addObject:fullName];
+            NSString *body = ApolloAICleanInputText(ApolloAIStringSel(link, @selector(selfText)) ?: @"", 0) ?: @"";
+            ApolloLog(@"[AISummary] %@ is a live interactive post — no post/link summary (body %lu words, threshold %lu)",
+                      fullName, (unsigned long)ApolloAIWordCount(body),
+                      (unsigned long)ApolloAISanitizedPostWordThreshold());
+        }
+    }
+    return YES;
+}
+
 // Title + selftext for the post, or nil for non-self (link/image) posts or
 // bodies too short to be worth summarizing.
 static NSString *ApolloAIPostText(id link) {
     if (!link) return nil;
+    if (ApolloAILinkIsDevvitWidgetPost(link)) return nil;
     BOOL isSelf = [link respondsToSelector:@selector(isSelfPostWithSelfText)] &&
         ((BOOL (*)(id, SEL))objc_msgSend)(link, @selector(isSelfPostWithSelfText));
 
@@ -1169,7 +1206,9 @@ static NSString *ApolloAIPostContextForComments(id link) {
         stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
 
     NSMutableString *context = [NSMutableString stringWithFormat:@"Post title: %@\n", title];
-    if (selfText.length > 0) {
+    // An interactive post's body is the fallback/data blob — the title alone
+    // is the honest topic for the discussion.
+    if (selfText.length > 0 && !ApolloAILinkIsDevvitWidgetPost(link)) {
         NSUInteger snippetMax = 160;
         NSString *snippet = selfText.length > snippetMax ? [selfText substringToIndex:snippetMax] : selfText;
         [context appendFormat:@"Post body: %@\n", snippet];
@@ -1310,6 +1349,7 @@ static NSString *ApolloAIFirstArticleURLInSelfText(id link) {
 // Returned regardless of how much body text there is — the caller decides the
 // mode: no body -> Link summary; body present -> Both (post + article) summary.
 static NSString *ApolloAIArticleURLForPost(id link) {
+    if (ApolloAILinkIsDevvitWidgetPost(link)) return nil;
     if (ApolloAILinkIsArticle(link)) {
         NSURL *url = ((NSURL *(*)(id, SEL))objc_msgSend)(link, @selector(URL));
         if ([url isKindOfClass:[NSURL class]]) return url.absoluteString;
@@ -2385,7 +2425,29 @@ static void ApolloAIScheduleCommentGeneration(UIViewController *vc) {
     if (!vc || !sEnableAISummaries) return;
     NSString *fullName = ApolloAIFullNameForController(vc);
     if (fullName.length == 0 || [sCommentGenerationScheduled containsObject:fullName]) return;
+
+    // In tap mode the first eligible pass installs the idle card without
+    // starting a request. Once that card exists, repeated Texture lifecycle
+    // callbacks have nothing to do until the user taps it. Re-gathering the
+    // same model here used to force a full header remeasure on every scroll
+    // callback, feeding the comment-section hitch reported in #863.
+    // A controller's first pass still runs: when the thread loaded after
+    // viewDidAppear's retries, it is the pass that installs the post card.
+    BOOL controllerHadPass = objc_getAssociatedObject(vc, &kApolloAIControllerPassScheduledKey) != nil;
+    if (sEnableTapToSummarize && controllerHadPass) {
+        NSString *tapKey = [@"comment|" stringByAppendingString:fullName];
+        if (![sTapRequested containsObject:tapKey]) {
+            for (id headerNode in sHeaderNodes.allObjects) {
+                NSString *headerFullName = objc_getAssociatedObject(headerNode, &kApolloAIHeaderFullNameKey);
+                if ([headerFullName isEqualToString:fullName] &&
+                    ApolloAIGetBoxState(headerNode, NO) == ApolloAIBoxStateTapToSummarize) {
+                    return;
+                }
+            }
+        }
+    }
     [sCommentGenerationScheduled addObject:fullName];
+    objc_setAssociatedObject(vc, &kApolloAIControllerPassScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     __weak UIViewController *weakVC = vc;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
@@ -2949,8 +3011,9 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                ![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
         // Tap-to-Summarize is on and the user hasn't tapped this card yet: show the
         // idle "Tap to summarize" prompt instead of generating automatically.
-        ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateTapToSummarize, nil);
-        ApolloAIForceHeaderRemeasure(fullName);
+        if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateTapToSummarize, nil)) {
+            ApolloAIForceHeaderRemeasure(fullName);
+        }
     } else if (![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
         // Do NOT consume the tap request here — see the matching note in the comment
         // branch below. A concurrency-deferred retry must still re-drive generation
@@ -3049,6 +3112,12 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                 objc_setAssociatedObject(vc, &kApolloAIProvisionalPostRequestKey, nil, OBJC_ASSOCIATION_ASSIGN);
             }
             ApolloLog(@"[AISummary] nothing to summarize for %@", fullName);
+            // A card restored onto the header from a stale cache (a live
+            // interactive post summarized before such posts were excluded)
+            // has nothing behind it any more — retire it.
+            if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateNone, nil)) {
+                ApolloAIForceHeaderRemeasure(fullName);
+            }
         }
     }
     }   // end "Post & Link Summaries" sub-toggle gate
@@ -3094,8 +3163,9 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             if (sEnableTapToSummarize && ![sTapRequested containsObject:commentTapKey]) {
             // Tap-to-Summarize is on and the user hasn't tapped: show the idle
             // "Tap to summarize" prompt instead of generating automatically.
-            ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateTapToSummarize, nil);
-            ApolloAIForceHeaderRemeasure(fullName);
+            if (ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateTapToSummarize, nil)) {
+                ApolloAIForceHeaderRemeasure(fullName);
+            }
             } else {
             // Do NOT consume the tap request here. A transient-concurrency (code 9)
             // deferral clears sCommentInFlight and re-enters this function ~0.75s later;
@@ -3322,8 +3392,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
             UIViewController *vc = sVisibleCommentsController;
             id comment = MSHookIvar<id>((id)result, "comment");
             if (!vc || !ApolloAICommentIsEligible(comment)) return;
-            ApolloAICaptureCommentForController(comment, vc);
-            ApolloAIScheduleCommentGeneration(vc);
+            if (ApolloAICaptureCommentForController(comment, vc)) {
+                ApolloAIScheduleCommentGeneration(vc);
+            }
         });
     }
     return result;
@@ -3344,8 +3415,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         Ivar commentIvar = class_getInstanceVariable(object_getClass(sectionController), "comment");
         id comment = commentIvar ? object_getIvar(sectionController, commentIvar) : nil;
         if (!vc || !ApolloAICommentIsEligible(comment)) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 
@@ -3365,8 +3437,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);
         if (!vc || !comment) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 
@@ -3380,8 +3453,9 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);
         if (!vc || !comment) return;
-        ApolloAICaptureCommentForController(comment, vc);
-        ApolloAIScheduleCommentGeneration(vc);
+        if (ApolloAICaptureCommentForController(comment, vc)) {
+            ApolloAIScheduleCommentGeneration(vc);
+        }
     });
 }
 
@@ -3529,12 +3603,55 @@ static void ApolloAIMaybeRouteDebugURL(void) {
 }
 #endif
 
+// The Live Interactive Posts setting flipped. Turned OFF, such a post's body
+// is Apollo's own rendering again and the normal generation pass may
+// summarize it. Turned ON, its body is hidden behind the widget again — so a
+// post/link card generated in the meantime (the setting can be toggled with
+// the thread still open) describes text the user can no longer see: retire
+// it, drop its cache entry, and cancel anything in flight.
+static void ApolloAIDevvitSettingsChanged(void) {
+    if (!sDevvitInteractivePosts) return;
+    ApolloAIEnsureState();
+    BOOL persist = NO;
+    for (id headerNode in sHeaderNodes.allObjects) {
+        id link = ApolloAIScanForLink(headerNode);
+        if (!link || !ApolloDevvitLinkShowsWidget(link)) continue;
+        NSString *fullName = ApolloAILinkFullName(link);
+        if (fullName.length == 0) continue;
+        NSString *requestID = sPostRequestIDs[fullName];
+        if (requestID.length) [ApolloAIBridge() cancelRequest:requestID];
+        [sPostInFlight removeObject:fullName];
+        [sPostRequestIDs removeObjectForKey:fullName];
+        [sLinkSummaryPosts removeObject:fullName];
+        [sBothSummaryPosts removeObject:fullName];
+        [sPostEmpty removeObject:fullName];
+        ApolloAIClearFailure(fullName, YES);
+        if (sPostSummaryCache[fullName]) {
+            [sPostSummaryCache removeObjectForKey:fullName];
+            [sPostSummaryMode removeObjectForKey:fullName];
+            [sPostSummaryDetails removeObjectForKey:fullName];
+            [sPostSummaryProfiles removeObjectForKey:fullName];
+            persist = YES;
+        }
+        if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateNone, nil)) {
+            ApolloAIForceHeaderRemeasure(fullName);
+        }
+        ApolloLog(@"[AISummary] %@ is a live interactive post again — retired its post/link card", fullName);
+    }
+    if (persist) ApolloAIPersistSummaries();
+}
+
 %ctor {
     @autoreleasepool {
         ApolloAIEnsureState();
         ApolloFoundationModels *bridge = ApolloAIBridge();
         ApolloLog(@"[AISummary] loaded; bridge=%@ availabilityStatus=%ld",
                   bridge ? @"yes" : @"no", bridge ? (long)[bridge availabilityStatus] : -1);
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:ApolloDevvitFeedOwnershipChangedNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(__unused NSNotification *note) { ApolloAIDevvitSettingsChanged(); }];
 
 #if APOLLO_SIM_BUILD
         ApolloAIMaybeRouteDebugURL();

@@ -89,6 +89,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloTopBarScrollPresentation.h"
 
 @interface UIScrollView (ApolloScrollEdgePocket)
 - (void)_setOverrideGeometryView:(UIView *)view forEdge:(NSUInteger)edge;
@@ -263,6 +264,7 @@ static void ApolloEdgeBeginTransition(UINavigationController *nav, UIViewControl
     if (sTransitionsInFlight > 0 &&
         ApolloEdgePocketsFrozenFor(ApolloEdgeOwningScrollView(self))) return;
     %orig;
+    ApolloTopBarRevalidateHeaderView(self);
 }
 
 %end

@@ -6,16 +6,19 @@
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloAccountSubscriptions.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
 #import "ApolloSubredditDefaultAssets.h"
+#import "ApolloSubredditHeaderPreview.h"
 #import "ApolloSubredditInfoCache.h"
+#import "ApolloSubredditLayout.h"
+#import "ApolloNativeActionMenus.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditHighlights.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
 #import "ApolloThemeRuntime.h"
-#import "settings/ApolloSubredditLayoutViewController.h"
 
 // Mirrors the profile-banner pattern in ApolloUserAvatars.xm exactly:
 // - Only hooks `_TtC6Apollo19PostsViewController`.
@@ -56,6 +59,7 @@ static const void *kApolloSubredditRepairScheduledKey = &kApolloSubredditRepairS
 static const void *kApolloSubredditAmbientViewKey = &kApolloSubredditAmbientViewKey;
 static const void *kApolloSubredditOriginalTableBackgroundKey = &kApolloSubredditOriginalTableBackgroundKey;
 static const void *kApolloSubredditOriginalTableBackgroundViewKey = &kApolloSubredditOriginalTableBackgroundViewKey;
+static const void *kApolloSubredditOriginalViewBackgroundKey = &kApolloSubredditOriginalViewBackgroundKey;
 static const void *kApolloSubredditSearchGlassViewKey = &kApolloSubredditSearchGlassViewKey;
 static const void *kApolloSubredditSearchOriginalBackgroundKey = &kApolloSubredditSearchOriginalBackgroundKey;
 static const void *kApolloSubredditSearchOriginalTextColorKey = &kApolloSubredditSearchOriginalTextColorKey;
@@ -71,6 +75,8 @@ static const void *kApolloSubredditNavigationOwnerKey = &kApolloSubredditNavigat
 
 static Class sPostsViewControllerClass = Nil;
 static BOOL sApolloSubredditRefreshVisibleScheduled = NO;
+static BOOL sApolloSubredditRefreshAllPending = NO;
+static NSMutableSet<NSString *> *sApolloSubredditPendingRefreshNames = nil;
 // Effectively invisible while the ambient backdrop is covering it, but not
 // literal zero so the banner's accessibility action remains discoverable.
 static CGFloat const ApolloSubredditFadedBannerAlpha = 0.011;
@@ -109,6 +115,10 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 @property(nonatomic, strong) UILabel *nameLabel;
 @property(nonatomic, strong) UIButton *subscribeButton;
 @property(nonatomic, strong) UIVisualEffectView *subscribeGlassView;
+@property(nonatomic, strong) UIButton *userFlairButton;
+@property(nonatomic, strong) UIVisualEffectView *userFlairGlassView;
+@property(nonatomic, strong) UIButton *sidebarButton;
+@property(nonatomic, strong) UIVisualEffectView *sidebarGlassView;
 @property(nonatomic, strong) UILabel *aboutLabel;
 @property(nonatomic, strong) UIButton *aboutToggleButton;
 @property(nonatomic) BOOL aboutExpanded;
@@ -130,6 +140,10 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 @property(nonatomic) BOOL subscriptionStateKnown;
 @property(nonatomic) BOOL subscribed;
 @property(nonatomic) BOOL subscriptionRequestInFlight;
+// The known state came from (or was written onto) the controller's own
+// currentSubreddit. Until it does, the install pass re-resolves once that
+// ivar lands: the fallbacks answered first only because it wasn't there yet.
+@property(nonatomic) BOOL subscriptionFromCurrentSubreddit;
 // Grace window so a fresh tap's optimistic state wins over the native
 // `currentSubreddit.isSubscriber` re-sync (see apollo_applySubscriptionState:
 // known: callers in ApolloSubredditInstallOrUpdateHeader) until a fetch has
@@ -137,6 +151,10 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 // followIntentDate/followIntentValue for the profile Follow button.
 @property(nonatomic, strong) NSDate *subscribeIntentDate;
 @property(nonatomic) BOOL subscribeIntentValue;
+@property(nonatomic) BOOL userFlairAvailabilityKnown;
+@property(nonatomic) BOOL userCanSetFlair;
+@property(nonatomic, copy) NSString *communityTitle;
+@property(nonatomic) BOOL subredditInfoLoaded;
 @property(nonatomic, copy) NSString *memberCountText;
 @property(nonatomic, copy) void (^heightInvalidationBlock)(void);
 - (void)applyInfo:(ApolloSubredditInfo *)info fallbackSubredditName:(NSString *)subredditName;
@@ -148,6 +166,8 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 - (void)apollo_viewImageForAssetKind:(ApolloSubredditHeaderAssetKind)assetKind;
 - (NSURL *)apollo_viewableImageURLForAssetKind:(ApolloSubredditHeaderAssetKind)assetKind;
 - (void)apollo_subscribeTapped;
+- (void)apollo_userFlairTapped;
+- (void)apollo_sidebarTapped;
 - (void)apollo_applySubscriptionState:(BOOL)subscribed known:(BOOL)known;
 - (void)apollo_applySubscriptionGlassWithAccent:(UIColor *)accent;
 - (void)apollo_updateSubname;
@@ -167,6 +187,7 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 static void ApolloSubredditDismissHeaderPickersForViewController(UIViewController *viewController);
 static void ApolloSubredditRefreshBannerForSubreddit(NSString *subredditName);
 static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName);
+static NSString *ApolloNormalizedSubredditName(NSString *subredditName);
 static BOOL ApolloSubredditNamesEqual(NSString *left, NSString *right);
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
@@ -184,10 +205,14 @@ static void ApolloSubredditScheduleInstallIfNeeded(UIViewController *viewControl
 static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header);
 static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITableView *tableView,
                                           ApolloSubredditHeaderView *header, UIView *wrappedHeader);
-static void ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView);
+static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView);
 static void ApolloSubredditUpdateAmbientScroll(UIViewController *viewController, UIScrollView *scrollView);
 static void ApolloSubredditStyleSearchBar(UIViewController *viewController);
 static void ApolloSubredditRestoreSearchBar(UIViewController *viewController);
+static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName);
+static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *viewController,
+                                                           NSString *subredditName,
+                                                           BOOL subscribed);
 
 // Accent tint strong enough to read as a filled pill over busy banner art —
 // 0.30 was nearly invisible against bright/noisy banners.
@@ -195,6 +220,10 @@ static CGFloat const ApolloSubredditControlGlassTintAlpha = 0.62;
 
 static CGFloat const ApolloSubredditActionBottomGap = 16.0;  // gap below the Join pill, above the body
 static CGFloat const ApolloSubredditActionRowHeight = 42.0;  // Join pill height at default type — matches the profile header's Follow pill
+static CGFloat const ApolloSubredditSecondaryActionSide = 44.0;
+static CGFloat const ApolloSubredditSecondaryActionIconSide = 22.0;
+static CGFloat const ApolloSubredditActionGap = 10.0;
+static CGFloat const ApolloSubredditStackedActionGap = 8.0;
 // Vertical breathing room around the pill's scaled title. 42pt around the
 // default-size (~20pt) line, kept as the growth rate for larger type.
 static CGFloat const ApolloSubredditActionRowVerticalPadding = 22.0;
@@ -209,7 +238,26 @@ static CGFloat const ApolloSubredditBannerHeight = 104.0;
 static CGFloat const ApolloSubredditAboutMaxHeight = 220.0;
 static CGFloat const ApolloSubredditAboutToggleHeight = 22.0;
 static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
+
+static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
+    if (!image || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
+    CGFloat scale = MIN(ApolloSubredditSecondaryActionIconSide / image.size.width,
+                        ApolloSubredditSecondaryActionIconSide / image.size.height);
+    if (scale >= 1.0) return image;
+
+    CGSize size = CGSizeMake(round(image.size.width * scale), round(image.size.height * scale));
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
+    [image drawInRect:(CGRect){CGPointZero, size}];
+    UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return resizedImage ?: image;
+}
+
 @implementation ApolloSubredditHeaderView {
+    CGFloat _cachedSubtitleHeight;
+    CGFloat _cachedSubtitleWidth;
+    NSString *_cachedSubtitleText;
+    UIFont *_cachedSubtitleFont;
     // Memoized about-text NATURAL (unbounded) height; layoutSubviews fires often
     // while scrolling, so avoid re-measuring the about string every pass. Keyed
     // on text/font/width. Collapsed/expanded heights derive from this cheaply.
@@ -294,6 +342,38 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
                    forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_subscribeButton];
 
+        UIImageSymbolConfiguration *actionSymbolConfiguration =
+            [UIImageSymbolConfiguration configurationWithPointSize:17.0
+                                                             weight:UIImageSymbolWeightSemibold];
+        UIImage *flairImage = [UIImage imageNamed:@"option-set-flair"];
+        if (!flairImage) {
+            flairImage = [UIImage systemImageNamed:@"tag" withConfiguration:actionSymbolConfiguration];
+        }
+        flairImage = ApolloSubredditSizedActionIcon(flairImage);
+        _userFlairButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [_userFlairButton setImage:[flairImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+                          forState:UIControlStateNormal];
+        _userFlairButton.accessibilityLabel = @"Set User Flair";
+        _userFlairButton.layer.cornerCurve = kCACornerCurveContinuous;
+        [_userFlairButton addTarget:self action:@selector(apollo_userFlairTapped)
+                   forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_userFlairButton];
+
+        UIImage *sidebarImage = [UIImage imageNamed:@"option-sidebar"];
+        if (!sidebarImage) {
+            sidebarImage = [UIImage systemImageNamed:@"rectangle.righthalf.inset.filled"
+                                    withConfiguration:actionSymbolConfiguration];
+        }
+        sidebarImage = ApolloSubredditSizedActionIcon(sidebarImage);
+        _sidebarButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [_sidebarButton setImage:[sidebarImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
+                        forState:UIControlStateNormal];
+        _sidebarButton.accessibilityLabel = @"Open Sidebar";
+        _sidebarButton.layer.cornerCurve = kCACornerCurveContinuous;
+        [_sidebarButton addTarget:self action:@selector(apollo_sidebarTapped)
+                 forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_sidebarButton];
+
         // Same treatment as the profile header's bio: body-size type, collapsed
         // to a few lines with a "more"/"less" toggle instead of a small,
         // hard-capped footnote.
@@ -305,6 +385,8 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
         [self addSubview:_aboutLabel];
 
         ApolloIdentityHeaderApplyTextStyles(_displayNameLabel, _nameLabel, _aboutLabel);
+        _nameLabel.numberOfLines = 0;
+        _nameLabel.lineBreakMode = NSLineBreakByWordWrapping;
         _aboutLabel.numberOfLines = ApolloSubredditAboutCollapsedLines;
 
         _aboutToggleButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -330,6 +412,12 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     self.nameLabel.textColor = [UIColor secondaryLabelColor];
     self.aboutLabel.textColor = [UIColor labelColor];
     [self apollo_applySubscriptionState:self.subscribed known:self.subscriptionStateKnown];
+    if (previousTraitCollection &&
+        ![previousTraitCollection.preferredContentSizeCategory
+            isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        [self setNeedsLayout];
+        if (self.heightInvalidationBlock) self.heightInvalidationBlock();
+    }
 }
 
 // Full, unbounded natural height of the about text — memoized since
@@ -338,7 +426,9 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
 // height, so a "more" tap shows ALL of the bio, not just up to an arbitrary cap.
 - (CGFloat)apollo_aboutNaturalHeightForWidth:(CGFloat)width {
     NSString *text = self.aboutLabel.text;
-    if (self.aboutLabel.hidden || text.length == 0 || width <= 0.0) return 0.0;
+    // A live toggle measures before `hidden` is updated, so derive visibility
+    // from the preference rather than the label's previous state.
+    if (!sSubredditShowDescription || text.length == 0 || width <= 0.0) return 0.0;
 
     UIFont *font = self.aboutLabel.font;
     if (_cachedAboutText == text && _cachedAboutFont == font && _cachedAboutWidth == width) {
@@ -398,27 +488,155 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
                               : [self apollo_aboutCollapsedHeightForWidth:width];
 }
 
-// When the display name is redundant with r/name it is dropped and everything
-// below the avatar lifts by the name row's height. Both preferredHeightForWidth
-// and layoutSubviews go through this so they can't disagree.
-- (CGFloat)apollo_nameRowLiftForLayout:(ApolloIdentityHeaderLayout)identity {
-    BOOL nameShown = self.displayNameLabel.text.length > 0;
-    if (nameShown) return 0.0;
-    return CGRectGetMinY(identity.subnameFrame) - CGRectGetMinY(identity.nameFrame);
+- (BOOL)apollo_displayNameShown {
+    return sSubredditShowDisplayName && self.displayNameLabel.text.length > 0;
+}
+
+- (BOOL)apollo_subtitleShown {
+    return sSubredditShowSubtitle && self.nameLabel.text.length > 0;
+}
+
+// Move a lone subtitle into the title slot instead of leaving a blank row.
+- (CGRect)apollo_subtitleFrameForLayout:(ApolloIdentityHeaderLayout)identity {
+    CGRect frame = identity.subnameFrame;
+    if (![self apollo_displayNameShown]) frame.origin.y = CGRectGetMinY(identity.nameFrame);
+    NSString *text = self.nameLabel.text;
+    UIFont *font = self.nameLabel.font;
+    CGFloat width = CGRectGetWidth(frame);
+    if (text.length > 0 && font && width > 0.0) {
+        if (_cachedSubtitleText != text || _cachedSubtitleFont != font || _cachedSubtitleWidth != width) {
+            _cachedSubtitleHeight = ceil([self.nameLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)].height);
+            _cachedSubtitleText = text;
+            _cachedSubtitleFont = font;
+            _cachedSubtitleWidth = width;
+        }
+        frame.size.height = MAX(CGRectGetHeight(frame), _cachedSubtitleHeight);
+    }
+    return frame;
 }
 
 - (ApolloIdentityHeaderLayout)apollo_identityForWidth:(CGFloat)width {
     return ApolloIdentityHeaderLayoutMakeWithBanner(width, sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
 }
 
-// Y of the centered Join pill: right below the name/subname stack, above the
-// body. Only meaningful when sSubredditShowJoinButton is YES.
+// Y of the action cluster: right below the name/subname stack and above the
+// description. Flair and Sidebar remain independent of the Join preference.
 - (CGFloat)apollo_actionYForWidth:(CGFloat)width {
     ApolloIdentityHeaderLayout identity = [self apollo_identityForWidth:width];
-    return identity.bodyY - [self apollo_nameRowLiftForLayout:identity];
+    BOOL displayNameShown = [self apollo_displayNameShown];
+    BOOL subtitleShown = [self apollo_subtitleShown];
+    if (displayNameShown && subtitleShown) {
+        return CGRectGetMaxY([self apollo_subtitleFrameForLayout:identity]) + 10.0;
+    }
+    if (displayNameShown) return CGRectGetMaxY(identity.nameFrame) + 10.0;
+    if (subtitleShown) return CGRectGetMaxY([self apollo_subtitleFrameForLayout:identity]) + 10.0;
+    return CGRectGetMaxY(identity.avatarFrame) + 8.0;
 }
 
-// Single source of truth for the post-name body stack, in order: Join pill →
+- (BOOL)apollo_userFlairButtonShown {
+    return sSubredditShowUserFlairButton &&
+        self.userFlairAvailabilityKnown && self.userCanSetFlair;
+}
+
+- (BOOL)apollo_sidebarButtonShown {
+    return sSubredditShowSidebarButton && self.subredditName.length > 0;
+}
+
+- (void)apollo_layoutSecondaryActionButton:(UIButton *)button
+                                  glassView:(UIVisualEffectView *)glassView
+                                      frame:(CGRect)frame {
+    button.frame = frame;
+    button.layer.cornerRadius = CGRectGetHeight(frame) / 2.0;
+    glassView.frame = button.bounds;
+    glassView.layer.cornerRadius = button.layer.cornerRadius;
+}
+
+// Lays out separate Flair / Join / Sidebar controls as one centered cluster.
+// If Dynamic Type makes the three controls too wide, Join keeps its own row and
+// the two secondary controls wrap below it rather than shrinking tap targets.
+- (CGFloat)apollo_layoutActionsForWidth:(CGFloat)width
+                                  bodyX:(CGFloat)bodyX
+                              bodyWidth:(CGFloat)bodyWidth
+                                      y:(CGFloat)y
+                                  apply:(BOOL)apply {
+    BOOL showJoin = sSubredditShowJoinButton;
+    BOOL showFlair = [self apollo_userFlairButtonShown];
+    BOOL showSidebar = [self apollo_sidebarButtonShown];
+    NSUInteger secondaryCount = (showFlair ? 1 : 0) + (showSidebar ? 1 : 0);
+
+    if (apply) {
+        self.subscribeButton.hidden = !showJoin;
+        self.subscribeGlassView.hidden = !showJoin;
+        self.userFlairButton.hidden = !showFlair;
+        self.sidebarButton.hidden = !showSidebar;
+    }
+    if (!showJoin && secondaryCount == 0) return y;
+
+    CGFloat joinHeight = showJoin ? [self apollo_subscribeButtonHeight] : 0.0;
+    CGFloat joinWidth = showJoin
+        ? MIN(bodyWidth, MAX(148.0, ceil(self.subscribeButton.intrinsicContentSize.width) + 52.0))
+        : 0.0;
+    CGFloat inlineWidth = joinWidth + secondaryCount * ApolloSubredditSecondaryActionSide;
+    NSUInteger controlCount = secondaryCount + (showJoin ? 1 : 0);
+    if (controlCount > 1) inlineWidth += (controlCount - 1) * ApolloSubredditActionGap;
+    BOOL stacked = showJoin && secondaryCount > 0 && inlineWidth > bodyWidth;
+
+    if (!stacked) {
+        CGFloat rowHeight = MAX(joinHeight, secondaryCount > 0 ? ApolloSubredditSecondaryActionSide : 0.0);
+        CGFloat x = bodyX + floor((bodyWidth - inlineWidth) / 2.0);
+        if (showFlair) {
+            CGRect frame = CGRectMake(x, y + floor((rowHeight - ApolloSubredditSecondaryActionSide) / 2.0),
+                                      ApolloSubredditSecondaryActionSide, ApolloSubredditSecondaryActionSide);
+            if (apply) [self apollo_layoutSecondaryActionButton:self.userFlairButton
+                                                      glassView:self.userFlairGlassView
+                                                          frame:frame];
+            x += ApolloSubredditSecondaryActionSide + ApolloSubredditActionGap;
+        }
+        if (showJoin) {
+            CGRect frame = CGRectMake(x, y + floor((rowHeight - joinHeight) / 2.0), joinWidth, joinHeight);
+            if (apply) {
+                self.subscribeButton.frame = frame;
+                self.subscribeButton.layer.cornerRadius = joinHeight / 2.0;
+                self.subscribeGlassView.frame = self.subscribeButton.bounds;
+                self.subscribeGlassView.layer.cornerRadius = self.subscribeButton.layer.cornerRadius;
+            }
+            x += joinWidth + ApolloSubredditActionGap;
+        }
+        if (showSidebar) {
+            CGRect frame = CGRectMake(x, y + floor((rowHeight - ApolloSubredditSecondaryActionSide) / 2.0),
+                                      ApolloSubredditSecondaryActionSide, ApolloSubredditSecondaryActionSide);
+            if (apply) [self apollo_layoutSecondaryActionButton:self.sidebarButton
+                                                      glassView:self.sidebarGlassView
+                                                          frame:frame];
+        }
+        return y + rowHeight + ApolloSubredditActionBottomGap;
+    }
+
+    if (apply) {
+        self.subscribeButton.frame = CGRectMake(bodyX + floor((bodyWidth - joinWidth) / 2.0),
+                                                y, joinWidth, joinHeight);
+        self.subscribeButton.layer.cornerRadius = joinHeight / 2.0;
+        self.subscribeGlassView.frame = self.subscribeButton.bounds;
+        self.subscribeGlassView.layer.cornerRadius = self.subscribeButton.layer.cornerRadius;
+    }
+    y += joinHeight + ApolloSubredditStackedActionGap;
+    CGFloat secondaryWidth = secondaryCount * ApolloSubredditSecondaryActionSide +
+        (secondaryCount - 1) * ApolloSubredditActionGap;
+    CGFloat x = bodyX + floor((bodyWidth - secondaryWidth) / 2.0);
+    for (UIButton *button in @[self.userFlairButton, self.sidebarButton]) {
+        BOOL visible = button == self.userFlairButton ? showFlair : showSidebar;
+        if (!visible) continue;
+        UIVisualEffectView *glassView = button == self.userFlairButton
+            ? self.userFlairGlassView : self.sidebarGlassView;
+        CGRect frame = CGRectMake(x, y, ApolloSubredditSecondaryActionSide,
+                                  ApolloSubredditSecondaryActionSide);
+        if (apply) [self apollo_layoutSecondaryActionButton:button glassView:glassView frame:frame];
+        x += ApolloSubredditSecondaryActionSide + ApolloSubredditActionGap;
+    }
+    return y + ApolloSubredditSecondaryActionSide + ApolloSubredditActionBottomGap;
+}
+
+// Single source of truth for the post-name body stack, in order: actions →
 // about text → more/less toggle. apply=NO just measures (returns the bottom
 // Y); apply=YES also sets every frame, so preferredHeightForWidth and
 // layoutSubviews can never drift apart — mirrors the profile header's
@@ -429,23 +647,7 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     CGFloat bodyX = identity.bodyX;
     CGFloat y = [self apollo_actionYForWidth:width];
 
-    if (apply) {
-        self.subscribeButton.hidden = !sSubredditShowJoinButton;
-        self.subscribeGlassView.hidden = !sSubredditShowJoinButton;
-    }
-    if (sSubredditShowJoinButton) {
-        CGFloat buttonHeight = [self apollo_subscribeButtonHeight];
-        if (apply) {
-            // Grows for Dynamic Type and the longer "Joining…"/"Leaving…"
-            // titles instead of clipping inside a fixed pill.
-            CGFloat buttonWidth = MIN(bodyWidth, MAX(148.0, ceil(self.subscribeButton.intrinsicContentSize.width) + 52.0));
-            self.subscribeButton.frame = CGRectMake(floor((width - buttonWidth) / 2.0), y, buttonWidth, buttonHeight);
-            self.subscribeButton.layer.cornerRadius = buttonHeight / 2.0;
-            self.subscribeGlassView.frame = self.subscribeButton.bounds;
-            self.subscribeGlassView.layer.cornerRadius = buttonHeight / 2.0;
-        }
-        y += buttonHeight + ApolloSubredditActionBottomGap;
-    }
+    y = [self apollo_layoutActionsForWidth:width bodyX:bodyX bodyWidth:bodyWidth y:y apply:apply];
 
     CGFloat aboutHeight = [self apollo_aboutHeightForWidth:bodyWidth];
     BOOL showToggle = aboutHeight > 0.0 && ([self apollo_aboutTruncatesForWidth:bodyWidth] || self.aboutExpanded);
@@ -487,7 +689,8 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
 
     NSArray<UIView *> *expectedSubviews = @[self.bannerImageView, self.iconImageView,
                                             self.displayNameLabel, self.nameLabel,
-                                            self.subscribeButton, self.aboutLabel,
+                                            self.userFlairButton, self.subscribeButton,
+                                            self.sidebarButton, self.aboutLabel,
                                             self.aboutToggleButton];
     for (UIView *subview in expectedSubviews) {
         if (subview && subview.superview != self) {
@@ -496,9 +699,9 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     }
     self.bannerImageView.hidden = !sSubredditShowBanner;
     self.iconImageView.hidden = NO;
-    self.displayNameLabel.hidden = self.displayNameLabel.text.length == 0;
-    self.nameLabel.hidden = self.nameLabel.text.length == 0;
-    self.aboutLabel.hidden = self.aboutLabel.text.length == 0;
+    self.displayNameLabel.hidden = ![self apollo_displayNameShown];
+    self.nameLabel.hidden = ![self apollo_subtitleShown];
+    self.aboutLabel.hidden = !sSubredditShowDescription || self.aboutLabel.text.length == 0;
     BOOL ambientInstalled = objc_getAssociatedObject(self.hostViewController, kApolloSubredditAmbientViewKey) != nil;
     self.bannerImageView.alpha = ambientInstalled ? ApolloSubredditFadedBannerAlpha : 1.0;
     self.iconImageView.alpha = 1.0;
@@ -508,26 +711,27 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     // interaction state calls for, not unconditionally to full strength — a
     // hard 1.0 here would wipe the disabled dimming on the next layout.
     self.subscribeButton.alpha = self.subscribeButton.enabled ? 1.0 : ApolloSubredditDisabledControlAlpha;
+    self.userFlairButton.alpha = 1.0;
+    self.sidebarButton.alpha = 1.0;
     self.aboutLabel.alpha = 1.0;
 
     CGFloat width = self.bounds.size.width;
     ApolloIdentityHeaderLayout identity = [self apollo_identityForWidth:width];
-    CGFloat lift = [self apollo_nameRowLiftForLayout:identity];
     self.bannerImageView.frame = identity.bannerFrame;
     self.iconImageView.frame = identity.avatarFrame;
     self.iconImageView.layer.cornerRadius = CGRectGetWidth(identity.avatarFrame) / 2.0;
     self.displayNameLabel.frame = identity.nameFrame;
-    CGRect subnameFrame = identity.subnameFrame;
-    subnameFrame.origin.y -= lift;
-    self.nameLabel.frame = subnameFrame;
+    self.nameLabel.frame = [self apollo_subtitleFrameForLayout:identity];
 
-    // Join pill → about text → more/less toggle, in one sequential pass.
+    // Header actions → about text → more/less toggle, in one sequential pass.
     [self apollo_layoutBodyForWidth:width apply:YES];
 
     [self bringSubviewToFront:self.iconImageView];
     [self bringSubviewToFront:self.displayNameLabel];
     [self bringSubviewToFront:self.nameLabel];
+    [self bringSubviewToFront:self.userFlairButton];
     [self bringSubviewToFront:self.subscribeButton];
+    [self bringSubviewToFront:self.sidebarButton];
     [self bringSubviewToFront:self.aboutLabel];
     [self bringSubviewToFront:self.aboutToggleButton];
 }
@@ -536,19 +740,26 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     CGFloat width = ApolloSubredditLocalWidth(self);
     CGFloat heightBefore = [self preferredHeightForWidth:width];
 
-    // Whether the big display name (e.g. "Reddit Science") shows above the
-    // r/name line is a direct viewer choice (sSubredditShowDisplayName), not
-    // an automatic "is it different enough from r/name" guess.
-    NSString *displayName = sSubredditShowDisplayName ? info.displayName : nil;
+    // Use the short name with Apollo's display casing, not Reddit's custom title.
+    // Keep it populated while hidden so enabling the switch needs no fetch.
+    NSString *displayName = subredditName.length > 0 ? subredditName : info.subredditName;
+    NSString *navigationName = ApolloNormalizedSubredditName(self.hostViewController.navigationItem.title);
+    if (ApolloSubredditNamesEqual(navigationName, displayName)) displayName = navigationName;
     self.displayNameLabel.text = displayName.length > 0 ? displayName : nil;
+    self.communityTitle = info.displayName.length > 0 ? info.displayName : nil;
+    self.subredditInfoLoaded = info != nil;
     self.aboutLabel.text = info.aboutText.length > 0 ? info.aboutText : nil;
     self.memberCountText = info && info.subscriberCount >= 0
         ? ApolloSubredditFormattedMemberCount(info.subscriberCount) : nil;
+    if (info.userFlairInfoAvailable) {
+        self.userFlairAvailabilityKnown = YES;
+        self.userCanSetFlair = info.usersCanAssignUserFlair;
+    }
     [self apollo_updateSubname];
 
-    self.displayNameLabel.hidden = self.displayNameLabel.text.length == 0;
-    self.nameLabel.hidden = self.nameLabel.text.length == 0;
-    self.aboutLabel.hidden = self.aboutLabel.text.length == 0;
+    self.displayNameLabel.hidden = ![self apollo_displayNameShown];
+    self.nameLabel.hidden = ![self apollo_subtitleShown];
+    self.aboutLabel.hidden = !sSubredditShowDescription || self.aboutLabel.text.length == 0;
     [self setNeedsLayout];
 
     CGFloat heightAfter = [self preferredHeightForWidth:width];
@@ -560,12 +771,38 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
 - (void)apollo_updateSubname {
     NSString *canonicalName = self.subredditName.length > 0
         ? [@"r/" stringByAppendingString:self.subredditName] : nil;
-    if (canonicalName.length > 0 && self.memberCountText.length > 0) {
-        self.nameLabel.text = [NSString stringWithFormat:@"%@  ·  %@", canonicalName, self.memberCountText];
+    NSString *subtitle = self.subredditInfoLoaded ? self.communityTitle : canonicalName;
+    if (ApolloSubredditNamesEqual(subtitle, self.subredditName)) subtitle = nil;
+    if (subtitle.length > 0 && self.memberCountText.length > 0) {
+        self.nameLabel.text = [NSString stringWithFormat:@"%@  ·  %@", subtitle, self.memberCountText];
+    } else if (subtitle.length > 0) {
+        self.nameLabel.text = subtitle;
     } else {
-        self.nameLabel.text = canonicalName;
+        self.nameLabel.text = self.memberCountText;
     }
-    self.nameLabel.hidden = self.nameLabel.text.length == 0;
+    self.nameLabel.hidden = ![self apollo_subtitleShown];
+}
+
+- (UIVisualEffectView *)apollo_applySecondaryActionAppearanceToButton:(UIButton *)button
+                                                             glassView:(UIVisualEffectView *)glassView {
+    button.tintColor = UIColor.labelColor;
+    button.backgroundColor = UIColor.clearColor;
+    button.clipsToBounds = YES;
+    if (!glassView || glassView.superview != button) {
+        [glassView removeFromSuperview];
+        UIVisualEffect *effect = ApolloImmersiveGlassEffect(nil, 0.0, YES)
+            ?: [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+        glassView = [[UIVisualEffectView alloc] initWithEffect:effect];
+        glassView.userInteractionEnabled = NO;
+        glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [button insertSubview:glassView atIndex:0];
+    }
+    glassView.frame = button.bounds;
+    glassView.layer.cornerCurve = kCACornerCurveContinuous;
+    glassView.clipsToBounds = YES;
+    [button sendSubviewToBack:glassView];
+    if (button.imageView) [button bringSubviewToFront:button.imageView];
+    return glassView;
 }
 
 - (void)apollo_applySubscriptionState:(BOOL)subscribed known:(BOOL)known {
@@ -605,6 +842,10 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
                                      forState:UIControlStateHighlighted];
         [self.aboutToggleButton setTitleColor:resolvedAccent forState:UIControlStateNormal];
     }
+    self.userFlairGlassView = [self apollo_applySecondaryActionAppearanceToButton:self.userFlairButton
+                                                                        glassView:self.userFlairGlassView];
+    self.sidebarGlassView = [self apollo_applySecondaryActionAppearanceToButton:self.sidebarButton
+                                                                      glassView:self.sidebarGlassView];
     _appliedAccent = resolvedAccent;
 }
 
@@ -683,6 +924,11 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     }
 
     NSString *subredditName = [self.subredditName copy];
+    // Apollo's subscription list stores names as Reddit spells them.
+    id currentSubreddit = ApolloSubredditCurrentSubredditObject(self.hostViewController, subredditName);
+    NSString *displayName = currentSubreddit
+        ? ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name)) : nil;
+    NSString *listName = displayName.length > 0 ? [displayName copy] : subredditName;
     __weak typeof(self) weakSelf = self;
     // RDKClient mutation completions are `^(NSError *error)`. Verified from
     // Apollo's native subscribe/unsubscribe implementations: both forward the
@@ -690,20 +936,29 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
     // with nil or the NSError respectively.
     void (^completion)(NSError *error) = ^(NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL succeeded = ![error isKindOfClass:[NSError class]];
+            // The name-based call changed Reddit and nothing on Apollo's side.
+            // Its ⋯ menu (Subscribe/Unsubscribe) and the Subscriptions list
+            // read the account's subscription list, so apply the change there
+            // too; that posts Apollo's subscriptions notification, which every
+            // other screen showing this subreddit follows. This is account
+            // state, so it happens even if this header has moved on, but only
+            // for the account that made the request.
+            if (succeeded && ApolloActiveAccountClient() == client) {
+                ApolloAccountApplySubscriptionChange(listName, desiredState);
+            }
             ApolloSubredditHeaderView *strongSelf = weakSelf;
             if (!strongSelf || !ApolloSubredditNamesEqual(strongSelf.subredditName, subredditName)) return;
             strongSelf.subscriptionRequestInFlight = NO;
-            BOOL succeeded = ![error isKindOfClass:[NSError class]];
             BOOL finalState = succeeded ? desiredState : oldState;
             if (!succeeded) {
                 ApolloLog(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
                           desiredState ? @"subscribe" : @"unsubscribe", subredditName, error);
             }
             // Grace window: our own confirmed outcome (success or rollback)
-            // wins over the native currentSubreddit.isSubscriber re-sync that
-            // ApolloSubredditInstallOrUpdateHeader runs on every layout pass,
-            // which reads a stale ivar our name-based RDKClient call never
-            // updates directly.
+            // wins over the other sources for a moment (see
+            // ApolloSubredditRefreshSubscriptionState); on success it is also
+            // written onto currentSubreddit below.
             strongSelf.subscribeIntentValue = finalState;
             strongSelf.subscribeIntentDate = [NSDate date];
             [strongSelf apollo_applySubscriptionState:finalState known:YES];
@@ -717,10 +972,27 @@ static NSInteger const ApolloSubredditAboutCollapsedLines = 3;
                 }
                 [[ApolloSubredditInfoCache sharedCache] refetchInfoForSubreddit:subredditName
                                                                       completion:^(__unused ApolloSubredditInfo *info) {}];
+                ApolloSubredditWriteCurrentSubredditSubscribed(strongSelf.hostViewController, subredditName, finalState);
             }
         });
     };
     ((id (*)(id, SEL, id, id))objc_msgSend)(client, selector, subredditName, [completion copy]);
+}
+
+- (void)apollo_userFlairTapped {
+    if (![self apollo_userFlairButtonShown]) return;
+    if (!ApolloNativeActionMenuInvokePostsAction(self.hostViewController, self.userFlairButton, 46)) {
+        ApolloLog(@"[SubredditHeaders] Set User Flair action unavailable subreddit=%@",
+                  self.subredditName ?: @"nil");
+    }
+}
+
+- (void)apollo_sidebarTapped {
+    if (![self apollo_sidebarButtonShown]) return;
+    if (!ApolloNativeActionMenuInvokePostsAction(self.hostViewController, self.sidebarButton, 36)) {
+        ApolloLog(@"[SubredditHeaders] Sidebar action unavailable subreddit=%@",
+                  self.subredditName ?: @"nil");
+    }
 }
 
 - (void)apollo_presentPhotoPickerForAssetKind:(ApolloSubredditHeaderAssetKind)assetKind {
@@ -1041,7 +1313,7 @@ static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClas
 // silently swallowing every tap. These fallbacks answer the same question
 // without depending on that ivar.
 
-// Tier 1: the VC's own RDKSubreddit. Free when it's there, and the freshest
+// The VC's own RDKSubreddit. Free when it's there, and the freshest
 // thing available — but only trusted when its name matches the subreddit we're
 // actually drawing, since a recycled controller can still hold the previous
 // one. A missing name on either side is not treated as a mismatch.
@@ -1061,36 +1333,31 @@ static BOOL ApolloSubredditSubscribedFromCurrentSubreddit(UIViewController *view
     return YES;
 }
 
-// Tier 3: the signed-in account's own subscription list. Only a POSITIVE match
-// counts: the list can legitimately be empty or half-loaded early in a launch,
-// and answering "not subscribed" from an incomplete list would put a wrong
-// "Join" on a subreddit the user is already in. Absence just means "still
-// unknown", which leaves the pill in the state it was already in.
+// The signed-in account's own subscription list. Only a POSITIVE match counts:
+// the list can legitimately be empty or half-loaded early in a launch, and
+// answering "not subscribed" from an incomplete list would put a wrong "Join"
+// on a subreddit the user is already in. Absence just means "still unknown",
+// which leaves the answer to the next source.
 static BOOL ApolloSubredditSubscribedFromAccountList(NSString *subredditName, BOOL *outSubscribed) {
-    if (subredditName.length == 0) return NO;
-    id client = ApolloActiveAccountClient();
-    if (!client) return NO;
-    if (![client respondsToSelector:@selector(currentUser)]) return NO;
-    id currentUser = ((id (*)(id, SEL))objc_msgSend)(client, @selector(currentUser));
-    if (![currentUser respondsToSelector:@selector(subscribedSubreddits)]) return NO;
-    id subscribed = ((id (*)(id, SEL))objc_msgSend)(currentUser, @selector(subscribedSubreddits));
-    if (![subscribed isKindOfClass:[NSArray class]]) return NO;
+    BOOL listed = NO;
+    if (!ApolloAccountSubscriptionListState(subredditName, &listed) || !listed) return NO;
+    *outSubscribed = YES;
+    return YES;
+}
 
-    for (id entry in (NSArray *)subscribed) {
-        // Entries are RDKSubreddit objects, but mirror ApolloHideModSubreddits'
-        // defensive shape and accept a bare name string too.
-        NSString *name = nil;
-        if ([entry isKindOfClass:[NSString class]]) {
-            name = entry;
-        } else if ([entry respondsToSelector:@selector(name)]) {
-            name = ((NSString * (*)(id, SEL))objc_msgSend)(entry, @selector(name));
-        }
-        if (name.length > 0 && ApolloSubredditNamesEqual(name, subredditName)) {
-            *outSubscribed = YES;
-            return YES;
-        }
+typedef NS_ENUM(NSInteger, ApolloSubredditSubscriptionSource) {
+    ApolloSubredditSubscriptionSourceCurrentSubreddit,
+    ApolloSubredditSubscriptionSourceAccountList,
+    ApolloSubredditSubscriptionSourceInfoCache,
+};
+
+static NSString *ApolloSubredditSubscriptionSourceName(ApolloSubredditSubscriptionSource source) {
+    switch (source) {
+        case ApolloSubredditSubscriptionSourceCurrentSubreddit: return @"currentSubreddit";
+        case ApolloSubredditSubscriptionSourceAccountList: return @"accountList";
+        case ApolloSubredditSubscriptionSourceInfoCache: return @"infoCache";
     }
-    return NO;
+    return @"?";
 }
 
 // Resolves the subscription state from the best source that actually knows.
@@ -1098,20 +1365,32 @@ static BOOL ApolloSubredditSubscribedFromAccountList(NSString *subredditName, BO
 // (visibly disabled) state rather than guessing.
 static BOOL ApolloSubredditResolveSubscribed(UIViewController *viewController,
                                              NSString *subredditName,
-                                             BOOL *outSubscribed) {
+                                             BOOL *outSubscribed,
+                                             ApolloSubredditSubscriptionSource *outSource) {
     if (!outSubscribed) return NO;
     if (ApolloSubredditSubscribedFromCurrentSubreddit(viewController, subredditName, outSubscribed)) {
+        if (outSource) *outSource = ApolloSubredditSubscriptionSourceCurrentSubreddit;
         return YES;
     }
-    // Tier 2: `user_is_subscriber` from the subreddit's own about.json, which
-    // this header already fetches and disk-caches for the banner/description.
-    // Per-subreddit and authoritative in BOTH directions (unlike tier 3), and
+    // The account's own list, positive matches only (see its comment). It
+    // comes before the info cache below because it is the fresher of the two:
+    // Apollo reloads it from Reddit on every launch and changes it on every
+    // subscribe/unsubscribe it hears about, while a cached flag can be days
+    // old. Checked the other way round, a subreddit joined since the cache
+    // was written (from an interactive post, on the web) opened as "Join".
+    if (ApolloSubredditSubscribedFromAccountList(subredditName, outSubscribed)) {
+        if (outSource) *outSource = ApolloSubredditSubscriptionSourceAccountList;
+        return YES;
+    }
+    // `user_is_subscriber` from the subreddit's own about.json, which this
+    // header already fetches and disk-caches for the banner/description.
+    // Per-subreddit and authoritative in BOTH directions (unlike the list), and
     // refetched right after our own subscribe/unsubscribe. nil = the fetch was
     // unauthenticated or predates the field, i.e. unknown. The flag is
     // ACCOUNT-SPECIFIC while the cache entry is shared and persists for days,
     // so it only counts when it was fetched AS the currently active account —
-    // an unstamped (pre-stamp build) or other-account flag reads as unknown,
-    // falling through to tier 3 rather than showing another account's answer.
+    // an unstamped (pre-stamp build) or other-account flag reads as unknown
+    // rather than showing another account's answer.
     ApolloSubredditInfo *cachedInfo = [[ApolloSubredditInfoCache sharedCache]
         cachedInfoForSubreddit:subredditName];
     if (cachedInfo.userIsSubscriber != nil) {
@@ -1120,10 +1399,11 @@ static BOOL ApolloSubredditResolveSubscribed(UIViewController *viewController,
         if (flagAccount.length > 0 && activeAccount.length > 0 &&
             [flagAccount caseInsensitiveCompare:activeAccount] == NSOrderedSame) {
             *outSubscribed = cachedInfo.userIsSubscriber.boolValue;
+            if (outSource) *outSource = ApolloSubredditSubscriptionSourceInfoCache;
             return YES;
         }
     }
-    return ApolloSubredditSubscribedFromAccountList(subredditName, outSubscribed);
+    return NO;
 }
 
 // Pushes the resolved state into the header, honouring the same in-flight and
@@ -1138,22 +1418,82 @@ static void ApolloSubredditRefreshSubscriptionState(ApolloSubredditHeaderView *h
         [[NSDate date] timeIntervalSinceDate:header.subscribeIntentDate] < 30.0;
     if (recentIntent) {
         // Our own tap-confirmed state wins over every source below for a grace
-        // window — subscribeToSubredditWithName: is name-based and has no
-        // confirmed path that updates this VC's already-cached currentSubreddit
-        // object, so reading it right after a successful tap can otherwise flip
-        // the button straight back.
+        // window. The result is written onto currentSubreddit when the
+        // controller has one; without it the next answer can come from the
+        // info cache, and the about.json refetched right after the tap can
+        // still carry the old flag, which would flip the button straight back.
         [header apollo_applySubscriptionState:header.subscribeIntentValue known:YES];
         return;
     }
     header.subscribeIntentDate = nil;
 
     BOOL subscribed = NO;
-    if (!ApolloSubredditResolveSubscribed(viewController, subredditName, &subscribed)) return;
-    if (!header.subscriptionStateKnown) {
-        ApolloLog(@"[SubredditHeaders] subscription state resolved subreddit=%@ subscribed=%d",
-                  subredditName ?: @"nil", subscribed);
+    ApolloSubredditSubscriptionSource source = ApolloSubredditSubscriptionSourceInfoCache;
+    if (!ApolloSubredditResolveSubscribed(viewController, subredditName, &subscribed, &source)) return;
+    BOOL fromCurrentSubreddit = (source == ApolloSubredditSubscriptionSourceCurrentSubreddit);
+    if (!header.subscriptionStateKnown || fromCurrentSubreddit != header.subscriptionFromCurrentSubreddit ||
+        subscribed != header.subscribed) {
+        ApolloLog(@"[SubredditHeaders] subscription state resolved subreddit=%@ subscribed=%d source=%@",
+                  subredditName ?: @"nil", subscribed, ApolloSubredditSubscriptionSourceName(source));
     }
+    header.subscriptionFromCurrentSubreddit = fromCurrentSubreddit;
     [header apollo_applySubscriptionState:subscribed known:YES];
+}
+
+// The controller's own RDKSubreddit, when it is the subreddit being drawn.
+static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName) {
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    if (!currentSubreddit || ![currentSubreddit respondsToSelector:@selector(name)]) return nil;
+    NSString *name = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
+    return ApolloSubredditNamesEqual(name, subredditName) ? currentSubreddit : nil;
+}
+
+// The resolver's first source is the controller's currentSubreddit, loaded
+// with the screen and never updated afterwards, so a confirmed subscription
+// change (the pill's request returned, or Apollo's subscription list just
+// changed) has to be written onto it or the next resolve reads the old answer
+// back. Its readonly `subscriber` is backed by `_subscriber`, which KVC sets
+// directly. Returns NO when the controller has no currentSubreddit for this
+// name.
+static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *viewController,
+                                                           NSString *subredditName,
+                                                           BOOL subscribed) {
+    id currentSubreddit = ApolloSubredditCurrentSubredditObject(viewController, subredditName);
+    if (!currentSubreddit) return NO;
+    @try {
+        [currentSubreddit setValue:@(subscribed) forKey:@"subscriber"];
+    } @catch (__unused NSException *exception) {
+        return NO;
+    }
+    return YES;
+}
+
+// Prefer Apollo's live subreddit model, then the same can_assign_user_flair
+// value cached with the header metadata. The overflow action alone is not an
+// availability signal: Apollo includes it for communities with no choices.
+static void ApolloSubredditRefreshUserFlairAvailability(ApolloSubredditHeaderView *header,
+                                                        UIViewController *viewController) {
+    if (!header || !viewController) return;
+    id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit",
+                                            objc_getClass("RDKSubreddit"));
+    if ([subreddit respondsToSelector:@selector(name)]) {
+        NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
+        if (!ApolloSubredditNamesEqual(name, header.subredditName)) return;
+    }
+
+    BOOL canSetFlair = NO;
+    if ([subreddit respondsToSelector:@selector(canSetFlair)]) {
+        canSetFlair = ((BOOL (*)(id, SEL))objc_msgSend)(subreddit, @selector(canSetFlair));
+    } else {
+        ApolloSubredditInfo *info = [[ApolloSubredditInfoCache sharedCache]
+            cachedInfoForSubreddit:header.subredditName];
+        if (!info.userFlairInfoAvailable) return;
+        canSetFlair = info.usersCanAssignUserFlair;
+    }
+    BOOL changed = !header.userFlairAvailabilityKnown || header.userCanSetFlair != canSetFlair;
+    header.userFlairAvailabilityKnown = YES;
+    header.userCanSetFlair = canSetFlair;
+    if (changed) [header setNeedsLayout];
 }
 
 // PostsType is a Swift enum stored inline in the `currentPostsType` ivar; its
@@ -1609,6 +1949,55 @@ static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
     return header;
 }
 
+#pragma mark - Settings preview seam
+
+UIView *ApolloSubredditHeaderPreviewContentCreate(CGFloat width) {
+    ApolloSubredditHeaderView *header = ApolloSubredditCreateHeader(MAX(1.0, width));
+    header.userInteractionEnabled = NO;
+    header.accessibilityElementsHidden = YES;
+    return header;
+}
+
+static ApolloSubredditHeaderView *ApolloSubredditHeaderPreviewContent(UIView *contentView) {
+    return [contentView isKindOfClass:[ApolloSubredditHeaderView class]]
+        ? (ApolloSubredditHeaderView *)contentView : nil;
+}
+
+void ApolloSubredditHeaderPreviewContentConfigure(UIView *contentView,
+                                                   ApolloSubredditInfo *info,
+                                                   NSString *fallbackSubredditName,
+                                                   UIImage *iconImage,
+                                                   UIImage *bannerImage) {
+    ApolloSubredditHeaderView *header = ApolloSubredditHeaderPreviewContent(contentView);
+    if (!header || !info) return;
+
+    header.subredditName = fallbackSubredditName;
+    header.userFlairAvailabilityKnown = YES;
+    header.userCanSetFlair = YES;
+    [header applyInfo:info fallbackSubredditName:fallbackSubredditName];
+    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header);
+    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner();
+    [header apollo_applySubscriptionState:YES known:YES];
+}
+
+CGFloat ApolloSubredditHeaderPreviewContentPreferredHeight(UIView *contentView, CGFloat width) {
+    ApolloSubredditHeaderView *header = ApolloSubredditHeaderPreviewContent(contentView);
+    return header ? [header preferredHeightForWidth:width] : 0.0;
+}
+
+UIImage *ApolloSubredditHeaderPreviewContentBannerImage(UIView *contentView) {
+    return ApolloSubredditHeaderPreviewContent(contentView).bannerImageView.image;
+}
+
+CGFloat ApolloSubredditHeaderPreviewContentBannerHeight(UIView *contentView) {
+    return CGRectGetHeight(ApolloSubredditHeaderPreviewContent(contentView).bannerImageView.frame);
+}
+
+void ApolloSubredditHeaderPreviewContentSetAmbientActive(UIView *contentView, BOOL active) {
+    ApolloSubredditHeaderView *header = ApolloSubredditHeaderPreviewContent(contentView);
+    header.bannerImageView.alpha = active ? ApolloSubredditFadedBannerAlpha : 1.0;
+}
+
 static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName, BOOL forceRefresh) {
     if (!header || subredditName.length == 0) return;
 
@@ -1647,7 +2036,7 @@ static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSStrin
     if (forceRefresh) {
         [cache refetchInfoForSubreddit:subredditName completion:applyInfo];
     } else {
-        [cache requestInfoForSubreddit:subredditName completion:applyInfo];
+        [cache requestUserFlairInfoForSubreddit:subredditName completion:applyInfo];
     }
 }
 
@@ -1666,10 +2055,10 @@ static UIView *ApolloSubredditBuildWrapper(ApolloSubredditHeaderView *header,
                                            UIView *originalHeader,
                                            CGFloat width) {
     if (!header) return nil;
-    // When Community Highlights is on, host its carousel in the original-header
-    // slot (a container stacking the carousel above Apollo's real header). The
-    // sizing/positioning below then accounts for it automatically.
-    if (sCommunityHighlights && header.subredditName.length) {
+    // Reconcile this slot even when Highlights is off. The helper also unwraps
+    // a container left by the previous mode, which keeps repeated
+    // Reborn/Native transitions from nesting table-header owners.
+    if (header.subredditName.length) {
         originalHeader = ApolloHLHeaderOriginalSubstitute(header.subredditName, header.hostViewController, originalHeader, width);
     }
     CGFloat originalHeight = originalHeader ? originalHeader.frame.size.height : 0.0;
@@ -1715,6 +2104,34 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
     }
 }
 
+static BOOL ApolloSubredditColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
+    if (!color) return NO;
+    UIColor *resolved = [color resolvedColorWithTraitCollection:
+        traits ?: UIScreen.mainScreen.traitCollection];
+    return resolved && CGColorGetAlpha(resolved.CGColor) > 0.01;
+}
+
+// Apollo's table headers can be transparent. Resolve an opaque themed surface
+// so switching to Native cannot expose the previous immersive backdrop.
+static UIColor *ApolloSubredditPageSurface(UIViewController *viewController, UIColor *fallback) {
+    UITraitCollection *traits = viewController.traitCollection;
+    UIColor *themeColor = ApolloThemePageBackgroundColor();
+    if (ApolloSubredditColorProvidesSurface(themeColor, traits)) return themeColor;
+    if (ApolloSubredditColorProvidesSurface(fallback, traits)) return fallback;
+    return UIColor.systemGroupedBackgroundColor;
+}
+
+static void ApolloSubredditApplyPageSurface(UIViewController *viewController,
+                                            UITableView *tableView,
+                                            UIColor *fallback) {
+    if (!viewController || !tableView) return;
+    UIColor *pageColor = ApolloSubredditPageSurface(viewController, fallback);
+    tableView.backgroundColor = pageColor;
+    viewController.view.backgroundColor = pageColor;
+    [tableView setNeedsLayout];
+    [viewController.view setNeedsLayout];
+}
+
 static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header) {
     UIViewController *viewController = header.hostViewController;
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
@@ -1723,11 +2140,10 @@ static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header) {
     if (!tableView) return;
 
     UIColor *fallback = tableView.backgroundColor;
-    if (!fallback || CGColorGetAlpha(fallback.CGColor) <= 0.01) {
-        fallback = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey)
-            ?: UIColor.systemBackgroundColor;
+    if (!ApolloSubredditColorProvidesSurface(fallback, viewController.traitCollection)) {
+        fallback = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey);
     }
-    UIColor *pageColor = ApolloImmersiveResolvedPageColor(fallback);
+    UIColor *pageColor = ApolloImmersiveResolvedPageColor(fallback, viewController.traitCollection);
     viewController.view.backgroundColor = pageColor;
     // adjustedContentInset.top is the full chrome above the table header —
     // safe area plus Apollo's search bar — which is exactly where the header
@@ -1783,9 +2199,12 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     if (!viewController || !tableView || !header || !wrappedHeader) return;
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
     if (!ambient) {
-        UIColor *pageColor = tableView.backgroundColor ?: UIColor.systemBackgroundColor;
+        UIColor *pageColor = ApolloSubredditPageSurface(viewController, tableView.backgroundColor);
         objc_setAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey,
                                  pageColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(viewController, kApolloSubredditOriginalViewBackgroundKey,
+                                 viewController.view.backgroundColor ?: (id)NSNull.null,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         UIView *originalBackgroundView = tableView.backgroundView;
         if (originalBackgroundView) {
             objc_setAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundViewKey,
@@ -1810,18 +2229,32 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     ApolloSubredditUpdateAmbientScroll(viewController, tableView);
 }
 
-static void ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView) {
+static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView) {
+    if (!viewController || !tableView) return nil;
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
     UIView *originalBackgroundView = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundViewKey);
+    UIColor *savedTableBackground = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey);
+    id originalViewBackground = objc_getAssociatedObject(viewController, kApolloSubredditOriginalViewBackgroundKey);
+    BOOL ownedSurface = ambient || originalBackgroundView || savedTableBackground || originalViewBackground;
+    if (!ownedSurface) return nil;
+
     if (tableView.backgroundView == ambient) tableView.backgroundView = originalBackgroundView;
     [ambient removeFromSuperview];
     objc_setAssociatedObject(viewController, kApolloSubredditAmbientViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIColor *pageColor = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey);
-    if (pageColor) tableView.backgroundColor = pageColor;
+
+    UIColor *savedViewBackground = [originalViewBackground isKindOfClass:[UIColor class]]
+        ? originalViewBackground
+        : nil;
+    UIColor *fallback = savedTableBackground ?: savedViewBackground ?: tableView.backgroundColor;
+    UIColor *pageColor = ApolloSubredditPageSurface(viewController, fallback);
     objc_setAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(viewController, kApolloSubredditOriginalViewBackgroundKey,
+                             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
     header.bannerImageView.alpha = 1.0;
+
+    return pageColor;
 }
 
 static void ApolloSubredditUpdateAmbientScroll(UIViewController *viewController, UIScrollView *scrollView) {
@@ -1983,7 +2416,7 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
     ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
     UIView *wrappedHeader = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey);
     UIView *originalHeader = objc_getAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey);
-    ApolloSubredditRemoveAmbient(viewController, tableView);
+    UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
     ApolloSubredditRestoreSearchBar(viewController);
     UINavigationItem *navigationItem = viewController.navigationItem;
     ApolloSubredditWeakControllerBox *navigationOwner =
@@ -2005,9 +2438,13 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
 
     if (tableView && restoreNativeHeader && wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        tableView.tableHeaderView = originalHeader;
+        tableView.tableHeaderView = ApolloHLUnwrapManagedHeader(originalHeader, viewController);
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    if (restoredPageColor) {
+        ApolloSubredditApplyPageSurface(viewController, tableView, restoredPageColor);
+    }
+    ApolloHLReleaseHeaderContainer(viewController);
 
     if (header.superview == wrappedHeader) {
         [header removeFromSuperview];
@@ -2055,6 +2492,10 @@ static BOOL ApolloSubredditNeedsInstall(UIViewController *viewController) {
     if (!tableView || !header || !wrappedHeader) return YES;
     if (tableView.tableHeaderView != wrappedHeader || header.superview != wrappedHeader) return YES;
     if (header.hidden || wrappedHeader.hidden || header.alpha < 0.99 || wrappedHeader.alpha < 0.99) return YES;
+
+    UIView *originalHeader = objc_getAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey);
+    BOOL highlightsSlotInstalled = ApolloHLUnwrapManagedHeader(originalHeader, viewController) != originalHeader;
+    if (highlightsSlotInstalled != sCommunityHighlights) return YES;
 
     NSString *installedName = objc_getAssociatedObject(viewController, kApolloSubredditNameKey);
     // Case-insensitive: the name arrives from the nav title first ("denver")
@@ -2166,11 +2607,20 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     // Setting off -> restore the native tableHeaderView and drop our state.
     if (!sShowSubredditHeaders) {
-        ApolloSubredditRemoveAmbient(viewController, tableView);
+        UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
         ApolloSubredditRestoreSearchBar(viewController);
         if (wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
-            tableView.tableHeaderView = originalHeader;
+            tableView.tableHeaderView = ApolloHLUnwrapManagedHeader(originalHeader, viewController);
         }
+        // Liquid Glass can retain the outgoing header capture after ownership changes;
+        // reapply the surface instead of waiting for the next layout.
+        if (wrappedHeader || restoredPageColor) {
+            ApolloSubredditApplyPageSurface(viewController, tableView,
+                                            restoredPageColor ?: tableView.backgroundColor);
+            ApolloLog(@"[SubredditHeaders] restored themed page surface vc=%p native=1 ambient=%d",
+                      viewController, restoredPageColor != nil);
+        }
+        ApolloHLReleaseHeaderContainer(viewController);
         objc_setAssociatedObject(viewController, kApolloSubredditHeaderViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2183,7 +2633,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     NSString *subredditName = ApolloSubredditNameFromViewController(viewController);
     if (subredditName.length == 0) {
-        ApolloSubredditRemoveAmbient(viewController, tableView);
+        UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
         ApolloSubredditRestoreSearchBar(viewController);
         // Not a single-subreddit feed (multireddit, profile section, or special
         // feed). If this controller was reused and previously hosted our header,
@@ -2191,7 +2641,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         // stale/mislabeled header behind. (#327)
         if (wrappedHeader && tableView.tableHeaderView == wrappedHeader) {
             objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            tableView.tableHeaderView = originalHeader;
+            tableView.tableHeaderView = ApolloHLUnwrapManagedHeader(originalHeader, viewController);
             objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(viewController, kApolloSubredditHeaderViewKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2201,6 +2651,10 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
             objc_setAssociatedObject(tableView, kApolloSubredditTableManagedHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(tableView, kApolloSubredditManagedViewControllerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        if (restoredPageColor) {
+            ApolloSubredditApplyPageSurface(viewController, tableView, restoredPageColor);
+        }
+        ApolloHLReleaseHeaderContainer(viewController);
         return;
     }
 
@@ -2244,11 +2698,34 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         // this as our own write (no double-wrap recursion).
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         wrappedHeader = ApolloSubredditBuildWrapper(header, originalHeader, width);
+        if ([wrappedHeader isKindOfClass:[ApolloSubredditHeaderWrapperView class]]) {
+            originalHeader = ((ApolloSubredditHeaderWrapperView *)wrappedHeader).apolloOriginalHeaderView;
+        }
         ApolloSubredditSyncAssociations(tableView, viewController, header, wrappedHeader, originalHeader);
         tableView.tableHeaderView = wrappedHeader;
         objc_setAssociatedObject(tableView, kApolloSubredditRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
         BOOL repaired = NO;
+
+        // Toggling Highlights adds or removes its native-header container, so reconcile
+        // the slot explicitly; relayout alone cannot change ownership.
+        UIView *reconciledOriginal = ApolloHLHeaderOriginalSubstitute(subredditName,
+                                                                      viewController,
+                                                                      originalHeader,
+                                                                      width);
+        if (reconciledOriginal != originalHeader) {
+            // The substitute may already have adopted `originalHeader`; remove it only
+            // while the wrapper still owns it.
+            if (originalHeader.superview == wrappedHeader) [originalHeader removeFromSuperview];
+            originalHeader = reconciledOriginal;
+            if (originalHeader) [wrappedHeader addSubview:originalHeader];
+            if ([wrappedHeader isKindOfClass:[ApolloSubredditHeaderWrapperView class]]) {
+                ((ApolloSubredditHeaderWrapperView *)wrappedHeader).apolloOriginalHeaderView = originalHeader;
+            }
+            objc_setAssociatedObject(wrappedHeader, kApolloSubredditOriginalHeaderKey,
+                                     originalHeader, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            repaired = YES;
+        }
         if (header.superview != wrappedHeader) {
             [wrappedHeader addSubview:header];
             repaired = YES;
@@ -2298,7 +2775,10 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         header.usesCustomIcon = NO;
         header.usesCustomBanner = NO;
         header.subscriptionStateKnown = NO;
+        header.subscriptionFromCurrentSubreddit = NO;
         header.subscriptionRequestInFlight = NO;
+        header.userFlairAvailabilityKnown = NO;
+        header.userCanSetFlair = NO;
         // A reused header must not carry a previous subreddit's tap intent
         // into this one — same class of bug as the profile header's
         // followIntentDate not being cleared on a username change.
@@ -2311,9 +2791,18 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     }
     // Once one of the sources has resolved the state, do not rescan the active
     // account's complete subscription list on every viewDidLayoutSubviews pass.
-    // Account/subscription notifications below explicitly invalidate it.
-    if (!header.subscriptionStateKnown) {
+    // Account/subscription notifications below explicitly invalidate it. The
+    // one exception is an answer that came from a fallback because the
+    // controller's currentSubreddit had not landed yet: when it does, it is
+    // this screen's own fresh fetch, so let it have the final say (a cached
+    // flag answered first and was never looked at again).
+    if (!header.subscriptionStateKnown ||
+        (!header.subscriptionFromCurrentSubreddit &&
+         ApolloSubredditCurrentSubredditObject(viewController, header.subredditName))) {
         ApolloSubredditRefreshSubscriptionState(header, viewController);
+    }
+    if (!header.userFlairAvailabilityKnown) {
+        ApolloSubredditRefreshUserFlairAvailability(header, viewController);
     }
 
     if (wrappedHeader && header) {
@@ -2331,7 +2820,10 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     if (sSubredditHeaderImmersive) {
         ApolloSubredditInstallAmbient(viewController, tableView, header, wrappedHeader);
     } else {
-        ApolloSubredditRemoveAmbient(viewController, tableView);
+        UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
+        if (restoredPageColor) {
+            ApolloSubredditApplyPageSurface(viewController, tableView, restoredPageColor);
+        }
     }
     ApolloSubredditStyleSearchBar(viewController);
     } @finally {
@@ -2407,37 +2899,76 @@ static void ApolloSubredditRefreshIconForSubreddit(NSString *subredditName) {
     });
 }
 
-static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewController, NSHashTable *visited) {
+static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewController,
+                                                        NSSet<NSString *> *subredditNames,
+                                                        NSHashTable *visited) {
     if (!viewController || [visited containsObject:viewController]) return;
     [visited addObject:viewController];
 
     BOOL isPostsVC = sPostsViewControllerClass && [viewController isMemberOfClass:sPostsViewControllerClass];
     BOOL alreadyWrapped = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey) != nil;
     if (isPostsVC || alreadyWrapped) {
-        ApolloSubredditInstallOrUpdateHeader(viewController);
+        BOOL matchesScope = subredditNames == nil;
+        if (!matchesScope) {
+            NSString *subredditName = ApolloSubredditNameFromViewController(viewController);
+            if (subredditName.length == 0) {
+                subredditName = objc_getAssociatedObject(viewController, kApolloSubredditNameKey);
+            }
+            NSString *normalizedName = ApolloNormalizedSubredditName(subredditName).lowercaseString;
+            matchesScope = normalizedName.length > 0 && [subredditNames containsObject:normalizedName];
+        }
+        if (matchesScope) ApolloSubredditInstallOrUpdateHeader(viewController);
     }
 
     for (UIViewController *child in viewController.childViewControllers) {
-        ApolloSubredditRefreshViewControllersInTree(child, visited);
+        ApolloSubredditRefreshViewControllersInTree(child, subredditNames, visited);
     }
     if (viewController.presentedViewController) {
-        ApolloSubredditRefreshViewControllersInTree(viewController.presentedViewController, visited);
+        ApolloSubredditRefreshViewControllersInTree(viewController.presentedViewController,
+                                                     subredditNames,
+                                                     visited);
     }
 }
 
-static void ApolloSubredditRefreshVisibleControllers(void) {
-    // Info/highlights/settings notifications often arrive in a burst after one
-    // network response. Collapse them into one controller-tree walk and one
-    // install per visible header for this run-loop turn.
+static void ApolloSubredditScheduleVisibleControllerRefresh(void) {
     if (sApolloSubredditRefreshVisibleScheduled) return;
     sApolloSubredditRefreshVisibleScheduled = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSSet<NSString *> *subredditNames = sApolloSubredditRefreshAllPending
+            ? nil
+            : [sApolloSubredditPendingRefreshNames copy];
+        sApolloSubredditRefreshAllPending = NO;
+        [sApolloSubredditPendingRefreshNames removeAllObjects];
         sApolloSubredditRefreshVisibleScheduled = NO;
         NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:64];
         for (UIWindow *window in ApolloAllWindows()) {
-            ApolloSubredditRefreshViewControllersInTree(window.rootViewController, visited);
+            ApolloSubredditRefreshViewControllersInTree(window.rootViewController,
+                                                         subredditNames,
+                                                         visited);
         }
     });
+}
+
+static void ApolloSubredditRefreshVisibleControllers(void) {
+    // A pending full refresh supersedes any subreddit-scoped requests.
+    sApolloSubredditRefreshAllPending = YES;
+    [sApolloSubredditPendingRefreshNames removeAllObjects];
+    ApolloSubredditScheduleVisibleControllerRefresh();
+}
+
+static void ApolloSubredditRefreshVisibleControllersForSubreddit(NSString *subredditName) {
+    NSString *normalizedName = ApolloNormalizedSubredditName(subredditName).lowercaseString;
+    if (normalizedName.length == 0) {
+        ApolloSubredditRefreshVisibleControllers();
+        return;
+    }
+    if (!sApolloSubredditRefreshAllPending) {
+        if (!sApolloSubredditPendingRefreshNames) {
+            sApolloSubredditPendingRefreshNames = [NSMutableSet set];
+        }
+        [sApolloSubredditPendingRefreshNames addObject:normalizedName];
+    }
+    ApolloSubredditScheduleVisibleControllerRefresh();
 }
 
 #pragma mark - Hooks
@@ -2479,7 +3010,9 @@ static void ApolloSubredditRefreshVisibleControllers(void) {
     CGFloat width = ApolloSubredditLocalWidth(self);
     UIView *wrapper = ApolloSubredditBuildWrapper(ourHeader, tableHeaderView, width);
     UIViewController *viewController = ourHeader.hostViewController;
-    ApolloSubredditSyncAssociations(self, viewController, ourHeader, wrapper, tableHeaderView);
+    UIView *originalHeader = [wrapper isKindOfClass:[ApolloSubredditHeaderWrapperView class]]
+        ? ((ApolloSubredditHeaderWrapperView *)wrapper).apolloOriginalHeaderView : tableHeaderView;
+    ApolloSubredditSyncAssociations(self, viewController, ourHeader, wrapper, originalHeader);
     %orig(wrapper);
     if (viewController) {
         ApolloSubredditScheduleRepairPass(viewController, @"setTableHeaderView");
@@ -2586,6 +3119,14 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    // Apollo retains popped controllers for swipe-forward navigation. Teardown
+    // blocks late offscreen repairs, but the same controller becomes eligible
+    // again when it reappears. Clear before %orig so nested layout callbacks
+    // can also rebuild the header (including its Community Highlights wrapper).
+    if ([objc_getAssociatedObject(self, kApolloSubredditTeardownMarkerKey) boolValue]) {
+        objc_setAssociatedObject(self, kApolloSubredditTeardownMarkerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[SubredditHeaders] reactivating retained vc=%p on appearance", self);
+    }
     %orig(animated);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
@@ -2614,7 +3155,10 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     ApolloSubredditHeaderView *header =
         objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
     header.subscriptionStateKnown = NO;
+    header.subscriptionFromCurrentSubreddit = NO;
     header.subscribeIntentDate = nil;
+    header.userFlairAvailabilityKnown = NO;
+    header.userCanSetFlair = NO;
     ApolloSubredditScheduleRepairPass((UIViewController *)self, @"account changed");
 }
 
@@ -2623,6 +3167,29 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     ApolloSubredditHeaderView *header =
         objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
     if (!header || header.subscriptionRequestInFlight) return;
+    // Apollo posts this right after it changes the account's subscription
+    // list (the ⋯ menu's Subscribe/Unsubscribe, the Join pill, an interactive
+    // post subscribing the user), so the list is the freshest answer here.
+    // Re-resolving through the usual sources instead read the controller's
+    // currentSubreddit first, which was loaded with the screen and never
+    // follows those changes: a menu Subscribe put "Join" straight back.
+    // Take the list's answer and write it through to the stale sources.
+    // Without a currentSubreddit, the list's absence falls through to the
+    // info cache: refetch it, or its account-stamped flag keeps the old
+    // answer for days.
+    BOOL subscribed = NO;
+    if (ApolloAccountSubscriptionListState(header.subredditName, &subscribed)) {
+        BOOL wrote = ApolloSubredditWriteCurrentSubredditSubscribed((UIViewController *)self,
+                                                                    header.subredditName, subscribed);
+        if (!wrote) {
+            [[ApolloSubredditInfoCache sharedCache] refetchInfoForSubreddit:header.subredditName
+                                                                  completion:^(__unused ApolloSubredditInfo *info) {}];
+        }
+        header.subscribeIntentDate = nil;
+        header.subscriptionFromCurrentSubreddit = wrote;
+        [header apollo_applySubscriptionState:subscribed known:YES];
+        return;
+    }
     header.subscriptionStateKnown = NO;
     ApolloSubredditRefreshSubscriptionState(header, (UIViewController *)self);
 }
@@ -2656,13 +3223,13 @@ BOOL ApolloSubredditTitleShouldTruncate(UIViewController *viewController) {
 %ctor {
     sPostsViewControllerClass = objc_getClass("_TtC6Apollo19PostsViewController");
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloSubredditHeaderToggleChangedNotification"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditHeaderOwnershipChangedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
         ApolloSubredditRefreshVisibleControllers();
     }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditLayoutToggleChangedNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditLayoutChangedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
@@ -2671,17 +3238,17 @@ BOOL ApolloSubredditTitleShouldTruncate(UIViewController *viewController) {
 
     // Re-run the wrapper build (which hosts the Community Highlights carousel)
     // when its toggle flips or its data lands while the header is showing.
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloCommunityHighlightsToggleChangedNotification"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloCommunityHighlightsModeChangedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(__unused NSNotification *note) {
         ApolloSubredditRefreshVisibleControllers();
     }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloHLDataReadyNotification
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloCommunityHighlightsDataReadyNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(__unused NSNotification *note) {
-        ApolloSubredditRefreshVisibleControllers();
+                                                  usingBlock:^(NSNotification *note) {
+        ApolloSubredditRefreshVisibleControllersForSubreddit(note.object);
     }];
 
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditInfoUpdatedNotification

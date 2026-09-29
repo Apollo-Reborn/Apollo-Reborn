@@ -103,3 +103,19 @@ body:
         - Other
     validations:
       required: true
+
+  - type: dropdown
+    id: livecontainer
+    attributes:
+      label: Are you running Apollo Reborn through LiveContainer?
+      description: |
+        LiveContainer is an app that runs other apps *inside itself* instead of installing them normally. If you added the Apollo Reborn IPA to LiveContainer and launch Apollo from there (including from a LiveContainer Home Screen shortcut), answer **Yes**. If Apollo Reborn was installed as its own app with AltStore/SideStore/Feather/Sideloadly/TrollStore etc., answer **No**.
+
+        LiveContainer isn't officially supported, so this helps us tell LiveContainer-only sign-in problems apart from ones everyone would hit.
+      options:
+        - "No, LiveContainer isn't installed on this device"
+        - "No, LiveContainer is installed, but Apollo Reborn is its own separate app"
+        - "Yes, Apollo Reborn runs inside LiveContainer"
+        - "Not sure"
+    validations:
+      required: true

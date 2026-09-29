@@ -20,6 +20,14 @@ void ApolloFloatingTabsCloseAll(void);
 // stack the user can no longer form), turning it ON does nothing retroactive.
 void ApolloFloatingTabsMagnetSettingChanged(void);
 
+// The comment sort (RDKCommentSortingMethod raw, 1-8, Live Update included)
+// a floating tab remembers for the post it is reopening cold through Apollo's
+// URL router, published for the few seconds that open takes; 0 when no tab is
+// reopening that post. ApolloURLOpenCommentSort.xm puts it at the top of its
+// sort chain so the thread comes back on the sort the user left it on.
+// `postID` may be a bare id or a t3_ fullname, any case.
+int64_t ApolloFloatingTabsPendingCommentSortForPost(NSString *postID);
+
 #if APOLLO_SIM_BUILD
 // Headless sim driver for the "floattab ..." debug-bridge command
 // (ApolloSimDebugTap.xm): keep / tap N / close N / release N cx cy vx vy /

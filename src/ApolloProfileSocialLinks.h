@@ -16,7 +16,8 @@
 // available, which also clears Reddit's logged-out hard block on flagged
 // networks). SECOND CHANCE: the full profile page (settles deleted users).
 // FALLBACK: the original hidden-WKWebView scrape — it renders and hydrates like
-// a real browser — for responses neither direct GET can classify. Results are cached per-username (memory + a TTL disk cache). Icons
+// a real browser, then reads the same social-link markers — for responses
+// neither direct GET can classify. Results are cached per-username (memory + a TTL disk cache). Icons
 // come from each link's domain favicon (bundled coffee glyph for Buy Me a
 // Coffee / Ko-fi), so brands render without a bundled logo set. See
 // ApolloProfileSocialLinks.m.
@@ -30,6 +31,8 @@
 @property(nonatomic, copy) NSString *urlString;    // absolute URL string
 @property(nonatomic, copy) NSString *type;         // lowercased token: buymeacoffee, instagram, twitter, custom, …
 @property(nonatomic, strong) NSURL *url;
+// Local settings artwork; nil keeps normal favicon loading.
+@property(nonatomic, strong) UIImage *settingsPreviewIcon;
 @end
 
 // In-header band, added as a subview of ApolloProfileHeaderView (ApolloUserAvatars.xm)
@@ -47,6 +50,8 @@
 - (CGFloat)preferredHeightForWidth:(CGFloat)width;
 // Pull-to-refresh: drop cached links for the current user and re-scrape.
 - (void)refresh;
+// Permanently use a local settings fixture, including an empty array, without scraping.
+- (void)apollo_useSettingsPreviewLinks:(NSArray<ApolloSocialLink *> *)links;
 @end
 
 // YES when "Show Detailed Profiles" is on (reads sShowDetailedProfiles) — the Social

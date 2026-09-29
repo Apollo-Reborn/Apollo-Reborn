@@ -430,8 +430,10 @@ enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, E
         case ApolloThemeTokenBackground: {
             UIColor *effective = ApolloThemePageBackgroundColor();
             if (effective) return effective;
-            UITableView *source = ApolloInheritedSettingsThemeSourceTableView(self);
-            return source.backgroundColor ?: fallback;
+            // A subreddit/post table can be clear over an immersive backdrop.
+            // Use the same opaque surface as other pushed settings screens so
+            // its content cannot show through this page during navigation.
+            return ApolloInheritedSettingsBackgroundColor(self);
         }
         case ApolloThemeTokenSecondaryBackground:
         case ApolloThemeTokenTertiaryBackground:
@@ -965,11 +967,20 @@ static NSString *SpacedThemeName(NSString *raw) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
-    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
-    header.textLabel.textColor = [self themeColorForToken:ApolloThemeTokenSecondaryLabel
-                                                 fallback:UIColor.secondaryLabelColor];
-    header.contentView.backgroundColor = UIColor.clearColor;
+    if (@available(iOS 26.0, *)) {
+        [super tableView:tableView willDisplayHeaderView:view forSection:section];
+        if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        // The shared header callback owns typography and the native/custom
+        // settings palette; keep its color for both labels and configurations.
+        header.contentView.backgroundColor = UIColor.clearColor;
+    } else {
+        if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+        UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+        header.textLabel.textColor = [self themeColorForToken:ApolloThemeTokenSecondaryLabel
+                                                     fallback:UIColor.secondaryLabelColor];
+        header.contentView.backgroundColor = UIColor.clearColor;
+    }
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
@@ -1303,7 +1314,7 @@ static NSString *SpacedThemeName(NSString *raw) {
     cell.textLabel.textColor = label;
     cell.detailTextLabel.textColor = secondary;
     UIView *selBG = [[UIView alloc] init];
-    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+    selBG.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
     cell.selectedBackgroundView = selBG;
     switch (row) {
         case 0:
@@ -1325,7 +1336,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         default:
             cell.textLabel.text = @"Selected / tapped row";
             cell.detailTextLabel.text = nil;
-            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenSelection];
+            cell.backgroundColor = [self previewColorForToken:ApolloThemeTokenRowHighlight];
             cell.imageView.image = SwatchImage(sep, 22);
             break;
     }

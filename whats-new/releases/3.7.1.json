@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "3.7.1",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "arrow.left.and.right.circle.fill", "title": "Snappier Swipes", "subtitle": "Swipe navigation settles with Apollo's original easing again after you lift your finger." },
+    { "icon": "arrow.down.circle.fill", "title": "Comments Fixes", "subtitle": "The jump button advances on every tap again, and posts opened from highlights or links respect the subreddit's suggested sort." },
+    { "icon": "checkmark.shield.fill", "title": "Crash Fixes", "subtitle": "Fixes for launch crashes on TrollStore, profile switching, multireddit expansion, LiveContainer, and a Liquid Glass display crash." },
+    { "icon": "ellipsis.circle.fill", "title": "Pill Stays Expanded", "subtitle": "The Liquid Glass action pill stays expanded again; turn on Collapse Navigation Actions if you preferred the collapsing one." },
+    { "icon": "menubar.rectangle", "title": "Hide Header on Scroll", "subtitle": "Let the navigation bar follow the tab bar as it hides, and pick Hidden as a Header Style again." },
+    { "icon": "speaker.wave.2.fill", "title": "Media & Menu Fixes", "subtitle": "Videos stay audible after rotating, adding to a multireddit no longer reports an error, and the ⋯ sheet gets along with other tweaks." }
+  ]
+}

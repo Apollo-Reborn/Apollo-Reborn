@@ -5,8 +5,7 @@
   "contributors": [
     {
       "role": "maintainer",
-      "github": "JeffreyCA",
-      "buyMeACoffeeUrl": "https://buymeacoffee.com/jeffreyca"
+      "github": "JeffreyCA"
     },
     {
       "role": "maintainer",
@@ -25,6 +24,11 @@
     {
       "role": "maintainer",
       "github": "DeltAndy123"
+    },
+    {
+      "role": "maintainer",
+      "github": "IllIIllIllIllII",
+      "buyMeACoffeeUrl": "https://buymeacoffee.com/illiillillillii"
     },
     {
       "role": "code",
@@ -111,6 +115,10 @@
       "github": "jaredrossberg"
     },
     {
+      "role": "code",
+      "github": "paradoxally"
+    },
+    {
       "role": "design",
       "github": "iGerman00"
     },
@@ -140,7 +148,7 @@
     },
     {
       "role": "design",
-      "github": "IllIIllIllIllII"
+      "github": "AcornElf"
     },
     {
       "role": "design",

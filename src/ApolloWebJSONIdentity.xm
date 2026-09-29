@@ -70,6 +70,7 @@
 #import "ApolloWebJSON.h"
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloUserProfileCache.h"
 #import "ApolloWebSessionStore.h"
 
 // Minimal surface of Apollo's RedditKit classes used here. Real definitions live
@@ -871,14 +872,45 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 }
 
 - (id)editComment:(id)comment newText:(id)text completion:(id)completion {
-    ApolloWebJSONNoteCommentWriteContext(self, text,
-                                         ApolloWebJSONThingProperty(comment, @selector(subreddit)),
-                                         ApolloWebJSONThingProperty(comment, @selector(subredditID)),
-                                         ApolloWebJSONThingProperty(comment, @selector(linkID)),
-                                         nil);
+    ApolloWebJSONNoteCommentEditContext(self, [text isKindOfClass:[NSString class]] ? text : nil, comment);
     return %orig;
 }
 
+// Self-text edits arrive as the raw form fields (thing_id + text); the t3
+// gate inside the capture keeps a comment edit routed through here from
+// starting a prefetch it doesn't need.
+- (id)editSelfTextWithParameters:(id)parameters completion:(id)completion {
+    NSDictionary *params = [parameters isKindOfClass:[NSDictionary class]] ? parameters : nil;
+    NSString *thingID = [params[@"thing_id"] isKindOfClass:[NSString class]] ? params[@"thing_id"] : nil;
+    NSString *text = [params[@"text"] isKindOfClass:[NSString class]] ? params[@"text"] : nil;
+    ApolloWebJSONNoteSelfTextEditContext(self, text, thingID);
+    return %orig;
+}
+
+%end
+
+// Validate at the request completion boundary, where the original endpoint
+// survives redirects and every serializer/cache path has already finished.
+%hook RDKClient
+- (id)taskWithMethod:(NSString *)method path:(NSString *)path parameters:(id)parameters
+    completion:(void (^)(NSHTTPURLResponse *, id, NSError *))completion {
+    if (!completion) return %orig;
+    NSString *requestMethod = [method copy];
+    NSString *requestPath = [path copy];
+    NSString *username = ApolloWebJSONShouldActForClient(self) ? ApolloWebJSONClientUsername(self) : nil;
+    ApolloWebJSONCheckAccountSession(username);
+    void (^wrapped)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id object, NSError *error) {
+        NSError *sessionError = ApolloWebJSONAccountSessionError(username);
+        if (sessionError) {
+            completion(response, nil, sessionError);
+            return;
+        }
+        id guarded = ApolloWebJSONGuardListingTaskResponse(requestMethod, requestPath, response, object, &error);
+        if (object && !guarded) ApolloWebJSONNoteMalformedAccountResponse(username, requestPath);
+        completion(response, guarded, error);
+    };
+    return %orig(method, path, parameters, wrapped);
+}
 %end
 
 // Comment writes (/api/editusertext, /api/comment) can come back in the legacy
@@ -902,6 +934,18 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
     // The repair is a strict no-op for the modern shape.
     @try { obj = ApolloWebJSONFixupWriteResponseObject(response, obj); }
     @catch (NSException *e) { ApolloLog(@"[WebJSON] write-response fixup failed: %@", e); }
+    // Apollo fetches user_data_by_account_ids for a thread's comment authors on
+    // its own (every auth mode). Hand the result to the avatar cache so inline
+    // avatars don't look each of those authors up again; for an API-Key-Free
+    // account that was one about.json per author, on the same Reddit budget as
+    // the thread itself (issue #1163).
+    if (sShowUserAvatars && [obj isKindOfClass:[NSDictionary class]] && [response isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSString *path = ((NSHTTPURLResponse *)response).URL.path;
+        if ([path isEqualToString:@"/api/user_data_by_account_ids.json"] || [path isEqualToString:@"/api/user_data_by_account_ids"]) {
+            @try { [[ApolloUserProfileCache sharedCache] ingestUserDataByAccountIDsResponse:obj]; }
+            @catch (NSException *e) { ApolloLog(@"[UserAvatars] user_data_by_account_ids ingest failed: %@", e); }
+        }
+    }
     if (sWebJSONEnabled) {
         @try { obj = ApolloWebJSONFixupModeratorsResponseObject(response, obj); }
         @catch (NSException *e) { ApolloLog(@"[WebJSON] moderators-response fixup failed: %@", e); }

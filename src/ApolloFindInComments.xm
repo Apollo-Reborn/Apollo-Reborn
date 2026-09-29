@@ -371,11 +371,24 @@ static void FICRunSelection(UIViewController *controller, dispatch_block_t orig)
 
 // MARK: - hooks: multi-term matching
 
+typedef NSRange (*FICRangeOfStringIMP)(NSString *, SEL, NSString *, NSStringCompareOptions, NSRange);
+static FICRangeOfStringIMP sFICStringBootstrapOriginal = NULL;
+
+%group ApolloFindInCommentsString
+
 // Only answers the exact rangeOfString: call the native match rebuild makes
 // (armed flag + main thread + the needle is the active comma query), so the
-// hot path everywhere else is a single static-BOOL test.
+// ordinary search path needs no additional Objective-C calls.
 %hook NSString
 - (NSRange)rangeOfString:(NSString *)needle options:(NSStringCompareOptions)options range:(NSRange)searchRange {
+    // ElleKit publishes the replacement, logs using Foundation string
+    // operations, then fills Logos's original-IMP slot. That log can reenter
+    // this hook during %init (#1083), before %orig is callable. The bootstrap
+    // IMP was captured before publication; after installation always use the
+    // generator's original so Substrate trampolines and prior hooks stay in
+    // the chain. The same &%orig syntax works with the internal sim generator.
+    FICRangeOfStringIMP original = (FICRangeOfStringIMP)&%orig;
+    if (!original) original = sFICStringBootstrapOriginal;
     if (sFICMultiActive && needle && [NSThread isMainThread] &&
         [needle compare:sFICMultiQuery options:NSCaseInsensitiveSearch] == NSOrderedSame) {
         // Earliest match of ANY term; on a tied start the longer term wins so
@@ -383,7 +396,7 @@ static void FICRunSelection(UIViewController *controller, dispatch_block_t orig)
         // whatever we return and asks again — all terms, in document order.
         NSRange best = NSMakeRange(NSNotFound, 0);
         for (NSString *term in sFICMultiTerms) {
-            NSRange r = %orig(term, options, searchRange);
+            NSRange r = original(self, _cmd, term, options, searchRange);
             if (r.location == NSNotFound) continue;
             if (best.location == NSNotFound || r.location < best.location ||
                 (r.location == best.location && r.length > best.length)) {
@@ -392,9 +405,21 @@ static void FICRunSelection(UIViewController *controller, dispatch_block_t orig)
         }
         return best;
     }
-    return %orig;
+    return original(self, _cmd, needle, options, searchRange);
 }
 %end
+%end
+
+static BOOL FICInstallStringHook(Class stringClass) {
+    Method method = class_getInstanceMethod(stringClass, @selector(rangeOfString:options:range:));
+    if (!method) return NO;
+    sFICStringBootstrapOriginal = (FICRangeOfStringIMP)method_getImplementation(method);
+    if (!sFICStringBootstrapOriginal) return NO;
+    // Keep publication after the bootstrap assignment, and keep Foundation
+    // logging outside the hook itself: logging can call this method again.
+    %init(ApolloFindInCommentsString, NSString = stringClass);
+    return YES;
+}
 
 // UIKit owns one find panel; Apollo still owns matching and decoration.
 // The hidden native field is only the input adapter, never a second responder.
@@ -609,5 +634,7 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
 
 %ctor {
     %init;
-    ApolloLog(@"[FindInComments] hooks installed (scroll watchdog + comma multi-term search)");
+    BOOL stringHookInstalled = FICInstallStringHook(objc_getClass("NSString"));
+    ApolloLog(@"[FindInComments] scroll watchdog installed; comma multi-term search %@",
+              stringHookInstalled ? @"installed" : @"unavailable (NSString method missing)");
 }

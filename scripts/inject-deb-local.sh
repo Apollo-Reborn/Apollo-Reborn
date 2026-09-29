@@ -244,6 +244,8 @@ if [[ -d "$resource_bundle" ]]; then
     echo "Copied ApolloReborn resources into app bundle"
 fi
 
+python3 "$SCRIPT_DIR/register-backup-document.py" "$app_bundle"
+
 rm -f "$OUTPUT_IPA"
 (
     cd "$tmpdir/ipa"

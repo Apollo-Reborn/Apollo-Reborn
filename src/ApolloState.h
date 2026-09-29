@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 @class UIScrollView;
+@class UISearchBar;
 @class UITabBar;
 @class UITabBarController;
 @class UINavigationItem;
@@ -33,6 +34,9 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sAutomaticBackupsEnabled;
+extern NSInteger sAutomaticBackupIntervalDays;
+extern NSInteger sAutomaticBackupDestination; // 0 = local, 1 = selected Files folder
 extern BOOL sShowDeletedComments;
 extern BOOL sTapToRevealDeletedComments;
 extern BOOL sPassiveDeletedComments;
@@ -43,6 +47,10 @@ extern BOOL sFeedGalleryCarousel;
 // Default-on: at the carousel's first/last image, swiping past the edge hands
 // the drag to Apollo's swipe-back/forward navigation instead of rubber-banding.
 extern BOOL sFeedGalleryEdgeSwipeNav;
+// Default-on: Gallery View's grid plays video tiles / animates GIF tiles
+// silently while they are on screen (ApolloGalleryViewController.m).
+extern BOOL sGalleryAutoplayVideos;
+extern BOOL sGalleryAutoplayGIFs;
 // Default-on: scrolling the feed a few posts past where you swiped back drops
 // Apollo's forward-swipe memory (ApolloForwardSwipeExpiry.xm).
 extern BOOL sForwardSwipeForgetAfterScrolling;
@@ -80,6 +88,11 @@ extern NSInteger sUnmuteFeedVideos;
 // bottom of a feed video and slide to scrub it in place; taps keep opening the
 // fullscreen viewer as stock. Default OFF. See ApolloFeedVideoScrubber.xm.
 extern BOOL sFeedVideoScrubber;
+
+// "Smoother Video Scrolling" — when ON (default), feed video players are built
+// on a background queue and video posts draw asynchronously after they scroll
+// in (no synchronous display wait). See ApolloFeedVideoScrolling.xm.
+extern BOOL sFeedVideoScrollSmoothing;
 
 // "Hold for Video Speed": when ON (default), press-and-hold the right side of a
 // fullscreen video to play it at sVideoHoldSpeed while held; release restores the
@@ -126,9 +139,11 @@ void ApolloNormalizeNativeHideUsernameForIconOnlyTabBar(void);
 // large avatar/snoovatar, display name, bio, and the Social Links band (Buy Me a
 // Coffee, Instagram, X, …). When OFF, profiles revert to Apollo's compact stock
 // layout — the detailed header is not installed and any existing one is torn down.
-// Independent of sShowUserAvatars (inline avatars). The Social Links band lives
-// inside this header, so it is gated on this same flag. Default ON via
-// registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.{h,m}.
+// Profile Layout exposes three densities with the same two-boolean encoding as
+// Subreddit Layout: Immersive = master + immersive, Compact = master + flat,
+// Native = !master. Independent of sShowUserAvatars (inline avatars). The Social
+// Links band lives inside this header, so it is gated on this same flag. Default
+// ON via registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.
 extern BOOL sShowDetailedProfiles;
 extern BOOL sBadgeBookEnabled;
 extern BOOL sProfileHeaderImmersive;
@@ -138,20 +153,21 @@ extern BOOL sProfileShowSocialLinks;
 extern BOOL sProfileShowActions;
 extern NSInteger sProfileAvatarStyle; // 0 Full snoovatar, 1 Circle, 2 Square
 extern BOOL sShowSubredditHeaders;
-// Subreddit Layout density has three user-visible states:
-// New = sShowSubredditHeaders + sSubredditHeaderImmersive,
-// Classic = sShowSubredditHeaders + !sSubredditHeaderImmersive,
-// Native = !sShowSubredditHeaders (Apollo's current/pre-3.5 header).
+// Header Style maps onto the existing boolean preferences:
+// Immersive = sShowSubredditHeaders && sSubredditHeaderImmersive
+// Compact   = sShowSubredditHeaders && !sSubredditHeaderImmersive
+// Native    = !sShowSubredditHeaders
 extern BOOL sSubredditHeaderImmersive;
-// Per-section show switches on the subreddit header (banner / Join button /
-// display name) — same "turn off the bands you don't need" pattern as the
-// profile header's per-section switches.
 extern BOOL sSubredditShowBanner;
 extern BOOL sSubredditShowJoinButton;
-// Whether the community's big bold title (e.g. "Reddit Science") shows above
-// the r/name line. Direct on/off choice rather than the old auto-hide-if-
-// similar-to-r/name heuristic, so behavior is predictable across subreddits.
+extern BOOL sSubredditShowUserFlairButton;
+extern BOOL sSubredditShowSidebarButton;
+// Whether the short subreddit name (e.g. "science") appears as the bold title.
 extern BOOL sSubredditShowDisplayName;
+// Whether the community title + member-count subtitle appears below it. Before
+// metadata arrives it falls back to r/name; a redundant title leaves only the count.
+extern BOOL sSubredditShowSubtitle;
+extern BOOL sSubredditShowDescription;
 // Backing booleans for the single Community Highlights mode picker:
 //   Off     = both NO
 //   Partial = sCommunityHighlights YES, sCommunityHighlightsWeb NO
@@ -174,6 +190,9 @@ extern ApolloTabBarHideStyle sTabBarHideStyle;
 #ifdef __cplusplus
 extern "C" {
 #endif
+// Opt-in top navigation bar movement, following the bottom tab bar's scroll
+// behavior while Hide Bars on Scroll is enabled. Default NO.
+extern BOOL sHideTopBarOnScroll;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
@@ -188,6 +207,9 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
 // bottom (classic) instead of the top-center pill. Opt-in; default OFF via
 // registerDefaults. Temporary stopgap for issue #387. See ApolloIPadTabBarBottom.xm.
 extern BOOL sIPadTabBarBottom;
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
+extern BOOL sTabBarSwipeNavigation;
 // iPad only. When ON, each tab's navigation stack is hosted inside a
 // multi-column UISplitViewController (sidebar → content → detail) instead of a
 // single full-width stack. Opt-in; default OFF via registerDefaults
@@ -198,10 +220,6 @@ extern BOOL sIPadPaneLayout;
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.
 extern BOOL sKeepSearchBarInPlace;
-// Liquid Glass title placement: ON (default) = centered in the gap between the
-// back pill and the trailing pill; OFF = centered on the screen, nudged only to
-// clear a pill. See ApolloRecenterTitleControl in ApolloLiquidGlass.xm.
-extern BOOL sLGTitleGapCentering;
 // When ON (default), press-and-hold on a post info row shows the glass-slider
 // magnifier loupe: slide to pick an icon, release to activate it (upvote /
 // comments / posted / % upvoted / translation). See ApolloStatsRowTouch.xm.
@@ -238,7 +256,7 @@ extern BOOL sPerPostCommentSort;
 // iOS 26+ Liquid Glass. iOS 26 defaults to Soft; iOS 27 betas default to Hard,
 // which some users find jarring. Only the top (header) edge is governed — the
 // tab-bar/bottom edge always keeps the system's own treatment. See
-// ApolloScrollEdgeEffect.xm (Soft/Hard enforcement) and
+// ApolloScrollEdgeEffect.xm (Soft/Hard/Hidden enforcement) and
 // ApolloProgressiveBlur.xm (Blur's tweak-drawn variable blur).
 typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     // Retired user-facing System Default value. Load-time migration resolves
@@ -246,11 +264,13 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleAutomatic = 0,
     ApolloScrollEdgeEffectStyleSoft      = 1,
     ApolloScrollEdgeEffectStyleHard      = 2,
-    // 3 was Hidden, retired: visually indistinguishable from Soft, so stored 3s
-    // migrate to Soft at load (Tweak.xm). Never reuse 3 for a new mode — the
-    // migration could not tell an old Hidden user from a new-mode user.
+    // Preserve the original Hidden value for existing preferences/backups.
+    ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
+extern BOOL sCollapseNavigationActions;
+extern BOOL sScrollReturnButton;
+extern BOOL sCenterTitleBetweenButtons;
 extern NSInteger sScrollEdgeEffectStyle;
 // Resolves the retired Automatic value defensively if it is observed before
 // load-time migration, and resolves Blur to the OS-equivalent Soft/Hard style
@@ -275,13 +295,36 @@ extern NSString *const ApolloScrollEdgeEffectStyleChangedNotification;
 // didMoveToWindow hook in ApolloAutoHideTabBar.xm — kept here to avoid a
 // second %hook UIScrollView didMoveToWindow, which the Logos internal
 // generator silently drops as a duplicate symbol.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
+// Registers a search bar hosted in a navigation bar (feed / comments / settings
+// and the other tweak-owned screens) with the Header Style feature, which keeps
+// its field clear of the Hard style's band edge; re-applied on style changes.
+// No-op off Liquid Glass. Defined in ApolloScrollEdgeEffect.xm; C linkage so
+// the .m screens can call it.
+#ifdef __cplusplus
+extern "C" {
+#endif
+void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar);
+// Called from ApolloThemeRuntime.xm's UISearchBar didMoveToWindow hook (the one
+// hook that class gets); applies the Hard-style insets to registered bars.
+void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
+#ifdef __cplusplus
+}
+#endif
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
+// Temporarily suppress Hard header while immersive profile artwork is visible.
+void ApolloSetProfileHeroVisible(UIViewController *viewController, BOOL visible);
+#ifdef __cplusplus
+}
+#endif
 // Whether the nav title for this view controller should size its JumpBar to
 // its actual content (with truncation if still too wide) instead of Apollo's
 // fixed native width (ApolloSubredditHeaders.xm's subreddit feeds).
@@ -315,6 +358,10 @@ extern NSInteger sSubredditFeedLayout;
 // Opt-in per-account FavoriteSubreddits projection. Defaults OFF; see
 // ApolloPerAccountFavorites.{h,m}.
 extern BOOL sPerAccountFavoritesEnabled;
+// Effective sorting preference for the materialized favorites scope.
+extern BOOL sSortFavoritesAlphabetically;
+// Opt-in confirm sheet before the Subreddits-list star mutates favorites.
+extern BOOL sConfirmFavoriteToggle;
 // Hide the description subtitles under the subreddit list's built-in feed rows
 // (see UDKeyHideSubredditListDescriptions). Independent of the enhancements master.
 extern BOOL sHideSubredditListDescriptions;
@@ -326,6 +373,11 @@ extern BOOL sHideMultiredditDescriptions;
 // colors (filled pill + matching text color). When NO, Apollo's default grey
 // flair styling is preserved. See ApolloFlairColors.xm.
 extern BOOL sEnableFlairColors;
+
+// Render feed post titles (large + compact posts, crossposts, the post
+// context above a comment) in Semibold instead of Apollo's Regular.
+// Appearance > Posts > Bold Post Titles. See ApolloBoldPostTitles.xm.
+extern BOOL sBoldPostTitles;
 
 // Render image URLs inline in post selftext and comments. Defaults to YES on
 // fresh installs (registerDefaults). When NO, Apollo's native behavior (text
@@ -505,8 +557,21 @@ extern NSInteger sShareLinkHost;
 
 // Most recently observed Reddit bearer token, captured from outgoing Authorization
 // headers. Used by the native Reddit image upload path. nil if Apollo hasn't made an
-// authenticated Reddit API call yet.
+// authenticated Reddit API call yet. It can belong to any signed-in account, not
+// just the active one.
 extern NSString *sLatestRedditBearerToken;
+#ifdef __cplusplus
+extern "C" {
+#endif
+// The bearer a tweak-authored Reddit read for the ACTIVE account should carry:
+// sLatestRedditBearerToken, or nil when none is captured yet or the active account
+// is API-Key-Free (it never owns a real bearer). On nil, send the read bearer-less
+// to www.reddit.com; the request chokepoint signs it with the active account's web
+// session. Implemented in ApolloImageUploadHost.xm, next to the capture.
+NSString *ApolloActiveAccountRedditBearerToken(void);
+#ifdef __cplusplus
+}
+#endif
 
 extern BOOL sEnableBulkTranslation;
 extern BOOL sAutoTranslateOnAppear;

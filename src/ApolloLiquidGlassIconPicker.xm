@@ -5,6 +5,7 @@
 #import <stdint.h>
 #import <stdlib.h>
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
 #import "ApolloBarkNotifications.h"
 #import "ApolloLiquidGlassIconIDs.h"
 #import "ApolloLiquidGlassIconSelectionState.h"
@@ -336,7 +337,13 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
 
     static NSCache<NSString *, UIImage *> *sDecodedCache;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ sDecodedCache = [[NSCache alloc] init]; });
+    dispatch_once(&once, ^{
+        // 52pt previews, one picker screenful at a time.
+        sDecodedCache = [[NSCache alloc] init];
+        sDecodedCache.countLimit = 60;
+        sDecodedCache.totalCostLimit = 4 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"icon-picker-previews", sDecodedCache);
+    });
 
     UIImage *cached = [sDecodedCache objectForKey:name];
     if (cached) return cached;
@@ -351,7 +358,7 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
         [image drawAtPoint:CGPointZero];
     }];
 
-    [sDecodedCache setObject:decoded forKey:name];
+    [sDecodedCache setObject:decoded forKey:name cost:ApolloImageByteCost(decoded)];
     return decoded;
 }
 
@@ -608,13 +615,13 @@ static LGIconRow *LGBuildRows(const LGIconRowEntry *entries, NSInteger entryCoun
     NSMutableArray<NSString *> *storage = [NSMutableArray arrayWithCapacity:(NSUInteger)(entryCount * 3)];
     NSInteger count = 0;
     for (NSInteger i = 0; i < entryCount; i++) {
-        NSString *iconID = [@(entries[i].iconID) copy];
+        NSString *iconID = @(entries[i].iconID);
         if (!LGAlternateIconRegisteredInInfoPlist(iconID)) {
             ApolloLog(@"[LGIconPicker] omitting icon not in Info.plist: %@", iconID);
             continue;
         }
-        NSString *dn = [@(entries[i].displayName) copy];
-        NSString *ds = [@(entries[i].designer) copy];
+        NSString *dn = @(entries[i].displayName);
+        NSString *ds = @(entries[i].designer);
         [storage addObject:iconID]; [storage addObject:dn]; [storage addObject:ds];
         rows[count++] = (LGIconRow){ iconID, dn, ds };
     }
@@ -823,9 +830,9 @@ static void LGInitRuntimeGroups(void) {
         NSMutableArray *storage = [NSMutableArray array];
         for (NSInteger gi = 0; gi < cap; gi++) {
             const LGIconGroupDef *def = &kLGIconGroups[gi];
-            NSString *groupID     = [@(def->groupID) copy];
-            NSString *title       = [@(def->title) copy];
-            NSString *description = [@(def->description) copy];
+            NSString *groupID     = @(def->groupID);
+            NSString *title       = @(def->title);
+            NSString *description = @(def->description);
             [storage addObjectsFromArray:@[groupID, title, description]];
             NSArray<NSString *> *rowStorage = nil;
             NSInteger count = 0;
@@ -2942,7 +2949,12 @@ static UIImage *LGNormalizedUltraThumbnail(NSString *baseName) {
 static UIImage *LGAddedUltraThumbnail(NSString *iconID) {
     static NSCache<NSString *, UIImage *> *cache;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ cache = [[NSCache alloc] init]; });
+    dispatch_once(&onceToken, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 60;
+        cache.totalCostLimit = 2 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"icon-picker-ultra-thumbs", cache);
+    });
 
     UIImage *cached = [cache objectForKey:iconID];
     if (cached) return cached;
@@ -2959,7 +2971,7 @@ static UIImage *LGAddedUltraThumbnail(NSString *iconID) {
     UIImage *thumbnail = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
         [source drawInRect:(CGRect){ CGPointZero, size }];
     }];
-    if (thumbnail) [cache setObject:thumbnail forKey:iconID];
+    if (thumbnail) [cache setObject:thumbnail forKey:iconID cost:ApolloImageByteCost(thumbnail)];
     return thumbnail;
 }
 

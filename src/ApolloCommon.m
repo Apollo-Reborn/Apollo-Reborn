@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloExecutableSDK.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import <QuartzCore/QuartzCore.h>
@@ -455,9 +456,9 @@ static NSString *const kApolloBoundedDataErrorDomain = @"ApolloBoundedData";
     ApolloBoundedDataRecord *record = [ApolloBoundedDataRecord new];
     record.maximumBytes = maximumBytes;
     record.data = [NSMutableData data];
-    record.responseValidator = [responseValidator copy];
+    record.responseValidator = responseValidator;
     record.completionQueue = completionQueue ?: dispatch_get_main_queue();
-    record.completion = [completion copy];
+    record.completion = completion;
     @synchronized (self) { self.records[@(task.taskIdentifier)] = record; }
     [task resume];
     return task;
@@ -533,87 +534,63 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(NSURLRequest *request,
                                                                 completion:completion];
 }
 
-// Get the SDK version from the main binary's LC_BUILD_VERSION load command
-// Returns 0 if not found, otherwise packed version (major << 16 | minor << 8 | patch)
-static uint32_t GetLinkedSDKVersion(void) {
-    // Find the main executable by filetype instead of assuming image index 0.
-    // In the simulator the injected tweak dylib can occupy index 0, which made
-    // IsLiquidGlass() read the dylib's own SDK (always current) instead of
-    // Apollo's — masking every legacy (non-glass) code path during sim testing.
-    const struct mach_header_64 *header = NULL;
-    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-        const struct mach_header *h = _dyld_get_image_header(i);
-        if (h && h->filetype == MH_EXECUTE) {
-            header = (const struct mach_header_64 *)h;
-            break;
-        }
+// Identify Apollo by a native class, independently of launch host or image
+// order. LiveContainer normally retains its own MH_EXECUTE and loads Apollo
+// as MH_DYLIB; the sim may put the injected tweak at image index zero. Neither
+// image describes which chrome Apollo's selected IPA variant requested.
+static const char *ApolloNativeExecutableImageName(void) {
+    const char *classNames[] = {
+        "_TtC6Apollo11AppDelegate",
+        "_TtC6Apollo13SceneDelegate",
+        "_TtC6Apollo19PostsViewController",
+    };
+    for (size_t i = 0; i < sizeof(classNames) / sizeof(classNames[0]); i++) {
+        Class cls = objc_lookUpClass(classNames[i]);
+        const char *name = cls ? class_getImageName(cls) : NULL;
+        if (name && name[0]) return name;
     }
-    if (!header) header = (const struct mach_header_64 *)_dyld_get_image_header(0);
-    if (!header) return 0;
+    return NULL;
+}
 
-    uintptr_t cursor = (uintptr_t)header + sizeof(struct mach_header_64);
-    for (uint32_t i = 0; i < header->ncmds; i++) {
-        struct load_command *cmd = (struct load_command *)cursor;
-        if (cmd->cmd == LC_BUILD_VERSION) {
-            struct build_version_command *buildCmd = (struct build_version_command *)cmd;
-            return buildCmd->sdk;
-        }
-        cursor += cmd->cmdsize;
+// Read the guest image's actual load command. LiveContainer's optional SDK
+// spoofing hooks dyld's program-SDK APIs, not this header; the glass patch's
+// intentional SDK bump therefore still works in both hosted and normal apps.
+static uint32_t GetLinkedSDKVersion(void) {
+    const char *executableName = ApolloNativeExecutableImageName();
+    if (!executableName) return 0;
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *imageName = _dyld_get_image_name(i);
+        if (!imageName || strcmp(imageName, executableName) != 0) continue;
+        const struct mach_header *header = _dyld_get_image_header(i);
+        if (!header || header->magic != MH_MAGIC_64 ||
+            header->sizeofcmds > ApolloMaximumMachOLoadCommandBytes) return 0;
+        // dyld has already validated/mapped this loaded image. The reader
+        // additionally bounds every command within its declared header area.
+        size_t length = sizeof(struct mach_header_64) + header->sizeofcmds;
+        return ApolloSDKVersionFromMachO(header, length);
     }
     return 0;
 }
 
-// Check if Liquid Glass is active by checking if the app binary was linked against iOS 26+ SDK
+// Both the selected Apollo variant and the running OS must support glass.
 BOOL IsLiquidGlass(void) {
     static BOOL checked = NO;
     static BOOL available = NO;
 
     if (!checked) {
         checked = YES;
-        // BOOL isiOS26Runtime = (objc_getClass("_UITabButton") != nil);
-        // if (!isiOS26Runtime) {
-        //     ApolloLog(@"[IsLiquidGlass] iOS 26+ runtime not detected");
-        //     available = NO;
-        //     return available;
-        // }
-
-        // iOS 26 SDK version = 19.0 = 0x00130000 (major 19 in high 16 bits)
-        // SDK version format: major << 16 | minor << 8 | patch
+        BOOL glassRuntime = NO;
+        if (@available(iOS 26.0, *)) {
+            glassRuntime = objc_lookUpClass("UIGlassEffect") != Nil;
+        }
         uint32_t sdkVersion = GetLinkedSDKVersion();
-        uint32_t sdkMajor = (sdkVersion >> 16) & 0xFFFF;
-        available = (sdkMajor >= 19);
+        available = ApolloSDKEnablesLiquidGlass(sdkVersion, glassRuntime);
 
-        ApolloLog(@"[IsLiquidGlass] SDK version: 0x%08X (major: %u), linked for iOS 26+: %@",
-                  sdkVersion, sdkMajor, available ? @"YES" : @"NO");
+        ApolloLog(@"[IsLiquidGlass] Apollo SDK: 0x%08X, glass runtime: %@, enabled: %@",
+                  sdkVersion, glassRuntime ? @"YES" : @"NO", available ? @"YES" : @"NO");
     }
 
     return available;
-}
-
-// --- Liquid Glass trailing-cluster reservation (see ApolloCommon.h) ---
-// Plain associated storage on the navigation item; the recenter in
-// ApolloLiquidGlass.xm is the only reader and sole inset writer.
-static char kApolloNavItemTrailingHoldKey;
-static char kApolloNavItemTrailingInsetKey;
-
-void ApolloNavItemSetTrailingReservationHold(UINavigationItem *item, BOOL hold) {
-    if (!item) return;
-    objc_setAssociatedObject(item, &kApolloNavItemTrailingHoldKey,
-                             hold ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-BOOL ApolloNavItemTrailingReservationHold(UINavigationItem *item) {
-    return [objc_getAssociatedObject(item, &kApolloNavItemTrailingHoldKey) boolValue];
-}
-
-void ApolloNavItemNoteTrailingContentInset(UINavigationItem *item, CGFloat inset) {
-    if (!item || inset <= 0) return;
-    objc_setAssociatedObject(item, &kApolloNavItemTrailingInsetKey,
-                             @(inset), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-CGFloat ApolloNavItemTrailingContentInset(UINavigationItem *item) {
-    return [objc_getAssociatedObject(item, &kApolloNavItemTrailingInsetKey) doubleValue];
 }
 
 // Route a URL through Apollo's own URL handler, bypassing iOS URL dispatch.
@@ -770,14 +747,17 @@ static UIColor *ApolloVisibleBackgroundColorForTable(UITableView *tableView,
     return nil;
 }
 
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller) {
+    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
+    return (ApolloThemeSourceTableIsStale(source) ? nil
+        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
+        ?: ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+}
+
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller) {
     if (!controller) return;
 
-    UITableView *source = ApolloInheritedSettingsThemeSourceTableView(controller);
-    BOOL stale = ApolloThemeSourceTableIsStale(source);
-    UIColor *backgroundColor = (stale ? nil
-        : ApolloVisibleBackgroundColorForTable(source, controller.traitCollection))
-        ?: ApolloThemePageBackgroundColor() ?: controller.tableView.backgroundColor;
+    UIColor *backgroundColor = ApolloInheritedSettingsBackgroundColor(controller);
     controller.view.backgroundColor = backgroundColor;
     controller.tableView.backgroundColor = backgroundColor;
     controller.tableView.separatorColor = ApolloThemeSeparatorColor()
@@ -951,10 +931,6 @@ UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFl
         UIColor *fill = backgroundColor ?: [UIColor secondarySystemFillColor];
         [fill setFill];
         [path fill];
-
-        [[UIColor separatorColor] setStroke];
-        path.lineWidth = 0.5;
-        [path stroke];
 
         UIFont *font = [UIFont systemFontOfSize:size * 0.58];
         NSDictionary *attrs = @{NSFontAttributeName: font};
@@ -1232,6 +1208,23 @@ void ApolloPresentWebURLFromViewController(UIViewController *presenter, NSURL *u
 
     NSURL *normalizedURL = ApolloNormalizedWebURL(url);
     if (!normalizedURL) return;
+
+    // The in-app browser is an SFSafariViewController, which throws
+    // NSInvalidArgumentException for any scheme but http(s) (#1179: a
+    // recovered comment's apollo-translation://toggle marker crashed here).
+    // Hand other schemes (mailto:, tel:, app links) to the system; a URL with
+    // no scheme at all has nowhere to go.
+    // Only the scheme is logged: a mailto:/tel: URL is an address or number.
+    NSString *scheme = normalizedURL.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        if (scheme.length == 0) {
+            ApolloLog(@"[Browser] skip present: URL has no scheme");
+            return;
+        }
+        ApolloLog(@"[Browser] %@: is not a web scheme, handing it to the system", scheme);
+        [[UIApplication sharedApplication] openURL:normalizedURL options:@{} completionHandler:nil];
+        return;
+    }
 
     if (ApolloShouldSkipDuplicateBrowserPresent(normalizedURL)) {
         ApolloLog(@"[Browser] skip duplicate present url=%@", normalizedURL.absoluteString);
@@ -1588,6 +1581,22 @@ double ApolloPerfNowMs(void) {
     return CACurrentMediaTime() * 1000.0;
 }
 
+NSUInteger ApolloImageByteCost(UIImage *image) {
+    if (![image isKindOfClass:[UIImage class]]) return 0;
+    CGImageRef cgImage = image.CGImage;
+    if (cgImage) {
+        size_t bytesPerRow = CGImageGetBytesPerRow(cgImage);
+        size_t height = CGImageGetHeight(cgImage);
+        if (height == 0 || bytesPerRow == 0) return 0;
+        if (bytesPerRow > NSUIntegerMax / height) return NSUIntegerMax;
+        return (NSUInteger)(bytesPerRow * height);
+    }
+    CGFloat scale = image.scale > 0.0 ? image.scale : 1.0;
+    double pixels = (double)image.size.width * scale * (double)image.size.height * scale * 4.0;
+    if (pixels <= 0.0) return 0;
+    return pixels >= (double)NSUIntegerMax ? NSUIntegerMax : (NSUInteger)pixels;
+}
+
 // --- Tweak-UI text node marker -------------------------------------------
 // Content scans (translation's post-body candidate walk, etc.) must never
 // treat tweak-drawn text as user content. One shared assoc key, set at node
@@ -1602,4 +1611,24 @@ void ApolloMarkTweakUITextNode(id node) {
 BOOL ApolloTextNodeIsTweakUI(id node) {
     if (!node) return NO;
     return [objc_getAssociatedObject(node, &kApolloTweakUITextNodeKey) boolValue];
+}
+
+// Runtime-checked UIKit preview feedback shared by profile menus and their viewer.
+id ApolloPlayPreviewOpenedFeedback(UIView *sourceView) {
+    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
+    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
+    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
+    SEL stateSelector = NSSelectorFromString(@"previewState");
+    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
+    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
+    if (![configurationClass respondsToSelector:configurationSelector] ||
+        ![configurationClass respondsToSelector:stateSelector] ||
+        ![generatorClass instancesRespondToSelector:initializer] ||
+        ![generatorClass instancesRespondToSelector:transition]) return nil;
+    id configuration = ((id (*)(id, SEL))objc_msgSend)(configurationClass, configurationSelector);
+    id state = ((id (*)(id, SEL))objc_msgSend)(configurationClass, stateSelector);
+    if (!configuration || !state) return nil;
+    id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, sourceView);
+    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
+    return generator;
 }

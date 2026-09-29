@@ -19,6 +19,13 @@
 // irrelevant; slots are computed lazily, per controller, the first time any of
 // them is asked about.
 //
+// This owner also adds tableView:willSelectRowAtIndexPath: to ActionController
+// (Apollo doesn't implement it) and handles every injected row's tap THERE,
+// returning nil so UIKit never sends didSelectRowAtIndexPath: for an injected
+// row. That keeps injected indices away from any didSelect implementation that
+// sits outside ours — Translomatic's does, and it crashed on "Keep in Floating
+// Tab" (#1071). Don't add a didSelect-only tap path for an injected row.
+//
 // Additive only: this owns injecting/replacing rows, not hiding native ones.
 // A feature that needs to remove a native row (e.g. ApolloTranslation.xm's
 // bulk-translate row removal) mutates Apollo's raw Swift `actions` buffer
@@ -36,9 +43,12 @@ NS_ASSUME_NONNULL_BEGIN
 // Where a declarative spec's row lands in the Liquid Glass UIMenu's children.
 // Legacy-sheet placement is NOT configurable here: every injected row is always
 // appended after the last native row on that path, ordered by `order`/
-// `identifier` — Apollo's own cellForRow dequeues with the index path it's
-// handed and UIKit asserts if a native row's index shifts, so native rows can
-// never move on the legacy path regardless of glass placement.
+// `identifier` (or by the user's saved layout, see ApolloActionMenuLayout.h) —
+// Apollo's own cellForRow dequeues with the index path it's handed and UIKit
+// asserts if a native row's index shifts, so native rows can never be
+// interleaved with injected ones on the legacy path regardless of glass
+// placement. (Native rows CAN be reordered among themselves there: the owner
+// permutes the controller's `actions` buffer before the table loads.)
 typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
     // End of the menu's children (DeletedComments' "Show/Hide Deleted Comments").
     ApolloActionMenuPlacementAppend = 0,
@@ -112,6 +122,27 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 
 // Register a spec. Call from a feature's %ctor, after %init.
 void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
+
+// Customised ••• menus (Settings → Interface → Action Menus; the model lives in
+// ApolloActionMenuLayout.h). Resolves which menu context the sheet was opened
+// from (armed by the tap hooks in ApolloActionMenu.xm), then — once per
+// controller — reorders and drops Apollo's native `actions` in place to the
+// saved layout and filters/sorts the registered specs to it. The glass path
+// calls this before it reads the controller's actions; every legacy table hook
+// reaches it through the memoised slot state. Safe to call repeatedly.
+// Capture the current tap on this exact controller before UIKit defers a
+// legacy presentation. Called by the existing native-menu presentation owner.
+void ApolloActionMenuCaptureContextForController(id actionController);
+// From the handlers of a ••• sheet's Moderator row: arm the moderator context
+// that row opens (post's or comment's) for the sheet about to follow.
+void ApolloActionMenuArmModeratorFollowUp(id actionController);
+
+void ApolloActionMenuPrepareController(id actionController, NSString *_Nullable menuTitleHint);
+
+// Glass path: remember which Action kind a native UIMenuElement was built from,
+// so ApolloActionMenuInjectMenuElements can place a customised tweak row among
+// Apollo's own rows (an untagged element is transparent to that placement).
+void ApolloActionMenuTagElementWithNativeKind(UIMenuElement *element, NSUInteger kind);
 
 // The square box menu row icons are fitted into, in points. Apollo's own
 // option-* assets are ~24pt on the long edge and its legacy sheet shows them

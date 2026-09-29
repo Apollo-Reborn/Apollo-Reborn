@@ -1,13 +1,18 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <os/lock.h>
+#import <math.h>
+#import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloMemoryDiagnostics.h"
+#import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
-#import "fishhook.h"
+#import "ApolloSwiftSingletonCapture.h"
 
 // MARK: - Recently Read Posts
 //
@@ -21,16 +26,42 @@
 // so our reads are ordered after any pending native mark and never race the
 // barrier writers.
 
-// Direct access to ReadPostsTracker's in-memory ordered set via fishhook + ObjC runtime
+// Direct access to ReadPostsTracker's in-memory ordered set via the ObjC runtime
 static __unsafe_unretained id sReadPostsTracker = nil;
 static Ivar sReadPostIDsIvar = NULL;
-static void *sTrackerTypeMetadata = NULL;
 // Cached resolved values - both ivars are assigned once in the tracker's init
 // and never replaced, and the tracker itself lives for the app's lifetime.
 static __unsafe_unretained NSMutableOrderedSet *sTrackerReadPostIDsCached = nil;
 static BOOL sReadPostIDsLookupFailed = NO;
 static dispatch_queue_t sTrackerQueueCached = nil;
 static BOOL sTrackerQueueLookupFailed = NO;
+static char sTrackerQueueSpecificKey;
+
+NSNotificationName const ApolloPostReadStateDidChangeNotification = @"ApolloPostReadStateDidChangeNotification";
+
+// Native marks run on the tracker's queue, while comments snapshots may be
+// saved from any comments controller. Never synchronously notify UIKit from
+// either path: observers take queue-ordered snapshots and could otherwise
+// deadlock with the writer. Coalesce bursts (including remove/re-add revisits)
+// into one main-queue refresh; the observer's queue-ordered snapshot waits for
+// any pending writer before reading the IDs.
+static os_unfair_lock sReadStateNotificationLock = OS_UNFAIR_LOCK_INIT;
+static BOOL sReadStateNotificationPending = NO;
+
+static void ApolloSchedulePostReadStateDidChange(void) {
+    os_unfair_lock_lock(&sReadStateNotificationLock);
+    BOOL alreadyPending = sReadStateNotificationPending;
+    sReadStateNotificationPending = YES;
+    os_unfair_lock_unlock(&sReadStateNotificationLock);
+    if (alreadyPending) return;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        os_unfair_lock_lock(&sReadStateNotificationLock);
+        sReadStateNotificationPending = NO;
+        os_unfair_lock_unlock(&sReadStateNotificationLock);
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloPostReadStateDidChangeNotification object:nil];
+    });
+}
 
 // Post IDs are stored bare (no t3_ prefix) in the tracker's set
 static NSString *ApolloBarePostID(NSString *postID) {
@@ -56,16 +87,10 @@ static Ivar ApolloTrackerIvarNamed(const char *nameSubstr) {
     return found;
 }
 
-// fishhook: briefly hook swift_allocObject to capture the ReadPostsTracker singleton
-static void *(*orig_swift_allocObject)(void *type, size_t size, size_t alignMask);
-static void *hooked_swift_allocObject(void *type, size_t size, size_t alignMask) {
-    void *obj = orig_swift_allocObject(type, size, alignMask);
-    if (type == sTrackerTypeMetadata && !sReadPostsTracker) {
-        sReadPostsTracker = (__bridge id)obj;
-        // Unhook immediately – only need one capture
-        rebind_symbols((struct rebinding[1]){{"swift_allocObject", (void *)orig_swift_allocObject, NULL}}, 1);
-    }
-    return obj;
+// Captured at allocation by ApolloSwiftSingletonCapture (the shared owner of
+// the swift_allocObject hook).
+static void ApolloRecentlyReadCaptureTracker(void *object) {
+    sReadPostsTracker = (__bridge id)object;
 }
 
 // Retrieve the in-memory NSMutableOrderedSet of read post IDs from the tracker
@@ -103,18 +128,22 @@ static dispatch_queue_t getTrackerQueue(void) {
     Ivar queueIvar = ApolloTrackerIvarNamed("dispatchQueue");
     if (!queueIvar) {
         sTrackerQueueLookupFailed = YES;
-        ApolloLog(@"[RecentlyRead] dispatchQueue ivar not found - falling back to direct set access");
+        ApolloLog(@"[RecentlyRead] dispatchQueue ivar not found - native read state unavailable");
         return nil;
     }
 
     id value = object_getIvar(sReadPostsTracker, queueIvar);
+    // The singleton is captured at allocation, before its initializer assigns
+    // the queue. An early UI read must be allowed to retry after initialization.
+    if (!value) return nil;
     // Sanity-check the class: barrier semantics only mean anything on a real
     // private dispatch queue.
     if ([value isKindOfClass:objc_getClass("OS_dispatch_queue")]) {
         sTrackerQueueCached = (dispatch_queue_t)value;
+        dispatch_queue_set_specific(sTrackerQueueCached, &sTrackerQueueSpecificKey, &sTrackerQueueSpecificKey, NULL);
     } else {
         sTrackerQueueLookupFailed = YES;
-        ApolloLog(@"[RecentlyRead] dispatchQueue ivar is not a dispatch queue - falling back to direct set access");
+        ApolloLog(@"[RecentlyRead] dispatchQueue ivar is not a dispatch queue - native read state unavailable");
     }
     return sTrackerQueueCached;
 }
@@ -124,40 +153,40 @@ static dispatch_queue_t getTrackerQueue(void) {
 // barrier write (Apollo enqueues marks as async barrier blocks) - this is
 // what guarantees a refresh sees a just-marked post. -[NSOrderedSet array]
 // returns a live proxy, not a snapshot, so the copy MUST be materialized
-// inside the block. Returns nil when the tracker isn't captured.
-static NSArray<NSString *> *ApolloReadPostIDsSnapshot(void) {
+// inside the block. Returns nil when the tracker/queue isn't available, rather
+// than racing native barrier writers through an unguarded direct read.
+NSArray<NSString *> *ApolloReadPostIDsSnapshot(void) {
     NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
     if (!trackerSet) return nil;
 
     dispatch_queue_t queue = getTrackerQueue();
+    if (!queue) return nil;
     __block NSArray *snapshot = nil;
-    if (queue) {
+    if (dispatch_get_specific(&sTrackerQueueSpecificKey)) {
+        // Already executing on this queue: dispatch_sync would deadlock.
+        snapshot = [[NSArray alloc] initWithArray:[trackerSet array]];
+    } else {
         dispatch_sync(queue, ^{
             snapshot = [[NSArray alloc] initWithArray:[trackerSet array]];
         });
-    } else {
-        // Queue unavailable (unexpected) - best-effort direct read, matching
-        // the old behavior.
-        snapshot = [[NSArray alloc] initWithArray:[trackerSet array]];
     }
     return snapshot;
 }
 
 // Mutate the tracker's set with the same async-barrier discipline native
-// writes use. The block must not dispatch to other queues (deadlock risk for
-// the dispatch_sync readers).
-static void ApolloMutateTrackerSet(void (^mutation)(NSMutableOrderedSet *trackerSet)) {
+// writes use. The block must never synchronously dispatch to other queues
+// (deadlock risk for the dispatch_sync readers).
+static BOOL ApolloMutateTrackerSet(void (^mutation)(NSMutableOrderedSet *trackerSet)) {
     NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
-    if (!trackerSet) return;
+    if (!trackerSet) return NO;
 
     dispatch_queue_t queue = getTrackerQueue();
-    if (queue) {
-        dispatch_barrier_async(queue, ^{
-            mutation(trackerSet);
-        });
-    } else {
+    if (!queue) return NO;
+    dispatch_barrier_async(queue, ^{
         mutation(trackerSet);
-    }
+        ApolloSchedulePostReadStateDidChange();
+    });
+    return YES;
 }
 
 // Mark a post as read in the tracker (stored as a bare ID, matching native
@@ -175,14 +204,70 @@ static BOOL ApolloMarkPostIDAsRead(NSString *postID) {
     }
 
     NSString *bareID = ApolloBarePostID(postID);
+    if (bareID.length == 0) return NO;
     NSString *prefixedID = [@"t3_" stringByAppendingString:bareID];
-    ApolloMutateTrackerSet(^(NSMutableOrderedSet *trackerSet) {
+    return ApolloMutateTrackerSet(^(NSMutableOrderedSet *trackerSet) {
         // Drop a legacy prefixed twin so the two ID forms can't coexist as
         // duplicate entries.
         [trackerSet removeObject:prefixedID];
         [trackerSet addObject:bareID];
     });
-    return YES;
+}
+
+// NewCommentsTracker synchronously publishes its snapshots to defaults before
+// posting com.christianselig.ReadCommentsUpdated. This avoids reading its inline
+// Swift OrderedDictionary: the JSON is ["abc123", {"totalComments": 42,
+// "timestamp": ...}, ...]. CommentsViewController.viewDidDisappear: owns baseline
+// updates, including for apollo:// links, so rendering never creates a baseline.
+NSDictionary<NSString *, NSNumber *> *ApolloLastReadCommentTotalsSnapshot(void) {
+    static NSObject *cacheLock;
+    static NSData *cachedData;
+    static NSDictionary<NSString *, NSNumber *> *cachedTotals;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cacheLock = [[NSObject alloc] init];
+        cachedTotals = @{};
+    });
+
+    @synchronized (cacheLock) {
+        NSData *data = [[NSUserDefaults standardUserDefaults] dataForKey:@"PostCommentsSnapshots"];
+        if (data == cachedData || [data isEqualToData:cachedData]) return cachedTotals;
+        cachedData = [data copy];
+        cachedTotals = @{};
+        if (data.length == 0) return cachedTotals;
+
+        // Apollo caps the native collection at 1,000 snapshots. Bound parsing
+        // generously above that size so malformed restored preferences cannot
+        // make every card refresh decode an unbounded payload.
+        if (data.length > 2 * 1024 * 1024) {
+            ApolloLog(@"[RecentlyRead] Ignoring oversized native comment snapshot data (%lu bytes)", (unsigned long)data.length);
+            return cachedTotals;
+        }
+        NSError *error = nil;
+        id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+        if (![decoded isKindOfClass:[NSArray class]] || [(NSArray *)decoded count] % 2 != 0) {
+            ApolloLog(@"[RecentlyRead] Native comment snapshots have an unsupported JSON shape (decode error: %ld)", (long)error.code);
+            return cachedTotals;
+        }
+
+        NSArray *entries = decoded;
+        NSMutableDictionary<NSString *, NSNumber *> *totals = [NSMutableDictionary dictionaryWithCapacity:entries.count / 2];
+        for (NSUInteger i = 0; i + 1 < entries.count; i += 2) {
+            NSString *postID = [entries[i] isKindOfClass:[NSString class]] ? entries[i] : nil;
+            NSDictionary *snapshot = [entries[i + 1] isKindOfClass:[NSDictionary class]] ? entries[i + 1] : nil;
+            NSNumber *count = [snapshot[@"totalComments"] isKindOfClass:[NSNumber class]] ? snapshot[@"totalComments"] : nil;
+            if (postID.length == 0 || !count || CFGetTypeID((__bridge CFTypeRef)count) == CFBooleanGetTypeID()) continue;
+            double value = count.doubleValue;
+            // Keep only integral, nonnegative counts that are exactly usable in
+            // the cards' signed 64-bit delta arithmetic; absent stays unknown.
+            if (!isfinite(value) || value < 0 || value >= (double)LLONG_MAX || floor(value) != value) continue;
+            NSString *bareID = ApolloBarePostID(postID);
+            if (bareID.length) totals[bareID] = @(count.longLongValue);
+        }
+        cachedTotals = [totals copy];
+        ApolloLog(@"[RecentlyRead] Loaded %lu native last-read comment baselines", (unsigned long)cachedTotals.count);
+        return cachedTotals;
+    }
 }
 
 // Flush the in-memory ReadPostIDs to NSUserDefaults so backup captures current state
@@ -253,7 +338,11 @@ static NSCache<NSString *, UIImage *> *RecentlyReadThumbnailCache(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        // Rows show Reddit's own thumbnails (up to 140px, ~78KB decoded), so
+        // this holds about sixty: several screens of the list.
+        cache.countLimit = 150;
+        cache.totalCostLimit = 5 * 1024 * 1024;
+        ApolloMemoryRegisterPurgableCache(@"recently-read-thumbs", cache);
     });
     return cache;
 }
@@ -380,6 +469,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"Search Recently Read";
+    ApolloHeaderStyleRegisterSearchBar(self.searchController.searchBar);
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
     self.definesPresentationContext = YES;
@@ -983,7 +1073,7 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
                                          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         UIImage *image = (!error && data.length > 0) ? [UIImage imageWithData:data] : nil;
         if (image) {
-            [cache setObject:image forKey:urlString];
+            [cache setObject:image forKey:urlString cost:ApolloImageByteCost(image)];
         }
         finish(image);
     }];
@@ -1397,11 +1487,44 @@ void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewContr
     // Runs for every ordered set in the app; getTrackerReadPostIDs() caches,
     // so after first resolution this is a pointer compare.
     NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
-    if (trackerSet && self == trackerSet && object && [self containsObject:object]) {
+    BOOL isTracker = trackerSet && self == trackerSet;
+    if (isTracker && object && [self containsObject:object]) {
         ApolloLog(@"[RecentlyRead] Bumping existing post to most-recent: %@", object);
         [self removeObject:object];
     }
     %orig;
+    if (isTracker) ApolloSchedulePostReadStateDidChange();
+}
+
+// Native unmarks/history eviction must refresh existing cards too. Restrict
+// every notification to the captured set; these selectors otherwise run on
+// ordered collections throughout the app. Nested primitive calls coalesce.
+- (void)removeObject:(id)object {
+    NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
+    BOOL changed = trackerSet && self == trackerSet && object && [self containsObject:object];
+    %orig;
+    if (changed) ApolloSchedulePostReadStateDidChange();
+}
+
+- (void)removeObjectAtIndex:(NSUInteger)index {
+    NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
+    BOOL isTracker = trackerSet && self == trackerSet;
+    %orig;
+    if (isTracker) ApolloSchedulePostReadStateDidChange();
+}
+
+- (void)removeObjectsInRange:(NSRange)range {
+    NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
+    BOOL changed = trackerSet && self == trackerSet && range.length > 0;
+    %orig;
+    if (changed) ApolloSchedulePostReadStateDidChange();
+}
+
+- (void)removeAllObjects {
+    NSMutableOrderedSet *trackerSet = getTrackerReadPostIDs();
+    BOOL changed = trackerSet && self == trackerSet && self.count > 0;
+    %orig;
+    if (changed) ApolloSchedulePostReadStateDidChange();
 }
 
 %end
@@ -1492,11 +1615,18 @@ static void ApolloCommentsVCTryMarkRead(id commentsVC, const char *trigger) {
 %end
 
 %ctor {
-    // Hook swift_allocObject to capture the ReadPostsTracker singleton
-    sTrackerTypeMetadata = (__bridge void *)objc_getClass("_TtC6Apollo16ReadPostsTracker");
-    if (sTrackerTypeMetadata) {
-        rebind_symbols((struct rebinding[1]){{"swift_allocObject", (void *)hooked_swift_allocObject, (void **)&orig_swift_allocObject}}, 1);
-    }
+    // Capture the ReadPostsTracker singleton when Apollo allocates it
+    ApolloCaptureFirstSwiftAllocation(objc_getClass("_TtC6Apollo16ReadPostsTracker"), ApolloRecentlyReadCaptureTracker);
+
+    // Native save completes (including its defaults write) before posting this.
+    // In particular it arrives after a comments controller's viewDidDisappear,
+    // later than the feed's initial viewWillAppear refresh on a navigation pop.
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"com.christianselig.ReadCommentsUpdated"
+                                                    object:nil
+                                                     queue:nil
+                                                usingBlock:^(__unused NSNotification *note) {
+        ApolloSchedulePostReadStateDidChange();
+    }];
 
     %init;
 }

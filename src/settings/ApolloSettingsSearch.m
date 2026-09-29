@@ -4,6 +4,7 @@
 #import <string.h>
 
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
 #import "settings/ApolloSettingsSearchNativeIndex.h"
@@ -251,13 +252,20 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
 
     // Runtime-injected leaf rows do not exist in the generated native crawl.
     // Disclosure injections are already represented by router entries above;
-    // Color Flairs is the one injected switch with no dedicated screen/route.
+    // the switches appended to Apollo's Appearance sections (Color Flairs,
+    // Bold Post Titles) have no dedicated screen/route, so index them here.
     ApolloSettingsSearchEntry *colorFlairs = [[ApolloSettingsSearchEntry alloc] init];
     colorFlairs.title = @"Color Flairs";
     colorFlairs.breadcrumb = @"Appearance → Flair";
     colorFlairs.nativePath = @[ @"Appearance" ];
     colorFlairs.rowTitle = @"Color Flairs";
     [entries addObject:colorFlairs];
+    ApolloSettingsSearchEntry *boldPostTitles = [[ApolloSettingsSearchEntry alloc] init];
+    boldPostTitles.title = @"Bold Post Titles";
+    boldPostTitles.breadcrumb = @"Appearance → Posts";
+    boldPostTitles.nativePath = @[ @"Appearance" ];
+    boldPostTitles.rowTitle = @"Bold Post Titles";
+    [entries addObject:boldPostTitles];
 
     // Resolve a leading icon for every result so the list is visually uniform:
     //   own row icon (captured above) → the parent screen/section's icon (by
@@ -757,6 +765,7 @@ void ApolloSettingsSearchAttach(UIViewController *settingsVC) {
     searchController.searchBar.placeholder = @"Search Settings";
     searchController.obscuresBackgroundDuringPresentation = NO;
     results.searchController = searchController;
+    ApolloHeaderStyleRegisterSearchBar(searchController.searchBar);
 
     settingsVC.navigationItem.searchController = searchController;
     // Start pinned so the bar is laid out visible on the very first appearance
@@ -766,6 +775,14 @@ void ApolloSettingsSearchAttach(UIViewController *settingsVC) {
     // flips this to the native scroll-away behavior once the screen is up.
     settingsVC.navigationItem.hidesSearchBarWhenScrolling = NO;
     settingsVC.definesPresentationContext = YES;
+    // Liquid Glass: keep the navigation bar up while the search is active,
+    // the same treatment the feed search bar gets (ApolloSearchNativeBar.xm).
+    // UISearchController hides the bar for its presentation by default, which
+    // on the glass chrome reads as the field sliding up over the "Settings"
+    // title and the title vanishing — the only search bar in the app that
+    // moved on activation. With the bar kept, the field stays in the palette
+    // and just gains its cancel button. Non-glass keeps the stock presentation.
+    if (IsLiquidGlass()) searchController.hidesNavigationBarDuringPresentation = NO;
 
     objc_setAssociatedObject(settingsVC, &kApolloSettingsSearchAttachedKey, searchController, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
@@ -779,7 +796,8 @@ void ApolloSettingsSearchAttach(UIViewController *settingsVC) {
         objc_setAssociatedObject(settingsVC, &kApolloSettingsSearchPullKey, pull, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    ApolloLog(@"[SettingsSearch] attached to %@", settingsVC);
+    ApolloLog(@"[SettingsSearch] attached to %@ (nav bar kept during search: %d)", settingsVC,
+              !searchController.hidesNavigationBarDuringPresentation);
 }
 
 static char kApolloSettingsSearchScrollAwayKey;

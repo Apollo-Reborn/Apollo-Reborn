@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "version": "3.8.5",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "magnifyingglass.circle.fill", "title": "Search With Google", "subtitle": "Tap the Search tab's magnifier and pick Google to find Reddit threads, then open them right in Apollo." },
+    { "icon": "bolt.fill", "title": "Lighter and Faster", "subtitle": "Apollo uses less memory, frees it when iOS runs low, and does less work at launch." },
+    { "icon": "checkmark.shield.fill", "title": "Crash Fixes", "subtitle": "Fixes a feed crash when RedGIFs posts load together, and a crash tapping a translated deleted comment." },
+    { "icon": "play.rectangle.fill", "title": "RedGIFs Keeps Playing", "subtitle": "Posts keep working after switching Wi-Fi, cellular, or VPN, and older videos play instead of showing an error." },
+    { "icon": "speaker.wave.2.fill", "title": "Video Sound Behaves", "subtitle": "Feed sound stays on one video, doesn't start on screens you've left, and mutes while another video is fullscreen." },
+    { "icon": "person.2.fill", "title": "Accounts and Sign-In", "subtitle": "API-Key-Free feeds stop stalling on a spinner, avatars load for the right account, and Add Account uses your Settings key." },
+    { "icon": "text.bubble.fill", "title": "Comments", "subtitle": "A comment that can't post now says why, image comments post cleanly, and inline images don't jump when they load." }
+  ]
+}

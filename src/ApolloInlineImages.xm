@@ -1,3 +1,4 @@
+#import "ApolloProfileBannerURL.h"
 // ApolloInlineImages.xm
 //
 // Renders image URLs inside Apollo's selftext / comment markdown bodies as
@@ -11,6 +12,7 @@
 #import "ApolloCommon.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloImageChestResolver.h"
+#import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloState.h"
@@ -280,6 +282,12 @@ static NSString *ApolloInlineSuppressionPathKey(NSURL *url) {
     NSString *host = [[url host] lowercaseString];
     NSString *path = [url path];
     if (host.length == 0 || path.length == 0) return nil;
+    // Apollo's link card shows a Reddit media link as "redd.it/<file>", and on
+    // iOS 26+ ApolloGetLinkButtonNodeURLString can only read that display text,
+    // so the card's URL comes back without the i./preview. subdomain. Key the
+    // three hosts alike so a card measured detached (an inserted or reloaded
+    // row) still matches the image the cell inlined.
+    if ([host isEqualToString:@"i.redd.it"] || [host isEqualToString:@"preview.redd.it"]) host = @"redd.it";
     return [NSString stringWithFormat:@"path:%@%@", host, path];
 }
 
@@ -860,16 +868,16 @@ static void ApolloDashPosterInit(void) {
     dispatch_once(&once, ^{
         sApolloDashPosterCache = [NSCache new];
         sApolloDashPosterCache.name = @"ApolloDashPosterCache";
-        sApolloDashPosterCache.totalCostLimit = 32 * 1024 * 1024;
-        sApolloDashPosterCache.countLimit = 40;
+        // A poster is generated at feed-cell pixel size, so ~3MB each at @3x.
+        // This holds roughly seven video posts of scrollback.
+        sApolloDashPosterCache.totalCostLimit = 24 * 1024 * 1024;
+        sApolloDashPosterCache.countLimit = 24;
         sApolloDashPosterFailures = [NSMutableDictionary dictionary];
         sApolloDashPosterFailureOrder = [NSMutableOrderedSet orderedSet];
         sApolloDashPosterPending = [NSMutableDictionary dictionary];
         sApolloDashPosterQueuedStarts = [NSMutableArray array];
         sApolloDashPosterQueue = dispatch_queue_create("ca.jeffrey.apollo.dashposter", DISPATCH_QUEUE_SERIAL);
-        ApolloMemoryRegisterPurgeHandler(@"dash-posters", ^{
-            [sApolloDashPosterCache removeAllObjects];
-        });
+        ApolloMemoryRegisterPurgableCache(@"dash-posters", sApolloDashPosterCache);
     });
 }
 
@@ -1309,7 +1317,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
     ApolloAlbumDownloadRecord *record = [ApolloAlbumDownloadRecord new];
     record.destinationURL = destination;
-    record.completion = [completion copy];
+    record.completion = completion;
     [[NSFileManager defaultManager] removeItemAtURL:destination error:nil];
     if (![[NSFileManager defaultManager] createFileAtPath:destination.path contents:nil attributes:nil]) {
         record.failure = [self errorWithCode:8 description:@"Could not create the album image file"];
@@ -1449,6 +1457,8 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
 @end
 
 @interface ApolloImageChestAlbumViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
+@property (nonatomic) BOOL profileBannerPresentation;
+@property (nonatomic, strong) id previewFeedback;
 @property (nonatomic, copy) NSArray<NSDictionary *> *items;
 @property (nonatomic) NSInteger initialIndex;
 @property (nonatomic, strong) UIScrollView *scrollView;
@@ -1636,6 +1646,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     self.actionButton.clipsToBounds = YES;
     [self.actionButton addTarget:self action:@selector(apollo_actionButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.actionButton];
+    self.actionButton.hidden = self.profileBannerPresentation;
 
     // True download progress for big albums, fed by the tasks' NSProgress.
     self.progressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
@@ -1897,6 +1908,16 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = YES;
                     [owner apollo_displayFileForPageIfActive:page decodedImage:nil];
                 } else if (!cancelled && !owner.tearingDown) {
+                    NSURL *fallback = owner.profileBannerPresentation ? owner.items[page][@"bannerFallbackURL"] : nil;
+                    if (fallback) {
+                        // Consume the fallback before retrying, so failure cannot loop.
+                        NSMutableArray *items = [owner.items mutableCopy];
+                        items[page] = @{@"url": fallback};
+                        owner.items = items;
+                        [owner.pendingImageIndexes insertObject:index atIndex:0];
+                        [owner apollo_pumpImageDownloads];
+                        return;
+                    }
                     [owner.failedImageIndexes addObject:index];
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = NO;
                     ApolloLog(@"[InlineImages] viewer download failed page=%ld status=%ld err=%@",
@@ -2190,6 +2211,8 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
 
 - (void)apollo_viewerLongPressed:(UILongPressGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    if (self.presentedViewController) return;
+    if (self.profileBannerPresentation) self.previewFeedback = ApolloPlayPreviewOpenedFeedback(self.view);
     [self apollo_presentActionsForPage:[self apollo_currentPageIndex] fromView:self.view];
 }
 
@@ -2262,8 +2285,21 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                         owner.photoLibrarySavesInFlight--;
                     }
                     if (success) {
-                        [owner apollo_showToast:files.count == 1 ? @"Saved"
-                                              : [NSString stringWithFormat:@"Saved %lu images", (unsigned long)files.count]];
+                        // Apollo 1.15.11: the ObjC thunk at 0x1004b13e8 ignores
+                        // context and only retains/releases image. Its helper
+                        // (0x1004bfab0) branches on error; nil selects Saved! when
+                        // a fresh manager has no wallpaperSavingViewController.
+                        // This reports the confirmed Photos result; it performs no save.
+                        id manager = owner.profileBannerPresentation
+                            ? [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init] : nil;
+                        SEL saved = NSSelectorFromString(@"image:didFinishSavingWithError:contextInfo:");
+                        if ([manager respondsToSelector:saved]) {
+                            owner.toastLabel.alpha = 0.0;
+                            ((void (*)(id, SEL, id, id, void *))objc_msgSend)(manager, saved, nil, nil, NULL);
+                        } else {
+                            [owner apollo_showToast:files.count == 1 ? @"Saved"
+                                : [NSString stringWithFormat:@"Saved %lu images", (unsigned long)files.count]];
+                        }
                     } else {
                         ApolloLog(@"[InlineImages] album save failed: %@", error.localizedDescription);
                         [owner apollo_showToast:@"Save failed"];
@@ -2563,6 +2599,20 @@ static void ApolloReleaseVideoCommentAudioSession(NSUInteger generation);
 
 static UIViewController *ApolloTopVCFromView(UIView *v);
 static BOOL ApolloPresentRedditVideoCommentURL(NSURL *url, UIView *sourceView);
+BOOL ApolloPresentProfileBanner(NSURL *url, UIView *sourceView) {
+    if (!url) return NO;
+    UIViewController *top = ApolloTopVCFromView(sourceView);
+    if (!top) return NO;
+    NSURL *candidate = ApolloProfileBannerOriginalCandidate(url);
+    NSDictionary *item = [candidate isEqual:url] ? @{@"url": url}
+        : @{@"url": candidate, @"bannerFallbackURL": url};
+    ApolloImageChestAlbumViewController *viewer = [[ApolloImageChestAlbumViewController alloc]
+        initWithItems:@[item] initialIndex:0];
+    viewer.profileBannerPresentation = YES;
+    [top presentViewController:viewer animated:YES completion:nil];
+    return YES;
+}
+
 static void ApolloOpenImageChestURLNormally(NSURL *url);
 static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceView, void (^fallback)(void));
 
@@ -4521,6 +4571,22 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
 
     CGFloat ratio = ApolloAspectRatioFromURL(normalizedURL);
     if (ratio <= 0) {
+        // Reddit includes authoritative source dimensions in media_metadata.
+        // Use them during the first Texture measurement so a comment reserves
+        // the image's final space before the network image finishes loading.
+        // The helper requires a matching Reddit asset and deliberately ignores
+        // external hosts, whose existing load-then-layout behavior is unchanged.
+        NSDictionary *mediaMetadata = ApolloMediaMetadataForHost(hostMarkdownNode);
+        ratio = (CGFloat)ApolloInlineImageAspectRatioFromMediaMetadata(normalizedURL,
+                                                                       mediaMetadata);
+        // That first measurement normally runs before the MarkdownNode joins
+        // its CommentCellNode, so the host lookup above cannot reach the model.
+        // Fall back to dimensions captured when Reddit parsed that model.
+        if (ratio <= 0) {
+            ratio = (CGFloat)ApolloInlineImageAspectRatioFromRegisteredMetadata(normalizedURL);
+        }
+    }
+    if (ratio <= 0) {
         // A previous node instance already loaded this image and recorded its
         // real ratio — reuse it so a rebuilt cell measures the row
         // correctly on the FIRST pass instead of hiding the image and growing
@@ -4529,7 +4595,8 @@ static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
         if (known) ratio = known.doubleValue;
     }
     // kApolloAspectRatioKey is only set when we have real ratio info (URL
-    // query params now, a prior load's cached ratio, or didLoadImage later).
+    // query params now, matching Reddit media_metadata, a prior load's cached
+    // ratio, or didLoadImage later).
     // Nil means "unknown" → the wrapper omits the image from layout to avoid
     // wrong-ratio races.
 
@@ -5449,7 +5516,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         // the returned layout spec the layout transition removes it itself.
         NSMutableDictionary *imageCache = objc_getAssociatedObject(self, &kApolloImageNodesByURLKey);
         if (imageCache.count > 0) {
-            NSArray *cachedURLs = [imageCache.allKeys copy];
+            NSArray *cachedURLs = imageCache.allKeys;
             for (NSString *cachedURL in cachedURLs) {
                 if (![referencedURLs containsObject:cachedURL]) {
                     ASNetworkImageNode *staleNode = imageCache[cachedURL];

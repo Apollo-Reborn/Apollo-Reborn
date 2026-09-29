@@ -1,3 +1,7 @@
+// Ordered Settings hold-menu route IDs. Missing value uses the default five;
+// an empty array intentionally disables the menu. Included in settings backups.
+static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
+
 // UserDefaults keys
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
@@ -17,6 +21,21 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
+// days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
+// Folder permission, installation identity and last-run state live separately
+// in Application Support, so exporting/restoring settings cannot transfer them.
+static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled";
+static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
+// Legacy destination value retained for compatibility with older builds.
+static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
+// Version stamps for Apollo's own sideload-unlock flags, which the constructor
+// writes into two preference domains. Each stamp lives in the SAME domain as
+// the flags it guards, so anything that resets a domain (fresh install, a
+// settings restore, Apollo wiping the group container) takes the stamp with it
+// and the flags are rewritten on the next launch.
+static NSString *const UDKeySideloadFlagsStamp = @"ApolloRebornSideloadFlagsStamp";
+static NSString *const UDKeyGroupUnlockFlagsStamp = @"ApolloRebornGroupUnlockFlagsStamp";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -33,6 +52,14 @@ static NSString *const UDKeyCrashPromptedReportIDs = @"CrashPromptedReportIDs";
 static NSString *const UDKeyDebugForceAccountReadMiss = @"ApolloDebugForceAccountReadMiss";
 static NSString *const UDKeyDebugDisableKeychainRecovery = @"ApolloDebugDisableKeychainRecovery";
 static NSString *const UDKeyShowRandNsfw = @"ShowRandNsfwButton";
+// Search tab engine (ApolloGoogleSearchTab.m): 0 = Reddit (Apollo's own
+// search), 1 = Google (Reddit results found through Google). Remembered across
+// launches; picked from the search field's magnifier, not in Settings.
+static NSString *const UDKeySearchEngine = @"SearchEngine";
+// Google mode filters, set from the chips above the Google results: an
+// ApolloGoogleSearchTimeRange raw value, and Google's "Verbatim" mode.
+static NSString *const UDKeyGoogleSearchTimeRange = @"GoogleSearchTimeRange";
+static NSString *const UDKeyGoogleSearchExactWords = @"GoogleSearchExactWords";
 static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
 static NSString *const UDKeyTrendingSubredditsSource = @"TrendingSubredditsSource";
@@ -55,6 +82,14 @@ static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShor
 // account's bucket back through Apollo's native FavoriteSubreddits key so every
 // stock reader/mutator continues to work unchanged.
 static NSString *const UDKeyPerAccountFavoritesEnabled = @"PerAccountFavoritesEnabled";
+// Alphabetize shared favorites and disable manual reordering. Default NO.
+static NSString *const UDKeySortFavoritesAlphabetically = @"SortFavoritesAlphabetically";
+// Ask before adding or removing a favorite via the Subreddits-list star.
+// Opt-in; default OFF. See ApolloFavoriteConfirm.xm.
+static NSString *const UDKeyConfirmFavoriteToggle = @"ConfirmFavoriteToggle";
+// Per-account sorting preferences, keyed by the per-account favorites identity
+// (u:name / anonymous). Missing entries default OFF; shared preference is above.
+static NSString *const UDKeyFavoriteSortingByAccount = @"FavoriteSortingByAccount";
 // Versioned envelope: { "version": 1, "buckets": { "u:name": [subreddits],
 // "anonymous": [subreddits] } }. Missing bucket and explicit empty bucket are
 // intentionally distinct; accounts created after the first migration start empty.
@@ -98,6 +133,10 @@ static NSString *const ApolloSubredditSectionsChangedNotification = @"ApolloSubr
 static NSString *const UDKeySubredditSectionsPreviewPinned = @"SubredditSectionsPreviewPinned";
 // Color post (link) and user/author flairs with Reddit's assigned colors. Default NO.
 static NSString *const UDKeyEnableFlairColors = @"EnableFlairColors";
+// Feed post titles in Semibold instead of Apollo's Regular (large + compact
+// posts, crossposts, comment post context). Appearance > Posts > Bold Post
+// Titles; default NO. See ApolloBoldPostTitles.xm.
+static NSString *const UDKeyBoldPostTitles = @"BoldPostTitles";
 static NSString *const ApolloFlairColorsChangedNotification = @"ApolloFlairColorsChangedNotification";
 static NSString *const UDKeyReadPostMaxCount = @"ReadPostMaxCount";
 static NSString *const UDKeyShowRecentlyReadThumbnails = @"ShowRecentlyReadThumbnails";
@@ -119,6 +158,11 @@ static NSString *const UDKeyFeedVideosUnmutedMemory = @"FeedVideosUnmutedMemory"
 // the video (bar included) still opens it fullscreen as stock. Default NO.
 // See ApolloFeedVideoScrubber.xm.
 static NSString *const UDKeyFeedVideoScrubber = @"FeedVideoScrubber";
+// "Smoother Video Scrolling": build feed video players on a background queue
+// and let video posts finish drawing asynchronously after they scroll in
+// instead of holding the frame for them. Default YES. See
+// ApolloFeedVideoScrolling.xm.
+static NSString *const UDKeyFeedVideoScrollSmoothing = @"FeedVideoScrollSmoothing";
 // "Hold for Video Speed": press-and-hold the right side of a fullscreen video to
 // play at a chosen speed while held. Master toggle (default YES via
 // registerDefaults — preserves the original always-on behaviour) and the speed
@@ -219,13 +263,29 @@ static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
+// UI-only preference: keep the Profile Layout preview visible while scrolling.
+// Default NO; independent of the subreddit preview and actual profile layout.
+static NSString *const UDKeyProfileLayoutPreviewPinned = @"ProfileLayoutPreviewPinned";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
 // New (Immersive, with the melt/ambient backdrop) vs Classic (same content,
 // flat) — mirrors UDKeyProfileHeaderImmersive's semantics for subreddits.
 static NSString *const UDKeySubredditHeaderImmersive = @"SubredditHeaderImmersive";
 static NSString *const UDKeySubredditShowBanner = @"SubredditShowBanner";
 static NSString *const UDKeySubredditShowJoinButton = @"SubredditShowJoinButton";
+// Show direct actions beside Join in Apollo Reborn's subreddit header.
+// Both default to NO; User Flair is also hidden when the subreddit disallows it.
+static NSString *const UDKeySubredditShowUserFlairButton = @"SubredditShowUserFlairButton";
+static NSString *const UDKeySubredditShowSidebarButton = @"SubredditShowSidebarButton";
 static NSString *const UDKeySubredditShowDisplayName = @"SubredditShowDisplayName";
+// Whether the Reborn header shows the community title + member-count line.
+// Before metadata it falls back to r/name; redundant titles leave only the count.
+// Defaults to YES; surfaced as "Subtitle".
+static NSString *const UDKeySubredditShowSubtitle = @"SubredditShowSubtitle";
+// Whether the Reborn subreddit header shows the community's about text.
+// Defaults to YES alongside the other header bands.
+static NSString *const UDKeySubredditShowDescription = @"SubredditShowDescription";
+// Keep the Subreddit Layout settings preview visible while scrolling. Default YES.
+static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPreviewPinned";
 // Backing values for the single Community Highlights picker. Keeping the old
 // keys maps existing settings naturally: both YES = Full, master only = Partial,
 // master NO = Off.
@@ -242,6 +302,9 @@ static NSString *const UDKeyClassicTabBarScrollBehavior = @"ClassicTabBarScrollB
 // Apollo's native preference, mirrored in Reborn's Interface > Tab Bar screen
 // and consumed by the Liquid Glass compatibility layer as its source of truth.
 static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
+// Liquid Glass only. Also hides/reveals the top navigation bar with the bottom
+// tab bar while Hide Bars on Scroll is enabled. Default NO; remembered when off.
+static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
 // bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
@@ -253,18 +316,16 @@ static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";
 // "search takeover" (nav slides away + fades, field docks to the top and grows). Mutually
 // exclusive with the default nav-hide mode. Liquid Glass only. Default NO. See ApolloSearchInPlace.xm.
 static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
-// Liquid Glass nav bar title placement. ON (default): center the title in the
-// gap between the back pill and the trailing pill so it reads balanced whatever
-// the trailing cluster holds (translation globe on or off). OFF: center it on
-// the screen itself, nudged just enough to clear a pill it would overlap.
-// See ApolloRecenterTitleControl in ApolloLiquidGlass.xm.
-static NSString *const UDKeyLGTitleGapCentering = @"LGTitleGapCentering";
 // iPad only, Liquid Glass only. When ON, forces the iOS 26 floating tab bar to
 // dock at the BOTTOM (classic tab bar) instead of the top-center pill, which on
 // iPad overlaps Apollo's search bar. Temporary stopgap for issue #387 until the
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
+// dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
+// default OFF via registerDefaults. See ApolloLiquidGlass.xm.
+static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →
 // content → detail. Opt-in; default OFF via registerDefaults. Installation
@@ -325,9 +386,17 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// Navigation actions collapse and between-buttons title centering are opt-in (default off).
+static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+// Show the return button (and the navigation-bar tap) after a status bar tap
+// scrolls a feed or comment thread to the top. Default YES; the second
+// status bar tap returns to the saved position regardless.
+static NSString *const UDKeyScrollReturnButton = @"ScrollReturnButton";
+static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
+
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).
 // 0 = retired System Default (migrates to 1 on iOS 26 or 2 on iOS 27),
-// 1 = Soft, 2 = Hard, 3 = retired Hidden, 4 = Blur.
+// 1 = Soft, 2 = Hard, 3 = Hidden, 4 = Blur.
 static NSString *const UDKeyScrollEdgeEffectStyle = @"ScrollEdgeEffectStyle";
 // Render image URLs (i.redd.it, preview.redd.it, i.imgur.com, generic .png/.jpg/.jpeg/.webp)
 // inline within post selftext and comments instead of leaving them as plain text links.
@@ -521,6 +590,10 @@ static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOve
 // Debug-only override (seconds, >= 5) for how long the modern Chat surface
 // must be hidden/inactive before returning to it auto-refreshes the list.
 static NSString *const UDKeyChatStaleRefreshOverride = @"ChatStaleRefreshOverride";
+// Embedded Inbox Chat > Messages room filter: "direct" (default), "group", "all".
+static NSString *const UDKeyChatMessagesFilter = @"ChatMessagesFilter";
+// Embedded Inbox Chat > Messages: show unread rooms only (Reddit's "Unread" switch).
+static NSString *const UDKeyChatMessagesUnreadOnly = @"ChatMessagesUnreadOnly";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent
@@ -613,6 +686,14 @@ static NSString *const ApolloFeedGalleryCarouselChangedNotification = @"ApolloFe
 // is needed (same reasoning as UDKeySwipeUpForComments below). See
 // ApolloFeedGalleryCarousel.xm.
 static NSString *const UDKeyFeedGalleryEdgeSwipeNav = @"FeedGalleryEdgeSwipeNavigation";
+// Gallery View grid: video tiles play, and GIF tiles animate, silently while
+// they are on screen (tap a tile for the fullscreen viewer, which has sound).
+// One switch per kind so either can be left still; both default YES. Low
+// Power Mode pauses both. Either switch posts the notification so an open
+// gallery reacts at once. See ApolloGalleryViewController.m.
+static NSString *const UDKeyGalleryAutoplayVideos = @"GalleryAutoplayVideos";
+static NSString *const UDKeyGalleryAutoplayGIFs = @"GalleryAutoplayGIFs";
+static NSString *const ApolloGalleryAutoplayMediaChangedNotification = @"ApolloGalleryAutoplayMediaChangedNotification";
 // Apollo's forward-swipe (right edge, plus the gallery edge-swipe hand-off)
 // re-opens the screen you last swiped back from, and that memory natively
 // survives unlimited feed scrolling. With this on, scrolling the feed a few
@@ -625,7 +706,7 @@ static NSString *const UDKeyForwardSwipeForgetAfterScrolling = @"ForwardSwipeFor
 // In the fullscreen viewer for post-backed images, galleries, GIFs, and video,
 // an upward vertical flick or comments-button tap opens a media-owned comments
 // pane. The normal downward flick still dismisses when the pane is closed.
-// Default YES. See ApolloSwipeUpComments.xm. No change notification: the flag
+// Default NO (opt-in). See ApolloSwipeUpComments.xm. No change notification: the flag
 // is read live at gesture/tap time, so a toggle applies immediately without
 // any cached state to invalidate (unlike the carousel above).
 static NSString *const UDKeySwipeUpForComments = @"SwipeUpForComments";
@@ -682,6 +763,19 @@ static NSString *const ApolloLinkPreviewModeDidChangeNotification = @"ApolloLink
 // Posted by the Inline Media settings screen when size/alignment changes so
 // visible comments re-measure their inline media immediately.
 static NSString *const ApolloInlineMediaLayoutDidChangeNotification = @"ApolloInlineMediaLayoutDidChangeNotification";
+
+// Per-menu ••• layouts (Apollo Reborn → Interface → Action Menus): a dictionary
+// keyed by ApolloActionMenuContext id → { "order": [itemID…], "hidden": [itemID…] }.
+// An absent context means Apollo's own order with nothing hidden, and that
+// sheet is never touched. Model and item vocabulary: ApolloActionMenuLayout.h.
+static NSString *const UDKeyActionMenuLayouts = @"ActionMenuLayouts";
+// Which catalogue items each ••• menu offered the last time it was opened
+// (context id → [itemID…]); written by the menu owner, read by the settings
+// screen's ••• preview so it mirrors this user's menus rather than the whole
+// catalogue.
+static NSString *const UDKeyActionMenuLastPresented = @"ActionMenuLastPresented";
+// Posted (object = the context id) whenever a menu's order or hidden set changes.
+static NSString *const ApolloActionMenuLayoutsChangedNotification = @"ApolloActionMenuLayoutsChangedNotification";
 
 // The last TWEAK_VERSION (without the leading "v") the What's New sheet was
 // shown for (or silently advanced past, when a version has no catalog entry).

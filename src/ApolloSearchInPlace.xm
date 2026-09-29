@@ -266,6 +266,81 @@ static CGFloat ApolloFeedSearchActiveRestTop(void) {
                                                       : ApolloFeedSearchRestTop();
 }
 
+// MARK: - Offset floor + clamp-fight breaker (non-glass Cancel stack overflow)
+//
+// UIKit's floor for any programmatic content offset is -adjustedContentInset.top
+// (_adjustContentOffsetIfNecessary clamps to firstPageOffset - _effectiveContentInset.top). The pins
+// below must never write beneath it. Concretely: ApolloFeedSearchRestTop() reads the toolbar's
+// window-space bottom, and during the non-glass Cancel teardown the toolbar's frame is still laid out
+// for the surfaced offset (~413), so after the pin's own 413 -> -89 restore that read is 502pt stale
+// and grows by another 502 on every write (-591, -1093, ...). Each of those lands below UIKit's floor
+// (-89); UIKit clamps it back inside -[UITableView _updateVisibleCellsNow:], sees its offset move
+// mid-pass, re-runs the pass, the pin writes lower still - 475 nested passes later the main thread's
+// stack is gone (SIGSEGV on a stack address ~1.4s after Cancel; r/X with Subreddit Headers ON + a
+// query). Clamping the pin at UIKit's own floor makes the second call a no-op and ends the loop, and
+// keeps the teardown's job ("hold the feed at its top while the chrome comes back") intact: the floor
+// IS the content top for whatever inset Apollo has at that instant. Standing down entirely was tried
+// and rejected - with nothing holding the feed at the top Apollo never re-lays out its toolbar, which
+// ends up stranded 500pt down in the content.
+static CGFloat ApolloFeedSearchOffsetFloor(UIScrollView *sv) {
+    return -sv.adjustedContentInset.top;
+}
+
+// Belt and braces for any floor mismatch we can't see (UIKit's private inset vs the public one): if
+// UIKit keeps re-asserting the SAME incoming offset within one main-thread callout and we keep
+// overriding it, we are fighting its clamp synchronously - the only way that ends is with the stack.
+// Stand down for the rest of the callout (one bounded log names it). The counter resets on the next
+// main-queue turn, so the legitimate re-pin on every keystroke / layout pass across frames never trips.
+static CGFloat    sFeedSearchPinLastInY      = NAN;
+static NSUInteger sFeedSearchPinRepeats      = 0;
+static BOOL       sFeedSearchPinFloorLogged  = NO;
+static BOOL       sFeedSearchPinResetQueued  = NO;
+static const NSUInteger kFeedSearchPinMaxRepeats = 8;
+
+static void ApolloFeedSearchPinQueueReset(void) {
+    if (sFeedSearchPinResetQueued) return;
+    sFeedSearchPinResetQueued = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sFeedSearchPinResetQueued = NO;
+        sFeedSearchPinRepeats = 0;
+        sFeedSearchPinLastInY = NAN;
+        sFeedSearchPinFloorLogged = NO;
+    });
+}
+
+// Call only when the pin actually changed the offset. YES = pass UIKit's value through untouched.
+static BOOL ApolloFeedSearchPinIsFightingClamp(CGFloat inY, CGFloat outY) {
+    if (fabs(inY - sFeedSearchPinLastInY) < 0.01) {
+        if (++sFeedSearchPinRepeats >= kFeedSearchPinMaxRepeats) {
+            if (sFeedSearchPinRepeats == kFeedSearchPinMaxRepeats) {
+                ApolloLog(@"[SearchInPlace] offset pin is fighting UIKit's clamp (offset %.1f re-asserted %lu times in one pass, we kept writing %.1f); standing down for this pass",
+                          inY, (unsigned long)sFeedSearchPinRepeats, outY);
+            }
+            return YES;
+        }
+    } else {
+        sFeedSearchPinLastInY = inY;
+        sFeedSearchPinRepeats = 1;
+    }
+    ApolloFeedSearchPinQueueReset();
+    return NO;
+}
+
+// The "clamp down to rest" target: rest, but never beneath UIKit's floor. A rest beneath the floor is
+// the stale-toolbar read described above, not a position, so the content top (the floor) is used
+// instead. Logs once per callout when that happens.
+static CGFloat ApolloFeedSearchPinTarget(UIScrollView *sv, CGFloat rest) {
+    CGFloat floorY = ApolloFeedSearchOffsetFloor(sv);
+    if (rest >= floorY - 0.5) return rest;
+    if (!sFeedSearchPinFloorLogged) {
+        sFeedSearchPinFloorLogged = YES;
+        ApolloLog(@"[SearchInPlace] offset pin floored: rest %.1f is below UIKit's floor %.1f (inset.top %.1f), stale toolbar read; pinning to the floor",
+                  rest, floorY, sv.contentInset.top);
+        ApolloFeedSearchPinQueueReset();
+    }
+    return floorY;
+}
+
 // The current feed query text, or nil/empty when not searching.
 static NSString *ApolloFeedSearchQueryText(void) {
     UIView *f = sFeedSearchField;
@@ -812,10 +887,15 @@ static void recenterCancelButton(void) {
         !ApolloFeedSearchManagedHeader((UIScrollView *)self)) {
         UIScrollView *sv2 = (UIScrollView *)self;
         CGFloat rest = -sFeedSearchStandaloneRestInset;
+        CGPoint requested = offset;
         if (sv2.isDragging) sFeedSearchScrolledByUser = YES;
         else if (offset.y <= rest + 1.0) sFeedSearchScrolledByUser = NO;
         if (!sv2.isDragging && !sv2.isDecelerating && !sFeedSearchScrolledByUser) {
-            if (offset.y > rest) offset.y = rest; // hold the carousel at rest
+            CGFloat pinY = ApolloFeedSearchPinTarget(sv2, rest);
+            if (offset.y > pinY) offset.y = pinY; // hold the carousel at rest (never below UIKit's floor)
+        }
+        if (offset.y != requested.y && ApolloFeedSearchPinIsFightingClamp(requested.y, offset.y)) {
+            offset = requested;
         }
         %orig(offset);
         return;
@@ -831,6 +911,7 @@ static void recenterCancelButton(void) {
         BOOL userScrolling = sv.isDragging || sv.isDecelerating;
         BOOL hasQuery = (ApolloFeedSearchQueryText().length > 0);
         CGFloat target = ApolloFeedSearchDesiredOffsetY(sv); // rest (empty) or surfaced (query)
+        CGPoint requested = offset;
 
         // Once the user drags, stop pinning so they can browse; re-arm when they settle back at/above
         // the target (scrolling up toward the chrome snaps back; scrolling down through results is free).
@@ -838,14 +919,23 @@ static void recenterCancelButton(void) {
         else if (offset.y <= target + 1.0) sFeedSearchScrolledByUser = NO;
 
         if (sFeedSearchDismissing && !userScrolling) {
-            if (offset.y > rest) offset.y = rest; // teardown: restore the chrome as the search dismisses
+            // Teardown: restore the chrome as the search dismisses - never below UIKit's floor (see
+            // ApolloFeedSearchOffsetFloor: this is the write that used to recurse the table to death).
+            CGFloat pinY = ApolloFeedSearchPinTarget(sv, rest);
+            if (offset.y > pinY) offset.y = pinY;
         } else if (sFeedSearchActive && !sFeedSearchDismissing && !userScrolling &&
                    !sFeedSearchScrolledByUser) {
             if (hasQuery && target > rest + 1.0) {
-                offset.y = target;            // surfaced (in-place + query): hold the chrome scrolled off
-            } else if (offset.y > rest) {
-                offset.y = rest;              // otherwise: clamp down to rest only; keep pull-to-refresh
+                // Surfaced (in-place + query): hold the chrome scrolled off. target is
+                // headerHeight - contentInset.top, above UIKit's floor by construction, so no floor check.
+                offset.y = target;
+            } else {
+                CGFloat pinY = ApolloFeedSearchPinTarget(sv, rest);
+                if (offset.y > pinY) offset.y = pinY; // otherwise: clamp down to rest only; keep pull-to-refresh
             }
+        }
+        if (offset.y != requested.y && ApolloFeedSearchPinIsFightingClamp(requested.y, offset.y)) {
+            offset = requested;               // UIKit's clamp wins; do not feed the recursion
         }
 
         BOOL surfaced = hasQuery && sFeedSearchActive && !sFeedSearchDismissing &&

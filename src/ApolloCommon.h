@@ -3,6 +3,8 @@
 #import <os/log.h>
 #import <Security/SecBase.h>
 
+@class CASpringAnimation;
+
 // On iOS 26, NSLog redacts strings, so use os_log: https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-26-release-notes#NSLog
 // Uses a dedicated subsystem so OSLogStore can efficiently filter our entries.
 #define ApolloLogWithType(type, fmt, ...) do { \
@@ -64,29 +66,11 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(
 
 BOOL IsLiquidGlass(void);
 
-// --- Liquid Glass trailing-cluster reservation ---
-// Some screens temporarily strip their right bar buttons while staying on the
-// SAME navigation item (the Inbox strips them whenever its in-place Chat hub
-// covers Notifications). The Liquid Glass title recenter in
-// ApolloLiquidGlass.xm would then re-balance the title against an empty
-// trailing side, visibly sliding it — in gap-centering mode because the gap
-// midpoint moves, and in screen-centering mode because the overlap clamp
-// relaxes. While a "hold" is set on the navigation item, the recenter keeps
-// using the trailing content edge it last measured for that item (stored as an
-// inset from the bar's trailing edge, so rotation keeps working), making the
-// title position identical whether the buttons are up or stripped. The
-// recenter itself records the live inset via
-// ApolloNavItemNoteTrailingContentInset on every pass that sees real trailing
-// content; holders only toggle the hold. All four are no-ops off-glass (the
-// recenter never runs there and nothing else reads the values).
-void ApolloNavItemSetTrailingReservationHold(UINavigationItem *item, BOOL hold);
-BOOL ApolloNavItemTrailingReservationHold(UINavigationItem *item);
-void ApolloNavItemNoteTrailingContentInset(UINavigationItem *item, CGFloat inset);
-CGFloat ApolloNavItemTrailingContentInset(UINavigationItem *item);   // 0 = never captured
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);
 void ApolloFlushReadPostIDsToDefaults(void);
 UITableView *ApolloInheritedSettingsThemeSourceTableView(UITableViewController *controller);
+UIColor *ApolloInheritedSettingsBackgroundColor(UITableViewController *controller);
 void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller);
 
 // YES if sourceTable is nil or detached from its window. A covered (non-
@@ -119,6 +103,13 @@ UIImage *ApolloBundledPDFTemplateImage(NSString *baseName, CGSize maxSize);
 // Monotonic milliseconds (CACurrentMediaTime-based); ~ns-cheap. Used by the
 // trailing-debounce relayout schedulers (InlineImages, LinkPreviews).
 double ApolloPerfNowMs(void);
+
+// Decoded backing-store size of `image` in bytes — the number an image cache's
+// totalCostLimit has to be given for the limit to mean anything. A
+// totalCostLimit with cost-less insertions never evicts by bytes at all.
+// Prefers the CGImage's real row stride; falls back to points x scale^2 x 4 for
+// CIImage-backed images that have no bitmap yet. Saturates instead of wrapping.
+NSUInteger ApolloImageByteCost(UIImage *image);
 
 // The build variant string sent with the anonymous usage heartbeat, e.g.
 // "glass", "deb-rootless". The source of truth is stamped at package time (IPA
@@ -153,9 +144,20 @@ BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene);
 // Returns all UIWindows across every connected UIWindowScene.
 // Use instead of the deprecated UIApplication.windows property.
 NSArray<UIWindow *> *ApolloAllWindows(void);
-// Re-centers every live nav bar title after the LG title-centering mode toggle
-// changes (defined in ApolloLiquidGlass.xm; no-op off Liquid Glass).
-void ApolloLGTitleCenteringModeChanged(void);
+// Refresh title geometry/capsules on one known bar after a local content or
+// action change. Never walks the window/page hierarchy (no-op off Liquid Glass).
+void ApolloNavigationTitlesRefreshBar(UINavigationBar *bar);
+// Global appearance changes (e.g. Header Style) must refresh every live bar.
+// Local title owners should use the bar-scoped entry point above instead.
+void ApolloNavigationTitlesRefresh(void);
+// Settle new content before display, preserving the control, width constraint
+// and same-host glass. sameItem also preserves the active action-avoidance spring.
+void ApolloNavigationTitleGlassRefreshContent(UIView *titleControl, BOOL sameItem);
+// Capture the currently displayed title before publishing action widths, then
+// settle collision geometry with the pill's spring. Nil spring means immediate
+// placement (Reduce Motion, page teardown or nonanimated updates).
+void ApolloNavigationTitleActionsWillChange(UINavigationBar *bar);
+void ApolloNavigationTitleActionsDidChange(UINavigationBar *bar, CASpringAnimation *spring);
 // Keeps the Liquid Glass title capsule in sync with a custom title view's
 // independently-faded content (defined in ApolloLiquidGlass.xm; no-op off LG).
 void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alpha);
@@ -235,6 +237,10 @@ BOOL ApolloIsSystemShareComposeController(UIViewController *controller);
 // the name it is a generic viewer, not ImageChest-specific. Returns NO when
 // items is empty or no presenter could be found from sourceView.
 BOOL ApolloPresentImageChestItems(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex);
+// Profile-only viewer chrome and native save confirmation.
+BOOL ApolloPresentProfileBanner(NSURL *url, UIView *sourceView);
+// Returns the generator so the caller can retain it through presentation.
+id ApolloPlayPreviewOpenedFeedback(UIView *sourceView);
 // As above, but albumURL is the album's page URL when known — it enables the
 // viewer's "Share Album Link" action; pass nil otherwise.
 BOOL ApolloPresentImageChestItemsWithAlbumURL(NSArray<NSDictionary *> *items, UIView *sourceView, NSInteger initialIndex, NSURL *albumURL);
@@ -282,6 +288,11 @@ BOOL ApolloPollsFeatureEnabled(void);
 // sheet's segmented control when it appears. Called from
 // ApolloNativeActionMenuBuildMenu when it hits actionKind 51 (Submit Post).
 UIMenu *ApolloSubmitPostTypesMenu(id actionController, void (^selectRow)(void));
+// One of the tweak's bundled custom new-post symbols ("custom.photo.badge.plus",
+// …) from ApolloPollSymbols.bundle, or nil when the bundle is unavailable —
+// callers fall back to a stock SF Symbol. Shared with the Action Menus settings
+// preview so its mock of the quick new-post buttons shows the real glyphs.
+UIImage *ApolloPollComposeSymbol(NSString *symbolName);
 
 // Container keychain mirror (Tweak.xm): the Valet items the real keychain could not persist
 // on a keychain-broken sideload, so a backup taken there still carries the signed-in account.
@@ -331,4 +342,18 @@ NSString *ApolloDebugPoisonAccountAccessibility(void);
 // marked objects — otherwise tweak UI can be mistaken for the post body.
 void ApolloMarkTweakUITextNode(id node);
 BOOL ApolloTextNodeIsTweakUI(id node);
+
+// fishhook consolidation. Every rebind_symbols() call walks all ~2k images
+// loaded on iOS 26, so the modules below hand their bindings to the single call
+// in Tweak.xm's %ctor instead of each rebinding from its own constructor. The
+// direction has to be a pull: constructors run in link order and Tweak.xm links
+// first, so a registry those modules pushed into would always be flushed before
+// they filled it. Each function writes its bindings at `out` and returns how
+// many it wrote; ApolloRebornMaxAppendedRebindings bounds the caller's array.
+// swift_allocObject stays out of this batch: ApolloSwiftSingletonCapture is its
+// only owner and rebinds just the image that defines each captured class.
+struct rebinding;
+enum { ApolloRebornMaxAppendedRebindings = 5 };
+size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out);
+size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out);
 __END_DECLS

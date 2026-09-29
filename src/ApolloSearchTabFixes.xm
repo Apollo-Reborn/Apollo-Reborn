@@ -36,6 +36,15 @@
 // only by SearchViewController's cell provider (xrefs: 0x1002b3ab4 / 0x1002b4d58 /
 // 0x1002b50e8), so patching it at the cell is complete coverage.
 //
+// ── Reddit / Google search engine (feature request "In-app Google Search") ──
+//
+// This is the Search tab's one hook module, so Google mode rides on the hooks
+// below instead of hooking SearchViewController a second time: viewDidLoad /
+// viewDidAppear install and refresh the engine button (the field's magnifier)
+// and the Google list, text changes and Cancel update that list, the keyboard's
+// Search button is taken over only in Google mode, and a Search-tab re-select
+// scrolls the Google list when it's up (ApolloGoogleSearchTab.{h,m}).
+//
 // ── Trending pull-to-refresh + Random NSFW action ──
 //
 // Hopper confirms the default state is section 2 = the Swift Optional<[String]>
@@ -50,6 +59,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloGoogleSearchTab.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
 #import "Tweak.h"
@@ -425,12 +435,14 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     objc_setAssociatedObject(self, kApolloSearchRandomNSFWSuppressedKey, nil,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabViewDidLoad(self);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloSearchTabSyncRandomNSFWSection(self);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabViewDidAppear(self);
 }
 
 %new
@@ -496,6 +508,15 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabFinishModeTransition(self, nextDefaultState);
     ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    // Google mode: Apollo's own suggestions above still update (hidden under
+    // the Google list), so switching back to Reddit shows current ones.
+    ApolloGoogleSearchTabTextDidChange(self, text);
+}
+
+// Google mode runs its own search; Reddit mode is Apollo's, untouched.
+- (void)searchBarSearchButtonClicked:(UISearchBar *)bar {
+    if (ApolloGoogleSearchTabHandleSearchButton(self, bar)) return;
+    %orig;
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)bar {
@@ -504,6 +525,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabFinishModeTransition(self, YES);
     ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
+    ApolloGoogleSearchTabDidCancel(self);
 }
 
 // MARK: Random action group
@@ -597,6 +619,53 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
 
 %end
 
+// Apollo requires an exact top-offset match before focusing Search (0x10008907c).
+// Handle Search-root re-selection here so subpixel offsets cannot block focus.
+%hook ApolloSearchTabSceneDelegate
+
+- (BOOL)tabBarController:(UITabBarController *)tabs
+ shouldSelectViewController:(UIViewController *)page {
+    if (page != tabs.selectedViewController ||
+        ![page isKindOfClass:UINavigationController.class]) {
+        return %orig(tabs, page);
+    }
+    UINavigationController *nav = (UINavigationController *)page;
+    UIViewController *root = nav.viewControllers.firstObject;
+    if (nav.viewControllers.count != 1 ||
+        ![root isKindOfClass:NSClassFromString(@"_TtC6Apollo20SearchViewController")]) {
+        return %orig(tabs, page);
+    }
+    if (tabs.presentedViewController || nav.presentedViewController ||
+        root.presentedViewController || nav.transitionCoordinator ||
+        !root.viewIfLoaded.window) return NO;
+    // Google mode's result list sits over Apollo's table; it gets the reselect.
+    if (ApolloGoogleSearchTabHandleReselect(root)) return NO;
+
+    UITableView *table = ApolloSearchTabTableView(root);
+    UISearchBar *bar = ApolloSearchTabSearchBar(root);
+    if (!table || !bar.window) return %orig(tabs, page);
+    if (table.isDragging || table.isDecelerating) return NO;
+
+    // Allow one point for rounding; scroll to the top before focusing on the next tap.
+    CGFloat top = -table.adjustedContentInset.top;
+    CGFloat offset = table.contentOffset.y;
+    if (offset > top + 1.0) {
+        [table setContentOffset:CGPointMake(table.contentOffset.x, top)
+                       animated:!UIAccessibilityIsReduceMotionEnabled()];
+        ApolloLog(@"[SearchTabFixes] reselect scroll-to-top offset=%.3f top=%.3f",
+                  offset, top);
+    } else {
+        BOOL focused = [bar becomeFirstResponder];
+        ApolloLog(@"[SearchTabFixes] reselect focus=%d offset=%.3f top=%.3f nativeTop=%.3f",
+                  focused, offset, top,
+                  -root.view.safeAreaInsets.top - table.contentInset.top);
+    }
+    // Prevent UIKit from handling the same re-selection again.
+    return NO;
+}
+
+%end
+
 %ctor {
-    %init;
+    %init(ApolloSearchTabSceneDelegate = objc_getClass("_TtC6Apollo13SceneDelegate"));
 }

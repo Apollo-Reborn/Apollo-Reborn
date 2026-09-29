@@ -7,8 +7,10 @@
 
 #import "ApolloDirectChatWeb.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
 #import "ApolloListLayoutSupport.h"
+#import "ApolloMessageDraftStore.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloWebSessionLoginViewController.h"
@@ -16,6 +18,7 @@
 #import "UserDefaultConstants.h"
 #import "ipad/ApolloPaneLayout.h"
 
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #import <WebKit/WebKit.h>
 #import <math.h>
 #import <objc/message.h>
@@ -357,6 +360,17 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // The :host(.tooltip) guard restricts the arrow rule to tooltip poppers;
         // menu/popover arrows and aria-label/aria-describedby stay untouched.
         "const chatTouchLayout=()=>mailRoute()?'':'@media (hover:none),(pointer:coarse){[role=tooltip],:host(.tooltip) .popup--arrow[part=arrow]{display:none!important;}}';"
+        // The same sizes fixChatListTypography (below) writes inline, as
+        // stylesheet rules scoped to the list rows' own shadow trees. Reddit
+        // rebuilds every row when a room gives way to the list, and the
+        // rebuilt rows painted at Reddit's 12px until the next sweep reached
+        // them — a visible text-size pop on every in-page Back tap once the
+        // list chrome stopped covering for it. The stylesheet lands in each
+        // new row's shadow root at attachShadow time, so the rows are sized
+        // before their first paint. Gated on the embedded Messages flag, not
+        // the route: the flag is set once the list hydrates and outlives a
+        // room visit, and the rows it targets exist only in the list.
+        "const listTypography=()=>window.__apolloEmbeddedInboxMessages?':host(rs-rooms-nav-room) .room-name{font-size:15px!important;line-height:20px!important;}:host(rs-rooms-nav-room) .last-message{font-size:14px!important;line-height:20px!important;}:host(rs-rooms-nav-room) .last-message-time{font-size:12px!important;line-height:20px!important;}':'';"
         // fixEmbeddedMessagesChrome (below) hides Reddit's redundant list rows
         // with inline styles, but only after the elements exist and a sweep has
         // run — one visible frame of Requests/Threads rows and filter chips
@@ -367,7 +381,19 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // Scoped to the root list route: Requests/Threads crop their redundant
         // chrome natively and must keep those rows in layout, and on room
         // routes the background list pane keeps the sweep's inline styles.
-        "const embeddedChrome=()=>window.__apolloEmbeddedInboxMessages&&chatListRoute()?'li[data-testid=requests-button],li[data-testid=threads-button],rs-rooms-nav-filter-chips{display:none!important;}':'';"
+        // Reddit rebuilds the whole list nav (rs-rooms-nav and its shadow
+        // tree) when a room gives way to the list, and the URL still reads
+        // the room for the first beat of that flip (until the click
+        // interception's history.back() lands). Gating these rules on the
+        // list route left the rebuilt nav's stylesheet without them, so
+        // Reddit's header, filter chip and Threads row painted for a few
+        // frames on every in-page Back tap. The rules apply whenever the
+        // Messages list is embedded — off the list route nothing they match
+        // exists — and the stylesheet lands in every new shadow root at
+        // attachShadow time, before its first paint. The header is Reddit's
+        // own top row (the one holding its home link), the same element
+        // fixEmbeddedMessagesChrome walks up to.
+        "const embeddedChrome=()=>window.__apolloEmbeddedInboxMessages?'li[data-testid=requests-button],li[data-testid=threads-button],rs-rooms-nav-filter-chips,:host(rs-rooms-nav)>div:has(a[aria-label=\"Go to Reddit home\"]){display:none!important;}':'';"
         // Every keystroke in the Modmail reply box makes Reddit re-render the
         // composer header, which REPLACES the "Reply as r/…" avatar with a
         // brand-new <img> carrying the same src. A fresh element re-runs the
@@ -398,7 +424,15 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
             "--color-tone-1:${palette.text}!important;--color-tone-2:${palette.secondaryText}!important;--color-tone-3:${palette.secondaryText}!important;--color-tone-4:${palette.separator}!important;--color-tone-5:${palette.tertiary}!important;--color-tone-6:${palette.secondary}!important;--color-tone-7:${palette.primary}!important;"
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
         "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${textScale()}%!important;text-size-adjust:${textScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
-        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}${chatTouchLayout()}${embeddedChrome()}${mailAvatarHold()}`;"
+        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}${chatTouchLayout()}${embeddedChrome()}${listTypography()}${mailAvatarHold()}"
+        // A press-and-hold on a chat-list row used to bring up WebKit's stock
+        // link menu — the rows are links to Reddit's client-side /room/… routes,
+        // which do not exist as pages, so the preview was a 404 — and start a
+        // text selection in the row. Neither is an Apollo action; the rows opt
+        // out of both (inherited into each row's shadow tree). Links inside
+        // messages keep their menu.
+        "rs-rooms-nav-room,rs-threads-view-thread{-webkit-touch-callout:none!important;-webkit-user-select:none!important;user-select:none!important;}"
+        ":host(rs-rooms-nav-room) a,:host(rs-threads-view-thread) a{-webkit-touch-callout:none!important;}`;"
         "const themeRoot=r=>{if(!r)return;let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)return;target.appendChild(s);}const next=css();if(s.textContent!==next)s.textContent=next;};"
         "let sweepScheduled=false;const scheduleSweep=()=>{if(sweepScheduled)return;sweepScheduled=true;requestAnimationFrame(()=>{sweepScheduled=false;window.__apolloChatEnhancementSweep?.();});};window.__apolloChatScheduleSweep=scheduleSweep;"
         // Tapping Send media currently lets Reddit focus the contenteditable
@@ -442,6 +476,19 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // hidden element reports an all-zero rect that would otherwise pass
         // the top-left test.
         "const isChatBackControl=node=>{if(!(node instanceof Element)||!node.matches?.('button,[role=button],a'))return false;const rect=node.getBoundingClientRect();if(rect.width<=0||rect.height<=0)return false;if(rect.top>140||rect.left>120)return false;const marker=[node.getAttribute('aria-label'),node.getAttribute('title'),node.getAttribute('data-testid'),node.textContent].filter(Boolean).join(' ').replace(/\\s+/g,' ').trim().toLowerCase();return /(^|[\\s_-])back([\\s_-]|$)/.test(marker)||!!node.querySelector('[icon-name*=back i],[name*=back i],[aria-label*=back i]');};"
+        // Page-side surface report for the native side (see the controller's
+        // pageConversationVisible): whether a conversation pane is on screen,
+        // judged by the same in-room Back control the swipe driver clicks,
+        // narrowed to a compact control so a full-width list row whose preview
+        // happens to contain the word "back" can never read as a room. Only
+        // the root list and conversation routes are judged — Reddit's Requests
+        // and Threads lists carry their own header Back control, so they always
+        // report no room. Posted only when the answer (or the path it was
+        // judged under) changes, from the enhancement sweep: every pane flip is
+        // a DOM mutation, so the observers deliver it within a frame.
+        "const compactChatBackControlVisible=()=>{for(const r of roots())for(const node of r.querySelectorAll('button,[role=button],a')){if(!isChatBackControl(node))continue;const rect=node.getBoundingClientRect();if(rect.width<=120&&rect.height<=80)return true;}return false;};"
+        "window.__apolloChatBackControlVisible=compactChatBackControlVisible;"
+        "window.__apolloChatReportSurface=()=>{if(mailRoute())return;const path=location.pathname;const judged=/^\\/chat\\/?$/.test(path)||path.startsWith('/chat/room/')||path.startsWith('/chat/user/')||/^\\/chat\\/threads\\/[^/]+/.test(path);const room=judged&&compactChatBackControlVisible();const key=(room?'1':'0')+path;if(window.__apolloChatSurfaceKey===key)return;window.__apolloChatSurfaceKey=key;try{window.webkit?.messageHandlers?.apolloChatSurface?.postMessage({room,path});}catch(e){}};"
         // Native swipe-back driver. A back gesture inside a conversation must
         // do exactly what tapping that control does — Reddit's own pane flip
         // plus the interception below (a capture-phase click listener; a
@@ -460,9 +507,16 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // than a slow return, and leaving the URL alone is exactly what lets
         // the native net do a real navigation instead.
         "window.__apolloChatBackHandledAt=Date.now();"
-        "setTimeout(()=>{if(location.pathname!==from)return;for(const r of roots())for(const node of r.querySelectorAll('button,[role=button],a'))if(isChatBackControl(node))return;history.back();},90);"
+        // A room the route never reported leaves the URL already on the list;
+        // there is nothing to repair then, and a history.back() would step
+        // PAST the list. Only a URL that still reads the conversation is
+        // repaired.
+        "setTimeout(()=>{if(location.pathname!==from)return;for(const r of roots())for(const node of r.querySelectorAll('button,[role=button],a'))if(isChatBackControl(node))return;if(!from.startsWith('/chat/room/')&&!from.startsWith('/chat/user/')&&!/^\\/chat\\/threads\\/[^/]+/.test(from))return;history.back();},90);"
         "return 'clicked';};"
-        "const redirectEmbeddedRoomBack=event=>{if(mailRoute()||!window.__apolloEmbeddedInboxMessages)return;if((window.__apolloEmbeddedSection||'messages')!=='messages')return;if(!location.pathname.startsWith('/chat/room/'))return;for(const node of event.composedPath?.()||[]){if(!isChatBackControl(node))continue;"
+        // The new-chat pane (/chat/user/<id>, reached from a profile's
+        // envelope when there is no room yet) has the same Back control and
+        // the same pane flip, and its URL stayed put in exactly the same way.
+        "const redirectEmbeddedRoomBack=event=>{if(mailRoute()||!window.__apolloEmbeddedInboxMessages)return;if((window.__apolloEmbeddedSection||'messages')!=='messages')return;if(!location.pathname.startsWith('/chat/room/')&&!location.pathname.startsWith('/chat/user/'))return;for(const node of event.composedPath?.()||[]){if(!isChatBackControl(node))continue;"
         "const from=location.pathname;"
         // The pass-through branch cannot stopImmediatePropagation (that would
         // also swallow Reddit's own pane-flip handler), so the same tap
@@ -545,7 +599,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
         // Collect avatar sources BEFORE themeRoots() so a newly seen icon lands
         // in the stylesheet on the same sweep that first sees it.
-        "const sweep=()=>{const mailAvatars=collectMailAvatarSrcs();themeRoots();const giphyGrids=fixGiphy();return {roots:roots().length,mailAvatars,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),bottomAllowance:fixBottomAllowance(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
+        "const sweep=()=>{const mailAvatars=collectMailAvatarSrcs();themeRoots();const giphyGrids=fixGiphy();const result={roots:roots().length,mailAvatars,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),bottomAllowance:fixBottomAllowance(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};window.__apolloChatReportSurface?.();return result;};"
         "window.__apolloChatEnhancementSweep=sweep;"
         // The hidden preloaded Inbox hub reports document.hidden=true (WebKit
         // derives page visibility from the view hierarchy), so gate the
@@ -659,7 +713,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     ApolloModernMailboxKindModmail,
 };
 
-@interface ApolloDirectChatWebViewController : UIViewController <WKNavigationDelegate, WKUIDelegate>
+@interface ApolloDirectChatWebViewController : UIViewController <WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) UIView *loadingView;
@@ -726,6 +780,12 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // this still frame stands in for it while the drag runs, and is swapped for
 // the live (identical) list once the panes have actually flipped.
 @property (nonatomic, strong) UIView *conversationBackSnapshot;
+// When conversationBackSnapshot was captured by a touch on the list (0 for a
+// frame the route observer captured). A room opened by a tap keeps the
+// touch-time frame: it predates the row's pressed highlight and the web
+// view's move to the room geometry, both of which the route-time frame
+// would carry.
+@property (nonatomic, assign) NSTimeInterval conversationBackSnapshotTouchAt;
 @property (nonatomic, strong) UIView *conversationBackDimView;
 @property (nonatomic, assign) BOOL conversationBackInteractive;
 @property (nonatomic, assign) CGFloat conversationBackDirection;
@@ -734,6 +794,41 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // newer drag has already claimed these views — the same guard the hub's
 // sInboxSwipeGeneration gives the tab-switch pages.
 @property (nonatomic, assign) NSUInteger conversationBackGeneration;
+// What the page itself shows, reported by the enhancement script whenever it
+// changes: YES while Reddit's in-room Back control is on screen, i.e. a
+// conversation pane is the visible surface. The URL observer is the primary
+// route source, but a room opened from the list is a same-document SPA
+// transition, and on a device (iOS 26.6) that transition has been seen to
+// deliver no URL change at all: the room was on screen while every route read
+// still said "/chat", so a back swipe switched to Notifications instead of
+// returning to the list, and the tab bar stayed over the composer. The page
+// report closes that gap — the swipe hierarchy and the room treatments key
+// on either source (apollo_isInsideConversation).
+@property (nonatomic, assign) BOOL pageConversationVisible;
+// YES while the room treatments (tab bar, composer inset) came from the page
+// report because the route never reported the room; cleared when the route
+// catches up or the page reports the list again.
+@property (nonatomic, assign) BOOL pageConversationTreatmentsApplied;
+// A conversation asked for while the Messages list was not the live surface
+// (another section up, a room still open, a load in flight): the list is
+// brought up first and the reveal opens this in place. Stamped so a reveal
+// that arrives much later (a failed load retried by hand) never pops a room
+// nobody asked for any more.
+@property (nonatomic, copy) NSString *pendingInPlaceConversationPath;
+@property (nonatomic, assign) NSTimeInterval pendingInPlaceConversationQueuedAt;
+// A room queued as a controller's destination waits for its FIRST document
+// however long that takes (a failed load retried by hand included); only a
+// room queued behind a list switch expires.
+@property (nonatomic, assign) BOOL pendingInPlaceConversationWaitsForFirstDocument;
+// YES while the loading cover is kept up past the list reveal because a
+// conversation is queued behind that list: the list loads and paints under
+// the cover, the room opens in place, and the room's own reveal lifts the
+// cover — so a room opened from outside the list never shows the list on
+// its way in.
+@property (nonatomic, assign) BOOL holdsLoadingCoverForQueuedConversation;
+// An embedded controller whose hub is pushed on its own (no Inbox host):
+// takes the stand-alone back-pan, since no host mode-pan exists for it.
+@property (nonatomic, assign) BOOL hostedByStandaloneHub;
 // A fresh, isolated WKWebView can leave Reddit's Modmail bundle waiting
 // forever when /mail/all is its very first document. Prime the authenticated
 // reddit.com client through the known-good Chat route, then replace it with
@@ -767,6 +862,20 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // Set once a standalone mailbox discovers its seeded account is no longer the
 // active one; the controller blanks itself and leaves its navigation stack.
 @property (nonatomic, assign) BOOL sessionIdentityInvalidated;
+// requestId -> immutable account/room/snapshot record. Reddit clears the
+// composer optimistically, so the record is the authority until THIS exact
+// Matrix request reports a success or failure.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *pendingDraftSends;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *draftEmptyClearGenerations;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *draftContentGenerations;
+// Last mutation per opaque key. Coalescing keeps Keychain I/O off the typing
+// path while a lifecycle flush makes a quick room exit durable.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *pendingDraftWrites;
+// One Keychain read per room visit. Repeated hydration/reveal callbacks may
+// probe for a composer, but a missing draft must not trigger 21 reads.
+@property (nonatomic, strong) NSMutableSet<NSString *> *draftRestoreAttemptedKeys;
+@property (nonatomic, copy) NSString *draftRestoreRoute;
+@property (nonatomic, assign) NSUInteger draftRestoreGeneration;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
 - (BOOL)apollo_isModmailListURL:(NSURL *)url;
@@ -781,6 +890,15 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_finishModmailTransitionForGeneration:(NSUInteger)generation;
 - (BOOL)apollo_isChatConversationPath:(NSString *)path;
 - (NSString *)apollo_currentChatPath;
+- (BOOL)apollo_isInsideConversation;
+- (void)apollo_notePageConversationVisible:(BOOL)visible reportedPath:(NSString *)reportedPath;
+- (void)apollo_reconcilePageSurfaceReportedPath:(NSString *)reportedPath;
+- (void)apollo_noteTouchBeganOnPage;
+- (void)apollo_resettleEmbeddedListForPath:(NSString *)path;
+- (void)apollo_repairRouteAfterPageLeftConversation:(NSString *)routePath;
+- (void)apollo_openPendingInPlaceConversationIfReady;
+- (void)apollo_openQueuedConversation:(NSString *)pending attempt:(NSUInteger)attempt;
+- (void)apollo_releaseLoadingCoverIfHeld;
 - (BOOL)apollo_goBackToConversationList;
 - (void)apollo_captureConversationBackSnapshot;
 - (BOOL)apollo_beginInteractiveConversationBack;
@@ -800,6 +918,10 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
                                                    attempt:(NSUInteger)attempt;
 - (void)apollo_cancelChatTransition;
 - (void)apollo_revealChat;
+- (void)apollo_openConversationPath:(NSString *)path;
+- (void)apollo_loadConversationPath:(NSString *)validated;
+- (void)apollo_confirmInPlaceConversationOpen:(NSString *)validated attempt:(NSUInteger)attempt;
+- (void)apollo_performHeaderAction:(ApolloModernChatHeaderAction)action;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 - (void)apollo_showAuthenticationError:(NSString *)detail automaticallyPrompt:(BOOL)automaticallyPrompt;
@@ -820,6 +942,21 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_applicationWillResignActive:(NSNotification *)notification;
 - (void)apollo_enableNativeScrollBounce;
 - (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance;
+- (BOOL)apollo_validateDraftPath:(NSString *)path;
+- (void)apollo_handleDraftMessage:(NSDictionary *)body;
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt;
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt generation:(NSUInteger)generation;
+- (BOOL)apollo_draftSessionIsCurrentForAccount:(NSString *)account
+                                          path:(NSString *)path
+                                    generation:(NSUInteger)generation;
+- (void)apollo_scheduleDraftWriteForAccount:(NSString *)account
+                                conversation:(NSString *)conversation
+                                        text:(NSString *)text
+                                   opaqueKey:(NSString *)opaqueKey;
+- (void)apollo_flushPendingDraftWrites;
+- (void)apollo_invalidateEmptyDraftClearForKey:(NSString *)opaqueKey;
+- (BOOL)apollo_hasPendingDraftSendForOpaqueKey:(NSString *)opaqueKey
+                             contentGeneration:(NSUInteger)contentGeneration;
 @end
 
 // A CSS overflow scroller inside WKWebView is represented by a private
@@ -923,11 +1060,152 @@ static NSHashTable<UIGestureRecognizer *> *sStandaloneChatBackPanWired = nil;
 static BOOL sStandaloneChatBackInteractive = NO;   // NO = the release takes the instant step
 static void ApolloStandaloneChatBackPanInstall(ApolloDirectChatWebViewController *controller);
 static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewController *controller);
+// The most recently created mailbox controller: its cookie jar is the bearer
+// source the chat poller and room directory read (see the %ctor registration).
+static __weak ApolloDirectChatWebViewController *sLatestMailboxWebController = nil;
+
+// Reddit's Create Chat page lives under the room route prefix, so it is a
+// conversation for every route decision (tab bar, swipe back) — but not a
+// room that settles: it focuses its username field at once, and the
+// keyboard and field animations keep the settle probe's signature moving
+// until its timeout, which held a blank cover for seconds. It gets Reddit's
+// own transition instead of the cover.
+static BOOL ApolloChatPathIsComposer(NSString *path) {
+    return [path isEqualToString:@"/chat/room/create"] ||
+        [path isEqualToString:@"/chat/room/create/"];
+}
+
+// A JavaScript string literal for `string` (JSON escaping covers quotes,
+// backslashes and line terminators).
+static NSString *ApolloDirectChatJSStringLiteral(NSString *string) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[string ?: @""] options:0 error:nil];
+    NSString *array = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    if (array.length < 2) return @"\"\"";
+    return [array substringWithRange:NSMakeRange(1, array.length - 2)];
+}
+
+ApolloModernChatMessagesFilter ApolloModernChatCurrentMessagesFilter(void) {
+    NSString *name = [[NSUserDefaults standardUserDefaults] stringForKey:UDKeyChatMessagesFilter];
+    if ([name isEqualToString:@"group"]) return ApolloModernChatMessagesFilterGroup;
+    if ([name isEqualToString:@"all"]) return ApolloModernChatMessagesFilterAll;
+    return ApolloModernChatMessagesFilterDirect;
+}
+
+BOOL ApolloModernChatMessagesUnreadOnly(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyChatMessagesUnreadOnly];
+}
+
+static NSString *ApolloModernChatMessagesFilterName(ApolloModernChatMessagesFilter filter) {
+    switch (filter) {
+        case ApolloModernChatMessagesFilterGroup: return @"group chats";
+        case ApolloModernChatMessagesFilterAll: return @"all chats";
+        case ApolloModernChatMessagesFilterDirect:
+        default: return @"direct chats";
+    }
+}
+
+// Name of the page's surface report (see pageConversationVisible).
+static NSString * const ApolloDirectChatSurfaceMessageName = @"apolloChatSurface";
+static NSString * const ApolloDirectChatDraftMessageName = @"apolloChatDraft";
+
+static NSString *ApolloCanonicalChatDraftPath(NSString *path) {
+    return [path isKindOfClass:[NSString class]] ? (path.stringByRemovingPercentEncoding ?: path) : nil;
+}
+
+// Keychain writes can occasionally block while securityd wakes or evaluates a
+// protection class. Serialize them off the main queue: ordering is preserved
+// (save -> send-success clear, or save -> manual-clear), while typing stays
+// entirely on WebKit/UIKit's input path.
+static void ApolloDirectChatPersistDraft(NSString *account, NSString *conversation, NSString *text, NSUInteger storeGeneration, NSUInteger accountGeneration) {
+    ApolloMessageDraftStoreAsync(^{
+        ApolloMessageDraftStoreTextIfCurrent(account, conversation, text, storeGeneration, accountGeneration);
+    });
+}
+
+static void ApolloDirectChatClearDraft(NSString *account, NSString *conversation) {
+    ApolloMessageDraftStoreAsync(^{
+        ApolloMessageDraftClear(account, conversation);
+    });
+}
+
+static void ApolloDirectChatLoadDraft(NSString *account,
+                                      NSString *conversation,
+                                      void (^completion)(NSString *draft)) {
+    ApolloMessageDraftStoreAsync(^{
+        NSString *draft = ApolloMessageDraftLoadText(account, conversation);
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(draft); });
+    });
+}
+
+// This isolated script does only draft bookkeeping. Keeping it separate from
+// the theme/layout script makes the privacy boundary auditable: it transmits
+// the current room path, draft text, and a matched send response status, never
+// cookies, account tokens, DOM HTML, or message history.
+static NSString *ApolloDirectChatDraftScript(void) {
+    return @"(()=>{if(window.__apolloChatDraftHook)return;window.__apolloChatDraftHook=1;"
+        "const bridge=payload=>{try{window.webkit?.messageHandlers?.apolloChatDraft?.postMessage(payload)}catch(e){}};"
+        "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const n of r.querySelectorAll?.('*')||[])if(n.shadowRoot)visit(n.shadowRoot)};visit(document);return out};"
+        "const conversationPath=()=>{const p=location.pathname||'';return /^\\/chat\\/room\\/(?!create\\/?$)[^\\/?#]+\\/?$/.test(p)||/^\\/chat\\/user\\/[^\\/?#]+\\/?$/.test(p)||/^\\/chat\\/threads\\/[^\\/?#]+\\/?$/.test(p)};"
+        "const visible=e=>{const r=e?.getBoundingClientRect?.();return !!r&&r.width>0&&r.height>0};"
+        "const entryValue=e=>e?.matches?.('[contenteditable=true]')?(e.innerText||e.textContent||''):(e?.value||'');"
+        // Reddit's room composer has a visible, exact "Send message" control
+        // in its component tree. Requiring both that control and a real room
+        // route excludes the Create Chat recipient/search boxes and headers.
+        "const composer=e=>{if(!conversationPath()||!visible(e)||!e?.matches?.('textarea,[contenteditable=true],[role=textbox]'))return false;if(e.getRootNode?.()?.host?.getAttribute?.('composer-type')==='thread')return false;for(const r of roots())for(const b of r.querySelectorAll?.('[aria-label=\"Send message\"],button[title=\"Send message\"]')||[])if(visible(b))return true;return false};"
+        "const snapshot=()=>{for(const r of roots())for(const e of r.querySelectorAll?.('textarea,[contenteditable=true],[role=textbox]')||[])if(composer(e))return {path:location.pathname||'',text:entryValue(e)};return null};"
+        "window.__apolloChatDraftComposerSnapshot=snapshot;"
+        "window.__apolloChatDraftRestore=(path,text)=>{const now=snapshot();if(!now||now.path!==path||now.text)return false;for(const r of roots())for(const e of r.querySelectorAll?.('textarea,[contenteditable=true],[role=textbox]')||[]){if(!composer(e))continue;if(e.matches('[contenteditable=true]'))e.textContent=text;else e.value=text;e.dispatchEvent(new InputEvent('input',{bubbles:true,composed:true,inputType:'insertText',data:text}));return true}return false};"
+        "let serial=0,requestSerial=0,current=null,lastNonempty=null,retryCandidate=null;const remember=e=>{if(!composer(e))return;current={path:location.pathname||'',text:entryValue(e),serial:++serial,at:Date.now()};if(current.text)lastNonempty={...current};bridge({kind:'changed',path:current.path,text:current.text,serial:current.serial})};"
+        "document.addEventListener('input',e=>remember(e.composedPath?.()[0]||e.target),true);"
+        // The current authenticated client uses Matrix v3's standard event-send
+        // API: PUT /_matrix/client/v3/rooms/<room>/send/m.room.message/<txn>.
+        // Its text event payload is exactly {msgtype:'m.text',body:<draft>}.
+        "const endpoint=(method,url)=>{try{const u=new URL(url,location.href);return method==='PUT'&&u.hostname==='matrix.redditspace.com'&&/^\\/_matrix\\/client\\/v3\\/rooms\\/[^/]+\\/send\\/m\\.room\\.message\\/[^/?#]+$/.test(u.pathname)}catch(e){return false}};"
+        // Reddit may clear the composer immediately before starting fetch. Keep
+        // that last value only for a short correlation window. A failed send
+        // gets a bounded exception for Reddit's same-transaction retry, but a
+        // different transaction or newly typed content cannot reuse it.
+        "const candidate=(method,url,body)=>{if(!lastNonempty?.text||lastNonempty.path!==(location.pathname||'')||!endpoint(method,url))return null;try{const payload=typeof body==='string'?JSON.parse(body):body;if(payload?.msgtype!=='m.text'||payload.body!==lastNonempty.text)return null;const txnId=new URL(url,location.href).pathname.split('/').pop(),retryLive=retryCandidate&&Date.now()-retryCandidate.failedAt<=10000,retry=retryLive&&retryCandidate.txnId===txnId&&retryCandidate.serial===lastNonempty.serial&&retryCandidate.path===lastNonempty.path&&retryCandidate.text===lastNonempty.text;if(retryLive&&retryCandidate.txnId===txnId&&retryCandidate.serial!==lastNonempty.serial)return null;const cleared=current&&!current.text&&(current.path!==lastNonempty.path||current.serial<=lastNonempty.serial||Date.now()-current.at>750);if(cleared&&!retry){if(!retryLive){lastNonempty=null;retryCandidate=null}return null}return {...lastNonempty,requestId:`send-${Date.now()}-${++requestSerial}`,txnId}}catch(e){}return null};"
+        "const notify=(kind,c,status)=>{if(!c)return;const success=kind==='send'&&status>=200&&status<300;if(success&&lastNonempty?.serial===c.serial)lastNonempty=null;if(success&&retryCandidate?.serial===c.serial)retryCandidate=null;else if(!success&&(kind==='send'||kind==='failed')&&lastNonempty?.serial===c.serial)retryCandidate={txnId:c.txnId,serial:c.serial,path:c.path,text:c.text,failedAt:Date.now()};bridge({kind,requestId:c.requestId,path:c.path,text:c.text,serial:c.serial,txnId:c.txnId||'',status:status||0})};"
+        "const originalFetch=window.fetch;if(originalFetch)window.fetch=function(...args){const request=args[0],init=args[1]||{},method=(init.method||request?.method||'GET').toUpperCase(),url=typeof request==='string'?request:(request instanceof Request?request.url:String(request));const c=candidate(method,url,init.body);if(c)notify('sending',c);let p;try{p=originalFetch.apply(this,args)}catch(e){notify('failed',c);throw e}return p.then(response=>{notify('send',c,response.status);return response},error=>{notify('failed',c);throw error})};"
+        "const originalOpen=XMLHttpRequest.prototype.open,originalSend=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url,...args){this.__apolloDraftMethod=(method||'GET').toUpperCase();this.__apolloDraftURL=url;return originalOpen.call(this,method,url,...args)};XMLHttpRequest.prototype.send=function(body){const c=candidate(this.__apolloDraftMethod,this.__apolloDraftURL,body);if(c){notify('sending',c);let done=false;const settle=(kind,status)=>{if(done)return;done=true;notify(kind,c,status)};this.addEventListener('loadend',()=>settle(this.status>=200&&this.status<300?'send':'failed',this.status),{once:true});this.addEventListener('error',()=>settle('failed',0),{once:true});this.addEventListener('abort',()=>settle('failed',0),{once:true});this.addEventListener('timeout',()=>settle('failed',0),{once:true})}return originalSend.call(this,body)};"
+        "})()";
+}
+
+// WKUserContentController retains its script message handlers; routing them
+// through a weak proxy keeps the web view's configuration from retaining the
+// controller back (which would keep its status timer and observers alive
+// forever).
+@interface ApolloDirectChatScriptMessageProxy : NSObject <WKScriptMessageHandler>
+@property (nonatomic, weak) id<WKScriptMessageHandler> target;
+@end
+
+@implementation ApolloDirectChatScriptMessageProxy
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    [self.target userContentController:userContentController didReceiveScriptMessage:message];
+}
+@end
+
+// Watches touches without taking them: reports the first touch of every
+// sequence and fails at once, so no other recognizer ever waits on it.
+@interface ApolloDirectChatTouchObserver : UIGestureRecognizer
+@property (nonatomic, copy) void (^onTouchBegan)(void);
+@end
+
+@implementation ApolloDirectChatTouchObserver
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    if (self.onTouchBegan) self.onTouchBegan();
+    self.state = UIGestureRecognizerStateFailed;
+}
+@end
 
 @implementation ApolloDirectChatWebViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    sLatestMailboxWebController = self;
     self.title = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Reddit Chat";
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = UIColor.systemBackgroundColor;
@@ -950,6 +1228,35 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
                   forKeyPath:@"URL"
                      options:NSKeyValueObservingOptionNew
                      context:ApolloDirectChatWebViewURLContext];
+    // The page reports which surface it shows (pageConversationVisible). The
+    // web view's configuration is a copy, but its user content controller is
+    // the shared object the user scripts are added to below.
+    ApolloDirectChatScriptMessageProxy *surfaceProxy = [ApolloDirectChatScriptMessageProxy new];
+    surfaceProxy.target = self;
+    [self.webView.configuration.userContentController addScriptMessageHandler:surfaceProxy
+                                                                         name:ApolloDirectChatSurfaceMessageName];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        ApolloDirectChatScriptMessageProxy *draftProxy = [ApolloDirectChatScriptMessageProxy new];
+        draftProxy.target = self;
+        [self.webView.configuration.userContentController addScriptMessageHandler:draftProxy
+                                                                             name:ApolloDirectChatDraftMessageName];
+    }
+    self.pendingDraftSends = [NSMutableDictionary dictionary];
+    self.draftEmptyClearGenerations = [NSMutableDictionary dictionary];
+    self.draftContentGenerations = [NSMutableDictionary dictionary];
+    self.pendingDraftWrites = [NSMutableDictionary dictionary];
+    self.draftRestoreAttemptedKeys = [NSMutableSet set];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        // See apollo_noteTouchBeganOnPage. Recognizers on this view receive
+        // every touch that lands in the web view's subtree.
+        ApolloDirectChatTouchObserver *touchObserver = [ApolloDirectChatTouchObserver new];
+        touchObserver.cancelsTouchesInView = NO;
+        touchObserver.delaysTouchesBegan = NO;
+        touchObserver.delaysTouchesEnded = NO;
+        __weak typeof(self) weakSelf = self;
+        touchObserver.onTouchBegan = ^{ [weakSelf apollo_noteTouchBeganOnPage]; };
+        [self.view addGestureRecognizer:touchObserver];
+    }
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     self.webView.allowsBackForwardNavigationGestures = YES;
     self.webView.opaque = YES;
@@ -1222,10 +1529,15 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
     // controller's pair so the immortal pan can never message a dead host
     // (removeTarget: matches by pointer — a no-op for every other host).
     ApolloStandaloneChatBackPanForgetHost(self);
+    [self apollo_flushPendingDraftWrites];
     [self.chatStatusRefreshTimer invalidate];
     [self.webView removeObserver:self
                      forKeyPath:@"URL"
                         context:ApolloDirectChatWebViewURLContext];
+    [self.webView.configuration.userContentController
+        removeScriptMessageHandlerForName:ApolloDirectChatSurfaceMessageName];
+    [self.webView.configuration.userContentController
+        removeScriptMessageHandlerForName:ApolloDirectChatDraftMessageName];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -1256,6 +1568,30 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
                 [self apollo_beginModmailTransitionToURL:url isList:isList];
             }
         }
+        // Grab the list frame an interactive back will reveal BEFORE the
+        // chrome update below moves the web view to the room geometry (top
+        // offset 0, composer inset). A frame placed at the web view's frame
+        // after that move sat the aligned list offset (~3pt) above where the
+        // live list returns, so the list hopped down by that much when the
+        // frame faded. The touch that opened the room has usually captured
+        // this frame already (apollo_noteTouchBeganOnPage), without the
+        // pressed highlight the tapped row shows by the time the route
+        // changes — keep a fresh touch frame; only a room opened without a
+        // touch (queued conversation, notification, deep link) needs the
+        // route-time capture.
+        if (self.mailboxKind == ApolloModernMailboxKindChat && url &&
+            [self apollo_isChatConversationPath:path] &&
+            ![self apollo_isChatConversationPath:previousPath] &&
+            !self.pageConversationTreatmentsApplied) {
+            NSTimeInterval sinceTouch = [NSDate date].timeIntervalSince1970 -
+                self.conversationBackSnapshotTouchAt;
+            BOOL freshTouchFrame = self.conversationBackSnapshot != nil &&
+                self.conversationBackSnapshotTouchAt > 0.0 && sinceTouch < 1.0;
+            if (!freshTouchFrame) [self apollo_captureConversationBackSnapshot];
+            ApolloLog(@"[DirectChatWeb] Conversation back frame: %@ (list frame y=%.1f)",
+                      freshTouchFrame ? @"kept the touch-time frame" : @"captured at the route change",
+                      self.webView.frame.origin.y);
+        }
         [self apollo_updateTabBarVisibilityForURL:url animated:NO];
         [self apollo_updateEmbeddedWebChromeForURL:url];
         if (self.mailboxKind == ApolloModernMailboxKindChat && url) {
@@ -1263,6 +1599,17 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
             BOOL wasConversation = [self apollo_isChatConversationPath:previousPath];
             BOOL previousWasRootList = [previousPath isEqualToString:@"/chat"] ||
                 [previousPath isEqualToString:@"/chat/"];
+            // Whether the page already showed this room before the route
+            // reported it (pageConversationVisible): the room treatments are
+            // in place and the room has painted, so the route is only catching
+            // up — no fresh frame (it would be the room, not the list) and no
+            // cover (it would blank a room the user is reading).
+            BOOL pageAlreadyShowing = self.pageConversationTreatmentsApplied;
+            if (![path isEqualToString:previousPath]) {
+                ApolloLog(@"[DirectChatWeb] Chat route %@ -> %@%@",
+                          previousPath.length ? previousPath : @"(none)", path,
+                          pageAlreadyShowing ? @" (the page showed the room first)" : @"");
+            }
             if (isConversation && !wasConversation) {
                 // Record whether this room has the embedded Messages list as
                 // its same-document history entry. The enhancement script's
@@ -1276,11 +1623,8 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
                 // whatever the swipe driver did on the way out of the last one
                 // must not swallow the first back gesture in this one.
                 self.conversationBackIssuedAt = 0.0;
-                // Grab the list while it is still the rendered frame — this
-                // observer runs in the same turn as Reddit's pane swap, before
-                // the room paints and before the transition cover blanks the
-                // document — so an interactive back has something to reveal.
-                [self apollo_captureConversationBackSnapshot];
+                // The list frame an interactive back reveals was captured
+                // above, before the chrome update moved the web view.
                 // WebKit re-creates its content view (and the history edge
                 // recognizers on it) across navigations; entering a room is
                 // exactly when the standalone back-pan must already outrank
@@ -1288,12 +1632,14 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
                 ApolloStandaloneChatBackPanInstall(self);
             }
             if (isConversation) {
+                // The route owns the room again from here.
+                self.pageConversationTreatmentsApplied = NO;
                 // Same-document room switches sometimes deliver no policy
                 // callback at all; this observer is the fallback cover hook.
                 // Only a real path change counts — query/fragment mutations
                 // inside an already-revealed room must not re-cover it.
-                if (!self.chatTransitionPending && !self.webView.loading &&
-                    ![path isEqualToString:previousPath]) {
+                if (!pageAlreadyShowing && !self.chatTransitionPending && !self.webView.loading &&
+                    ![path isEqualToString:previousPath] && !ApolloChatPathIsComposer(path)) {
                     [self apollo_beginChatTransitionToURL:url isList:NO];
                 }
             } else if (self.chatTransitionPending && !self.chatTransitionIsList) {
@@ -1303,51 +1649,19 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
             }
             // A same-document return from a conversation (Reddit's pane flip
             // with the URL repaired by the intercepted back control, or the
-            // edge swipe) keeps the fully-hydrated list pane alive: no reload
-            // happens and the remembered crop is already correct, so only a
-            // delayed sanity re-measure runs — measuring immediately catches
-            // Reddit's flip mid-animation and mis-aligns the list by the
-            // transient geometry. The status capture is animation-independent
-            // and runs right away.
-            if (self.embeddedInInbox && self.didRevealChat && wasConversation &&
-                !isConversation && !self.webView.loading) {
-                BOOL nowRootList = [path isEqualToString:@"/chat"] ||
-                    [path isEqualToString:@"/chat/"];
-                BOOL nowThreadsList = [path isEqualToString:@"/chat/threads"] ||
-                    [path isEqualToString:@"/chat/threads/"];
-                if (nowRootList &&
-                    self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) {
-                    [self apollo_captureChatStatus];
-                }
-                if ((nowRootList &&
-                     self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) ||
-                    (nowThreadsList &&
-                     self.embeddedInboxSection == ApolloModernChatInboxSectionThreads)) {
-                    NSUInteger generation = self.readinessGeneration;
-                    __weak typeof(self) weakSelf = self;
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
-                                   dispatch_get_main_queue(), ^{
-                        __strong typeof(weakSelf) self = weakSelf;
-                        if (!self || generation != self.readinessGeneration) return;
-                        // The user may already be inside another room again;
-                        // measuring the hidden list pane would misplace the
-                        // crop under the conversation.
-                        NSString *currentPath = self.webView.URL.path ?: @"";
-                        BOOL stillRootList = [currentPath isEqualToString:@"/chat"] ||
-                            [currentPath isEqualToString:@"/chat/"];
-                        BOOL stillThreadsList = [currentPath isEqualToString:@"/chat/threads"] ||
-                            [currentPath isEqualToString:@"/chat/threads/"];
-                        if (stillRootList &&
-                            self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) {
-                            [self apollo_alignEmbeddedMessagesForGeneration:generation
-                                                                  completion:nil];
-                        } else if (stillThreadsList &&
-                                   self.embeddedInboxSection == ApolloModernChatInboxSectionThreads) {
-                            [self apollo_alignEmbeddedThreadsForGeneration:generation
-                                                                 completion:nil];
-                        }
-                    });
-                }
+            // edge swipe) keeps the fully-hydrated list pane alive; only the
+            // list's sanity pass runs.
+            if (wasConversation && !isConversation) {
+                [self apollo_resettleEmbeddedListForPath:path];
+                // If the room pane is in fact still on screen (the route
+                // dropped to the list under it), the page report restores
+                // the room treatments; in a normal return the page has
+                // reported the list well before this fires.
+                __weak typeof(self) weakSelf = self;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    [weakSelf apollo_reconcilePageSurfaceReportedPath:@"(route left the room)"];
+                });
             }
         }
         return;
@@ -1398,6 +1712,10 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
+    [self apollo_flushPendingDraftWrites];
+    self.draftRestoreRoute = nil;
+    self.draftRestoreGeneration += 1;
+    [self.draftRestoreAttemptedKeys removeAllObjects];
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
     if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
     // The tab bar is a shared UITabBarController state. Always hand it back
@@ -1433,6 +1751,7 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
 
 - (void)apollo_applicationWillResignActive:(NSNotification *)notification {
     (void)notification;
+    [self apollo_flushPendingDraftWrites];
     if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
 }
 
@@ -1542,6 +1861,12 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         initWithSource:ApolloDirectChatEnhancementScript(palette)
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart
         forMainFrameOnly:YES]];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        [contentController addUserScript:[[WKUserScript alloc]
+            initWithSource:ApolloDirectChatDraftScript()
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+            forMainFrameOnly:YES]];
+    }
 
     if (self.webView.URL) {
         NSString *script = ApolloDirectChatEnhancementScript(palette);
@@ -1552,11 +1877,15 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
                 ApolloLog(@"[DirectChatWeb] Applied Apollo theme and compact GIPHY grid");
             }
         }];
+        if (self.mailboxKind == ApolloModernMailboxKindChat) {
+            [self.webView evaluateJavaScript:ApolloDirectChatDraftScript() completionHandler:nil];
+        }
     }
 }
 
 - (void)apollo_showLoadingWithDetail:(NSString *)detail {
     self.loadStartedAt = [NSDate date];
+    self.holdsLoadingCoverForQueuedConversation = NO;
     self.authenticationRequired = NO;
     self.authenticationPromptAutomaticallyOffered = NO;
     self.reauthenticateButton.hidden = YES;
@@ -1995,6 +2324,10 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 - (BOOL)apollo_isChatConversationPath:(NSString *)path {
     if (self.mailboxKind != ApolloModernMailboxKindChat || path.length == 0) return NO;
     if ([path hasPrefix:@"/chat/room/"]) return YES;
+    // Reddit's chat-with-user route (what "start chat" on a profile opens): the
+    // existing direct room when there is one, else a new-chat pane with a
+    // composer — a conversation for every route treatment either way.
+    if ([path hasPrefix:@"/chat/user/"]) return YES;
     // Message-reply threads append the conversation identifier to the list
     // route (/chat/threads/<id>); the bare list stays a list.
     if ([path hasPrefix:@"/chat/threads/"]) {
@@ -2014,6 +2347,419 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     return self.lastObservedWebPath ?: (self.webView.URL.path ?: @"");
 }
 
+// YES while this controller is inside a conversation by EITHER source: the
+// route (URL observer) or the page's own report (pageConversationVisible).
+// Every swipe-hierarchy decision reads this rather than the route alone, so a
+// room the route never reported still climbs back to its list instead of
+// switching tabs or popping the screen.
+- (BOOL)apollo_isInsideConversation {
+    if (self.mailboxKind != ApolloModernMailboxKindChat) return NO;
+    return self.pageConversationVisible ||
+        [self apollo_isChatConversationPath:[self apollo_currentChatPath]];
+}
+
+// MARK: - Page surface report
+
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    NSDictionary *body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : nil;
+    if (![message.name isEqualToString:ApolloDirectChatSurfaceMessageName]) {
+        if ([message.name isEqualToString:ApolloDirectChatDraftMessageName]) {
+            [self apollo_handleDraftMessage:body];
+        }
+        return;
+    }
+    // Page content is data: only the two typed fields are read.
+    id room = body[@"room"];
+    NSString *path = [body[@"path"] isKindOfClass:[NSString class]] ? body[@"path"] : @"";
+    [self apollo_notePageConversationVisible:[room isKindOfClass:[NSNumber class]] && [room boolValue]
+                                reportedPath:path];
+}
+
+- (BOOL)apollo_validateDraftPath:(NSString *)path {
+    if (self.mailboxKind != ApolloModernMailboxKindChat || ![path isKindOfClass:[NSString class]]) return NO;
+    NSString *decodedPath = ApolloCanonicalChatDraftPath(path);
+    if (decodedPath.length == 0 || decodedPath.length > 1024 || ![decodedPath hasPrefix:@"/chat/"]) return NO;
+    // Do not accept a page-supplied room name unless WebKit's actual URL agrees.
+    // A rare route-reporting failure therefore skips persistence rather than
+    // risking one room's draft appearing in another room.
+    NSString *loadedPath = self.webView.URL.path ?: @"";
+    return [loadedPath isEqualToString:decodedPath] && [self apollo_isChatConversationPath:decodedPath];
+}
+
+- (void)apollo_scheduleDraftWriteForAccount:(NSString *)account
+                                conversation:(NSString *)conversation
+                                        text:(NSString *)text
+                                   opaqueKey:(NSString *)opaqueKey {
+    if (account.length == 0 || conversation.length == 0 || text.length == 0 || opaqueKey.length == 0) return;
+    NSUInteger generation = [self.pendingDraftWrites[opaqueKey][@"generation"] unsignedIntegerValue] + 1;
+    NSDictionary *write = @{ @"account": account, @"conversation": conversation,
+                              @"text": text, @"generation": @(generation),
+                              @"storeGeneration": @(ApolloMessageDraftStoreInvalidationGeneration()),
+                              @"accountGeneration": @(ApolloMessageDraftStoreAccountGeneration(account)) };
+    self.pendingDraftWrites[opaqueKey] = write;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) self = weakSelf;
+        NSDictionary *current = self.pendingDraftWrites[opaqueKey];
+        if (!self || ![current[@"generation"] isEqual:write[@"generation"]]) return;
+        [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+        NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+        if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat] ||
+            ![current[@"account"] isEqualToString:active]) {
+            ApolloLog(@"[ChatDraft] Discarded debounced write (modern chat disabled or account changed)");
+            return;
+        }
+        ApolloDirectChatPersistDraft(current[@"account"], current[@"conversation"], current[@"text"], [current[@"storeGeneration"] unsignedIntegerValue], [current[@"accountGeneration"] unsignedIntegerValue]);
+    });
+}
+
+- (void)apollo_flushPendingDraftWrites {
+    NSDictionary<NSString *, NSDictionary *> *writes = self.pendingDraftWrites.copy;
+    [self.pendingDraftWrites removeAllObjects];
+    [writes enumerateKeysAndObjectsUsingBlock:^(__unused NSString *key, NSDictionary *write, __unused BOOL *stop) {
+        NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+        if (![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat] ||
+            ![write[@"account"] isEqualToString:active]) {
+            ApolloLog(@"[ChatDraft] Discarded pending write (modern chat disabled or account changed)");
+            return;
+        }
+        ApolloDirectChatPersistDraft(write[@"account"], write[@"conversation"], write[@"text"], [write[@"storeGeneration"] unsignedIntegerValue], [write[@"accountGeneration"] unsignedIntegerValue]);
+    }];
+}
+
+- (void)apollo_invalidateEmptyDraftClearForKey:(NSString *)opaqueKey {
+    self.draftEmptyClearGenerations[opaqueKey] = @([self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue] + 1);
+}
+
+- (BOOL)apollo_hasPendingDraftSendForOpaqueKey:(NSString *)opaqueKey
+                             contentGeneration:(NSUInteger)contentGeneration {
+    for (NSDictionary *send in self.pendingDraftSends.allValues) {
+        if ([send[@"opaqueKey"] isEqualToString:opaqueKey] &&
+            ApolloMessageDraftSendOwnsContentGeneration([send[@"contentGeneration"] unsignedIntegerValue],
+                                                         contentGeneration)) return YES;
+    }
+    return NO;
+}
+
+- (void)apollo_handleDraftMessage:(NSDictionary *)body {
+    if (![body isKindOfClass:[NSDictionary class]] || self.sessionIdentityInvalidated ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat]) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (invalid or stale controller)");
+        return;
+    }
+    NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    NSString *account = self.username.lowercaseString ?: @"";
+    if (account.length == 0 || ![account isEqualToString:active]) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (account mismatch)");
+        return;
+    }
+    NSString *kind = [body[@"kind"] isKindOfClass:[NSString class]] ? body[@"kind"] : @"";
+    NSString *requestID = [body[@"requestId"] isKindOfClass:[NSString class]] ? body[@"requestId"] : @"";
+    NSString *path = [body[@"path"] isKindOfClass:[NSString class]] ? body[@"path"] : nil;
+    NSString *text = [body[@"text"] isKindOfClass:[NSString class]] ? body[@"text"] : nil;
+    if (![self apollo_validateDraftPath:path] || text.length > 100000) {
+        ApolloLog(@"[ChatDraft] Dropped bridge message (unverified route or length %lu)", (unsigned long)text.length);
+        return;
+    }
+    NSString *conversation = [@"web:" stringByAppendingString:ApolloCanonicalChatDraftPath(path)];
+    NSString *opaqueKey = ApolloMessageDraftOpaqueKey(account, conversation);
+    if (opaqueKey.length == 0) return;
+
+    if ([kind isEqualToString:@"sending"]) {
+        if (text.length > 0 && requestID.length > 0 && requestID.length <= 128) {
+            [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+            [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+            ApolloDirectChatPersistDraft(account, conversation, text, ApolloMessageDraftStoreInvalidationGeneration(), ApolloMessageDraftStoreAccountGeneration(account));
+            NSUInteger contentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+            self.pendingDraftSends[requestID] = @{ @"opaqueKey": opaqueKey, @"account": account,
+                                                   @"conversation": conversation, @"text": text,
+                                                   @"contentGeneration": @(contentGeneration) };
+            ApolloLog(@"[ChatDraft] Tracked send (%lu chars, generation %lu)", (unsigned long)text.length, (unsigned long)contentGeneration);
+        }
+        return;
+    }
+    if ([kind isEqualToString:@"send"] || [kind isEqualToString:@"failed"]) {
+        NSNumber *status = [body[@"status"] isKindOfClass:[NSNumber class]] ? body[@"status"] : nil;
+        NSDictionary *send = self.pendingDraftSends[requestID];
+        if (!send || ![send[@"opaqueKey"] isEqualToString:opaqueKey] ||
+            ![send[@"text"] isEqualToString:text]) return;
+        NSUInteger sentGeneration = [send[@"contentGeneration"] unsignedIntegerValue];
+        NSUInteger currentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+        BOOL ownsCurrentGeneration = ApolloMessageDraftShouldInvalidateEmptyClearForSendGeneration(sentGeneration, currentGeneration);
+        if (ownsCurrentGeneration) {
+            [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+            [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+        }
+        if ([kind isEqualToString:@"send"] && status &&
+            ApolloMessageDraftShouldClearForSendGeneration(status.integerValue, sentGeneration, currentGeneration)) {
+            ApolloDirectChatClearDraft(account, conversation);
+        }
+        [self.pendingDraftSends removeObjectForKey:requestID];
+        ApolloLog(@"[ChatDraft] Send %@ (%ld, newer=%d)", kind, (long)status.integerValue, !ownsCurrentGeneration);
+        return;
+    }
+    if (![kind isEqualToString:@"changed"]) return;
+    if (text.length > 0) {
+        [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+        self.draftContentGenerations[opaqueKey] = @([self.draftContentGenerations[opaqueKey] unsignedIntegerValue] + 1);
+        [self apollo_scheduleDraftWriteForAccount:account conversation:conversation text:text opaqueKey:opaqueKey];
+        return;
+    }
+    // Send buttons commonly clear the editor before their network request has
+    // resolved. Defer an empty-field deletion briefly; a matched send attempt
+    // keeps the draft on failures, while an intentional manual clear still
+    // removes it.
+    [self.pendingDraftWrites removeObjectForKey:opaqueKey];
+    [self apollo_invalidateEmptyDraftClearForKey:opaqueKey];
+    NSUInteger clearGeneration = [self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue];
+    NSUInteger contentGeneration = [self.draftContentGenerations[opaqueKey] unsignedIntegerValue];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) self = weakSelf;
+        if (!self || [self.draftEmptyClearGenerations[opaqueKey] unsignedIntegerValue] != clearGeneration ||
+            [self apollo_hasPendingDraftSendForOpaqueKey:opaqueKey contentGeneration:contentGeneration]) return;
+        ApolloDirectChatClearDraft(account, conversation);
+    });
+}
+
+- (BOOL)apollo_draftSessionIsCurrentForAccount:(NSString *)account
+                                          path:(NSString *)path
+                                    generation:(NSUInteger)generation {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || self.draftRestoreGeneration != generation ||
+        ![self.draftRestoreRoute isEqualToString:ApolloCanonicalChatDraftPath(path)] || ![self apollo_validateDraftPath:path]) return NO;
+    NSString *active = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    return account.length > 0 && [account isEqualToString:self.username.lowercaseString ?: @""] &&
+        [account isEqualToString:active];
+}
+
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || ![self apollo_isInsideConversation]) return;
+    [self apollo_restoreDraftAttempt:attempt generation:self.draftRestoreGeneration];
+}
+
+- (void)apollo_restoreDraftAttempt:(NSUInteger)attempt generation:(NSUInteger)generation {
+    if (self.sessionIdentityInvalidated || self.mailboxKind != ApolloModernMailboxKindChat ||
+        !self.didRevealChat || generation != self.draftRestoreGeneration) return;
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:@"window.__apolloChatDraftComposerSnapshot?.()||null"
+                   completionHandler:^(id result, NSError *error) {
+        typeof(self) self = weakSelf;
+        NSDictionary *snapshot = [result isKindOfClass:[NSDictionary class]] ? result : nil;
+        NSString *path = [snapshot[@"path"] isKindOfClass:[NSString class]] ? snapshot[@"path"] : nil;
+        NSString *current = [snapshot[@"text"] isKindOfClass:[NSString class]] ? snapshot[@"text"] : nil;
+        if (self && !error && [self apollo_validateDraftPath:path]) {
+            NSString *canonicalPath = ApolloCanonicalChatDraftPath(path);
+            if (![self.draftRestoreRoute isEqualToString:canonicalPath]) {
+                self.draftRestoreRoute = canonicalPath;
+                self.draftRestoreGeneration += 1;
+                [self.draftRestoreAttemptedKeys removeAllObjects];
+                [self apollo_restoreDraftAttempt:attempt generation:self.draftRestoreGeneration];
+                return;
+            }
+            NSString *account = self.username.lowercaseString ?: @"";
+            if (![self apollo_draftSessionIsCurrentForAccount:account path:path generation:generation]) return;
+            if (current.length > 0) return; // never overwrite typing or Reddit's own draft.
+            NSString *conversation = [@"web:" stringByAppendingString:canonicalPath];
+            NSString *opaqueKey = ApolloMessageDraftOpaqueKey(account, conversation);
+            if (opaqueKey.length == 0 || [self.draftRestoreAttemptedKeys containsObject:opaqueKey]) return;
+            [self.draftRestoreAttemptedKeys addObject:opaqueKey];
+            ApolloDirectChatLoadDraft(account, conversation, ^(NSString *draft) {
+                if (![self apollo_draftSessionIsCurrentForAccount:account path:path generation:generation]) return;
+                if (draft.length == 0) return;
+                NSString *script = [NSString stringWithFormat:@"window.__apolloChatDraftRestore?.(%@,%@)",
+                                    ApolloDirectChatJSStringLiteral(path), ApolloDirectChatJSStringLiteral(draft)];
+                [self.webView evaluateJavaScript:script completionHandler:nil];
+            });
+            return;
+        }
+        if (self && attempt < 20 && generation == self.draftRestoreGeneration && [self apollo_isInsideConversation]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self apollo_restoreDraftAttempt:attempt + 1 generation:generation];
+            });
+        }
+    }];
+}
+
+// The page reported its surface. Agreement with the route needs nothing —
+// the URL observer has already done (or will do) the work. A DISAGREEMENT is
+// the case this exists for: the page shows a room the route never reported
+// (or the route dropped back to the list under a room that stayed), or the
+// page has left a room the route never saw it enter.
+- (void)apollo_notePageConversationVisible:(BOOL)visible reportedPath:(NSString *)reportedPath {
+    if (self.mailboxKind != ApolloModernMailboxKindChat) return;
+    if (!visible) {
+        [self apollo_flushPendingDraftWrites];
+        self.draftRestoreRoute = nil;
+        self.draftRestoreGeneration += 1;
+        [self.draftRestoreAttemptedKeys removeAllObjects];
+    }
+    self.pageConversationVisible = visible;
+    [self apollo_reconcilePageSurfaceReportedPath:reportedPath];
+    if (visible) [self apollo_restoreDraftAttempt:0];
+}
+
+- (void)apollo_reconcilePageSurfaceReportedPath:(NSString *)reportedPath {
+    if (self.mailboxKind != ApolloModernMailboxKindChat) return;
+    BOOL routeSaysConversation = [self apollo_isChatConversationPath:[self apollo_currentChatPath]];
+    if (self.pageConversationVisible) {
+        if (routeSaysConversation) {
+            // The route owns the room; anything applied from the page report
+            // is superseded by the observer's own treatments.
+            self.pageConversationTreatmentsApplied = NO;
+            return;
+        }
+        if (self.pageConversationTreatmentsApplied) return;
+        // Apply the room treatments the observer would have (they only test
+        // the route class, so a stand-in conversation URL is enough). No
+        // frame is captured here: the room has already painted, and the
+        // frame an interactive back reveals came from the touch that opened
+        // it (apollo_noteTouchBeganOnPage).
+        ApolloLog(@"[DirectChatWeb] Page shows a conversation while the route reads %@; applying room treatments from the page report",
+                  reportedPath.length ? reportedPath : @"(empty)");
+        self.pageConversationTreatmentsApplied = YES;
+        self.conversationBackIssuedAt = 0.0;
+        NSURL *standIn = [NSURL URLWithString:@"https://www.reddit.com/chat/room/page-reported-room"];
+        [self apollo_updateTabBarVisibilityForURL:standIn animated:NO];
+        [self apollo_updateEmbeddedWebChromeForURL:standIn];
+        ApolloStandaloneChatBackPanInstall(self);
+        return;
+    }
+    // The page shows a list. If the route reported the room it left, its
+    // repair (or the fallback list load) delivers the list treatments through
+    // the observer; only a room the page alone knew about has nobody else to
+    // do it.
+    if (!self.pageConversationTreatmentsApplied) {
+        // Unless the route never follows: Reddit's Back control flips the
+        // pane and leaves the URL on the conversation. The page script's
+        // click interception repairs that URL for a room or new-chat pane
+        // entered from the list, but a tap that slipped past it (a control
+        // it did not hook, a conversation with no list entry behind it)
+        // would leave every route treatment — the hidden tab bar, the room
+        // geometry, Reddit's list chrome — in place over the list. Repair
+        // the URL here once the page has settled.
+        if (routeSaysConversation && !self.chatTransitionPending && !self.webView.loading) {
+            [self apollo_repairRouteAfterPageLeftConversation:[self apollo_currentChatPath]];
+        }
+        return;
+    }
+    self.pageConversationTreatmentsApplied = NO;
+    NSURL *url = self.webView.URL;
+    NSString *path = url.path ?: @"";
+    ApolloLog(@"[DirectChatWeb] Page is back on the list (%@) from a page-reported conversation; applying list treatments",
+              path.length ? path : @"(empty)");
+    [self apollo_updateTabBarVisibilityForURL:url animated:NO];
+    [self apollo_updateEmbeddedWebChromeForURL:url];
+    [self apollo_resettleEmbeddedListForPath:path];
+}
+
+// The page reported a list while the route still reads `routePath`, and no
+// route change followed on its own. A beat later — the page's own repair
+// (redirectEmbeddedRoomBack's history.back()) runs 60 ms after the tap, and a
+// room whose header is still rendering must not be mistaken for a list — if
+// the page is still on that URL with no Back control on screen, pop the
+// conversation entry when the list is behind it (__apolloChatRoomFromList),
+// else rewrite the URL in place. Either drives the URL observer, which owns
+// every list treatment, and the sweep is poked so Reddit's list chrome hides
+// without waiting for the next DOM mutation.
+- (void)apollo_repairRouteAfterPageLeftConversation:(NSString *)routePath {
+    if (![self apollo_isChatConversationPath:routePath]) return;
+    NSUInteger generation = self.readinessGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.readinessGeneration) return;
+        // Back in a room, or the route moved on its own meanwhile.
+        if (self.pageConversationVisible) return;
+        if (![[self apollo_currentChatPath] isEqualToString:routePath]) return;
+        if (self.chatTransitionPending || self.webView.loading) return;
+        NSString *script = [NSString stringWithFormat:
+            @"(()=>{const route=%@;let here=location.pathname;try{here=decodeURIComponent(here);}catch(e){}"
+             "if(here!==route)return 'moved:'+here;"
+             "if(window.__apolloChatBackControlVisible?.())return 'conversation still on screen';"
+             "const poke=()=>{for(const ms of [60,300])setTimeout(()=>window.__apolloChatEnhancementSweep?.(),ms);};"
+             "if(window.__apolloChatRoomFromList){history.back();poke();return 'popped the conversation entry';}"
+             "history.replaceState(null,'','/chat');poke();return 'rewrote the URL to /chat';})()",
+            ApolloDirectChatJSStringLiteral(routePath)];
+        [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+            ApolloLog(@"[DirectChatWeb] Page left %@ without a route change; URL repair: %@",
+                      routePath, error ? error.localizedDescription
+                                       : ([result isKindOfClass:[NSString class]] ? result : @"(no result)"));
+        }];
+    });
+}
+
+// Every touch that lands on the page while a list is showing refreshes the
+// still frame an interactive back will reveal. The URL observer captures that
+// frame at the pane swap for a room it is told about; a room the route never
+// reports has already painted by the time the page report arrives, so the
+// frame has to come from before the tap — the touch that opens the room is
+// exactly that moment, and it also folds in any scrolling since the last
+// capture. A snapshot is a render-server copy, cheap enough per touch.
+- (void)apollo_noteTouchBeganOnPage {
+    if (self.mailboxKind != ApolloModernMailboxKindChat || !self.didRevealChat) return;
+    if (self.chatTransitionPending || self.conversationBackInteractive) return;
+    if ([self apollo_isInsideConversation]) return;
+    [self apollo_captureConversationBackSnapshot];
+    if (self.conversationBackSnapshot) {
+        self.conversationBackSnapshotTouchAt = [NSDate date].timeIntervalSince1970;
+    }
+}
+
+// After a conversation gives way to a list — the URL observer's normal path,
+// or the page report's when no URL change followed — refresh what the list
+// feeds: the status scrape right away (animation-independent) and the crop
+// re-measure once Reddit's flip has settled; measuring immediately catches
+// the pane mid-flip and mis-aligns the list by the transient geometry. The
+// still-hydrated list pane needs no reload and the remembered crop is
+// already correct, so this is only a sanity pass.
+- (void)apollo_resettleEmbeddedListForPath:(NSString *)path {
+    if (!self.embeddedInInbox || !self.didRevealChat || self.webView.loading) return;
+    BOOL nowRootList = [path isEqualToString:@"/chat"] ||
+        [path isEqualToString:@"/chat/"];
+    BOOL nowThreadsList = [path isEqualToString:@"/chat/threads"] ||
+        [path isEqualToString:@"/chat/threads/"];
+    if (nowRootList &&
+        self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) {
+        [self apollo_captureChatStatus];
+    }
+    if ((nowRootList &&
+         self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) ||
+        (nowThreadsList &&
+         self.embeddedInboxSection == ApolloModernChatInboxSectionThreads)) {
+        NSUInteger generation = self.readinessGeneration;
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || generation != self.readinessGeneration) return;
+            // The user may already be inside another room again;
+            // measuring the hidden list pane would misplace the
+            // crop under the conversation. The page report covers a
+            // room the route does not show (a room-name marker in the
+            // open room measured as the list's first row otherwise).
+            if (self.pageConversationVisible) return;
+            NSString *currentPath = self.webView.URL.path ?: @"";
+            BOOL stillRootList = [currentPath isEqualToString:@"/chat"] ||
+                [currentPath isEqualToString:@"/chat/"];
+            BOOL stillThreadsList = [currentPath isEqualToString:@"/chat/threads"] ||
+                [currentPath isEqualToString:@"/chat/threads/"];
+            if (stillRootList &&
+                self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) {
+                [self apollo_alignEmbeddedMessagesForGeneration:generation
+                                                      completion:nil];
+            } else if (stillThreadsList &&
+                       self.embeddedInboxSection == ApolloModernChatInboxSectionThreads) {
+                [self apollo_alignEmbeddedThreadsForGeneration:generation
+                                                     completion:nil];
+            }
+        });
+    }
+}
+
 // One step UP Reddit's chat hierarchy: from a conversation (a room or a reply
 // thread) back to the list it was opened from, by clicking Reddit's own
 // in-room Back control. That is the same pane flip a tap performs — the list
@@ -2024,8 +2770,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 // or one is still in flight), NO when this controller is not inside a
 // conversation and the caller should keep its stock behavior.
 - (BOOL)apollo_goBackToConversationList {
-    if (self.mailboxKind != ApolloModernMailboxKindChat) return NO;
-    if (![self apollo_isChatConversationPath:[self apollo_currentChatPath]]) return NO;
+    if (![self apollo_isInsideConversation]) return NO;
     NSTimeInterval now = [NSDate date].timeIntervalSince1970;
     if (self.conversationBackIssuedAt > 0.0 &&
         now - self.conversationBackIssuedAt < 1.5) {
@@ -2058,7 +2803,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
                    dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self || self.conversationBackIssuedAt != now) return;
-        if (![self apollo_isChatConversationPath:[self apollo_currentChatPath]]) return;
+        if (![self apollo_isInsideConversation]) return;
         if (self.webView.loading) return;
         ApolloLog(@"[DirectChatWeb] Conversation back did not leave the room; loading %@", listPath);
         [self.webView evaluateJavaScript:
@@ -2079,20 +2824,28 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 
 - (void)apollo_captureConversationBackSnapshot {
     self.conversationBackSnapshot = nil;
+    self.conversationBackSnapshotTouchAt = 0.0;
     if (self.mailboxKind != ApolloModernMailboxKindChat) return;
     // A hidden hub renders nothing worth capturing, and an off-window view
     // snapshots empty.
     if (!self.view.window || CGRectIsEmpty(self.view.bounds)) return;
     if (self.embeddedInInbox && !self.embeddedInboxVisible) return;
-    UIView *snapshot = [self.view snapshotViewAfterScreenUpdates:NO];
-    if (!snapshot) return;
+    // The web view's own rendering, not the whole view: a queued conversation
+    // opens while the loading cover still sits over the list (see
+    // apollo_revealChat), and the frame the back swipe reveals must be the
+    // list the web view painted beneath it, not the cover.
+    UIView *webSnapshot = [self.webView snapshotViewAfterScreenUpdates:NO];
+    if (!webSnapshot) return;
+    UIView *snapshot = [[UIView alloc] initWithFrame:self.view.bounds];
+    snapshot.backgroundColor = self.view.backgroundColor;
+    webSnapshot.frame = self.webView.frame;
+    [snapshot addSubview:webSnapshot];
     snapshot.userInteractionEnabled = NO;
     self.conversationBackSnapshot = snapshot;
 }
 
 - (BOOL)apollo_beginInteractiveConversationBack {
-    if (self.mailboxKind != ApolloModernMailboxKindChat) return NO;
-    if (![self apollo_isChatConversationPath:[self apollo_currentChatPath]]) return NO;
+    if (![self apollo_isInsideConversation]) return NO;
     if (self.conversationBackInteractive) {
         // Grabbed again mid-settle: hand the views straight back to the finger
         // instead of letting the previous animation keep driving them. The
@@ -2222,7 +2975,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 - (void)apollo_waitForConversationBackSwap:(UIView *)snapshot attempt:(NSUInteger)attempt {
     if (!snapshot.superview) return;
     BOOL current = self.conversationBackSnapshot == snapshot;
-    BOOL leftConversation = ![self apollo_isChatConversationPath:[self apollo_currentChatPath]];
+    BOOL leftConversation = ![self apollo_isInsideConversation];
     if (current && !leftConversation && attempt < 28) {
         __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)),
@@ -2497,6 +3250,11 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     } else {
         [self.webView.layer removeAllAnimations];
         [UIView animateWithDuration:0.15 animations:^{ self.webView.alpha = 1.0; }];
+        if (isList) [self apollo_openPendingInPlaceConversationIfReady];
+        else {
+            [self apollo_releaseLoadingCoverIfHeld];
+            [self apollo_restoreDraftAttempt:0];
+        }
     }
     ApolloLog(@"[DirectChatWeb] Revealed settled Chat %@", isList ? @"list" : @"conversation");
 }
@@ -2544,12 +3302,30 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     self.didRevealChat = YES;
     [self.spinner stopAnimating];
     self.webView.userInteractionEnabled = YES;
-    [UIView animateWithDuration:0.22 animations:^{
+    if (self.mailboxKind == ApolloModernMailboxKindChat && self.pendingInPlaceConversationPath.length > 0) {
+        // A conversation is queued behind this list: keep the cover up so the
+        // list never shows on its own; the room's reveal lifts it. The web
+        // view still goes opaque underneath, so the frame the room's back
+        // swipe later reveals (captured from the web view) is the list.
         self.webView.alpha = 1.0;
-        self.loadingView.alpha = 0.0;
-    } completion:^(BOOL finished) {
-        self.loadingView.hidden = YES;
-    }];
+        self.holdsLoadingCoverForQueuedConversation = YES;
+        NSUInteger generation = self.readinessGeneration;
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            // Whatever went wrong with the queued open, the list must not stay
+            // hidden behind the cover.
+            if (self && generation == self.readinessGeneration) [self apollo_releaseLoadingCoverIfHeld];
+        });
+    } else {
+        [UIView animateWithDuration:0.22 animations:^{
+            self.webView.alpha = 1.0;
+            self.loadingView.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            self.loadingView.hidden = YES;
+        }];
+    }
     NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat";
     NSTimeInterval elapsed = self.loadStartedAt ? -[self.loadStartedAt timeIntervalSinceNow] : 0.0;
     ApolloLog(@"[DirectChatWeb] Revealed hydrated mobile %@ UI in %.2fs", surface, elapsed);
@@ -2564,10 +3340,84 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     if (self.mailboxKind == ApolloModernMailboxKindChat) {
         [self apollo_startChatStatusRefreshIfNeeded];
         [self apollo_captureChatStatus];
+        [self apollo_restoreDraftAttempt:0];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self apollo_captureChatStatus];
         });
     }
+    [self apollo_openPendingInPlaceConversationIfReady];
+}
+
+// A conversation queued behind the Messages list (apollo_openConversationPath:)
+// opens in place once that list is the live surface again — called from both
+// reveal paths (a fresh document, and a same-document list settling behind
+// its cover), a beat after the reveal fade so the frame the room's back swipe
+// later reveals is the list and not the loading placeholder mid-fade.
+- (void)apollo_openPendingInPlaceConversationIfReady {
+    NSString *pending = self.pendingInPlaceConversationPath;
+    if (!pending.length || self.mailboxKind != ApolloModernMailboxKindChat) return;
+    NSString *path = self.webView.URL.path ?: @"";
+    BOOL rootList = [path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"];
+    if (!rootList || (self.embeddedInInbox &&
+                      self.embeddedInboxSection != ApolloModernChatInboxSectionMessages)) {
+        // Another list came up first (the user switched sections meanwhile);
+        // keep waiting for Messages until the queue expires.
+        return;
+    }
+    self.pendingInPlaceConversationPath = nil;
+    BOOL waitedForFirstDocument = self.pendingInPlaceConversationWaitsForFirstDocument;
+    self.pendingInPlaceConversationWaitsForFirstDocument = NO;
+    BOOL fresh = waitedForFirstDocument ||
+        [NSDate date].timeIntervalSince1970 - self.pendingInPlaceConversationQueuedAt < 12.0;
+    if (!fresh) {
+        ApolloLog(@"[DirectChatWeb] Dropped a queued conversation (queued too long ago)");
+        [self apollo_releaseLoadingCoverIfHeld];
+        return;
+    }
+    ApolloLog(@"[DirectChatWeb] Messages list is up; opening the queued conversation in place");
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf apollo_openQueuedConversation:pending attempt:0];
+    });
+}
+
+// The list reveals as soon as Reddit's page is ready, which can be a beat
+// before its rows have painted (skeleton placeholders first). The frame the
+// room's back swipe later reveals is captured at the room open, so wait for a
+// painted row — capped, since an empty list never paints one.
+- (void)apollo_openQueuedConversation:(NSString *)pending attempt:(NSUInteger)attempt {
+    NSString *script =
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "for(const r of roots)for(const e of r.querySelectorAll('.room-name')){const b=e.getBoundingClientRect();if(b.width>0&&b.height>0)return 'rows';}return 'none';})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        BOOL rows = !error && [result isEqual:@"rows"];
+        if (rows || attempt >= 16) {
+            // One more beat for avatars and text to land in the painted rows.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakSelf apollo_openConversationPath:pending];
+            });
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [weakSelf apollo_openQueuedConversation:pending attempt:attempt + 1];
+        });
+    }];
+}
+
+- (void)apollo_releaseLoadingCoverIfHeld {
+    if (!self.holdsLoadingCoverForQueuedConversation) return;
+    self.holdsLoadingCoverForQueuedConversation = NO;
+    [UIView animateWithDuration:0.22 animations:^{
+        self.loadingView.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        if (!self.holdsLoadingCoverForQueuedConversation) self.loadingView.hidden = YES;
+    }];
 }
 
 - (void)apollo_startChatStatusRefreshIfNeeded {
@@ -2647,9 +3497,10 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         // redundant back/Threads row without clipping the first participant.
         // Returning from a reply-thread conversation, restore the already
         // measured alignment instead so the list does not visibly hop while
-        // the async re-measure runs.
+        // the async re-measure runs. A measured value is authoritative from
+        // the moment it exists, revealed or not — see the Messages branch.
         topOffset = 8.0;
-        if (self.didRevealChat && !isnan(self.threadsAlignedTopOffset) &&
+        if (!isnan(self.threadsAlignedTopOffset) &&
             self.embeddedInboxSection == ApolloModernChatInboxSectionThreads) {
             topOffset = self.threadsAlignedTopOffset;
         }
@@ -2660,11 +3511,31 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         // align pass has measured the real breathing gap once, returning from
         // a room reuses that value — resetting to zero here and re-measuring a
         // moment later made the whole list hop by the gap and back.
+        //
+        // The measured value counts before the reveal too. The align pass
+        // runs just ahead of the reveal and lays out immediately, which
+        // re-enters this method from viewDidLayoutSubviews; gating the reuse
+        // on didRevealChat made that re-entry undo the measurement (back to
+        // 0), so the list was revealed at 0, the frame a room's back swipe
+        // captured showed it there, and the first re-measure after the swipe
+        // dropped the whole list by the gap (~3pt).
         topOffset = 0.0;
-        if (self.didRevealChat && !isnan(self.messagesAlignedTopOffset) &&
+        if (!isnan(self.messagesAlignedTopOffset) &&
             self.embeddedInboxSection == ApolloModernChatInboxSectionMessages) {
             topOffset = self.messagesAlignedTopOffset;
         }
+    } else if (self.embeddedInboxSection == ApolloModernChatInboxSectionMessages &&
+               !isnan(self.messagesAlignedTopOffset) && self.messagesAlignedTopOffset >= 0.0) {
+        // A conversation reached from the Messages list — a room, the
+        // new-chat pane, the composer — keeps the list's measured breathing
+        // gap. Reddit's Back control flips the pane back to the list under
+        // the same web view, and the geometry change on top of that flip
+        // (0 back to the gap) landed a beat later, as a ~3pt hop on every
+        // in-page Back tap; the swipe path only hid it under its still
+        // frame. A few points of gap above a room's header are invisible. A
+        // negative (cropping) measurement is not reused: it would clip the
+        // header.
+        topOffset = self.messagesAlignedTopOffset;
     }
 
     // Standalone Direct Chat hides Apollo's tab bar, but the embedded Inbox
@@ -2711,15 +3582,22 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         return;
     }
 
+    // Which type boxes to tick: the user's Messages filter (Inbox bar menu).
+    // "All" leaves every box clear — an unfiltered list is Reddit's default.
+    ApolloModernChatMessagesFilter filter = ApolloModernChatCurrentMessagesFilter();
+    BOOL directWanted = filter == ApolloModernChatMessagesFilterDirect;
+    BOOL groupWanted = filter == ApolloModernChatMessagesFilterGroup;
+    BOOL unreadWanted = ApolloModernChatMessagesUnreadOnly();
     NSString *script = [NSString stringWithFormat:
         @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
          "const all=()=>roots.flatMap(r=>[...r.querySelectorAll('*')]);const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
          "const items=all().filter(e=>e.tagName==='RS-ROOMS-NAV-FILTER-ITEM'&&visible(e));"
          "if(!items.length){const filter=all().find(e=>visible(e)&&(e.getAttribute('aria-label')||'').trim().toLowerCase()==='filter chat inbox');if(filter){filter.click();return 'opening';}return 'waiting';}"
-         "const wanted={'group chats':%@,'direct chats':%@,'mod mail':false};"
-         "for(const item of items){const label=(item.getAttribute('label')||item.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();if(!(label in wanted))continue;const control=item.querySelector('[role=checkbox]')||item;const checked=item.checked===true||item.hasAttribute('checked')||control.getAttribute('aria-checked')==='true';if(checked!==wanted[label]){control.click();return 'changed';}}"
+         "const wanted={'group chats':%@,'direct chats':%@,'mod mail':false,'unread':%@};"
+         "for(const item of items){const label=(item.getAttribute('label')||item.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();if(!(label in wanted))continue;const control=item.querySelector('[role=checkbox],[role=switch]')||item;const checked=item.checked===true||item.hasAttribute('checked')||control.getAttribute('aria-checked')==='true';if(checked!==wanted[label]){control.click();return 'changed';}}"
          "const apply=all().find(e=>visible(e)&&e.matches('button,[role=button]')&&(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase()==='apply');if(apply){apply.click();return 'applied';}return 'waiting';})()",
-         @"false", @"true"];
+         groupWanted ? @"true" : @"false", directWanted ? @"true" : @"false",
+         unreadWanted ? @"true" : @"false"];
 
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
@@ -2727,7 +3605,9 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         if (!self || generation != self.readinessGeneration || self.didRevealChat ||
             self.embeddedInboxSection != desiredSection) return;
         if (!error && [result isEqual:@"applied"]) {
-            ApolloLog(@"[DirectChatWeb] Applied embedded Messages (direct chats) filter");
+            ApolloLog(@"[DirectChatWeb] Applied embedded Messages (%@%@) filter",
+                      ApolloModernChatMessagesFilterName(filter),
+                      unreadWanted ? @", unread only" : @"");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 if (generation != self.readinessGeneration || self.didRevealChat) return;
@@ -2985,6 +3865,198 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         [@"https://www.reddit.com" stringByAppendingString:targetPath]]];
     request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
     [self.webView loadRequest:request];
+}
+
+// A conversation opened from OUTSIDE the web content (a legacy-inbox chat
+// mirror tapped in Notifications). It loads as a real navigation: the policy
+// callback covers the room while it settles exactly as a tapped room is, and
+// the in-room Back control then returns to the list through its own reload
+// path. Before the first document exists the path simply becomes the initial
+// destination, so cookie seeding does not race a list load against it.
+- (void)apollo_openConversationPath:(NSString *)path {
+    if (self.mailboxKind != ApolloModernMailboxKindChat) return;
+    NSString *validated = ApolloValidatedModernMailboxPath(ApolloModernMailboxKindChat, path);
+    if (!validated || ![self apollo_isChatConversationPath:validated]) {
+        ApolloLog(@"[DirectChatWeb] Ignored an invalid conversation path");
+        return;
+    }
+    if (self.embeddedInInbox) {
+        self.embeddedInboxSection = ApolloModernChatInboxSectionMessages;
+        [self.webView evaluateJavaScript:
+            @"window.__apolloEmbeddedSection='messages';"
+             "try{sessionStorage.setItem('__apolloEmbeddedSection','messages');}catch(e){}"
+                       completionHandler:nil];
+    }
+    if (!self.webView.URL) {
+        self.initialDestinationPath = validated;
+        ApolloLog(@"[DirectChatWeb] Queued a conversation as the first Chat document");
+        return;
+    }
+    if ([[self apollo_currentChatPath] isEqualToString:validated]) {
+        ApolloLog(@"[DirectChatWeb] Conversation already open");
+        return;
+    }
+    // The Chat list is a single-page app. While its document is live, open
+    // the room the way a tapped row does — through one of Reddit's own
+    // client-side room links, which its router turns into a same-document
+    // navigation — so the whole return path stays the one a list-opened
+    // room has (pane flip + URL repair, no reload). A page load here
+    // rebuilt the list document on the way back, and that rebuild painted
+    // Reddit's header, filter chip and Threads row for a beat before the
+    // align pass hid them again. The router accepts a link anywhere inside
+    // its app element, so no rendered row is needed (the list is
+    // virtualized); a click it leaves unhandled falls back to the page load.
+    NSString *currentPath = [self apollo_currentChatPath];
+    BOOL onRootList = [currentPath isEqualToString:@"/chat"] ||
+        [currentPath isEqualToString:@"/chat/"];
+    BOOL listLive = onRootList && self.didRevealChat && !self.webView.loading &&
+        !self.chatTransitionPending && !self.pageConversationVisible;
+    BOOL room = [validated hasPrefix:@"/chat/room/"] || [validated hasPrefix:@"/chat/user/"];
+    if (listLive && room) {
+        NSString *route = [validated substringFromIndex:@"/chat".length];
+        NSString *script = [NSString stringWithFormat:
+            @"(()=>{const app=document.querySelector('rs-app');if(!app)return 'no app element';"
+             "const a=document.createElement('a');a.href=%@;a.setAttribute('aria-hidden','true');a.style.display='none';app.appendChild(a);"
+             // Belt: should the router leave the click alone, the browser must
+             // not follow the link as a real navigation to an unknown page.
+             "window.addEventListener('click',e=>{if(e.target===a)e.preventDefault();},{once:true});"
+             "const before=location.pathname;a.click();const after=location.pathname;setTimeout(()=>a.remove(),0);"
+             "return after!==before&&(after.startsWith('/chat/room/')||after.startsWith('/chat/user/'))?'opened':'clicked';})()",
+            ApolloDirectChatJSStringLiteral(route)];
+        __weak typeof(self) weakSelf = self;
+        [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            if (!error && [result isEqual:@"opened"]) {
+                ApolloLog(@"[DirectChatWeb] Opened a Chat conversation from the native inbox in place%@",
+                          self.embeddedInInbox ? @" (Inbox hub)" : @"");
+                return;
+            }
+            if (!error && [result isEqual:@"clicked"]) {
+                // The router can finish the route change a beat after the
+                // click; give it a moment before deciding it never happened.
+                [self apollo_confirmInPlaceConversationOpen:validated attempt:0];
+                return;
+            }
+            ApolloLog(@"[DirectChatWeb] In-place room open %@; loading the room instead",
+                      error ? error.localizedDescription
+                            : ([result isKindOfClass:[NSString class]] ? result : @"failed"));
+            [self apollo_loadConversationPath:validated];
+        }];
+        return;
+    }
+    if (self.embeddedInInbox && room) {
+        // The Messages list is not the live surface (another section is up, a
+        // room is still open, a load is in flight, or the page shows a room
+        // the route never reported). Bring the list up first — that is where
+        // the room's Back must land anyway — and let its reveal open the room
+        // in place. A revealed list under a list URL only re-checks as live
+        // after a reload, so that case forces one.
+        self.pendingInPlaceConversationPath = validated;
+        self.pendingInPlaceConversationQueuedAt = [NSDate date].timeIntervalSince1970;
+        BOOL messagesUp = onRootList &&
+            self.embeddedInboxSection == ApolloModernChatInboxSectionMessages;
+        if (messagesUp && (self.webView.loading || !self.didRevealChat || self.chatTransitionPending)) {
+            // A Messages list is already on its way (loading, or settling
+            // behind a cover); asking for it again here started a second
+            // readiness pipeline over the first. Its reveal opens the room.
+            ApolloLog(@"[DirectChatWeb] Queued a conversation behind the Messages list already on its way");
+            return;
+        }
+        ApolloLog(@"[DirectChatWeb] Queued a conversation behind the Messages list (route %@)",
+                  currentPath.length ? currentPath : @"(none)");
+        // messagesUp here means a revealed, idle list that still is not live:
+        // the page shows a room the route never reported. Only a reload
+        // squares that; every other state is a plain section switch.
+        [self apollo_showEmbeddedInboxSection:ApolloModernChatInboxSectionMessages
+                                  forceReload:messagesUp];
+        return;
+    }
+    [self apollo_loadConversationPath:validated];
+}
+
+// After an in-place open whose route change had not landed by the time the
+// click returned: poll the page's own location for a moment, then fall back to
+// the page load. The page's location is checked rather than the observed
+// route because a same-document room open may deliver no URL change to the
+// app at all (pageConversationVisible), while the page always knows.
+- (void)apollo_confirmInPlaceConversationOpen:(NSString *)validated attempt:(NSUInteger)attempt {
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        if ([self apollo_isChatConversationPath:[self apollo_currentChatPath]]) {
+            ApolloLog(@"[DirectChatWeb] Opened a Chat conversation from the native inbox in place (after %lu checks)",
+                      (unsigned long)attempt + 1);
+            return;
+        }
+        [self.webView evaluateJavaScript:@"location.pathname" completionHandler:^(id result, NSError *error) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            NSString *path = [result isKindOfClass:[NSString class]] ? result : @"";
+            if ([path hasPrefix:@"/chat/room/"] || [path hasPrefix:@"/chat/user/"]) {
+                ApolloLog(@"[DirectChatWeb] Opened a Chat conversation from the native inbox in place (page route, after %lu checks)",
+                          (unsigned long)attempt + 1);
+                return;
+            }
+            if (attempt < 3) {
+                [self apollo_confirmInPlaceConversationOpen:validated attempt:attempt + 1];
+                return;
+            }
+            ApolloLog(@"[DirectChatWeb] In-place room open never left the list; loading the room instead");
+            [self apollo_loadConversationPath:validated];
+        }];
+    });
+}
+
+// The page-load path: a real navigation to the room under the same covered
+// transition a tapped room gets. Used before the list document is live, off
+// the root list, and as the fallback when the in-place open is unhandled.
+- (void)apollo_loadConversationPath:(NSString *)validated {
+    NSURL *url = [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:validated]];
+    if (!url) return;
+    // Retire any list readiness/filter loop still running for the previous
+    // route; the room's covered transition owns the reveal from here.
+    self.readinessGeneration += 1;
+    [self.webView stopLoading];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
+    [self.webView loadRequest:request];
+    ApolloLog(@"[DirectChatWeb] Opening a Chat conversation from the native inbox by page load%@",
+              self.embeddedInInbox ? @" (Inbox hub)" : @"");
+}
+
+// Reddit's chat-list header actions, through the page's own controls (hidden
+// with the rest of that header, which still receive a scripted click).
+- (void)apollo_performHeaderAction:(ApolloModernChatHeaderAction)action {
+    if (self.mailboxKind != ApolloModernMailboxKindChat || !self.webView.URL) return;
+    BOOL markAllRead = action == ApolloModernChatHeaderActionMarkAllRead;
+    NSString *script = markAllRead
+        ? @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+           "for(const r of roots)for(const n of r.querySelectorAll('button,[role=button]')){const l=(n.getAttribute('aria-label')||n.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+           "if(l==='mark all messages as read'||l.startsWith('mark all')){n.click();return 'clicked';}}return 'missing';})()"
+        // Create new chat is a client-side link like a room row; the router
+        // turns the click into a same-document navigation. Same belt as the
+        // in-place room open against a real navigation to an unknown page.
+        : @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+           "for(const r of roots)for(const n of r.querySelectorAll('a,button,[role=button]')){const l=(n.getAttribute('aria-label')||'').replace(/\\s+/g,' ').trim().toLowerCase();if(l!=='create new chat')continue;"
+           "window.addEventListener('click',e=>{if(e.target===n)e.preventDefault();},{once:true});const before=location.pathname;n.click();"
+           "return location.pathname!==before?'navigated':'clicked';}return 'missing';})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        ApolloLog(@"[DirectChatWeb] Chat header action (%@) -> %@%@",
+                  markAllRead ? @"mark all read" : @"new chat",
+                  [result isKindOfClass:[NSString class]] ? result : @"unknown",
+                  error ? [NSString stringWithFormat:@" (%@)", error.localizedDescription] : @"");
+        if (!self || !markAllRead || error) return;
+        // Reddit clears the unread marks asynchronously; re-scrape once it has.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self apollo_captureChatStatus];
+        });
+    }];
 }
 
 - (void)apollo_seedAndLoad {
@@ -3280,7 +4352,8 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     // hook: cover the document now so its skeleton, late usernames/avatars,
     // and image loads all settle invisibly.
     if (url && self.mailboxKind == ApolloModernMailboxKindChat &&
-        [self apollo_isChatConversationPath:url.path] && !self.chatTransitionPending) {
+        [self apollo_isChatConversationPath:url.path] && !self.chatTransitionPending &&
+        !ApolloChatPathIsComposer(url.path)) {
         [self apollo_beginChatTransitionToURL:url isList:NO];
     }
     NSString *host = url.host.lowercaseString ?: @"";
@@ -3320,6 +4393,10 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    // A new document is on its way: whatever surface the old page reported
+    // goes with it (the new document's first sweep reports afresh).
+    self.pageConversationVisible = NO;
+    self.pageConversationTreatmentsApplied = NO;
     // Reddit occasionally starts a Modmail thread through location.assign
     // without delivering a useful targetFrame in the policy callback. At this
     // point the destination URL has already been installed on WKWebView, but
@@ -3460,6 +4537,8 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     ApolloLog(@"[DirectChatWeb] Reddit web process terminated for u/%@", self.username);
+    self.pageConversationVisible = NO;
+    self.pageConversationTreatmentsApplied = NO;
     [self apollo_showLoadError:@"Reddit stopped responding. Tap Try Again to reconnect."];
 }
 
@@ -3539,8 +4618,22 @@ UIViewController *ApolloCreateModernChatViewController(void) {
 
 UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinationPath) {
     ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
-    controller.initialDestinationPath = ApolloValidatedModernMailboxPath(
-        ApolloModernMailboxKindChat, destinationPath);
+    NSString *validated = ApolloValidatedModernMailboxPath(ApolloModernMailboxKindChat, destinationPath);
+    BOOL conversation = [validated hasPrefix:@"/chat/room/"] || [validated hasPrefix:@"/chat/user/"];
+    if (conversation && !ApolloChatPathIsComposer(validated)) {
+        // A room destination loads the LIST first and opens the room in place
+        // once the list is up (apollo_openPendingInPlaceConversationIfReady),
+        // exactly like a room tapped in that list. A room loaded as the first
+        // document had nothing before it: its back swipe revealed the loading
+        // placeholder (the only frame ever captured) and returned to the list
+        // through a fresh load rather than the pane flip.
+        controller.initialDestinationPath = @"/chat";
+        controller.pendingInPlaceConversationPath = validated;
+        controller.pendingInPlaceConversationQueuedAt = [NSDate date].timeIntervalSince1970;
+        controller.pendingInPlaceConversationWaitsForFirstDocument = YES;
+    } else {
+        controller.initialDestinationPath = validated;
+    }
     // Lists remain part of the Inbox tab. Route observation hides the
     // shared tab bar only if this controller opens an actual conversation.
     controller.hidesBottomBarWhenPushed = NO;
@@ -3577,6 +4670,76 @@ void ApolloModernChatControllerShowInboxSection(UIViewController *controller,
     [(ApolloDirectChatWebViewController *)controller apollo_showEmbeddedInboxSection:section];
 }
 
+void ApolloModernChatControllerOpenConversationPath(UIViewController *controller, NSString *path) {
+    if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return;
+    [(ApolloDirectChatWebViewController *)controller apollo_openConversationPath:path];
+}
+
+void ApolloModernChatControllerQueueConversationPath(UIViewController *controller, NSString *path) {
+    if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return;
+    ApolloDirectChatWebViewController *chatController = (ApolloDirectChatWebViewController *)controller;
+    NSString *validated = ApolloValidatedModernMailboxPath(ApolloModernMailboxKindChat, path);
+    if (![chatController apollo_isChatConversationPath:validated] || ApolloChatPathIsComposer(validated)) return;
+    chatController.pendingInPlaceConversationPath = validated;
+    chatController.pendingInPlaceConversationQueuedAt = [NSDate date].timeIntervalSince1970;
+    chatController.pendingInPlaceConversationWaitsForFirstDocument = YES;
+    // A list that is already up opens it now; otherwise its reveal will.
+    if (chatController.didRevealChat) [chatController apollo_openPendingInPlaceConversationIfReady];
+}
+
+void ApolloModernChatControllerSetHostedByStandaloneHub(UIViewController *controller, BOOL hosted) {
+    if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return;
+    ((ApolloDirectChatWebViewController *)controller).hostedByStandaloneHub = hosted;
+}
+
+void ApolloModernChatControllerApplyMessagesFilter(UIViewController *controller,
+                                                   ApolloModernChatMessagesFilter filter) {
+    NSString *name = filter == ApolloModernChatMessagesFilterGroup ? @"group"
+        : (filter == ApolloModernChatMessagesFilterAll ? @"all" : @"direct");
+    [[NSUserDefaults standardUserDefaults] setObject:name forKey:UDKeyChatMessagesFilter];
+    if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return;
+    ApolloDirectChatWebViewController *chatController =
+        (ApolloDirectChatWebViewController *)controller;
+    if (!chatController.embeddedInInbox) return;
+    ApolloLog(@"[DirectChatWeb] Messages filter -> %@; reloading the embedded list",
+              ApolloModernChatMessagesFilterName(filter));
+    // Reddit persists the type filter per account in localStorage and reads it
+    // back on every fresh document. Write the wanted flags there first — the
+    // readiness pipeline's checkbox pass reliably TICKS a box but an untick
+    // did not survive Apply — then do a full route load so Reddit's in-memory
+    // store is rebuilt from the stored flags (the same store the Requests and
+    // Threads sections clear before they open). An account with no stored
+    // entry yet is left to the checkbox pass, which handles ticking.
+    BOOL group = filter == ApolloModernChatMessagesFilterGroup;
+    BOOL direct = filter == ApolloModernChatMessagesFilterDirect;
+    NSString *script = [NSString stringWithFormat:
+        @"(()=>{const key='chat:reddit-chat-type-filters';let state={};"
+         "try{state=JSON.parse(localStorage.getItem(key)||'{}')}catch(e){state={}}"
+         "for(const account of Object.keys(state)){state[account]={...(state[account]||{}),"
+         "shouldShowGroupChats:%@,shouldShowDirectChats:%@,shouldShowModmailChats:false};}"
+         "localStorage.setItem(key,JSON.stringify(state));return Object.keys(state).length;})()",
+        group ? @"true" : @"false", direct ? @"true" : @"false"];
+    __weak ApolloDirectChatWebViewController *weakController = chatController;
+    [chatController.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        ApolloDirectChatWebViewController *controller = weakController;
+        if (!controller) return;
+        [controller apollo_showEmbeddedInboxSection:ApolloModernChatInboxSectionMessages
+                                        forceReload:YES];
+    }];
+}
+
+void ApolloModernChatControllerSetMessagesUnreadOnly(UIViewController *controller, BOOL unreadOnly) {
+    [[NSUserDefaults standardUserDefaults] setBool:unreadOnly forKey:UDKeyChatMessagesUnreadOnly];
+    // The readiness pass flips Reddit's switch to match on the reload.
+    ApolloModernChatControllerApplyMessagesFilter(controller, ApolloModernChatCurrentMessagesFilter());
+}
+
+void ApolloModernChatControllerPerformHeaderAction(UIViewController *controller,
+                                                   ApolloModernChatHeaderAction action) {
+    if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return;
+    [(ApolloDirectChatWebViewController *)controller apollo_performHeaderAction:action];
+}
+
 BOOL ApolloModernChatControllerSessionIsCurrent(UIViewController *controller) {
     if (![controller isMemberOfClass:[ApolloDirectChatWebViewController class]]) return NO;
     ApolloDirectChatWebViewController *chatController =
@@ -3611,7 +4774,7 @@ BOOL ApolloModernChatControllerIsOnConversationRoute(UIViewController *controlle
     if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return NO;
     ApolloDirectChatWebViewController *chatController =
         (ApolloDirectChatWebViewController *)controller;
-    return [chatController apollo_isChatConversationPath:[chatController apollo_currentChatPath]];
+    return [chatController apollo_isInsideConversation];
 }
 
 BOOL ApolloModernChatControllerGoBackToConversationList(UIViewController *controller) {
@@ -3769,9 +4932,10 @@ BOOL ApolloModernChatBackSwipeCommits(UIGestureRecognizerState state, CGFloat pr
     // Zeroing-weak read: once the host deallocs this is nil and the pan simply
     // never begins (it cannot serve a dead host).
     ApolloDirectChatWebViewController *host = sStandaloneChatBackPanHost;
-    if (!host || host.embeddedInInbox || host.mailboxKind != ApolloModernMailboxKindChat) return NO;
+    if (!host || (host.embeddedInInbox && !host.hostedByStandaloneHub) ||
+        host.mailboxKind != ApolloModernMailboxKindChat) return NO;
     // Only inside a conversation: on the list the stock pop is the right back.
-    if (![host apollo_isChatConversationPath:[host apollo_currentChatPath]]) return NO;
+    if (![host apollo_isInsideConversation]) return NO;
     UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
     CGPoint velocity = [pan velocityInView:pan.view];
     if (fabs(velocity.x) <= fabs(velocity.y)) return NO;   // decisively horizontal only
@@ -3790,7 +4954,8 @@ BOOL ApolloModernChatBackSwipeCommits(UIGestureRecognizerState state, CGFloat pr
 // (pop/pan recognizers on the navigation container, WebKit's re-created edge
 // recognizers). No-op for the embedded hub controller.
 static void ApolloStandaloneChatBackPanInstall(ApolloDirectChatWebViewController *controller) {
-    if (controller.embeddedInInbox || controller.mailboxKind != ApolloModernMailboxKindChat) return;
+    if ((controller.embeddedInInbox && !controller.hostedByStandaloneHub) ||
+        controller.mailboxKind != ApolloModernMailboxKindChat) return;
     UIView *hostView = controller.viewIfLoaded;
     if (!hostView) return;
     if (!sStandaloneChatBackPan) {
@@ -3907,12 +5072,69 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
 
 %end
 
+// Apollo's rule for tapping the tab that is already selected — scroll the
+// screen on top back to its top, or step back one screen once it is there —
+// only recognizes Apollo's own screens; the tweak's mailbox screens (the
+// stand-alone Chat hub, Modmail) sat inert under that tap. The same rule
+// applies to them here. Their list scrolls inside the web view (Reddit's own
+// scroller, not the WKWebView's), so any scrolled scroll view under the web
+// view is the one to bring back to the top.
+static UIScrollView *ApolloScrolledScrollViewUnder(UIView *view) {
+    if ([view isKindOfClass:[UIScrollView class]]) {
+        UIScrollView *scrollView = (UIScrollView *)view;
+        if (scrollView.contentOffset.y > -scrollView.adjustedContentInset.top + 1.0 &&
+            scrollView.contentSize.height > 1.0) {
+            return scrollView;
+        }
+    }
+    for (UIView *subview in view.subviews) {
+        UIScrollView *found = ApolloScrolledScrollViewUnder(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static BOOL ApolloMailboxScreenHandleTabReselect(UINavigationController *navigationController) {
+    UIViewController *top = navigationController.topViewController;
+    ApolloDirectChatWebViewController *mailbox = nil;
+    if ([top isKindOfClass:[ApolloDirectChatWebViewController class]]) {
+        mailbox = (ApolloDirectChatWebViewController *)top;
+    } else {
+        UIViewController *embedded = ApolloStandaloneInboxChatHubEmbeddedController(top);
+        if ([embedded isKindOfClass:[ApolloDirectChatWebViewController class]]) {
+            mailbox = (ApolloDirectChatWebViewController *)embedded;
+        }
+    }
+    if (!mailbox) return NO;
+    UIScrollView *scrolled = mailbox.webView ? ApolloScrolledScrollViewUnder(mailbox.webView) : nil;
+    if (scrolled) {
+        [scrolled setContentOffset:CGPointMake(scrolled.contentOffset.x,
+                                               -scrolled.adjustedContentInset.top)
+                          animated:YES];
+        ApolloLog(@"[DirectChatWeb] Inbox tab re-tap: scrolled %@ back to the top",
+                  NSStringFromClass(top.class));
+        return YES;
+    }
+    if (navigationController.viewControllers.count > 1) {
+        ApolloLog(@"[DirectChatWeb] Inbox tab re-tap: stepping back from %@",
+                  NSStringFromClass(top.class));
+        [navigationController popViewControllerAnimated:YES];
+        return YES;
+    }
+    return NO;
+}
+
 // Selecting Inbox already reveals the untouched mailbox. Clear the optional
 // native-Back return marker so a later Back action in Posts behaves normally.
 %hook _TtC6Apollo13SceneDelegate
 
 - (BOOL)tabBarController:(UITabBarController *)tabBarController
  shouldSelectViewController:(UIViewController *)viewController {
+    if (viewController == tabBarController.selectedViewController &&
+        [viewController isKindOfClass:[UINavigationController class]] &&
+        ApolloMailboxScreenHandleTabReselect((UINavigationController *)viewController)) {
+        return NO;
+    }
     for (UIViewController *candidate in tabBarController.viewControllers) {
         // PaneEntry's narrowly-scoped native compatibility adapter may expose
         // synthetic primary navigation controllers while this hook is chained
@@ -3947,8 +5169,51 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
 
 %end
 
+#if APOLLO_SIM_BUILD
+// Sim debug bridge ("chatjs <js>"): evaluate JS in the most recently created
+// mailbox web view and log the result, so a simulator can reproduce web-side
+// states its own WebKit never produces (see ApolloSimDebugTap.xm).
+void ApolloDirectChatDebugEvaluateJS(NSString *js);
+void ApolloDirectChatDebugEvaluateJS(NSString *js) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        WKWebView *webView = sLatestMailboxWebController.webView;
+        if (!webView) {
+            ApolloLog(@"[DirectChatWeb] chatjs: no mailbox web view");
+            return;
+        }
+        [webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+            ApolloLog(@"[DirectChatWeb] chatjs -> %@%@", result ?: @"(nil)",
+                      error ? [NSString stringWithFormat:@" error: %@", error.localizedDescription] : @"");
+        }];
+    });
+}
+#endif
+
 %ctor {
     %init;
+    ApolloMessageDraftStoreAsync(^{ ApolloMessageDraftStorePruneExpired(); });
     ApolloMigrateModernMailboxPreferences();
+    // The mailbox web views load real reddit.com documents, so their isolated
+    // cookie jar carries the token_v2 Reddit refreshed on the way — an
+    // already-minted Matrix bearer for the chat poller and room directory.
+    // Only a controller seeded for the CURRENT account's session qualifies.
+    ApolloChatPollSetWebJarBearerProvider(^(void (^completion)(NSString *token)) {
+        ApolloDirectChatWebViewController *controller = sLatestMailboxWebController;
+        WKWebView *webView = controller.webView;
+        if (!webView || !ApolloModernChatControllerSessionIsCurrent(controller)) {
+            completion(nil);
+            return;
+        }
+        [webView.configuration.websiteDataStore.httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+            NSString *token = nil;
+            for (NSHTTPCookie *cookie in cookies) {
+                if ([cookie.name isEqualToString:@"token_v2"] && cookie.value.length > 0) {
+                    token = cookie.value;
+                    break;
+                }
+            }
+            completion(token);
+        }];
+    });
     ApolloLog(@"[DirectChatWeb] module loaded");
 }

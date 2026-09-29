@@ -12,8 +12,9 @@
 // rendered where content scrolls under the nav/tab bars. iOS 26 defaults to a
 // soft gradient blur; iOS 27 betas default to a hard cutoff with a dividing
 // line, which some users find jarring. The "Header Style" setting lets users
-// choose the TOP (header) edge treatment explicitly: Soft, Hard, or Blur (a
-// tweak-drawn progressive blur — see ApolloProgressiveBlur.xm).
+// choose the TOP (header) edge treatment explicitly: Soft, Hard, Blur (a
+// tweak-drawn progressive blur — see ApolloProgressiveBlur.xm), or Hidden
+// (no native edge effect and no replacement blur).
 //
 // Only the top edge is ever touched. Earlier builds applied the chosen style
 // to all four edges, which painted a hard band behind the tab bar in Hard
@@ -36,6 +37,8 @@ static char kApolloScrollEdgeEffectForcedHiddenKey;
 // the next apply pass (didMoveToWindow / style-change notification) stamps it
 // and applies the mode directly.
 static char kApolloScrollEdgeEffectIsTopKey;
+static char kApolloProfileHeroVisibleKey;
+static char kApolloEdgeHasVisibleProfileHeroKey;
 
 // Debug-only introspection for the sim bridge's "headerdump" command.
 const void *ApolloScrollEdgeEffectTopStampKey(void) { return &kApolloScrollEdgeEffectIsTopKey; }
@@ -57,6 +60,10 @@ NSInteger ApolloResolvedScrollEdgeEffectStyle(void) {
         sSystemDefaultsHard = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 27;
     });
     return sSystemDefaultsHard ? ApolloScrollEdgeEffectStyleHard : ApolloScrollEdgeEffectStyleSoft;
+}
+
+static BOOL ApolloHeaderStyleHidesNativeEffect(NSInteger mode) {
+    return mode == ApolloScrollEdgeEffectStyleBlur || mode == ApolloScrollEdgeEffectStyleHidden;
 }
 
 static id ApolloScrollEdgeEffectStyleObjectForMode(NSInteger mode) {
@@ -108,12 +115,27 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
 
     objc_setAssociatedObject(effect, &kApolloScrollEdgeEffectIsTopKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
+    // The profile table and Apollo's intercepting scroll view both participate
+    // in the top effect. Inherit the override from their controller's root.
+    BOOL heroVisible = NO;
+    for (UIView *view = scrollView; view; view = view.superview) {
+        if ([objc_getAssociatedObject(view, &kApolloProfileHeroVisibleKey) boolValue]) {
+            heroVisible = YES;
+            break;
+        }
+    }
+    objc_setAssociatedObject(effect, &kApolloEdgeHasVisibleProfileHeroKey,
+                             heroVisible ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (heroVisible && mode == ApolloScrollEdgeEffectStyleHard) {
+        mode = ApolloScrollEdgeEffectStyleHidden;
+    }
+
     SEL setHiddenSelector = NSSelectorFromString(@"setHidden:");
     BOOL hasSetHidden = [effect respondsToSelector:setHiddenSelector];
     if (hasSetHidden) {
-        if (mode == ApolloScrollEdgeEffectStyleBlur) {
+        if (ApolloHeaderStyleHidesNativeEffect(mode)) {
             // Blur replaces the system header effect with the tweak-drawn
-            // progressive blur, so the native effect must go away. Remember
+            // progressive blur; Hidden removes it without a replacement. Remember
             // only the visibility changes made BY THIS FEATURE: stamp an
             // effect solely when this call actually flips it visible→hidden.
             // An effect that is already hidden either belongs to UIKit/Apollo
@@ -133,12 +155,12 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
         }
     }
 
-    // Blur leaves the (hidden) native effect's style alone; every other mode
-    // pushes its style object — Automatic pushes automaticStyle, which is also
+    // Blur and Hidden leave the hidden native effect's style alone; other modes
+    // push their style object — Automatic pushes automaticStyle, which is also
     // what restores system behavior after switching away from Soft/Hard.
     BOOL hasSetStyle = NO;
     id style = nil;
-    if (mode != ApolloScrollEdgeEffectStyleBlur) {
+    if (!ApolloHeaderStyleHidesNativeEffect(mode)) {
         SEL setStyleSelector = NSSelectorFromString(@"setStyle:");
         style = ApolloScrollEdgeEffectStyleObjectForMode(mode);
         hasSetStyle = (style != nil) && [effect respondsToSelector:setStyleSelector];
@@ -189,6 +211,18 @@ static void ApolloApplyAndNudgeViewTree(UIView *view) {
     }
 }
 
+void ApolloSetProfileHeroVisible(UIViewController *viewController, BOOL visible) {
+    if (!viewController.isViewLoaded) return;
+    UIView *root = viewController.view;
+    if ([objc_getAssociatedObject(root, &kApolloProfileHeroVisibleKey) boolValue] == visible) return;
+    objc_setAssociatedObject(root, &kApolloProfileHeroVisibleKey,
+                             visible ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!IsLiquidGlass()) return;
+    ApolloApplyAndNudgeViewTree(root);
+    ApolloLog(@"[HeaderStyle] profile hero visible=%d mode=%ld", visible,
+              (long)ApolloResolvedScrollEdgeEffectStyle());
+}
+
 static void ApolloNudgeViewTree(UIView *view) {
     if ([view isKindOfClass:[UIScrollView class]]) {
         ApolloNudgeEdgeEffectRebuild((UIScrollView *)view);
@@ -198,7 +232,109 @@ static void ApolloNudgeViewTree(UIView *view) {
     }
 }
 
+// MARK: - Hard: room above a nav-bar-hosted search field
+//
+// Under the Hard header style UIKit paints the navigation bar's title row as
+// a solid band with a hard bottom edge. A search bar hosted in the bar sits in
+// its own 54pt row below that band (the search bar registers its own scroll
+// pocket, so the band stops above it), and UIKit lays its 44pt field out flush
+// with the top of that row (0pt above it on iOS 27, 1pt on iOS 26): the hard
+// edge lands exactly on the top of the field and the field reads as cut off
+// (reported with #1138; Soft and Blur have no edge there, so the same geometry
+// looks padded). The row's height is the bar's to decide — a taller natural
+// height, intrinsic size or palette preferredHeight is ignored by the iOS 26
+// bar — so the room has to come from inside the row: centre the field in it,
+// splitting the row's slack (10pt on iOS 27, 16pt on iOS 26) evenly above and
+// below instead of leaving it all at the bottom, through UISearchBar's
+// edge-specific content inset override (the SPI UIKit provides for exactly
+// this; the field keeps its height). Even, not "as much as possible on top":
+// the slack is small, and a field pushed down until it nearly touches the
+// content looked just as cramped from the other side. The split is computed
+// from the insets UIKit itself resolved for the hosted bar, read while no
+// override is active, so each OS keeps its own row.
+//
+// Timing: the bar's visual provider zeroes its private insets in -prepare
+// (and the navigation bar drives the effective-inset recomputation), so an
+// override written when the search controller is created is gone by the time
+// the bar is hosted. It is applied once the bar is in a window — from the
+// UISearchBar didMoveToWindow hook ApolloThemeRuntime.xm already owns — and
+// re-applied live when the style changes; every other style hands the insets
+// back to UIKit (an empty edge mask). Applied to every nav-bar search bar the
+// tweak installs: feed and comments through the native search attach, Settings
+// through its own, and the Giphy / theme gallery / AI models / Recently Read
+// screens.
+static NSHashTable<UISearchBar *> *sApolloHeaderStyleSearchBars;
+static char kApolloHeaderStyleSearchBarBaseInsetKey;   // NSValue(UIEdgeInsets): UIKit's own insets
+
+static void ApolloHeaderStyleApplySearchBarInsets(UISearchBar *searchBar) {
+    SEL overrideSelector = NSSelectorFromString(@"_setOverrideContentInsets:forRectEdges:");
+    SEL querySelector = NSSelectorFromString(@"_getOverrideContentInsets:overriddenEdges:");
+    SEL effectiveSelector = NSSelectorFromString(@"_effectiveContentInset");
+    SEL refreshSelector = NSSelectorFromString(@"_updateEffectiveContentInset");
+    if (!searchBar || ![searchBar respondsToSelector:overrideSelector] ||
+        ![searchBar respondsToSelector:querySelector] ||
+        ![searchBar respondsToSelector:effectiveSelector]) return;
+    BOOL hard = IsLiquidGlass() && ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleHard;
+
+    // UIKit's own insets are only readable while nothing overrides them; keep
+    // the last such reading as the base the shift is applied to.
+    UIEdgeInsets current = UIEdgeInsetsZero;
+    NSUInteger overridden = 0;
+    ((void (*)(id, SEL, UIEdgeInsets *, NSUInteger *))objc_msgSend)(searchBar, querySelector, &current, &overridden);
+    if (overridden == 0) {
+        UIEdgeInsets effective = ((UIEdgeInsets (*)(id, SEL))objc_msgSend)(searchBar, effectiveSelector);
+        objc_setAssociatedObject(searchBar, &kApolloHeaderStyleSearchBarBaseInsetKey,
+                                 [NSValue valueWithUIEdgeInsets:effective], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    NSValue *baseValue = objc_getAssociatedObject(searchBar, &kApolloHeaderStyleSearchBarBaseInsetKey);
+    if (hard && !baseValue) return;   // nothing measured yet; the window arrival will
+    UIEdgeInsets base = baseValue ? baseValue.UIEdgeInsetsValue : UIEdgeInsetsZero;
+
+    UIEdgeInsets insets = UIEdgeInsetsZero;
+    NSUInteger edges = UIRectEdgeNone;   // no edge overridden: UIKit's own insets again
+    if (hard) {
+        CGFloat slack = MAX(0.0, base.top) + MAX(0.0, base.bottom);
+        CGFloat top = round(slack);          // whole points: even split, any odd point below
+        top = floor(top / 2.0);
+        insets = UIEdgeInsetsMake(top, 0.0, slack - top, 0.0);
+        edges = UIRectEdgeTop | UIRectEdgeBottom;
+    }
+    if (overridden == edges && (edges == UIRectEdgeNone ||
+                                (fabs(current.top - insets.top) < 0.01 && fabs(current.bottom - insets.bottom) < 0.01))) {
+        return;   // already in place
+    }
+    ((void (*)(id, SEL, UIEdgeInsets, NSUInteger))objc_msgSend)(searchBar, overrideSelector, insets, edges);
+    // The provider stores the override; the navigation bar normally asks for
+    // the recomputation, so ask for it here to take effect on this layout.
+    if ([searchBar respondsToSelector:refreshSelector]) {
+        ((void (*)(id, SEL))objc_msgSend)(searchBar, refreshSelector);
+    }
+    [searchBar setNeedsLayout];
+    ApolloLog(@"[HeaderStyle] search field insets %@: base=(%.1f,%.1f) -> (%.1f,%.1f) edges=%lu on %@",
+              hard ? @"centred for Hard" : @"restored", base.top, base.bottom,
+              hard ? insets.top : base.top, hard ? insets.bottom : base.bottom,
+              (unsigned long)edges, searchBar.placeholder ?: @"");
+}
+
+void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar) {
+    if (!searchBar || !IsLiquidGlass()) return;
+    if (!sApolloHeaderStyleSearchBars) sApolloHeaderStyleSearchBars = [NSHashTable weakObjectsHashTable];
+    [sApolloHeaderStyleSearchBars addObject:searchBar];
+    if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
+}
+
+void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar) {
+    if (!searchBar.window || !IsLiquidGlass()) return;
+    if (![sApolloHeaderStyleSearchBars containsObject:searchBar]) return;
+    ApolloHeaderStyleApplySearchBarInsets(searchBar);
+}
+
 static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
+    // Registered bars on screen first; the ones off screen pick the style up
+    // when they next enter a window.
+    for (UISearchBar *searchBar in sApolloHeaderStyleSearchBars) {
+        if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
+    }
     for (UIWindow *window in UIApplication.sharedApplication.windows) {
         ApolloApplyAndNudgeViewTree(window);
     }
@@ -241,8 +377,11 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 }
 
 - (void)setHidden:(BOOL)hidden {
+    NSInteger mode = ApolloResolvedScrollEdgeEffectStyle();
+    BOOL hideForHero = mode == ApolloScrollEdgeEffectStyleHard &&
+        [objc_getAssociatedObject(self, &kApolloEdgeHasVisibleProfileHeroKey) boolValue];
     if (IsLiquidGlass() &&
-        ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleBlur &&
+        (ApolloHeaderStyleHidesNativeEffect(mode) || hideForHero) &&
         objc_getAssociatedObject(self, &kApolloScrollEdgeEffectIsTopKey)) {
         if (!hidden) {
             // The caller wanted it visible and we are overriding — exactly the
@@ -253,7 +392,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
         // hide WE created — the apply pass's own setHidden:YES routes through
         // this very hook, and clearing the stamp here erased the restore
         // record the moment it was written, leaving effects stuck hidden
-        // after switching away from Blur (the repro'd "Hard renders nothing").
+        // after switching away from Blur/Hidden.
         // hidden == YES with no stamp is UIKit/Apollo's own intent: leave it
         // unstamped so restore never un-hides an edge they keep disabled. If
         // UIKit genuinely wants an edge hidden while our stamp exists, it will

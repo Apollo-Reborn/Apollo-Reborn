@@ -14,6 +14,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ipad/ApolloPaneLayout.h"
 #import "ApolloWallpapersViewController.h"
+#import "ApolloSettingsTableViewController.h"
 
 // MARK: - Settings View Controller (Custom API row injection)
 
@@ -294,8 +295,9 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = indexPath.row == 0 ? @"Apollo Reborn" : @"Buy Us a Coffee";
+        ApolloSettingsApplyCellTypography(cell);
         ApolloRootSettingsPreparePaneText(cell, (UIViewController *)self);
-        UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
+        UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
             ? (ApolloRebornOptionsSettingsIcon(29.0) ?: createSettingsIcon(@"key.fill", [UIColor systemTealColor]))
@@ -316,8 +318,9 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
         }
         cell.textLabel.text = title;
+        ApolloSettingsApplyCellTypography(cell);
         ApolloRootSettingsPreparePaneText(cell, (UIViewController *)self);
-        UIColor *primaryText = ApolloThemeRuntimeColor(ApolloThemeTokenLabel);
+        UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
             ? createSettingsIcon(@"photo.on.rectangle.angled", UIColor.systemRedColor)
@@ -417,15 +420,12 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0 || indexPath.section == 2) {
-        // Native cell text grows at accessibility sizes. Let UIKit measure the
-        // multiline label instead of clipping it inside the ordinary 52pt row.
-        // This is the existing single owner of the root table, not a second
-        // delegate/remapper layered onto Apollo's General screen.
+    if (ApolloRootCellCopiesNativeSurface(indexPath)) {
         if (ApolloPaneSplitControllerFor((UIViewController *)self) &&
-            UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory))
+            UIContentSizeCategoryIsAccessibilityCategory(tableView.traitCollection.preferredContentSizeCategory)) {
             return UITableViewAutomaticDimension;
-        return 52.0;
+        }
+        return MAX(52.0, ceil(ApolloSettingsFont(UIFontTextStyleBody, tableView.traitCollection).lineHeight) + 22.0);
     }
     return %orig;
 }
@@ -692,7 +692,24 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 
 %end
 
+%group ApolloSettingsGestureHeaders
+%hook ApolloSettingsGesturesViewController
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    UIView *header = %orig;
+    ApolloSettingsApplySectionHeaderTypography(header);
+    return header;
+}
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    %orig;
+    ApolloSettingsApplySectionHeaderTypography(view);
+}
+%end
+%end
+
 %ctor {
+    if (@available(iOS 26.0, *)) {
+        %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = NSClassFromString(@"Apollo.SettingsGesturesViewController"));
+    }
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
           SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"));
 

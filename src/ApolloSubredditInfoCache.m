@@ -3,6 +3,8 @@
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — userIsSubscriber stamping
 #import "ApolloCommon.h"               // ApolloLog
 #import "ApolloState.h"
+#import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
+#import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
 NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoUpdatedNotification";
 NSString * const ApolloSubredditNameKey = @"subredditName";
@@ -220,6 +222,10 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         dict[@"allowsImageComments"] = @(info.allowsImageComments);
         dict[@"allowsGifComments"] = @(info.allowsGifComments);
     }
+    if (info.userFlairInfoAvailable) {
+        dict[@"userFlairInfoAvailable"] = @(YES);
+        dict[@"usersCanAssignUserFlair"] = @(info.usersCanAssignUserFlair);
+    }
     // Written only when known, so a reloaded entry that never carried the flag
     // stays nil (unknown) rather than decoding as a definite "not subscribed."
     if (info.userIsSubscriber != nil) {
@@ -260,6 +266,8 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     info.commentMediaInfoAvailable = [dict[@"commentMediaInfoAvailable"] boolValue];
     info.allowsImageComments = [dict[@"allowsImageComments"] boolValue];
     info.allowsGifComments = [dict[@"allowsGifComments"] boolValue];
+    info.userFlairInfoAvailable = [dict[@"userFlairInfoAvailable"] boolValue];
+    info.usersCanAssignUserFlair = [dict[@"usersCanAssignUserFlair"] boolValue];
     id storedSubscriberFlag = dict[@"userIsSubscriber"];
     if ([storedSubscriberFlag isKindOfClass:[NSNumber class]]) {
         info.userIsSubscriber = @([storedSubscriberFlag boolValue]);
@@ -356,7 +364,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
 - (NSURLRequest *)requestForSubreddit:(NSString *)subredditName {
     NSString *escaped = [self escapedSubredditForPath:subredditName];
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloActiveAccountRedditBearerToken();
     NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/about.json?raw_json=1", escaped]
         : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", escaped];
@@ -420,6 +428,12 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     if ([subscriberFlag isKindOfClass:[NSNumber class]]) {
         info.userIsSubscriber = @([subscriberFlag boolValue]);
         info.userIsSubscriberAccount = ApolloActiveAccountUsername().lowercaseString;
+    }
+
+    id userFlairFlag = dataDict[@"can_assign_user_flair"];
+    if ([userFlairFlag isKindOfClass:[NSNumber class]]) {
+        info.userFlairInfoAvailable = YES;
+        info.usersCanAssignUserFlair = [userFlairFlag boolValue];
     }
 
     // `allowed_media_in_comments` is an array of permitted media kinds for
@@ -496,6 +510,20 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     }
 
+    // With no bearer (an API-Key-Free account) the chokepoint signs this in
+    // with the web session cookie. While Reddit has that session rate-limited,
+    // fall back to the cached entry (or nothing) instead of adding to it; the
+    // subreddit's own posts are waiting on the same window to reset.
+    NSString *webSessionUsername = ([request valueForHTTPHeaderField:@"Authorization"].length == 0 &&
+                                    ApolloWebJSONHasUsableSession()) ? ApolloActiveWebSessionUsername() : nil;
+    NSTimeInterval budgetWait = ApolloWebJSONOptionalReadBackoff(webSessionUsername);
+    if (budgetWait > 0) {
+        ApolloLog(@"[SubredditHeaders] Info fetch r/%@ held for %.0fs while Reddit rate-limits u/%@",
+                  key, budgetWait, webSessionUsername);
+        [self finishRequestForKey:key info:cached];
+        return;
+    }
+
     __weak typeof(self) weakSelf = self;
     void (^retryOrGiveUp)(NSString *) = ^(NSString *reason) {
         typeof(self) strongSelf = weakSelf;
@@ -527,6 +555,13 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSInteger statusCode = http ? http.statusCode : 200;
+        // A web session's 429 lasts until Reddit's window resets; a retry in
+        // a few seconds just hits it again.
+        if (statusCode == 429 && webSessionUsername.length > 0) {
+            ApolloLog(@"[SubredditHeaders] Info fetch r/%@ HTTP 429 on u/%@'s web session — not retrying", key, webSessionUsername);
+            [strongSelf finishRequestForKey:key info:cached];
+            return;
+        }
         if (statusCode == 429 || statusCode >= 500) {
             retryOrGiveUp([NSString stringWithFormat:@"HTTP %ld", (long)statusCode]);
             return;
@@ -606,6 +641,16 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
     // Fresh entry missing the comment-media field (older disk cache) → force a
     // refetch so we don't keep serving incomplete data.
     BOOL forceRefresh = (cached != nil && !cached.commentMediaInfoAvailable);
+    [self enqueueRequestForSubreddit:subredditName forceRefresh:forceRefresh completion:completion];
+}
+
+- (void)requestUserFlairInfoForSubreddit:(NSString *)subredditName completion:(void (^)(ApolloSubredditInfo *info))completion {
+    ApolloSubredditInfo *cached = [self cachedInfoForSubreddit:subredditName];
+    if (cached && [self isFreshInfo:cached] && cached.userFlairInfoAvailable) {
+        if (completion) completion(cached);
+        return;
+    }
+    BOOL forceRefresh = cached != nil && !cached.userFlairInfoAvailable;
     [self enqueueRequestForSubreddit:subredditName forceRefresh:forceRefresh completion:completion];
 }
 

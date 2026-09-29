@@ -28,6 +28,17 @@ for (const value of canonicalVariants) {
     });
 }
 
+test("builds canonical direct Apollo URLs for the legacy extension", () => {
+    assert.equal(
+        links.toApolloURL("https://old.reddit.com/r/apolloapp/comments/13rhvfe/title/comment/?context=3#reply"),
+        "apollo://reddit.com/r/apolloapp/comments/13rhvfe/title/comment/?context=3#reply"
+    );
+    assert.equal(
+        links.toApolloURL("https://redd.it/13rhvfe?context=3#comments"),
+        "apollo://reddit.com/comments/13rhvfe?context=3#comments"
+    );
+});
+
 test("upgrades an HTTP Reddit page before building the Universal Link", () => {
     const source = "http://old.reddit.com/r/apolloapp/comments/13rhvfe/title/";
     const normalized = "https://old.reddit.com/r/apolloapp/comments/13rhvfe/title/";
@@ -51,6 +62,7 @@ test("does not treat Reddit media hosts as post short links", () => {
 
 test("rejects malformed redd.it paths", () => {
     assert.equal(links.toOpenerURL("https://redd.it/abc/extra"), null);
+    assert.equal(links.toApolloURL("https://redd.it/abc/extra"), null);
 });
 
 test("rejects roots, unsafe schemes, lookalikes, credentials, and fallback loops", () => {
@@ -66,5 +78,6 @@ test("rejects roots, unsafe schemes, lookalikes, credentials, and fallback loops
         "https://click.redditmail.com/CL0/example"
     ]) {
         assert.equal(links.redditURL(value), null);
+        assert.equal(links.toApolloURL(value), null);
     }
 });

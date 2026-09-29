@@ -53,6 +53,7 @@ typedef NS_ENUM(NSUInteger, ApolloThemeToken) {
     ApolloThemeTokenLink,
     ApolloThemeTokenSelection,
     ApolloThemeTokenDisabled,
+    ApolloThemeTokenRowHighlight,
 
     ApolloThemeTokenCount
 };

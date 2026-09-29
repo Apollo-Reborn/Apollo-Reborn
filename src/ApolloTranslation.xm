@@ -10,11 +10,14 @@
 #include <string.h>
 
 #import "ApolloCommon.h"
+#import "ApolloNavigationActions.h"
+#import "ApolloNativeActionMenus.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloTranslation.h"
+#import "ApolloFindInCommentsGlass.h"
 #import "Tweak.h"
 #import "settings/ApolloSettingsGeneralTable.h"
 
@@ -57,7 +60,6 @@ static const void *kApolloThreadTranslatedModeKey = &kApolloThreadTranslatedMode
 // Set when the user explicitly toggled away from a translated thread (so we
 // don't clobber the user's preference when sAutoTranslateOnAppear is on).
 static const void *kApolloThreadOriginalModeKey = &kApolloThreadOriginalModeKey;
-static const void *kApolloTranslateBarButtonKey = &kApolloTranslateBarButtonKey;
 static const void *kApolloVisibleTranslationAppliedKey = &kApolloVisibleTranslationAppliedKey;
 static const void *kApolloAppliedTranslationFullNameKey = &kApolloAppliedTranslationFullNameKey;
 // Phase D — vote resilience. When we install a translated string into a text
@@ -86,13 +88,13 @@ static const void *kApolloCommentOwnedTextNodeKey = &kApolloCommentOwnedTextNode
 // The globe-installation code uses this to gate visibility on
 // sTranslatePostTitles in addition to sEnableBulkTranslation.
 static const void *kApolloFeedTranslationVCKey = &kApolloFeedTranslationVCKey;
-// Liquid Glass globe-merge: instead of adding the translation globe as a SEPARATE
-// trailing bar button item (which iOS 26 spaces apart from Apollo's mod/sort/more
-// container with a visible inter-group gap), we inject the globe button directly
-// into Apollo's existing trailing container so all icons form one evenly-spaced
-// group. kApolloGlobeMergeButtonKey holds the globe UIButton on the navigationItem;
-// sApplyingGlobeMerge guards the setRightBarButtonItem(s) re-injection hook.
+// Share the native action container to align the globe with taller moderator
+// buttons and avoid Liquid Glass's inter-item gap (#393). Track it on the nav
+// item; sApplyingGlobeMerge guards rebuild-hook recursion.
 static const void *kApolloGlobeMergeButtonKey = &kApolloGlobeMergeButtonKey;
+// A deferred removal is feature intent, not another layout request. Native
+// item setters must not turn it back into an insertion while the menu is open.
+static const void *kApolloGlobeRemovalPendingKey = &kApolloGlobeRemovalPendingKey;
 // Fallback for screens with no multi-button container to merge into: the globe
 // is shown as its own trailing bar button item (the pre-26 behavior).
 static const void *kApolloGlobeStandaloneItemKey = &kApolloGlobeStandaloneItemKey;
@@ -332,10 +334,26 @@ static NSString *ApolloCachedLinkTranslationForKey(NSString *key) {
     return hit;
 }
 
+// Bumped by every full flush below. A disk hydrate that was already in flight
+// compares it before inserting anything, so a "forget everything" landing
+// mid-launch is not quietly undone by a snapshot read before it. Main-thread
+// only: the flush runs from a main-queue observer and the hydrate reads it on
+// main.
+static uint32_t sTranslationCacheGeneration = 0;
+
+// YES from the moment the launch hydrate is dispatched until its main-queue
+// insert has run (or it gave up). The persist checks it before touching the
+// file: with the hydrate asynchronous, a background transition that lands
+// before the read has been folded into the mirrors would otherwise snapshot
+// empty mirrors and delete the very file it was still reading. Main-thread
+// only, like the generation above.
+static BOOL sTranslationDiskHydratePending = NO;
+
 // Full flush — caches AND mirrors. For "forget everything" flows (the
 // skip-language list changed). Clearing only the NSCaches would leave the
 // mirror fallbacks above serving the stale entries right back.
 static void ApolloClearAllTranslationCaches(void) {
+    sTranslationCacheGeneration++;
     [sTranslationCache removeAllObjects];
     [sCommentTranslationByFullName removeAllObjects];
     [sLinkTranslationByFullName removeAllObjects];
@@ -558,6 +576,10 @@ static const void *kApolloPostInfoMarkerSizeKey = &kApolloPostInfoMarkerSizeKey;
 // can be recomputed when the marker font changes without a re-parent — e.g. when
 // the post-mount heal resizes a marker that first built at a fallback size.
 static const void *kApolloPostInfoMarkerBaselineKey = &kApolloPostInfoMarkerBaselineKey;
+// How far past the age view's trailing edge the marker was last pinned (see
+// ApolloPostInfoMarkerLeadForAgeView), so a later pass can tell when the stats
+// after the age have moved and re-pin it.
+static const void *kApolloPostInfoMarkerLeadKey = &kApolloPostInfoMarkerLeadKey;
 // Weak set of all live PostInfoNode marker labels, so a globe toggle-to-original
 // can hide them all at once (they're separate UILabels, not owned text nodes).
 static NSHashTable *sPostInfoMarkerLabels = nil;
@@ -2163,8 +2185,8 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
     // setAttributedText: write below, so the global setter hook sees the
     // marker and the swap-to-translated logic can trigger if Apollo later
     // overwrites the node (e.g. on vote/score-flair refresh).
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [comment.body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, comment.body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloCommentOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
@@ -2578,6 +2600,35 @@ static BOOL ApolloNodeIsInsideLinkPreviewCard(id node) {
     return NO;
 }
 
+// YES when the node lives inside the post's metadata row (Apollo.PostInfoNode).
+// Hopper: -[PostInfoNode layoutSpecThatFits:] stacks only metadata: the pinned
+// indicator, subreddit icon/button, author byline button, cake-day icon, author
+// flair, points, liked %, comments, age, edited, awards, and the mod / more /
+// approved buttons. The feed selftext preview is RichMediaNode's
+// selfPostPreviewNode, so nothing in this row is ever the body.
+// The feed picker has no readable RDKLink to drop the byline by author, and the
+// inline user avatar (U+FFFC + space before the name) makes "by <20-char name>"
+// exactly 25 characters, the picker's length floor. On a post with no selftext
+// preview the byline won the election; translating it rebuilt it from its plain
+// string (the avatar attachment went, its U+FFFC + space stayed), the avatar
+// hook prepended a new avatar, the longer byline re-qualified on the next pass,
+// and each round pushed the name one space further right.
+static BOOL ApolloNodeIsInsidePostInfoRow(id node) {
+    Class postInfoClass = objc_getClass("_TtC6Apollo12PostInfoNode");
+    if (!postInfoClass) return NO;
+    id current = node;
+    for (int hop = 0; hop < 8 && current; hop++) {
+        if ([current isKindOfClass:postInfoClass]) return YES;
+        if (![current respondsToSelector:NSSelectorFromString(@"supernode")]) return NO;
+        @try {
+            current = ((id (*)(id, SEL))objc_msgSend)(current, NSSelectorFromString(@"supernode"));
+        } @catch (__unused NSException *e) {
+            return NO;
+        }
+    }
+    return NO;
+}
+
 static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewController, UITableView *tableView, RDKLink *link) {
     if (!viewController.view) return nil;
     NSMutableArray *candidates = [NSMutableArray array];
@@ -2648,6 +2699,9 @@ static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewC
             if (ApolloTextNodeIsTweakUI(candidate)) { dbgMetadata++; continue; }
             // Rich-link-card scraped text belongs to the rich-preview pipeline.
             if (ApolloNodeIsInsideLinkPreviewCard(candidate)) { dbgMetadata++; continue; }
+            // The byline row is metadata. With no readable RDKLink (the case this
+            // scan exists for) the author filter below can't drop it by name.
+            if (ApolloNodeIsInsidePostInfoRow(candidate)) { dbgMetadata++; continue; }
             NSString *text = ApolloVisibleTextFromNode(candidate);
             if (text.length == 0 || ApolloPostTextLooksLikeMetadata(text, link)) { dbgMetadata++; continue; }
 
@@ -2718,6 +2772,7 @@ static id ApolloBestPostBodyTextNode(id headerCellNode, RDKLink *link, NSString 
         if ([objc_getAssociatedObject(n, kApolloTitleOwnedTextNodeKey) boolValue]) continue;
         if (ApolloTextNodeIsTweakUI(n)) continue;
         if (ApolloNodeIsInsideLinkPreviewCard(n)) continue;
+        if (ApolloNodeIsInsidePostInfoRow(n)) continue;
         NSAttributedString *attr = nil;
         @try { attr = ((id (*)(id, SEL))objc_msgSend)(n, @selector(attributedText)); }
         @catch (__unused NSException *e) { continue; }
@@ -2812,10 +2867,10 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
     // no marker — but STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(body)) {
         if (!ApolloTranslatedTextDiffersFromSource(body, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         objc_setAssociatedObject(headerCellNode, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (link) objc_setAssociatedObject(headerCellNode, kApolloAppliedHeaderLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2829,8 +2884,8 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
     NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
 
     // Same vote-resilience marker pattern as comment cells.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
     // EXACT no-op gate (see comment apply): the vote-time headerReapply
@@ -2912,10 +2967,10 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
     // STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
         if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         return;
     }
@@ -2945,8 +3000,8 @@ static void ApolloApplyTranslationToPostTextNode(id owner, id textNode, NSString
     }
 
     NSAttributedString *translatedAttr = ApolloTranslatedAttributedStringPreservingVisualLinks(current, translatedText);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
     // EXACT no-op gate (see comment apply): skip the write + relayout when the
@@ -5318,9 +5373,9 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
                         objc_setAssociatedObject(heldNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                     }
                 } @catch (__unused NSException *e) {}
-                objc_setAssociatedObject(heldNode, kApolloOwnedNodeOriginalBodyKey, [trimmed copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject(heldNode, kApolloOwnedNodeOriginalBodyKey, trimmed, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 objc_setAssociatedObject(heldNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                objc_setAssociatedObject(heldNode, kApolloTitlePinnedSourceKey, [trimmed copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject(heldNode, kApolloTitlePinnedSourceKey, trimmed, OBJC_ASSOCIATION_COPY_NONATOMIC);
                 ApolloTapModeRegisterTouchedNode(heldNode);
                 objc_setAssociatedObject(headerCellNode, kApolloHeaderTranslatedTextNodeKey, heldNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 if (link) objc_setAssociatedObject(headerCellNode, kApolloAppliedHeaderLinkKey, link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -5413,9 +5468,9 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
                     objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 }
             } @catch (__unused NSException *e) {}
-            objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
             objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
             ApolloTapModeRegisterTouchedNode(textNode);
             ApolloUpdatePostInfoMarkerForNode(textNode, targetLanguage, YES, textNode);
         }
@@ -6095,6 +6150,17 @@ static BOOL ApolloAttributedStringEndsWithMarker(NSAttributedString *attr) {
     return [attr attribute:ApolloTranslationMarkerAttributeName atIndex:attr.length - 1 effectiveRange:NULL] != nil;
 }
 
+// See ApolloTranslation.h. The appended line is one run tagged with the marker
+// attribute, leading newline included, so cutting that run restores the body.
+NSAttributedString *ApolloTranslationTextByRemovingTrailingMarker(NSAttributedString *text) {
+    if (!ApolloAttributedStringEndsWithMarker(text)) return nil;
+    NSRange markerRange = NSMakeRange(NSNotFound, 0);
+    [text attribute:ApolloTranslationMarkerAttributeName atIndex:text.length - 1
+        longestEffectiveRange:&markerRange inRange:NSMakeRange(0, text.length)];
+    if (markerRange.location == NSNotFound) return nil;
+    return [text attributedSubstringFromRange:NSMakeRange(0, markerRange.location)];
+}
+
 // Tap-to-translate: append the "🌐 Translate" affordance under a comment that is
 // still showing its ORIGINAL text (a translation exists and is cached; the swap
 // is held until the user taps). No ownership is taken — the text stays original.
@@ -6352,7 +6418,7 @@ static void ApolloToggleTranslationForTitleNode(id textNode) {
             // AUTO pin (@2) so turning the mode off later releases it; a
             // normal-mode revert is an explicit user choice (manual @YES).
             objc_setAssociatedObject(node, kApolloTitlePinnedOriginalKey, sTapToTranslate ? @2 : (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(node, kApolloTitlePinnedSourceKey, [nodeSource copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+            objc_setAssociatedObject(node, kApolloTitlePinnedSourceKey, nodeSource, OBJC_ASSOCIATION_COPY_NONATOMIC);
             objc_setAssociatedObject(node, kApolloTranslationOwnedTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             objc_setAssociatedObject(node, kApolloCommentOwnedTextNodeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             NSAttributedString *original = objc_getAssociatedObject(node, kApolloOriginalAttributedTextKey);
@@ -6546,10 +6612,71 @@ static UIFont *ApolloStatFontFromPostInfoNode(id postInfoNode, id ageNode) {
     return nil;
 }
 
+// The stats PostInfoNode lays out AFTER the age stat, in row order
+// (-[PostInfoNode layoutSpecThatFits:] builds the row as points, %, comments,
+// age, then these). Apollo only creates the edited pencil in the thread header,
+// and only for an edited post. Nil ivars and nodes the layout left out are not
+// mounted and get skipped.
+static const char *const kApolloPostInfoStatsAfterAge[] = {
+    "editedButtonNode", "awardsNode", "modButtonNode",
+    "moreOptionsButtonNode", "modOptionsNode", "approvedButton",
+};
+
+// Where the marker starts, in points past the age view's trailing edge: 6pt
+// after the LAST stat that follows the age in this row. A fixed 6pt after the
+// age drew the marker on top of the edited pencil in every edited post's thread
+// header, and the pencil's tap then won over the marker's (#1255). Compact rows
+// stop at the ⋯ button: ApolloReserveMarkerSlotInCompactRow reserves the
+// marker's slot right after it, and mod options / approved move over to make
+// room. Measured from laid-out layers, so a stat that hasn't been laid out yet
+// is skipped; the didEnterVisibleState heal measures again once the row is on
+// screen (ApolloReanchorPostInfoMarkerIfFallback).
+static CGFloat ApolloPostInfoMarkerLeadForAgeView(id postInfoNode, UIView *ageView) {
+    CGFloat lead = 6.0;
+    CALayer *ageLayer = [ageView isKindOfClass:[UIView class]] ? ageView.layer : nil;
+    if (!postInfoNode || !ageLayer) return lead;
+    BOOL infoIsCompact = NO;
+    Ivar civ = NULL;
+    for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
+        civ = class_getInstanceVariable(c, "isCompact");
+    }
+    if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
+    CGFloat ageWidth = ageView.bounds.size.width;
+    for (size_t i = 0; i < sizeof(kApolloPostInfoStatsAfterAge) / sizeof(kApolloPostInfoStatsAfterAge[0]); i++) {
+        const char *name = kApolloPostInfoStatsAfterAge[i];
+        id node = GetIvarObjectQuiet(postInfoNode, name);
+        if (!node) continue;
+        // Never load a node just to measure it: an unloaded node isn't on screen.
+        BOOL loaded = NO;
+        @try { loaded = [node respondsToSelector:@selector(isNodeLoaded)] && ((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded)); } @catch (__unused NSException *e) {}
+        CALayer *layer = nil;
+        if (loaded) {
+            @try { if ([node respondsToSelector:@selector(layer)]) layer = [node layer]; } @catch (__unused NSException *e) {}
+        }
+        // Same row container as the age stat (both are direct subnodes of the
+        // PostInfoNode), visible, and laid out.
+        CGRect r = CGRectNull;
+        BOOL usable = layer && !layer.hidden && layer.superlayer && layer.superlayer == ageLayer.superlayer;
+        if (usable) {
+            r = [layer convertRect:layer.bounds toLayer:ageLayer];
+            usable = !CGRectIsNull(r) && !CGRectIsInfinite(r) && !CGRectIsEmpty(r);
+        }
+        if (usable) {
+            CGFloat past = CGRectGetMaxX(r) - ageWidth + 6.0;
+            // Sanity cap against a bogus frame (the whole run after the age is
+            // well under 200pt of stat-font text and icons).
+            if (past > lead && past < 200.0) lead = past;
+        }
+        if (infoIsCompact && strcmp(name, "moreOptionsButtonNode") == 0) break;
+    }
+    return lead;
+}
+
 // Show/hide the compact "🌐 PT" marker overlaid on the metadata-row PostInfoNode
 // reachable from `anyNode` (a header cell node, a title node, etc.). The label
-// is pinned to the PostInfoNode's OWN view (bottom-trailing), so it tracks the
-// metadata row regardless of cell height — no fragile fixed offset.
+// is a child of the age stat's view, placed past the last stat in the row, so it
+// tracks the metadata row regardless of cell height — no fragile fixed offset.
+// Before the row is mounted it falls back to the PostInfoNode's own view.
 static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, BOOL show, id toggleNode) {
     id postInfoNode = ApolloPostInfoNodeForAnyNode(anyNode);
     if (!postInfoNode) return;
@@ -6567,10 +6694,11 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     // its tintColor is the effective accent.
     @try { UIColor *t = piView.tintColor; if ([t isKindOfClass:[UIColor class]]) sCachedThemeTint = t; } @catch (__unused NSException *e) {}
 
-    // Anchor the marker right AFTER the age/time node so it sits consistently at
-    // the end of the "↑ 💬 🕐" stats. The PostInfoNode's own bounds vary per cell
-    // (sometimes content-width, sometimes full-width), which made a trailing-edge
-    // pin land all over the place — so pin to the ageButtonNode instead.
+    // Anchor the marker to the age/time node so it sits consistently at the end
+    // of the "↑ 💬 🕐" stats (past any stat Apollo draws after the age — see
+    // ApolloPostInfoMarkerLeadForAgeView). The PostInfoNode's own bounds vary per
+    // cell (sometimes content-width, sometimes full-width), which made a
+    // trailing-edge pin land all over the place — so pin to the ageButtonNode.
     id ageNode = nil;
     UIView *ageView = nil;
     {
@@ -6629,9 +6757,21 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
         [sPostInfoMarkerLabels addObject:label];
     }
     host.clipsToBounds = NO;   // marker extends past the age view's right edge (re-assert each call in case ASDK reset it)
+    // Start the marker past whatever Apollo draws after the age stat in this row
+    // (the edited pencil in an edited post's thread header, the ⋯ button in
+    // compact rows) instead of on top of it. Measured every call: the stats after
+    // the age may not have been laid out on an earlier pass.
+    CGFloat markerLead = (host == ageView) ? ApolloPostInfoMarkerLeadForAgeView(postInfoNode, ageView) : 0.0;
+    NSNumber *pinnedLead = objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey);
+    BOOL leadMoved = host == ageView && label.superview == host &&
+                     (![pinnedLead isKindOfClass:[NSNumber class]] || fabs(pinnedLead.doubleValue - markerLead) >= 0.5);
+    if (leadMoved) {
+        ApolloLog(@"[Translation] marker lead %.1f -> %.1f", [pinnedLead doubleValue], markerLead);
+    }
     // (Re)parent under the current host each call — the age node re-mounts its view
-    // on re-processing, so re-add to the live one and drop stale constraints.
-    if (label.superview != host) {
+    // on re-processing, so re-add to the live one and drop stale constraints. A
+    // moved lead re-pins the same way, with fresh constraints.
+    if (label.superview != host || leadMoved) {
         NSArray *oldC = objc_getAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey);
         if ([oldC isKindOfClass:[NSArray class]]) [NSLayoutConstraint deactivateConstraints:oldC];
         [label removeFromSuperview];
@@ -6644,30 +6784,6 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // ↑ 💬 🕐 icons. This is now safe: the label is a CHILD of the age
             // view, so it's in a stable coordinate space (no cross-boundary drift
             // that made firstBaselineAnchor unreliable before).
-            //
-            // COMPACT rows draw the ⋯ more-options button immediately after the
-            // age stat — a 6pt lead put the marker right on top of it. When this
-            // is a compact PostInfoNode and the dots are mounted, start the
-            // marker just past their trailing edge instead (…🕐18h ⋯ 🌐PT).
-            CGFloat markerLead = 6.0;
-            {
-                BOOL infoIsCompact = NO;
-                Ivar civ = NULL;
-                for (Class c = [postInfoNode class]; c && c != [NSObject class] && !civ; c = class_getSuperclass(c)) {
-                    civ = class_getInstanceVariable(c, "isCompact");
-                }
-                if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
-                if (infoIsCompact) {
-                    id dotsNode = GetIvarObjectQuiet(postInfoNode, "moreOptionsButtonNode");
-                    CALayer *dotsLayer = nil;
-                    @try { if ([dotsNode respondsToSelector:@selector(layer)]) dotsLayer = [dotsNode layer]; } @catch (__unused NSException *e) {}
-                    if (dotsLayer && dotsLayer.superlayer && !dotsLayer.hidden && ageView.layer) {
-                        CGRect dotsInAge = [dotsLayer convertRect:dotsLayer.bounds toLayer:ageView.layer];
-                        CGFloat pastDots = CGRectGetMaxX(dotsInAge) - ageView.bounds.size.width + 6.0;
-                        if (pastDots > markerLead && pastDots < 120.0) markerLead = pastDots;
-                    }
-                }
-            }
             NSLayoutConstraint *baseline = [label.firstBaselineAnchor constraintEqualToAnchor:ageView.topAnchor constant:markerFont.ascender];
             fresh = @[
                 [label.leadingAnchor constraintEqualToAnchor:ageView.trailingAnchor constant:markerLead],
@@ -6677,12 +6793,14 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
             // path) can re-point its constant to the new font's ascender without a
             // full re-parent.
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, baseline, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, @(markerLead), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } else {
             fresh = @[
                 [label.trailingAnchor constraintEqualToAnchor:piView.trailingAnchor constant:-2.0],
                 [label.centerYAnchor constraintEqualToAnchor:piView.centerYAnchor constant:0.0],
             ];
             objc_setAssociatedObject(label, kApolloPostInfoMarkerBaselineKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(label, kApolloPostInfoMarkerLeadKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         [NSLayoutConstraint activateConstraints:fresh];
         objc_setAssociatedObject(label, kApolloPostInfoMarkerConstraintsKey, fresh, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -6760,7 +6878,7 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     label.font = markerFont;
     label.attributedText = content;
     label.hidden = NO;
-    objc_setAssociatedObject(label, kApolloPostInfoMarkerCodeKey, [sourceCode copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(label, kApolloPostInfoMarkerCodeKey, sourceCode, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(label, kApolloPostInfoMarkerSizeKey, @(markerFont.pointSize), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloReserveMarkerSlotInCompactRow(label, postInfoNode, YES);
 }
@@ -6792,15 +6910,24 @@ static void ApolloReanchorPostInfoMarkerIfFallback(id postInfoNode, BOOL allowRe
     // which is exactly when the "🌐 PT" showed up oversized). Now that the row is
     // on screen the stats are bound, so re-read the real stat font: if it differs
     // from the size the marker was last built at, fall through and re-run the
-    // updater to resize it to match the stats. Only when the anchor is fine AND
-    // the size already matches (or the real font still isn't readable) do we bail.
+    // updater to resize it to match the stats. The marker's lead gets the same
+    // check: the stats after the age (the edited pencil in a thread header, ⋯ in
+    // compact rows) may not have been laid out when it was pinned, so measure
+    // again against the label's superview (anchored means that IS the live age
+    // view) and re-pin if it moved. Only when the anchor is fine, the size matches
+    // (or the real font still isn't readable) AND the lead matches do we bail.
     NSString *reason = anchored ? @"detached" : @"fallback-pin";
     if (anchored && label.window) {
         id ageNode = GetIvarObjectQuiet(postInfoNode, "ageButtonNode");
         UIFont *realFont = ApolloStatFontFromPostInfoNode(postInfoNode, ageNode);
         CGFloat builtAt = [objc_getAssociatedObject(label, kApolloPostInfoMarkerSizeKey) doubleValue];
-        if (![realFont isKindOfClass:[UIFont class]] || fabs(realFont.pointSize - builtAt) < 0.5) return;
-        reason = [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize];
+        BOOL sizeStale = [realFont isKindOfClass:[UIFont class]] && fabs(realFont.pointSize - builtAt) >= 0.5;
+        CGFloat pinnedLead = [objc_getAssociatedObject(label, kApolloPostInfoMarkerLeadKey) doubleValue];
+        CGFloat wantLead = ApolloPostInfoMarkerLeadForAgeView(postInfoNode, label.superview);
+        BOOL leadStale = fabs(wantLead - pinnedLead) >= 0.5;
+        if (!sizeStale && !leadStale) return;
+        reason = sizeStale ? [NSString stringWithFormat:@"resize %.1f→%.1f", builtAt, realFont.pointSize]
+                           : [NSString stringWithFormat:@"lead %.1f→%.1f", pinnedLead, wantLead];
     }
     NSString *code = objc_getAssociatedObject(label, kApolloPostInfoMarkerCodeKey);
     if (![code isKindOfClass:[NSString class]] || code.length == 0) return;
@@ -7009,23 +7136,40 @@ static BOOL ApolloRefreshFeedTitleTranslationAppliedForController(UIViewControll
     return YES;
 }
 
-// MARK: - Liquid Glass globe-merge helpers
+// MARK: - Navigation globe-merge helpers
+
+@interface ApolloTranslationGlobeHost : UIView
+@end
+@implementation ApolloTranslationGlobeHost
+- (CGSize)intrinsicContentSize { return CGSizeMake(kApolloGlobeMergeSlotWidth, 32); }
+- (CGSize)sizeThatFits:(CGSize)size { return self.intrinsicContentSize; }
+@end
+
+static BOOL ApolloStandaloneItemHostsGlobe(UIBarButtonItem *item, UIButton *globe) {
+    return globe && (item.customView == globe ||
+        ([item.customView isKindOfClass:ApolloTranslationGlobeHost.class] && globe.superview == item.customView));
+}
+
+static UIView *ApolloStandaloneGlobeView(UIButton *globe) {
+    if (!IsLiquidGlass()) return globe;
+    // UIKit may keep sizing an outgoing custom view during dismissal. Give it
+    // a host to retain, never the button that moves back into the action strip.
+    UIView *host = [[ApolloTranslationGlobeHost alloc] initWithFrame:CGRectMake(0, 0, kApolloGlobeMergeSlotWidth, 32)];
+    globe.frame = host.bounds;
+    globe.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin |
+        UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+    [host addSubview:globe];
+    return host;
+}
 //
-// On iOS 26, each custom-view UIBarButtonItem is hosted in its own
-// NavigationButtonBar item wrapper, and the bar inserts ~16pt of inter-item
-// spacing between separate items — far more than the ~2-3pt Apollo gets by
-// hand-packing its mod/sort/more buttons into ONE combined custom-view
-// container (CGRectGetMaxX layout). Added as a separate item, the globe sits
-// visibly isolated with a big gap before Apollo's cluster (issue #393). The
-// fix: inject the globe button straight into Apollo's container so every icon
-// is one evenly-spaced group. Apollo rebuilds that container on various events,
-// so the setRightBarButtonItem(s) hook re-applies this after each rebuild.
+// Merge into Apollo's mod/sort/more row on both builds. Standard builds retain
+// native padding and never collapse; item-setter hooks reapply after rebuilds.
 
 // Find Apollo's combined trailing button container for this nav item: a
 // custom-view UIView that holds at least one UIButton OTHER than our globe.
-static UIView *ApolloFindTrailingButtonContainer(UINavigationItem *navItem, UIButton *globe) {
-    for (UIBarButtonItem *item in navItem.rightBarButtonItems) {
-        UIView *cv = item.customView;
+static UIView *ApolloFindTrailingButtonContainerInItems(NSArray<UIBarButtonItem *> *items, UIButton *globe) {
+    for (UIBarButtonItem *item in items) {
+        UIView *cv = ApolloNavigationActionsContentView(item);
         if (![cv isKindOfClass:[UIView class]]) continue;
         BOOL hasOtherButton = NO;
         for (UIView *sub in cv.subviews) {
@@ -7034,6 +7178,10 @@ static UIView *ApolloFindTrailingButtonContainer(UINavigationItem *navItem, UIBu
         if (hasOtherButton) return cv;
     }
     return nil;
+}
+
+static UIView *ApolloFindTrailingButtonContainer(UINavigationItem *navItem, UIButton *globe) {
+    return ApolloFindTrailingButtonContainerInItems(navItem.rightBarButtonItems, globe);
 }
 
 // Detach the globe from a container WE merged it into, restoring that
@@ -7071,23 +7219,160 @@ static void ApolloDetachGlobeFromContainer(UIButton *globe) {
 
 static BOOL ApolloButtonGlyphPads(UIButton *btn, CGFloat *outLeft, CGFloat *outRight);
 
-// Place the globe correctly for this nav item (idempotent). If Apollo has a
-// multi-button trailing container, inject the globe as its leading button so
-// every icon is one evenly-spaced group (issue #393). Otherwise fall back to a
-// standalone trailing bar button item (pre-26 behavior) so the globe still
-// appears on single-button screens. Re-runs after each Apollo rebuild via the
-// setRightBarButtonItem(s) hook.
+// Match the live neighboring slot, not a stale standalone frame left by UIKit
+// after search or moderator-button updates.
+static void ApolloAlignGlobeInMergedContainer(UIButton *globe, UIView *container) {
+    UIButton *nextButton = nil;
+    for (UIView *sub in container.subviews) {
+        if (sub == globe || ![sub isKindOfClass:UIButton.class] ||
+            CGRectGetWidth(sub.frame) <= 1.0 || CGRectGetHeight(sub.frame) <= 1.0) continue;
+        if (!nextButton || CGRectGetMinX(sub.frame) < CGRectGetMinX(nextButton.frame)) {
+            nextButton = (UIButton *)sub;
+        }
+    }
+    if (!nextButton) return;
+    CGRect slot = nextButton.frame;
+    CGRect frame = CGRectMake(CGRectGetMinX(slot) - kApolloGlobeMergeSlotWidth,
+                              CGRectGetMinY(slot), kApolloGlobeMergeSlotWidth, CGRectGetHeight(slot));
+    if (!CGRectEqualToRect(globe.frame, frame)) globe.frame = frame;
+}
+
+// Freeze both source and destination during native menu morphs. Merge/removal
+// share a key so only the latest requested state replays.
+static BOOL ApolloDeferGlobeGeometry(UIButton *globe, UIView *container, dispatch_block_t update) {
+    UIView *currentSurface = ApolloNavigationActionsMenuSourceView(globe);
+    UIView *destinationSurface = ApolloNavigationActionsMenuSourceView(container);
+    if (ApolloNativeActionMenuDeferNavigationUpdate(currentSurface, @"translation-globe", update)) return YES;
+    return destinationSurface != currentSurface &&
+        ApolloNativeActionMenuDeferNavigationUpdate(destinationSurface, @"translation-globe", update);
+}
+
+// Shared geometry for initial insertion and the handoff back from inline search.
+static void ApolloMergeGlobeIntoContainer(UIButton *globe, UIView *container) {
+    if (globe.superview == container) {
+        ApolloAlignGlobeInMergedContainer(globe, container);
+        return;
+    }
+    CGFloat gw = kApolloGlobeMergeSlotWidth;
+    CGFloat h = container.bounds.size.height > 1.0 ? container.bounds.size.height : 44.0;
+    // Out of any previous host: unpack a stale merged container properly
+    // (restore its layout), then leave whatever else held it — e.g. the
+    // wrapper of the standalone item we just dropped above.
+    ApolloDetachGlobeFromContainer(globe);
+    [globe removeFromSuperview];
+    globe.autoresizingMask = UIViewAutoresizingNone;
+
+    // Measure Apollo's button cluster and the container's trailing inset so
+    // we can insert the globe and keep the whole group SYMMETRIC inside the
+    // glass capsule (equal leading/trailing padding). Apollo's container can
+    // carry an asymmetric leading inset (the subreddit nav bar starts its
+    // first button ~10pt in) — inheriting it would leave a gap before the
+    // globe, so we re-place the leading edge to match the trailing inset.
+    CGFloat leadingX = CGFLOAT_MAX, rightEdge = 0.0, firstBtnWidth = 0.0;
+    UIButton *lastBtn = nil;
+    for (UIView *sub in container.subviews) {
+        if (![sub isKindOfClass:[UIButton class]]) continue;
+        if (CGRectGetMinX(sub.frame) < leadingX) {
+            leadingX = CGRectGetMinX(sub.frame);
+            firstBtnWidth = CGRectGetWidth(sub.frame);  // the button the globe sits before
+        }
+        if (CGRectGetMaxX(sub.frame) > rightEdge) {
+            rightEdge = CGRectGetMaxX(sub.frame);
+            lastBtn = (UIButton *)sub;
+        }
+    }
+    if (leadingX == CGFLOAT_MAX) leadingX = 0.0;
+    CGFloat contW = container.frame.size.width;
+    CGFloat trailInset = (contW > rightEdge) ? (contW - rightEdge) : 0.0;
+    trailInset = MAX(0.0, MIN(trailInset, 20.0));
+
+    // Center the glyph, then nudge it toward the next icon by HALF that
+    // icon's extra slot width beyond a normal ~38pt slot. The mod badge sits
+    // in a wide 44pt slot, so its centered glyph carries extra leading
+    // padding that makes the globe→badge gap read large; a narrow first icon
+    // (e.g. the 34pt trophy on Home) gets no nudge. Keeps spacing even on
+    // every screen without a one-size-fits-all shift.
+    CGFloat nudge = (firstBtnWidth - 38.0) * 0.5;
+    nudge = MAX(0.0, MIN(nudge, kApolloGlobeMergeGlyphNudge));
+    globe.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+    globe.imageEdgeInsets = UIEdgeInsetsMake(0.0, nudge, 0.0, -nudge);
+
+    // Symmetric container insets alone still read lopsided: the globe's
+    // 34pt slot only carries ~5pt of glyph centering while the trailing
+    // ••• slot centers a 25pt icon in 38-44pt (~7-10pt of air). Match the
+    // GLYPH-to-capsule-edge padding on both sides instead — the same rule
+    // the no-globe normalization below applies — by starting the globe
+    // slot at the difference. Falls back to bare symmetric insets if
+    // either glyph can't be measured.
+    // Preserve standard-build insets; only glass needs capsule-edge padding.
+    BOOL liquidGlass = IsLiquidGlass();
+    CGFloat globeX = liquidGlass ? trailInset : leadingX;
+    globe.frame = CGRectMake(0.0, 0.0, gw, h);  // size it so glyph pads resolve
+    CGFloat gGlyphL = 0.0, gGlyphR = 0.0, lastGlyphL = 0.0, lastGlyphR = 0.0;
+    if (liquidGlass && lastBtn &&
+        ApolloButtonGlyphPads(globe, &gGlyphL, &gGlyphR) &&
+        ApolloButtonGlyphPads(lastBtn, &lastGlyphL, &lastGlyphR)) {
+        CGFloat glyphAware = trailInset + lastGlyphR - gGlyphL;
+        globeX = MAX(trailInset, MIN(glyphAware, trailInset + 12.0));
+    }
+    CGFloat shift = globeX + gw - leadingX;         // first Apollo button lands flush after the globe
+
+    for (UIView *sub in container.subviews) {
+        if (![sub isKindOfClass:[UIButton class]]) continue;
+        CGRect f = sub.frame;
+        f.origin.x += shift;
+        sub.frame = f;
+    }
+    globe.frame = CGRectMake(globeX, 0.0, gw, h);
+    [container insertSubview:globe atIndex:0];
+    ApolloAlignGlobeInMergedContainer(globe, container);
+
+    // Resize so the bar item re-measures: content spans [globeX, rightEdge+
+    // shift] with a matching trailing inset. Remember the shift for removal.
+    CGFloat newW = rightEdge + shift + trailInset;
+    CGRect cf = container.frame;
+    cf.size.width = newW;
+    container.frame = cf;
+    container.bounds = CGRectMake(0.0, 0.0, newW, cf.size.height > 1.0 ? cf.size.height : h);
+    objc_setAssociatedObject(container, kApolloGlobeMergeShiftKey, @(shift), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [container setNeedsLayout];
+
+}
+
+// Merge into the trailing cluster, or retain a standalone item when absent.
 static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (!navItem) return;
+    if ([objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return;
+    // While a comments search has its match navigator in the trailing group
+    // (ApolloFindInCommentsGlass.xm), Apollo's container is parked off the nav
+    // item: neither merge into the navigator (it has buttons too) nor fall back
+    // to a standalone globe beside it. The items come back after the search and
+    // this re-runs from the setter hook.
+    if (ApolloFindInCommentsGlassOwnsRightItems(navItem)) return;
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
     if (!globe) return;
 
     UIView *container = ApolloFindTrailingButtonContainer(navItem, globe);
+    __weak UINavigationItem *weakItem = navItem;
+    if (ApolloDeferGlobeGeometry(globe, container, ^{
+        ApolloApplyGlobeMergeForNavItem(weakItem);
+    })) return;
+    // Liquid Glass uses the same neutral chrome in standalone and merged slots.
+    // Classic builds keep their accent and translated-state tint.
+    id target = globe.allTargets.anyObject;
+    UIViewController *controller = [target isKindOfClass:UIViewController.class] ? target : nil;
+    BOOL visibleTranslationApplied = [objc_getAssociatedObject(controller, kApolloVisibleTranslationAppliedKey) boolValue];
+    globe.tintColor = IsLiquidGlass() ? ApolloNavigationChromeColor()
+        : (visibleTranslationApplied ? UIColor.systemGreenColor
+            : (ApolloThemeAccentColor() ?: controller.viewIfLoaded.tintColor ?: UIColor.systemBlueColor));
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
 
     if (container) {
         // Prefer the merged layout — drop any standalone fallback we added.
         if (standalone) {
+            // Clear the retained adaptor before reparenting, or its delayed
+            // layout can resize the merged globe to the old standalone frame.
+            if (ApolloStandaloneItemHostsGlobe(standalone, globe)) standalone.customView = nil;
             NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy];
             if ([its containsObject:standalone]) {
                 [its removeObject:standalone];
@@ -7099,92 +7384,13 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
         }
 
         if (globe.superview == container) {
-            // The visual pill may have been rebuilt around the same custom
-            // view. Keep the title invalidation alive even though the button
-            // geometry itself is already merged.
+            ApolloAlignGlobeInMergedContainer(globe, container);
+            // The pill may have rebuilt around unchanged slots; refresh the title.
             ApolloSubredditRequestTitleRelayout(navItem);
             return;  // already merged — don't double-shift
         }
 
-        CGFloat gw = kApolloGlobeMergeSlotWidth;
-        CGFloat h = container.bounds.size.height > 1.0 ? container.bounds.size.height : 44.0;
-        // Out of any previous host: unpack a stale merged container properly
-        // (restore its layout), then leave whatever else held it — e.g. the
-        // wrapper of the standalone item we just dropped above.
-        ApolloDetachGlobeFromContainer(globe);
-        [globe removeFromSuperview];
-
-        // Measure Apollo's button cluster and the container's trailing inset so
-        // we can insert the globe and keep the whole group SYMMETRIC inside the
-        // glass capsule (equal leading/trailing padding). Apollo's container can
-        // carry an asymmetric leading inset (the subreddit nav bar starts its
-        // first button ~10pt in) — inheriting it would leave a gap before the
-        // globe, so we re-place the leading edge to match the trailing inset.
-        CGFloat leadingX = CGFLOAT_MAX, rightEdge = 0.0, firstBtnWidth = 0.0;
-        UIButton *lastBtn = nil;
-        for (UIView *sub in container.subviews) {
-            if (![sub isKindOfClass:[UIButton class]]) continue;
-            if (CGRectGetMinX(sub.frame) < leadingX) {
-                leadingX = CGRectGetMinX(sub.frame);
-                firstBtnWidth = CGRectGetWidth(sub.frame);  // the button the globe sits before
-            }
-            if (CGRectGetMaxX(sub.frame) > rightEdge) {
-                rightEdge = CGRectGetMaxX(sub.frame);
-                lastBtn = (UIButton *)sub;
-            }
-        }
-        if (leadingX == CGFLOAT_MAX) leadingX = 0.0;
-        CGFloat contW = container.frame.size.width;
-        CGFloat trailInset = (contW > rightEdge) ? (contW - rightEdge) : 0.0;
-        trailInset = MAX(0.0, MIN(trailInset, 20.0));
-
-        // Center the glyph, then nudge it toward the next icon by HALF that
-        // icon's extra slot width beyond a normal ~38pt slot. The mod badge sits
-        // in a wide 44pt slot, so its centered glyph carries extra leading
-        // padding that makes the globe→badge gap read large; a narrow first icon
-        // (e.g. the 34pt trophy on Home) gets no nudge. Keeps spacing even on
-        // every screen without a one-size-fits-all shift.
-        CGFloat nudge = (firstBtnWidth - 38.0) * 0.5;
-        nudge = MAX(0.0, MIN(nudge, kApolloGlobeMergeGlyphNudge));
-        globe.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
-        globe.imageEdgeInsets = UIEdgeInsetsMake(0.0, nudge, 0.0, -nudge);
-
-        // Symmetric container insets alone still read lopsided: the globe's
-        // 34pt slot only carries ~5pt of glyph centering while the trailing
-        // ••• slot centers a 25pt icon in 38-44pt (~7-10pt of air). Match the
-        // GLYPH-to-capsule-edge padding on both sides instead — the same rule
-        // the no-globe normalization below applies — by starting the globe
-        // slot at the difference. Falls back to bare symmetric insets if
-        // either glyph can't be measured.
-        CGFloat globeX = trailInset;
-        globe.frame = CGRectMake(0.0, 0.0, gw, h);  // size it so glyph pads resolve
-        CGFloat gGlyphL = 0.0, gGlyphR = 0.0, lastGlyphL = 0.0, lastGlyphR = 0.0;
-        if (lastBtn &&
-            ApolloButtonGlyphPads(globe, &gGlyphL, &gGlyphR) &&
-            ApolloButtonGlyphPads(lastBtn, &lastGlyphL, &lastGlyphR)) {
-            CGFloat glyphAware = trailInset + lastGlyphR - gGlyphL;
-            globeX = MAX(trailInset, MIN(glyphAware, trailInset + 12.0));
-        }
-        CGFloat shift = globeX + gw - leadingX;         // first Apollo button lands flush after the globe
-
-        for (UIView *sub in container.subviews) {
-            if (![sub isKindOfClass:[UIButton class]]) continue;
-            CGRect f = sub.frame;
-            f.origin.x += shift;
-            sub.frame = f;
-        }
-        globe.frame = CGRectMake(globeX, 0.0, gw, h);
-        [container insertSubview:globe atIndex:0];
-
-        // Resize so the bar item re-measures: content spans [globeX, rightEdge+
-        // shift] with a matching trailing inset. Remember the shift for removal.
-        CGFloat newW = rightEdge + shift + trailInset;
-        CGRect cf = container.frame;
-        cf.size.width = newW;
-        container.frame = cf;
-        container.bounds = CGRectMake(0.0, 0.0, newW, cf.size.height > 1.0 ? cf.size.height : h);
-        objc_setAssociatedObject(container, kApolloGlobeMergeShiftKey, @(shift), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [container setNeedsLayout];
+        ApolloMergeGlobeIntoContainer(globe, container);
 
         // iOS 27 caches the UIBarButtonItem custom-view measurement more
         // aggressively than iOS 26. Merely widening container.frame can leave
@@ -7218,18 +7424,22 @@ static void ApolloApplyGlobeMergeForNavItem(UINavigationItem *navItem) {
     // only trailing button is a plain image item — PostsSearchResultsViewController
     // with its sort bullseye — live on this path permanently.
     ApolloDetachGlobeFromContainer(globe);  // only unpacks a container we merged into
-    if (standalone && standalone.customView == globe && [navItem.rightBarButtonItems containsObject:standalone]) {
+    if (standalone && ApolloStandaloneItemHostsGlobe(standalone, globe) && [navItem.rightBarButtonItems containsObject:standalone]) {
         return;  // already hosted as its own item — leave UIKit's wrapper alone
     }
-    globe.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    // A standalone glass item has its own circular surface, with no neighboring
+    // moderator slot to nudge toward. Preserve legacy edge alignment outside glass.
+    globe.contentHorizontalAlignment = IsLiquidGlass()
+        ? UIControlContentHorizontalAlignmentCenter : UIControlContentHorizontalAlignmentRight;
+    globe.imageEdgeInsets = UIEdgeInsetsZero;
     globe.frame = CGRectMake(0.0, 0.0, kApolloGlobeMergeSlotWidth, 32.0);
     if (!standalone) {
-        standalone = [[UIBarButtonItem alloc] initWithCustomView:globe];
+        standalone = [[UIBarButtonItem alloc] initWithCustomView:ApolloStandaloneGlobeView(globe)];
         objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, standalone, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLog(@"[Translation] Globe: no trailing container to merge into on '%@' - hosting as a standalone bar item",
                   navItem.title ?: @"(untitled)");
-    } else if (standalone.customView != globe) {
-        standalone.customView = globe;
+    } else if (!ApolloStandaloneItemHostsGlobe(standalone, globe)) {
+        standalone.customView = ApolloStandaloneGlobeView(globe);
     }
     NSMutableArray<UIBarButtonItem *> *its = [navItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
     if (![its containsObject:standalone]) {
@@ -7246,7 +7456,15 @@ static void ApolloNormalizeTrailingPillPaddingForNavItem(UINavigationItem *navIt
 // drop any standalone item, and clear tracking.
 static void ApolloRemoveGlobeMergeForNavItem(UINavigationItem *navItem) {
     if (!navItem) return;
+    objc_setAssociatedObject(navItem, kApolloGlobeRemovalPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
+    __weak UINavigationItem *weakItem = navItem;
+    if (ApolloDeferGlobeGeometry(globe, ApolloFindTrailingButtonContainer(navItem, globe), ^{
+        UINavigationItem *item = weakItem;
+        if ([objc_getAssociatedObject(item, kApolloGlobeRemovalPendingKey) boolValue]) {
+            ApolloRemoveGlobeMergeForNavItem(item);
+        }
+    })) return;
     ApolloDetachGlobeFromContainer(globe);
     UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
     if (standalone) {
@@ -7263,6 +7481,7 @@ static void ApolloRemoveGlobeMergeForNavItem(UINavigationItem *navItem) {
     [globe removeFromSuperview];
     objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(navItem, kApolloGlobeMergeButtonKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(navItem, kApolloGlobeRemovalPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // The stock container is asymmetric inside the glass capsule; with the
     // globe gone, give it the same symmetric padding treatment.
     if (IsLiquidGlass()) ApolloNormalizeTrailingPillPaddingForNavItem(navItem);
@@ -7317,9 +7536,16 @@ static const void *kApolloTrailingPadNormalizedKey = &kApolloTrailingPadNormaliz
 
 static void ApolloNormalizeTrailingPillPaddingForNavItem(UINavigationItem *navItem) {
     if (!navItem) return;
+    // A late no-globe request must not overwrite merged-globe padding.
+    if (objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey)) return;
     UIView *container = ApolloFindTrailingButtonContainer(navItem, nil);
     if (!container) return;
     if (objc_getAssociatedObject(container, kApolloTrailingPadNormalizedKey)) return;
+    __weak UINavigationItem *weakItem = navItem;
+    if (ApolloNativeActionMenuDeferNavigationUpdate(ApolloNavigationActionsMenuSourceView(container),
+            @"translation-padding", ^{
+        ApolloNormalizeTrailingPillPaddingForNavItem(weakItem);
+    })) return;
 
     // Locate the first and last button by geometry (Apollo chains slots with
     // CGRectGetMaxX, so subview order matches, but don't rely on it).
@@ -7373,8 +7599,6 @@ static void ApolloUpdateTranslationUIForController(id controller) {
     if (!sEnableBulkTranslation) return;
 
     BOOL isFeedVC = [objc_getAssociatedObject(controller, kApolloFeedTranslationVCKey) boolValue];
-    UIBarButtonItem *translationItem = objc_getAssociatedObject(controller, kApolloTranslateBarButtonKey);
-    NSMutableArray<UIBarButtonItem *> *items = [vc.navigationItem.rightBarButtonItems mutableCopy] ?: [NSMutableArray array];
     // Comments VCs require sEnableBulkTranslation.
     // Feed VCs additionally require sTranslatePostTitles — the only thing
     // they translate is post titles, so when titles are disabled the globe
@@ -7391,82 +7615,32 @@ static void ApolloUpdateTranslationUIForController(id controller) {
         objc_setAssociatedObject(controller, kApolloThreadTranslatedModeKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(controller, kApolloThreadOriginalModeKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        if (translationItem) {
-            [items removeObject:translationItem];
-            vc.navigationItem.rightBarButtonItems = items;
-            objc_setAssociatedObject(controller, kApolloTranslateBarButtonKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        // Liquid Glass: also pull the globe back out of Apollo's merged container.
         ApolloRemoveGlobeMergeForNavItem(vc.navigationItem);
         ApolloHideAllPostInfoMarkers();
         return;
     }
 
     BOOL translatedMode = ApolloControllerIsInTranslatedMode(vc);
-    BOOL visibleTranslationApplied = [objc_getAssociatedObject(vc, kApolloVisibleTranslationAppliedKey) boolValue];
     NSString *targetName = ApolloLocalizedTargetLanguageName();
-
-    // Globe icon — a UIButton hosted either inside Apollo's trailing container
-    // (Liquid Glass, so it groups evenly with mod/sort/more — issue #393) or as
-    // our own separate bar button item (pre-26, where that's the tuned layout).
-    BOOL liquidGlass = IsLiquidGlass();
 
     UIImage *globeImage = [[UIImage systemImageNamed:@"globe"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 
-    UIButton *globeButton = nil;
-    if (liquidGlass) {
-        globeButton = objc_getAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey);
-    }
-    if (!globeButton && translationItem && [translationItem.customView isKindOfClass:[UIButton class]]) {
-        globeButton = (UIButton *)translationItem.customView;
-    }
+    UIButton *globeButton = objc_getAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey);
     if (!globeButton) {
         globeButton = [UIButton buttonWithType:UIButtonTypeSystem];
         globeButton.frame = CGRectMake(0.0, 0.0, 36.0, 32.0);
-        // Pre-26: right-align so the glyph tucks against Apollo's adjacent pill.
-        // Liquid Glass: ApolloApplyGlobeMergeForNavItem re-centers it in the slot.
-        globeButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
         [globeButton addTarget:controller action:@selector(apollo_translationGlobeTapped) forControlEvents:UIControlEventTouchUpInside];
     }
     [globeButton setImage:globeImage forState:UIControlStateNormal];
 
-    UIColor *themeTintColor = ApolloThemeAccentColor() ?: vc.view.tintColor ?: [UIColor systemBlueColor];
-    UIColor *resolvedTint = visibleTranslationApplied ? [UIColor systemGreenColor] : themeTintColor;
-    globeButton.tintColor = resolvedTint;
     globeButton.accessibilityLabel = translatedMode
         ? @"Translation: showing translated. Tap to show original."
         : [NSString stringWithFormat:@"Translation: showing original. Tap to translate to %@.", targetName];
 
-    if (liquidGlass) {
-        // Merge the globe into Apollo's combined trailing container so all icons
-        // share one evenly-spaced group. Track the button on the nav item so the
-        // setRightBarButtonItem(s) hook re-injects it after Apollo rebuilds.
-        objc_setAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey, globeButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // Drop any separate bar item from a prior pre-26 run (migration safety).
-        if (translationItem && [items containsObject:translationItem]) {
-            [items removeObject:translationItem];
-            vc.navigationItem.rightBarButtonItems = items;
-            objc_setAssociatedObject(controller, kApolloTranslateBarButtonKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        ApolloApplyGlobeMergeForNavItem(vc.navigationItem);
-    } else {
-        if (!translationItem) {
-            translationItem = [[UIBarButtonItem alloc] initWithCustomView:globeButton];
-            objc_setAssociatedObject(controller, kApolloTranslateBarButtonKey, translationItem, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        } else if (translationItem.customView != globeButton) {
-            translationItem.customView = globeButton;
-        }
-        translationItem.menu = nil;
-        translationItem.tintColor = resolvedTint;
-        translationItem.accessibilityLabel = globeButton.accessibilityLabel;
-        if (![items containsObject:translationItem]) {
-            // Apollo's rightBarButtonItems are laid out right-to-left. Adding to
-            // the end places the globe just to the left of Apollo's sort/3-dots
-            // pill — same bubble, tighter spacing thanks to the narrower frame.
-            [items addObject:translationItem];
-        }
-        vc.navigationItem.rightBarButtonItems = items;
-    }
+    // Both builds share this layout; only Liquid Glass collapses the actions.
+    objc_setAssociatedObject(vc.navigationItem, kApolloGlobeRemovalPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc.navigationItem, kApolloGlobeMergeButtonKey, globeButton, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloApplyGlobeMergeForNavItem(vc.navigationItem);
 }
 
 static void ApolloToggleThreadTranslationForController(UIViewController *vc) {
@@ -8065,8 +8239,8 @@ static BOOL ApolloPreemptUnownedCommentTextNode(id textNode, NSAttributedString 
     // Adopt ownership so subsequent overwrites flow through the normal owned
     // swap. Store the RENDERED incoming string as the original-body marker —
     // that is what Apollo hands rebuilt nodes, so future matches are exact.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [incomingText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translated copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, incomingText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translated, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloCommentOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (!objc_getAssociatedObject(textNode, kApolloOriginalAttributedTextKey)) {
         objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [incoming copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -8172,8 +8346,8 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     NSAttributedString *swap = ApolloRebuildTranslatedAttrPreservingAttrs(incoming, translated);
     if (!swap) return NO;
     // Adopt ownership so the normal prepareSwap path handles future updates.
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [body copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translated copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translated, OBJC_ASSOCIATION_COPY_NONATOMIC);
     // Register in the global owned-nodes set so toggle-off's
     // ApolloRestoreAllOwnedTextNodes walk will restore us even when the
     // header is scrolled offscreen and the visible-cells walk skips us.
@@ -8749,10 +8923,10 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // marker — but STILL returns: tap mode must never auto-swap.
     if (sTapToTranslate && !ApolloTapModeIsTranslatedKey(sourceText)) {
         if (!ApolloTranslatedTextDiffersFromSource(sourceText, translatedText)) return;
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);   // @2 = tap-mode auto-pin
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         UIViewController *tapVC = ApolloEnclosingViewControllerForNode(titleNode);
         BOOL tapIsHeaderTitle = ApolloClassLooksLikeCommentsViewController([tapVC class]);
@@ -8800,8 +8974,8 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // Vote-resilience / cell-reuse markers (same scheme as comment cells +
     // post bodies). The title-owned marker tells the global swap hook to
     // bypass the per-thread translated-mode gate. Cache stays CLEAN (marker-free).
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [sourceText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, [translatedText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, sourceText, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translatedText, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(textNode, kApolloTitleOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloRegisterOwnedTextNode(textNode);
 
@@ -9043,9 +9217,9 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
                 objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [cur copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         } @catch (__unused NSException *e) {}
-        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, [titleText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, titleText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(textNode, kApolloTitlePinnedOriginalKey, @2, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, [titleText copy], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(textNode, kApolloTitlePinnedSourceKey, titleText, OBJC_ASSOCIATION_COPY_NONATOMIC);
         ApolloTapModeRegisterTouchedNode(textNode);
         UIViewController *heldVC = ApolloEnclosingViewControllerForNode(titleNode);
         BOOL heldIsHeaderTitle = ApolloClassLooksLikeCommentsViewController([heldVC class]);
@@ -9097,9 +9271,9 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
 // cell's runtime class varies and its RDKLink ivar is NOT reliably readable
 // (object_getIvar never returns it for LargePostCellNode — confirmed on device), so we
 // locate the body preview node WITHOUT the link: walk the cell's text nodes and take the
-// longest that isn't the title (excludeTitleNode) and isn't short metadata (author /
-// score / timestamp / flair / source label). We translate the *displayed* (truncated)
-// preview text, so the cell layout is unchanged.
+// longest that isn't the title (excludeTitleNode), isn't in the metadata row (PostInfoNode:
+// byline / flair / score / age) and isn't other short metadata (source label). We translate
+// the *displayed* (truncated) preview text, so the cell layout is unchanged.
 static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitleNode) {
     if (!feedCellNode) return;
     if (!sEnableBulkTranslation || !sTranslatePostTitles) return;
@@ -9112,8 +9286,9 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
     NSUInteger bestLen = 0;
     for (id n in candidates) {
         if (excludeTitleNode && n == excludeTitleNode) continue;   // never the title node
+        if (ApolloNodeIsInsidePostInfoRow(n)) continue;            // byline row (see the helper)
         NSString *t = ApolloVisibleTextFromNode(n);
-        if (t.length < 25) continue;                               // metadata / author / score are short
+        if (t.length < 25) continue;                               // metadata / source label are short
         if (ApolloPostTextLooksLikeMetadata(t, nil)) continue;
         if (t.length > bestLen) { bestLen = t.length; textNode = n; }
     }
@@ -9808,6 +9983,26 @@ static NSString *ApolloCurrentTranslationTag(void) {
     return [NSString stringWithFormat:@"%@|%@", provider, language];
 }
 
+// Every touch of the cache file goes through one serial queue: the hydrate's
+// read at launch, and each background's write-or-delete. Two background
+// transitions close together used to be impossible to interleave because the
+// persist ran inline on main; now that it is asynchronous, a concurrent queue
+// would let one job unlink the file another had just written, or let an older
+// snapshot land after a newer one. Serial submission also means each job takes
+// its mirror snapshot after the previous job finished, so the last write always
+// reflects the newest state.
+static dispatch_queue_t ApolloTranslationDiskQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create_with_target(
+            "com.apolloreborn.translation-disk-cache",
+            DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL,
+            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
+
 static void ApolloPersistTranslationCachesToDisk(void) {
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
@@ -9824,6 +10019,16 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     }
     @synchronized (sLinkTranslationMirror) {
         linkSnapshot = [sLinkTranslationMirror copy];
+    }
+
+    // Nothing cached: drop the file instead of serializing an empty one. It has
+    // to go rather than just be skipped — a skip-language change flushes the
+    // mirrors but the on-disk tag only covers provider and target language, so
+    // leaving the old file would rehydrate exactly the entries the user asked
+    // to forget.
+    if (commentSnapshot.count == 0 && linkSnapshot.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtURL:url error:NULL];
+        return;
     }
 
     NSMutableArray *commentEntries = [NSMutableArray array];
@@ -9861,53 +10066,108 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     ApolloLog(@"[translation/persist] wrote %lu comment + %lu link entries", (unsigned long)commentEntries.count, (unsigned long)linkEntries.count);
 }
 
+static void ApolloPersistTranslationCachesInBackground(void) {
+    // The mirrors are not authoritative until the launch hydrate has folded the
+    // file in; writing (or deleting) now would lose everything still on disk.
+    // Nothing new can have been lost either way: the next background persists.
+    if (sTranslationDiskHydratePending) {
+        ApolloLog(@"[translation/persist] skipped: disk hydrate still in flight");
+        return;
+    }
+    UIApplication *app = [UIApplication sharedApplication];
+    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+    void (^endTask)(void) = ^{
+        if (task == UIBackgroundTaskInvalid) return;
+        UIBackgroundTaskIdentifier finished = task;
+        task = UIBackgroundTaskInvalid;
+        [app endBackgroundTask:finished];
+    };
+    // Expiration handlers are delivered on the main thread, so ending from a
+    // main hop too keeps `task` single-threaded without a lock.
+    task = [app beginBackgroundTaskWithName:@"ApolloTranslationPersist" expirationHandler:endTask];
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        ApolloPersistTranslationCachesToDisk();
+        dispatch_async(dispatch_get_main_queue(), endTask);
+    });
+}
+
+// Filters one persisted section (comments or links) down to the entries that
+// are still valid for `tag` at `now`. Pure — runs on whatever queue calls it.
+static NSDictionary<NSString *, NSString *> *ApolloTranslationEntriesStillValid(id section, NSString *tag, NSDate *now) {
+    NSMutableDictionary<NSString *, NSString *> *valid = [NSMutableDictionary dictionary];
+    if (![section isKindOfClass:[NSArray class]]) return valid;
+    for (NSDictionary *entry in (NSArray *)section) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        NSString *key = entry[@"k"];
+        NSString *text = entry[@"v"];
+        NSDate *t = entry[@"t"];
+        NSString *entryTag = entry[@"tag"];
+        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
+        if (![entryTag isEqualToString:tag]) continue;
+        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
+        valid[key] = text;
+    }
+    return valid;
+}
+
+// The file holds up to 2048 comment + 256 link entries, so reading and parsing
+// it belongs off the launch thread; only the cache/mirror inserts hop back to
+// main, where every other reader of those caches lives. It runs whether or not
+// bulk translation is on: Tap to Translate fills the same caches with it off,
+// and the persist on background writes whatever the mirrors hold, so skipping
+// the hydrate in a bulk-off session would replace the file with that session's
+// handful of entries (or delete it) and lose the cache the user built up.
 static void ApolloHydrateTranslationCachesFromDisk(void) {
     NSURL *url = ApolloTranslationDiskCacheURL();
     if (!url) return;
-    NSData *data = [NSData dataWithContentsOfURL:url];
-    if (!data) return;
-
-    NSError *err = nil;
-    id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
-    if (![root isKindOfClass:[NSDictionary class]]) {
-        ApolloLog(@"[translation/hydrate] bad plist: %@", err);
-        return;
-    }
-    NSString *version = root[@"version"];
-    if (![version isEqualToString:kApolloTranslationDiskCacheVersion]) return;
-
     NSString *currentTag = ApolloCurrentTranslationTag();
-    NSDate *now = [NSDate date];
+    uint32_t generation = sTranslationCacheGeneration;
+    sTranslationDiskHydratePending = YES;
 
-    NSUInteger restored = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"comments"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sCommentTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetComment(key, text);
-        restored++;
-    }
-    NSUInteger restoredLinks = 0;
-    for (NSDictionary *entry in (NSArray *)root[@"links"]) {
-        if (![entry isKindOfClass:[NSDictionary class]]) continue;
-        NSString *key = entry[@"k"];
-        NSString *text = entry[@"v"];
-        NSDate *t = entry[@"t"];
-        NSString *tag = entry[@"tag"];
-        if (![key isKindOfClass:[NSString class]] || ![text isKindOfClass:[NSString class]]) continue;
-        if (![tag isEqualToString:currentTag]) continue;
-        if (![t isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:t] > kApolloTranslationDiskCacheTTL) continue;
-        [sLinkTranslationByFullName setObject:text forKey:key];
-        ApolloMirrorSetLink(key, text);
-        restoredLinks++;
-    }
-    ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)", (unsigned long)restored, (unsigned long)restoredLinks, currentTag);
+    dispatch_async(ApolloTranslationDiskQueue(), ^{
+        NSDictionary<NSString *, NSString *> *comments = nil;
+        NSDictionary<NSString *, NSString *> *links = nil;
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        if (data) {
+            NSError *err = nil;
+            id root = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:&err];
+            if (![root isKindOfClass:[NSDictionary class]]) {
+                ApolloLog(@"[translation/hydrate] bad plist: %@", err);
+            } else if ([root[@"version"] isEqualToString:kApolloTranslationDiskCacheVersion]) {
+                NSDate *now = [NSDate date];
+                comments = ApolloTranslationEntriesStillValid(root[@"comments"], currentTag, now);
+                links = ApolloTranslationEntriesStillValid(root[@"links"], currentTag, now);
+            }
+        }
+
+        // Always hop back, even with nothing to insert: the persist waits on the
+        // pending flag, and only the main thread may clear it.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sTranslationDiskHydratePending = NO;
+            if (comments.count == 0 && links.count == 0) return;
+            // This snapshot is only good if nothing invalidated it while the
+            // read was in flight, and it must never win over a translation the
+            // running app already produced for the same key.
+            if (generation != sTranslationCacheGeneration) return;
+            if (![currentTag isEqualToString:ApolloCurrentTranslationTag()]) return;
+
+            NSUInteger restoredComments = 0, restoredLinks = 0;
+            for (NSString *key in comments) {
+                if (ApolloCachedCommentTranslationForFullName(key).length > 0) continue;
+                [sCommentTranslationByFullName setObject:comments[key] forKey:key];
+                ApolloMirrorSetComment(key, comments[key]);
+                restoredComments++;
+            }
+            for (NSString *key in links) {
+                if (ApolloCachedLinkTranslationForKey(key).length > 0) continue;
+                [sLinkTranslationByFullName setObject:links[key] forKey:key];
+                ApolloMirrorSetLink(key, links[key]);
+                restoredLinks++;
+            }
+            ApolloLog(@"[translation/hydrate] restored %lu comments + %lu links (tag=%@)",
+                      (unsigned long)restoredComments, (unsigned long)restoredLinks, currentTag);
+        });
+    });
 }
 
 // Re-runs the cache-only translation reapply path for the currently-visible
@@ -9946,7 +10206,48 @@ static void ApolloReapplyTranslationOnAppResume(void) {
     }
 }
 
-// Liquid Glass trailing-container upkeep. Apollo rebuilds its combined trailing
+// Return the globe before UIKit measures or snapshots the restored action pill.
+static void ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
+                                                   NSArray<UIBarButtonItem *> *items) {
+    if (!IsLiquidGlass() || sApplyingGlobeMerge ||
+        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return;
+    UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
+    UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
+    if (!globe || !ApolloStandaloneItemHostsGlobe(standalone, globe) ||
+        ![navItem.rightBarButtonItems containsObject:standalone]) return;
+    UIView *container = ApolloFindTrailingButtonContainerInItems(items, globe);
+    if (!container ||
+        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(globe)) ||
+        ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(container))) return;
+    // Release UIKit's search adaptor before the restored strip adopts the globe.
+    standalone.customView = nil;
+    objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [UIView performWithoutAnimation:^{ ApolloMergeGlobeIntoContainer(globe, container); }];
+}
+
+// Supply both search actions before the editor expands into the available gap.
+static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *navItem,
+                                                            NSArray<UIBarButtonItem *> *items) {
+    if (!IsLiquidGlass() || sApplyingGlobeMerge || items.count != 1 ||
+        items.firstObject.action != NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:") ||
+        [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return items;
+    UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
+    if (!globe || ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(globe))) return items;
+    ApolloDetachGlobeFromContainer(globe);
+    globe.contentHorizontalAlignment = UIControlContentHorizontalAlignmentCenter;
+    globe.imageEdgeInsets = UIEdgeInsetsZero;
+    globe.frame = CGRectMake(0, 0, kApolloGlobeMergeSlotWidth, 32);
+    UIBarButtonItem *standalone = objc_getAssociatedObject(navItem, kApolloGlobeStandaloneItemKey);
+    if (!standalone) {
+        standalone = [[UIBarButtonItem alloc] initWithCustomView:ApolloStandaloneGlobeView(globe)];
+        objc_setAssociatedObject(navItem, kApolloGlobeStandaloneItemKey, standalone, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (!ApolloStandaloneItemHostsGlobe(standalone, globe)) {
+        standalone.customView = ApolloStandaloneGlobeView(globe);
+    }
+    return @[items.firstObject, standalone];
+}
+
+// Trailing-container upkeep in both builds. Apollo rebuilds its combined trailing
 // button container on various events (mod-status load, trait changes, etc.) and
 // re-sets it via setRightBarButtonItem(s):. When a nav item is flagged for the
 // globe merge, re-inject the globe into the freshly-built container after each
@@ -9956,15 +10257,21 @@ static void ApolloReapplyTranslationOnAppResume(void) {
 %hook UINavigationItem
 
 - (void)setRightBarButtonItems:(NSArray<UIBarButtonItem *> *)items animated:(BOOL)animated {
+    NSArray *prepared = ApolloSearchItemsWithGlobe(self, items);
+    // Settle the button allocation first; the title capsule owns its resize.
+    if (prepared != items) animated = NO;
+    items = prepared;
+    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
     %orig(items, animated);
     // Subreddit headers size this nav item's title against the trailing
     // cluster. The owner association makes this a small, local invalidation.
     if (sShowSubredditHeaders && !sApplyingGlobeMerge) ApolloSubredditRequestTitleRelayout(self);
     if (sApplyingGlobeMerge) return;
     if (!IsLiquidGlass()) return;
+    if (ApolloFindInCommentsGlassOwnsRightItems(self)) return; // comments find navigator holds the group
     if (objc_getAssociatedObject(self, kApolloGlobeMergeButtonKey)) {
         ApolloApplyGlobeMergeForNavItem(self);
-    } else {
+    } else if (IsLiquidGlass()) {
         // No globe on this nav item — still make the stock container sit
         // symmetrically in its glass capsule.
         ApolloNormalizeTrailingPillPaddingForNavItem(self);
@@ -9972,13 +10279,21 @@ static void ApolloReapplyTranslationOnAppResume(void) {
 }
 
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item animated:(BOOL)animated {
+    NSArray *items = item ? @[item] : @[];
+    NSArray *prepared = ApolloSearchItemsWithGlobe(self, items);
+    if (prepared != items) {
+        [self setRightBarButtonItems:prepared animated:NO];
+        return;
+    }
+    ApolloRestoreGlobeBeforeSearchDismissal(self, items);
     %orig(item, animated);
     if (sShowSubredditHeaders && !sApplyingGlobeMerge) ApolloSubredditRequestTitleRelayout(self);
     if (sApplyingGlobeMerge) return;
     if (!IsLiquidGlass()) return;
+    if (ApolloFindInCommentsGlassOwnsRightItems(self)) return; // comments find navigator holds the group
     if (objc_getAssociatedObject(self, kApolloGlobeMergeButtonKey)) {
         ApolloApplyGlobeMergeForNavItem(self);
-    } else {
+    } else if (IsLiquidGlass()) {
         ApolloNormalizeTrailingPillPaddingForNavItem(self);
     }
 }
@@ -10358,12 +10673,15 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
     // never comes before suspension: the snapshot silently slipped to the
     // following resume (visible in user logs as "[translation/persist]
     // wrote …" milliseconds after the foreground heal) and was lost
-    // entirely when the app was jetsam-killed while suspended.
+    // entirely when the app was jetsam-killed while suspended. The background
+    // task preserves that "finishes before suspension" guarantee now that the
+    // serialize + write themselves run on a utility queue instead of blocking
+    // the main thread through the whole transition.
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(__unused NSNotification *note) {
-        ApolloPersistTranslationCachesToDisk();
+        ApolloPersistTranslationCachesInBackground();
     }];
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification
                                                       object:nil

@@ -39,11 +39,11 @@
 // the video, then present our own UIActivityViewController with the file. Any
 // failure falls back to Apollo's normal image share so the button never dead-ends.
 //
-// Coexists with ApolloShareAsImageLink's "Include Link" row: our row anchors to
+// Coexists with ApolloShareAsImageLink's Link row: our row anchors to
 // the Share button's current position and pushes the button down (after %orig) so
-// it stacks below whatever other modules added. When the Include Link option is on,
-// the exported video carries the post link too — added to our share sheet for
-// messaging/mail (not Save Video) — exactly as Include Link does for the image.
+// it stacks below whatever other modules added. The exported video honors No Link,
+// Post Link, and (for comment GIFs) Comment Link — added to our share sheet for
+// messaging/mail, not Save Video, exactly as the image path does.
 //
 // No hardcoded binary addresses: everything is ObjC-runtime ivar access (ivar
 // names from class-dump headers) plus public AVFoundation/UIKit, guarded.
@@ -56,7 +56,7 @@
 // suppresses the native image share before Link's handler runs. Each module's row
 // also stacks below the previous one's in its post-%orig viewDidLayoutSubviews pass.
 // If you reorder these in the Makefile, re-verify the share-button chain and the row
-// layout. (The Include-Link double-append guard in ApolloShareAsImageLink no longer
+// layout. (The link double-append guard in ApolloShareAsImageLink no longer
 // depends on this order — see that file — but the layout stacking still does.)
 
 #import <UIKit/UIKit.h>
@@ -65,6 +65,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloHostedVideo.h"
+#import "ApolloShareAsImageLinkMode.h"
 
 #pragma mark - Tunables
 
@@ -993,29 +994,18 @@ static void ApolloSVUpdateHUD(id vc, float p) {
 
 #pragma mark - Share orchestration
 
-// RDKLink.permalink is relative ("/r/.../comments/..."); resolve to an absolute
-// reddit URL. Mirrors the Include Link feature so a video share can carry the link.
-static NSURL *ApolloSVAbsoluteURL(NSURL *url) {
-    if (![url isKindOfClass:[NSURL class]]) return nil;
-    if (url.scheme.length > 0 && url.host.length > 0) return url;
-    NSString *path = url.absoluteString ?: @"";
-    if (path.length == 0) return nil;
-    if (![path hasPrefix:@"/"]) path = [@"/" stringByAppendingString:path];
-    return [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]] ?: url;
-}
-
 static NSURL *ApolloSVPostURL(id vc) {
     id link = ApolloSVIvarObject(vc, "link");
     NSURL *u = (NSURL *)ApolloSVCall(link, @selector(permalink));
-    if ([u isKindOfClass:[NSURL class]]) return ApolloSVAbsoluteURL(u);
+    if ([u isKindOfClass:[NSURL class]]) return ApolloShareLinkAbsoluteURL(u);
     u = (NSURL *)ApolloSVCall(link, @selector(URL));
-    if ([u isKindOfClass:[NSURL class]]) return ApolloSVAbsoluteURL(u);
+    if ([u isKindOfClass:[NSURL class]]) return ApolloShareLinkAbsoluteURL(u);
     return nil;
 }
 
 // Supplies the post link to messaging/mail activities (not Save Video / Assign to
 // Contact / Print), so an exported video can be shared WITH a tappable link —
-// matching how the Include Link option behaves for the image.
+// matching how the Link option behaves for the image.
 @interface ApolloSVLinkItemSource : NSObject <UIActivityItemSource>
 @property (nonatomic, strong) NSURL *url;
 @end
@@ -1037,16 +1027,19 @@ static void ApolloSVPresentShare(id vc, NSURL *fileURL) {
         [[NSFileManager defaultManager] removeItemAtURL:fileURL error:nil];
         return;
     }
-    // If the (separate) Include Link option is on, attach the post link too — a
-    // shared video carries it just like a shared image does.
+    // Honor the same Link selection as image exports. This matters for comment
+    // GIFs: Share-as-Video suppresses the native image path, so it must resolve
+    // the selected comment permalink itself rather than consulting only the old
+    // Include Link boolean.
     NSMutableArray *items = [NSMutableArray arrayWithObject:fileURL];
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"ApolloShareAsImageIncludeLink"]) {
-        NSURL *postURL = ApolloSVPostURL(vc);
-        if (postURL) {
-            ApolloSVLinkItemSource *src = [[ApolloSVLinkItemSource alloc] init];
-            src.url = postURL;
-            [items addObject:src];
-        }
+    id comment = ApolloSVIvarObject(vc, "comment");
+    ApolloShareLinkMode linkMode = ApolloShareLinkModeRead(NSUserDefaults.standardUserDefaults,
+                                                            comment != nil);
+    NSURL *selectedURL = ApolloShareLinkURLForMode(linkMode, comment, ApolloSVPostURL(vc));
+    if (selectedURL) {
+        ApolloSVLinkItemSource *src = [[ApolloSVLinkItemSource alloc] init];
+        src.url = selectedURL;
+        [items addObject:src];
     }
     UIActivityViewController *avc = [[UIActivityViewController alloc]
         initWithActivityItems:items applicationActivities:nil];

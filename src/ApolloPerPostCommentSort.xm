@@ -40,10 +40,13 @@
 // - The initial sort is computed in the VC's Swift init (before viewDidLoad). viewDidLoad
 //   kicks the first fetch, which uses a non-nil currentSort AS-IS — so writing the ivar
 //   before %orig in viewDidLoad both overrides the init-time chain and feeds the first
-//   fetch AND the sort-button icon setup. On URL-scheme/inbox opens (init(linkID:...))
-//   the `link` ivar is nil until the first fetch returns; those opens keep native
-//   behavior (no id to look up yet), while recording still works because the user can
-//   only change sort after the load populates `link`.
+//   fetch AND the sort-button icon setup. On URL-scheme/inbox/Floating-Tab opens
+//   (init(linkID:...)) the `link` ivar is nil until the first fetch returns; the id comes
+//   from the `linkID` Swift ivar there instead (see PPCSPostID), so the saved sort feeds
+//   that first fetch too. A relaunch-restored Floating Tab publishes its screen's own last
+//   sort for the open (ApolloFloatingTabsPendingCommentSortForPost) and outranks this
+//   memory, so the pre-write steps aside for it; ApolloURLOpenCommentSort.xm evaluates the
+//   same chain once the first response carries the link and corrects any mismatch.
 // - Every user sort pick funnels through sortBarButtonItemTappedWithSender: -> option
 //   closure -> currentSort ivar write -> reload via -[RDKClient
 //   linkAndCommentsForLinkWithIdentifier:commentSort:pagination:completion:] (bare post
@@ -69,8 +72,11 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFloatingTabs.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloPerPostCommentSort.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsGeneralTable.h"
 
@@ -131,12 +137,22 @@ static BOOL PPCSWriteCurrentSort(id vc, int64_t raw) {
 
 // Bare post id (e.g. "1abcde") from the VC's `link` ivar (RDKLink, a plain ObjC pointer
 // per the class dump). This is the exact identifier the reload fetch is keyed with.
-// nil on URL-scheme/inbox opens until the first fetch populates `link`.
+//
+// `link` is nil until the first fetch returns on every open that starts from a URL
+// rather than a feed cell: the URL scheme, inbox, and — the one that made this matter
+// — a Floating Tab restored after a relaunch, which reopens cold through Apollo's URL
+// router (ApolloFloatingTabs.xm's openTab:). Those opens carry the id in the `linkID`
+// Swift ivar instead — normally the same bare form, but tolerate a t3_ fullname
+// there the way ApolloURLOpenCommentSort.xm does, so both opens key the same entry.
 static NSString *PPCSPostID(id vc) {
     id link = PPCSObjectIvar(vc, "link");
-    if (!link || ![link respondsToSelector:@selector(identifier)]) return nil;
-    NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, @selector(identifier));
-    return ([identifier isKindOfClass:[NSString class]] && identifier.length > 0) ? identifier : nil;
+    if (link && [link respondsToSelector:@selector(identifier)]) {
+        NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, @selector(identifier));
+        if ([identifier isKindOfClass:[NSString class]] && identifier.length > 0) return identifier;
+    }
+    NSString *linkID = ApolloReadSwiftStringIvar(vc, "linkID");
+    if ([linkID hasPrefix:@"t3_"]) linkID = [linkID substringFromIndex:3];
+    return linkID.length > 0 ? linkID : nil;
 }
 
 static NSString *PPCSSortName(int64_t raw) {
@@ -214,7 +230,16 @@ static void PPCSDisarm(void) {
     if (sPerPostCommentSort) {
         NSString *postID = PPCSPostID(self);
         int64_t saved = postID ? PPCSSavedSortForPost(postID) : 0;
-        if (saved >= 1 && saved <= 7) {   // Live(8) is never stored; anything else is stale/garbage
+        // A relaunch-restored Floating Tab reopening this post asks for the sort its
+        // screen was last on; ApolloURLOpenCommentSort.xm writes that one (it hooks
+        // viewDidLoad after this module, so its pre-write would run first and this one
+        // would silently overwrite it — the completion then refetches). Leave the ivar
+        // to it; the tab's sort outranks this memory in the URL-open chain anyway.
+        int64_t tabSort = postID ? ApolloFloatingTabsPendingCommentSortForPost(postID) : 0;
+        if (saved >= 1 && saved <= 7 && tabSort >= 1 && tabSort <= 8) {
+            ApolloLog(@"[PerPostSort] post %@ has saved sort %@ but a Floating Tab is reopening it on %@; leaving the pre-write to URLOpenSort",
+                      postID, PPCSSortName(saved), PPCSSortName(tabSort));
+        } else if (saved >= 1 && saved <= 7) {   // Live(8) is never stored; anything else is stale/garbage
             int64_t cur = 0;
             BOOL curSet = PPCSReadCurrentSort(self, &cur);
             if ((!curSet || cur != saved) && PPCSWriteCurrentSort(self, saved)) {
@@ -285,6 +310,17 @@ static void PPCSDisarm(void) {
 }
 
 %end
+
+// MARK: - exports (ApolloPerPostCommentSort.h)
+//
+// Thin wrappers so ApolloURLOpenCommentSort.xm can reuse the ivar-layout knowledge above
+// without a second copy of it.
+
+BOOL ApolloCommentsVCReadCurrentSort(id vc, int64_t *outRaw) { return PPCSReadCurrentSort(vc, outRaw); }
+BOOL ApolloCommentsVCWriteCurrentSort(id vc, int64_t raw) { return PPCSWriteCurrentSort(vc, raw); }
+id ApolloCommentsVCLink(id vc) { return PPCSObjectIvar(vc, "link"); }
+NSString *ApolloCommentSortName(int64_t raw) { return PPCSSortName(raw); }
+int64_t ApolloPerPostCommentSortSavedSort(NSString *postID) { return postID.length ? PPCSSavedSortForPost(postID) : 0; }
 
 // MARK: - Settings row (registered with ApolloSettingsGeneralTable)
 //

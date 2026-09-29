@@ -96,6 +96,7 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 @interface ApolloSettingsSection ()
 @property (nonatomic, copy, readwrite) NSString *title;
 @property (nonatomic, copy, readwrite) NSArray<ApolloSettingsRow *> *rows;
+@property (nonatomic, readonly) BOOL isVisible;
 @end
 
 @implementation ApolloSettingsSection
@@ -109,6 +110,10 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
     return section;
 }
 
+- (BOOL)isVisible {
+    return self.visible ? self.visible() : YES;
+}
+
 @end
 
 #pragma mark - Icon tiles
@@ -117,6 +122,10 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 // rounded square. Cached per symbol + resolved color; the color is resolved
 // against the presenting view's traits because system colors differ slightly
 // between light and dark. Unknown symbol names fail soft to a plain tile.
+UIColor *ApolloThemeManagerIconColor(void) {
+    return UIColor.systemIndigoColor;
+}
+
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, UITraitCollection *traits) {
     static NSCache<NSString *, UIImage *> *cache;
     static dispatch_once_t once;
@@ -142,6 +151,33 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
     UIImage *tile = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
         [resolved setFill];
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:6.5] fill];
+        if ([symbolName isEqualToString:@"apollo.saved-categories"]) {
+            CGContextSaveGState(ctx.CGContext);
+            CGContextScaleCTM(ctx.CGContext, side / 36.0, side / 36.0);
+        // Two outlined bookmarks, matching the Saved Categories shortcut.
+        [UIColor.whiteColor setStroke];
+        UIBezierPath *rear = [UIBezierPath bezierPath];
+        [rear moveToPoint:CGPointMake(16, 9)];
+        [rear addLineToPoint:CGPointMake(16, 7)];
+        [rear addLineToPoint:CGPointMake(27, 7)];
+        [rear addLineToPoint:CGPointMake(27, 25)];
+        rear.lineWidth = 1.8;
+        rear.lineJoinStyle = kCGLineJoinRound;
+        rear.lineCapStyle = kCGLineCapRound;
+        [rear stroke];
+        UIBezierPath *front = [UIBezierPath bezierPath];
+        [front moveToPoint:CGPointMake(10, 11)];
+        [front addLineToPoint:CGPointMake(21, 11)];
+        [front addLineToPoint:CGPointMake(21, 29)];
+        [front addLineToPoint:CGPointMake(15.5, 24)];
+        [front addLineToPoint:CGPointMake(10, 29)];
+        [front closePath];
+        front.lineWidth = 1.8;
+        front.lineJoinStyle = kCGLineJoinRound;
+        [front stroke];
+            CGContextRestoreGState(ctx.CGContext);
+            return;
+        }
         CGSize gs = glyph.size;
         if (gs.width > 0 && gs.height > 0) {
             // Symbols vary in aspect ratio; cap the longer side so wide glyphs
@@ -167,10 +203,20 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     // The visibility snapshot the dataSource serves. Rebuilt only in
     // -rebuildForm and -visibilityDidChange, never during enumeration — the
     // table's counts and our answers must agree for the whole layout pass.
+    NSArray<ApolloSettingsSection *> *_visibleSections;
     NSArray<NSArray<ApolloSettingsRow *> *> *_visibleRows;
-    // A footer-height re-check is already queued for the next runloop turn
+    // A footer-height check is already queued for the next runloop turn
     // (see -tableView:willDisplayFooterView:forSection:).
     BOOL _footerHeightCheckPending;
+    // The height each plain-string footer's own view asked for, keyed by
+    // "table width|footer text" and served from
+    // -tableView:heightForFooterInSection:. See "section footer heights".
+    NSMutableDictionary<NSString *, NSNumber *> *_footerMeasuredHeights;
+    // How often each footer's measurement has changed, keyed by
+    // "label point size|width|text" — the bound on the adopting pass.
+    NSMutableDictionary<NSString *, NSNumber *> *_footerMeasureChanges;
+    // A check is parked on the running navigation transition's completion.
+    BOOL _footerHeightCheckDeferred;
 }
 
 - (NSArray<ApolloSettingsSection *> *)buildForm {
@@ -187,9 +233,19 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     [self rebuildForm];
 }
 
-- (void)rebuildForm {
+- (void)refreshFormAfterRowMove {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
+}
+
+- (void)rebuildForm {
+    // Measured footer heights stay (they are keyed by text and width, so the
+    // reload below gets them straight away); only the change budget restarts.
+    [_footerMeasureChanges removeAllObjects];
+    _sections = [self buildForm] ?: @[];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
     [self.tableView reloadData];
 }
 
@@ -203,11 +259,25 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
         [self.tableView reloadData];
     }
+    // Footer heights were measured at the previous text size.
+    if (previousTraitCollection &&
+        ![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        [_footerMeasuredHeights removeAllObjects];
+        [_footerMeasureChanges removeAllObjects];
+    }
 }
 
-- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRows {
-    NSMutableArray *all = [NSMutableArray arrayWithCapacity:_sections.count];
+- (NSArray<ApolloSettingsSection *> *)computeVisibleSections {
+    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:_sections.count];
     for (ApolloSettingsSection *section in _sections) {
+        if (section.isVisible) [visible addObject:section];
+    }
+    return visible;
+}
+
+- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRowsForSections:(NSArray<ApolloSettingsSection *> *)sections {
+    NSMutableArray *all = [NSMutableArray arrayWithCapacity:sections.count];
+    for (ApolloSettingsSection *section in sections) {
         NSMutableArray *visible = [NSMutableArray arrayWithCapacity:section.rows.count];
         for (ApolloSettingsRow *row in section.rows) {
             if (row.isVisible) [visible addObject:row];
@@ -231,32 +301,60 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 }
 
 - (void)visibilityDidChange {
-    if (!_visibleRows) return;
-    NSArray<NSArray<ApolloSettingsRow *> *> *old = _visibleRows;
-    NSArray<NSArray<ApolloSettingsRow *> *> *new_ = [self computeVisibleRows];
+    if (!_visibleSections || !_visibleRows) return;
+    NSArray<ApolloSettingsSection *> *oldSections = _visibleSections;
+    NSArray<NSArray<ApolloSettingsRow *> *> *oldRowsBySection = _visibleRows;
+    NSArray<ApolloSettingsSection *> *newSections = [self computeVisibleSections];
+    NSArray<NSArray<ApolloSettingsRow *> *> *newRowsBySection =
+        [self computeVisibleRowsForSections:newSections];
 
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *deletes = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *inserts = [NSMutableDictionary dictionary];
-    for (NSUInteger s = 0; s < new_.count; s++) {
-        NSArray<ApolloSettingsRow *> *oldRows = s < old.count ? old[s] : @[];
-        NSArray<ApolloSettingsRow *> *newRows = new_[s];
+    NSMutableIndexSet *deletedSections = [NSMutableIndexSet indexSet];
+    NSMutableIndexSet *insertedSections = [NSMutableIndexSet indexSet];
+    for (NSUInteger s = 0; s < oldSections.count; s++) {
+        if (![newSections containsObject:oldSections[s]]) [deletedSections addIndex:s];
+    }
+    for (NSUInteger s = 0; s < newSections.count; s++) {
+        if (![oldSections containsObject:newSections[s]]) [insertedSections addIndex:s];
+    }
+
+    // Row deletions use the section's old index while insertions use its new
+    // index, matching UITableView's batch-update coordinate spaces when a
+    // conditional section elsewhere is inserted or removed at the same time.
+    for (NSUInteger newSectionIndex = 0; newSectionIndex < newSections.count; newSectionIndex++) {
+        ApolloSettingsSection *section = newSections[newSectionIndex];
+        NSUInteger oldSectionIndex = [oldSections indexOfObjectIdenticalTo:section];
+        if (oldSectionIndex == NSNotFound) continue;
+        NSArray<ApolloSettingsRow *> *oldRows = oldRowsBySection[oldSectionIndex];
+        NSArray<ApolloSettingsRow *> *newRows = newRowsBySection[newSectionIndex];
         for (NSUInteger r = 0; r < oldRows.count; r++) {
             if (![newRows containsObject:oldRows[r]]) {
                 ApolloSFAddPath(deletes, oldRows[r].showHideAnimation,
-                                [NSIndexPath indexPathForRow:(NSInteger)r inSection:(NSInteger)s]);
+                                [NSIndexPath indexPathForRow:(NSInteger)r
+                                                 inSection:(NSInteger)oldSectionIndex]);
             }
         }
         for (NSUInteger r = 0; r < newRows.count; r++) {
             if (![oldRows containsObject:newRows[r]]) {
                 ApolloSFAddPath(inserts, newRows[r].showHideAnimation,
-                                [NSIndexPath indexPathForRow:(NSInteger)r inSection:(NSInteger)s]);
+                                [NSIndexPath indexPathForRow:(NSInteger)r
+                                                 inSection:(NSInteger)newSectionIndex]);
             }
         }
     }
 
-    _visibleRows = new_;
-    if (deletes.count == 0 && inserts.count == 0) return;
+    _visibleSections = newSections;
+    _visibleRows = newRowsBySection;
+    if (deletes.count == 0 && inserts.count == 0 &&
+        deletedSections.count == 0 && insertedSections.count == 0) return;
     [self.tableView beginUpdates];
+    if (deletedSections.count > 0) {
+        [self.tableView deleteSections:deletedSections withRowAnimation:UITableViewRowAnimationFade];
+    }
+    if (insertedSections.count > 0) {
+        [self.tableView insertSections:insertedSections withRowAnimation:UITableViewRowAnimationFade];
+    }
     for (NSNumber *animation in deletes) {
         [self.tableView deleteRowsAtIndexPaths:deletes[animation]
                               withRowAnimation:(UITableViewRowAnimation)animation.integerValue];
@@ -281,16 +379,46 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
-    for (NSUInteger s = 0; s < _sections.count; s++) {
-        for (ApolloSettingsRow *row in _sections[s].rows) {
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
+    for (ApolloSettingsSection *section in _sections) {
+        for (ApolloSettingsRow *row in section.rows) {
             if ([row.rowID isEqualToString:rowID]) {
-                [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:s] withRowAnimation:animation];
+                NSUInteger visibleIndex = [_visibleSections indexOfObjectIdenticalTo:section];
+                if (visibleIndex == NSNotFound) break;
+                [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:visibleIndex]
+                              withRowAnimation:animation];
                 return;
             }
         }
     }
     [self.tableView reloadData];
+}
+
+- (void)noteRowMovedFromIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath {
+    if (!_visibleRows || !_visibleSections) return;
+    if (fromIndexPath.section != toIndexPath.section) return;
+    NSUInteger s = (NSUInteger)fromIndexPath.section;
+    if (s >= _visibleRows.count || s >= _visibleSections.count) return;
+    NSMutableArray<ApolloSettingsRow *> *visible = [_visibleRows[s] mutableCopy];
+    NSUInteger from = (NSUInteger)fromIndexPath.row, to = (NSUInteger)toIndexPath.row;
+    if (from >= visible.count || to >= visible.count || from == to) return;
+    ApolloSettingsRow *moved = visible[from];
+    [visible removeObjectAtIndex:from];
+    [visible insertObject:moved atIndex:to];
+    NSMutableArray *rowsBySection = [_visibleRows mutableCopy];
+    rowsBySection[s] = [visible copy];
+    _visibleRows = [rowsBySection copy];
+    // The section's full row list (hidden rows included) follows: the moved
+    // row goes right before the row that now follows it on screen, or last.
+    ApolloSettingsSection *section = _visibleSections[s];
+    NSMutableArray<ApolloSettingsRow *> *all = [section.rows mutableCopy];
+    [all removeObjectIdenticalTo:moved];
+    ApolloSettingsRow *next = to + 1 < visible.count ? visible[to + 1] : nil;
+    NSUInteger insertAt = next ? [all indexOfObjectIdenticalTo:next] : NSNotFound;
+    if (insertAt == NSNotFound) insertAt = all.count;
+    [all insertObject:moved atIndex:insertAt];
+    section.rows = all;
 }
 
 #pragma mark identity lookups
@@ -337,6 +465,10 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
 }
 
+- (ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self apollo_sf_rowAtIndexPath:indexPath];
+}
+
 - (ApolloSettingsRow *)apollo_sf_rowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section < 0 || (NSUInteger)indexPath.section >= _visibleRows.count) return nil;
     NSArray<ApolloSettingsRow *> *rows = _visibleRows[(NSUInteger)indexPath.section];
@@ -356,13 +488,13 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if ((NSUInteger)section >= _sections.count) return nil;
-    return _sections[(NSUInteger)section].title;
+    if ((NSUInteger)section >= _visibleSections.count) return nil;
+    return _visibleSections[(NSUInteger)section].title;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if ((NSUInteger)section >= _sections.count) return nil;
-    ApolloSettingsSection *model = _sections[(NSUInteger)section];
+    if ((NSUInteger)section >= _visibleSections.count) return nil;
+    ApolloSettingsSection *model = _visibleSections[(NSUInteger)section];
     return model.footer;
 }
 
@@ -396,14 +528,20 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         }
         case ApolloSFRowKindValue:
         case ApolloSFRowKindDisclosure: {
-            static NSString *const reuseID = @"ApolloSFValue";
+            // A disclosure row may carry its detail as a subtitle under the
+            // title (wraps, never truncates) rather than as a trailing value;
+            // that variant gets its own reuse pool since the cell style differs.
+            BOOL subtitle = row.kind == ApolloSFRowKindDisclosure && row.detailAsSubtitle;
+            NSString *reuseID = subtitle ? @"ApolloSFDisclosureSubtitle" : @"ApolloSFValue";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
-            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseID];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:subtitle ? UITableViewCellStyleSubtitle : UITableViewCellStyleValue1
+                                                  reuseIdentifier:reuseID];
             BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             cell.textLabel.enabled = enabled;
             cell.detailTextLabel.text = row.detail ? row.detail() : nil;
+            cell.detailTextLabel.numberOfLines = subtitle ? 0 : 1;
             cell.detailTextLabel.textColor = enabled
                 ? [UIColor secondaryLabelColor] : [UIColor tertiaryLabelColor];
             cell.accessoryType = (enabled && row.kind == ApolloSFRowKindDisclosure)
@@ -441,6 +579,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         [self apollo_applyPrimaryTextColorToCell:cell];
     }
     if (row.configure) row.configure(cell);
+    ApolloSettingsApplyCellTypography(cell);
     return cell;
 }
 
@@ -476,27 +615,37 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 
 #pragma mark section footer heights
 
-// UITableView never re-measures a plain-string section footer once it has a
-// height for it. Footers on screen at first layout are measured from their
-// real view; footers that start off-screen get UIKit's classic title-height
-// estimate, and that estimate stays even after the footer's view exists. For
-// most strings the two agree closely enough, but the estimate under-measures
-// long multi-paragraph text — seen with the Apollo AI Summaries footer on iOS
-// 26: estimated 254pt where the footer view's own sizeThatFits: says 258.7 —
-// and UITableViewHeaderFooterView anchors its label to the BOTTOM of the view,
-// so a footer that was sized short pushes its first line up against the
-// section box above it instead of leaving the usual gap.
+// The form owns the height of its plain-string section footers, because
+// UITableView's own number for them cannot be trusted:
 //
-// An empty beginUpdates/endUpdates pass makes the table re-measure the footers
-// that are on screen from their real views and leaves header heights alone
-// (checked: 45.3pt before and after). So: after a footer comes on screen, look
-// at the visible footers on the next runloop turn — by then the label has its
-// final font — and run that pass, without animation, when one disagrees with
-// its view. Footers that were sized right come back at exactly their current
-// height, so nothing else moves. Deliberately NOT done through
-// heightForFooterInSection:: merely implementing that delegate method switches
-// the whole table from estimated to exact section sizing, which also changes
-// every header height (55/38pt instead of 45.3) on every form screen.
+//  - A footer that is off screen is sized by UIKit from the title alone, on a
+//    private sizing view with UIKit's default footer font. That under-measures
+//    long multi-paragraph text (the Apollo AI Summaries footer on iOS 26: 254pt
+//    where the real view's sizeThatFits: says 258.7), and it is far off as soon
+//    as anything gives the real label another font (62pt for a footer whose
+//    view needs 96pt, measured with a settings-wide text-size pass that
+//    re-fonts footers in willDisplayFooterView:).
+//  - UITableViewHeaderFooterView anchors its label to the BOTTOM of the view,
+//    so a footer that is sized short does not clip: its text rides UP, over the
+//    rows of the section above it.
+//  - An empty beginUpdates/endUpdates pass re-measures the footers that are ON
+//    screen from their real views, and puts every footer that is OFF screen
+//    back on the title estimate. So a pass alone can never settle a table
+//    taller than the screen: healing the footers at the bottom un-heals the
+//    ones at the top, which then come back short when the user scrolls up.
+//
+// So: once a footer's view has been displayed, take the height that view asks
+// for (on the next runloop turn — by then the label has its final font),
+// remember it by table width and text, and answer heightForFooterInSection:
+// with it from then on. Whatever the table rebuilds later, that footer keeps
+// the measured height whether it is on screen or not, and one updates pass is
+// enough for the table to adopt a new measurement. A footer that has not been
+// displayed yet still gets UIKit's estimate (UITableViewAutomaticDimension);
+// it is measured as it scrolls in, which for a first visit is from the bottom
+// edge, below the rows it could otherwise cover.
+//
+// Subclasses that override heightForFooterInSection: call super for their
+// plain-string footers.
 - (CGFloat)apollo_sf_fittedHeightForFooterView:(UIView *)view inTableView:(UITableView *)tableView {
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return 0.0;
     if (((UITableViewHeaderFooterView *)view).textLabel.text.length == 0) return 0.0;
@@ -505,8 +654,29 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return [view sizeThatFits:CGSizeMake(width, 0.0)].height;
 }
 
+- (NSString *)apollo_sf_footerHeightKeyForText:(NSString *)text inTableView:(UITableView *)tableView {
+    CGFloat width = CGRectGetWidth(tableView.bounds);
+    if (text.length == 0 || width <= 0.0) return nil;
+    return [NSString stringWithFormat:@"%.0f|%@", width, text];
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    NSString *text = [self tableView:tableView titleForFooterInSection:section];
+    // No footer text: answer what the table would have used had this method
+    // not existed (a subclass may have set a fixed sectionFooterHeight).
+    if (text.length == 0) return tableView.sectionFooterHeight;
+    NSString *key = [self apollo_sf_footerHeightKeyForText:text inTableView:tableView];
+    NSNumber *measured = key ? _footerMeasuredHeights[key] : nil;
+    return measured ? (CGFloat)measured.doubleValue : UITableViewAutomaticDimension;
+}
+
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayFooterView:view forSection:section];
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    [self apollo_sf_scheduleFooterHeightCheck];
+}
+
+- (void)apollo_sf_scheduleFooterHeightCheck {
     if (_footerHeightCheckPending) return;
     _footerHeightCheckPending = YES;
     __weak typeof(self) weakSelf = self;
@@ -514,26 +684,85 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         strongSelf->_footerHeightCheckPending = NO;
-        [strongSelf apollo_sf_remeasureMismatchedFooters];
+        [strongSelf apollo_sf_adoptMeasuredFooterHeights];
     });
 }
 
-- (void)apollo_sf_remeasureMismatchedFooters {
+// The adopting pass runs ONLY when a footer's measurement is new or changed,
+// never merely because the table and a footer's view disagree: endUpdates puts
+// the footers on screen again, which calls willDisplayFooterView: again, so a
+// pass keyed on disagreement re-runs on every runloop turn for as long as the
+// two cannot be reconciled (2,293 passes in ~10s in a device log), and an
+// updates pass per frame stalls a scroll. A measurement that keeps changing is
+// capped per label font, so a label whose font flips cannot drive a loop either.
+static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
+
+- (void)apollo_sf_adoptMeasuredFooterHeights {
     UITableView *tableView = self.tableView;
     if (!tableView.window) return;
-    NSInteger sections = tableView.numberOfSections;
+
+    // Not inside a navigation transition: an updates pass run while the
+    // transition's animations are open gets its settle captured, so the rows
+    // visibly slide into place as the screen comes back. Look again once the
+    // transition is over.
+    // Footers keep appearing while the transition runs, so park one check,
+    // not one per appearance. The completion also fires for a cancelled
+    // interactive pop; the screen that stays then simply gets its check late.
+    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+    if (coordinator) {
+        if (_footerHeightCheckDeferred) return;
+        __weak typeof(self) weakSelf = self;
+        BOOL queued = [coordinator animateAlongsideTransition:nil
+                                                   completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf->_footerHeightCheckDeferred = NO;
+            [strongSelf apollo_sf_scheduleFooterHeightCheck];
+        }];
+        if (queued) {
+            _footerHeightCheckDeferred = YES;
+            return;
+        }
+    }
+
+    NSInteger sections = MIN(tableView.numberOfSections, (NSInteger)_visibleSections.count);
+    BOOL needsPass = NO;
     for (NSInteger section = 0; section < sections; section++) {
         UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
         CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:footer inTableView:tableView];
-        if (fitted <= 0.0 || fabs(fitted - CGRectGetHeight(footer.bounds)) < 0.5) continue;
-        ApolloLog(@"[SettingsForm] footer %ld is %.1fpt tall but its view fits %.1fpt — re-measuring visible footers",
-                  (long)section, CGRectGetHeight(footer.bounds), fitted);
-        [UIView performWithoutAnimation:^{
-            [tableView beginUpdates];
-            [tableView endUpdates];
-        }];
-        return;
+        if (fitted <= 0.0) continue;
+        NSString *key = [self apollo_sf_footerHeightKeyForText:footer.textLabel.text inTableView:tableView];
+        if (!key) continue;
+        NSNumber *known = _footerMeasuredHeights[key];
+        if (known && fabs(known.doubleValue - fitted) < 0.5) continue;
+
+        NSString *budgetKey = [NSString stringWithFormat:@"%.1f|%@", footer.textLabel.font.pointSize, key];
+        NSUInteger changes = _footerMeasureChanges[budgetKey].unsignedIntegerValue;
+        if (changes >= kApolloSFMaxFooterMeasureChanges) {
+            if (changes == kApolloSFMaxFooterMeasureChanges) {
+                if (!_footerMeasureChanges) _footerMeasureChanges = [NSMutableDictionary dictionary];
+                _footerMeasureChanges[budgetKey] = @(changes + 1);
+                ApolloLog(@"[SettingsForm] footer %ld keeps changing its fitted height (%.1fpt, now %.1fpt) — leaving it at %.1fpt",
+                          (long)section, known.doubleValue, fitted, known.doubleValue);
+            }
+            continue;
+        }
+        if (!_footerMeasuredHeights) _footerMeasuredHeights = [NSMutableDictionary dictionary];
+        if (!_footerMeasureChanges) _footerMeasureChanges = [NSMutableDictionary dictionary];
+        _footerMeasuredHeights[key] = @(fitted);
+        _footerMeasureChanges[budgetKey] = @(changes + 1);
+
+        CGFloat height = CGRectGetHeight(footer.bounds);
+        if (fabs(fitted - height) < 0.5) continue;
+        needsPass = YES;
+        ApolloLog(@"[SettingsForm] footer %ld is %.1fpt tall but its view fits %.1fpt — adopting the measured height",
+                  (long)section, height, fitted);
     }
+    if (!needsPass) return;
+    [UIView performWithoutAnimation:^{
+        [tableView beginUpdates];
+        [tableView endUpdates];
+    }];
 }
 
 @end
@@ -564,10 +793,11 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
         }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    // iPad popover anchoring; fall back to the presenter's view center.
-    UIView *anchor = sourceView ?: presenter.view;
+    // Anchor to the screen, not a reusable cell: row reloads can recycle the
+    // source cell for a different row while the picker is still open.
+    UIView *anchor = presenter.view;
     sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds
+    sheet.popoverPresentationController.sourceRect = sourceView ? [sourceView convertRect:sourceView.bounds toView:anchor]
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
     [presenter presentViewController:sheet animated:YES completion:nil];
 }
