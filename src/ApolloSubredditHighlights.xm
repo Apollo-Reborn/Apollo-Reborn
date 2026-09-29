@@ -121,6 +121,7 @@ static const void *kApolloHLContainerKey       = &kApolloHLContainerKey;      //
 static const void *kApolloHLHeaderChangeGenKey     = &kApolloHLHeaderChangeGenKey;     // NSNumber on the table: latest ApplyHeaderChange generation
 static const void *kApolloHLHeaderChangePendingKey = &kApolloHLHeaderChangePendingKey; // BOOL on the table: a deferred header change awaits scroll settle
 static char kApolloHLHiddenRowsKey;            // NSMutableSet<NSNumber*> of de-duped sticky rows, per ASTableNode
+static char kApolloHLDeDupSubKey;               // NSString subreddit whose separators this ASTableNode may collapse
 static char kApolloHLStickyCountKey;           // NSNumber (REST sticky count N) per feed ASTableNode — breaker rule
 static char kApolloHLFeedOwnedMaskKey;         // NSNumber (bitmask of sticky rows the feed keeps) per feed ASTableNode
 static char kApolloHLSwitchPendingKey;         // BOOL on the VC — an in-place-switch re-install is already scheduled
@@ -2034,6 +2035,43 @@ static void ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subr
 static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
 static void ApolloHLInstall(UIViewController *vc); // defined with the PostsViewController hooks
 
+static void ApolloHLClearTableDeDupState(UIViewController *vc) {
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    if (!tableNode) return;
+    @synchronized(tableNode) {
+        [(NSMutableSet *)objc_getAssociatedObject(tableNode, &kApolloHLHiddenRowsKey) removeAllObjects];
+        objc_setAssociatedObject(tableNode, &kApolloHLDeDupSubKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(tableNode, &kApolloHLStickyCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(tableNode, &kApolloHLFeedOwnedMaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+// Prepare one PostsViewController's de-duplication identity. This is shared by
+// both install paths: Subreddit Headers can request its original-header
+// substitute before the controller's normal lifecycle reaches ApolloHLInstall.
+// Keeping the switch in one place prevents that early path from overwriting the
+// old identity before its table-local sticky inputs have been cleared.
+static void ApolloHLPrepareDeDupForSubreddit(UIViewController *vc, NSString *subreddit) {
+    if (!vc || subreddit.length == 0) return;
+    NSString *sub = subreddit.lowercaseString;
+    NSString *old = objc_getAssociatedObject(vc, kApolloHLActiveSubKey);
+    if (old.length && ![old isEqualToString:sub]) {
+        ApolloHLHideSubsRemove(old);
+        ApolloHLDidCollapseRemove(old);
+        ApolloHLClearTableDeDupState(vc);
+    }
+
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    if (tableNode) {
+        @synchronized(tableNode) {
+            objc_setAssociatedObject(tableNode, &kApolloHLDeDupSubKey, sub,
+                                     OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+    }
+    ApolloHLHideSubsAdd(sub);
+    objc_setAssociatedObject(vc, kApolloHLActiveSubKey, sub, OBJC_ASSOCIATION_COPY_NONATOMIC);
+}
+
 UIView *ApolloHLUnwrapManagedHeader(UIView *headerView, UIViewController *hostVC) {
     if ([headerView isMemberOfClass:[ApolloHLHeaderContainerView class]]) {
         return ((ApolloHLHeaderContainerView *)headerView).realOriginal;
@@ -2068,9 +2106,9 @@ UIView *ApolloHLHeaderOriginalSubstitute(NSString *subreddit, UIViewController *
     NSString *sub = subreddit.lowercaseString;
     if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
 
-    // De-dup membership now (the header installs before cells render).
-    ApolloHLHideSubsAdd(sub);
-    if (hostVC) objc_setAssociatedObject(hostVC, kApolloHLActiveSubKey, sub, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    // De-dup membership and table identity now: this header path can run before
+    // ApolloHLInstall, and cells may begin measuring immediately afterwards.
+    if (hostVC) ApolloHLPrepareDeDupForSubreddit(hostVC, sub);
 
     if (existingContainer && [existingContainer.subreddit isEqualToString:sub]) {
         ApolloHLApplyHeaderSurface(existingContainer, existingContainer.hlCarouselView);
@@ -2214,13 +2252,9 @@ static void ApolloHLTeardown(UIViewController *vc, BOOL restoreNativeHeader) {
         objc_setAssociatedObject(vc, kApolloHLActiveSubKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
     objc_setAssociatedObject(vc, kApolloHLContainerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    // Clear the per-table de-duped-sticky rows so the next sub's separators can't
-    // self-collapse against stale rows. EMPTY it (don't free the set) under the same
-    // owningTable lock — an off-main layout pass may be reading it concurrently.
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
-    if (tableNode) @synchronized(tableNode) {
-        [(NSMutableSet *)objc_getAssociatedObject(tableNode, &kApolloHLHiddenRowsKey) removeAllObjects];
-    }
+    // Empty, rather than free, the hidden-row set under the owning table's lock:
+    // an off-main Texture layout may be reading it concurrently.
+    ApolloHLClearTableDeDupState(vc);
     ApolloHLRestoreStandaloneHeader(vc);
 }
 
@@ -3005,6 +3039,21 @@ static void ApolloHLInstall(UIViewController *vc) {
     UITableView *tableView = ApolloHLFindTableView(vc);
     if (!tableView) return;
 
+    // A PostsViewController can be reused for a different subreddit. Tear down
+    // the previous table-local de-duplication state before publishing inputs for
+    // the new one; otherwise an uncached sub can briefly inherit the old sticky
+    // count and collapse the wrong breaker on its first measurement.
+    NSString *storedActive = objc_getAssociatedObject(vc, kApolloHLActiveSubKey);
+    if (storedActive.length && ![storedActive isEqualToString:subreddit]) {
+        ApolloHLTeardown(vc, YES);
+    }
+
+    // Scope separator decisions to this exact single-subreddit table before a
+    // sticky-count publication can trigger a synchronous reload. The global
+    // hide set may contain several other live subreddit controllers; it is not
+    // sufficient ownership proof by itself (#830).
+    ApolloHLPrepareDeDupForSubreddit(vc, subreddit);
+
     // First consult of this sub this session: seed the caches from the persisted
     // snapshot so the carousel below installs synchronously, before Apollo's posts
     // have rendered — no layout snap (#909). The seeded fetch date is old, so the
@@ -3049,19 +3098,6 @@ static void ApolloHLInstall(UIViewController *vc) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), pass);
         }
     }
-
-    // Subreddit changed under a reused controller — drop old state.
-    NSString *storedActive = objc_getAssociatedObject(vc, kApolloHLActiveSubKey);
-    if (storedActive.length && ![storedActive isEqualToString:subreddit]) {
-        ApolloHLTeardown(vc, YES);
-    }
-
-    // Mark this subreddit's foreground feed for inline de-duplication NOW (before
-    // its cells lay out), so the pinned posts collapse on first layout instead of
-    // flashing then collapsing once the async carousel data lands. Done in BOTH
-    // placement modes (standalone tableHeaderView, or hosted in the headers wrapper).
-    ApolloHLHideSubsAdd(subreddit);
-    objc_setAssociatedObject(vc, kApolloHLActiveSubKey, subreddit, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     // Opt-in: harvest the full highlights set (>2) via a hidden WebView, once per
     // sub. The fast API carousel shows immediately; this upgrades it when it lands.
@@ -3216,36 +3252,43 @@ static void ApolloHLRecordHiddenStickyRow(id postNode) {
     if (!owning || row < 0) return;
     @synchronized(owning) { [ApolloHLHiddenRowsSet(owning, YES) addObject:@(row)]; } // lock the stable owningTable, not the set
 }
+
+// Pure row policy, kept separate from the runtime ownership checks so the
+// cold/warm and feed-owned cases can be exhaustively host-tested.
+static BOOL ApolloHLSeparatorRowShouldCollapse(NSInteger row, BOOL eligible,
+                                               BOOL hasStickyCount, NSInteger stickyCount,
+                                               NSUInteger feedOwnedMask) {
+    if (!eligible || row < 1) return NO;
+    if (hasStickyCount) {
+        if (stickyCount < 1) return NO;
+        if (feedOwnedMask == 0) return row < (2 * stickyCount - 1);
+        if (row >= 2 * stickyCount) return NO;
+        NSInteger sticky = (row - 1) / 2;
+        return sticky >= 32 || !(feedOwnedMask & (1u << sticky));
+    }
+    // Cold first load: REST has not published N yet. Two stickies is Reddit's
+    // common case, so collapse only the first orphan until the exact count lands.
+    return row == 1;
+}
+
 static BOOL ApolloHLSeparatorShouldCollapse(id sepNode) {
-    if ([objc_getAssociatedObject(sepNode, &kApolloHLSepCollapseKey) boolValue]) return YES; // reactive pass
     if (!sCommunityHighlights || ApolloHLHideSubsIsEmpty()) return NO;
     NSInteger r = ApolloHLNodeRow(sepNode);
     if (r < 1) return NO;
     id owning = ApolloHLOwningTableNode(sepNode);
+    if (!owning) return NO;
+    NSString *subreddit = objc_getAssociatedObject(owning, &kApolloHLDeDupSubKey);
+    BOOL eligible = subreddit.length > 0 && ApolloHLHideSubsContains(subreddit);
+    if (!eligible) return NO;
+    if ([objc_getAssociatedObject(sepNode, &kApolloHLSepCollapseKey) boolValue]) return YES; // reactive pass
     // Race-free exact rule when the inline-sticky count N is known (warm loads):
     // stickies occupy rows 0..2N-1; their separators are the odd rows 1,3,…,2N-1; the
     // breaker is the LAST one (row 2N-1). Collapse every separator before it. This is
     // correct for any N from the FIRST measure — including N==1 (2N-1==1, so r<1 is
     // false and the lone separator is kept as the breaker).
-    NSNumber *n = owning ? objc_getAssociatedObject(owning, &kApolloHLStickyCountKey) : nil;
-    if (n) {
-        NSInteger N = n.integerValue;
-        if (N < 1) return NO;
-        NSUInteger mask = [objc_getAssociatedObject(owning, &kApolloHLFeedOwnedMaskKey) unsignedIntegerValue];
-        if (mask == 0) return r < (2 * N - 1); // every sticky collapsed — keep the last
-        // Some sticky rows stay VISIBLE (a live interactive post the feed owns), so
-        // "keep the last separator" is no longer right: each visible post needs its
-        // own trailing breaker, and every separator under a collapsed post is an
-        // orphan. Separator at row r trails sticky (r-1)/2 — collapse it iff that
-        // post collapsed. At least one bit is set, so at least one breaker survives.
-        if (r >= 2 * N) return NO; // past the sticky run
-        NSInteger sticky = (r - 1) / 2;
-        return sticky >= 32 || !(mask & (1u << sticky));
-    }
-    // N not known yet (cold first load, before the REST fetch lands). Fall back to the
-    // common 2-sticky case: collapse the first orphan (row 1) race-free. The reactive
-    // pass + the post-fetch re-install fix any other count once N is known.
-    return r == 1;
+    NSNumber *n = objc_getAssociatedObject(owning, &kApolloHLStickyCountKey);
+    NSUInteger mask = [objc_getAssociatedObject(owning, &kApolloHLFeedOwnedMaskKey) unsignedIntegerValue];
+    return ApolloHLSeparatorRowShouldCollapse(r, eligible, n != nil, n.integerValue, mask);
 }
 
 static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
