@@ -2,7 +2,7 @@
 set -eu
 
 test_repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-test_logos=${LOGOS:-${THEOS:-/Users/corn/.local/share/theos}/bin/logos.pl}
+test_logos=${LOGOS:-${THEOS:-$HOME/theos}/bin/logos.pl}
 test_build_dir=$(mktemp -d "${TMPDIR:-/tmp}/apollo-macos-texture-sync.XXXXXX")
 trap 'rm -rf -- "$test_build_dir"' EXIT HUP INT TERM
 

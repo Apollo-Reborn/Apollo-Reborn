@@ -27,17 +27,39 @@ static void ApolloVFSetTestPlatform(NSString *mode) {
     }
 }
 
+NSNotificationName const UISceneWillDeactivateNotification = @"ApolloVFTestSceneWillDeactivate";
+NSNotificationName const UISceneDidActivateNotification = @"ApolloVFTestSceneDidActivate";
 NSNotificationName const UIApplicationWillResignActiveNotification = @"ApolloVFTestWillResignActive";
 NSNotificationName const UIApplicationDidBecomeActiveNotification = @"ApolloVFTestDidBecomeActive";
 NSNotificationName const UIWindowDidResignKeyNotification = @"ApolloVFTestWindowDidResignKey";
 NSNotificationName const UIWindowDidBecomeKeyNotification = @"ApolloVFTestWindowDidBecomeKey";
 
+@interface UIScene : NSObject @end
+@implementation UIScene @end
+
+@interface UIWindowScene : UIScene @end
+@implementation UIWindowScene @end
+
+@interface UIWindow : NSObject
+@property (nonatomic, strong) UIWindowScene *windowScene;
+@end
+@implementation UIWindow @end
+
+@interface UIView : NSObject
+@property (nonatomic, strong) UIWindow *window;
+@end
+@implementation UIView @end
+
 @interface ASDisplayNode : NSObject {
     BOOL _displaysAsynchronously;
+    BOOL _nodeLoaded;
     NSUInteger _synchronousFlushCount;
+    UIView *_view;
 }
 @property (nonatomic) BOOL displaysAsynchronously;
+@property (nonatomic, getter=isNodeLoaded) BOOL nodeLoaded;
 @property (nonatomic) NSUInteger synchronousFlushCount;
+@property (nonatomic, strong) UIView *view;
 - (void)didEnterHierarchy;
 - (void)didExitHierarchy;
 - (void)recursivelyEnsureDisplaySynchronously:(BOOL)synchronous;
@@ -46,7 +68,11 @@ NSNotificationName const UIWindowDidBecomeKeyNotification = @"ApolloVFTestWindow
 @implementation ASDisplayNode
 - (instancetype)init {
     self = [super init];
-    if (self) _displaysAsynchronously = YES;
+    if (self) {
+        _displaysAsynchronously = YES;
+        _nodeLoaded = YES;
+        _view = [UIView new];
+    }
     return self;
 }
 - (void)didEnterHierarchy {}
@@ -55,7 +81,9 @@ NSNotificationName const UIWindowDidBecomeKeyNotification = @"ApolloVFTestWindow
     if (synchronous) self.synchronousFlushCount++;
 }
 @synthesize displaysAsynchronously = _displaysAsynchronously;
+@synthesize nodeLoaded = _nodeLoaded;
 @synthesize synchronousFlushCount = _synchronousFlushCount;
+@synthesize view = _view;
 @end
 
 @interface ASTextNode : ASDisplayNode @end
@@ -103,14 +131,31 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         Require(argc == 2, @"runner supplies exactly one platform mode");
         NSString *mode = [NSString stringWithUTF8String:argv[1]];
+        Require([@[ @"ios", @"native", @"catalyst" ] containsObject:mode],
+                @"platform mode is recognized");
         BOOL runsOnMac = [mode isEqualToString:@"native"] || [mode isEqualToString:@"catalyst"];
         ApolloVFSetTestPlatform(mode);
+
+        UIWindowScene *primaryScene = [UIWindowScene new];
+        UIWindow *primaryWindow = [UIWindow new];
+        primaryWindow.windowScene = primaryScene;
+        UIWindowScene *secondaryScene = [UIWindowScene new];
+        UIWindow *secondaryWindow = [UIWindow new];
+        secondaryWindow.windowScene = secondaryScene;
 
         ASTextNode *text = [ASTextNode new];
         ASTextNode2 *text2 = [ASTextNode2 new];
         ASImageNode *image = [ASImageNode new];
         ASTextNode *departed = [ASTextNode new];
+        ASTextNode *offscreen = [ASTextNode new];
+        ASTextNode *unloaded = [ASTextNode new];
+        ASTextNode *otherScene = [ASTextNode new];
         ApolloVFPlainNode *plain = [ApolloVFPlainNode new];
+        for (ASDisplayNode *node in @[ text, text2, image, departed, plain ]) {
+            node.view.window = primaryWindow;
+        }
+        unloaded.nodeLoaded = NO;
+        otherScene.view.window = secondaryWindow;
 
         Require(text.displaysAsynchronously && text2.displaysAsynchronously &&
                 image.displaysAsynchronously && departed.displaysAsynchronously &&
@@ -123,17 +168,24 @@ int main(int argc, const char *argv[]) {
         [image didEnterHierarchy];
         [departed didEnterHierarchy];
         [departed didExitHierarchy];
+        [offscreen didEnterHierarchy];
+        [unloaded didEnterHierarchy];
+        [otherScene didEnterHierarchy];
         [plain didEnterHierarchy];
 
-        NSArray<NSNotificationName> *focusNotifications = @[
-            UIApplicationWillResignActiveNotification,
-            UIApplicationDidBecomeActiveNotification,
-            UIWindowDidResignKeyNotification,
-            UIWindowDidBecomeKeyNotification,
+        NSArray<NSArray *> *focusNotifications = @[
+            @[ UISceneWillDeactivateNotification, primaryScene ],
+            @[ UISceneDidActivateNotification, primaryScene ],
+            @[ UIApplicationWillResignActiveNotification, [NSNull null] ],
+            @[ UIApplicationDidBecomeActiveNotification, [NSNull null] ],
+            @[ UIWindowDidResignKeyNotification, primaryWindow ],
+            @[ UIWindowDidBecomeKeyNotification, primaryWindow ],
         ];
-        for (NSNotificationName notificationName in focusNotifications) {
+        for (NSArray *entry in focusNotifications) {
+            NSNotificationName notificationName = entry[0];
+            id object = entry[1] == [NSNull null] ? nil : entry[1];
             NSUInteger before = text.synchronousFlushCount;
-            [[NSNotificationCenter defaultCenter] postNotificationName:notificationName object:nil];
+            [[NSNotificationCenter defaultCenter] postNotificationName:notificationName object:object];
             DrainFocusFlushes();
             NSUInteger expected = runsOnMac ? before + 3 : before;
             Require(text.synchronousFlushCount == expected,
@@ -148,17 +200,24 @@ int main(int argc, const char *argv[]) {
                 @"focus guard never changes normal asynchronous display policy");
 
         if (runsOnMac) {
-            Require(text.synchronousFlushCount == 12, @"Mac ASTextNode is tracked and flushed");
-            Require(text2.synchronousFlushCount == 12, @"Mac ASTextNode2 is tracked and flushed");
-            Require(image.synchronousFlushCount == 12, @"Mac ASImageNode is tracked and flushed");
+            Require(text.synchronousFlushCount == 18, @"Mac ASTextNode is tracked and flushed");
+            Require(text2.synchronousFlushCount == 18, @"Mac ASTextNode2 is tracked and flushed");
+            Require(image.synchronousFlushCount == 18, @"Mac ASImageNode is tracked and flushed");
             Require(departed.synchronousFlushCount == 0,
                     @"Mac target leaf is removed when it exits the hierarchy");
+            Require(offscreen.synchronousFlushCount == 0,
+                    @"Mac off-screen target leaf is never forced to display");
+            Require(unloaded.synchronousFlushCount == 0,
+                    @"Mac unloaded target leaf is never forced to display");
+            Require(otherScene.synchronousFlushCount == 6,
+                    @"Mac scene/window focus events do not flush another scene");
             Require(plain.synchronousFlushCount == 0, @"Mac non-target node is excluded");
             Require(sDiagnosticCount == 1, @"Mac installation emits one diagnostic");
         } else {
             Require(text.synchronousFlushCount == 0 && text2.synchronousFlushCount == 0 &&
                     image.synchronousFlushCount == 0 && departed.synchronousFlushCount == 0 &&
-                    plain.synchronousFlushCount == 0,
+                    offscreen.synchronousFlushCount == 0 && unloaded.synchronousFlushCount == 0 &&
+                    otherScene.synchronousFlushCount == 0 && plain.synchronousFlushCount == 0,
                     @"iOS path installs no tracker and performs no focus flushes");
             Require(sDiagnosticCount == 0, @"non-Mac path emits no Mac diagnostic");
         }

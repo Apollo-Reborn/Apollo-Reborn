@@ -51,6 +51,8 @@
 @interface ASDisplayNode : NSObject
 @property (nonatomic) BOOL neverShowPlaceholders;
 @property (nonatomic) BOOL displaysAsynchronously;
+@property (nonatomic, readonly) BOOL isNodeLoaded;
+@property (nonatomic, readonly) UIView *view;
 - (NSArray<ASDisplayNode *> *)subnodes;
 - (void)didEnterHierarchy;
 - (void)didExitHierarchy;
@@ -111,24 +113,38 @@ static void ApolloVFTrackMacDisplayLeaf(id node, BOOL inHierarchy) {
     }
 }
 
-static void ApolloVFFlushTrackedMacDisplayLeaves(void) {
+static UIWindowScene *ApolloVFFocusSceneForNotification(NSNotification *notification) {
+    id object = notification.object;
+    if ([object isKindOfClass:[UIWindowScene class]]) return object;
+    if ([object isKindOfClass:[UIWindow class]]) return ((UIWindow *)object).windowScene;
+    return nil;
+}
+
+static void ApolloVFFlushTrackedMacDisplayLeaves(UIWindowScene *focusScene) {
     NSHashTable *leaves = ApolloVFMacDisplayLeaves();
     NSArray *snapshot = nil;
     @synchronized (leaves) { snapshot = leaves.allObjects; }
     for (ASDisplayNode *node in snapshot) {
         @try {
-            if ([node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
-                [node recursivelyEnsureDisplaySynchronously:YES];
-            }
+            // Check isNodeLoaded before touching .view: asking an unloaded
+            // Texture node for its view can force it to load. Only a node in a
+            // live window can contribute a blank frame, and scene/window
+            // notifications must not flush another Catalyst window.
+            if (![node respondsToSelector:@selector(isNodeLoaded)] || !node.isNodeLoaded) continue;
+            UIView *view = [node respondsToSelector:@selector(view)] ? node.view : nil;
+            UIWindow *window = view.window;
+            if (!window || (focusScene && window.windowScene != focusScene)) continue;
+            if (![node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) continue;
+            [node recursivelyEnsureDisplaySynchronously:YES];
         } @catch (__unused NSException *e) {}
     }
 }
 
-static void ApolloVFScheduleMacFocusFlush(void) {
-    ApolloVFFlushTrackedMacDisplayLeaves();
-    dispatch_async(dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(); });
+static void ApolloVFScheduleMacFocusFlush(UIWindowScene *focusScene) {
+    ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+    dispatch_async(dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(focusScene); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
-                   dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(); });
+                   dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(focusScene); });
 }
 
 %group ApolloVFMacTextureSync
@@ -155,6 +171,8 @@ static void ApolloVFInstallMacTextureSync(void) {
     %init(ApolloVFMacTextureSync, ASDisplayNode = displayNodeClass);
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
     NSArray<NSNotificationName> *focusNotifications = @[
+        UISceneWillDeactivateNotification,
+        UISceneDidActivateNotification,
         UIApplicationWillResignActiveNotification,
         UIApplicationDidBecomeActiveNotification,
         UIWindowDidResignKeyNotification,
@@ -162,8 +180,8 @@ static void ApolloVFInstallMacTextureSync(void) {
     ];
     for (NSNotificationName name in focusNotifications) {
         [center addObserverForName:name object:nil queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(__unused NSNotification *notification) {
-            ApolloVFScheduleMacFocusFlush();
+                        usingBlock:^(NSNotification *notification) {
+            ApolloVFScheduleMacFocusFlush(ApolloVFFocusSceneForNotification(notification));
         }];
     }
     ApolloLog(@"[VoteFlicker] Mac focus redraw guard enabled");
