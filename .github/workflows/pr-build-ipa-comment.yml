@@ -8,7 +8,9 @@ name: PR build IPA comment
 # (the prebuilt comment body) — it never checks out or runs the PR's code. The
 # target PR and its author are resolved from trusted inputs (event data + the
 # API), and the authoritative code-owner gate is enforced HERE, in this
-# fork-uneditable workflow, before any comment is posted.
+# fork-uneditable workflow, before any comment is posted: the PR author must be
+# a code owner, or a code owner must have started the build run (approved an
+# outside contributor's held run, or re-ran it).
 #
 # Note: workflow_run only fires once this file exists on the default branch.
 
@@ -34,7 +36,7 @@ jobs:
     steps:
       - name: Download comment payload
         id: download
-        # Fork-PR builds upload `pr-comment`; non-code-owner or cancelled runs do
+        # Fork-PR builds upload `pr-comment`; unauthorized or cancelled runs do
         # not, so a missing artifact is normal — don't fail the job over it.
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -54,6 +56,10 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          # Who started the build attempt, set by GitHub (the fork can't touch
+          # it): the contributor on a first attempt, the maintainer who clicked
+          # "Approve and run" or re-ran it on a later one.
+          RUN_TRIGGERING_ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
         run: |
           [ -f comment.md ] || { echo "No comment body; nothing to post."; exit 0; }
 
@@ -61,8 +67,11 @@ jobs:
           # the artifact: a build runs the PR head's workflow file and could
           # otherwise spoof an arbitrary PR number. head_sha is a hex commit id;
           # branch/owner are only ever passed as data (env / API query field).
+          # A commit can belong to several open PRs (stacked branches), so prefer
+          # the one whose head IS the built commit: an approved build authorizes
+          # its own PR, not whichever PR happens to be listed first.
           PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
-                --jq 'map(select(.state == "open")) | .[0] // empty' 2>/dev/null || true)
+                --jq "map(select(.state == \"open\")) | (map(select(.head.sha == \"${HEAD_SHA}\")) + .) | .[0] // empty" 2>/dev/null || true)
           if [ -z "$PR_JSON" ]; then
             # Fallback: match open PRs by head label, then by exact head SHA.
             PR_JSON=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
@@ -80,21 +89,29 @@ jobs:
           # Authoritative code-owner gate, enforced HERE (trusted, fork can't edit
           # this workflow) rather than in the build workflow (whose file the PR
           # head controls). Read CODEOWNERS from the default branch via the API,
-          # and the author from the resolved PR object — both trusted inputs.
+          # the author from the resolved PR object, and the run's starter from
+          # the workflow_run event — all trusted inputs. An outside contributor's
+          # PR is authorized once a code owner approves (or re-runs) its build.
           OWNERS=$(gh api "repos/${GITHUB_REPOSITORY}/contents/.github/CODEOWNERS" \
                     -H "Accept: application/vnd.github.raw" 2>/dev/null \
                     | grep -E '^\*[[:space:]]' | sed 's/#.*//' \
                     | grep -oE '@[A-Za-z0-9_-]+' | sed 's/@//')
-          is_owner=false
-          while IFS= read -r owner; do
-            [ -z "$owner" ] && continue
-            if [ "$(echo "$owner" | tr '[:upper:]' '[:lower:]')" = "$(echo "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')" ]; then
-              is_owner=true
-              break
-            fi
-          done <<< "$OWNERS"
-          if [ "$is_owner" != "true" ]; then
-            echo "PR author ${PR_AUTHOR} is not a code owner; not commenting."
+          is_code_owner() {
+            local user
+            user=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+            [ -n "$user" ] || return 1
+            while IFS= read -r owner; do
+              [ -z "$owner" ] && continue
+              [ "$(echo "$owner" | tr '[:upper:]' '[:lower:]')" = "$user" ] && return 0
+            done <<< "$OWNERS"
+            return 1
+          }
+          if is_code_owner "$PR_AUTHOR"; then
+            echo "Authorized: PR author ${PR_AUTHOR} is a code owner."
+          elif is_code_owner "$RUN_TRIGGERING_ACTOR"; then
+            echo "Authorized: code owner ${RUN_TRIGGERING_ACTOR} approved or re-ran the build."
+          else
+            echo "Neither PR author ${PR_AUTHOR} nor run starter ${RUN_TRIGGERING_ACTOR} is a code owner; not commenting."
             exit 0
           fi
 
