@@ -3573,11 +3573,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return text;
 }
 
-- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
-    NSAttributedString *text = [self footerAttributedTextForSection:section];
-    if (!text) return nil;
-
-    UITextView *textView = [[ApolloFooterLinkTextView alloc] init];
+// A link footer exactly as the table shows it. -tableView:heightForFooterInSection:
+// measures one of these, so everything that sizes the text happens here. The
+// settings base styles every footer again in willDisplayFooterView:, after the
+// table has taken the footer's height; a view that got that styling only there
+// was measured in one font and shown in another (13pt text shown at 17pt under
+// a Rounded, Serif or Mono theme font), and the lines that didn't fit were cut
+// off. Styled here, that second pass changes nothing.
+- (UITextView *)apollo_footerLinkTextViewWithText:(NSAttributedString *)text width:(CGFloat)width {
+    // Created at its width: styling a text view before it has one, then
+    // measuring it at that width, took over twice as long per height query.
+    UITextView *textView = [[ApolloFooterLinkTextView alloc] initWithFrame:CGRectMake(0, 0, width, 0)];
     textView.editable = NO;
     textView.scrollEnabled = NO;
     textView.backgroundColor = [UIColor clearColor];
@@ -3585,8 +3591,29 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     textView.tintColor = [self apollo_themeAccentColor];
     textView.linkTextAttributes = @{NSForegroundColorAttributeName: [self apollo_themeAccentColor]};
     textView.attributedText = text;
+    ApolloSettingsApplyFooterTypography(textView);
 
     return textView;
+}
+
+// The width UIKit lays a footer view out at: insetGrouped places it inside the
+// section inset, which follows the table's layout margins.
+- (CGFloat)apollo_footerLinkWidthInTableView:(UITableView *)tableView {
+    CGFloat tableWidth = tableView.bounds.size.width;
+    if (tableWidth <= 0) tableWidth = [UIScreen mainScreen].bounds.size.width;
+
+    // Account for insetGrouped horizontal insets — footer is narrower than the table view
+    UIEdgeInsets margins = tableView.layoutMargins;
+    CGFloat footerWidth = tableWidth - margins.left - margins.right;
+    if (footerWidth <= 0) footerWidth = tableWidth - 40.0;
+    return footerWidth;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    NSAttributedString *text = [self footerAttributedTextForSection:section];
+    if (!text) return nil;
+
+    return [self apollo_footerLinkTextViewWithText:text width:[self apollo_footerLinkWidthInTableView:tableView]];
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -3601,20 +3628,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         return plainFooter.length > 0 ? [super tableView:tableView heightForFooterInSection:section] : 12.0;
     }
 
-    CGFloat tableWidth = tableView.bounds.size.width;
-    if (tableWidth <= 0) tableWidth = [UIScreen mainScreen].bounds.size.width;
-
-    // Account for insetGrouped horizontal insets — footer is narrower than the table view
-    UIEdgeInsets margins = tableView.layoutMargins;
-    CGFloat footerWidth = tableWidth - margins.left - margins.right;
-    if (footerWidth <= 0) footerWidth = tableWidth - 40.0;
-
-    UITextView *measureView = [[UITextView alloc] initWithFrame:CGRectMake(0, 0, footerWidth, CGFLOAT_MAX)];
-    measureView.editable = NO;
-    measureView.scrollEnabled = NO;
-    measureView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
-    measureView.attributedText = text;
-
+    CGFloat footerWidth = [self apollo_footerLinkWidthInTableView:tableView];
+    UITextView *measureView = [self apollo_footerLinkTextViewWithText:text width:footerWidth];
     CGSize size = [measureView sizeThatFits:CGSizeMake(footerWidth, CGFLOAT_MAX)];
     return ceil(size.height);
 }

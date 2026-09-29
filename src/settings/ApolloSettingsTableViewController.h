@@ -8,6 +8,10 @@ UIColor *ApolloSettingsPrimaryTextColor(void);
 UIFont *ApolloSettingsFont(UIFontTextStyle style, UITraitCollection *traits);
 void ApolloSettingsApplyCellTypography(UITableViewCell *cell);
 void ApolloSettingsApplySectionHeaderTypography(UIView *view);
+// What -tableView:willDisplayFooterView:forSection: applies to every footer. A
+// screen that sizes its own footer view applies it to the view it measures, so
+// the height it answers is the height of the text as it is displayed.
+void ApolloSettingsApplyFooterTypography(UIView *view);
 #ifdef __cplusplus
 }
 #endif
