@@ -221,6 +221,33 @@ static UIFontTextStyle ApolloThemeFontTextStyle(id style) {
     return UIFontTextStyleBody;
 }
 
+// A systemFontOfSize: font (and the rest of that family: bold, italic, the
+// weighted variants) carries a CoreText UI usage where a Dynamic Type font
+// carries its text style: "CTFontRegularUsage", "CTFontDemiUsage", …. A font
+// already re-derived here carries the usage's designed form instead
+// ("CTFontSystemUIRoundedSemibold", "CTFontSystemUISerifRegular").
+static BOOL ApolloThemeFontIsSystemUsage(id style) {
+    return [style isKindOfClass:[NSString class]] && [style hasPrefix:@"CTFont"];
+}
+
+UIFontDescriptor *ApolloThemeFontPristineDescriptor(id textStyleAttribute, BOOL italic) {
+    if (!ApolloThemeFontIsSystemUsage(textStyleAttribute)) {
+        return [UIFontDescriptor preferredFontDescriptorWithTextStyle:ApolloThemeFontTextStyle(textStyleAttribute)];
+    }
+    // The plain system UI font, not Body: Body brought its own line spacing
+    // (1.5pt at 15pt; the system font has none), so every multi-line post and
+    // comment under a Rounded/Serif/Mono theme was spaced looser than with a
+    // stock theme, and its Body tag made UIKit pad the Reborn settings
+    // section headers ~20pt less (it scales header padding by the font's
+    // tag). Always the plain usage and never the base's own: a designed usage
+    // has the design baked in, so a font already in Rounded could not be moved
+    // back to SF Pro or on to New York. Italic starts from the italic usage,
+    // because SF Mono doesn't pick up the italic trait from an upright one.
+    return [UIFontDescriptor fontDescriptorWithFontAttributes:@{
+        UIFontDescriptorTextStyleAttribute: italic ? @"CTFontObliqueUsage" : @"CTFontRegularUsage",
+    }];
+}
+
 UIFont *ApolloThemeFontApply(ApolloThemeFont font, UIFont *base) {
     if (!base) return base;
 
@@ -229,8 +256,6 @@ UIFont *ApolloThemeFontApply(ApolloThemeFont font, UIFont *base) {
                           (unsigned long)font, base.pointSize, base.fontName, styleAttribute ?: @"-"];
     UIFont *cached = [FontApplyCache() objectForKey:cacheKey];
     if (cached) return cached;
-
-    UIFontTextStyle textStyle = ApolloThemeFontTextStyle(styleAttribute);
 
     UIFontDescriptorSystemDesign design;
     switch (font) {
@@ -260,15 +285,30 @@ UIFont *ApolloThemeFontApply(ApolloThemeFont font, UIFont *base) {
     // tile rendered in the live theme's design). The text-style descriptor is
     // the one public route to a system-family descriptor that does not pass
     // through the (runtime-hooked) UIFont factories. It is the base's own
-    // style (ApolloThemeFontTextStyle above), so the result keeps it.
+    // style (ApolloThemeFontTextStyle above), so the result keeps it; a
+    // systemFontOfSize: base starts from the plain system UI font instead
+    // (ApolloThemeFontPristineDescriptor).
     //
-    // Deliberately does NOT carry an italic trait: an italic attempt is
-    // always built from a separate descriptor derived from this one (see
-    // below), so this stays a clean, reusable base for the upright
-    // resolution and (for Rounded) the SF Pro italic fallback alike.
-    UIFontDescriptor *descriptor = [UIFontDescriptor preferredFontDescriptorWithTextStyle:textStyle];
+    // A text-style start deliberately does NOT carry an italic trait: an
+    // italic attempt is always built from a separate descriptor derived from
+    // this one (see below), so this stays a clean, reusable base for the
+    // upright resolution and (for Rounded) the SF Pro italic fallback alike.
+    // A system-usage start is the italic usage for an italic base (SF Mono
+    // needs it); the italic descriptors below are still built on top of it.
+    UIFontDescriptor *pristine = ApolloThemeFontPristineDescriptor(styleAttribute, italic);
+    UIFontDescriptor *descriptor = pristine;
     if (font != ApolloThemeFontSystem) {
-        descriptor = [descriptor fontDescriptorWithDesign:design] ?: descriptor;
+        UIFontDescriptor *designed = [pristine fontDescriptorWithDesign:design];
+        if (!designed && ApolloThemeFontIsSystemUsage(styleAttribute)) {
+            // A system-usage start takes a design on every OS this was tried
+            // on (it's the documented systemFont…withDesign: route), but if
+            // one refuses, the Body start always could: keep the theme font
+            // and lose only the native spacing.
+            ApolloLog(@"ThemeTokens: design %@ refused for %@, rebuilding from Body", design, styleAttribute);
+            pristine = [UIFontDescriptor preferredFontDescriptorWithTextStyle:UIFontTextStyleBody];
+            designed = [pristine fontDescriptorWithDesign:design];
+        }
+        descriptor = designed ?: pristine;
     }
     descriptor = [descriptor fontDescriptorByAddingAttributes:@{
         UIFontDescriptorTraitsAttribute: @{ UIFontWeightTrait: @(weight) },
@@ -333,7 +373,7 @@ UIFont *ApolloThemeFontApply(ApolloThemeFont font, UIFont *base) {
             // a bold weight implies. Read from the pristine descriptor they
             // don't, and CoreText resolves some styles by those bits alone
             // (a bold-italic Large Title came back Regular italic).
-            UIFontDescriptor *fallback = [[UIFontDescriptor preferredFontDescriptorWithTextStyle:textStyle]
+            UIFontDescriptor *fallback = [pristine
                 fontDescriptorByAddingAttributes:@{
                     UIFontDescriptorTraitsAttribute: @{ UIFontWeightTrait: @(weight) },
                 }];

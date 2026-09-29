@@ -476,7 +476,7 @@ static BOOL FontLooksLikeAppleSystemDesign(UIFont *font) {
 // including one whose font choice is plain SF Pro (the sink/refresh/attach
 // paths don't short-circuit on System the way ThemedFont() does; they still
 // call ApolloThemeFontApply(System, font), which rebuilds from a proportional
-// text-style descriptor). Exempt anything already monospaced, independent of design.
+// pristine descriptor). Exempt anything already monospaced, independent of design.
 static BOOL FontIsMonospaced(UIFont *font) {
     if (![font isKindOfClass:[UIFont class]]) return NO;
     if (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitMonoSpace) return YES;
@@ -2026,13 +2026,27 @@ void ApolloThemeRuntimeInvalidate(void) {
         // because it replaces the descriptor with whichever family member
         // matches the coarse symbolic bits, disregarding the fine-grained
         // numeric weight set moments earlier.
-        UIFontDescriptor *fallback = [UIFontDescriptor preferredFontDescriptorWithTextStyle:UIFontTextStyleBody];
-        return [fallback fontDescriptorByAddingAttributes:@{
-            UIFontDescriptorTraitsAttribute: @{
-                UIFontWeightTrait: @(weight),
-                UIFontSymbolicTrait: @(symbolicTraits),
-            },
-        }];
+        //
+        // Start from the same descriptor ApolloThemeFontApply rebuilds this
+        // font from (its own text style, or the plain system UI font for a
+        // systemFontOfSize: font), so the italic run keeps the paragraph's tag
+        // and line spacing. A Body start gave italic runs Body leading while
+        // the rest of a comment has none, so lines with italics sat looser.
+        // Weight goes on first, as in ApolloThemeFontApply, so the symbolic
+        // traits already carry the bold bit a bold weight implies. Self's
+        // point size carries over, as fontDescriptorWithSymbolicTraits:
+        // normally does, for a caller that builds the font at size 0.
+        UIFontDescriptor *fallback = [ApolloThemeFontPristineDescriptor(
+            [self objectForKey:UIFontDescriptorTextStyleAttribute], YES)
+            fontDescriptorByAddingAttributes:@{
+                UIFontDescriptorTraitsAttribute: @{ UIFontWeightTrait: @(weight) },
+            }];
+        NSMutableDictionary *attributes = [NSMutableDictionary dictionaryWithObject:@{
+            UIFontWeightTrait: @(weight),
+            UIFontSymbolicTrait: @(fallback.symbolicTraits | symbolicTraits),
+        } forKey:UIFontDescriptorTraitsAttribute];
+        if (self.pointSize > 0) attributes[UIFontDescriptorSizeAttribute] = @(self.pointSize);
+        return [fallback fontDescriptorByAddingAttributes:attributes];
     }
     return %orig;
 }
