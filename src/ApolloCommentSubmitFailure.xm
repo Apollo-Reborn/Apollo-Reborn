@@ -27,8 +27,9 @@
 //     status), keyed by the thing being replied to;
 //  2. when a submit fails, looks the thread up through the client that posted (API-key and
 //     API-key-free accounts alike) before passing the result on: removed / locked / archived
-//     post, a removed or locked parent comment, a subreddit ban or comment restriction — plus the
-//     moderators' stickied note when the post was removed. When the thread shows none of that,
+//     post, a removed or locked parent comment, a subreddit ban or comment restriction — plus where
+//     the moderators' reason is (their stickied comment on the post, or the author's inbox) when the
+//     post was removed. When the thread shows none of that,
 //     Reddit's own answer is used (THREAD_LOCKED, TOO_OLD, DELETED_LINK, or its message);
 //  3. while that result is being handed to Apollo, swaps the alert's title and message for the
 //     explanation. The actions stay Apollo's own, so Copy Text still keeps the comment.
@@ -60,8 +61,6 @@ static const NSInteger kApolloCommentFailureServerErrorLastCode = 504;
 static const NSTimeInterval kApolloCommentFailureLookupBudget = 5.0;
 // How long Reddit's noted answer stays claimable by its submit's completion.
 static const NSTimeInterval kApolloCommentFailureReplyTTL = 60.0;
-// Longest moderator note quoted in the alert.
-static const NSUInteger kApolloCommentFailureNoteLimit = 280;
 
 #pragma mark - Reddit's answer to the POST
 
@@ -148,7 +147,7 @@ static BOOL ApolloCommentFailureIsCommentPath(NSString *path) {
 @property (nonatomic, strong) NSError *error;
 @property (nonatomic, copy) NSDictionary *parent;    // t1 data, when replying to a comment
 @property (nonatomic, copy) NSDictionary *post;      // t3 data
-@property (nonatomic, copy) NSString *moderatorNote; // the moderators' stickied comment, flattened
+@property (nonatomic, assign) BOOL moderatorCommented; // a stickied moderator comment on the post (removal reason)
 @property (nonatomic, copy) NSDictionary *subreddit; // /r/<sub>/about data
 @end
 
@@ -228,53 +227,28 @@ static NSDictionary *ApolloCommentFailureFirstChild(id listing) {
     return [thing isKindOfClass:[NSDictionary class]] ? thing : nil;
 }
 
-// Markdown → one plain line, cut at a word boundary.
-static NSString *ApolloCommentFailureFlatten(NSString *markdown, NSUInteger limit) {
-    if (markdown.length == 0) return nil;
-    NSMutableString *text = [markdown mutableCopy];
-    static NSRegularExpression *link = nil, *lineMarks = nil, *space = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        link = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]]*)\\]\\([^)]*\\)" options:0 error:NULL];
-        lineMarks = [NSRegularExpression regularExpressionWithPattern:@"(?m)^[ \\t]*(?:#{1,6}|>+|[*+-](?=\\s))[ \\t]*" options:0 error:NULL];
-        space = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:NULL];
-    });
-    [link replaceMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@"$1"];
-    [lineMarks replaceMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@""];
-    for (NSString *mark in @[ @"**", @"__", @"~~", @"`", @"&#x200B;" ]) {
-        [text replaceOccurrencesOfString:mark withString:@"" options:0 range:NSMakeRange(0, text.length)];
-    }
-    [space replaceMatchesInString:text options:0 range:NSMakeRange(0, text.length) withTemplate:@" "];
-    NSString *flat = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (flat.length <= limit) return flat.length > 0 ? flat : nil;
-    NSRange cut = [flat rangeOfString:@" " options:NSBackwardsSearch range:NSMakeRange(0, limit)];
-    NSUInteger end = cut.location != NSNotFound && cut.location > limit / 2 ? cut.location : limit;
-    NSCharacterSet *trailing = [NSCharacterSet characterSetWithCharactersInString:@" .,;:!?-–—"];
-    return [[[flat substringToIndex:end] stringByTrimmingCharactersInSet:trailing] stringByAppendingString:@"…"];
-}
-
-// The moderators' stickied comment among the first top-level comments (removal messages are
-// posted as one — r/Destiny's rule #9 removal in the original report was).
-static NSString *ApolloCommentFailureModeratorNote(id commentsListing) {
+// Removal reasons are usually posted as a stickied moderator comment. The alert only says it's
+// there (quoting it took most of a small screen); the thread shows the text.
+static BOOL ApolloCommentFailureHasModeratorComment(id commentsListing) {
     NSDictionary *data = [commentsListing isKindOfClass:[NSDictionary class]] ? commentsListing[@"data"] : nil;
     NSArray *children = [data isKindOfClass:[NSDictionary class]] ? data[@"children"] : nil;
-    if (![children isKindOfClass:[NSArray class]]) return nil;
+    if (![children isKindOfClass:[NSArray class]]) return NO;
     for (NSDictionary *child in children) {
         NSDictionary *comment = [child isKindOfClass:[NSDictionary class]] ? child[@"data"] : nil;
         if (![comment isKindOfClass:[NSDictionary class]]) continue;
-        if (!ApolloCommentFailureBool(comment, @"stickied")) continue;
-        if (![ApolloCommentFailureString(comment, @"distinguished") isEqualToString:@"moderator"]) continue;
-        return ApolloCommentFailureFlatten(ApolloCommentFailureString(comment, @"body"), kApolloCommentFailureNoteLimit);
+        if (ApolloCommentFailureBool(comment, @"stickied") &&
+            [ApolloCommentFailureString(comment, @"distinguished") isEqualToString:@"moderator"]) return YES;
     }
-    return nil;
+    return NO;
 }
 
-static ApolloCommentFailureExplanation *ApolloCommentFailureMake(NSString *kind, NSString *title, NSString *reason, NSString *note) {
+// `hint` (optional) follows the reason in the same paragraph.
+static ApolloCommentFailureExplanation *ApolloCommentFailureMake(NSString *kind, NSString *title, NSString *reason, NSString *hint) {
     ApolloCommentFailureExplanation *explanation = [ApolloCommentFailureExplanation new];
     explanation.kind = kind;
     explanation.title = title;
     NSMutableString *message = [reason mutableCopy];
-    if (note.length > 0) [message appendFormat:@"\n\nThe moderators commented: “%@”", note];
+    if (hint.length > 0) [message appendFormat:@" %@", hint];
     [message appendString:@"\n\nYour comment wasn't posted. Tap Copy Text to keep it."];
     explanation.message = message;
     return explanation;
@@ -302,6 +276,11 @@ static ApolloCommentFailureExplanation *ApolloCommentFailureExplainStateUnmarked
     BOOL ownPost = author && ctx.username && [author caseInsensitiveCompare:ctx.username] == NSOrderedSame;
     NSString *thePost = ownPost ? @"Your post" : @"This post";
     BOOL canModerate = ApolloCommentFailureBool(post, @"can_mod_post") || ApolloCommentFailureBool(ctx.subreddit, @"user_is_moderator");
+    // Where the removal reason is. The thread on screen can predate the moderators' comment (it
+    // did in the original report: "0 Comments"), hence the refresh hint. Without one, a reason
+    // sent to the author can only be in their inbox.
+    NSString *reasonHint = ctx.moderatorCommented ? @"They left a comment on it explaining why (pull to refresh if you don't see it)."
+                         : ownPost ? @"If they sent a reason, it's in your inbox." : nil;
 
     if (post) {
         NSString *removedBy = ApolloCommentFailureString(post, @"removed_by_category");
@@ -310,13 +289,13 @@ static ApolloCommentFailureExplanation *ApolloCommentFailureExplainStateUnmarked
             if ([removedBy isEqualToString:@"moderator"]) {
                 return ApolloCommentFailureMake(@"post-removed-moderator", @"Post Removed",
                     [NSString stringWithFormat:@"%@ was removed by %@, so it can't take new comments.", thePost, moderators],
-                    ctx.moderatorNote);
+                    reasonHint);
             }
             if ([removedBy isEqualToString:@"automod_filtered"]) {
                 return ApolloCommentFailureMake(@"post-removed-automod", @"Post Awaiting Approval",
                     [NSString stringWithFormat:@"%@ was held by AutoModerator for %@ to review, so it can't take comments until they approve it.",
                         thePost, moderators],
-                    ctx.moderatorNote);
+                    ctx.moderatorCommented ? reasonHint : nil);
             }
             if ([removedBy isEqualToString:@"reddit"]) {
                 return ApolloCommentFailureMake(@"post-removed-filters", @"Post Removed",
@@ -426,9 +405,9 @@ static void ApolloCommentFailureLookUp(id client, ApolloCommentFailureContext *c
         if (finished) return;
         finished = YES;
         ApolloCommentFailureExplanation *explanation = ApolloCommentFailureExplainState(ctx) ?: ApolloCommentFailureExplainReply(ctx);
-        ApolloLog(@"[CommentFailure] %@ on %@: %@ (post=%@ parent=%@ note=%@ sub=%@ reddit=%@/%ld)",
+        ApolloLog(@"[CommentFailure] %@ on %@: %@ (post=%@ parent=%@ modComment=%@ sub=%@ reddit=%@/%ld)",
                   how, ctx.thingID, explanation.kind ?: @"unexplained — keeping Apollo's alert",
-                  ctx.post ? @"yes" : @"no", ctx.parent ? @"yes" : @"no", ctx.moderatorNote ? @"yes" : @"no",
+                  ctx.post ? @"yes" : @"no", ctx.parent ? @"yes" : @"no", ctx.moderatorCommented ? @"yes" : @"no",
                   ctx.subreddit ? @"yes" : @"no", ctx.reply.code ?: @"-", (long)ctx.reply.status);
         done(explanation);
     };
@@ -456,12 +435,12 @@ static void ApolloCommentFailureLookUp(id client, ApolloCommentFailureContext *c
             return;
         }
         // One read returns the post (removed_by_category / locked / archived) and its first
-        // top-level comments, where a stickied removal note sits.
+        // top-level comments, where a stickied removal reason sits.
         NSString *path = [@"comments/" stringByAppendingString:[linkFullName substringFromIndex:3]];
         ApolloCommentFailureGET(client, path, @{ @"limit": @"3", @"depth": @"1", @"raw_json": @"1" }, ^(NSInteger status, id json) {
             NSArray *listings = [json isKindOfClass:[NSArray class]] ? json : nil;
             if (listings.count > 0) ctx.post = ApolloCommentFailureFirstChild(listings[0]);
-            if (listings.count > 1) ctx.moderatorNote = ApolloCommentFailureModeratorNote(listings[1]);
+            if (listings.count > 1) ctx.moderatorCommented = ApolloCommentFailureHasModeratorComment(listings[1]);
             lookUpSubreddit();
         });
     };
