@@ -9769,7 +9769,8 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     // their stacks show this block tail-calling into MaybeTranslate with a dead cell).
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        // __strong is load-bearing: in a hook, __typeof__(self) is __unsafe_unretained (owns nothing).
+        __strong __typeof__(self) cellNode = weakSelf;
         if (cellNode) ApolloMaybeTranslateCommentCellNode((id)cellNode, NO);
     });
 }
@@ -9781,7 +9782,7 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
 
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        __strong __typeof__(self) cellNode = weakSelf;
         if (cellNode) ApolloMaybeTranslateCommentCellNode((id)cellNode, NO);
     });
 }
@@ -9808,7 +9809,7 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     // weak reference and bail if the cell died; a dead cell needs no re-translation.
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        __strong __typeof__(self) cellNode = weakSelf;
         if (!cellNode) return;
         UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)cellNode);
         if (ApolloControllerIsInTranslatedMode(owningVC)) {
@@ -9841,7 +9842,7 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
     // block holding the raw Logos `self` outlives cells killed by collapse/scroll.
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        __strong __typeof__(self) cellNode = weakSelf;
         if (!cellNode) return;
         UIViewController *owningVC = ApolloOwningCommentsVCForCellNode((id)cellNode);
         if (ApolloControllerIsInTranslatedMode(owningVC)) {
