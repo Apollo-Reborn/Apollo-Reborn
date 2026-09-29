@@ -182,14 +182,28 @@ static const CGFloat kApolloThemeMonoSizeScale = 0.94;
 // pristine descriptor upright. Fonts with no text style, or a CoreText usage
 // instead (systemFontOfSize: and friends, which is what Apollo's feed and
 // comment text uses), are rebuilt from Body as before.
+//
+// The list is longest name first, so the suffix match tries ExtraLargeTitle2
+// before Title2 (bold ExtraLargeTitle2 is "…EmphasizedExtraLargeTitle2").
+// The two ExtraLargeTitle styles only exist from iOS 17.
 static UIFontTextStyle ApolloThemeFontTextStyle(id style) {
     static NSArray<UIFontTextStyle> *styles;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        styles = @[UIFontTextStyleLargeTitle, UIFontTextStyleTitle1, UIFontTextStyleTitle2,
-                   UIFontTextStyleTitle3, UIFontTextStyleHeadline, UIFontTextStyleSubheadline,
-                   UIFontTextStyleBody, UIFontTextStyleCallout, UIFontTextStyleFootnote,
-                   UIFontTextStyleCaption1, UIFontTextStyleCaption2];
+        NSMutableArray<UIFontTextStyle> *known = [NSMutableArray arrayWithObjects:
+            UIFontTextStyleLargeTitle, UIFontTextStyleTitle1, UIFontTextStyleTitle2,
+            UIFontTextStyleTitle3, UIFontTextStyleHeadline, UIFontTextStyleSubheadline,
+            UIFontTextStyleBody, UIFontTextStyleCallout, UIFontTextStyleFootnote,
+            UIFontTextStyleCaption1, UIFontTextStyleCaption2, nil];
+        if (@available(iOS 17.0, *)) {
+            [known addObject:UIFontTextStyleExtraLargeTitle];
+            [known addObject:UIFontTextStyleExtraLargeTitle2];
+        }
+        [known sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+            if (a.length == b.length) return NSOrderedSame;
+            return a.length > b.length ? NSOrderedAscending : NSOrderedDescending;
+        }];
+        styles = [known copy];
     });
     if (![style isKindOfClass:[NSString class]]) return UIFontTextStyleBody;
     for (UIFontTextStyle candidate in styles) {
