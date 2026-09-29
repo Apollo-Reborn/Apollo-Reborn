@@ -261,6 +261,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSearchNativeBar.xm \
     $(SRC_DIR)/ApolloSearchObserverCleanup.xm \
     $(SRC_DIR)/ApolloJumpBarSuggestionTint.xm \
+    $(SRC_DIR)/ApolloSubredditSwitcherSheet.xm \
     $(SRC_DIR)/ApolloSearchHeaderOverlapFix.xm \
     $(SRC_DIR)/ApolloSearchTabFixes.xm \
     $(SRC_DIR)/ApolloGoogleSearch.m \
