@@ -114,6 +114,7 @@ NSString *sGeminiAIModel = nil;
 NSString *sCustomAIAPIKey = nil;
 NSString *sCustomAIModel = nil;
 NSString *sCustomAIBaseURL = nil;
+NSArray<NSDictionary<NSString *, NSString *> *> *sCustomAIHeaders = nil;
 NSInteger sAIPostWordThreshold = 150;
 ApolloAISummaryDetail sAIPostSummaryDetail = ApolloAISummaryDetailBalanced;
 ApolloAISummaryDetail sAICommentSummaryDetail = ApolloAISummaryDetailBalanced;

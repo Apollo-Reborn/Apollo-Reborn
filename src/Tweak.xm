@@ -41,6 +41,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
+#import "ApolloAICloudBridge.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
 #import "crash/ApolloCrashPromptCoordinator.h"
@@ -3913,6 +3914,17 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         sCustomAIAPIKey = loadKey(UDKeyCustomAIAPIKey);
         sCustomAIModel = loadKey(UDKeyCustomAIModel);
         sCustomAIBaseURL = loadKey(UDKeyCustomAIBaseURL);
+        // Custom-provider headers: invalid entries (hand-edited or restored
+        // defaults) are dropped from the in-memory list only; the next save from
+        // Apollo AI settings rewrites the stored list.
+        id storedAIHeaders = [standardDefaults objectForKey:UDKeyCustomAIHeaders];
+        sCustomAIHeaders = ApolloAICloudSanitizedCustomHeaders(storedAIHeaders);
+        NSUInteger storedAIHeaderCount = [storedAIHeaders isKindOfClass:[NSArray class]]
+            ? [(NSArray *)storedAIHeaders count] : (storedAIHeaders ? 1 : 0);
+        if (storedAIHeaderCount != sCustomAIHeaders.count) {
+            ApolloLog(@"[AICloud] Ignoring %lu invalid custom header entries from settings",
+                      (unsigned long)(storedAIHeaderCount - sCustomAIHeaders.count));
+        }
     }
     sInlineImageAlignment = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyInlineImageAlignment];
     if (sInlineImageAlignment < ApolloInlineImageAlignmentCenter || sInlineImageAlignment > ApolloInlineImageAlignmentRight) {

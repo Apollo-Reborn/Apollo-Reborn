@@ -406,6 +406,9 @@ extern NSString *sGeminiAIModel;
 extern NSString *sCustomAIAPIKey;
 extern NSString *sCustomAIModel;
 extern NSString *sCustomAIBaseURL;
+// Extra request headers for the custom provider: always the output of
+// ApolloAICloudSanitizedCustomHeaders (nil when none). Main thread only.
+extern NSArray<NSDictionary<NSString *, NSString *> *> *sCustomAIHeaders;
 
 // AI summary tuning shared by the settings UI and generation pipeline.
 // The threshold applies only to a Reddit self-post body; external article
