@@ -249,6 +249,62 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     [self.tableView reloadData];
 }
 
+// A reload or batch update runs UIKit's post-update scroll restore, which saves
+// the position against one row and puts it back against another when the top
+// edge of the screen sits inside a section footer (see "section footer
+// heights"): on Apollo AI, saving a custom header with the list scrolled down
+// to it moved the list ~210pt. So note where every row on screen sits, run the
+// update, let UIKit's restore happen, then put the first of those rows that is
+// still in the form back in its place. Rows only, by identity: the edit may
+// have removed the row that was first on screen, and the next one then holds
+// the list. Anything that comes on screen while the list is put back is
+// measured as it is laid out and can push that row down again (after a
+// reloadData every height is an estimate until then), so correct until the row
+// holds.
+- (void)performUpdateKeepingVisibleRowsInPlace:(void (NS_NOESCAPE ^)(void))update {
+    UITableView *tableView = self.tableView;
+    if (!tableView.window) {
+        update();
+        return;
+    }
+    CGFloat offsetY = tableView.contentOffset.y;
+    CGFloat visibleTop = offsetY + tableView.adjustedContentInset.top;
+    NSMutableArray<NSString *> *anchorIDs = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *anchorOffsets = [NSMutableArray array];
+    NSArray<NSIndexPath *> *visible = [tableView.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)];
+    for (NSIndexPath *indexPath in visible) {
+        NSString *rowID = [self apollo_sf_rowAtIndexPath:indexPath].rowID;
+        CGRect rect = [tableView rectForRowAtIndexPath:indexPath];
+        if (rowID.length == 0 || CGRectGetMaxY(rect) <= visibleTop) continue;   // under the bars
+        [anchorIDs addObject:rowID];
+        [anchorOffsets addObject:@(CGRectGetMinY(rect) - offsetY)];
+    }
+
+    [UIView performWithoutAnimation:^{
+        update();
+        [tableView layoutIfNeeded];   // the update, and UIKit's restore, happen here
+        CGFloat restored = tableView.contentOffset.y;
+        for (NSUInteger i = 0; i < anchorIDs.count; i++) {
+            if (![self indexPathForRowID:anchorIDs[i]]) continue;
+            NSInteger passes = 0;
+            for (; passes < 4; passes++) {
+                NSIndexPath *indexPath = [self indexPathForRowID:anchorIDs[i]];
+                UIEdgeInsets insets = tableView.adjustedContentInset;
+                CGFloat minY = -insets.top;
+                CGFloat maxY = MAX(minY, tableView.contentSize.height + insets.bottom - CGRectGetHeight(tableView.bounds));
+                CGFloat target = CGRectGetMinY([tableView rectForRowAtIndexPath:indexPath]) - anchorOffsets[i].doubleValue;
+                target = MIN(MAX(target, minY), maxY);
+                if (fabs(target - tableView.contentOffset.y) < 0.5) break;
+                tableView.contentOffset = CGPointMake(tableView.contentOffset.x, target);
+                [tableView layoutIfNeeded];
+            }
+            ApolloLog(@"[SettingsForm] update kept visible rows in place: offset was %.1f, UIKit restored %.1f, put back to %.1f in %ld pass(es)",
+                      offsetY, restored, tableView.contentOffset.y, (long)passes);
+            break;
+        }
+    }];
+}
+
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     // Icon tiles bake a trait-resolved fill color at render time (see

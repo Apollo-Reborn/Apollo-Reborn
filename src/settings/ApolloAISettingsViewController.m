@@ -1517,12 +1517,14 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:UDKeyCustomAIHeaders];
     }
     ApolloLog(@"[AICloud] Saved %lu custom header(s)", (unsigned long)sCustomAIHeaders.count);
-    // A full rebuild, not -rebuildSectionContainingRowID:. Reloading just this
-    // section brought its footer back in UIKit's default font instead of the
-    // settings text size (iOS 27 sim: re-measured 140pt -> 90pt). The rebuild's
-    // usual cost, clobbering a text field mid-edit, can't apply: the editor
-    // ended editing before it opened.
-    [self rebuildForm];
+    // Only this section is rebuilt: its rows are generated per header, and the
+    // other sections keep their measured heights. Save and Delete come with the
+    // list scrolled down to it, where the reload alone moved the list ~210pt
+    // (the top edge of the screen sits in the General footer), so the rows on
+    // screen are kept where they were.
+    [self performUpdateKeepingVisibleRowsInPlace:^{
+        [self rebuildSectionContainingRowID:@"customHeaders.add" withRowAnimation:UITableViewRowAnimationNone];
+    }];
 }
 
 #pragma mark - UITextFieldDelegate
