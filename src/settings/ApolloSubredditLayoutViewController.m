@@ -94,7 +94,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    if (tableView != self.tableView || section != 0) return UITableViewAutomaticDimension;
+    if (tableView != self.tableView || section != 0) return [super tableView:tableView heightForHeaderInSection:section];
 
     // The preview already supplies the first section's generous top spacing.
     // Match later section headers here instead of stacking another empty band.

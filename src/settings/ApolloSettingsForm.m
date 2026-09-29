@@ -205,6 +205,19 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     // table's counts and our answers must agree for the whole layout pass.
     NSArray<ApolloSettingsSection *> *_visibleSections;
     NSArray<NSArray<ApolloSettingsRow *> *> *_visibleRows;
+    // The height each plain-title section header had the first time it was
+    // shown, keyed by "width|first section|label font|title" and served from
+    // -tableView:heightForHeaderInSection:. See "section header heights".
+    NSMutableDictionary<NSString *, NSNumber *> *_headerHeldHeights;
+    // "font name|point size" of the settings header label, read off a
+    // displayed header; part of every header height key.
+    NSString *_headerFontKey;
+    // Header views UIKit has passed to willDisplayHeaderView: and not yet
+    // ended. UIKit also ends views it built for a layout but never showed.
+    NSHashTable<UIView *> *_shownHeaderViews;
+    // The first footer check has run (with its pass, if it needed one), so
+    // what the headers show now is how the screen settled.
+    BOOL _headersSettled;
     // A footer-height check is already queued for the next runloop turn
     // (see -tableView:willDisplayFooterView:forSection:).
     BOOL _footerHeightCheckPending;
@@ -259,11 +272,15 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
         [self.tableView reloadData];
     }
-    // Footer heights were measured at the previous text size.
+    // Footer heights were measured, and header heights held, at the previous
+    // text size.
     if (previousTraitCollection &&
         ![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
         [_footerMeasuredHeights removeAllObjects];
         [_footerMeasureChanges removeAllObjects];
+        [_headerHeldHeights removeAllObjects];
+        _headerFontKey = nil;
+        _headersSettled = NO;
     }
 }
 
@@ -613,6 +630,133 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return row.height ? row.height() : tableView.rowHeight;
 }
 
+#pragma mark section header heights
+
+// The form also holds the height of its plain-title section headers, because
+// owning the footers (below) makes UIKit size the same header differently
+// from one updates pass to the next:
+//
+//  - A title header after a section's footer has its top padding STRIPPED
+//    only while the delegate answers that footer's height with
+//    UITableViewAutomaticDimension (-[UITableView
+//    _shouldStripHeaderTopPaddingForSection:]). The form answers a footer's
+//    measured height from the first check on, so every header UIKit sizes
+//    after that is 7.3pt shorter (hub, iOS 27, stock theme: Features 59pt at
+//    first open, 51.7pt after), and one off screen goes to UIKit's sizing view
+//    with its default font instead (Shortcuts 59pt -> 38pt).
+//  - UIKit sizes a header again whenever an updates pass touches its section,
+//    and the hub reloads its summary rows every time it reappears. So coming
+//    back from any pushed screen moved the list 3-7pt from where it opened.
+//
+// So: hold every header at the height it is shown with once the screen has
+// settled, and answer that from heightForHeaderInSection:. Settled means the
+// first footer check has run, after the push and with its pass if it needed
+// one — that pass is part of how a screen opens today (it already re-sizes
+// the headers on screens whose footers it fixes), so holding before it would
+// change how the screen opens. From then on a header on screen is read in each
+// check, and one leaving the screen is read as it leaves, at the last height
+// it was shown with. Nothing is measured: a held height is what the table
+// already shows, so holding it never moves anything and no pass is needed. A
+// header that hasn't been shown since the screen settled keeps UIKit's own
+// behavior until it is. The key holds the label font, so a new theme font or
+// text size is read again rather than served stale.
+//
+// Subclasses that override heightForHeaderInSection: call super for the
+// sections they don't special-case.
+
+// A header UIKit built from the section title (no content configuration).
+static BOOL ApolloSFIsPlainTitleHeader(UIView *view) {
+    if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return NO;
+    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+    return header.contentConfiguration == nil && header.textLabel.text.length > 0;
+}
+
+- (BOOL)apollo_sf_formSizesHeadersInTableView:(UITableView *)tableView {
+    // A screen that supplies its own header views, or gives its table a fixed
+    // sectionHeaderHeight, sizes its headers itself. UITableViewController
+    // implements viewForHeaderInSection: for storyboard static tables, so look
+    // for an override below it rather than respondsToSelector:.
+    SEL viewForHeader = @selector(tableView:viewForHeaderInSection:);
+    BOOL ownHeaderViews = [self methodForSelector:viewForHeader] !=
+                          [UITableViewController instanceMethodForSelector:viewForHeader];
+    return tableView != nil && !ownHeaderViews && tableView.sectionHeaderHeight == UITableViewAutomaticDimension;
+}
+
+// Whether the table takes this section's header height from the form: a
+// subclass may size some sections itself (the pinned-preview screens fix
+// their first header) and call super only for the rest.
+- (BOOL)apollo_sf_formAnswersHeaderInSection:(NSInteger)section inTableView:(UITableView *)tableView {
+    SEL sel = @selector(tableView:heightForHeaderInSection:);
+    IMP formImp = class_getMethodImplementation([ApolloSettingsFormViewController class], sel);
+    if ([self methodForSelector:sel] == formImp) return YES;
+    CGFloat formAnswer = ((CGFloat (*)(id, SEL, UITableView *, NSInteger))formImp)(self, sel, tableView, section);
+    return [self tableView:tableView heightForHeaderInSection:section] == formAnswer;
+}
+
+// The first section's header carries the table's top padding, so the same
+// title is held separately there.
+- (NSString *)apollo_sf_headerHeightKeyForSection:(NSInteger)section inTableView:(UITableView *)tableView {
+    if (!_headerFontKey || ![self apollo_sf_formSizesHeadersInTableView:tableView]) return nil;
+    NSString *title = [self tableView:tableView titleForHeaderInSection:section];
+    CGFloat width = CGRectGetWidth(tableView.bounds);
+    if (title.length == 0 || width <= 0.0) return nil;
+    return [NSString stringWithFormat:@"%.0f|%d|%@|%@", width, section == 0, _headerFontKey, title];
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    NSString *key = [self apollo_sf_headerHeightKeyForSection:section inTableView:tableView];
+    NSNumber *held = key ? _headerHeldHeights[key] : nil;
+    // Anything the form doesn't hold gets what the table would have used had
+    // this method not existed (UITableViewController hides its static-table
+    // version from the table without a storyboard data source).
+    return held ? (CGFloat)held.doubleValue : tableView.sectionHeaderHeight;
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
+    if (!ApolloSFIsPlainTitleHeader(view)) return;
+    if (!_shownHeaderViews) _shownHeaderViews = [NSHashTable weakObjectsHashTable];
+    [_shownHeaderViews addObject:view];
+    // Read in the footers' check, once its size has settled.
+    [self apollo_sf_scheduleFooterHeightCheck];
+}
+
+- (void)tableView:(UITableView *)tableView didEndDisplayingHeaderView:(UIView *)view forSection:(NSInteger)section {
+    if (![_shownHeaderViews containsObject:view]) return;
+    if (_headersSettled) [self apollo_sf_holdHeightOfHeader:view section:section inTableView:tableView];
+    [_shownHeaderViews removeObject:view];
+}
+
+// Holds a shown header at its current height, unless it is already held, the
+// screen sizes that section itself, or the height can't even fit the title.
+- (void)apollo_sf_holdHeightOfHeader:(UIView *)view section:(NSInteger)section inTableView:(UITableView *)tableView {
+    if (![_shownHeaderViews containsObject:view] || !ApolloSFIsPlainTitleHeader(view) ||
+        ![self apollo_sf_formSizesHeadersInTableView:tableView]) return;
+    UIFont *font = ((UITableViewHeaderFooterView *)view).textLabel.font;
+    NSString *fontKey = [NSString stringWithFormat:@"%@|%.2f", font.fontName, font.pointSize];
+    if (![fontKey isEqualToString:_headerFontKey]) {
+        if (_headerFontKey) ApolloLog(@"[SettingsForm] section header font is now %@ — holding headers again as they're shown", fontKey);
+        _headerFontKey = fontKey;
+    }
+    NSString *key = [self apollo_sf_headerHeightKeyForSection:section inTableView:tableView];
+    CGFloat height = CGRectGetHeight(view.bounds);
+    if (!key || _headerHeldHeights[key] || height < ceil(font.lineHeight)) return;
+    if (![self apollo_sf_formAnswersHeaderInSection:section inTableView:tableView]) return;
+    if (!_headerHeldHeights) _headerHeldHeights = [NSMutableDictionary dictionary];
+    _headerHeldHeights[key] = @(height);
+    ApolloLog(@"[SettingsForm] header %ld held at %.1fpt", (long)section, height);
+}
+
+// Runs at the end of the footers' check, after its pass: holds every header
+// on screen that isn't held yet.
+- (void)apollo_sf_holdHeaderHeightsInTableView:(UITableView *)tableView sections:(NSInteger)sections {
+    _headersSettled = YES;
+    for (NSInteger section = 0; section < sections; section++) {
+        UITableViewHeaderFooterView *header = [tableView headerViewForSection:section];
+        if (header) [self apollo_sf_holdHeightOfHeader:header section:section inTableView:tableView];
+    }
+}
+
 #pragma mark section footer heights
 
 // The form owns the height of its plain-string section footers, because
@@ -758,11 +902,18 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
         ApolloLog(@"[SettingsForm] footer %ld is %.1fpt tall but its view fits %.1fpt — adopting the measured height",
                   (long)section, height, fitted);
     }
-    if (!needsPass) return;
-    [UIView performWithoutAnimation:^{
-        [tableView beginUpdates];
-        [tableView endUpdates];
-    }];
+    // Once the screen has settled, a header that has just come on screen is
+    // held before a pass can size it again; the first check holds after its
+    // pass, which is part of how the screen opens.
+    if (_headersSettled) [self apollo_sf_holdHeaderHeightsInTableView:tableView sections:sections];
+    if (needsPass) {
+        [UIView performWithoutAnimation:^{
+            [tableView beginUpdates];
+            [tableView endUpdates];
+            [tableView layoutIfNeeded];   // the headers are read below
+        }];
+    }
+    [self apollo_sf_holdHeaderHeightsInTableView:tableView sections:sections];
 }
 
 @end

@@ -480,7 +480,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 // starts right under the card rather than a full inset-grouped top margin
 // lower.
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    if (section != 0) return UITableViewAutomaticDimension;
+    if (section != 0) return [super tableView:tableView heightForHeaderInSection:section];
     UIFont *font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote
                            compatibleWithTraitCollection:self.traitCollection];
     return ceil(font.lineHeight) + 20.0;
