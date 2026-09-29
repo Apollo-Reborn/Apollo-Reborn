@@ -61,12 +61,6 @@ static inline double ApolloDuoSubsChromeTitleTrailing(double chromeRight) {
     return chromeRight;
 }
 
-// Center and fit the title inside its visible navigation band.
-static inline double ApolloDuoSubsChromeTitleCenterBetween(double leftEdge,
-                                                           double rightEdge) {
-    return (leftEdge + rightEdge) * 0.5;
-}
-
 static inline double ApolloDuoSubsChromeTitleMaxWidth(double leftEdge,
                                                       double rightEdge,
                                                       double padding) {

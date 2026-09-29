@@ -12,8 +12,6 @@
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloFindInCommentsGlass.h"
 #import "ApolloDuoRail.h"
-#import "ApolloDuoRailLayout.h"
-#import "ApolloDuoSubsChrome.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
@@ -1987,10 +1985,14 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     UIViewController *topVC = ApolloOwningTopViewController(titleControl);
     id<UIViewControllerTransitionCoordinator> transition = topVC.transitionCoordinator;
-    // During navigation the outgoing profile's Accounts/actions platters are still
-    // visible; fitting against those temporary edges clips the capsule ends.
-    // Keep UIKit's supplied size until the completion/cancellation refresh.
-    if (transition.isAnimated && transition != controller.completedTransition) {
+    NSArray<UIView *> *titleCandidates = [controller titleContentViews];
+    BOOL segmentedTitle = titleCandidates.count == 1 &&
+        [titleCandidates.firstObject isKindOfClass:UISegmentedControl.class];
+    // Segmented/native titles already have UIKit's transition geometry. Owned
+    // text titles must fit immediately: newly adopted controls start at 1pt,
+    // and reused controls otherwise retain the outgoing title's width.
+    if (transition.isAnimated && transition != controller.completedTransition &&
+        (segmentedTitle || !ApolloNavigationTitlePresentationOwnsControl(titleControl))) {
         // UIKit may animate only nested hosts. Retry explicitly on transition
         // completion/cancellation instead of relying on another layout pass.
         if (controller.pendingTransition != transition) {
@@ -2149,28 +2151,6 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         geometry.center = (leftLimit + rightLimit) / 2.0;
         geometry.maximumContentWidth = MAX(0, rightLimit - leftLimit -
             2 * (capsulePadding + kEdgePadding));
-    }
-
-    // Duo Subreddits: center over the visible list,
-    // not the full window, and keep the capsule out of corner/hinge
-    // chrome. Regular iPhone and non-RedditList screens are unchanged.
-    if (ApolloDuoSubsChromeControllerIsRedditList(topVC) && !ApolloDuoSplitIsUnfoldedPortrait()) {
-        int duoMode = ApolloDuoCurrentMode();
-        if (ApolloDuoSubsChromeShouldApply(duoMode)) {
-            CGFloat barMin = CGRectGetMinX(bar.bounds);
-            CGFloat barMax = CGRectGetMaxX(bar.bounds);
-            CGFloat lead = (CGFloat)ApolloDuoSubsChromeTitleLeading(
-                duoMode, (double)(leftLimit - barMin));
-            CGFloat trail = (CGFloat)ApolloDuoSubsChromeTitleTrailing(
-                (double)(barMax - rightLimit));
-            leftLimit = MAX(leftLimit, barMin + lead);
-            rightLimit = MIN(rightLimit, barMax - trail);
-            geometry.center = (CGFloat)ApolloDuoSubsChromeTitleCenterBetween(
-                (double)leftLimit, (double)rightLimit);
-            geometry.maximumContentWidth = (CGFloat)ApolloDuoSubsChromeTitleMaxWidth(
-                (double)leftLimit, (double)rightLimit,
-                (double)(capsulePadding + kEdgePadding));
-        }
     }
 
     // Fit the original title through one constraint, preserving native text

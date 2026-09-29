@@ -50,12 +50,6 @@ int main(void) {
           "title trailing uses the corner gutter when chrome is 0");
     Check(ApolloDuoSubsChromeTitleTrailing(32.0) == 32.0,
           "title trailing honors a larger chrome/hinge extra");
-    Check(ApolloDuoSubsChromeTitleCenterBetween(120.0, 1000.0) == 560.0,
-          "Open title centers over the list, not the full window");
-    Check(ApolloDuoSubsChromeTitleCenterBetween(120.0, 1000.0) != 500.0,
-          "window-midpoint 500 would sit on the rail side of the list");
-    Check(ApolloDuoSubsChromeTitleCenterBetween(0.0, 400.0) == 200.0,
-          "Closed title centers in the full bar");
     Check(ApolloDuoSubsChromeTitleMaxWidth(120.0, 980.0, 22.0) == 816.0,
           "title max width is the band minus padding");
     Check(ApolloDuoSubsChromeTitleMaxWidth(120.0, 130.0, 22.0) == 0.0,
