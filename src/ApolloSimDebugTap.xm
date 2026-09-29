@@ -1196,7 +1196,8 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         // search the way the Search tab's Google mode does and log every result;
         // "gsearchjs <js>": evaluate JS in the last results page (kept alive in
         // sim builds); "gsearchdebug <knobs>": the Google mode test switches
-        // (verification sheet, Reddit read off, error, saved page, link delay).
+        // (verification sheet, Reddit read off, error, saved page, link delay,
+        // the pre-iOS 17 cookie jar, a listing of the jar's cookies).
         // See ApolloGoogleSearch.{h,m}.
         if ([contents hasPrefix:@"gsearch "]) {
             ApolloGoogleSearchDebugRun([contents substringFromIndex:8]);

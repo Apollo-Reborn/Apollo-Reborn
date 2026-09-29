@@ -680,28 +680,257 @@ static BOOL ApolloGoogleSearchUsesDesktopLayout(void) {
     return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
 }
 
-#pragma mark - Session
+#pragma mark - Cookie jar
 
-@interface ApolloGoogleSearchSession () <WKNavigationDelegate>
+// Google's cookies are how it recognizes this browser again: the consent
+// choice, the exemption cookie a solved check leaves behind, and the Google
+// account a user signed into on one of its check pages. A jar that starts
+// empty looks like a fresh private-browsing session every time, which is what
+// Google's checks (captcha, or its newer "sign in to verify you're a human"
+// page) react to, and whatever the user answered is gone again (#1302).
+//
+// iOS 17+: a dedicated persistent store. Before iOS 17 the only persistent
+// store is the default one, which holds Apollo's own web sessions (the
+// API-key-free Reddit login), so there the jar is a non-persistent store whose
+// lasting cookies are kept in a file of their own: put back before a search
+// loads a page into an empty jar, and written again when they change. The file
+// is not in the settings plist, so Backup Settings never exports it.
+// Session-only cookies end with the app, as they do in the iOS 17 store.
+
+// Main thread only.
+static BOOL sApolloGoogleJarMirrored;        // the pre-iOS 17 jar, backed by the file
+static BOOL sApolloGoogleJarRestoring;       // a restore is in flight: nothing is saved until it lands
+static BOOL sApolloGoogleJarRestoreLate;     // ...and it overran its wait: searches stop waiting for it
+static NSUInteger sApolloGoogleJarRestoreAttempt;
+static NSMutableArray<dispatch_block_t> *sApolloGoogleJarWaiters;   // searches waiting to load
+static BOOL sApolloGoogleJarSaveScheduled;
+static NSData *sApolloGoogleJarLastSaved;    // what the file holds, to skip identical writes
+static BOOL sApolloGoogleJarFileUnreadable;  // the file is there but couldn't be read: leave it alone this launch
+
+static const NSTimeInterval kApolloGoogleJarRestoreTimeout = 3.0;
+static const NSTimeInterval kApolloGoogleJarSaveDelay = 1.0;
+
+#if APOLLO_SIM_BUILD
+// "gsearchdebug legacyjar=1": use the pre-iOS 17 jar on a newer simulator.
+// Read when the jar is made (the first search of a launch).
+static NSString *const kApolloGoogleSearchDebugLegacyJarKey = @"ApolloGoogleSearchDebugLegacyJar";
+#endif
+
+static NSString *ApolloGoogleJarFilePath(void) {
+    return [[NSHomeDirectory() stringByAppendingPathComponent:@"Library"]
+                stringByAppendingPathComponent:@"ApolloGoogleSearchCookies.plist"];
+}
+
+static dispatch_queue_t ApolloGoogleJarFileQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.apolloreborn.google-search-cookies",
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
+}
+
+// The cookies that outlive the app, as a binary plist of their properties
+// (name, value, domain, path, expiry, Secure, HttpOnly, SameSite: plain
+// strings, numbers and dates). nil when there are none.
+static NSData *ApolloGoogleJarArchive(NSArray<NSHTTPCookie *> *cookies, NSUInteger *count) {
+    NSMutableArray<NSDictionary *> *list = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in cookies) {
+        if (cookie.isSessionOnly || cookie.expiresDate.timeIntervalSinceNow <= 0) continue;
+        NSMutableDictionary *properties = [NSMutableDictionary dictionary];
+        [cookie.properties enumerateKeysAndObjectsUsingBlock:^(NSHTTPCookiePropertyKey key, id value, BOOL *stop) {
+            if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]] ||
+                [value isKindOfClass:[NSDate class]]) properties[key] = value;
+        }];
+        [list addObject:properties];
+    }
+    if (count) *count = list.count;
+    if (list.count == 0) return nil;
+    return [NSPropertyListSerialization dataWithPropertyList:list format:NSPropertyListBinaryFormat_v1_0
+                                                     options:0 error:nil];
+}
+
+static NSArray<NSHTTPCookie *> *ApolloGoogleJarUnarchive(NSData *data) {
+    id list = data ? [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:nil] : nil;
+    if (![list isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray<NSHTTPCookie *> *cookies = [NSMutableArray array];
+    for (id properties in (NSArray *)list) {
+        NSHTTPCookie *cookie = [properties isKindOfClass:[NSDictionary class]]
+            ? [NSHTTPCookie cookieWithProperties:properties] : nil;
+        if (cookie && !cookie.isSessionOnly && cookie.expiresDate.timeIntervalSinceNow > 0) [cookies addObject:cookie];
+    }
+    return cookies;
+}
+
+static WKWebsiteDataStore *ApolloGoogleSearchDataStore(void);
+
+static void ApolloGoogleJarSave(void) {
+    if (!sApolloGoogleJarMirrored || sApolloGoogleJarRestoring || sApolloGoogleJarFileUnreadable) return;
+    [ApolloGoogleSearchDataStore().httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+        NSUInteger count = 0;
+        NSData *data = ApolloGoogleJarArchive(cookies, &count);
+        // Never write an empty jar over the file: Google always leaves cookies
+        // behind, so an empty jar means the jar itself was lost (WebKit's
+        // networking process was relaunched), and the next search restores it.
+        if (!data || [data isEqualToData:sApolloGoogleJarLastSaved]) return;
+        sApolloGoogleJarLastSaved = data;
+        dispatch_async(ApolloGoogleJarFileQueue(), ^{
+            NSError *error = nil;
+            BOOL saved = [data writeToFile:ApolloGoogleJarFilePath()
+                                   options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication
+                                     error:&error];
+            if (saved) {
+                ApolloLog(@"[GoogleSearch] saved %lu Google cookie(s) for the next launch", (unsigned long)count);
+                return;
+            }
+            ApolloLog(@"[GoogleSearch] couldn't save Google's cookies: %@", error.localizedDescription ?: @"unknown error");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Not on disk after all: let the next save try again.
+                if (sApolloGoogleJarLastSaved == data) sApolloGoogleJarLastSaved = nil;
+            });
+        });
+    }];
+}
+
+static void ApolloGoogleJarSaveSoon(void) {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloGoogleJarSaveSoon(); });
+        return;
+    }
+    if (!sApolloGoogleJarMirrored || sApolloGoogleJarSaveScheduled) return;
+    sApolloGoogleJarSaveScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloGoogleJarSaveDelay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        sApolloGoogleJarSaveScheduled = NO;
+        ApolloGoogleJarSave();
+    });
+}
+
+@interface ApolloGoogleJarObserver : NSObject <WKHTTPCookieStoreObserver>
+@end
+
+@implementation ApolloGoogleJarObserver
+- (void)cookiesDidChangeInCookieStore:(WKHTTPCookieStore *)cookieStore {
+    ApolloGoogleJarSaveSoon();
+}
 @end
 
 static WKWebsiteDataStore *ApolloGoogleSearchDataStore(void) {
     static WKWebsiteDataStore *store;
+    static ApolloGoogleJarObserver *observer;   // the cookie store holds its observers weakly
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        BOOL legacyJar = NO;
+#if APOLLO_SIM_BUILD
+        legacyJar = [NSUserDefaults.standardUserDefaults boolForKey:kApolloGoogleSearchDebugLegacyJarKey];
+        if (legacyJar) ApolloLog(@"[GoogleSearch][debug] using the pre-iOS 17 cookie jar");
+#endif
         if (@available(iOS 17.0, *)) {
-            // Persistent and dedicated: Google's cookies (consent choice, the
-            // exemption cookie a solved challenge leaves behind) survive
-            // relaunches, so the user answers a prompt once, not every launch.
             // Separate from the Reddit scrape jar and from Apollo's own web views.
             NSUUID *identifier = [[NSUUID alloc] initWithUUIDString:@"6B0E4C1D-2F8A-4C39-9A57-3D1E8F6B2A94"];
-            if (identifier) store = [WKWebsiteDataStore dataStoreForIdentifier:identifier];
+            if (identifier && !legacyJar) store = [WKWebsiteDataStore dataStoreForIdentifier:identifier];
         }
-        // Before iOS 17: no custom persistent stores; keep one per process.
-        if (!store) store = [WKWebsiteDataStore nonPersistentDataStore];
+        if (!store) {
+            store = [WKWebsiteDataStore nonPersistentDataStore];
+            sApolloGoogleJarMirrored = YES;
+            observer = [[ApolloGoogleJarObserver alloc] init];
+            [store.httpCookieStore addObserver:observer];
+        }
     });
     return store;
 }
+
+static void ApolloGoogleJarReleaseWaiters(void) {
+    NSArray<dispatch_block_t> *waiters = [sApolloGoogleJarWaiters copy];
+    [sApolloGoogleJarWaiters removeAllObjects];
+    for (dispatch_block_t waiter in waiters) waiter();
+}
+
+// Runs `ready` (main queue) once the jar can take a page load: right away on
+// iOS 17+ and whenever the jar already holds cookies; otherwise once the saved
+// ones are back in. The jar is empty at the first search of a launch, and
+// again if WebKit's networking process was relaunched since. A restore that
+// overruns kApolloGoogleJarRestoreTimeout stops holding up searches, but
+// saving stays off until it lands, so a half-restored jar never replaces the
+// file. Main thread.
+static void ApolloGoogleSearchPrepareJar(dispatch_block_t ready) {
+    WKHTTPCookieStore *jar = ApolloGoogleSearchDataStore().httpCookieStore;
+    if (!sApolloGoogleJarMirrored) {
+        ready();
+        return;
+    }
+    if (sApolloGoogleJarRestoring && sApolloGoogleJarRestoreLate) {
+        ready();
+        return;
+    }
+    if (!sApolloGoogleJarWaiters) sApolloGoogleJarWaiters = [NSMutableArray array];
+    [sApolloGoogleJarWaiters addObject:[ready copy]];
+    if (sApolloGoogleJarRestoring) return;
+    sApolloGoogleJarRestoring = YES;
+    sApolloGoogleJarRestoreLate = NO;
+    NSUInteger attempt = ++sApolloGoogleJarRestoreAttempt;
+
+    void (^landed)(NSString *) = ^(NSString *outcome) {
+        if (attempt != sApolloGoogleJarRestoreAttempt || !sApolloGoogleJarRestoring) return;
+        BOOL late = sApolloGoogleJarRestoreLate;
+        sApolloGoogleJarRestoring = NO;
+        sApolloGoogleJarRestoreLate = NO;
+        if (outcome) ApolloLog(@"[GoogleSearch] %@", outcome);
+        ApolloGoogleJarReleaseWaiters();
+        // Searches ran meanwhile and their saves were held back: catch up.
+        if (late) ApolloGoogleJarSaveSoon();
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloGoogleJarRestoreTimeout * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (attempt != sApolloGoogleJarRestoreAttempt || !sApolloGoogleJarRestoring) return;
+        sApolloGoogleJarRestoreLate = YES;
+        ApolloLog(@"[GoogleSearch] restoring Google's cookies is slow; searching without waiting");
+        ApolloGoogleJarReleaseWaiters();
+    });
+
+    [jar getAllCookies:^(NSArray<NSHTTPCookie *> *live) {
+        if (live.count) {
+            // This launch's jar is already in use.
+            landed(nil);
+            return;
+        }
+        dispatch_async(ApolloGoogleJarFileQueue(), ^{
+            NSError *readError = nil;
+            NSData *data = [NSData dataWithContentsOfFile:ApolloGoogleJarFilePath() options:0 error:&readError];
+            BOOL missing = [readError.domain isEqualToString:NSCocoaErrorDomain] && readError.code == NSFileReadNoSuchFileError;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!data && !missing) {
+                    // Not the same as no file: a save now would replace cookies
+                    // that are still on disk with this launch's empty start.
+                    sApolloGoogleJarFileUnreadable = YES;
+                    landed([NSString stringWithFormat:@"couldn't read the saved Google cookies (%@); not saving over them this launch",
+                            readError.localizedDescription ?: @"unknown error"]);
+                    return;
+                }
+                NSArray<NSHTTPCookie *> *saved = ApolloGoogleJarUnarchive(data);
+                if (saved.count == 0) {
+                    landed(data ? @"no usable saved Google cookies" : nil);
+                    return;
+                }
+                sApolloGoogleJarLastSaved = data;
+                dispatch_group_t group = dispatch_group_create();
+                for (NSHTTPCookie *cookie in saved) {
+                    dispatch_group_enter(group);
+                    [jar setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
+                }
+                dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                    landed([NSString stringWithFormat:@"restored %lu saved Google cookie(s)", (unsigned long)saved.count]);
+                });
+            });
+        });
+    }];
+}
+
+#pragma mark - Session
+
+@interface ApolloGoogleSearchSession () <WKNavigationDelegate>
+@end
 
 #if APOLLO_SIM_BUILD
 static WKWebView *sApolloGoogleSearchDebugWeb;
@@ -838,8 +1067,14 @@ static BOOL sApolloGoogleSearchDebugStall;
 #endif
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:loadURL];
         request.timeoutInterval = kApolloGoogleSearchPageTimeout;
-        [web loadRequest:request];
-        [strongSelf schedulePoll:generation after:0.6];
+        // Below iOS 17 the jar starts each launch empty: the saved Google
+        // cookies go back in before the first page load.
+        ApolloGoogleSearchPrepareJar(^{
+            typeof(self) readySelf = weakSelf;
+            if (!readySelf || readySelf->_generation != generation || !readySelf->_loading || readySelf->_web != web) return;
+            [web loadRequest:request];
+            [readySelf schedulePoll:generation after:0.6];
+        });
     });
 }
 
@@ -1301,6 +1536,9 @@ static NSURLSessionDataTask *ApolloGoogleFetchRedditInfo(NSArray<ApolloGoogleSea
         ApolloScrapeWebViewDestroy(_web);
         _web = nil;
     }
+    // Below iOS 17: keep what this search left in the jar (a sign-in, a
+    // solved check) even where WebKit doesn't report cookie changes.
+    ApolloGoogleJarSaveSoon();
     if (error) ApolloLog(@"[GoogleSearch] failed: %@", error.localizedDescription);
     if (completion) completion(results ?: @[], error ? NO : more, error);
 }
@@ -1437,12 +1675,27 @@ void ApolloGoogleSearchDebugConfigure(NSString *arguments) {
             sApolloGoogleSearchDebugFollowDelay = MAX(0.0, [token substringFromIndex:12].doubleValue);
         } else if ([token hasPrefix:@"stall="]) {
             sApolloGoogleSearchDebugStall = [[token substringFromIndex:6] isEqualToString:@"1"];
+        } else if ([token hasPrefix:@"legacyjar="]) {
+            [NSUserDefaults.standardUserDefaults setBool:[[token substringFromIndex:10] isEqualToString:@"1"]
+                                                  forKey:kApolloGoogleSearchDebugLegacyJarKey];
+        } else if ([token isEqualToString:@"cookies"]) {
+            // Lists the jar: names and flags only, never values.
+            [ApolloGoogleSearchDataStore().httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+                ApolloLog(@"[GoogleSearch][debug] jar (%@): %lu cookie(s)",
+                          sApolloGoogleJarMirrored ? @"pre-iOS 17, file-backed" : @"persistent store", (unsigned long)cookies.count);
+                for (NSHTTPCookie *cookie in cookies) {
+                    ApolloLog(@"[GoogleSearch][debug]   %@ @ %@ secure=%d httpOnly=%d sameSite=%@ expires=%@",
+                              cookie.name, cookie.domain, cookie.isSecure, cookie.isHTTPOnly,
+                              cookie.sameSitePolicy ?: @"-", cookie.expiresDate ?: @"session");
+                }
+            }];
         }
     }
-    ApolloLog(@"[GoogleSearch][debug] verify=%@ redditInfo=%d failNext=%d fixture=%@ followDelay=%.1f stall=%d",
+    ApolloLog(@"[GoogleSearch][debug] verify=%@ redditInfo=%d failNext=%d fixture=%@ followDelay=%.1f stall=%d legacyJar=%d (from the jar's first use each launch)",
               sApolloGoogleSearchDebugVerifyPage ?: @"off", !sApolloGoogleSearchDebugSkipRedditInfo,
               sApolloGoogleSearchDebugFailNext, sApolloGoogleSearchDebugFixturePath ?: @"off",
-              sApolloGoogleSearchDebugFollowDelay, sApolloGoogleSearchDebugStall);
+              sApolloGoogleSearchDebugFollowDelay, sApolloGoogleSearchDebugStall,
+              [NSUserDefaults.standardUserDefaults boolForKey:kApolloGoogleSearchDebugLegacyJarKey]);
 }
 
 void ApolloGoogleSearchDebugEvaluateJS(NSString *js) {
