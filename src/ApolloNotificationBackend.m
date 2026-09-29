@@ -346,6 +346,18 @@ NSURLRequest *ApolloRewriteRequestForNotificationBackend(NSURLRequest *request) 
             ApolloLog(@"[NotifBackend] Tagged /v1/device registration (transport=%@%@)",
                       bark ? @"bark" : @"apns",
                       augmented ? @", body augmented" : @", header-only");
+        } else if (ApolloPathIsLiveActivityRegistration(path)) {
+            // Opt the followed thread in to commenter avatars when Show User
+            // Profile Pictures (UDKeyShowUserAvatars) is on: the backend then
+            // embeds each comment author's picture in the Live Activity pushes
+            // (a Live Activity can't fetch images itself). Sent explicitly
+            // either way so a re-registration also turns it off. Read from the
+            // same defaults snapshot as the backend URL; a header because the
+            // body may be out of reach.
+            id showAvatars = configuration[UDKeyShowUserAvatars];
+            BOOL avatars = [showAvatars respondsToSelector:@selector(boolValue)] && [showAvatars boolValue];
+            [mutable setValue:(avatars ? @"1" : @"0") forHTTPHeaderField:@"X-Apollo-Live-Activity-Avatars"];
+            ApolloLog(@"[NotifBackend] Tagged /v1/live_activities registration (avatars=%d)", avatars);
         }
     }
 

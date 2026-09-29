@@ -368,7 +368,13 @@ static void ApolloEditingMatchListBackground(UIViewController *controller) {
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     %orig;
-    dispatch_async(dispatch_get_main_queue(), ^{ ApolloEditingMatchListBackground(self); });
+    // Strong local, deliberately (as in #897): Logos hands hooked methods an
+    // __unsafe_unretained self, so a block that names self would not keep
+    // the list alive, and tearing down its scene right after a trait flip
+    // could free it before the block runs (the crash class behind #893/#943).
+    // Owning it for one main-queue turn is harmless: the block only recolours.
+    UIViewController *controller = (UIViewController *)self;
+    dispatch_async(dispatch_get_main_queue(), ^{ ApolloEditingMatchListBackground(controller); });
 }
 %end
 %end

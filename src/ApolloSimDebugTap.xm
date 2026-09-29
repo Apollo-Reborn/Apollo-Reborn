@@ -617,6 +617,9 @@ static void ApolloSimDebugDumpHierarchy(void) {
     ApolloLog(@"[SimDebugTap] hierarchy dump written (%lu bytes)", (unsigned long)out.length);
 }
 
+// The window's first responder, checking each view before its subviews. A
+// focused search field comes back as its UISearchBar: the bar answers
+// -isFirstResponder with its field's isEditing, and it is reached first.
 static UIResponder *ApolloSimDebugFirstResponder(UIView *view) {
     if (view.isFirstResponder) return view;
     for (UIView *subview in view.subviews) {
@@ -627,20 +630,54 @@ static UIResponder *ApolloSimDebugFirstResponder(UIView *view) {
 }
 
 // "text <string>" command: insert into the focused field through UIKeyInput,
-// which fires the same editing events as typing.
+// which fires the same editing events as typing. A UISearchBar from the walk
+// isn't UIKeyInput, so its searchTextField takes the text; a window whose
+// first responder is something else is skipped instead of ending the search.
+// The payload is newline-trimmed, so Return can't be typed: see "searchsubmit".
 static void ApolloSimDebugTypeText(NSString *text) {
     UIResponder *responder = nil;
     for (UIWindow *window in ApolloAllWindows()) {
-        responder = ApolloSimDebugFirstResponder(window);
-        if (responder) break;
+        UIResponder *candidate = ApolloSimDebugFirstResponder(window);
+        if ([candidate isKindOfClass:UISearchBar.class]) candidate = ((UISearchBar *)candidate).searchTextField;
+        if ([candidate conformsToProtocol:@protocol(UIKeyInput)]) { responder = candidate; break; }
+        if (candidate) {
+            ApolloLog(@"[SimDebugTap] text: skipping %@ in %@ (not key input)",
+                      NSStringFromClass(candidate.class), NSStringFromClass(window.class));
+        }
     }
-    if (![responder conformsToProtocol:@protocol(UIKeyInput)]) {
+    if (!responder) {
         ApolloLog(@"[SimDebugTap] no key-input first responder for text command");
         return;
     }
     [(id<UIKeyInput>)responder insertText:text];
     ApolloLog(@"[SimDebugTap] typed %lu chars into %@",
               (unsigned long)text.length, NSStringFromClass(responder.class));
+}
+
+// "searchsubmit" command: press the keyboard's Search key, which "text" can't
+// type. Acts on the focused search bar, else the first visible window's, and
+// calls the bar delegate's searchBarSearchButtonClicked:, where the key lands
+// (UIKit's -[UISearchBar _searchFieldReturnPressed] also tells the bar's
+// UISearchController when it has one; the Search tab's bar has none).
+static void ApolloSimDebugSubmitSearch(void) {
+    UISearchBar *bar = nil;
+    BOOL focused = NO;
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIResponder *responder = ApolloSimDebugFirstResponder(window);
+        if ([responder isKindOfClass:UISearchBar.class]) { bar = (UISearchBar *)responder; focused = YES; break; }
+    }
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (bar) break;
+        if (!window.hidden) bar = ApolloSimDebugFindSearchBar(window);
+    }
+    id<UISearchBarDelegate> delegate = bar.delegate;
+    if (![delegate respondsToSelector:@selector(searchBarSearchButtonClicked:)]) {
+        ApolloLog(@"[SimDebugTap] searchsubmit: no search bar delegate to press Search on (bar %@)", bar);
+        return;
+    }
+    ApolloLog(@"[SimDebugTap] searchsubmit: %@ search bar, %lu chars -> %@", focused ? @"focused" : @"first visible",
+              (unsigned long)bar.text.length, NSStringFromClass([(id)delegate class]));
+    [delegate searchBarSearchButtonClicked:bar];
 }
 
 // "crash <type>" command: deliberately crash the process to exercise the
@@ -1394,6 +1431,10 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             NSString *spec = [[contents substringFromIndex:10] stringByTrimmingCharactersInSet:
                 NSCharacterSet.whitespaceAndNewlineCharacterSet];
             ApolloTranslationDebugProbe(spec);
+            return;
+        }
+        if ([contents hasPrefix:@"searchsubmit"]) {
+            ApolloSimDebugSubmitSearch();
             return;
         }
         if ([contents hasPrefix:@"text "]) {

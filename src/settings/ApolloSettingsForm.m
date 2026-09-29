@@ -633,16 +633,26 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 //    back on the title estimate. So a pass alone can never settle a table
 //    taller than the screen: healing the footers at the bottom un-heals the
 //    ones at the top, which then come back short when the user scrolls up.
+//  - UIKit only takes a new footer height from an updates pass, not when the
+//    footer scrolls in, and a pass run while the list is scrolled can move it.
+//    After a batch update UIKit puts the first visible row back where it was,
+//    but when the top edge of the screen is inside a section footer it saves
+//    that position against one row (the footer's own section's last row, from
+//    -_indexPathsForVisibleRowsUsingPresentationValues:) and restores it
+//    against another (the next row, _visibleRows): the list jumps by the
+//    distance between the two, 187pt and 275pt mid-fling on Apollo AI, whose
+//    footers run to 250pt.
 //
 // So: once a footer's view has been displayed, take the height that view asks
 // for (on the next runloop turn — by then the label has its final font),
 // remember it by table width and text, and answer heightForFooterInSection:
 // with it from then on. Whatever the table rebuilds later, that footer keeps
 // the measured height whether it is on screen or not, and one updates pass is
-// enough for the table to adopt a new measurement. A footer that has not been
-// displayed yet still gets UIKit's estimate (UITableViewAutomaticDimension);
-// it is measured as it scrolls in, which for a first visit is from the bottom
-// edge, below the rows it could otherwise cover.
+// enough for the table to adopt a new measurement. The footers that are not on
+// screen yet are measured at the same time, on a footer view the table has
+// already styled, so the first check after the screen appears (still at the
+// top of the list, where UIKit skips that restore) adopts every footer on the
+// screen in one pass, and none needs a pass of its own as it scrolls in.
 //
 // Subclasses that override heightForFooterInSection: call super for their
 // plain-string footers.
@@ -658,6 +668,60 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     CGFloat width = CGRectGetWidth(tableView.bounds);
     if (text.length == 0 || width <= 0.0) return nil;
     return [NSString stringWithFormat:@"%.0f|%@", width, text];
+}
+
+// Measures the plain footers that are not on screen, so the pass that adopts
+// them runs now rather than one by one as each scrolls in (see "section footer
+// heights"). The measuring view is a footer the table built and
+// willDisplayFooterView: styled: same font, width and insets as every other
+// plain footer here, so only the text differs. Its label gets each text in
+// turn and is put back within this runloop turn, so none of it is drawn.
+// Returns YES when a footer the table sizes from the form got a new height.
+- (BOOL)apollo_sf_measureFootersAheadInTableView:(UITableView *)tableView sections:(NSInteger)sections {
+    NSMutableIndexSet *pending = nil;
+    UITableViewHeaderFooterView *template = nil;
+    for (NSInteger section = 0; section < sections; section++) {
+        NSString *text = [self tableView:tableView titleForFooterInSection:section];
+        NSString *key = [self apollo_sf_footerHeightKeyForText:text inTableView:tableView];
+        if (text.length == 0 || !key) continue;
+        UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
+        if (footer) {
+            // UIKit's own footer for the section's title, not a screen's own view.
+            if (!template && [footer.textLabel.text isEqualToString:text]) template = footer;
+            continue;   // on screen: the caller measures it from its own view
+        }
+        if (_footerMeasuredHeights[key]) continue;
+        if (!pending) pending = [NSMutableIndexSet indexSet];
+        [pending addIndex:(NSUInteger)section];
+    }
+    if (!pending || !template) return NO;
+
+    UILabel *label = template.textLabel;
+    NSString *ownText = label.text;
+    BOOL adopted = NO;
+    for (NSInteger section = 0; section < sections; section++) {
+        if (![pending containsIndex:(NSUInteger)section]) continue;
+        NSString *text = [self tableView:tableView titleForFooterInSection:section];
+        label.text = text;
+        // sizeThatFits: subtracts the label's baseline offsets, and UILabel
+        // reads those against its current frame: a text shorter than the frame
+        // the previous text left sits centered in it and measures short (52pt
+        // for a 96pt footer). sizeThatFits: lays the view out first, so ask.
+        [template setNeedsLayout];
+        CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:template inTableView:tableView];
+        if (fitted <= 0.0) continue;
+        if (!_footerMeasuredHeights) _footerMeasuredHeights = [NSMutableDictionary dictionary];
+        _footerMeasuredHeights[[self apollo_sf_footerHeightKeyForText:text inTableView:tableView]] = @(fitted);
+        // A section whose footer a subclass sizes itself (its own view) keeps
+        // its own height; the measurement is simply unused there.
+        if (fabs([self tableView:tableView heightForFooterInSection:section] - fitted) >= 0.5) continue;
+        adopted = YES;
+        ApolloLog(@"[SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt", (long)section, fitted);
+    }
+    label.text = ownText;
+    [template setNeedsLayout];
+    [template layoutIfNeeded];
+    return adopted;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -726,7 +790,7 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
     }
 
     NSInteger sections = MIN(tableView.numberOfSections, (NSInteger)_visibleSections.count);
-    BOOL needsPass = NO;
+    BOOL needsPass = [self apollo_sf_measureFootersAheadInTableView:tableView sections:sections];
     for (NSInteger section = 0; section < sections; section++) {
         UITableViewHeaderFooterView *footer = [tableView footerViewForSection:section];
         CGFloat fitted = [self apollo_sf_fittedHeightForFooterView:footer inTableView:tableView];

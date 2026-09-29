@@ -27,6 +27,13 @@ static char kApolloMediaMenuPressLocationKey;
 
 static __weak UIView *sApolloNativeActionMenuSourceView = nil;
 static __weak UIView *sApolloNativeActionMenuConfigurationSourceView = nil;
+// Which customisable ••• menu (ApolloActionMenuLayout.h) the long-press menu
+// being configured mirrors. Set only while one of the long-press delegate
+// hooks below runs Apollo's own configurationForMenuAtLocation:, which builds
+// its UIContextMenuConfiguration synchronously; the configuration hook copies
+// it into that configuration's action provider, so no other menu can pick it
+// up later. Main thread only (UIKit delegate callbacks).
+static ApolloActionMenuContext sApolloActionMenuLongPressContext = nil;
 static __weak UIViewController *sApolloNativeDirectActionOwner = nil;
 static __weak UIView *sApolloNativeDirectActionSourceView = nil;
 static uint16_t sApolloNativeDirectActionKind = UINT16_MAX;
@@ -1431,33 +1438,51 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 
 %hook UIContextMenuConfiguration
 + (instancetype)configurationWithIdentifier:(id<NSCopying>)identifier previewProvider:(id)previewProvider actionProvider:(ApolloNativeActionMenuProvider)actionProvider {
-    if (!ApolloNativeActionMenusEnabled()) {
+    // Process-wide: only the glass renderer's menus and Apollo's customisable
+    // long-press menus (a delegate hook below is running) are touched.
+    ApolloActionMenuContext longPressContext = sApolloActionMenuLongPressContext;
+    BOOL nativeMenus = ApolloNativeActionMenusEnabled();
+    if (!actionProvider || (!nativeMenus && !longPressContext)) {
         return %orig(identifier, previewProvider, actionProvider);
     }
 
-    ApolloNativeActionMenuProvider wrappedActionProvider = nil;
-    if (actionProvider) {
-        ApolloNativeActionMenuProvider originalActionProvider = [actionProvider copy];
-        UIView *sourceView = sApolloNativeActionMenuConfigurationSourceView;
-        wrappedActionProvider = ^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
-            UIMenu *menu = originalActionProvider(suggestedActions);
-            BOOL moderatorStyle = ApolloNativeActionMenuModeratorStyleActive() || sApolloNativeActionMenuNextPresentationModeratorStyle;
-            if (sApolloNativeActionMenuNextPresentationModeratorStyle) {
-                sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
-            }
-            return ApolloNativeActionMenuTransformMenu(menu, moderatorStyle, sourceView);
-        };
-    }
-    return %orig(identifier, previewProvider, wrappedActionProvider ?: actionProvider);
+    ApolloNativeActionMenuProvider originalActionProvider = [actionProvider copy];
+    UIView *sourceView = sApolloNativeActionMenuConfigurationSourceView;
+    ApolloNativeActionMenuProvider wrappedActionProvider = ^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+        UIMenu *menu = originalActionProvider(suggestedActions);
+        // Settings → Interface → Action Menus: the long press shows the same
+        // actions as that object's ••• menu, so it takes the same saved
+        // layout. Applied to Apollo's own rows, before any styling below.
+        if (longPressContext) menu = ApolloActionMenuApplyLayoutToContextMenu(menu, longPressContext);
+        if (!nativeMenus) return menu;
+        BOOL moderatorStyle = ApolloNativeActionMenuModeratorStyleActive() || sApolloNativeActionMenuNextPresentationModeratorStyle;
+        if (sApolloNativeActionMenuNextPresentationModeratorStyle) {
+            sApolloNativeActionMenuNextPresentationModeratorStyle = NO;
+        }
+        return ApolloNativeActionMenuTransformMenu(menu, moderatorStyle, sourceView);
+    };
+    return %orig(identifier, previewProvider, wrappedActionProvider);
 }
 %end
 
+// Touch and hold: a post in a feed (PostCellActionTaker — every list of post
+// cells), the post at the top of its comments, and a comment. Each builds its
+// configuration synchronously inside %orig; the image/link menus the same
+// delegates return over media or a link are told apart by their rows
+// (ApolloActionMenuApplyLayoutToContextMenu). Statics restored in @finally.
 %hook _TtC6Apollo19PostCellActionTaker
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
     UIView *previousSourceView = sApolloNativeActionMenuConfigurationSourceView;
+    ApolloActionMenuContext previousContext = sApolloActionMenuLongPressContext;
     sApolloNativeActionMenuConfigurationSourceView = interaction.view;
-    UIContextMenuConfiguration *configuration = %orig;
-    sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+    sApolloActionMenuLongPressContext = ApolloActionMenuContextPost;
+    UIContextMenuConfiguration *configuration = nil;
+    @try {
+        configuration = %orig;
+    } @finally {
+        sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+        sApolloActionMenuLongPressContext = previousContext;
+    }
     return configuration;
 }
 %end
@@ -1465,9 +1490,16 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 %hook _TtC6Apollo24CommentSectionController
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
     UIView *previousSourceView = sApolloNativeActionMenuConfigurationSourceView;
+    ApolloActionMenuContext previousContext = sApolloActionMenuLongPressContext;
     sApolloNativeActionMenuConfigurationSourceView = interaction.view;
-    UIContextMenuConfiguration *configuration = %orig;
-    sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+    sApolloActionMenuLongPressContext = ApolloActionMenuContextComment;
+    UIContextMenuConfiguration *configuration = nil;
+    @try {
+        configuration = %orig;
+    } @finally {
+        sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+        sApolloActionMenuLongPressContext = previousContext;
+    }
     return configuration;
 }
 %end
@@ -1475,9 +1507,17 @@ typedef UIMenu * (^ApolloNativeActionMenuProvider)(NSArray<UIMenuElement *> *sug
 %hook _TtC6Apollo31CommentsHeaderSectionController
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
     UIView *previousSourceView = sApolloNativeActionMenuConfigurationSourceView;
+    ApolloActionMenuContext previousContext = sApolloActionMenuLongPressContext;
     sApolloNativeActionMenuConfigurationSourceView = interaction.view;
-    UIContextMenuConfiguration *configuration = %orig;
-    sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+    // The comments view's own ••• menu: same actions, same Moderator follow-up.
+    sApolloActionMenuLongPressContext = ApolloActionMenuContextPostDetail;
+    UIContextMenuConfiguration *configuration = nil;
+    @try {
+        configuration = %orig;
+    } @finally {
+        sApolloNativeActionMenuConfigurationSourceView = previousSourceView;
+        sApolloActionMenuLongPressContext = previousContext;
+    }
     return configuration;
 }
 %end
