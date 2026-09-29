@@ -20,7 +20,8 @@ extern "C" {
 //              inbox/messages, "about", and every /api/* GET endpoint.
 //   • Writes — vote/comment/save/submit/subscribe/… POST/PUT/DELETE to /api/*,
 //              authenticated with the session cookie + X-Modhash.
-//   • OAuth-only moderator endpoints (removal reasons, /api/v1/modactions/*) —
+//   • OAuth-only moderator endpoints (removal reasons, /api/v1/modactions/*,
+//              the approved/banned/muted/moderator lists, ban, mod invites) —
 //              the cookie can't authenticate these at all, so they go to
 //              oauth.reddit.com with the account's web-session bearer
 //              (ApolloWebJSONPathNeedsWebBearer).
@@ -70,13 +71,15 @@ id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
                                         NSHTTPURLResponse *response, id responseObject,
                                         NSError **error);
 
-// YES if `response` is GET /api/v1/<sub>/moderators_invited and a cookie
-// session is active — this endpoint is OAuth2-only with no cookie-compatible
-// equivalent at all (unlike /moderators), so the caller should override the
-// parsed result to an empty array (and clear any parse/status error) rather
-// than let the underlying 403 surface as a visible error. NO for any other
-// endpoint, or when the active account isn't a web-session account (the real
-// OAuth path is untouched). Called from the RDKResponseSerializer hook.
+// YES if `response` is GET /api/v1/<sub>/moderators_invited, a cookie session
+// is active, and no web bearer got a real answer for it — this endpoint is
+// OAuth2-only with no cookie-compatible equivalent at all (unlike
+// /moderators), so the caller should override the parsed result to an empty
+// array (and clear any parse/status error) rather than let the refusal surface
+// as a visible error. NO for a successful oauth.reddit.com answer (the
+// web-bearer route), any other endpoint, or when the active account isn't a
+// web-session account (the real OAuth path is untouched). Called from the
+// RDKResponseSerializer hook.
 BOOL ApolloWebJSONShouldStubInvitedModerators(NSURLResponse *response);
 
 // YES if `response` is a cookie-routed GET /r/<sub>/api/link_flair(_v2) or
@@ -126,10 +129,12 @@ NSString *ApolloWebJSONKeylessOAuthBearer(NSString *username);
 void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *bearer);
 
 // YES for the moderator endpoints Reddit serves to OAuth bearers only (a
-// subreddit's removal reasons, /api/v1/modactions/*). ApolloWebJSONRewriteRequest
-// sends a web-session account's requests to them to oauth.reddit.com with the
-// account's web bearer instead of the cookie. Takes a URL path or RedditKit's
-// relative "api/v1/..." path.
+// subreddit's removal reasons, /api/v1/modactions/*, its approved-submitter,
+// banned, muted, moderator and invited-moderator lists, declining a mod invite,
+// and the /r/<sub>/api/friend and accept_moderator_invite writes).
+// ApolloWebJSONRewriteRequest sends a web-session account's requests to them to
+// oauth.reddit.com with the account's web bearer instead of the cookie. Takes a
+// URL path or RedditKit's relative "api/v1/..." / "r/<sub>/api/..." path.
 BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path);
 
 // The web-session account a Reddit request carrying `bearer` belongs to (nil

@@ -322,7 +322,10 @@ static BOOL ApolloWebJSONWritePathIsRoutable(NSString *path) {
 // the legacy /r/<sub>/about/moderators.json endpoint, whose response shape is
 // completely different (old-reddit {kind, data:{children:[...]}} vs the modern
 // {moderators:{<fullname>:{...}}, moderatorIds:[...], ...}) — see
-// ApolloWebJSONFixupModeratorsResponseObject for the translation back.
+// ApolloWebJSONFixupModeratorsResponseObject for the translation back. It's
+// now the fallback: with a web bearer on hand the request goes to
+// oauth.reddit.com instead (ApolloWebJSONPathNeedsWebBearer), which keeps the
+// fields the mirror can't supply, notably invitePending.
 // Returns the subreddit name, or nil if `path` doesn't match.
 static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
     static NSRegularExpression *re;
@@ -336,26 +339,36 @@ static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
     return [path substringWithRange:[m rangeAtIndex:1]];
 }
 
-// Moderator endpoints Reddit serves to OAuth bearers only: a subreddit's
-// removal-reason list and its add/edit/delete (/api/v1/<sub>/removal_reasons
-// [/<id>]), and every /api/v1/modactions/* action (logging a reason on a
-// removed post/comment, the removal_link_message / removal_comment_message
-// notice, bulk comment removal). www.reddit.com answers all of them with its
-// 403 HTML page for ANY cookie-authed request, healthy session or not, and no
-// cookie-compatible mirror exists (verified live 2026-09-29 with invalid
-// payloads: www refuses them before validating, while oauth.reddit.com with
-// the account's web bearer gets as far as a 400). So instead of the cookie,
-// ApolloWebJSONRewriteRequest sends these to oauth.reddit.com with the
-// account's own web-session bearer. Before this, a keyless moderator's
-// Removal Reasons screen stayed blank and removing a post never offered
-// "Add Removal Reason" (#1292). Takes a URL path or RedditKit's relative
-// "api/v1/..." path, with or without a query.
+// Moderator endpoints Reddit serves to OAuth bearers only (all checked live
+// 2026-09-29, the writes with targets Reddit had to refuse):
+//   • a subreddit's removal reasons and their add/edit/delete
+//     (/api/v1/<sub>/removal_reasons[/<id>]) and every /api/v1/modactions/*
+//     action (logging a reason, the removal notice, bulk comment removal);
+//     www answers each with its 403 HTML page for ANY cookie request (#1292);
+//   • the user lists behind Approved Submitters, Ban Users, Mute Users and
+//     Moderators (/api/v1/<sub>/contributors, /banned, /muted, /moderators,
+//     /moderators_invited, including their single-user lookups) and declining
+//     a mod invite (/api/v1/<sub>/decline_mod_invite); www answers these with
+//     a 403 JSON "Forbidden" / USER_REQUIRED;
+//   • banning and inviting a moderator (POST /r/<sub>/api/friend) and
+//     accepting a mod invite (POST /r/<sub>/api/accept_moderator_invite): www
+//     404s them, and the cookie transport never routed writes outside /api/,
+//     so they went to oauth.reddit.com on the placeholder bearer and drew a
+//     403 that RedditKit reports as success.
+// oauth.reddit.com accepts the account's own web bearer for them (a 200, or
+// Reddit's own validation error for the refused targets; deleting a removal
+// reason couldn't be confirmed that way). So instead of the cookie,
+// ApolloWebJSONRewriteRequest sends these to oauth.reddit.com with that
+// bearer. Takes a URL path or RedditKit's relative "api/v1/..." /
+// "r/<sub>/api/..." path, with or without a query.
 BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
     if (path.length == 0) return NO;
     static NSRegularExpression *re;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        re = [NSRegularExpression regularExpressionWithPattern:@"^/?api/v1/(modactions/[^/?]+|[^/?]+/removal_reasons(/[^/?]+)?)/?(\\?|$)"
+        re = [NSRegularExpression regularExpressionWithPattern:
+              @"^/?(api/v1/(modactions/[^/?]+|[^/?]+/(removal_reasons(/[^/?]+)?|contributors|banned|muted|moderators|moderators_invited|decline_mod_invite))"
+               "|r/[^/?]+/api/(friend|accept_moderator_invite))/?(\\?|$)"
                                                          options:NSRegularExpressionCaseInsensitive error:NULL];
     });
     return [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] != nil;
@@ -468,8 +481,11 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     // queue and must not block on a mint, so it only uses a bearer that's
     // already on hand — the RedditKit request hook (ApolloWebJSONIdentity.xm)
     // mints one before sending. With none (mint failed, or held off after a
-    // 401) the request falls through to the cookie path below, which Reddit
-    // refuses exactly as it always has.
+    // 401) the request falls through to the handling below, as before. Reddit
+    // refuses most of these there: the /api/ ones go to www with the cookie,
+    // and the /r/<sub>/api/ writes stay on oauth with the placeholder bearer.
+    // /moderators keeps its legacy mirror and /moderators_invited its empty
+    // stub.
     if (ApolloWebJSONPathNeedsWebBearer(path)) {
         NSString *webBearer = ApolloWebJSONReadyWebBearer(sessionUsername);
         NSURLRequest *oauthRequest = webBearer.length > 0
@@ -479,7 +495,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
                       method, path, sessionUsername);
             return oauthRequest;
         }
-        ApolloLog(@"[WebJSON] No web bearer ready for %@ %@ (u/%@) — sending it with the cookie, which Reddit refuses",
+        ApolloLog(@"[WebJSON] No web bearer ready for %@ %@ (u/%@) — sending it without one",
                   method, path, sessionUsername);
     }
 
@@ -1046,9 +1062,9 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // counting them would poison the expiry streak with permanent false
     // evidence. They say nothing about the session either way — ignore them.
     if ([url.path hasPrefix:@"/api/mod/"]) return;
-    // Same for the removal-reason / modactions endpoints. They normally go out
+    // Same for the other OAuth-only moderator endpoints. They normally go out
     // with a web bearer instead; one only reaches www with the cookie when no
-    // bearer could be minted, and then its 403 is guaranteed.
+    // bearer could be minted, and then its refusal is guaranteed.
     if (ApolloWebJSONPathNeedsWebBearer(url.path)) return;
 
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
@@ -1581,16 +1597,18 @@ id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
     return nil;
 }
 
-#pragma mark - Invited-moderators stub (no cookie-compatible equivalent exists)
+#pragma mark - Invited-moderators stub (fallback when no web bearer is on hand)
 
 // Unlike /api/v1/<sub>/moderators (which has the legacy /r/<sub>/about/
 // moderators.json mirror above), GET /api/v1/<sub>/moderators_invited is
 // OAuth2-only with NO cookie-compatible equivalent at all — old-reddit's web
 // surface never exposed pending moderator invitations as a separate JSON
-// resource. The request is left unrewritten (still hits oauth.reddit.com with
-// our synthetic dummy bearer) and predictably 403s; rather than let that
-// surface as a visible error, the response-serializer hook overrides the
-// result to an empty list once a cookie session is active. Apollo's
+// resource. With a web bearer on hand it goes to oauth.reddit.com
+// (ApolloWebJSONPathNeedsWebBearer) and its real answer passes through here
+// untouched. Without one it goes out with the cookie and www refuses it; rather
+// than let that surface as a visible error, the response-serializer hook
+// overrides the result to an empty list once a cookie session is active (the
+// same for a refused bearer request). Apollo's
 // `invitedModerators` is a loosely-typed `[[String:Any]]?` (see
 // Headers/Swift/SubredditModeratorListViewController.swift) with no required
 // fields, so an empty array decodes safely — the Mods screen just shows no
@@ -1600,7 +1618,11 @@ id ApolloWebJSONGuardListingTaskResponse(NSString *method, NSString *path,
 BOOL ApolloWebJSONShouldStubInvitedModerators(NSURLResponse *response) {
     if (!ApolloWebJSONHasUsableSession()) return NO;
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return NO;
-    NSString *path = [((NSHTTPURLResponse *)response).URL.path lowercaseString] ?: @"";
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+    // The web-bearer route's real answer is the list itself; keep it.
+    if (http.statusCode >= 200 && http.statusCode < 300 &&
+        [http.URL.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) return NO;
+    NSString *path = [http.URL.path lowercaseString] ?: @"";
     static NSRegularExpression *re;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
