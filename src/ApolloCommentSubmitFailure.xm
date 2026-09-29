@@ -147,7 +147,7 @@ static BOOL ApolloCommentFailureIsCommentPath(NSString *path) {
 @property (nonatomic, strong) NSError *error;
 @property (nonatomic, copy) NSDictionary *parent;    // t1 data, when replying to a comment
 @property (nonatomic, copy) NSDictionary *post;      // t3 data
-@property (nonatomic, assign) BOOL moderatorCommented; // a stickied moderator comment on the post (removal reason)
+@property (nonatomic, assign) BOOL moderatorCommented; // a stickied moderator removal note on the post
 @property (nonatomic, copy) NSDictionary *subreddit; // /r/<sub>/about data
 @end
 
@@ -228,16 +228,23 @@ static NSDictionary *ApolloCommentFailureFirstChild(id listing) {
 }
 
 // Removal reasons are usually posted as a stickied moderator comment. The alert only says it's
-// there (quoting it took most of a small screen); the thread shows the text.
-static BOOL ApolloCommentFailureHasModeratorComment(id commentsListing) {
+// there (quoting it took most of a small screen); the thread shows the text. Many subs also
+// sticky a standing AutoModerator comment (rules, welcome, bot notices) on every post, which is
+// not a reason, so it has to be a removal note: Reddit posts those as <Sub>-ModTeam, and mods
+// and AutoModerator word them as a removal.
+static BOOL ApolloCommentFailureHasRemovalComment(id commentsListing) {
     NSDictionary *data = [commentsListing isKindOfClass:[NSDictionary class]] ? commentsListing[@"data"] : nil;
     NSArray *children = [data isKindOfClass:[NSDictionary class]] ? data[@"children"] : nil;
     if (![children isKindOfClass:[NSArray class]]) return NO;
     for (NSDictionary *child in children) {
         NSDictionary *comment = [child isKindOfClass:[NSDictionary class]] ? child[@"data"] : nil;
         if (![comment isKindOfClass:[NSDictionary class]]) continue;
-        if (ApolloCommentFailureBool(comment, @"stickied") &&
-            [ApolloCommentFailureString(comment, @"distinguished") isEqualToString:@"moderator"]) return YES;
+        if (!ApolloCommentFailureBool(comment, @"stickied") ||
+            ![ApolloCommentFailureString(comment, @"distinguished") isEqualToString:@"moderator"]) continue;
+        NSString *author = ApolloCommentFailureString(comment, @"author");
+        NSString *body = ApolloCommentFailureString(comment, @"body");
+        if ([author hasSuffix:@"-ModTeam"] ||
+            (body && [body rangeOfString:@"remov" options:NSCaseInsensitiveSearch].location != NSNotFound)) return YES;
     }
     return NO;
 }
@@ -440,7 +447,7 @@ static void ApolloCommentFailureLookUp(id client, ApolloCommentFailureContext *c
         ApolloCommentFailureGET(client, path, @{ @"limit": @"3", @"depth": @"1", @"raw_json": @"1" }, ^(NSInteger status, id json) {
             NSArray *listings = [json isKindOfClass:[NSArray class]] ? json : nil;
             if (listings.count > 0) ctx.post = ApolloCommentFailureFirstChild(listings[0]);
-            if (listings.count > 1) ctx.moderatorCommented = ApolloCommentFailureHasModeratorComment(listings[1]);
+            if (listings.count > 1) ctx.moderatorCommented = ApolloCommentFailureHasRemovalComment(listings[1]);
             lookUpSubreddit();
         });
     };
