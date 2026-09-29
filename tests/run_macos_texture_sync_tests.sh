@@ -41,7 +41,7 @@ for test_generator in internal MobileSubstrate; do
     perl "$test_logos" -c "generator=$test_generator" \
         "$test_build_dir/MacTextureSync.xm" > "$test_build_dir/MacTextureSync.mm"
     xcrun --sdk macosx clang++ -fobjc-arc -fblocks -Wall -Wextra -Werror \
-        -DAPOLLO_VF_TEST_SUBSTRATE="$test_substrate" -framework Foundation \
+        -DAPOLLO_VF_TEST_SUBSTRATE="$test_substrate" -framework Foundation -framework CoreGraphics \
         -I "$test_build_dir" "$test_build_dir/MacTextureSync.mm" \
         -o "$test_build_dir/macos_texture_sync_tests"
     for test_mode in ios native catalyst; do

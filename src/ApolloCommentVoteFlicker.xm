@@ -134,17 +134,43 @@ static void ApolloVFFlushTrackedMacDisplayLeaves(UIWindowScene *focusScene) {
             UIView *view = [node respondsToSelector:@selector(view)] ? node.view : nil;
             UIWindow *window = view.window;
             if (!window || (focusScene && window.windowScene != focusScene)) continue;
+            if (view.hidden || view.alpha < 0.01 || CGRectIsEmpty(view.bounds)) continue;
+            CGRect frameInWindow = [view convertRect:view.bounds toView:window];
+            if (!CGRectIntersectsRect(window.bounds, frameInWindow)) continue;
             if (![node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) continue;
             [node recursivelyEnsureDisplaySynchronously:YES];
         } @catch (__unused NSException *e) {}
     }
 }
 
+static NSUInteger sApolloVFMacFocusGeneration = 0;
+static CFAbsoluteTime sApolloVFMacLastFocusTime = 0;
+static __weak UIWindowScene *sApolloVFMacLastFocusScene = nil;
+
 static void ApolloVFScheduleMacFocusFlush(UIWindowScene *focusScene) {
-    ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
-    dispatch_async(dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(focusScene); });
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    BOOL sameTransition = sApolloVFMacLastFocusTime > 0 &&
+        now - sApolloVFMacLastFocusTime <= 0.05 &&
+        (!focusScene || !sApolloVFMacLastFocusScene || focusScene == sApolloVFMacLastFocusScene);
+    NSUInteger generation = ++sApolloVFMacFocusGeneration;
+    sApolloVFMacLastFocusTime = now;
+    sApolloVFMacLastFocusScene = focusScene;
+
+    // Catalyst can post scene, application, and window notifications for the
+    // same focus boundary. Keep one immediate/next/late sequence instead of
+    // multiplying synchronous work for duplicate notifications.
+    if (!sameTransition) ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (generation == sApolloVFMacFocusGeneration) {
+            ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+        }
+    });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(150 * NSEC_PER_MSEC)),
-                   dispatch_get_main_queue(), ^{ ApolloVFFlushTrackedMacDisplayLeaves(focusScene); });
+                   dispatch_get_main_queue(), ^{
+        if (generation == sApolloVFMacFocusGeneration) {
+            ApolloVFFlushTrackedMacDisplayLeaves(focusScene);
+        }
+    });
 }
 
 %group ApolloVFMacTextureSync

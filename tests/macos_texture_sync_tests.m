@@ -40,15 +40,35 @@ NSNotificationName const UIWindowDidBecomeKeyNotification = @"ApolloVFTestWindow
 @interface UIWindowScene : UIScene @end
 @implementation UIWindowScene @end
 
-@interface UIWindow : NSObject
-@property (nonatomic, strong) UIWindowScene *windowScene;
-@end
-@implementation UIWindow @end
+@class UIWindow;
 
 @interface UIView : NSObject
 @property (nonatomic, strong) UIWindow *window;
+@property (nonatomic) BOOL hidden;
+@property (nonatomic) CGFloat alpha;
+@property (nonatomic) CGRect bounds;
+@property (nonatomic) CGRect convertedFrame;
+- (CGRect)convertRect:(CGRect)rect toView:(UIView *)view;
 @end
-@implementation UIView @end
+@implementation UIView
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _alpha = 1.0;
+        _bounds = CGRectMake(0, 0, 10, 10);
+        _convertedFrame = _bounds;
+    }
+    return self;
+}
+- (CGRect)convertRect:(__unused CGRect)rect toView:(__unused UIView *)view {
+    return self.convertedFrame;
+}
+@end
+
+@interface UIWindow : UIView
+@property (nonatomic, strong) UIWindowScene *windowScene;
+@end
+@implementation UIWindow @end
 
 @interface ASDisplayNode : NSObject {
     BOOL _displaysAsynchronously;
@@ -139,21 +159,26 @@ int main(int argc, const char *argv[]) {
         UIWindowScene *primaryScene = [UIWindowScene new];
         UIWindow *primaryWindow = [UIWindow new];
         primaryWindow.windowScene = primaryScene;
+        primaryWindow.bounds = CGRectMake(0, 0, 100, 100);
         UIWindowScene *secondaryScene = [UIWindowScene new];
         UIWindow *secondaryWindow = [UIWindow new];
         secondaryWindow.windowScene = secondaryScene;
+        secondaryWindow.bounds = CGRectMake(0, 0, 100, 100);
 
         ASTextNode *text = [ASTextNode new];
         ASTextNode2 *text2 = [ASTextNode2 new];
         ASImageNode *image = [ASImageNode new];
         ASTextNode *departed = [ASTextNode new];
         ASTextNode *offscreen = [ASTextNode new];
+        ASTextNode *preloadedOffscreen = [ASTextNode new];
         ASTextNode *unloaded = [ASTextNode new];
         ASTextNode *otherScene = [ASTextNode new];
         ApolloVFPlainNode *plain = [ApolloVFPlainNode new];
         for (ASDisplayNode *node in @[ text, text2, image, departed, plain ]) {
             node.view.window = primaryWindow;
         }
+        preloadedOffscreen.view.window = primaryWindow;
+        preloadedOffscreen.view.convertedFrame = CGRectMake(200, 200, 10, 10);
         unloaded.nodeLoaded = NO;
         otherScene.view.window = secondaryWindow;
 
@@ -169,6 +194,7 @@ int main(int argc, const char *argv[]) {
         [departed didEnterHierarchy];
         [departed didExitHierarchy];
         [offscreen didEnterHierarchy];
+        [preloadedOffscreen didEnterHierarchy];
         [unloaded didEnterHierarchy];
         [otherScene didEnterHierarchy];
         [plain didEnterHierarchy];
@@ -206,7 +232,9 @@ int main(int argc, const char *argv[]) {
             Require(departed.synchronousFlushCount == 0,
                     @"Mac target leaf is removed when it exits the hierarchy");
             Require(offscreen.synchronousFlushCount == 0,
-                    @"Mac off-screen target leaf is never forced to display");
+                    @"Mac detached target leaf is never forced to display");
+            Require(preloadedOffscreen.synchronousFlushCount == 0,
+                    @"Mac attached off-screen preload leaf is never forced to display");
             Require(unloaded.synchronousFlushCount == 0,
                     @"Mac unloaded target leaf is never forced to display");
             Require(otherScene.synchronousFlushCount == 6,
@@ -216,10 +244,24 @@ int main(int argc, const char *argv[]) {
         } else {
             Require(text.synchronousFlushCount == 0 && text2.synchronousFlushCount == 0 &&
                     image.synchronousFlushCount == 0 && departed.synchronousFlushCount == 0 &&
-                    offscreen.synchronousFlushCount == 0 && unloaded.synchronousFlushCount == 0 &&
+                    offscreen.synchronousFlushCount == 0 &&
+                    preloadedOffscreen.synchronousFlushCount == 0 && unloaded.synchronousFlushCount == 0 &&
                     otherScene.synchronousFlushCount == 0 && plain.synchronousFlushCount == 0,
                     @"iOS path installs no tracker and performs no focus flushes");
             Require(sDiagnosticCount == 0, @"non-Mac path emits no Mac diagnostic");
+        }
+
+        if (runsOnMac) {
+            NSUInteger before = text.synchronousFlushCount;
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UISceneWillDeactivateNotification object:primaryScene];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UIApplicationWillResignActiveNotification object:nil];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:UIWindowDidResignKeyNotification object:primaryWindow];
+            DrainFocusFlushes();
+            Require(text.synchronousFlushCount == before + 3,
+                    @"duplicate notifications coalesce into one staged focus sequence");
         }
     }
     return 0;
