@@ -25,9 +25,7 @@ liquid-glass/scripts/rebuilt/
 liquid-glass/scripts/cartool
 
 AsyncDisplayKit.framework/
-docs/*
-!docs/siri-spotlight-task-list.md
-!docs/siri-ai-gap-assessment.md
+docs/
 iPhone18-3_26.1_23B85_Restore/
 iOS26-Runtime-Headers/
 
@@ -38,7 +36,7 @@ widgets/build-*/
 widgets/*.xcodeproj/
 widgets/Info.plist
 
-# Optional Siri packaging proof — framework only; no standalone app target.
+# Optional iOS 27 Siri framework (built by scripts/inject-siri-proof.sh).
 siri/build/
 siri/build-*/
 siri/*.xcodeproj/
@@ -50,3 +48,6 @@ siri/*.xcodeproj/
 .sim[0-9]*/
 widgets/build/
 /.agents
+
+# Local Cloudflare worker dependencies
+workers/**/node_modules/

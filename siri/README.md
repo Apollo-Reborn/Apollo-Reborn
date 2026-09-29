@@ -1,218 +1,77 @@
-# Siri and Spotlight integration inside Apollo
+# Siri & Spotlight (iOS 27, optional)
 
-This is an opt-in iOS 27 proof embedded in the **real Apollo application**.
-There is no standalone app target, replacement executable, or new extension.
-The normal Theos build and its iOS 14 deployment target are unchanged.
-
-For the 2026-09-25 review against shipping Siri AI and the merged upstream code,
-see the [gap assessment and implementation sequence](../docs/siri-ai-gap-assessment.md).
-
-**Current discovery test (2026-09-25):** the five App Shortcut phrase registrations
-are disabled at the user's request. The provider publishes an empty catalogue;
-App Intent type names, schema conformances, entity IDs, and snippet implementations
-are retained. Packaging removes this proof's old phrase assets and verifies zero
-`autoShortcuts` in both host and framework metadata. The next device test is natural
-Siri invocation and Spotlight, not triggering a registered shortcut phrase.
-Ordinary intent actions can still appear in the Shortcuts editor; this does not
-mean the removed phrase registrations have returned.
-
-**2026-09-28:** aligned with Apple's documented Siri AI model — see the
-[best-practice section](../docs/siri-ai-gap-assessment.md#2026-09-28-best-practice-alignment).
-In-Siri results come from the semantic index, not from the custom card action;
-the fixed proof no longer competes as a `.system.open` subreddit action.
-A follow-up [sample-code deep dive](../docs/siri-ai-gap-assessment.md#2026-09-28-deep-dive-apple-sample-code-patterns)
-added comment entities, memory-only session context for opened posts/loaded
-comments, Spotlight client-state batching and UI-only donations.
-
-## Current implementation (2026-09-19)
-
-The integration now has a bounded persistent content catalogue, native search,
-interactive result snippets and an opt-in schema experiment. Progress and remaining work live in
-[`docs/siri-spotlight-task-list.md`](../docs/siri-spotlight-task-list.md).
-
-- **Search Apollo** calls Apollo's native search-bar callbacks and verifies the
-  resulting `PostsSearchResultsViewController` and query activity. It never
-  routes a search URL to a browser and refuses to dismiss a presented sheet.
-  Empty criteria explicitly prompt for a query first. This navigation action
-  does not return the separate post-result snippet.
-- **Set Apollo Content Indexing** is an explicit Shortcuts action. It defaults
-  off. Enable it before browsing; disable it to clear this integration's local
-  catalogue and post/subreddit entities. Existing legacy indexes and the original
-  fixed community proof are not erased.
-- **Apollo Content Index Status** reports current catalogue counts or a sync
-  error. **Find Indexed Apollo Posts** returns up to ten locally matching posts
-  and a compact snippet with native open buttons. **Search Apollo Posts** fetches
-  a bounded set through Apollo's authenticated client and returns the same card.
-- Apollo Reborn > Privacy > **Siri & Spotlight** provides enable/clear, counts,
-  explicit subscription refresh and the off-by-default notes-schema experiment.
-- The listing hook forwards allowlisted metadata without extra requests. Only
-  signed-in, public, non-NSFW, non-hidden, non-removed posts and public subscribed
-  communities qualify. Anonymous browsing isn't captured. This capture point
-  includes loaded listing results; it doesn't backfill all saved/read history.
-- A versioned atomic JSON catalogue holds at most 1,000 posts and 500 communities
-  for 30 days. It is excluded from backups and stores an account fingerprint,
-  not credentials. Account changes clear the previous scope.
-- Entity-backed Spotlight items have expiry dates; synchronization removes
-  evicted records and supports system-requested reindexing. Queries resolve from
-  disk after a cold launch. Post and community open actions reuse native routes.
-- Hide/delete/unsubscribe observation persists tombstones against stale responses.
-  Successful unhide/subscribe permits fresh metadata. Subscription refresh only
-  reconciles missing entries after a complete fetch (five-page / 500-item cap).
-- Visible post nodes and detail activities receive UIKit App Entity annotations.
-  These use only currently eligible catalogue records and clear on view exit or
-  privacy/account invalidation. Siri reference resolution still needs device tests.
-- **Experimental Notes Schema** projects posts into an isolated index namespace;
-  only one post representation is indexed at a time. It is read-only and declares
-  no note create/edit/delete intents. Metadata validation passes; improved Siri
-  discovery is a hypothesis, not a verified result.
-
-This is experimental. Real post and subreddit Spotlight discovery now pass
-user device testing. Lifecycle checks, unread/subscription collection and Siri
-discovery comparisons remain in the task list. Natural search currently opens
-Apollo search; natural subreddit opening incorrectly falls through to search.
-The observed onscreen summary does not yet prove entity resolution.
-
-Run the Foundation-only catalogue checks with `bash scripts/test-siri-catalog.sh`.
-All 51 assertions pass, including spoken subreddit names with spaces/hyphens.
-The updated device framework builds. Actual
-simulator Shortcuts execution verified warm Unicode/cold native search, two-row
-synthetic snippets, native Comments routing and disable/clear. The simulator-only
-fixture flag is not compiled into device builds. Live Reddit search through
-the snippet-returning action still needs device validation.
-
-## Diagnosing conversational Siri
-
-The `apollofix` / `SiriProof` log category now separates:
-
-- `Onscreen detail` binding, eligibility, view annotation and activity annotation.
-- `Query started/completed/failed` for post, subscribed subreddit and experimental
-  note queries. Completion includes a result count, never identifiers or text.
-- Open action execution, search-in-app navigation, snippet-returning search and
-  snippet view execution. Returning a snippet view is not proof Siri displayed it.
-
-Detail events use notice level and appear in Apollo Reborn > Advanced > Export
-Debug Logs. Export immediately after the test without force-quitting; this export
-reads the current process's log. Feed-row events use debug level to avoid noisy
-persistent logs during scrolling. All new messages contain only fixed stage
-labels and counts, never search terms, titles, account identifiers or body text.
-
-Keep Experimental Notes Schema off for the first run. Type an exact indexed
-subreddit name in Siri, then speak its spaced/hyphenated name. For context, open
-a short indexed text post, scroll its body offscreen and ask about that body.
-Record the time and response, then export logs. An annotation only proves we
-offered context; a query callback proves access by a system consumer (which may
-also be Spotlight or Shortcuts). Neither alone proves Siri used it in its answer,
-and cached system content can mean no fresh callback. Compare the answer against
-content unavailable in the visible screen before claiming stronger awareness.
-
-## Preserved packaging proof
-
-- One fixed `IndexedEntity`: `r/ApolloReborn`, with stable identifier
-  `reddit:subreddit:apolloreborn` and a string/entity query.
-- **Open Apollo Subreddit**: the iOS 27 `.system.open` schema, foreground
-  execution in Apollo, and an `apollo://` URL delivered through the tweak's
-  existing in-process `ApolloRouteURLThroughApp` router.
-- **Search Apollo**: the `.system.searchInApp` schema; now uses native search
-  instead of the previously browser-bound URL handler.
-- **Show Apollo Community**: returns the fixed entity, dialog, and static SwiftUI
-  snippet. Running it explicitly indexes that one public entity in Spotlight.
-- The five former App Shortcut phrase registrations are disabled. Underlying
-  intents remain available; existing user-authored shortcuts are not deleted.
-
-The fixed proof remains available independently of content indexing.
-Search requires Apollo's normal API/account setup. The fixed snippet does not.
-Diagnostics use the `apollofix` subsystem and never log search terms.
+An opt-in App Intents integration that makes Apollo content available to
+Spotlight and Siri on iOS 27. It ships as a separate `ApolloSiri.framework`
+injected into Apollo; the normal Theos build, release workflows and the
+tweak's iOS 14 floor are unchanged. Without the framework, the tweak-side
+hooks in `src/ApolloIntelligenceBridge.xm` are no-ops.
 
 ## Packaging
 
-Requires Xcode 27 with the iOS 27 SDK, XcodeGen, and the repo's usual build tools.
-First build a normal Apollo-Reborn IPA using `make package`, `patch.sh` (including
-`--fix-safari-extension`), and `build-ipa.sh` as documented in the root AGENTS.md.
-Then:
+Requires Xcode 27 (iOS 27 SDK) and XcodeGen. Build a normal Apollo Reborn IPA
+first (see the root `AGENTS.md`), then:
 
 ```sh
-scripts/inject-siri-proof.sh --ipa /path/to/Apollo-Reborn.ipa -o packages/Apollo-Siri-Proof.ipa
+scripts/inject-siri-proof.sh --ipa Apollo-Reborn.ipa -o Apollo-Siri.ipa
 ```
 
-The output must not already exist. The input IPA is preserved. The script builds
-`ApolloSiri.framework`, embeds it in Apollo, adds its Mach-O load command, and
-extracts host-level App Intents metadata using Apollo's actual bundle identifier.
-It removes old proof phrase assets and skips phrase training. This is more than
-copying framework metadata.
-The resulting **unsigned proof IPA requires iOS 27**. Sign it through the usual
-Apollo sideloading workflow, including the embedded framework.
+The output is an unsigned, iOS 27-only IPA; sign it with your usual signer.
+The script extracts App Intents metadata for the IPA's bundle ID, so set the
+final bundle ID before injecting. `--app <Apollo.app> --sdk iphonesimulator`
+injects into a prepared simulator bundle in place.
 
-Use the final intended bundle ID before running the script. A signer that changes
-Apollo's bundle ID afterward may invalidate the generated host metadata; that
-signing workflow still needs verification. Do not assume a successful framework
-load proves system discovery or that arbitrary sideloaders preserve all metadata.
+## What it does
 
-For an already prepared simulator Apollo bundle:
+Everything is off until **Settings → Apollo Reborn → Privacy → Siri &
+Spotlight → Index Apollo Content** is enabled.
 
-```sh
-scripts/inject-siri-proof.sh --app .sim-siri-proof/Payload/Apollo.app --sdk iphonesimulator
-```
+| Feature | How |
+| --- | --- |
+| Spotlight posts and subscribed communities | `IndexedEntity` types in a named index, fed from listings Apollo already loads (no extra requests); explicit subscription refresh |
+| Open from Spotlight / Siri | `.system.open` intents routed through Apollo's native URL router |
+| "Search Apollo for …" | `.system.searchInApp` intent driving Apollo's native search screen |
+| Onscreen context ("summarize this post", "send this to …") | Feed rows and the post header annotated with post entities; detail screen's `NSUserActivity` carries the open post; entities export HTTPS permalink + plain text |
+| Shortcuts actions | Search Apollo Posts / Find Indexed Apollo Posts (interactive result card), indexing on/off, status, refresh subscriptions |
 
-`--app` modifies that bundle in place; re-sign the framework and application,
-then reinstall. The normal simulator script injects the tweak through a launch
-environment variable. For system-driven cold launches, the simulator tweak must
-also be embedded/loaded in the Apollo bundle; the device IPA already loads its
-tweak normally. Keep this experiment separate from the standard `.sim` cache.
+Eligibility: signed-in account only; public, non-NSFW, non-hidden, non-removed
+posts; subscribed public communities. Bounded to 1,000 posts / 500 communities
+for 30 days, scoped to a one-way account fingerprint, excluded from backups.
+Hide/delete/unsubscribe removes content (with tombstones against stale
+listings); account change or opt-out clears the index and intent donations.
+Spotlight publication is incremental and committed with CoreSpotlight client
+state, so an index wiped by the system triggers one rebuild.
 
-## Historical packaging verification (2026-09-17)
+## Known limitations
 
-Passed:
+- Siri routes "open <subreddit>" to in-app search rather than resolving the
+  community entity, and sometimes just opens Apollo without running an action.
+  Logs show Siri never queries the subreddit entities in these cases.
+- The interactive result card only appears via Shortcuts; Siri has no schema
+  for "return search results" and may not display custom snippets.
+- Comment context (`ApolloCommentEntity`, `ApolloPostEntity.loadedComments`,
+  comment-row annotations) is implemented but comments do not currently reach
+  the session store on device, so Siri only sees on-screen comments. Diagnose
+  from the `CommentSectionController` capture in `ApolloIntelligenceBridge.xm`
+  forward.
+- No schema domain fits Reddit posts, so posts are custom entities rather than
+  schema entities; Siri's handling of them is best-effort.
 
-- Regular Theos package build, device and simulator framework compilation.
-- Apple metadata extraction recognizes the intents, entity, and App Shortcuts;
-  host phrase training uses `Apollo` and `com.christianselig.Apollo`.
-- Real Apollo launches on the iOS 27 simulator with the framework embedded.
-  Logs show `Framework loaded in Apollo` and shortcut parameter refresh.
-- Actual Apollo UI capture shows the existing Apollo Reborn settings screen.
-- ApolloSign USB installation on the real iOS 27 phone, framework loading,
-  all three actions appearing in Shortcuts, and the Show Community snippet
-  rendering (user-confirmed screenshots).
+## Layout
 
-The initial handoff-based navigation only opened Apollo: that handler expects
-`openinapollo.com` query links, not ordinary Reddit URLs. Open/search now use
-`apollo://reddit.com/…` through the existing tweak router instead (the canonical
-host is important: `www.reddit.com` can fall through to Apollo's web viewer). This
-revision's native subreddit opening and community snippet were subsequently
-confirmed by the user. The search URL still opened a browser and is now replaced
-by the native-search bridge above. Action/entity identifiers are unchanged.
+| Path | Purpose |
+| --- | --- |
+| `Sources/Content/ApolloContentCatalog.swift` | Foundation-only persistent catalogue (parsing, eligibility, tombstones, retention) |
+| `Sources/Content/ApolloSessionContext.swift` | Foundation-only memory store for opened posts and loaded comments |
+| `Sources/Content/ApolloContentService.swift` | Actor owning the catalogue, session, Spotlight publication; ObjC bridge for the tweak |
+| `Sources/Content/ApolloContentEntities.swift` | Post/subreddit/comment entities, queries, open intents |
+| `Sources/Content/ApolloOnscreenBridge.swift` | View / user-activity annotations and UI-initiated donations |
+| `Sources/SearchApolloIntent.swift`, `ApolloSiriNavigation.swift` | Native search and URL routing |
+| `CatalogTests/` | Host-side tests: `bash scripts/test-siri-catalog.sh` |
 
-Follow-up status is recorded in the task list. Native warm/cold search and
-synthetic result-card routing now pass simulator UI tests. Real-content Spotlight
-activation and Siri/Apple Intelligence behavior remain unverified. ApolloSign's
-`com.jte.ApolloReborn` setup is verified when metadata is generated for its
-final bundle ID and display name before signing.
+## Debugging
 
-`ApolloSiriTests` is a hostless XCTest **bundle**, not an application. It imports
-AppIntentsTesting and addresses the installed Apollo by bundle identifier; it does
-not link the proof framework. It compiles, but this Xcode 27 simulator rejected
-the test-service connection before Apollo execution with `transportCancelled`.
-The underlying service log says `XCTest internal client entitlement validation
-failed: com.apple.private.dt.xctest.internal-client should be true`. No private
-entitlement workaround was added. This is a test-harness blocker, not evidence
-that Apollo action execution works or fails. The existing UI automation runner
-subsequently exercised actual Shortcuts cards successfully; see the current
-task-list evidence rather than treating this historical harness failure as final.
-
-## Device acceptance checklist
-
-1. Sign/install the proof as Apollo, launch it once, and verify normal browsing.
-   Check the `apollofix` / `SiriProof` logs for framework loading.
-2. Enable content indexing, browse public posts, and refresh subscribed communities.
-   Confirm the catalogue contains real posts and communities.
-3. Find a real post and community in Spotlight and open each. Repeat after
-   terminating Apollo. Record OS version, signer, and final bundle identifier.
-4. Ask Siri naturally to search in the installed app and to open indexed content.
-   Record whether it invokes a schema intent, presents results, or fails. Do not
-   treat an existing user-authored shortcut being invoked as schema discovery.
-5. With an indexed post visible, ask about that post. Test follow-up references
-   and compare the optional Notes projection separately with the same content.
-6. The target is a natural request returning actionable results inside Siri.
-   Rendering an intent's card through diagnostic tooling alone does not pass.
-
-Continue recording actual device evidence in the task list. Real-content and
-Siri AI behaviour remain separate acceptance gates from the fixed proof.
+All diagnostics use the `apollofix` subsystem with a `[Siri]` prefix and never
+include content, IDs, search terms or account data. They appear in Apollo
+Reborn → Advanced → Export Debug Logs (export before force-quitting). A
+`Query started: …` line means a system surface asked for entities; it doesn't
+by itself prove Siri used them.

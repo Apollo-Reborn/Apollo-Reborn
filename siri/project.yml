@@ -29,25 +29,8 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
         BUILD_LIBRARY_FOR_DISTRIBUTION: NO
 
-  ApolloSiriTests:
-    # Hostless XCTest BUNDLE, not a test application. AppIntentsTesting dispatches
-    # to the already installed real Apollo by bundle identifier.
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - path: Tests
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.apolloreborn.SiriTests
-        GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: ""
-        BUNDLE_LOADER: ""
-
 schemes:
   ApolloSiri:
     build:
       targets:
         ApolloSiri: all
-    test:
-      targets:
-        - ApolloSiriTests

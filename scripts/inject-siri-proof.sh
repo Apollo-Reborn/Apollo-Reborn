@@ -52,7 +52,7 @@ if [[ -n "$IPA" ]]; then
     [[ ! -e "$OUTPUT" ]] || die "Output already exists; choose a new filename: $OUTPUT"
     [[ "$OUTPUT" == /* ]] || OUTPUT="$PWD/$OUTPUT"
     [[ -d "$(dirname "$OUTPUT")" ]] || die "Output directory does not exist."
-    WORK="$(mktemp -d -t apollo-siri-proof)"
+    WORK="$(mktemp -d -t apollo-siri)"
     unzip -q "$IPA" -d "$WORK"
     shopt -s nullglob
     APPS=("$WORK"/Payload/*.app)
@@ -64,7 +64,7 @@ fi
 APP="$(cd "$APP" && pwd)"
 PB=/usr/libexec/PlistBuddy
 EXECUTABLE="$($PB -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
-[[ "$EXECUTABLE" == Apollo && -f "$APP/Apollo" ]] || die "This proof only supports Apollo's executable."
+[[ "$EXECUTABLE" == Apollo && -f "$APP/Apollo" ]] || die "Only Apollo's executable is supported."
 BUNDLE_ID="$($PB -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
 if [[ -d "$APP/Metadata.appintents" ]]; then
     [[ "$($PB -c 'Print :ApolloSiriProofVersion' "$APP/Info.plist" 2>/dev/null || true)" == 1 ]] \
@@ -95,27 +95,14 @@ if [[ -e "$DESTINATION" ]]; then
 fi
 ditto "$PRODUCT" "$DESTINATION"
 
-# Remove phrase-training assets from earlier proof builds, including incremental
-# Xcode products. Both bundles are checked above as belonging to this integration.
-# Host metadata is regenerated below; never leave its former five shortcuts on disk.
-remove_phrase_assets() {
-    local bundle="$1"
-    rm -rf -- "$bundle/Metadata.appintents/nlu"
-    rm -f -- "$bundle/Metadata.appintents/root.ssu.yaml"
-    local asset
-    for asset in "$bundle"/*.lproj/nlu.appintents; do
-        [[ ! -d "$asset" ]] || rm -rf -- "$asset"
-    done
-}
-remove_phrase_assets "$DESTINATION"
+# Re-injecting: host metadata is regenerated below for this bundle ID.
 if [[ "$($PB -c 'Print :ApolloSiriProofVersion' "$APP/Info.plist" 2>/dev/null || true)" == 1 ]]; then
-    remove_phrase_assets "$APP"
     rm -rf -- "$APP/Metadata.appintents"
 fi
 
 # Extract again for the REAL host bundle. Copying framework metadata verbatim
 # does not establish host discovery. Keep the module name: the Swift types
-# actually live in ApolloSiri. This build intentionally supplies no phrase assets.
+# actually live in ApolloSiri. No App Shortcut phrases are defined.
 SDK_ROOT="$(xcrun --sdk "$SDK" --show-sdk-path)"
 TOOLCHAIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
 XCODE_BUILD="$(xcodebuild -version | awk '/Build version/{print $3}')"
@@ -134,8 +121,8 @@ xcrun appintentsmetadataprocessor \
     --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization
 
 [[ -s "$APP/Metadata.appintents/extract.actionsdata" ]] || die "Host metadata missing."
-# No appintentsnltrainingprocessor: the schema-only discovery experiment has no
-# App Shortcut phrases. Fail packaging if any are accidentally reintroduced.
+# No appintentsnltrainingprocessor: there are no App Shortcut phrases. Fail
+# packaging if any are accidentally introduced without that training step.
 python3 - "$APP/Metadata.appintents/extract.actionsdata" "$DESTINATION/Metadata.appintents/extract.actionsdata" <<'PY'
 import json
 import sys
@@ -151,7 +138,7 @@ PY
 python3 "$SCRIPT_DIR/macho_add_load_dylib.py" "$APP/Apollo" \
     '@executable_path/Frameworks/ApolloSiri.framework/ApolloSiri'
 
-# This is an explicit iOS 27-only proof IPA, not a change to the tweak's floor.
+# The Siri IPA variant is iOS 27-only; the tweak's own iOS 14 floor is unchanged.
 $PB -c 'Set :MinimumOSVersion 27.0' "$APP/Info.plist"
 if ! $PB -c 'Set :ApolloSiriProofVersion 1' "$APP/Info.plist" 2>/dev/null; then
     $PB -c 'Add :ApolloSiriProofVersion integer 1' "$APP/Info.plist"
@@ -162,7 +149,7 @@ done
 
 if [[ -n "$OUTPUT" ]]; then
     (cd "$WORK" && zip -qry "$OUTPUT" Payload)
-    echo "Created unsigned Apollo proof: $OUTPUT"
+    echo "Created unsigned Apollo Siri IPA: $OUTPUT"
 else
-    echo "Embedded Siri proof in $APP; re-sign before installing."
+    echo "Embedded ApolloSiri.framework in $APP; re-sign before installing."
 fi

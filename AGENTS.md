@@ -131,6 +131,10 @@ automatically; normal enabled `customRow` and hand-rolled cells must call
 `apollo_applyPrimaryTextColorToCell:` before returning. Do not mark accent,
 destructive, disabled/placeholder, or intentionally secondary/tertiary rows.
 
+### Siri & Spotlight (`siri/`, optional iOS 27)
+
+A separate `ApolloSiri.framework` (App Intents entities, Spotlight indexing, onscreen context) injected by `scripts/inject-siri-proof.sh`; not part of `make package` or release builds. Tweak-side hooks live in `src/ApolloIntelligenceBridge.xm` and no-op without the framework. **Read `siri/README.md` before changing it** (packaging, privacy scope, known Siri limitations). Host tests: `bash scripts/test-siri-catalog.sh`.
+
 ### Crash Reporting (`src/crash/`)
 
 Local-only crash recording built on KSCrash 2.5.1's **recording layer only** (`modules/KSCrash` submodule, pinned; only Core/RecordingCore/Recording compile — no sinks/filters/installations, so no transmission path exists in the binary). Every public KSCrash symbol AND ObjC class is namespaced via `-DKSCRASH_NAMESPACE=_ApolloReborn` (global CFLAG — required in every TU that imports KSCrash headers). Reports live under `Library/Caches/ApolloReborn/LocalCrashReports` (max 3, cleanup policy Never) and leave the device only through the user-reviewed report-form flow.

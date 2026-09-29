@@ -95,11 +95,7 @@ final class ApolloOnscreenBridge: NSObject {
                 switch binding.kind {
                 case .post:
                     post = try await ApolloContentService.shared.onscreenPost(binding.id, account: binding.account)
-                    let experimental = UserDefaults.standard.bool(forKey: ApolloContentBridge.schemaExperimentKey)
-                    guard let post else { annotation = EntityIdentifier(for: ApolloPostEntity.self, identifier: ""); break }
-                    annotation = experimental
-                        ? EntityIdentifier(for: ApolloExperimentalPostNote.self, identifier: ApolloExperimentalPostNote.prefix + post.id)
-                        : EntityIdentifier(for: ApolloPostEntity.self, identifier: post.id)
+                    annotation = EntityIdentifier(for: ApolloPostEntity.self, identifier: binding.id)
                 case .comment:
                     guard try await ApolloContentService.shared.onscreenComment(binding.id, account: binding.account) != nil else {
                         ApolloSiriLog.onscreen("Skipped; comment not in session context", detail: false)
@@ -156,8 +152,7 @@ final class ApolloOnscreenBridge: NSObject {
     /// Apple: donate only UI-initiated actions (not Siri/Shortcuts-driven ones),
     /// once per completed action, never per feed row.
     private static func donateOpenIfUserInitiated(_ binding: Binding, post: ApolloContentRecord?) {
-        guard !binding.donated, let post,
-              !UserDefaults.standard.bool(forKey: ApolloContentBridge.schemaExperimentKey) else { return }
+        guard !binding.donated, let post else { return }
         binding.donated = true
         guard !ApolloSiriNavigation.intentNavigationIsRecent else {
             ApolloSiriLog.onscreen("Donation skipped; navigation came from an intent", detail: true)

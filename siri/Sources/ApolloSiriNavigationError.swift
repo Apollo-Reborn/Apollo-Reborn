@@ -14,7 +14,7 @@ enum ApolloSiriNavigationError: Error, CustomLocalizedStringResourceConvertible 
         case .routerUnavailable:
             "Apollo Reborn's navigation handler is unavailable. Check that the tweak is loaded and try again."
         case .invalidRoute:
-            "This link cannot be opened by the Apollo proof."
+            "Apollo can't open this link."
         case .emptyQuery:
             "Enter something to search for in Apollo."
         case .searchUnavailable:

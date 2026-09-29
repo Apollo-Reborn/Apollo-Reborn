@@ -6,7 +6,7 @@ import Foundation
 /// snippet output. In-Siri post results come from the Spotlight semantic index
 /// (IndexedEntity + OpenApolloPostIntent), not from this action.
 @AppIntent(schema: .system.searchInApp)
-public struct SearchApolloProofIntent: ShowInAppSearchResultsIntent {
+public struct SearchApolloIntent: ShowInAppSearchResultsIntent {
     public static let title: LocalizedStringResource = "Search Apollo"
     public static let description = IntentDescription(
         "Searches Reddit in Apollo and shows the results in Apollo's search screen.",

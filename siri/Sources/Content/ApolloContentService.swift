@@ -9,18 +9,10 @@ import UIKit
 @objc(ApolloContentBridge)
 public final class ApolloContentBridge: NSObject {
     static let enabledKey = "ApolloSiriContentEnabled"
-    static let schemaExperimentKey = "ApolloSiriExperimentalNotes"
     private static var observers: [NSObjectProtocol] = []
     private static var contentEvents: Task<Void, Never>?
 
     static func accountState() -> (ready: Bool, fingerprint: String?) {
-        #if targetEnvironment(simulator)
-        // Explicit synthetic-data mode for the isolated real-Apollo simulator
-        // build. Never compiled into a device framework; no credential mocking.
-        if UserDefaults.standard.bool(forKey: "ApolloSiriSyntheticCatalogue") {
-            return (true, fingerprint("apollo-siri-synthetic"))
-        }
-        #endif
         guard let handle = dlopen(nil, RTLD_LAZY) else { return (false, nil) }
         defer { dlclose(handle) }
         guard let symbol = dlsym(handle, "ApolloSiriCurrentAccount") else { return (false, nil) }
@@ -113,15 +105,6 @@ public final class ApolloContentBridge: NSObject {
         }
     }
 
-    @objc public static func setSchemaExperiment(_ enabled: Bool, completion: @escaping @MainActor (String) -> Void) {
-        UserDefaults.standard.set(enabled, forKey: schemaExperimentKey)
-        ApolloOnscreenBridge.refresh()
-        Task {
-            do { completion(try await ApolloContentService.shared.status()) }
-            catch { completion(message(for: error)) }
-        }
-    }
-
     @objc public static func refreshSubscriptions(completion: @escaping @MainActor (String) -> Void) {
         Task {
             do {
@@ -152,18 +135,6 @@ public final class ApolloContentBridge: NSObject {
             })
         }
         refresh()
-        #if targetEnvironment(simulator)
-        if UserDefaults.standard.bool(forKey: "ApolloSiriSyntheticCatalogue"),
-           UserDefaults.standard.bool(forKey: enabledKey),
-           !UserDefaults.standard.bool(forKey: "ApolloSiriSyntheticCatalogueSeeded") {
-            Task {
-                do {
-                    try await ApolloContentService.shared.seedSyntheticCatalogue()
-                    UserDefaults.standard.set(true, forKey: "ApolloSiriSyntheticCatalogueSeeded")
-                } catch { ApolloSiriLog.event("Synthetic catalogue seed failed") }
-            }
-        }
-        #endif
     }
 
     @objc private static func refresh() {
@@ -203,7 +174,6 @@ actor ApolloContentService {
     /// succeed; a stale checkpoint only causes an idempotent re-upsert/delete.
     private struct PublishCheckpoint: Codable {
         var account: String?
-        var experimental: Bool
         var posts: [String: String]
         var subreddits: [String: String]
     }
@@ -212,30 +182,6 @@ actor ApolloContentService {
     private var syncTask: Task<Void, Error>?
     private var protectionClass: FileProtectionType? = .completeUntilFirstUserAuthentication
     private var networkRequestInProgress = false
-    private var experimentalNotes = false
-
-    func schemaExperimentEnabled() async -> Bool {
-        await MainActor.run { UserDefaults.standard.bool(forKey: ApolloContentBridge.schemaExperimentKey) }
-    }
-
-    #if targetEnvironment(simulator)
-    func seedSyntheticCatalogue() async throws {
-        try await refresh()
-        let account = try enabledAccount()
-        let rows: [[String: Any]] = [
-            ["kind": "t3", "name": "t3_siritest1", "title": "Synthetic test: café keyboards",
-             "subreddit": "apollo_test", "author": "test_author", "selftext": "A local fixture for the Apollo result card; not a Reddit response.",
-             "subreddit_type": "public", "over_18": false, "hidden": false],
-            ["kind": "t3", "name": "t3_siritest2", "title": "Synthetic test: compact keyboards",
-             "subreddit": "apollo_test", "author": "test_author", "selftext": "Second local fixture for stable identity and multiple result rows.",
-             "subreddit_type": "public", "over_18": false, "hidden": false]
-        ]
-        try store().ingest(JSONSerialization.data(withJSONObject: rows), account: account)
-        scheduleSync()
-        try await syncTask?.value
-    }
-    #endif
-
     private func store() throws -> ApolloContentCatalog {
         if let catalog { return catalog }
         let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
@@ -246,11 +192,6 @@ actor ApolloContentService {
     }
 
     func refresh() async throws {
-        let experiment = await schemaExperimentEnabled()
-        // A projection switch is detected against the persisted checkpoint in
-        // scheduleSync (full rebuild only when it really differs from Spotlight).
-        let toggled = experimentalNotes != experiment
-        experimentalNotes = experiment
         let (enabled, account) = await MainActor.run {
             (UserDefaults.standard.bool(forKey: ApolloContentBridge.enabledKey), ApolloContentBridge.accountState())
         }
@@ -266,7 +207,7 @@ actor ApolloContentService {
         }
         let count = catalog.state.records.count
         try catalog.expire()
-        if changed || toggled || resetIndex || loadCheckpoint() == nil || count != catalog.state.records.count { scheduleSync() }
+        if changed || resetIndex || loadCheckpoint() == nil || count != catalog.state.records.count { scheduleSync() }
     }
 
     func ingest(_ payload: Data, account: String) async throws {
@@ -476,8 +417,7 @@ actor ApolloContentService {
         guard catalog.state.account != nil else { return "Apollo content indexing is enabled. Sign in and browse Apollo to collect eligible public content." }
         let posts = catalog.records(kind: .post, limit: 1000).count
         let subs = catalog.records(kind: .subreddit, limit: 500).count
-        let projection = experimentalNotes ? "Experimental notes schema" : "Canonical post entities"
-        return "Apollo catalogue: \(posts) posts and \(subs) subscribed communities. \(projection). Public, non-NSFW content only; up to 30 days of loaded content."
+        return "Apollo catalogue: \(posts) posts and \(subs) subscribed communities. Public, non-NSFW content only; up to 30 days of loaded content."
     }
 
     /// System-requested full recovery (IndexedEntityQuery.reindexAllEntities).
@@ -503,7 +443,7 @@ actor ApolloContentService {
         try await Self.publish(reset: false, posts: records.filter { $0.kind == .post },
                                subreddits: records.filter { $0.kind == .subreddit },
                                removePosts: missing, removeSubreddits: missing,
-                               protectionClass: protectionClass, experimental: experimentalNotes)
+                               protectionClass: protectionClass)
         ApolloSiriLog.event("Targeted reindex completed", count: records.count)
     }
 
@@ -540,7 +480,6 @@ actor ApolloContentService {
     private static func clientState(_ checkpoint: PublishCheckpoint) -> Data {
         var hasher = SHA256()
         hasher.update(data: Data((checkpoint.account ?? "-").utf8))
-        hasher.update(data: Data([checkpoint.experimental ? 1 : 0]))
         for map in [checkpoint.posts, checkpoint.subreddits] {
             for key in map.keys.sorted() { hasher.update(data: Data("\(key)=\(map[key] ?? "")\n".utf8)) }
             hasher.update(data: Data([0]))
@@ -570,13 +509,12 @@ actor ApolloContentService {
                     dirty = false
                     let catalog = try store()
                     let account = catalog.state.enabled ? catalog.state.account : nil
-                    let experimental = experimentalNotes
                     let posts = account == nil ? [] : catalog.records(kind: .post, limit: 1000)
                     let subs = account == nil ? [] : catalog.records(kind: .subreddit, limit: 500)
                     var previous = loadCheckpoint()
-                    let reset = resetIndex || previous == nil || previous?.account != account || previous?.experimental != experimental
+                    let reset = resetIndex || previous == nil || previous?.account != account
                     resetIndex = false
-                    if reset { previous = PublishCheckpoint(account: account, experimental: experimental, posts: [:], subreddits: [:]) }
+                    if reset { previous = PublishCheckpoint(account: account, posts: [:], subreddits: [:]) }
                     guard let previous else { continue }
                     let postSigs = Dictionary(posts.map { ($0.id, Self.signature($0)) }, uniquingKeysWith: { first, _ in first })
                     let subSigs = Dictionary(subs.map { ($0.id, Self.signature($0)) }, uniquingKeysWith: { first, _ in first })
@@ -587,12 +525,12 @@ actor ApolloContentService {
                     guard reset || !changedPosts.isEmpty || !changedSubs.isEmpty || !removePosts.isEmpty || !removeSubs.isEmpty else {
                         continue
                     }
-                    let next = PublishCheckpoint(account: account, experimental: experimental,
+                    let next = PublishCheckpoint(account: account,
                                                  posts: postSigs, subreddits: subSigs)
                     do {
                         try await Self.publish(reset: reset, posts: changedPosts, subreddits: changedSubs,
                                                removePosts: Array(removePosts), removeSubreddits: Array(removeSubs),
-                                               protectionClass: protectionClass, experimental: experimental,
+                                               protectionClass: protectionClass,
                                                expectedState: reset ? nil : Self.clientState(previous),
                                                newState: Self.clientState(next))
                     } catch let error as CSIndexError where error.code == .mismatchedClientState {
@@ -621,29 +559,24 @@ actor ApolloContentService {
     private nonisolated static func publish(reset: Bool, posts: [ApolloContentRecord],
                                             subreddits: [ApolloContentRecord],
                                             removePosts: [String], removeSubreddits: [String],
-                                            protectionClass: FileProtectionType?, experimental: Bool,
+                                            protectionClass: FileProtectionType?,
                                             expectedState: Data? = nil, newState: Data? = nil) async throws {
         let index = CSSearchableIndex(name: indexName, protectionClass: protectionClass)
         // Canonical-index work is one batch whose client state commits only if
         // every call lands (Apple's CosmoTunes pattern). Targeted reindex passes
         // no state and stays outside the batch contract.
         if newState != nil { index.beginBatch() }
-        let experimentIndex = CSSearchableIndex(name: "ApolloReborn.SchemaExperiment.v1", protectionClass: protectionClass)
         if reset {
             try await index.deleteAppEntities(ofType: ApolloPostEntity.self)
             try await index.deleteAppEntities(ofType: ApolloSubredditEntity.self)
-            try await experimentIndex.deleteAppEntities(ofType: ApolloExperimentalPostNote.self)
         } else {
-            if !removePosts.isEmpty {
-                try await index.deleteAppEntities(identifiedBy: removePosts, ofType: ApolloPostEntity.self)
-                try await experimentIndex.deleteAppEntities(identifiedBy: removePosts.map { ApolloExperimentalPostNote.prefix + $0 }, ofType: ApolloExperimentalPostNote.self)
-            }
+            if !removePosts.isEmpty { try await index.deleteAppEntities(identifiedBy: removePosts, ofType: ApolloPostEntity.self) }
             if !removeSubreddits.isEmpty { try await index.deleteAppEntities(identifiedBy: removeSubreddits, ofType: ApolloSubredditEntity.self) }
         }
         // Entity-backed searchable items retain App Intents association while
         // allowing an expiry even when Apollo isn't launched again for weeks.
         // Upserting an existing identifier updates it in place (Apple).
-        let items = (experimental ? [] : posts).map { record in
+        let items = posts.map { record in
             let entity = ApolloPostEntity(record)
             let item = CSSearchableItem(appEntity: entity)
             item.expirationDate = entity.expiresAt
@@ -660,14 +593,6 @@ actor ApolloContentService {
         }
         if let newState {
             try await index.endIndexBatch(expectedClientState: expectedState, newClientState: newState)
-        }
-        if experimental, !posts.isEmpty {
-            let noteItems = posts.map { record in
-                let item = CSSearchableItem(appEntity: ApolloExperimentalPostNote(record))
-                item.expirationDate = record.observedAt.addingTimeInterval(30 * 24 * 60 * 60)
-                return item
-            }
-            try await experimentIndex.indexSearchableItems(noteItems)
         }
     }
 }

@@ -43,25 +43,18 @@
     ApolloSettingsRow *check = [ApolloSettingsRow buttonRowWithID:@"siri.check" title:@"Check Index Status"
         action:^{ [weakSelf runCommand:@"contentIndexStatusWithCompletion:" enabled:NO]; }];
     check.enabled = ^BOOL { return !weakSelf.busy; };
-    ApolloSettingsRow *experiment = [ApolloSettingsRow switchRowWithID:@"siri.experiment" title:@"Experimental Notes Schema"
-        isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySiriExperimentalNotes]; }
-        onToggle:^(UISwitch *sender) { [weakSelf runCommand:@"setSchemaExperiment:completion:" enabled:sender.isOn]; }];
-    experiment.enabled = ^BOOL { return !weakSelf.busy; };
     return @[
         [ApolloSettingsSection sectionWithTitle:@"Searchable Content"
             footer:@"Makes eligible public, non-NSFW posts loaded in Apollo and subscribed communities searchable in Spotlight and Siri. Up to 1,000 posts and 500 communities are retained for 30 days. Turning off clears this index. Private and anonymous browsing are excluded."
             rows:@[enabled, refresh]],
         [ApolloSettingsSection sectionWithTitle:@"Index Status"
             footer:@"Search Apollo opens native search. Search Apollo Posts fetches Reddit results into a Siri card; Find Indexed Apollo Posts searches this device’s catalogue. Failed hide/unsubscribe requests still remove indexed content conservatively."
-            rows:@[status, check]],
-        [ApolloSettingsSection sectionWithTitle:@"Siri Discovery Experiment"
-            footer:@"Off by default. Represents public posts as read-only text using Apple’s notes schema to compare Siri discovery. No note creation, editing or deletion is supported. Replaces the post index with a separate experimental representation; turning off restores canonical posts."
-            rows:@[experiment]]
+            rows:@[status, check]]
     ];
 }
 
 - (void)reloadControls {
-    for (NSString *identifier in @[@"siri.enabled", @"siri.refresh", @"siri.status", @"siri.check", @"siri.experiment"]) {
+    for (NSString *identifier in @[@"siri.enabled", @"siri.refresh", @"siri.status", @"siri.check"]) {
         [self reloadRowWithID:identifier];
     }
 }
@@ -85,7 +78,7 @@
         weakSelf.statusText = status;
         [weakSelf reloadControls];
     };
-    if ([name isEqualToString:@"setContentIndexing:completion:"] || [name isEqualToString:@"setSchemaExperiment:completion:"]) {
+    if ([name isEqualToString:@"setContentIndexing:completion:"]) {
         ((void (*)(id, SEL, BOOL, id))objc_msgSend)(bridge, selector, enabled, completion);
     } else {
         ((void (*)(id, SEL, id))objc_msgSend)(bridge, selector, completion);
