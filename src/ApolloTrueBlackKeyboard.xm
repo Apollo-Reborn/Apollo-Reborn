@@ -75,44 +75,6 @@ static void UpdateEdgeFill(UIVisualEffectView *backdrop, BOOL show) {
     fill.hidden = NO;
 }
 
-// What the tweak overwrote on a backdrop, so it can be put back when the mode stops applying.
-@interface ApolloTrueBlackBackdropState : NSObject
-@property (nonatomic, strong) UIVisualEffect *effect;
-@property (nonatomic, strong) UIColor *backgroundColor;
-@property (nonatomic, strong) UIColor *contentBackgroundColor;
-@property (nonatomic, strong) NSHashTable<UIView *> *hiddenSubviews;
-@end
-@implementation ApolloTrueBlackBackdropState
-@end
-
-static const void *kBackdropStateKey = &kBackdropStateKey;
-
-static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
-    BOOL applies = TrueBlackKeyboardAppliesTo(AppInterfaceStyle());
-    UpdateEdgeFill(backdrop, applies);
-    ApolloTrueBlackBackdropState *state = objc_getAssociatedObject(backdrop, kBackdropStateKey);
-
-    if (!applies) {
-        if (!state) return;
-        // Put back exactly what was changed; the retained backdrop outlives the setting.
-        backdrop.effect = state.effect;
-        backdrop.backgroundColor = state.backgroundColor;
-        backdrop.contentView.backgroundColor = state.contentBackgroundColor;
-        for (UIView *sub in state.hiddenSubviews) sub.hidden = NO;
-        objc_setAssociatedObject(backdrop, kBackdropStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        return;
-    }
-
-    if (!state) {
-        state = [[ApolloTrueBlackBackdropState alloc] init];
-        state.backgroundColor = backdrop.backgroundColor;
-        state.contentBackgroundColor = backdrop.contentView.backgroundColor;
-        state.hiddenSubviews = [NSHashTable weakObjectsHashTable];
-        objc_setAssociatedObject(backdrop, kBackdropStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    // UIKit may install a fresh effect while applied; remember the latest one.
-    if (backdrop.effect) {
-        state.effect = backdrop.effect;
 static const void *kStockLookKey = &kStockLookKey;
 
 static BOOL IsOpaqueBlack(UIColor *color) {
