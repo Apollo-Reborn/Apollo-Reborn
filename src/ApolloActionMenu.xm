@@ -860,6 +860,165 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
     }
 }
 
+#pragma mark - Touch-and-hold menus
+
+// A long-press menu from one of the customisable entry points is the object's
+// action menu when at least this many of its rows are catalogued for the
+// context: those menus carry a dozen or more, while the image, video and link
+// menus the same long press opens over media or a link carry one (Share) at
+// most — and those must stay exactly as Apollo builds them.
+static const NSUInteger kApolloActionMenuContextMenuMinimumRows = 3;
+
+static char kApolloActionMenuModeratorRowWrappedKey;
+
+typedef void (^ApolloActionMenuActionHandler)(__kindof UIAction *action);
+
+// The asset or SF Symbol name a row's icon was created from (UIImageAsset's
+// private assetName), nil when unknown. Only the author/subreddit rows depend
+// on it; every other row is matched by title first.
+static NSString *ApolloActionMenuImageName(UIImage *image) {
+    if (!image) return nil;
+    @try {
+        id name = [image.imageAsset valueForKey:@"assetName"];
+        if ([name isKindOfClass:[NSString class]] && [(NSString *)name length] > 0) return name;
+    } @catch (__unused NSException *exception) {
+    }
+    return nil;
+}
+
+static NSString *ApolloActionMenuDescribeRowItemIDs(NSArray *itemIDs) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:itemIDs.count];
+    for (id itemID in itemIDs) [parts addObject:[itemID isKindOfClass:[NSString class]] ? itemID : @"-"];
+    return [parts componentsJoinedByString:@","];
+}
+
+// The long-press menu's Moderator row opens the object's moderator menu once
+// the long-press menu has dismissed, so, like the ••• sheets' Moderator row
+// (ApolloActionMenuArmModeratorFollowUp), only the row's own handler can arm
+// that sheet's context. Wrapped once per UIAction.
+static void ApolloActionMenuWrapContextMenuModeratorRow(UIAction *action, ApolloActionMenuContext moderator) {
+    if (!action || !moderator || objc_getAssociatedObject(action, &kApolloActionMenuModeratorRowWrappedKey)) return;
+    if (![action respondsToSelector:@selector(handler)] || ![action respondsToSelector:@selector(setHandler:)]) return;
+    ApolloActionMenuActionHandler original =
+        ((ApolloActionMenuActionHandler (*)(id, SEL))objc_msgSend)(action, @selector(handler));
+    if (!original) return;
+    original = [original copy];
+    ApolloActionMenuActionHandler wrapped = ^(__kindof UIAction *selected) {
+        ApolloLog(@"[ActionMenu] long-press Moderator row — arming %@ for the sheet it opens", moderator);
+        ApolloActionMenuArmContext(moderator);
+        original(selected);
+    };
+    ((void (*)(id, SEL, id))objc_msgSend)(action, @selector(setHandler:), wrapped);
+    objc_setAssociatedObject(action, &kApolloActionMenuModeratorRowWrappedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static UIMenu *ApolloActionMenuLayoutContextMenu(UIMenu *menu, ApolloActionMenuContext context);
+
+UIMenu *ApolloActionMenuApplyLayoutToContextMenu(UIMenu *menu, NSString *context) {
+    if (![menu isKindOfClass:[UIMenu class]] || !ApolloActionMenuContextIsValid(context)) return menu;
+    // Runs inside UIKit's action provider: never let a surprise take the long
+    // press down with it — Apollo's own menu is always a fine answer.
+    @try {
+        return ApolloActionMenuLayoutContextMenu(menu, context);
+    } @catch (NSException *exception) {
+        ApolloLog(@"[ActionMenu] long-press %@ layout threw %@ — showing Apollo's menu", context, exception.name);
+        return menu;
+    }
+}
+
+static UIMenu *ApolloActionMenuLayoutContextMenu(UIMenu *menu, ApolloActionMenuContext context) {
+    ApolloActionMenuContext moderator = ApolloActionMenuModeratorContextFollowing(context);
+    BOOL customized = ApolloActionMenuContextIsCustomized(context);
+    BOOL moderatorCustomized = moderator && ApolloActionMenuContextIsCustomized(moderator);
+    // Neither menu has a saved layout: exactly Apollo's menu, not even read.
+    if (!customized && !moderatorCustomized) return menu;
+
+    // Match each row to its item (ApolloActionMenuItemIDForContextMenuRow —
+    // no Action kind travels with these UIActions). Anything that isn't a
+    // plain action, and any action the context doesn't catalogue, is NSNull.
+    NSArray<UIMenuElement *> *children = menu.children;
+    NSMutableArray *itemIDs = [NSMutableArray arrayWithCapacity:children.count];
+    NSUInteger catalogued = 0;
+    UIAction *moderatorRow = nil;
+    for (UIMenuElement *child in children) {
+        NSString *itemID = nil;
+        if ([child isKindOfClass:[UIAction class]]) {
+            NSString *imageName = ApolloActionMenuImageName(child.image);
+            itemID = ApolloActionMenuItemIDForContextMenuRow(context, child.title, imageName);
+            if (!moderatorRow && ApolloActionMenuContextMenuRowIsModerator(child.title, imageName)) {
+                moderatorRow = (UIAction *)child;
+            }
+        }
+        if (itemID) catalogued++;
+        [itemIDs addObject:itemID ?: (id)[NSNull null]];
+    }
+    if (catalogued < kApolloActionMenuContextMenuMinimumRows) {
+        ApolloLog(@"[ActionMenu] long-press %@ menu: %lu of %lu rows catalogued — an image/link menu, left alone",
+                  context, (unsigned long)catalogued, (unsigned long)children.count);
+        return menu;
+    }
+    if (moderatorRow && moderatorCustomized) ApolloActionMenuWrapContextMenuModeratorRow(moderatorRow, moderator);
+    if (!customized) return menu;
+
+    // Hidden rows go. Then, under a saved order, the catalogued rows are
+    // sorted by it and dealt back into the slots catalogued rows occupied, so
+    // a row this context doesn't know keeps Apollo's position — the comments
+    // header's Moderator row stays first and Remind Me In… last.
+    NSSet<NSString *> *hidden = ApolloActionMenuHiddenItemIDs(context);
+    NSMutableArray<UIMenuElement *> *kept = [NSMutableArray arrayWithCapacity:children.count];
+    NSMutableArray *keptIDs = [NSMutableArray arrayWithCapacity:children.count];
+    NSMutableArray<NSString *> *dropped = [NSMutableArray array];
+    for (NSUInteger i = 0; i < children.count; i++) {
+        id itemID = itemIDs[i];
+        if ([itemID isKindOfClass:[NSString class]] && [hidden containsObject:itemID]) {
+            [dropped addObject:itemID];
+            continue;
+        }
+        [kept addObject:children[i]];
+        [keptIDs addObject:itemID];
+    }
+    if (kept.count == 0) {
+        // Never an empty menu (same rule as the ••• sheet).
+        ApolloLog(@"[ActionMenu] long-press %@ menu: every row hidden — showing Apollo's menu", context);
+        return menu;
+    }
+    NSMutableArray<UIMenuElement *> *result = [kept mutableCopy];
+    if (ApolloActionMenuHasCustomOrder(context)) {
+        NSArray<NSString *> *order = ApolloActionMenuResolvedOrder(context);
+        NSMutableArray<NSNumber *> *slots = [NSMutableArray array];
+        for (NSUInteger i = 0; i < keptIDs.count; i++) {
+            if ([keptIDs[i] isKindOfClass:[NSString class]]) [slots addObject:@(i)];
+        }
+        // Stable: rows sharing an item keep Apollo's relative order.
+        NSArray<NSNumber *> *sorted = [slots sortedArrayWithOptions:NSSortStable
+                                                    usingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+            NSUInteger rankA = [order indexOfObject:keptIDs[a.unsignedIntegerValue]];
+            NSUInteger rankB = [order indexOfObject:keptIDs[b.unsignedIntegerValue]];
+            if (rankA == rankB) return NSOrderedSame;
+            return rankA < rankB ? NSOrderedAscending : NSOrderedDescending;
+        }];
+        for (NSUInteger k = 0; k < slots.count; k++) {
+            result[slots[k].unsignedIntegerValue] = kept[sorted[k].unsignedIntegerValue];
+        }
+    }
+
+    BOOL unchanged = result.count == children.count;
+    for (NSUInteger i = 0; unchanged && i < result.count; i++) {
+        if (result[i] != children[i]) unchanged = NO;
+    }
+    if (unchanged) return menu;
+
+    NSMutableArray *resultIDs = [NSMutableArray arrayWithCapacity:result.count];
+    for (UIMenuElement *element in result) {
+        [resultIDs addObject:itemIDs[[children indexOfObjectIdenticalTo:element]]];
+    }
+    // Item ids only: the author/subreddit rows' titles are user content.
+    ApolloLog(@"[ActionMenu] long-press %@ layout applied: %@ -> %@%@", context,
+              ApolloActionMenuDescribeRowItemIDs(itemIDs), ApolloActionMenuDescribeRowItemIDs(resultIDs),
+              dropped.count ? [NSString stringWithFormat:@" (hidden %@)", [dropped componentsJoinedByString:@","]] : @"");
+    return [menu menuByReplacingChildren:result];
+}
+
 #pragma mark - Legacy path: the single table/geometry owner
 
 #pragma mark - Injected-row tap dispatch

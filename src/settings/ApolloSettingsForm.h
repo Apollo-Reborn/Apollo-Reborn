@@ -145,6 +145,13 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
 
+// Runs update (a -rebuildSectionContainingRowID:…, -rebuildForm or other
+// reload) for an edit made while the list is scrolled, and keeps the rows that
+// were on screen where they were. After a reload UIKit puts the scroll
+// position back against the wrong row when the top edge of the screen sits
+// inside a section footer.
+- (void)performUpdateKeepingVisibleRowsInPlace:(void (NS_NOESCAPE ^)(void))update;
+
 // After UIKit has moved a row, update only the model snapshot. The caller's
 // buildForm must preserve section membership/counts and only reorder rows.
 - (void)refreshFormAfterRowMove;

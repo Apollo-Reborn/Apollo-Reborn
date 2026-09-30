@@ -190,6 +190,93 @@ UIKit icon renderer was stubbed for the host build.
   draws them in the moderator tint with destructive rows red, behind a shield
   bar button instead of •••; All lists their items too.
 
+## Long-press menus (2026-09-29)
+
+Touching and holding a post in a feed, the post at the top of its comments, or
+a comment opens a `UIContextMenu` whose actions are that object's ••• menu. It
+used to ignore the saved layouts entirely (every row, Apollo's order). It now
+takes the same layout as the ••• menu: Post, Post (Comments), Comment.
+
+Apollo builds these menus inside its `UIContextMenuInteractionDelegate`
+methods, not through `ActionController`. Each delegate hook in
+`ApolloNativeActionMenus.xm` (already there for the glass source view) now also
+names the context while `%orig` runs. The existing
+`+[UIContextMenuConfiguration configurationWithIdentifier:previewProvider:actionProvider:]`
+hook copies it into the configuration's action provider, which applies the
+layout before any glass styling (`ApolloActionMenuApplyLayoutToContextMenu`).
+No new hook. The statics are restored in `@finally`.
+
+| Long press | Delegate (Swift impl) | Context |
+| --- | --- | --- |
+| Post cell (every list of post cells) | `-[PostCellActionTaker contextMenuInteraction:configurationForMenuAtLocation:]` 0x10032fc1c (→ 0x1003433d8) | `post` |
+| Post at the top of its comments | `-[CommentsHeaderSectionController …]` 0x1004e735c (→ 0x1004f33a8) | `post-detail` |
+| Comment | `-[CommentSectionController …]` 0x1006051e4 (→ 0x100606f60) | `comment` |
+
+Inbox, fullscreen media, saved-category and link-card long presses are
+untouched (other delegates, no customisable menu behind them).
+
+Rows as captured on the glass sim (moderator account, Apollo 1.15.11). These
+UIActions carry no Action kind, so each row is matched to its item by what it
+shows (`ApolloActionMenuItemIDForContextMenuRow`):
+
+- Feed post: `[Moderator] Upvote|Undo Upvote, Downvote, Save, [own: Mark NSFW,
+  Mark Spoiler, Set Flair, Delete], Reply, <author>, <subreddit>, Hide, Hide
+  Posts Above, [own: Mute Notifications], Share, Share as Image…, Crosspost,
+  Give Award, Report, Remind Me In…`.
+- Comments header: the same with `Set Post Flair`, `Collapse Comments`,
+  `Share as Image` (no ellipsis) and `Select Text`, without Hide/Hide Above.
+- Comment: `[Moderator] Undo Upvote, Downvote, Save, Reply, <author>, Select
+  Text, Share, Share as Image…, Collapse to Top, Give Award, Report, Remind Me
+  In…`.
+- The author and subreddit rows are titled with the NAME, so only their icon
+  (`symbol-profile` / `symbol-subreddit`, the image asset's `assetName`)
+  identifies them. A name is never read as an action title.
+- Every other row is matched by Apollo's own Action title table
+  (`ApolloNativeActionMetadata.h`), ignoring a trailing ellipsis and case.
+  `Collapse Comments` and `Expand Comments` map to 120 and 121. The icons seen
+  on those rows are the fallback for a wording not captured yet.
+- The feed long press over an image or video, and link menus, carry 1 catalogued
+  row at most (Copy Image / Save Image / Share). A menu with fewer than 3
+  catalogued rows is left exactly as Apollo built it.
+
+Placement follows the ••• rules. No saved layout for the context (or for the
+moderator menu its Moderator row opens) means the menu isn't even read.
+Visibility-only layouts drop the hidden rows and keep Apollo's order. Under a
+saved order, the catalogued rows are sorted by it and dealt back into the slots
+catalogued rows held. A row the context doesn't catalogue keeps Apollo's
+position: the comments header's Moderator row stays first, and Remind Me In…
+stays last. A layout that would empty the menu shows Apollo's menu. An
+exception inside the layout step also falls back to Apollo's menu.
+
+The long press's Moderator row opens the object's moderator sheet after the
+context menu dismisses, like the ••• Moderator row. When that moderator menu is
+customised, the row's handler arms its context, and the sheet takes its layout.
+
+Verified in the sim (iPhone 16 Pro, iOS 26.5, `Apollo-ContextMenu-1131`),
+with before/after menus dumped by a probe dylib:
+
+- Baseline main: `post`/`post-detail` hid Upvote, yet the long press still
+  showed Upvote.
+- Glass + API key, Post `order [share, save]`, `hidden [crosspost]`: the feed
+  long press gave `share,save,upvote,downvote,reply,author,subreddit,hide,
+  hide-above,share-image,award,report,-`. The ••• sheet of the same post gave
+  kinds `15,7,3,5,12,42,44,239,241,17,122,123,2`, the same order.
+- Glass, own post: the Moderator row moved to third, as it does in the ••• menu.
+  Tapping it logged the `moderator-post` arm, and the moderator sheet applied its
+  layout (Lock first, Mark Spam hidden).
+- Glass: the comments header gave
+  `-,reply,share,downvote,save,author,…,-`. Moderator stayed first, Upvote was
+  hidden. The same result followed a cancelled edge swipe-back.
+- Glass: the comment long press applied Comment `order [reply, author]`, `hidden
+  [award, select-text]`.
+- The image long press logged `1 of 3 rows catalogued`, left alone. A comment's
+  link card (another delegate) was untouched.
+- Non-glass (vtool sdk 16.0 copy of the same shell): the classic context menu
+  and the legacy ••• sheet showed the same order.
+- Keyless (`[WebJSON] Rewrote`, u/remzerobestgirl, non-glass): layout applied.
+- No saved layouts: the final menu was identical to Apollo's (same `UIMenu`),
+  with no `[ActionMenu] long-press` log line.
+
 ## Reviewer checklist
 
 Full branch reviewed against freshly fetched upstream main `4683371` (3.7.1).

@@ -490,6 +490,12 @@ static NSString *const UDKeyGeminiAIModel     = @"GeminiAIModel";
 static NSString *const UDKeyCustomAIAPIKey    = @"CustomAIAPIKey";
 static NSString *const UDKeyCustomAIModel     = @"CustomAIModel";
 static NSString *const UDKeyCustomAIBaseURL   = @"CustomAIBaseURL"; // OpenAI-compatible base URL, e.g. https://api.example.com/v1
+// Extra HTTP headers sent with every "custom" provider request, for services
+// that need more than the Bearer key (OpenCode Go rejects requests without
+// x-opencode-session since 2026-09-06). An ordered array of
+// @{@"name": NSString, @"value": NSString}; unset = none. Validated on load and
+// on save by ApolloAICloudSanitizedCustomHeaders (ApolloAICloudBridge.h).
+static NSString *const UDKeyCustomAIHeaders   = @"CustomAIHeaders";
 
 // Picture-in-Picture: floating in-app mini-player for comments-page videos.
 static NSString *const UDKeyPictureInPictureEnabled = @"PictureInPictureEnabled";       // master switch

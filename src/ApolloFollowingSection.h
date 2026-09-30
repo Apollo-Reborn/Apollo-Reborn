@@ -38,6 +38,40 @@ void ApolloFollowingAnimateNextRemoval(UITableView *tableView, NSIndexPath *visi
 // "MULTIREDDITS" / "MODERATOR") or @"" for any other native section.
 NSString *ApolloFollowingCanonicalTitleForNativeSection(UITableView *tableView, NSInteger nativeSection);
 
+// Visible-space twin of the bridge above, for code that walks the table itself
+// (-visibleCells / -indexPathForCell:) and so holds VISIBLE section numbers that
+// never passed through this module's translating hooks. Returns nil when the
+// remap is not engaged (the caller's header walk already speaks visible space);
+// otherwise the canonical title of the section on screen: "FAVORITES" /
+// "MULTIREDDITS" / "MODERATOR" / "FOLLOWING", or @"" for any other section.
+NSString *ApolloFollowingCanonicalTitleForVisibleSection(UITableView *tableView, NSInteger visibleSection);
+
+// YES while the list is in a row's swipe-to-delete rather than Edit mode. A
+// swipe makes UIKit report -isEditing for the whole table (only the swiped row
+// is set up for editing), and Apollo's tableView:willBeginEditingRowAtIndexPath:
+// calls the list's setEditing:YES animated:YES, so Edit-mode decorations (the
+// moderator hide controls, the feed-shortcut remove badges) must check this
+// before showing. Already YES inside that setEditing: call; NO again once
+// didEndEditingRowAtIndexPath: has run.
+BOOL ApolloSubredditListIsSwipeEditing(UITableView *tableView);
+
+// Section-header half of the list's snapshot-then-animate updates (the Edit
+// toggle, the confirmed removal), in three steps. `offsetDelta` is always the
+// table's contentOffset change since the snapshot. See the .xm for why headers
+// need all three.
+//  1. Before the update: snapshot the on-screen header frames, keyed by title.
+//  2. Right after the update: park each header visually at its old place (and
+//     hide newly visible ones) without touching the view itself.
+//  3. Immediately before -startAnimation: hand the offset to the animator —
+//     each header gets the transform/alpha the animator returns to its
+//     original, recorded in `restores`. Pass nil `restores` when the animator
+//     will not start (superseded): the parking is simply dropped.
+NSDictionary<NSString *, NSValue *> *ApolloSubredditListSectionHeaderFrames(UITableView *tableView);
+void ApolloSubredditListParkSectionHeaders(UITableView *tableView, NSDictionary<NSString *, NSValue *> *oldFrames,
+                                           CGFloat offsetDelta);
+void ApolloSubredditListStartSectionHeaders(UITableView *tableView, NSDictionary<NSString *, NSValue *> *oldFrames,
+                                            CGFloat offsetDelta, NSMutableArray<NSArray *> *restores);
+
 // Subreddit name backing a VISIBLE row of the Subreddits list, from Apollo's
 // model (FavoriteSubreddits / sectionedSubreddits). Translates through the
 // Following remap when that remap is engaged. nil for rows without a

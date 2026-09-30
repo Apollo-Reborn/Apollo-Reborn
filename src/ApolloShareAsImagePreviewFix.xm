@@ -252,7 +252,8 @@ static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
     __weak __typeof__(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        __typeof__(self) strongSelf = weakSelf;
+        // __strong is load-bearing: in a hook, __typeof__(self) is __unsafe_unretained (owns nothing).
+        __strong __typeof__(self) strongSelf = weakSelf;
         if (strongSelf) ApolloSIPFPollSnapshot((UIViewController *)strongSelf, 0, -1.0, 0);
     });
     ApolloLog(@"[SharePreviewFix] armed snapshot poll");
@@ -275,7 +276,7 @@ static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
                                                NSArray *returnedItems, NSError *activityError) {
                 if (existing) existing(activityType, completed, returnedItems, activityError);
                 if (!completed) return; // cancelled — keep the preview up
-                __typeof__(self) strongSelf = weakSelf;
+                __strong __typeof__(self) strongSelf = weakSelf;
                 UIViewController *previewVC = (UIViewController *)strongSelf;
                 if (previewVC.viewIfLoaded.window) {
                     [previewVC dismissViewControllerAnimated:YES completion:nil];

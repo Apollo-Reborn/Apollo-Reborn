@@ -2148,13 +2148,72 @@ static NSMutableDictionary<NSString *, NSDictionary *> *ApolloUserFlairWebCurren
     return cache;
 }
 
+// Keyed per (account, subreddit) so one account's flair never shows as another's.
+static NSString *ApolloUserFlairWebCurrentKey(NSString *username, NSString *subreddit) {
+    if (username.length == 0 || subreddit.length == 0) return nil;
+    return [NSString stringWithFormat:@"%@|%@", username.lowercaseString, subreddit.lowercaseString];
+}
+
 static NSDictionary *ApolloUserFlairWebCurrentForSubreddit(NSString *subreddit) {
-    if (subreddit.length == 0) return nil;
+    NSString *key = ApolloUserFlairWebCurrentKey(ApolloActiveWebSessionUsername(), subreddit);
+    if (!key) return nil;
     NSDictionary *current = nil;
     @synchronized (ApolloUserFlairWebCurrentCache()) {
-        current = ApolloUserFlairWebCurrentCache()[subreddit.lowercaseString];
+        current = ApolloUserFlairWebCurrentCache()[key];
     }
     return current;
+}
+
+// Old reddit's subreddit page (our only source for the current flair) can keep
+// serving the previous flair briefly after a save; within this window the saved
+// value wins.
+static const NSTimeInterval kApolloUserFlairWebRecentSaveWindow = 180.0;
+
+static NSMutableDictionary<NSString *, NSDictionary *> *ApolloUserFlairWebRecentSaves(void) {
+    static NSMutableDictionary *saves;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ saves = [NSMutableDictionary dictionary]; });
+    return saves;
+}
+
+static NSDictionary *ApolloUserFlairWebRecentSave(NSString *key) {
+    if (!key) return nil;
+    @synchronized (ApolloUserFlairWebRecentSaves()) {
+        NSDictionary *save = ApolloUserFlairWebRecentSaves()[key];
+        NSDate *at = save[@"savedAt"];
+        if ([at isKindOfClass:[NSDate class]] && -[at timeIntervalSinceNow] < kApolloUserFlairWebRecentSaveWindow) return save;
+        [ApolloUserFlairWebRecentSaves() removeObjectForKey:key];
+        return nil;
+    }
+}
+
+// Records a successful keyless /api/selectflair or /api/setflairenabled in the
+// current-flair cache (the API-key path gets this from flairselector `current`).
+static void ApolloUserFlairWebNoteSaved(NSString *subreddit, NSString *text, NSString *templateID, NSNumber *enabled) {
+    NSString *key = ApolloUserFlairWebCurrentKey(ApolloActiveWebSessionUsername(), subreddit);
+    if (!key) return;
+    NSDictionary *previousSave = ApolloUserFlairWebRecentSave(key);
+    NSMutableDictionary *save = [previousSave mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (text) save[@"text"] = text;
+    if (templateID) save[@"templateID"] = templateID;
+    if (enabled) save[@"enabled"] = enabled;
+    save[@"savedAt"] = [NSDate date];
+    @synchronized (ApolloUserFlairWebRecentSaves()) {
+        ApolloUserFlairWebRecentSaves()[key] = [save copy];
+    }
+    @synchronized (ApolloUserFlairWebCurrentCache()) {
+        NSMutableDictionary *current = [ApolloUserFlairWebCurrentCache()[key] mutableCopy] ?: [@{
+            @"known": @YES, @"text": @"", @"cssClass": @"", @"enabled": @YES, @"templateID": @"",
+        } mutableCopy];
+        if (text) { current[@"text"] = text; current[@"cssClass"] = @""; }
+        if (templateID) current[@"templateID"] = templateID;
+        if (enabled) current[@"enabled"] = enabled;
+        ApolloUserFlairWebCurrentCache()[key] = [current copy];
+    }
+    ApolloLog(@"[UserFlair][Web] recorded saved flair for r/%@ (text=%@ template=%@ enabled=%@)", subreddit,
+              text ? (text.length ? @"present" : @"empty") : @"unchanged",
+              templateID ? (templateID.length ? @"set" : @"none") : @"unchanged",
+              enabled ? enabled.stringValue : @"unchanged");
 }
 
 // A signed-in old-Reddit subreddit page renders the user's applied flair in the
@@ -2198,19 +2257,30 @@ static NSDictionary *ApolloUserFlairWebCurrentFromHTML(NSData *data, NSString *u
     if (taglineStart.location == NSNotFound) return nil;
     NSString *taglinePrefix = [beforeUser substringFromIndex:taglineStart.location];
 
+    // old.reddit puts the flair span after the author link, up to the tagline's
+    // </div>; the before-the-link search stays as a fallback.
+    NSString *afterUser = [titlebox substringFromIndex:NSMaxRange(userAnchor.range)];
+    NSRange taglineEnd = [afterUser rangeOfString:@"</div>" options:NSCaseInsensitiveSearch];
+    if (taglineEnd.location != NSNotFound) afterUser = [afterUser substringToIndex:taglineEnd.location];
+
     NSString *currentText = @"";
     NSString *currentCSSClass = @"";
     NSRegularExpression *spanRegex = [NSRegularExpression regularExpressionWithPattern:@"<span\\b([^>]*)>"
         options:NSRegularExpressionCaseInsensitive error:NULL];
-    for (NSTextCheckingResult *match in [spanRegex matchesInString:taglinePrefix options:0
-                                                              range:NSMakeRange(0, taglinePrefix.length)]) {
-        if (match.numberOfRanges < 2) continue;
-        NSString *attrs = [taglinePrefix substringWithRange:[match rangeAtIndex:1]];
-        NSString *classAttribute = ApolloUserFlairHTMLAttribute(attrs, @"class") ?: @"";
-        if (![ApolloUserFlairHTMLClassSet(classAttribute) containsObject:@"flair"]) continue;
-        currentText = ApolloUserFlairDecodeHTML(ApolloUserFlairHTMLAttribute(attrs, @"title")) ?: @"";
-        currentCSSClass = ApolloUserFlairCSSClassFromClassAttribute(classAttribute) ?: @"";
-        break;
+    BOOL foundFlairSpan = NO;
+    for (NSString *segment in @[afterUser, taglinePrefix]) {
+        for (NSTextCheckingResult *match in [spanRegex matchesInString:segment options:0
+                                                                  range:NSMakeRange(0, segment.length)]) {
+            if (match.numberOfRanges < 2) continue;
+            NSString *attrs = [segment substringWithRange:[match rangeAtIndex:1]];
+            NSString *classAttribute = ApolloUserFlairHTMLAttribute(attrs, @"class") ?: @"";
+            if (![ApolloUserFlairHTMLClassSet(classAttribute) containsObject:@"flair"]) continue;
+            currentText = ApolloUserFlairDecodeHTML(ApolloUserFlairHTMLAttribute(attrs, @"title")) ?: @"";
+            currentCSSClass = ApolloUserFlairCSSClassFromClassAttribute(classAttribute) ?: @"";
+            foundFlairSpan = YES;
+            break;
+        }
+        if (foundFlairSpan) break;
     }
 
     BOOL enabled = NO;
@@ -2236,13 +2306,34 @@ static NSDictionary *ApolloUserFlairWebCurrentFromHTML(NSData *data, NSString *u
 }
 
 static NSDictionary *ApolloUserFlairMatchWebCurrent(NSDictionary *current, NSArray *options,
-                                                     NSString *subreddit) {
+                                                     NSString *subreddit, NSString *username) {
     if (![current[@"known"] boolValue]) return current;
+    NSString *cacheKey = ApolloUserFlairWebCurrentKey(username, subreddit);
+    NSDictionary *recentSave = ApolloUserFlairWebRecentSave(cacheKey);
+    if (recentSave) {
+        // A recent save is newer than the page; trust it.
+        NSMutableDictionary *merged = [current mutableCopy];
+        if ([recentSave[@"text"] isKindOfClass:[NSString class]]) {
+            merged[@"text"] = recentSave[@"text"];
+            merged[@"cssClass"] = @"";
+        }
+        if ([recentSave[@"enabled"] isKindOfClass:[NSNumber class]]) merged[@"enabled"] = recentSave[@"enabled"];
+        current = merged;
+    }
+    NSString *savedTemplateID = [recentSave[@"templateID"] isKindOfClass:[NSString class]] ? recentSave[@"templateID"] : nil;
     NSString *currentText = [current[@"text"] isKindOfClass:[NSString class]] ? current[@"text"] : @"";
     NSString *currentCSS = [current[@"cssClass"] isKindOfClass:[NSString class]] ? current[@"cssClass"] : @"";
     id matchedOption = nil;
 
-    if (currentCSS.length > 0) {
+    if (savedTemplateID.length > 0) {
+        for (id option in options) {
+            if ([ApolloUserFlairOptionIdentifier(option) isEqualToString:savedTemplateID]) {
+                matchedOption = option;
+                break;
+            }
+        }
+    }
+    if (!matchedOption && currentCSS.length > 0) {
         for (id option in options) {
             NSString *css = objc_getAssociatedObject(option, &kApolloUserFlairWebCSSClassKey);
             if ([css isKindOfClass:[NSString class]] && [css caseInsensitiveCompare:currentCSS] == NSOrderedSame) {
@@ -2261,6 +2352,41 @@ static NSDictionary *ApolloUserFlairMatchWebCurrent(NSDictionary *current, NSArr
             }
         }
     }
+    // An editable template's text is a placeholder ("SW:xxx Dose: xxmg") but the page
+    // has the filled-in text. Treat runs of 2+ x's in editable templates as wildcards;
+    // match only when exactly one template fits.
+    if (!matchedOption && currentText.length > 0) {
+        NSRegularExpression *placeholderRun = [NSRegularExpression regularExpressionWithPattern:@"[xX]{2,}" options:0 error:NULL];
+        id candidate = nil;
+        NSUInteger candidateCount = 0;
+        for (id option in options) {
+            BOOL editableKnown = NO;
+            if (!ApolloUserFlairOptionIsEditable(option, &editableKnown) || !editableKnown) continue;
+            NSString *templateText = ApolloUserFlairObjectString(option,
+                @[@"textRepresentation", @"text", @"flairText", @"flair_text", @"plainText"]);
+            if (![templateText isKindOfClass:[NSString class]] || templateText.length == 0) continue;
+            NSArray<NSTextCheckingResult *> *runs = [placeholderRun matchesInString:templateText options:0
+                                                                              range:NSMakeRange(0, templateText.length)];
+            if (runs.count == 0) continue;
+            NSMutableString *pattern = [NSMutableString stringWithString:@"^"];
+            NSUInteger cursor = 0;
+            for (NSTextCheckingResult *run in runs) {
+                NSString *literal = [templateText substringWithRange:NSMakeRange(cursor, run.range.location - cursor)];
+                [pattern appendString:[NSRegularExpression escapedPatternForString:literal]];
+                [pattern appendString:@".+?"];
+                cursor = NSMaxRange(run.range);
+            }
+            [pattern appendString:[NSRegularExpression escapedPatternForString:[templateText substringFromIndex:cursor]]];
+            [pattern appendString:@"$"];
+            NSRegularExpression *fit = [NSRegularExpression regularExpressionWithPattern:pattern
+                options:NSRegularExpressionCaseInsensitive error:NULL];
+            if (fit && [fit firstMatchInString:currentText options:0 range:NSMakeRange(0, currentText.length)]) {
+                candidate = option;
+                candidateCount++;
+            }
+        }
+        if (candidateCount == 1) matchedOption = candidate;
+    }
     // Some communities expose a single editable template whose selector text is
     // the template default while the sidebar contains the user's customized text.
     // With only one possible template, that is still an unambiguous match.
@@ -2274,10 +2400,9 @@ static NSDictionary *ApolloUserFlairMatchWebCurrent(NSDictionary *current, NSArr
 
     NSMutableDictionary *resolved = [current mutableCopy];
     resolved[@"templateID"] = templateID;
-    NSString *key = subreddit.lowercaseString;
-    if (key.length > 0) {
+    if (cacheKey) {
         @synchronized (ApolloUserFlairWebCurrentCache()) {
-            ApolloUserFlairWebCurrentCache()[key] = resolved;
+            ApolloUserFlairWebCurrentCache()[cacheKey] = resolved;
         }
     }
     ApolloLog(@"[UserFlair][Web] current r/%@ present=%@ matched=%@ visible=%@",
@@ -2441,6 +2566,15 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
         return nil;
     }
 
+    // Drop what the last open learned: numberOfRows runs before this response lands
+    // and would otherwise stamp the previous flair on. Recent saves are kept separately.
+    NSString *currentKey = ApolloUserFlairWebCurrentKey(username, subreddit);
+    if (currentKey) {
+        @synchronized (ApolloUserFlairWebCurrentCache()) {
+            [ApolloUserFlairWebCurrentCache() removeObjectForKey:currentKey];
+        }
+    }
+
     NSDictionary *fields = @{
         @"api_type": @"json",
         @"r": subreddit,
@@ -2455,6 +2589,7 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
         [NSString stringWithFormat:@"https://old.reddit.com/r/%@/", encodedSubreddit]]];
     currentRequest.HTTPMethod = @"GET";
     currentRequest.HTTPShouldHandleCookies = NO;
+    currentRequest.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     currentRequest.timeoutInterval = 25.0;
     [currentRequest setValue:webSession.cookieHeader forHTTPHeaderField:@"Cookie"];
     [currentRequest setValue:(sUserAgent.length > 0 ? sUserAgent : @"Apollo iOS") forHTTPHeaderField:@"User-Agent"];
@@ -2495,7 +2630,11 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
             }
             NSDictionary *current = (!currentError && currentHTTP.statusCode == 200)
                 ? ApolloUserFlairWebCurrentFromHTML(currentData, username) : nil;
-            if (choices && current) ApolloUserFlairMatchWebCurrent(current, choices, subreddit);
+            // A page that fails to parse shouldn't erase a recent save.
+            if (!current && choices && ApolloUserFlairWebRecentSave(currentKey)) {
+                current = @{ @"known": @YES, @"text": @"", @"cssClass": @"", @"enabled": @YES, @"templateID": @"" };
+            }
+            if (choices && current) ApolloUserFlairMatchWebCurrent(current, choices, subreddit, username);
             ApolloLog(@"[UserFlair][Web] selector r/%@ HTTP %ld choices=%lu error=%@",
                       subreddit, (long)selectorHTTP.statusCode, (unsigned long)choices.count, error ? @"yes" : @"no");
             ApolloLog(@"[UserFlair][Web] current-page r/%@ HTTP %ld parsed=%@ error=%@",
@@ -3025,10 +3164,16 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
         if (originalCompletion) originalCompletion(error);
     };
     if (!ApolloWebJSONHasUsableSession()) return %orig(subreddit, text, templateID, wrapped);
+    NSString *savedText = [text copy] ?: @"";
+    NSString *savedTemplateID = [templateID copy] ?: @"";
+    id webWrapped = ^(NSError *error) {
+        if (!error) ApolloUserFlairWebNoteSaved(subreddit, savedText, savedTemplateID, nil);
+        ((void (^)(NSError *))wrapped)(error);
+    };
     return ApolloUserFlairPerformWebUpdate(@"/api/selectflair", subreddit, @{
         @"flair_template_id": templateID ?: @"",
         @"text": text ?: @"",
-    }, wrapped);
+    }, webWrapped);
 }
 
 - (id)setShowUserFlair:(BOOL)show subredditName:(NSString *)subreddit completion:(id)completion {
@@ -3038,9 +3183,13 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
         if (originalCompletion) originalCompletion(error);
     };
     if (!ApolloWebJSONHasUsableSession()) return %orig(show, subreddit, wrapped);
+    id webWrapped = ^(NSError *error) {
+        if (!error) ApolloUserFlairWebNoteSaved(subreddit, nil, nil, @(show));
+        ((void (^)(NSError *))wrapped)(error);
+    };
     return ApolloUserFlairPerformWebUpdate(@"/api/setflairenabled", subreddit, @{
         @"flair_enabled": show ? @"true" : @"false",
-    }, wrapped);
+    }, webWrapped);
 }
 
 %end

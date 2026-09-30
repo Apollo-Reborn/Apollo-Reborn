@@ -113,6 +113,22 @@ static void ApolloSettingsApplyTextTypography(UIView *view) {
     for (UIView *child in view.subviews) ApolloSettingsApplyTextTypography(child);
 }
 
+// A plain header/footer's title label, then everything else in the view. The
+// label is styled directly because UIKit attaches it to the view lazily: a view
+// built for an update animation (a reloadSections: such as the form's
+// -rebuildSectionContainingRowID:, or any batch update that rebuilds existing
+// footers, the form's footer-height pass included) reaches willDisplay with its
+// label still detached, so the subview walk alone skips it. That footer then
+// kept UIKit's own size and colour while its siblings had the settings ones.
+static void ApolloSettingsApplySectionTitleTypography(UIView *view, UIFontTextStyle style) {
+    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
+        UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
+        label.font = ApolloSettingsFont(style, view.traitCollection);
+        if (![label isDescendantOfView:view]) ApolloSettingsApplyTextTypography(label);
+    }
+    ApolloSettingsApplyTextTypography(view);
+}
+
 void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
     // UIKit's default cell labels are fixed 17pt, unlike Eureka's Body rows.
     // Subtitle cells retain their smaller secondary text hierarchy.
@@ -232,20 +248,12 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
     if (@available(iOS 26.0, *)) {
         ApolloSettingsApplySectionHeaderTypography(view);
     } else {
-        if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
-            UITableViewHeaderFooterView *sectionView = (UITableViewHeaderFooterView *)view;
-            sectionView.textLabel.font = ApolloSettingsFont(UIFontTextStyleCaption1, view.traitCollection);
-        }
-        ApolloSettingsApplyTextTypography(view);
+        ApolloSettingsApplySectionTitleTypography(view, UIFontTextStyleCaption1);
     }
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
-        UITableViewHeaderFooterView *sectionView = (UITableViewHeaderFooterView *)view;
-        sectionView.textLabel.font = ApolloSettingsFont(UIFontTextStyleFootnote, view.traitCollection);
-    }
-    ApolloSettingsApplyTextTypography(view);
+    ApolloSettingsApplySectionTitleTypography(view, UIFontTextStyleFootnote);
 }
 
 - (void)tableView:(UITableView *)__unused tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)__unused indexPath {

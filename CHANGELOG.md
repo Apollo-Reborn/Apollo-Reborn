@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v3.8.5] - 2026-09-29
+
+### Features
+
+- Add **Google Search** to the Search tab: tap the magnifier and pick Google to find Reddit threads through Google, with its snippets, Any Time and Exact Words filters, and results that open natively in Apollo (#1260: @icpryde)
+- Open the fullscreen image viewer's **Copy / Save / Share** menu where you press and hold, instead of the middle of the screen (#1254: @IllIIllIllIllII)
+- Add **Toon Bot** and **Happy Toon Bot** to the Concepts icon pack (#1253: @IllIIllIllIllII)
+
+### Performance
+
+- Make Apollo lighter on memory and quicker to launch: image caches now have size limits and are freed when iOS runs low on memory, the Deleted Comments and sidebar text hooks stay idle when they aren't needed, editing a comment no longer holds up other loads for up to 20 seconds, and launch does less work (#1169: @paradoxally, @icpryde)
+  - Also stops the comments title flashing on non-Liquid-Glass builds, and makes **Remember Post Sort** open posts from links, the inbox, or Floating Post Tabs in your saved sort straight away instead of reloading them
+- Stop the **AI comment summary** from re-running over and over while you scroll a thread (#1270: @Thetromboneman1)
+- Stop filtered posts leaving stacks of gray gaps in feeds, correcting just the affected rows instead of redrawing the whole feed (#1274: @Thetromboneman1)
+
+### Fixes
+
+- Fix a feed **crash** when several RedGIFs posts load at once, most often right after launching or switching accounts (#1251: @icpryde)
+- Fix a crash tapping "Translated from…" on a recovered **deleted comment** (#1222: @icpryde)
+- Fix **RedGIFs** posts showing "RedGIFs error" on every post after switching Wi-Fi, cellular, or VPN, and on older RedGIFs videos with no listed length (#1256, #1258: @icpryde)
+- Fix **API-Key-Free** feeds getting stuck on a spinner: avatar lookups no longer use up Reddit's request limit for your session (#1220: @icpryde)
+- Keep avatar and subreddit lookups on the active account, so avatars stop staying blank and follow and subscribe states are right when you have several accounts signed in (#1227: @icpryde)
+- Fix **Add Account** signing in with the active account's saved API key instead of the one set in Settings (#1237: @icpryde)
+- Explain what went wrong when Reddit rejects your API key during sign-in, instead of leaving a blank "{}" page (#1236: @icpryde)
+- Fix **Invalid Backup** when restoring backups made on 3.7.x and earlier (#1217: @icpryde)
+- Fix **Unmute Videos** swapping the sound between two playing feed videos on every frame, starting videos with sound from feeds you already left, and playing on with sound under a different fullscreen video (#1247, #1250, #1252: @icpryde)
+- Fix a post's video going grey, and the video scrubber not working, after opening the OP's profile or swiping forward back into the post (#1269: @icpryde)
+- Fix **Swipe Past Gallery to Navigate** only acting after you lift your finger, sometimes on the wrong thread: swiping past a feed gallery's first or last image now goes straight to your post swipes (vote, save, back, or forward) (#1271: @Thetromboneman1)
+- Fix tapping a post sometimes opening a gallery post from further up the feed with **Swipe Through Feed Galleries** on (#1248: @icpryde)
+- Fix **Gallery View** only playing the first video when swiping on CarPlay (CarBridge/CarCast) (#1257: @icpryde)
+- Fix **Download Video** sending the first video you shared again over Messages, and clean up the downloaded copies it left behind (#1216, #1219: @icpryde)
+- Reserve room for **inline comment images** up front, so comments no longer grow when the image finishes loading (#1273: @Thetromboneman1)
+- Explain why a **comment** couldn't post, such as the post being removed (and where the mods' reason is), the thread being locked or archived, the parent comment being removed, or a ban, instead of "Reddit had a little hiccup" (#1275: @icpryde)
+- Fix a just-posted **image comment** showing "[Unknown Image]" under the picture (#1246: @icpryde)
+- Keep the newest message above the reply bar in **modmail** and message threads on iOS 26 and 27, and bring the reply bar back after a cancelled swipe-back between threads (#1228, #1234: @icpryde)
+- Fix the **post composer**'s Post button turning white on Liquid Glass, the Media body editor's checkmark turning into Post as you type, and Command-Return submitting from the body editors instead of acting as Done (#1221, #1226, #1233: @icpryde)
+- On Liquid Glass, keep a scrolled-away feed **search bar** hidden after swiping back from a post, and the Search tab's placeholder dim after Cancel (#1249, #1261: @icpryde)
+- Fix **interactive posts**' Subscribe button doing nothing when Reddit needs your permission first, and keep Apollo's Join button and Subscriptions list in sync when a post subscribes you (#1264: @icpryde)
+- Put the post header's **translation** marker after the edited pencil instead of on top of it (#1259: @icpryde)
+- Keep feed avatars out of post titles that name their own author (#1218: @icpryde)
+- Show old-reddit sprite **user flairs** on every row of the flair picker again (#1215: @icpryde)
+- Stop **Random** and **RandNSFW** sometimes opening an empty feed that never loads (#1272: @Thetromboneman1)
+- Fix tapping a multireddit's expand arrow in the Subreddits list asking to change a favorite, and style expanded multireddit rows like the rest of the list (#1229: @nunoo)
+- Fix the Subreddits list's **Edit** mode putting moderator hide controls on the wrong rows and jumping the list up after Edit or Done (#1262: @icpryde)
+  - Swiping a row no longer turns on Edit controls, and stars stay put in Edit mode with Subreddit List Enhancements off
+- Open the multireddit editor in the Subreddits list's Edit mode again when Multireddits isn't the second section (#1267: @icpryde)
+- Make **settings section headers** match across Apollo's and Apollo Reborn's settings on iOS 26 and later, in one Title Case style that follows Text Size and your theme (#1241: @IllIIllIllIllII)
+- Fix **Settings Shortcuts**' Remove button not removing the shortcut (#1212: @IllIIllIllIllII)
+- Make **Pixel Pals** follow the real Dynamic Island on iPhone 18 Pro and newer (#1244: @JeffreyCA)
+- Fix **Open in Apollo (Legacy)** in Safari doing nothing without Link Companion installed (#1268: @Thetromboneman1)
+- Stop the **Social Links** row sometimes showing Reddit's copyright footer instead of a profile's links (#1231: @icpryde)
+- Stop forwarding Apollo's analytics to your **Notification Backend** when one is set; they're now always blocked (#1230: @DeltAndy123)
+
 ## [v3.8.0] - 2026-09-25
 
 ### Features
@@ -940,6 +993,7 @@ There are currently a few limitations:
 ## [v1.0.0] - 2023-10-13
 - Initial release
 
+[v3.8.5]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.8.0...v1.15.11_3.8.5
 [v3.8.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.1...v1.15.11_3.8.0
 [v3.7.1]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.7.0...v1.15.11_3.7.1
 [v3.7.0]: https://github.com/Apollo-Reborn/Apollo-Reborn/compare/v1.15.11_3.6.0...v1.15.11_3.7.0

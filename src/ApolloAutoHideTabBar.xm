@@ -1601,6 +1601,11 @@ static UITabBarController *ApolloResolveTabBarControllerForScrollView(UIScrollVi
             }
             vc = vc.parentViewController;
         }
+        // The first controller owns this scroll view. A modal's responder
+        // chain can continue into its presenter, but that does not make its
+        // scrolling belong to the feed underneath. Only controller containment
+        // may supply a tab owner; otherwise the sheet can hide the feed's bars.
+        return nil;
     }
     return nil;
 }

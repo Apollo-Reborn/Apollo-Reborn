@@ -538,12 +538,18 @@ static void ApolloActionsSetScrollOwner(UIPanGestureRecognizer *pan, ApolloNavig
 static void ApolloActionsUpdateScrollOwner(UIScrollView *scrollView) {
     ApolloNavigationActionsOwner *owner = nil;
     if (scrollView.window) {
-        // Incoming pages can attach before becoming topViewController.
-        // Walk past child controllers to find the actual page owner.
+        // Incoming pages can attach before becoming topViewController. Start
+        // at the first owning controller, then follow containment to support
+        // child pages without crossing a modal's responder chain into the
+        // presenting feed and collapsing its navigation actions.
         for (UIResponder *responder = scrollView.nextResponder; responder; responder = responder.nextResponder) {
             if (![responder isKindOfClass:UIViewController.class]) continue;
-            owner = ApolloActionsOwner(((UIViewController *)responder).navigationItem, NO);
-            if (owner) break;
+            for (UIViewController *controller = (UIViewController *)responder;
+                 controller; controller = controller.parentViewController) {
+                owner = ApolloActionsOwner(controller.navigationItem, NO);
+                if (owner) break;
+            }
+            break;
         }
     }
     ApolloActionsSetScrollOwner(scrollView.panGestureRecognizer, owner);

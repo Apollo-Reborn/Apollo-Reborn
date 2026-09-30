@@ -50,6 +50,10 @@ static const void *kApolloSubredditRewrapInProgressKey = &kApolloSubredditRewrap
 // table hook can keep controller/bookkeeping aligned when Apollo swaps the
 // native header during search transitions.
 static const void *kApolloSubredditManagedViewControllerKey = &kApolloSubredditManagedViewControllerKey;
+// Zeroing-weak box on every PostsViewController's feed table, managed or not, so
+// the reloadData hook can also notice a feed that has no header yet being
+// switched to a subreddit in place (the nav-title jump bar, e.g. from Home).
+static const void *kApolloSubredditFeedControllerKey = &kApolloSubredditFeedControllerKey;
 static const void *kApolloSubredditTeardownMarkerKey = &kApolloSubredditTeardownMarkerKey;
 static const void *kApolloSubredditBannerPickerCoordinatorKey = &kApolloSubredditBannerPickerCoordinatorKey;
 static const void *kApolloSubredditIconPickerCoordinatorKey = &kApolloSubredditIconPickerCoordinatorKey;
@@ -1235,9 +1239,12 @@ static NSString *ApolloNormalizedSubredditName(NSString *subredditName) {
     if ([clean hasPrefix:@"/r/"] || [clean hasPrefix:@"/R/"]) clean = [clean substringFromIndex:3];
     if ([clean hasPrefix:@"r/"] || [clean hasPrefix:@"R/"]) clean = [clean substringFromIndex:2];
     if (clean.length == 0) return nil;
-    // Reject special feeds that aren't really single subreddits.
+    // Reject special feeds that aren't really single subreddits. "random"/"randnsfw"
+    // are the titles Apollo gives a random feed until its listing names the
+    // subreddit it landed on.
     NSArray<NSString *> *blocked = @[@"home", @"popular", @"all", @"search", @"profile",
-                                     @"settings", @"inbox", @"friends", @"mod"];
+                                     @"settings", @"inbox", @"friends", @"mod",
+                                     @"random", @"randnsfw"];
     if ([blocked containsObject:clean.lowercaseString]) return nil;
     // Must look like a subreddit slug: letters/digits/underscores.
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
@@ -1516,9 +1523,13 @@ static BOOL ApolloSubredditPostsTypeTag(id viewController, uint8_t *tag) {
 // for #327: we gate on the synchronous PostsType tag so multireddit feeds (even
 // when named like a real subreddit) and profile/special feeds (Upvoted, Hidden,
 // All, Popular, ...) never install a header. For a genuine single-subreddit
-// feed we use `currentSubreddit.name` once Apollo has fetched it, and otherwise
-// fall back to the nav title so the header still appears instantly on
-// navigation instead of waiting for that async object.
+// feed the nav title decides: Apollo writes it synchronously on every path that
+// changes what the controller shows, including the nav-title jump bar's in-place
+// switch, which reuses the controller. `currentSubreddit` is only replaced when
+// the new subreddit's about.json lands, so right after a switch (and for good if
+// that fetch fails) it still names the previous subreddit. Its spelling is kept
+// while it names the same subreddit as the title, and it is the answer for a
+// feed that has no title yet.
 // Apollo's search-results VC is a different class and never reaches this hook.
 // Non-static: ApolloGalleryMenu.xm needs the same "is this really a single
 // subreddit, and which one" answer to decide whether the subreddit "..." menu
@@ -1538,27 +1549,26 @@ NSString *ApolloSubredditNameFromViewController(UIViewController *viewController
     BOOL haveTag = ApolloSubredditPostsTypeTag(viewController, &tag);
     if (haveTag && tag != kApolloPostsTypeSubreddit && tag != kApolloPostsTypeRandom) return nil;
 
-    // Authoritative slug once Apollo has loaded the backing subreddit object.
+    NSString *loadedName = nil;
     id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
     if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
         id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
-        if ([nameValue isKindOfClass:[NSString class]]) {
-            NSString *normalized = ApolloNormalizedSubredditName(nameValue);
-            if (normalized.length) return normalized;
-        }
+        if ([nameValue isKindOfClass:[NSString class]]) loadedName = ApolloNormalizedSubredditName(nameValue);
     }
 
-    // currentSubreddit is populated asynchronously; for a confirmed
-    // single-subreddit feed (named or random) fall back to the nav title so the
-    // header loads instantly. The tag is already known to be subreddit/random
-    // here, so the title can't belong to a multireddit or profile feed.
+    // The tag is already known to be subreddit/random here, so the title can't
+    // belong to a multireddit or profile feed.
     if (haveTag) {
         NSString *title = viewController.navigationItem.title;
         if (title.length == 0) title = viewController.title;
-        return ApolloNormalizedSubredditName(title);
+        if (title.length > 0) {
+            NSString *titleName = ApolloNormalizedSubredditName(title);
+            if (loadedName.length && ApolloSubredditNamesEqual(loadedName, titleName)) return loadedName;
+            return titleName;
+        }
     }
 
-    return nil;
+    return loadedName.length ? loadedName : nil;
 }
 
 // The slug for one of Apollo's three pseudo-subreddit feeds — Popular Posts,
@@ -2965,6 +2975,19 @@ static void ApolloSubredditRefreshVisibleControllersForSubreddit(NSString *subre
     ApolloSubredditScheduleVisibleControllerRefresh();
 }
 
+// Point the feed table back at its controller so the reloadData hook can
+// catch an in-place switch on a feed that has no header yet.
+static void ApolloSubredditWatchFeedTable(UIViewController *viewController) {
+    if (!sShowSubredditHeaders || !viewController) return;
+    UITableView *tableView = ApolloSubredditFindTableView(viewController);
+    if (!tableView) return;
+    ApolloSubredditWeakControllerBox *feed = objc_getAssociatedObject(tableView, kApolloSubredditFeedControllerKey);
+    if (feed.viewController == viewController) return;
+    feed = [[ApolloSubredditWeakControllerBox alloc] init];
+    feed.viewController = viewController;
+    objc_setAssociatedObject(tableView, kApolloSubredditFeedControllerKey, feed, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 #pragma mark - Hooks
 
 // Apollo enters/exits search mode by mutating its tableHeaderView (sometimes
@@ -3015,7 +3038,23 @@ static void ApolloSubredditRefreshVisibleControllersForSubreddit(NSString *subre
 
 - (void)reloadData {
     %orig;
-    if (![objc_getAssociatedObject(self, kApolloSubredditManagedTableKey) boolValue]) return;
+    if (![objc_getAssociatedObject(self, kApolloSubredditManagedTableKey) boolValue]) {
+        // A feed with no header of ours: the nav-title jump bar switches the
+        // controller to another subreddit IN PLACE (title + PostsType rewritten,
+        // then the new listing's reload) with no lifecycle callback, so check
+        // whether it now needs one. Next turn, not here: a random feed's listing
+        // reloads first and renames the feed after the subreddit it landed on
+        // right after, in the same turn.
+        if (!sShowSubredditHeaders) return;
+        ApolloSubredditWeakControllerBox *feed =
+            objc_getAssociatedObject(self, kApolloSubredditFeedControllerKey);
+        __weak UIViewController *weakFeedController = feed.viewController;
+        if (!weakFeedController) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloSubredditScheduleInstallIfNeeded(weakFeedController);
+        });
+        return;
+    }
     ApolloSubredditWeakControllerBox *owner =
         objc_getAssociatedObject(self, kApolloSubredditManagedViewControllerKey);
     UIViewController *viewController = owner.viewController;
@@ -3104,6 +3143,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 
 - (void)viewDidLoad {
     %orig;
+    ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
 
@@ -3122,6 +3162,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         ApolloLog(@"[SubredditHeaders] reactivating retained vc=%p on appearance", self);
     }
     %orig(animated);
+    ApolloSubredditWatchFeedTable((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
 
