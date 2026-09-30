@@ -113,7 +113,45 @@ static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
     // UIKit may install a fresh effect while applied; remember the latest one.
     if (backdrop.effect) {
         state.effect = backdrop.effect;
-        backdrop.effect = nil;
+static const void *kStockLookKey = &kStockLookKey;
+
+static BOOL IsOpaqueBlack(UIColor *color) {
+    CGFloat r = 1, g = 1, b = 1, a = 0;
+    return [color getRed:&r green:&g blue:&b alpha:&a] && r == 0 && g == 0 && b == 0 && a == 1;
+}
+
+// Puts UIKit's look back when the mode stops applying to a backdrop that's still up (Dark Mode
+// Only and the app flips to light while typing). UIKit's _setRenderConfig: re-sets its effect and
+// tint for the new config, but not the content view fill or the views hidden below, so the light
+// keycaps would sit on black and the return key, globe and mic glyphs would vanish.
+static void RevertTrueBlack(UIVisualEffectView *backdrop) {
+    NSDictionary *stock = objc_getAssociatedObject(backdrop, kStockLookKey);
+    if (!stock) return;
+    objc_setAssociatedObject(backdrop, kStockLookKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (IsOpaqueBlack(backdrop.backgroundColor)) backdrop.backgroundColor = stock[@"background"];
+    backdrop.contentView.backgroundColor = stock[@"content"];
+    for (UIView *sub in stock[@"hidden"]) sub.hidden = NO;
+}
+
+static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
+    BOOL applies = TrueBlackKeyboardAppliesTo(AppInterfaceStyle());
+    UpdateEdgeFill(backdrop, applies);
+    if (!applies) {
+        RevertTrueBlack(backdrop);
+        return;
+    }
+    NSMutableDictionary *stock = objc_getAssociatedObject(backdrop, kStockLookKey);
+    if (!stock) {
+        stock = [NSMutableDictionary dictionaryWithObject:[NSHashTable weakObjectsHashTable] forKey:@"hidden"];
+        stock[@"content"] = backdrop.contentView.backgroundColor;
+        objc_setAssociatedObject(backdrop, kStockLookKey, stock, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // UIKit re-sets the tint on each render-config change; keep its latest before covering it.
+    if (!IsOpaqueBlack(backdrop.backgroundColor)) stock[@"background"] = backdrop.backgroundColor;
+    if (backdrop.effect) {
+        // Outside any running animation: a light/dark flip animates backgroundEffects on this view,
+        // and UIKit throws if .effect was animated next to it (UIVisualEffectView.m:1045).
+        [UIView performWithoutAnimation:^{ backdrop.effect = nil; }];
     }
     backdrop.backgroundColor = UIColor.blackColor;
     backdrop.contentView.backgroundColor = UIColor.blackColor;
@@ -121,7 +159,7 @@ static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
         // Any private glass/blur layer view UIKit adds beside the content view.
         if (sub != backdrop.contentView && !sub.hidden) {
             sub.hidden = YES;
-            [state.hiddenSubviews addObject:sub];
+            [stock[@"hidden"] addObject:sub];
         }
     }
 }
