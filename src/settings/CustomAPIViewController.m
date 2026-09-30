@@ -929,6 +929,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
     [self reloadRowWithID:@"feat.profileLayout"];
+    [self reloadRowWithID:@"siri.settings"];
     // The Setup section footer (onboarding nudge) collapses once a Reddit key
     // exists, which may have just been entered on the pushed API Keys screen.
     // Section 0 is Setup on the hub; reloading it re-evaluates the footer.
@@ -993,6 +994,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[
         [self buildSetupSection],
+        [self buildSiriSection],
         [self buildFeaturesSection],
         [self buildShortcutsSection],
         [self buildDataSection],
@@ -3028,14 +3030,25 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     crashReports.iconSystemName = @"bandage";
     crashReports.iconTileColor = [UIColor systemOrangeColor];
 
-    ApolloSettingsRow *siri = [ApolloSettingsRow disclosureRowWithID:@"privacy.siri" title:@"Siri & Spotlight"
-        detail:nil push:^UIViewController * {
-            return [[ApolloSiriSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports ]];
+}
+
+// An opt-in integration belongs near Setup, with its own explanation rather
+// than below crash reports and the unrelated anonymous-heartbeat footer.
+- (ApolloSettingsSection *)buildSiriSection {
+    ApolloSettingsRow *siri = [ApolloSettingsRow disclosureRowWithID:@"siri.settings" title:@"Siri & Spotlight"
+        detail:^NSString * {
+            return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySiriContentIndexing] ? @"On" : @"Off";
+        } push:^UIViewController * {
+            return ApolloSettingsRouteInstantiate(@"siri-spotlight");
         }];
-    siri.visible = ^BOOL { return NSClassFromString(@"ApolloContentBridge") != Nil; };
     siri.iconSystemName = @"sparkle.magnifyingglass";
     siri.iconTileColor = UIColor.systemPurpleColor;
-    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports, siri ]];
+    ApolloSettingsSection *section = [ApolloSettingsSection sectionWithTitle:nil
+        footer:@"Find Apollo posts and communities with Siri, Spotlight and Shortcuts. Content indexing is off until you enable it."
+        rows:@[siri]];
+    section.visible = ^BOOL { return NSClassFromString(@"ApolloContentBridge") != Nil; };
+    return section;
 }
 
 - (ApolloSettingsSection *)buildAboutSection {

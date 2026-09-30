@@ -4,7 +4,7 @@ An opt-in App Intents integration that makes Apollo content available to
 Spotlight and Siri on iOS 27. It ships as a separate `ApolloSiri.framework`
 injected into Apollo; the normal Theos build, release workflows and the
 tweak's iOS 14 floor are unchanged. Without the framework, the tweak-side
-hooks in `src/ApolloIntelligenceBridge.xm` are no-ops.
+hooks in `src/ApolloIntelligenceBridge.xm` are not installed.
 
 ## Packaging
 
@@ -22,8 +22,7 @@ injects into a prepared simulator bundle in place.
 
 ## What it does
 
-Everything is off until **Settings → Apollo Reborn → Privacy → Siri &
-Spotlight → Index Apollo Content** is enabled.
+Everything is off until **Settings → Apollo Reborn → Siri & Spotlight → Index Apollo Content** is enabled.
 
 | Feature | How |
 | --- | --- |
@@ -39,7 +38,13 @@ for 30 days, scoped to a one-way account fingerprint, excluded from backups.
 Hide/delete/unsubscribe removes content (with tombstones against stale
 listings); account change or opt-out clears the index and intent donations.
 Spotlight publication is incremental and committed with CoreSpotlight client
-state, so an index wiped by the system triggers one rebuild.
+state, so an index wiped by the system triggers one rebuild. Publication times
+out after 20 seconds and failed background updates back off for 60 seconds.
+An unresponsive system call retains the single publication slot until it
+returns (or Apollo relaunches), preventing overlapping batches and suspended
+retry buildup. Errors remain visible in status; an unsuccessful purge is never
+reported as a cleared index. Siri & Spotlight is also available in settings
+search and at `apollo://reborn/settings/siri-spotlight`.
 
 ## Known limitations
 
@@ -48,11 +53,10 @@ state, so an index wiped by the system triggers one rebuild.
   Logs show Siri never queries the subreddit entities in these cases.
 - The interactive result card only appears via Shortcuts; Siri has no schema
   for "return search results" and may not display custom snippets.
-- Comment context (`ApolloCommentEntity`, `ApolloPostEntity.loadedComments`,
-  comment-row annotations) is implemented but comments do not currently reach
-  the session store on device, so Siri only sees on-screen comments. Diagnose
-  from the `CommentSectionController` capture in `ApolloIntelligenceBridge.xm`
-  forward.
+- Comment context captures cells Texture has loaded, including those prepared
+  ahead of the visible range, rather than the entire fetched comment tree.
+  These comments stay in memory for the session and are not Spotlight-indexed.
+  Siri’s use of that context still needs device verification after this fix.
 - No schema domain fits Reddit posts, so posts are custom entities rather than
   schema entities; Siri's handling of them is best-effort.
 
@@ -63,6 +67,7 @@ state, so an index wiped by the system triggers one rebuild.
 | `Sources/Content/ApolloContentCatalog.swift` | Foundation-only persistent catalogue (parsing, eligibility, tombstones, retention) |
 | `Sources/Content/ApolloSessionContext.swift` | Foundation-only memory store for opened posts and loaded comments |
 | `Sources/Content/ApolloContentService.swift` | Actor owning the catalogue, session, Spotlight publication; ObjC bridge for the tweak |
+| `Sources/Content/ApolloPublicationGate.swift` | Bounded wait and single outstanding Spotlight publication, including late-callback cancellation |
 | `Sources/Content/ApolloContentEntities.swift` | Post/subreddit/comment entities, queries, open intents |
 | `Sources/Content/ApolloOnscreenBridge.swift` | View / user-activity annotations and UI-initiated donations |
 | `Sources/SearchApolloIntent.swift`, `ApolloSiriNavigation.swift` | Native search and URL routing |

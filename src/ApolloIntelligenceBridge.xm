@@ -305,9 +305,9 @@ static void ApolloSiriObserveOpenedPost(id link) {
     ApolloSiriForward(@"observePost:account:", post);
 }
 
-// Section controllers are created from the loaded CommentTree before cells
-// exist (see ApolloAISummary), so this sees the whole fetched thread. Coalesce
-// a burst into one hand-off; cap per flush like the listing allowlist.
+// Texture loads comment cells ahead of the visible range. Capture those
+// loaded comments (not the entire fetched tree), coalescing a burst into one
+// hand-off; cap per flush like the listing allowlist.
 static NSMutableArray *sApolloSiriPendingComments;
 static NSUInteger sApolloSiriCommentOrder;
 static BOOL sApolloSiriCommentFlushScheduled;
@@ -413,8 +413,11 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
         return %orig;
     }
     void (^originalCompletion)(NSError *) = completion;
+    // Logos self is unsafe-unretained; the asynchronous completion owns this
+    // client until it has finished reading the request's account context.
+    id client = self;
     void (^wrapped)(NSError *) = ^(NSError *error) {
-        if (!error) ApolloSiriChangeEligibility(self, identifiers, YES);
+        if (!error) ApolloSiriChangeEligibility(client, identifiers, YES);
         if (originalCompletion) originalCompletion(error);
     };
     return %orig(path, parameters, wrapped);
@@ -449,24 +452,23 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
 - (void)didExitVisibleState { ApolloSiriAnnotateNode(self, NO); %orig; }
 %end
 %hook _TtC6Apollo15CommentCellNode
+// Swift's designated CommentSectionController initializer bypasses ObjC
+// -init, so that hook never captured comments. Texture's didLoad runs for
+// each loaded cell, including cells prepared ahead of the visible range.
+- (void)didLoad {
+    %orig;
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:ApolloSiriEnabledKey]) return;
+    // A queued block must not retain Logos' unsafe-unretained self. Cells can
+    // disappear during collapse/scroll churn before the main queue drains.
+    __weak id weakNode = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id node = weakNode;
+        Ivar ivar = node ? class_getInstanceVariable(object_getClass(node), "comment") : NULL;
+        ApolloSiriObserveComment(ivar ? object_getIvar(node, ivar) : nil);
+    });
+}
 - (void)didEnterVisibleState { %orig; ApolloSiriAnnotateCommentNode(self, YES); }
 - (void)didExitVisibleState { ApolloSiriAnnotateCommentNode(self, NO); %orig; }
-%end
-%hook _TtC6Apollo24CommentSectionController
-- (id)init {
-    id result = %orig;
-    if (NSClassFromString(@"ApolloContentBridge") && [[NSUserDefaults standardUserDefaults] boolForKey:ApolloSiriEnabledKey]) {
-        // The comment ivar is populated after init returns (same as the AI
-        // summary capture); a weak ref avoids touching a torn-down controller.
-        __weak id weakResult = result;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            id controller = weakResult;
-            Ivar ivar = controller ? class_getInstanceVariable(object_getClass(controller), "comment") : NULL;
-            ApolloSiriObserveComment(ivar ? object_getIvar(controller, ivar) : nil);
-        });
-    }
-    return result;
-}
 %end
 %hook _TtC6Apollo17LargePostCellNode
 - (void)didEnterVisibleState { %orig; ApolloSiriAnnotateNode(self, YES); }
@@ -479,6 +481,10 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
 %end
 
 %ctor {
+    // dyld maps launch images and registers their ObjC classes before running
+    // initializers. Normal IPAs do not embed this optional framework, so they
+    // should not install Siri hooks on feeds, comments or network parsing.
+    if (!NSClassFromString(@"ApolloContentBridge")) return;
     %init(ApolloSiriContentHooks);
     %init(ApolloSiriOnscreenHooks);
 }

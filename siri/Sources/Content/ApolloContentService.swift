@@ -151,12 +151,13 @@ public final class ApolloContentBridge: NSObject {
 
 actor ApolloContentService {
     enum Failure: Error, CustomLocalizedStringResourceConvertible {
-        case accountUnavailable, indexingDisabled, searchInProgress, emptyQuery
+        case accountUnavailable, indexingDisabled, searchInProgress, emptyQuery, indexUnavailable
         var localizedStringResource: LocalizedStringResource {
             switch self {
             case .accountUnavailable: "Apollo is still loading its account. Open Apollo and try again."
             case .indexingDisabled: "Enable Siri & Spotlight content indexing in Apollo first."
             case .searchInProgress: "Apollo is already loading content. Try again shortly."
+            case .indexUnavailable: "Spotlight could not finish updating. Apollo will retry after a short pause. If it stays unavailable, reopen Apollo. Index removal is not confirmed until an update succeeds."
             case .emptyQuery: "Enter a search of between 1 and 512 characters."
             }
         }
@@ -180,6 +181,9 @@ actor ApolloContentService {
     private var checkpoint: PublishCheckpoint?
     private var checkpointLoaded = false
     private var syncTask: Task<Void, Error>?
+    private var syncFailure: (any Error)?
+    private var retryAfter: ContinuousClock.Instant?
+    private static let publicationGate = ApolloPublicationGate()
     private var protectionClass: FileProtectionType? = .completeUntilFirstUserAuthentication
     private var networkRequestInProgress = false
     private func store() throws -> ApolloContentCatalog {
@@ -200,6 +204,7 @@ actor ApolloContentService {
         let changed = try catalog.configure(enabled: enabled, account: account.fingerprint)
         session.configure(account: catalog.state.enabled ? catalog.state.account : nil)
         if changed {
+            retryAfter = nil // Account changes and opt-out must attempt cleanup immediately.
             resetIndex = true
             // Apple: remove donations that no longer apply. A different account
             // or an opt-out makes every prior Apollo open-content donation stale.
@@ -224,7 +229,7 @@ actor ApolloContentService {
         session.suppress(canonical)
         Self.deleteDonations(forPosts: canonical.filter { $0.hasPrefix("reddit:post:") })
         scheduleSync()
-        try await syncTask?.value
+        try await waitForSync()
     }
 
     func allow(_ identifiers: [String], account: String) async throws {
@@ -292,13 +297,13 @@ actor ApolloContentService {
                 let stale = catalog.records(kind: .subreddit, limit: 500).map(\.id).filter { !observed.contains($0) }
                 try catalog.suppress(stale, account: account)
                 scheduleSync()
-                try await syncTask?.value
+                try await waitForSync()
                 return true
             }
             guard cursors.insert(next).inserted else { throw ApolloContentRequest.Failure.invalidResponse }
             after = next
         }
-        try await syncTask?.value
+        try await waitForSync()
         return false // Never infer unsubscribe from a truncated/failed listing.
     }
 
@@ -406,12 +411,12 @@ actor ApolloContentService {
         try await refresh()
         // Turning off completes only after our entities have been removed from
         // Spotlight. An in-flight older upsert cannot race a completed disable.
-        try await syncTask?.value
+        try await waitForSync()
     }
 
     func status() async throws -> String {
         try await refresh()
-        try await syncTask?.value
+        try await waitForSync()
         let catalog = try store()
         guard catalog.state.enabled else { return "Apollo content indexing is off. Its post and subscription index is cleared." }
         guard catalog.state.account != nil else { return "Apollo content indexing is enabled. Sign in and browse Apollo to collect eligible public content." }
@@ -428,7 +433,7 @@ actor ApolloContentService {
         self.protectionClass = protectionClass
         resetIndex = true
         scheduleSync()
-        try await syncTask?.value
+        try await waitForSync()
     }
 
     /// System-requested targeted recovery: re-upsert only the named entities
@@ -496,9 +501,17 @@ actor ApolloContentService {
         return SHA256.hash(data: Data(content.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
+    private func waitForSync() async throws {
+        try await syncTask?.value
+        // During backoff there is no task to await. Never claim a successful
+        // update (especially "index is cleared") after a failed publication.
+        if let syncFailure { throw syncFailure }
+    }
+
     private func scheduleSync() {
         dirty = true
         guard syncTask == nil else { return }
+        if let retryAfter, ContinuousClock.now < retryAfter { return }
         syncTask = Task {
             defer { syncTask = nil }
             do {
@@ -542,25 +555,50 @@ actor ApolloContentService {
                         continue
                     }
                     try saveCheckpoint(next)
+                    syncFailure = nil
+                    retryAfter = nil
                     ApolloSiriLog.event("Content index synchronized; upserts", count: changedPosts.count + changedSubs.count)
                 }
             } catch {
                 resetIndex = true
                 dirty = true
-                ApolloSiriLog.event("Content index sync failed; retry on next refresh")
+                syncFailure = error
+                retryAfter = ContinuousClock.now.advanced(by: .seconds(60))
+                ApolloSiriLog.event("Content index sync failed; refresh retries after cooldown")
                 throw error
             }
+        }
+    }
+
+    /// A task-group timeout would still await a non-cooperative SDK child.
+    /// The gate releases callers after 20 seconds but keeps that operation's
+    /// slot occupied until it drains, avoiding overlapping or unbounded calls.
+    private nonisolated static func publish(reset: Bool, posts: [ApolloContentRecord],
+                                            subreddits: [ApolloContentRecord],
+                                            removePosts: [String], removeSubreddits: [String],
+                                            protectionClass: FileProtectionType?,
+                                            expectedState: Data? = nil, newState: Data? = nil) async throws {
+        do {
+            try await publicationGate.run {
+                try await publishNow(reset: reset, posts: posts, subreddits: subreddits,
+                                     removePosts: removePosts, removeSubreddits: removeSubreddits,
+                                     protectionClass: protectionClass,
+                                     expectedState: expectedState, newState: newState)
+            }
+        } catch is ApolloPublicationGate.Failure {
+            throw Failure.indexUnavailable
         }
     }
 
     // The SDK's CSSearchableIndex reference isn't Sendable. Keep it local to
     // this nonisolated async operation; never pass an actor-owned reference to
     // a nonisolated SDK method or paper over it with @unchecked Sendable.
-    private nonisolated static func publish(reset: Bool, posts: [ApolloContentRecord],
+    private nonisolated static func publishNow(reset: Bool, posts: [ApolloContentRecord],
                                             subreddits: [ApolloContentRecord],
                                             removePosts: [String], removeSubreddits: [String],
                                             protectionClass: FileProtectionType?,
                                             expectedState: Data? = nil, newState: Data? = nil) async throws {
+        try Task.checkCancellation()
         let index = CSSearchableIndex(name: indexName, protectionClass: protectionClass)
         // Canonical-index work is one batch whose client state commits only if
         // every call lands (Apple's CosmoTunes pattern). Targeted reindex passes
@@ -568,11 +606,16 @@ actor ApolloContentService {
         if newState != nil { index.beginBatch() }
         if reset {
             try await index.deleteAppEntities(ofType: ApolloPostEntity.self)
+            try Task.checkCancellation()
             try await index.deleteAppEntities(ofType: ApolloSubredditEntity.self)
         } else {
             if !removePosts.isEmpty { try await index.deleteAppEntities(identifiedBy: removePosts, ofType: ApolloPostEntity.self) }
+            try Task.checkCancellation()
             if !removeSubreddits.isEmpty { try await index.deleteAppEntities(identifiedBy: removeSubreddits, ofType: ApolloSubredditEntity.self) }
         }
+        // A callback can arrive after the caller timed out or changed account.
+        // Do not let the cancelled publication continue with stale writes.
+        try Task.checkCancellation()
         // Entity-backed searchable items retain App Intents association while
         // allowing an expiry even when Apollo isn't launched again for weeks.
         // Upserting an existing identifier updates it in place (Apple).
@@ -590,6 +633,7 @@ actor ApolloContentService {
         // Bounded batches keep a first full build from being one huge request.
         for start in stride(from: 0, to: items.count, by: 200) {
             try await index.indexSearchableItems(Array(items[start..<min(start + 200, items.count)]))
+            try Task.checkCancellation()
         }
         if let newState {
             try await index.endIndexBatch(expectedClientState: expectedState, newClientState: newState)

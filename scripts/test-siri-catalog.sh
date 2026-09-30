@@ -7,3 +7,7 @@ xcrun swiftc -swift-version 6 "$ROOT/siri/Sources/Content/ApolloContentCatalog.s
     "$ROOT/siri/Sources/Content/ApolloSessionContext.swift" \
     "$ROOT/siri/CatalogTests/main.swift" -o "$WORK/catalog-tests"
 "$WORK/catalog-tests"
+xcrun swiftc -swift-version 6 -parse-as-library \
+    "$ROOT/siri/Sources/Content/ApolloPublicationGate.swift" \
+    "$ROOT/siri/CatalogTests/PublicationGateTests.swift" -o "$WORK/publication-tests"
+"$WORK/publication-tests"
