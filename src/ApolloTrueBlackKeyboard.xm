@@ -9,8 +9,22 @@
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
 
+// The dark-config swap below hooks +configForAppearance:inputMode:traitEnvironment:, which UIKit
+// added in iOS 15. iOS 14 only has +configForAppearance:inputMode:, so the hook never installs
+// there and a light app would get light keycaps on black; keep the stock keyboard in that case.
+static BOOL DarkConfigSwapAvailable(void) {
+    static BOOL available;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        available = class_getClassMethod(objc_getClass("UIKBRenderConfig"),
+            NSSelectorFromString(@"configForAppearance:inputMode:traitEnvironment:")) != NULL;
+    });
+    return available;
+}
+
 // 0 Off, 1 Dark Only, 2 Light Only, 3 Always.
 static BOOL TrueBlackKeyboardAppliesTo(UIUserInterfaceStyle style) {
+    if (style != UIUserInterfaceStyleDark && !DarkConfigSwapAvailable()) return NO;
     switch ([[NSUserDefaults standardUserDefaults] integerForKey:UDKeyTrueBlackKeyboardMode]) {
         case 1: return style == UIUserInterfaceStyleDark;
         case 2: return style != UIUserInterfaceStyleDark;
