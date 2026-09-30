@@ -57,9 +57,45 @@ static NSString *ApolloSettingsTitleCaseHeader(NSString *text) {
     return text.capitalizedString;
 }
 
+static char kApolloSettingsTitleUIKitColorKey;
+
+// The label of a header or footer UIKit built from the section's title string.
+static UILabel *ApolloSettingsPlainTitleLabel(UIView *view) {
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return nil;
+    UITableViewHeaderFooterView *titleView = (UITableViewHeaderFooterView *)view;
+    return titleView.contentConfiguration ? nil : titleView.textLabel;
+}
+
+// Keeps the colour UIKit gave a title before the settings styling first
+// touched it, so -apollo_restyleShownSectionTitles can start from the same
+// place a newly displayed title does.
+static void ApolloSettingsRememberTitleColor(UIView *view) {
+    UILabel *label = ApolloSettingsPlainTitleLabel(view);
+    if (label.textColor && !objc_getAssociatedObject(label, &kApolloSettingsTitleUIKitColorKey)) {
+        objc_setAssociatedObject(label, &kApolloSettingsTitleUIKitColorKey, label.textColor,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+// The fonts the settings styling gives section headers and footers (see
+// -tableView:willDisplayHeaderView:forSection: and the footer one). A theme
+// font or text size change shows up here.
+static NSString *ApolloSettingsSectionTitleFontKey(UITraitCollection *traits) {
+    UIFont *header = nil;
+    if (@available(iOS 26.0, *)) {
+        header = ApolloSettingsSectionHeaderFont(traits);
+    } else {
+        header = ApolloSettingsFont(UIFontTextStyleCaption1, traits);
+    }
+    UIFont *footer = ApolloSettingsFont(UIFontTextStyleFootnote, traits);
+    return [NSString stringWithFormat:@"%@ %.2f|%@ %.2f", header.fontName, header.pointSize,
+                                      footer.fontName, footer.pointSize];
+}
+
 void ApolloSettingsApplySectionHeaderTypography(UIView *view) {
     // Older iOS versions retain their original casing, fonts, and theme setup.
     if (@available(iOS 26.0, *)) {} else { return; }
+    ApolloSettingsRememberTitleColor(view);
     if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
         UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
         // UIKit owns standard form headers. Configure their source of truth,
@@ -121,6 +157,7 @@ static void ApolloSettingsApplyTextTypography(UIView *view) {
 // label still detached, so the subview walk alone skips it. That footer then
 // kept UIKit's own size and colour while its siblings had the settings ones.
 static void ApolloSettingsApplySectionTitleTypography(UIView *view, UIFontTextStyle style) {
+    ApolloSettingsRememberTitleColor(view);
     if ([view isKindOfClass:UITableViewHeaderFooterView.class]) {
         UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
         label.font = ApolloSettingsFont(style, view.traitCollection);
@@ -151,6 +188,10 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 
 @interface ApolloSettingsTableViewController ()
 @property (nonatomic, copy) NSString *apollo_lastTextSizeCategory;
+// The section title fonts the table last took its heights with, and whether a
+// pass to take new ones is queued (see -apollo_restyleShownSectionTitles).
+@property (nonatomic, copy) NSString *apollo_sectionTitleFontKey;
+@property (nonatomic) BOOL apollo_titleHeightPassPending;
 @end
 
 @implementation ApolloSettingsTableViewController
@@ -163,6 +204,7 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self apollo_applyTheme];
+    [self apollo_restyleShownSectionTitles];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
@@ -258,6 +300,145 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
 
 - (void)tableView:(UITableView *)__unused tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)__unused indexPath {
     [self apollo_applyThemeToCell:cell];
+}
+
+// Section headers and footers are styled once, as they're displayed (the
+// willDisplay callbacks above), so the ones that were showing while the theme
+// changed under a pushed screen (Theme Manager is one of the hub's Shortcuts)
+// came back in the old theme's colour and font: a stock theme's colours have
+// its values baked in, and a custom theme's keep resolving to its tokens after
+// the runtime is switched off. Run the display styling again on the ones the
+// table is showing, through the screen's own callbacks so a subclass's styling
+// comes along. Cells get the same from -apollo_applyTheme.
+- (void)apollo_restyleShownSectionTitles {
+    UITableView *tableView = self.tableView;
+    for (NSInteger section = 0; section < tableView.numberOfSections; section++) {
+        for (NSUInteger footer = 0; footer < 2; footer++) {
+            UITableViewHeaderFooterView *view = footer ? [tableView footerViewForSection:section]
+                                                       : [tableView headerViewForSection:section];
+            if (!view) continue;
+            UILabel *label = ApolloSettingsPlainTitleLabel(view);
+            UIFont *font = label.font;
+            // The styling recolours a title only while it has the colour UIKit
+            // gave it, so a title left in the old theme's colour would keep it.
+            UIColor *uikitColor = objc_getAssociatedObject(label, &kApolloSettingsTitleUIKitColorKey);
+            if (uikitColor) label.textColor = uikitColor;
+            if (footer) {
+                [self tableView:tableView willDisplayFooterView:view forSection:section];
+            } else {
+                [self tableView:tableView willDisplayHeaderView:view forSection:section];
+            }
+            if (label && ![label.font isEqual:font]) {
+                // Measured later (the form's footer check reads -sizeThatFits:),
+                // and a label still framed for the old font measures wrong.
+                [view setNeedsLayout];
+                [view layoutIfNeeded];
+            }
+        }
+    }
+
+    // The titles' heights follow their fonts, on screen or not, and the table
+    // only takes new ones from an updates pass. The key is stored once a pass
+    // has taken them, so a pass that didn't run (a cancelled swipe-back left
+    // the screen covered) is asked for again next time. A colour-only theme
+    // change keeps the key.
+    NSString *fontKey = ApolloSettingsSectionTitleFontKey(self.traitCollection);
+    if (!self.apollo_sectionTitleFontKey) {
+        self.apollo_sectionTitleFontKey = fontKey;
+    } else if (![fontKey isEqualToString:self.apollo_sectionTitleFontKey]) {
+        [self apollo_scheduleSectionTitleHeightPass];
+    }
+}
+
+// Once any transition is over (a pass during one gets its settle captured),
+// on the next turn, so the transition's own completion work, the form's footer
+// check included, has run.
+- (void)apollo_scheduleSectionTitleHeightPass {
+    if (self.apollo_titleHeightPassPending) return;
+    self.apollo_titleHeightPassPending = YES;
+    __weak typeof(self) weakSelf = self;
+    void (^pass)(void) = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.apollo_titleHeightPassPending = NO;
+        if (!strongSelf.tableView.window) return;
+        // A transition that began since: wait for that one too. One that can't
+        // take a completion anymore is ending, so go ahead (as the form's
+        // footer check does).
+        id<UIViewControllerTransitionCoordinator> current = strongSelf.transitionCoordinator;
+        if (current && [current animateAlongsideTransition:nil
+                                                completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+            [weakSelf apollo_scheduleSectionTitleHeightPass];
+        }]) {
+            return;
+        }
+        NSString *fontKey = ApolloSettingsSectionTitleFontKey(strongSelf.traitCollection);
+        if ([fontKey isEqualToString:strongSelf.apollo_sectionTitleFontKey]) return;
+        strongSelf.apollo_sectionTitleFontKey = fontKey;
+        ApolloLog(@"[SettingsForm] section title fonts changed with the theme — re-measuring");
+        [strongSelf apollo_updateSectionTitleHeights];
+    };
+    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+    if (coordinator && [coordinator animateAlongsideTransition:nil
+                                                   completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+        dispatch_async(dispatch_get_main_queue(), pass);
+    }]) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), pass);
+}
+
+// After an updates pass UIKit puts the first row on screen back where it was,
+// except when the top edge of the screen is inside a section footer: it then
+// puts the list back against another row and the list jumps (the form's
+// -performUpdateKeepingVisibleRowsInPlace: has the details). This pass adds
+// and removes no rows, so note where the first row on screen sits and put that
+// index path back there. At the top of the list UIKit keeps the list at the
+// top, which is right: putting the row back there would push the header above
+// it under the bars.
+- (void)apollo_updateSectionTitleHeights {
+    UITableView *tableView = self.tableView;
+    CGFloat offsetY = tableView.contentOffset.y;
+    CGFloat visibleTop = offsetY + tableView.adjustedContentInset.top;
+    NSIndexPath *anchor = nil;
+    CGFloat anchorOffset = 0.0;
+    NSArray<NSIndexPath *> *visible = visibleTop > 0.5
+        ? [tableView.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)] : nil;
+    for (NSIndexPath *indexPath in visible) {
+        CGRect rect = [tableView rectForRowAtIndexPath:indexPath];
+        if (CGRectGetMaxY(rect) <= visibleTop) continue;   // under the bars
+        anchor = indexPath;
+        anchorOffset = CGRectGetMinY(rect) - offsetY;
+        break;
+    }
+    [UIView performWithoutAnimation:^{
+        [self apollo_takeSectionTitleHeights];
+        [tableView layoutIfNeeded];   // the update, and UIKit's restore, happen here
+        CGFloat restored = tableView.contentOffset.y;
+        // Rows that come on screen as the list is put back are measured as
+        // they're laid out and can move the anchor again, so correct until it holds.
+        NSInteger passes = 0;
+        for (; anchor && passes < 4; passes++) {
+            UIEdgeInsets insets = tableView.adjustedContentInset;
+            CGFloat minY = -insets.top;
+            CGFloat maxY = MAX(minY, tableView.contentSize.height + insets.bottom - CGRectGetHeight(tableView.bounds));
+            CGFloat target = CGRectGetMinY([tableView rectForRowAtIndexPath:anchor]) - anchorOffset;
+            target = MIN(MAX(target, minY), maxY);
+            if (fabs(target - tableView.contentOffset.y) < 0.5) break;
+            tableView.contentOffset = CGPointMake(tableView.contentOffset.x, target);
+            [tableView layoutIfNeeded];
+        }
+        ApolloLog(@"[SettingsForm] section title heights taken: offset was %.1f, UIKit restored %.1f, now %.1f (%@)",
+                  offsetY, restored, tableView.contentOffset.y,
+                  anchor ? [NSString stringWithFormat:@"row %ld/%ld kept in place in %ld pass(es)",
+                                                      (long)anchor.section, (long)anchor.row, (long)passes]
+                         : @"top of the list");
+    }];
+}
+
+- (void)apollo_takeSectionTitleHeights {
+    [self.tableView beginUpdates];
+    [self.tableView endUpdates];
 }
 
 @end

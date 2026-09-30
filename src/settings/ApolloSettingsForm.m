@@ -305,6 +305,20 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     }];
 }
 
+// Section titles restyled for a new theme font (see the settings base's
+// -viewWillAppear:) take their new heights in one pass that keeps the rows on
+// screen in place. The footer heights the form measured were for the old font,
+// the ones off screen too, so measure them again in that pass, as after a text
+// size change (see "section footer heights"). Left to the footer check the
+// restyled footers queued, they'd get a second pass right after this one,
+// without that protection, and the list moved (9pt on the hub).
+- (void)apollo_takeSectionTitleHeights {
+    [_footerMeasuredHeights removeAllObjects];
+    [_footerMeasureChanges removeAllObjects];
+    [self apollo_sf_adoptMeasuredFooterHeights];
+    [super apollo_takeSectionTitleHeights];
+}
+
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
     // Icon tiles bake a trait-resolved fill color at render time (see
