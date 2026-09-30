@@ -177,7 +177,7 @@ static BOOL ApolloSwipeCommentsAssignSwiftWeak(id object, const char *name, id v
 @property (nonatomic, weak) UIViewController *mediaController;
 @property (nonatomic, weak) UIViewController *mediaViewer;
 @property (nonatomic, weak) AVPlayer *player;
-@property (nonatomic, strong) AVPlayerLayer *playerLayer;
+@property (nonatomic, weak) AVPlayerLayer *playerLayer;
 @property (nonatomic, weak) CALayer *playerLayerHost;
 @property (nonatomic) float intendedPlaybackRate;
 @property (nonatomic, weak) UIView *animatedImageView;
