@@ -196,9 +196,9 @@ static void ApplyAccentImageView(id cell) {
     UIImage *hi = icon.highlightedImage;
     if (hi && hi.renderingMode != UIImageRenderingModeAlwaysTemplate)
         icon.highlightedImage = [hi imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     icon.tintColor = accent;
 }
 
@@ -261,9 +261,9 @@ static void ApplyAccentImageNode(id cell) {
         if (current != templated)
             ((void (*)(id, SEL, UIImage *))objc_msgSend)(iconNode, @selector(setImage:), templated);
     }
+    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     if ([iconNode respondsToSelector:@selector(setTintColor:)])
         ((void (*)(id, SEL, UIColor *))objc_msgSend)(iconNode, @selector(setTintColor:), accent);
     if ([iconNode respondsToSelector:@selector(view)]) {
@@ -275,9 +275,7 @@ static void ApplyAccentImageNode(id cell) {
 %hook _TtC6Apollo16IconTextCellNode
 - (id)layoutSpecThatFits:(ApolloASSizeRange)fits {
     ApplyAccentImageNode(self);
-    id spec = %orig;
-    ApplyAccentImageNode(self);
-    return spec;
+    return %orig;
 }
 %end
 

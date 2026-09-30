@@ -242,7 +242,7 @@ static void ApolloDeliverImageChestResolution(NSString *cacheKey, NSDictionary *
     NSArray *callbacks = nil;
     @synchronized (ApolloImageChestResolverLock()) {
         ApolloImageChestStoreResolution(cacheKey, result);
-        callbacks = [ApolloImageChestResolverPending()[cacheKey] copy];
+        callbacks = ApolloImageChestResolverPending()[cacheKey];
         [ApolloImageChestResolverPending() removeObjectForKey:cacheKey];
     }
 

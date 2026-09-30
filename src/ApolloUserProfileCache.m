@@ -584,7 +584,7 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
             if (info.decoratorURL) [self requestImageForURL:info.decoratorURL completion:nil];
         }
 
-        NSArray<void (^)(ApolloUserProfileInfo *)> *callbacks = [self.infoCompletions[key] copy];
+        NSArray<void (^)(ApolloUserProfileInfo *)> *callbacks = self.infoCompletions[key];
         [self.infoCompletions removeObjectForKey:key];
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1095,7 +1095,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
             [self.imageCache setObject:image forKey:key cost:cost];
         }
 
-        NSArray<void (^)(UIImage *)> *callbacks = [self.imageCompletions[key] copy];
+        NSArray<void (^)(UIImage *)> *callbacks = self.imageCompletions[key];
         [self.imageCompletions removeObjectForKey:key];
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^callback)(UIImage *) in callbacks) {
@@ -1303,7 +1303,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
             [self.bannerCache setObject:image forKey:key cost:cost];
         }
 
-        NSArray<void (^)(UIImage *)> *callbacks = [self.imageCompletions[key] copy];
+        NSArray<void (^)(UIImage *)> *callbacks = self.imageCompletions[key];
         [self.imageCompletions removeObjectForKey:key];
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^callback)(UIImage *) in callbacks) {

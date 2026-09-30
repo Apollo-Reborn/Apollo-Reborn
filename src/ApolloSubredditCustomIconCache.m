@@ -109,7 +109,9 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {
     if (key.length == 0) return;
     @synchronized (self.storedKeysLock) {
-        NSMutableSet<NSString *> *keys = [self.storedKeys mutableCopy] ?: [NSMutableSet set];
+        NSSet<NSString *> *storedKeys = self.storedKeys;
+        if ([storedKeys containsObject:key] == present) return;
+        NSMutableSet<NSString *> *keys = [storedKeys mutableCopy];
         if (present) [keys addObject:key];
         else [keys removeObject:key];
         self.storedKeys = keys;
@@ -156,10 +158,7 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
     if (data.length <= ApolloSubredditCustomIconMaxBytes) return data;
 
     UIImage *smaller = [self normalizedIconImageFromImage:image targetDimension:ApolloSubredditCustomIconFallbackDimension];
-    data = UIImagePNGRepresentation(smaller);
-    if (data.length <= ApolloSubredditCustomIconMaxBytes) return data;
-
-    return data;
+    return UIImagePNGRepresentation(smaller);
 }
 
 - (void)postChangedNotificationForSubreddit:(NSString *)subredditName {
@@ -323,12 +322,10 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
                     if (key.length > 0) [failedKeys addObject:key];
                     ApolloLog(@"[SubredditHeaders] failed clearing custom icon file=%@ error=%@",
                         file, removeError.localizedDescription ?: @"unknown");
-                } else if (key.length > 0) {
-                    [self publishStoredKey:key present:NO];
                 }
             }
         }
-        for (NSString *key in failedKeys) [self publishStoredKey:key present:YES];
+        [self replaceStoredKeys:failedKeys];
         ApolloLog(@"[SubredditHeaders] cleared all custom icons");
         // Correct any startup-inventory notification that reached the main
         // queue before deletion completed, regardless of the optimistic state.

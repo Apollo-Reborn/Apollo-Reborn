@@ -32,6 +32,7 @@
 #import <math.h>
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloScrapeWebView.h"
 #import "ApolloSubredditHighlights.h"
 #import "ApolloDevvitPosts.h"
@@ -2529,7 +2530,7 @@ static NSArray<UIViewController *> *ApolloHLRootViewControllers(void) {
 static void ApolloHLForEachPostsVC(void (^block)(UIViewController *postsVC)) {
     Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
     if (!postsClass || !block) return;
-    NSMutableArray<UIViewController *> *stack = [[ApolloHLRootViewControllers() mutableCopy] ?: [NSMutableArray array] mutableCopy];
+    NSMutableArray<UIViewController *> *stack = [ApolloHLRootViewControllers() mutableCopy];
     NSMutableSet *seen = [NSMutableSet set];
     while (stack.count) {
         UIViewController *vc = stack.lastObject;
@@ -3657,16 +3658,15 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
 %end
 
 // A name typed into the jump bar: Return runs the in-place switch before this
-// returns. The bar's delegate is a Swift-only property, so find the feed that owns
-// it by its jumpBar ivar.
+// returns. Its Swift weak delegate is the feed controller to re-sync.
 %hook _TtC6Apollo7JumpBar
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     BOOL result = %orig;
     if (!sCommunityHighlights) return result;
-    id jumpBar = self;
-    ApolloHLForEachPostsVC(^(UIViewController *postsVC) {
-        if (ApolloHLTypedIvar(postsVC, @"jumpBar", [jumpBar class]) == jumpBar) ApolloHLSyncSwitchedFeed(postsVC);
-    });
+    UIViewController *postsVC = ApolloReadSwiftWeakObjectIvar(self, "delegate");
+    if ([postsVC isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")]) {
+        ApolloHLSyncSwitchedFeed(postsVC);
+    }
     return result;
 }
 %end

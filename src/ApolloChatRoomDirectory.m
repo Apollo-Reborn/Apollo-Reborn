@@ -234,7 +234,7 @@ static NSUInteger ApolloChatRoomDirectoryMergePage(NSDictionary *payload,
 
 static void ApolloChatRoomDirectoryFinish(BOOL ready) {
     sDirectoryInFlight = NO;
-    NSArray *waiters = [sDirectoryWaiters copy];
+    NSArray *waiters = sDirectoryWaiters;
     sDirectoryWaiters = nil;
     for (void (^waiter)(BOOL) in waiters) waiter(ready);
 }

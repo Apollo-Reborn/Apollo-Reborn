@@ -69,6 +69,23 @@ static inline id ApolloReadObjectIvar(id object, const char *name) {
     return (__bridge id)value;
 }
 
+// Swift weak storage must be loaded by its runtime, not object_getIvar.
+// The loader returns +1 ownership; transfer it to ARC.
+static inline id ApolloReadSwiftWeakObjectIvar(id object, const char *name) {
+    if (!object || !name) return nil;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return nil;
+    typedef void *(*LoadStrongFunction)(void *slot);
+    static LoadStrongFunction loadStrong;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        loadStrong = (LoadStrongFunction)dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
+    });
+    if (!loadStrong) return nil;
+    void *value = loadStrong((uint8_t *)(__bridge void *)object + offset);
+    return (__bridge_transfer id)value;
+}
+
 static inline BOOL ApolloReadBoolIvar(id object, const char *name, BOOL defaultValue) {
     if (!object) return defaultValue;
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);

@@ -1,7 +1,7 @@
 #import "ApolloCommon.h"
 #import "ApolloHiddenContentViewController.h"
 #import "ApolloAccountCredentials.h"
-#import <dlfcn.h>
+#import "ApolloSwiftRuntime.h"
 #import <objc/message.h>
 
 // Defined in ApolloUserAvatars.xm -- more reliable than reading "userInfo"
@@ -71,25 +71,9 @@ static id ApolloHiddenObjectIvar(id object, const char *name) {
     return ivar ? object_getIvar(object, ivar) : nil;
 }
 
-static UIViewController *ApolloHiddenListAdapterController(id adapter) {
-    Ivar ivar = class_getInstanceVariable([adapter class], "viewController");
-    if (!ivar) return nil;
-    typedef void *(*ApolloHiddenWeakLoadStrongFunction)(void *slot);
-    static ApolloHiddenWeakLoadStrongFunction weakLoadStrong;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        weakLoadStrong = (ApolloHiddenWeakLoadStrongFunction)dlsym(
-            RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
-    });
-    if (!weakLoadStrong) return nil;
-    void *slot = (uint8_t *)(__bridge void *)adapter + ivar_getOffset(ivar);
-    void *value = weakLoadStrong(slot);
-    return value ? CFBridgingRelease(value) : nil;
-}
-
 static UIViewController *ApolloHiddenProfileControllerForAdapter(id adapter, ASDisplayNode *tableNode) {
     Class profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
-    UIViewController *owner = ApolloHiddenListAdapterController(adapter);
+    UIViewController *owner = ApolloReadSwiftWeakObjectIvar(adapter, "viewController");
     if (owner) return [owner isKindOfClass:profileClass] ? owner : nil;
 
     // A missing weak owner is unusual, but an attached table's responder chain

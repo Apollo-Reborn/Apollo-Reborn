@@ -2662,14 +2662,7 @@ static void ApolloFTArmFromPostCellNode(id node) {
 // invalidated by the next sort pick). Read through the Swift runtime's weak
 // loader so the state dump can show whether a tab's screen is still polling.
 static NSTimer *ApolloFTDebugLiveTimer(id vc) {
-    if (!vc) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(vc), "liveSortTimer");
-    if (!ivar) return nil;
-    static void *(*weakLoadStrong)(void *) = NULL;
-    if (!weakLoadStrong) weakLoadStrong = (void *(*)(void *))dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
-    if (!weakLoadStrong) return nil;
-    void *ref = (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar);
-    id timer = (__bridge_transfer id)weakLoadStrong(ref);   // +1 from the loader, balanced by ARC
+    id timer = ApolloReadSwiftWeakObjectIvar(vc, "liveSortTimer");
     return [timer isKindOfClass:[NSTimer class]] ? (NSTimer *)timer : nil;
 }
 
