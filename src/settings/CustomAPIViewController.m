@@ -21,6 +21,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebJSON.h"           // ApolloWebJSONBearerIsSynthetic() — widget setup code
 #import "ApolloPerAccountFavorites.h"
+#import "ApolloICloudReadState.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloState.h"
 #import "ApolloScrollToTop.h"
@@ -1720,9 +1721,65 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFilterNSFWRecentlyRead]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf filterNSFWRecentlyReadSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *iCloudReadState =
+        [ApolloSettingsRow switchRowWithID:@"gen.iCloudReadState"
+                                     title:@"Sync Read State with iCloud"
+                                      isOn:^BOOL { return ApolloICloudReadState.sharedManager.enabled; }
+                                  onToggle:^(UISwitch *sender) {
+        if (sender.isOn) {
+            [sender setOn:NO animated:YES];
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Sync Read History with iCloud?"
+                message:@"Apollo will sync read post IDs, view times, and new-comment baselines. The cloud payload is encrypted with a key stored in iCloud Keychain. Sync only works across devices using the same iCloud account and compatible signing identity. Changing iCloud accounts turns sync off without changing local history."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Enable Sync" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    NSError *enableError = nil;
+                    if (![ApolloICloudReadState.sharedManager setEnabled:YES error:&enableError]) {
+                        [weakSelf showAlertWithTitle:@"iCloud Sync Unavailable"
+                                             message:enableError.localizedDescription ?: @"This build cannot access iCloud."];
+                    }
+                    [weakSelf reloadRowWithID:@"gen.iCloudReadState"];
+                    [weakSelf reloadRowWithID:@"gen.iCloudReadStateStatus"];
+                }]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        NSError *error = nil;
+        if (![ApolloICloudReadState.sharedManager setEnabled:sender.isOn error:&error]) {
+            [sender setOn:NO animated:YES];
+            [weakSelf showAlertWithTitle:@"iCloud Sync Unavailable"
+                                 message:error.localizedDescription ?: @"This build cannot access iCloud."];
+        }
+    }];
+
+    ApolloSettingsRow *iCloudReadStateStatus =
+        [ApolloSettingsRow valueRowWithID:@"gen.iCloudReadStateStatus"
+                                    title:@"iCloud Sync Status"
+                                   detail:^NSString * {
+        ApolloICloudReadState *manager = ApolloICloudReadState.sharedManager;
+        if (!manager.enabled) return manager.availabilityMessage ?: @"Off";
+        return manager.available ? @"Encrypted · Active" : (manager.availabilityMessage ?: @"Unavailable");
+    } onSelect:^{
+        UIAlertController *reset = [UIAlertController alertControllerWithTitle:@"Reset Encrypted Cloud State?"
+            message:@"Use this only when devices created conflicting encryption keys. It deletes Apollo's encrypted read-state value and synchronized key from iCloud, but does not change local read history. After resetting, enable sync on one device first, then the others."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [reset addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [reset addAction:[UIAlertAction actionWithTitle:@"Reset Cloud Sync" style:UIAlertActionStyleDestructive
+            handler:^(__unused UIAlertAction *action) {
+                NSError *resetError = nil;
+                if (![ApolloICloudReadState.sharedManager resetEncryptedCloudState:&resetError]) {
+                    [weakSelf showAlertWithTitle:@"Reset Failed" message:resetError.localizedDescription];
+                }
+                [weakSelf reloadRowWithID:@"gen.iCloudReadState"];
+                [weakSelf reloadRowWithID:@"gen.iCloudReadStateStatus"];
+            }]];
+        [weakSelf presentViewController:reset animated:YES completion:nil];
+    }];
+
     return [ApolloSettingsSection sectionWithTitle:@"Recently Read"
-                                            footer:@"Show thumbnails on posts you've already read, and cap how many Apollo remembers."
-                                              rows:@[ readThumbnails, readPostMax, filterNSFWRR ]];
+                                            footer:@"Show thumbnails on posts you've already read, and cap how many Apollo remembers. iCloud sync is optional and requires usable iCloud key-value-store and iCloud Keychain access. Read state updates live; native comment highlighting uses received baselines after the next cold start."
+                                              rows:@[ readThumbnails, readPostMax, filterNSFWRR, iCloudReadState, iCloudReadStateStatus ]];
 }
 
 // The "Open in App" screen now lives in native General → Open Links — see
@@ -4794,6 +4851,11 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 @end
 
 @implementation ApolloPostsFeedsViewController
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadRowWithID:@"gen.iCloudReadState"];
+    [self reloadRowWithID:@"gen.iCloudReadStateStatus"];
+}
 - (NSString *)apollo_screenTitle { return @"Posts & Feeds"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildPostsRecentlyReadSection],

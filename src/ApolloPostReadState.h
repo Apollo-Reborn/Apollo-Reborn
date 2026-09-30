@@ -21,4 +21,15 @@ FOUNDATION_EXPORT NSArray<NSString *> * _Nullable ApolloReadPostIDsSnapshot(void
 // second history. For a present baseline, +N is MAX(0, currentTotal - baseline).
 FOUNDATION_EXPORT NSDictionary<NSString *, NSNumber *> *ApolloLastReadCommentTotalsSnapshot(void);
 
+// Validated native snapshots including the exact viewing timestamp needed for
+// cross-device new-comment baselines. Malformed rows are omitted.
+FOUNDATION_EXPORT NSDictionary<NSString *, NSDictionary *> *ApolloRawPostCommentSnapshots(void);
+
+// Apply a converged cloud projection. Read IDs update live through the native
+// tracker's queue when it exists and always update its persisted mirror. Comment
+// snapshots are persisted for the native tracker to consume on its next cold
+// start; its inline Swift OrderedDictionary has no stable live mutation API.
+FOUNDATION_EXPORT void ApolloApplySyncedPostReadState(NSArray<NSString *> *readIDs,
+                                                       NSData * _Nullable commentSnapshots);
+
 NS_ASSUME_NONNULL_END

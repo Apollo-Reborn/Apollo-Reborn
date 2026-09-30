@@ -29,6 +29,9 @@ static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled"
 static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
 // Legacy destination value retained for compatibility with older builds.
 static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
+// Opt-in cross-device read/unread and new-comment baseline sync. Runtime iCloud
+// access still depends on the current signing profile's KVS entitlement.
+static NSString *const UDKeyICloudReadStateSyncEnabled = @"ICloudReadStateSyncEnabled";
 // Version stamps for Apollo's own sideload-unlock flags, which the constructor
 // writes into two preference domains. Each stamp lives in the SAME domain as
 // the flags it guards, so anything that resets a domain (fresh install, a

@@ -6,6 +6,7 @@
 #import <limits.h>
 
 #import "ApolloCommon.h"
+#import "ApolloICloudReadState.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloPostReadState.h"
 #import "settings/ApolloSettingsTableViewController.h"
@@ -268,6 +269,46 @@ NSDictionary<NSString *, NSNumber *> *ApolloLastReadCommentTotalsSnapshot(void) 
         ApolloLog(@"[RecentlyRead] Loaded %lu native last-read comment baselines", (unsigned long)cachedTotals.count);
         return cachedTotals;
     }
+}
+
+NSDictionary<NSString *, NSDictionary *> *ApolloRawPostCommentSnapshots(void) {
+    NSData *data = [[NSUserDefaults standardUserDefaults] dataForKey:@"PostCommentsSnapshots"];
+    if (data.length == 0 || data.length > 2 * 1024 * 1024) return @{};
+    id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![decoded isKindOfClass:NSArray.class] || [decoded count] % 2 != 0) return @{};
+    NSMutableDictionary *snapshots = [NSMutableDictionary dictionaryWithCapacity:[decoded count] / 2];
+    for (NSUInteger i = 0; i + 1 < [decoded count]; i += 2) {
+        NSString *postID = [decoded[i] isKindOfClass:NSString.class] ? ApolloBarePostID(decoded[i]) : nil;
+        NSDictionary *snapshot = [decoded[i + 1] isKindOfClass:NSDictionary.class] ? decoded[i + 1] : nil;
+        NSNumber *timestamp = [snapshot[@"timestamp"] isKindOfClass:NSNumber.class] ? snapshot[@"timestamp"] : nil;
+        NSNumber *count = [snapshot[@"totalComments"] isKindOfClass:NSNumber.class] ? snapshot[@"totalComments"] : nil;
+        if (!postID.length || !timestamp || !count ||
+            CFGetTypeID((__bridge CFTypeRef)timestamp) == CFBooleanGetTypeID() ||
+            CFGetTypeID((__bridge CFTypeRef)count) == CFBooleanGetTypeID() ||
+            !isfinite(timestamp.doubleValue) || timestamp.doubleValue < 0 ||
+            !isfinite(count.doubleValue) || count.doubleValue < 0 || floor(count.doubleValue) != count.doubleValue) continue;
+        snapshots[postID] = @{ @"timestamp": timestamp, @"totalComments": @(count.longLongValue) };
+    }
+    return snapshots;
+}
+
+void ApolloApplySyncedPostReadState(NSArray<NSString *> *readIDs, NSData *commentSnapshots) {
+    NSMutableOrderedSet *normalized = [NSMutableOrderedSet orderedSet];
+    for (id rawID in readIDs) {
+        if (![rawID isKindOfClass:NSString.class]) continue;
+        NSString *postID = ApolloBarePostID(rawID);
+        if (postID.length) [normalized addObject:postID];
+    }
+    NSArray *projected = normalized.array;
+    [[NSUserDefaults standardUserDefaults] setObject:projected forKey:@"ReadPostIDs"];
+    if (commentSnapshots.length > 0) {
+        [[NSUserDefaults standardUserDefaults] setObject:commentSnapshots forKey:@"PostCommentsSnapshots"];
+    }
+    ApolloMutateTrackerSet(^(NSMutableOrderedSet *trackerSet) {
+        [trackerSet removeAllObjects];
+        [trackerSet addObjectsFromArray:projected];
+    });
+    ApolloSchedulePostReadStateDidChange();
 }
 
 // Flush the in-memory ReadPostIDs to NSUserDefaults so backup captures current state
@@ -717,6 +758,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Clear All" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [[ApolloICloudReadState sharedManager] recordClearAll];
         // Kill any in-flight page fetch so its completion can't repopulate
         // the cleared list.
         [self _invalidateInFlightFetches];
@@ -1404,6 +1446,7 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
 
     NSString *fullName = link.fullName; // e.g. "t3_abc123"
     NSString *bareID = ApolloBarePostID(fullName);
+    [[ApolloICloudReadState sharedManager] recordPostIDAsUnread:bareID];
 
     // Remove from tracker's in-memory ordered set (stores bare IDs) with the
     // same barrier discipline native writes use

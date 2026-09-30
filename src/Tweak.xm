@@ -42,6 +42,7 @@
 #import "ApolloPerAccountFavorites.h"
 #import "ApolloFavoritesSorting.h"
 #import "ApolloAICloudBridge.h"
+#import "ApolloICloudReadState.h"
 #import "crash/ApolloCrashManager.h"
 #import "crash/ApolloCrashContext.h"
 #import "crash/ApolloCrashPromptCoordinator.h"
@@ -3643,6 +3644,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyAutomaticBackupsEnabled: @NO,
                                     UDKeyAutomaticBackupIntervalDays: @3,
                                     UDKeyAutomaticBackupDestination: @0,
+                                    UDKeyICloudReadStateSyncEnabled: @NO,
                                     UDKeyCrashCaptureEnabled: @YES,
                                     UDKeyTrendingSubredditsLimit: @"5",
                                     UDKeyShowRandNsfw: @NO,
@@ -3800,6 +3802,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         [standardDefaults setInteger:3 forKey:UDKeyAutomaticBackupIntervalDays];
     }
     sAutomaticBackupDestination = [standardDefaults integerForKey:UDKeyAutomaticBackupDestination] == 1 ? 1 : 0;
+    sICloudReadStateSyncEnabled = [standardDefaults boolForKey:UDKeyICloudReadStateSyncEnabled];
     NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     NSDictionary *persistentDomain = bundleID.length > 0 ? [standardDefaults persistentDomainForName:bundleID] : nil;
 
@@ -4462,6 +4465,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // account array. The feature is dormant when its opt-in flag is off.
     ApolloPerAccountFavoritesStart();
     [[ApolloAutomaticBackup sharedManager] start];
+    [[ApolloICloudReadState sharedManager] start];
 
     // Mirror the selected app icon for Bark notification icon passthrough.
     ApolloBarkCaptureInitialIconSelection();
