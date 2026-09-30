@@ -95,7 +95,23 @@ static void RevertTrueBlack(UIVisualEffectView *backdrop) {
     for (UIView *sub in stock[@"hidden"]) sub.hidden = NO;
 }
 
+// Pressed keys and the variant picker draw their own glass with a UIKBBackdropView (a
+// UIKBVisualEffectView inside TUIVariantSelectorView, or one owned by a key view). Painting those
+// black leaves a black cover under the pressed key, so only the keyboard's own background
+// backdrops are touched.
+static BOOL BackdropBelongsToKey(UIView *backdrop) {
+    Class effectView = objc_getClass("UIKBVisualEffectView");
+    if (effectView && [backdrop isKindOfClass:effectView]) return YES;
+    Class keyView = objc_getClass("UIKBKeyView");
+    Class variantSelector = objc_getClass("TUIVariantSelectorView");
+    for (UIView *view = backdrop.superview; view; view = view.superview) {
+        if ((keyView && [view isKindOfClass:keyView]) || (variantSelector && [view isKindOfClass:variantSelector])) return YES;
+    }
+    return NO;
+}
+
 static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
+    if (BackdropBelongsToKey(backdrop)) return;
     BOOL applies = TrueBlackKeyboardAppliesTo(AppInterfaceStyle());
     UpdateEdgeFill(backdrop, applies);
     if (!applies) {
