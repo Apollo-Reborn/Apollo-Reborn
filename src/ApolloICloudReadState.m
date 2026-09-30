@@ -482,8 +482,8 @@ static NSURL *ApolloICloudReadStateURL(void) {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self start]; }); return; }
     if (self.started) return;
     self.started = YES;
-    self.journal = [[self loadOrCreateJournal] mutableCopy];
     if (!self.enabled) return;
+    self.journal = [[self loadOrCreateJournal] mutableCopy];
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(cloudDidChange:)
         name:NSUbiquitousKeyValueStoreDidChangeExternallyNotification object:NSUbiquitousKeyValueStore.defaultStore];
@@ -505,6 +505,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
         if (error) *error = ApolloICloudReadStateError(self.availabilityMessage);
         return NO;
     }
+    if (enabled && !self.journal) self.journal = [[self loadOrCreateJournal] mutableCopy];
     if (enabled && ![self prepareEncryptionKey:error]) {
         self.available = NO;
         return NO;
