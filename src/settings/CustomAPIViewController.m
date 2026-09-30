@@ -150,6 +150,7 @@ static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
 
 static NSString *const kApolloRebornSubredditName = @"ApolloReborn";
 static char kAboutSubredditIconTaskKey;
+static char kApolloFooterLinkSectionTitleKey;
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
 @property (nonatomic, copy) NSArray<NSNumber *> *visibleIndexes;
@@ -427,6 +428,9 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 // Hub only: whether the Setup section last rendered its "add a Reddit key"
 // footer, so viewWillAppear reloads that section only when the answer flips.
 @property (nonatomic) BOOL setupFooterShowsKeyNudge;
+// A height pass for restyled link footers is queued (see
+// -apollo_refreshFooterTextViews).
+@property (nonatomic) BOOL footerLinkHeightPassPending;
 @end
 
 @implementation CustomAPIViewController
@@ -558,23 +562,66 @@ typedef NS_ENUM(NSInteger, Tag) {
     cell.selectedBackgroundView = selectedBackground;
 }
 
+// Restyles the link footers the table is showing for the current theme, the way
+// they are built. A footer that was showing when the theme changed under a
+// pushed screen (Theme Manager is one of the hub's Shortcuts) otherwise came
+// back with the old theme's text colour, link colour and font. UIKit shows
+// these footers as plain views, and -footerViewForSection: only returns
+// UITableViewHeaderFooterViews, so they are found among the table's own
+// subviews by the section title each was tagged with in
+// -tableView:viewForFooterInSection:.
 - (void)apollo_refreshFooterTextViews {
-    UIColor *accentColor = [self apollo_themeAccentColor];
-    NSInteger sectionCount = self.tableView.numberOfSections;
-    for (NSInteger section = 0; section < sectionCount; section++) {
-        UIView *footerView = [self.tableView footerViewForSection:section];
-        if (![footerView isKindOfClass:[UITextView class]]) continue;
+    UITableView *tableView = self.tableView;
+    BOOL heightChanged = NO;
+    for (UIView *view in tableView.subviews) {
+        NSString *sectionTitle = objc_getAssociatedObject(view, &kApolloFooterLinkSectionTitleKey);
+        if (!sectionTitle || ![view isKindOfClass:[UITextView class]]) continue;
+        NSAttributedString *text = nil;
+        for (NSInteger section = 0; section < tableView.numberOfSections && !text; section++) {
+            if ([[self tableView:tableView titleForHeaderInSection:section] isEqualToString:sectionTitle]) {
+                text = [self footerAttributedTextForSection:section];
+            }
+        }
+        if (!text) continue;
 
-        UITextView *textView = (UITextView *)footerView;
-        textView.tintColor = accentColor;
-        textView.linkTextAttributes = @{NSForegroundColorAttributeName: accentColor};
-        textView.attributedText = [self footerAttributedTextForSection:section];
+        UITextView *textView = (UITextView *)view;
+        [self apollo_styleFooterLinkTextView:textView withText:text];
+        CGFloat width = CGRectGetWidth(textView.bounds);
+        if (width <= 0) continue;
+        // Same rounding as -tableView:heightForFooterInSection:.
+        CGFloat fitted = ceil([textView sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)].height);
+        if (fabs(fitted - CGRectGetHeight(textView.bounds)) >= 0.5) heightChanged = YES;
     }
+    if (heightChanged) [self apollo_scheduleFooterLinkHeightPass];
 }
 
-- (void)apollo_applyTheme {
-    [super apollo_applyTheme];
-    [self apollo_refreshFooterTextViews];
+// A theme font change can leave a restyled link footer taller than the height
+// the table gave it (its last lines cut off) or shorter. An empty updates pass
+// makes the table ask -tableView:heightForFooterInSection: again, which
+// measures the same way. Run it once any transition is over (a pass during one
+// gets its settle captured), and keep the rows on screen where they are.
+- (void)apollo_scheduleFooterLinkHeightPass {
+    if (self.footerLinkHeightPassPending) return;
+    self.footerLinkHeightPassPending = YES;
+    __weak typeof(self) weakSelf = self;
+    void (^pass)(void) = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.footerLinkHeightPassPending = NO;
+        UITableView *tableView = strongSelf.tableView;
+        if (!tableView.window) return;
+        ApolloLog(@"[SettingsForm] link footers changed height with the theme — re-measuring");
+        [strongSelf performUpdateKeepingVisibleRowsInPlace:^{
+            [tableView beginUpdates];
+            [tableView endUpdates];
+        }];
+    };
+    id<UIViewControllerTransitionCoordinator> coordinator = self.transitionCoordinator;
+    if (coordinator && [coordinator animateAlongsideTransition:nil
+                                                   completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) { pass(); }]) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), pass);
 }
 
 - (UIImage *)roundedImage:(UIImage *)image size:(CGFloat)size cornerRadius:(CGFloat)radius {
@@ -902,6 +949,9 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self apollo_applyTheme];
+    // The theme may have changed while this screen was covered (Theme Manager
+    // is one of the hub's Shortcuts).
+    [self apollo_refreshFooterTextViews];
     // Refresh the Web Session Login status line after returning from the login
     // flow (signed-in user / write-token availability may have just changed).
     // No-ops while the row is hidden (API-Key-Free Mode off).
@@ -3573,13 +3623,32 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return text;
 }
 
-// A link footer exactly as the table shows it. -tableView:heightForFooterInSection:
-// measures one of these, so everything that sizes the text happens here. The
-// settings base styles every footer again in willDisplayFooterView:, after the
-// table has taken the footer's height; a view that got that styling only there
-// was measured in one font and shown in another (13pt text shown at 17pt under
-// a Rounded, Serif or Mono theme font), and the lines that didn't fit were cut
-// off. Styled here, that second pass changes nothing.
+// A link footer's text, fonts and colours exactly as the table shows them.
+// -tableView:heightForFooterInSection: measures a footer styled here and
+// -apollo_refreshFooterTextViews restyles the shown ones here, so everything
+// that sizes the text happens here. The settings base styles every footer again
+// in willDisplayFooterView:, after the table has taken the footer's height; a
+// view that got that styling only there was measured in one font and shown in
+// another (13pt text shown at 17pt under a Rounded, Serif or Mono theme font),
+// and the lines that didn't fit were cut off. Styled here, that second pass
+// changes nothing.
+- (void)apollo_styleFooterLinkTextView:(UITextView *)textView withText:(NSAttributedString *)text {
+    textView.tintColor = [self apollo_themeAccentColor];
+    textView.linkTextAttributes = @{NSForegroundColorAttributeName: [self apollo_themeAccentColor]};
+    textView.attributedText = text;
+    // The styling reads -font and -textColor, and once they have been set a
+    // UITextView keeps answering with those values rather than the new text's:
+    // restyling a shown footer after a theme change kept the old theme's font
+    // and never recoloured the text. Every run shares one font, and the styling
+    // gives the whole text one colour anyway (links draw in linkTextAttributes),
+    // so setting both from the first character changes nothing else.
+    if (text.length > 0) {
+        textView.font = [text attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL];
+        textView.textColor = [text attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL];
+    }
+    ApolloSettingsApplyFooterTypography(textView);
+}
+
 - (UITextView *)apollo_footerLinkTextViewWithText:(NSAttributedString *)text width:(CGFloat)width {
     // Created at its width: styling a text view before it has one, then
     // measuring it at that width, took over twice as long per height query.
@@ -3588,10 +3657,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     textView.scrollEnabled = NO;
     textView.backgroundColor = [UIColor clearColor];
     textView.textContainerInset = UIEdgeInsetsMake(8, 16, 8, 16);
-    textView.tintColor = [self apollo_themeAccentColor];
-    textView.linkTextAttributes = @{NSForegroundColorAttributeName: [self apollo_themeAccentColor]};
-    textView.attributedText = text;
-    ApolloSettingsApplyFooterTypography(textView);
+    [self apollo_styleFooterLinkTextView:textView withText:text];
 
     return textView;
 }
@@ -3613,7 +3679,12 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     NSAttributedString *text = [self footerAttributedTextForSection:section];
     if (!text) return nil;
 
-    return [self apollo_footerLinkTextViewWithText:text width:[self apollo_footerLinkWidthInTableView:tableView]];
+    UITextView *textView = [self apollo_footerLinkTextViewWithText:text width:[self apollo_footerLinkWidthInTableView:tableView]];
+    // Which footer this is, for -apollo_refreshFooterTextViews: the section's
+    // header title, the identity -footerAttributedTextForSection: files it under.
+    objc_setAssociatedObject(textView, &kApolloFooterLinkSectionTitleKey,
+                             [self tableView:tableView titleForHeaderInSection:section], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    return textView;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
