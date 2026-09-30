@@ -18,6 +18,9 @@ __END_DECLS
 - (void)resumeAfterFailedSettingsRestore;
 
 @property (nonatomic, readonly) BOOL enabled;
+@property (nonatomic, readonly) BOOL iCloudEnabled;
+@property (nonatomic, readonly) NSUInteger iCloudPendingCount;
+@property (nonatomic, readonly, nullable) NSString *iCloudLastErrorMessage;
 @property (nonatomic, readonly) NSInteger intervalDays;
 @property (nonatomic, readonly, getter=isBackingUp) BOOL backingUp;
 @property (nonatomic, readonly, nullable) NSDate *lastBackupDate;
@@ -27,6 +30,7 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
 
 - (void)setEnabled:(BOOL)enabled;
+- (void)setICloudEnabled:(BOOL)enabled;
 - (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, or 7 days
 // Successful completion includes the actual archive filename saved by Files.
 - (void)backUpNowWithCompletion:(void (^)(NSString *_Nullable filename, NSError *_Nullable error))completion;

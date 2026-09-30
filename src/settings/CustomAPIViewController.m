@@ -53,6 +53,8 @@
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloAutomaticBackupViewController.h"
 #import "settings/ApolloLocalBackupsViewController.h"
+#import "settings/ApolloICloudBackupStore.h"
+#import "settings/ApolloICloudBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -4696,6 +4698,12 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 
 - (void)restoreSettings {
     if (self.resolvingRestoreFolder || self.presentedViewController) return;
+    ApolloICloudBackupStore *iCloudStore = ApolloICloudBackupStore.sharedStore;
+    if (iCloudStore.availability == ApolloICloudBackupAvailabilityUnknown && !iCloudStore.isWorking) {
+        __weak typeof(self) weakSelf = self;
+        [iCloudStore refreshAvailabilityWithCompletion:^{ [weakSelf restoreSettings]; }];
+        return;
+    }
     __weak typeof(self) weakSelf = self;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
         message:@"Choose where the backup is stored."
@@ -4706,7 +4714,15 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
                 [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
             [weakSelf.navigationController pushViewController:controller animated:YES];
         }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+    UIAlertAction *iCloud = [UIAlertAction actionWithTitle:@"iCloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloICloudBackupsViewController *controller =
+                [[ApolloICloudBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    iCloud.enabled = iCloudStore.availability == ApolloICloudBackupAvailabilityAvailable;
+    [sheet addAction:iCloud];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Choose from Files"
         style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf presentRestorePickerAtDirectory:nil];

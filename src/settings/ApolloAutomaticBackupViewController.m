@@ -1,7 +1,10 @@
 #import "settings/ApolloAutomaticBackupViewController.h"
 
 #import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloICloudBackupStore.h"
+#import "settings/ApolloICloudBackupsViewController.h"
 #import "settings/ApolloLocalBackupsViewController.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static NSString *ApolloBackupDateDescription(NSDate *date) {
     if (!date) return @"Never";
@@ -11,10 +14,13 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 
 @interface ApolloAutomaticBackupViewController () <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSNumber *backupCount;
+@property (nonatomic, strong) NSNumber *iCloudBackupCount;
 @property (nonatomic) BOOL countRequestInFlight;
+@property (nonatomic) BOOL iCloudCountRequestInFlight;
 @property (nonatomic) BOOL refreshScheduled;
 @property (nonatomic, strong) UIDocumentPickerViewController *manualExportPicker;
 @property (nonatomic, strong) NSURL *manualExportURL;
+@property (nonatomic, strong) UIDocumentPickerViewController *folderPicker;
 @end
 
 @implementation ApolloAutomaticBackupViewController
@@ -24,14 +30,21 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
     self.title = @"Backup Settings";
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(backupStateDidChange)
         name:ApolloAutomaticBackupDidChangeNotification object:nil];
-    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(backupStateDidChange)
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applicationDidBecomeActive)
         name:UIApplicationDidBecomeActiveNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(iCloudStateDidChange)
+        name:ApolloICloudBackupStoreDidChangeNotification object:nil];
     [self refreshBackupCount];
+    __weak typeof(self) weakSelf = self;
+    [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithCompletion:^{
+        [weakSelf refreshICloudBackupCount];
+    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshBackupCount];
+    [self refreshICloudBackupCount];
     [self scheduleRefresh];
 }
 
@@ -44,6 +57,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     __weak typeof(self) weakSelf = self;
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
+    ApolloICloudBackupStore *iCloudStore = ApolloICloudBackupStore.sharedStore;
     BOOL (^canConfigure)(void) = ^BOOL { return !manager.isBackingUp; };
     BOOL (^automaticVisible)(void) = ^BOOL { return manager.enabled; };
 
@@ -101,6 +115,45 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             return [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
+    ApolloSettingsRow *iCloudEnabled = [ApolloSettingsRow switchRowWithID:@"automatic.icloud.enabled"
+        title:@"Save Copies to iCloud" isOn:^BOOL { return manager.iCloudEnabled; }
+        onToggle:^(UISwitch *sender) {
+            if (!sender.isOn) {
+                [manager setICloudEnabled:NO];
+                [weakSelf scheduleRefresh];
+                return;
+            }
+            sender.on = NO;
+            [weakSelf confirmEnableICloud];
+        }];
+    iCloudEnabled.enabled = ^BOOL {
+        return !manager.isBackingUp && !iCloudStore.isWorking && (manager.iCloudEnabled ||
+            iCloudStore.availability == ApolloICloudBackupAvailabilityAvailable);
+    };
+
+    ApolloSettingsRow *iCloudStatus = [ApolloSettingsRow valueRowWithID:@"automatic.icloud.status"
+        title:@"iCloud Drive" detail:^NSString * {
+            if (manager.iCloudLastErrorMessage.length) return manager.iCloudLastErrorMessage;
+            if (manager.iCloudPendingCount > 0) return [NSString stringWithFormat:@"%lu Pending Upload%@",
+                (unsigned long)manager.iCloudPendingCount, manager.iCloudPendingCount == 1 ? @"" : @"s"];
+            return iCloudStore.availabilityDescription;
+        } onSelect:nil];
+
+    ApolloSettingsRow *chooseICloudFolder = [ApolloSettingsRow buttonRowWithID:@"automatic.icloud.folder"
+        title:(iCloudStore.selectedFolderName.length ? @"Change iCloud Drive Folder" : @"Choose iCloud Drive Folder")
+        action:^{ [weakSelf chooseICloudFolder]; }];
+    chooseICloudFolder.enabled = ^BOOL { return !manager.isBackingUp && !iCloudStore.isWorking; };
+
+    ApolloSettingsRow *manageICloud = [ApolloSettingsRow disclosureRowWithID:@"automatic.icloud.manage"
+        title:@"Manage iCloud Backups" detail:^NSString * {
+            return weakSelf.iCloudBackupCount ? weakSelf.iCloudBackupCount.stringValue : nil;
+        } push:^UIViewController * {
+            return [[ApolloICloudBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    manageICloud.enabled = ^BOOL {
+        return !iCloudStore.isWorking && iCloudStore.availability == ApolloICloudBackupAvailabilityAvailable;
+    };
+
     ApolloSettingsSection *schedule = [ApolloSettingsSection sectionWithTitle:@"Backup Schedule"
         footer:@"Automatic backups are stored inside Apollo. The latest 10 automatic backups are kept; manual backups remain until you delete them."
         rows:@[interval]];
@@ -119,10 +172,26 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
         [ApolloSettingsSection sectionWithTitle:@"Backups"
             footer:@"Manual backups are kept locally and immediately open Files so you can save another copy in iCloud Drive or elsewhere. Export any backup again from Manage Backups."
             rows:@[manage]],
+        [ApolloSettingsSection sectionWithTitle:@"iCloud Backups"
+            footer:@"Optional. Successful local backups are copied to the selected Files/iCloud Drive folder, or to the default iCloud container when this build is entitled. Local backups remain the primary copy. A selected folder may require reconnecting after a reboot or provider permission change."
+            rows:@[iCloudEnabled, iCloudStatus, chooseICloudFolder, manageICloud]],
     ];
 }
 
 - (void)backupStateDidChange { [self scheduleRefresh]; [self refreshBackupCount]; }
+
+- (void)applicationDidBecomeActive {
+    [self backupStateDidChange];
+    __weak typeof(self) weakSelf = self;
+    [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithCompletion:^{
+        [weakSelf refreshICloudBackupCount];
+    }];
+}
+
+- (void)iCloudStateDidChange {
+    [self scheduleRefresh];
+    if (!ApolloICloudBackupStore.sharedStore.isWorking) [self refreshICloudBackupCount];
+}
 
 - (void)scheduleRefresh {
     if (self.refreshScheduled) return;
@@ -138,9 +207,42 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
     if (!self.isViewLoaded) return;
     [self visibilityDidChange];
     for (NSString *rowID in @[@"automatic.enabled", @"automatic.backupNow", @"automatic.interval",
-                              @"automatic.last", @"automatic.next", @"automatic.error", @"automatic.manage"]) {
+                              @"automatic.last", @"automatic.next", @"automatic.error", @"automatic.manage",
+                              @"automatic.icloud.enabled", @"automatic.icloud.status", @"automatic.icloud.folder",
+                              @"automatic.icloud.manage"]) {
         [self reloadRowWithID:rowID];
     }
+}
+
+- (void)refreshICloudBackupCount {
+    ApolloICloudBackupStore *store = ApolloICloudBackupStore.sharedStore;
+    if (self.iCloudCountRequestInFlight || store.isWorking ||
+        store.availability != ApolloICloudBackupAvailabilityAvailable) return;
+    self.iCloudCountRequestInFlight = YES;
+    __weak typeof(self) weakSelf = self;
+    [store backupURLsWithCompletion:^(NSArray<NSURL *> *urls, __unused NSError *error) {
+        weakSelf.iCloudCountRequestInFlight = NO;
+        weakSelf.iCloudBackupCount = @(urls.count);
+        [weakSelf scheduleRefresh];
+    }];
+}
+
+- (void)confirmEnableICloud {
+    if (ApolloICloudBackupStore.sharedStore.availability != ApolloICloudBackupAvailabilityAvailable ||
+        self.presentedViewController) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Save Backups to iCloud?"
+        message:[NSString stringWithFormat:@"Apollo backups include settings, API keys, and logged-in account credentials. Enabling this copies future successful backups to %@. Only devices with access to that same destination can restore them.",
+            ApolloICloudBackupStore.sharedStore.selectedFolderName ?: @"this signed build's default iCloud container"]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel
+        handler:^(__unused UIAlertAction *action) { [self scheduleRefresh]; }]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Use iCloud" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            [ApolloAutomaticBackup.sharedManager setICloudEnabled:YES];
+            [weakSelf scheduleRefresh];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)refreshBackupCount {
@@ -166,6 +268,17 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             [manager setIntervalDays:values[(NSUInteger)pickedIndex].integerValue];
             [weakSelf scheduleRefresh];
         });
+}
+
+- (void)chooseICloudFolder {
+    if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    picker.modalPresentationStyle = UIModalPresentationFormSheet;
+    self.folderPicker = picker;
+    [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)backUpNow {
@@ -205,6 +318,22 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller
     didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (controller == self.folderPicker) {
+        self.folderPicker = nil;
+        NSURL *folder = urls.firstObject;
+        __weak typeof(self) weakSelf = self;
+        [ApolloICloudBackupStore.sharedStore selectFolderURL:folder completion:^(NSError *error) {
+            if (error) [weakSelf showAlertWithTitle:@"Folder Unavailable" message:error.localizedDescription];
+            else {
+                [ApolloAutomaticBackup.sharedManager setICloudEnabled:NO];
+                [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithCompletion:^{
+                    [weakSelf scheduleRefresh];
+                    [weakSelf confirmEnableICloud];
+                }];
+            }
+        }];
+        return;
+    }
     if (controller != self.manualExportPicker) return;
     NSString *filename = self.manualExportURL.lastPathComponent ?: @"Apollo backup";
     self.manualExportPicker = nil;
@@ -215,6 +344,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    if (controller == self.folderPicker) { self.folderPicker = nil; return; }
     if (controller != self.manualExportPicker) return;
     NSString *filename = self.manualExportURL.lastPathComponent ?: @"The manual backup";
     self.manualExportPicker = nil;

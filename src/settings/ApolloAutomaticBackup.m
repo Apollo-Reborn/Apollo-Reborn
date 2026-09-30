@@ -5,6 +5,7 @@
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloICloudBackupStore.h"
 #import <stdlib.h>
 
 NSNotificationName const ApolloAutomaticBackupDidChangeNotification = @"ApolloAutomaticBackupDidChangeNotification";
@@ -191,6 +192,7 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic) BOOL started;
 @property (nonatomic) BOOL suspendedForRestore;
+@property (nonatomic, copy) NSString *iCloudMirrorInFlightFilename;
 @end
 
 @implementation ApolloAutomaticBackup
@@ -211,6 +213,18 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
 }
 
 - (BOOL)enabled { return sAutomaticBackupsEnabled; }
+- (BOOL)iCloudEnabled {
+    [self loadStateIfNeeded];
+    return [self.state[@"iCloudEnabled"] boolValue];
+}
+- (NSUInteger)iCloudPendingCount {
+    [self loadStateIfNeeded];
+    return [self.state[@"iCloudPending"] isKindOfClass:NSArray.class] ? [self.state[@"iCloudPending"] count] : 0;
+}
+- (NSString *)iCloudLastErrorMessage {
+    [self loadStateIfNeeded];
+    return [self.state[@"iCloudLastError"] isKindOfClass:NSString.class] ? self.state[@"iCloudLastError"] : nil;
+}
 - (NSInteger)intervalDays { return ApolloAutomaticBackupDays(sAutomaticBackupIntervalDays); }
 - (BOOL)isBackingUp { return self.job != nil; }
 
@@ -315,8 +329,9 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
 - (void)scheduleNextCheck {
     [self stopTimer];
     UIApplication *app = UIApplication.sharedApplication;
-    if (!self.started || !self.enabled || self.isBackingUp || self.suspendedForRestore ||
-        app.applicationState != UIApplicationStateActive || !app.isProtectedDataAvailable) return;
+    if (!self.started || app.applicationState != UIApplicationStateActive || !app.isProtectedDataAvailable) return;
+    [self retryPendingICloudMirror];
+    if (!self.enabled || self.isBackingUp || self.suspendedForRestore) return;
     if (![self loadStateIfNeeded]) { [self notifyChange]; return; }
     NSTimeInterval delay = MAX(2, self.nextBackupDate.timeIntervalSinceNow);
     if (self.nextRetryDate) delay = MAX(delay, self.nextRetryDate.timeIntervalSinceNow);
@@ -334,6 +349,108 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:UDKeyAutomaticBackupsEnabled];
     [self notifyChange];
     [self scheduleNextCheck];
+}
+
+- (void)setICloudEnabled:(BOOL)enabled {
+    if (self.isBackingUp || self.suspendedForRestore || self.iCloudEnabled == enabled) return;
+    NSDictionary *previousState = [self.state copy];
+    self.state[@"iCloudEnabled"] = @(enabled);
+    if (enabled) {
+        NSString *scope = ApolloICloudBackupStore.sharedStore.scopeIdentifier;
+        if (scope.length == 0) {
+            self.state = [previousState mutableCopy];
+            self.state[@"iCloudLastError"] = @"Choose or reconnect an iCloud backup folder before enabling cloud copies.";
+            [self notifyChange];
+            return;
+        }
+        self.state[@"iCloudConsentScope"] = scope;
+        [self.state removeObjectForKey:@"iCloudLastError"];
+    } else {
+        [self.state removeObjectForKey:@"iCloudConsentScope"];
+        [self.state removeObjectForKey:@"iCloudPending"];
+        [self.state removeObjectForKey:@"iCloudLastError"];
+    }
+    NSError *error = nil;
+    if (![self saveState:&error]) {
+        self.state = [previousState mutableCopy];
+        ApolloLog(@"[iCloudBackup] Could not persist opt-in (code %ld)", (long)error.code);
+        return;
+    }
+    [self notifyChange];
+    if (enabled) [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithCompletion:nil];
+}
+
+- (void)enqueueICloudMirrorForFilename:(NSString *)filename {
+    if (!self.iCloudEnabled || filename.length == 0) return;
+    NSMutableOrderedSet *pending = [NSMutableOrderedSet orderedSetWithArray:
+        [self.state[@"iCloudPending"] isKindOfClass:NSArray.class] ? self.state[@"iCloudPending"] : @[]];
+    [pending addObject:filename];
+    self.state[@"iCloudPending"] = pending.array;
+    [self saveState:nil];
+    [self notifyChange];
+    [self retryPendingICloudMirror];
+}
+
+- (void)retryPendingICloudMirror {
+    if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self retryPendingICloudMirror]; }); return; }
+    UIApplication *app = UIApplication.sharedApplication;
+    if (!self.iCloudEnabled || self.iCloudMirrorInFlightFilename.length > 0 ||
+        ApolloICloudBackupStore.sharedStore.isWorking || self.suspendedForRestore ||
+        app.applicationState != UIApplicationStateActive || !app.isProtectedDataAvailable) return;
+    NSArray *pending = [self.state[@"iCloudPending"] isKindOfClass:NSArray.class] ? self.state[@"iCloudPending"] : @[];
+    NSString *filename = [pending.firstObject isKindOfClass:NSString.class] ? pending.firstObject : nil;
+    if (!filename) return;
+    NSString *expectedScope = [self.state[@"iCloudConsentScope"] isKindOfClass:NSString.class]
+        ? self.state[@"iCloudConsentScope"] : nil;
+    self.iCloudMirrorInFlightFilename = filename;
+    __weak typeof(self) weakSelf = self;
+    [self localBackupURLsWithCompletion:^(NSArray<NSURL *> *urls) {
+        NSURL *source = nil;
+        for (NSURL *url in urls) if ([url.lastPathComponent isEqualToString:filename]) { source = url; break; }
+        if (!source) {
+            if (![weakSelf.iCloudMirrorInFlightFilename isEqualToString:filename]) return;
+            weakSelf.iCloudMirrorInFlightFilename = nil;
+            NSArray *currentPending = [weakSelf.state[@"iCloudPending"] isKindOfClass:NSArray.class]
+                ? weakSelf.state[@"iCloudPending"] : @[];
+            NSMutableArray *remaining = [currentPending mutableCopy];
+            [remaining removeObject:filename];
+            weakSelf.state[@"iCloudPending"] = remaining;
+            weakSelf.state[@"iCloudLastError"] = @"A pending local backup was deleted before it could be copied to iCloud.";
+            [weakSelf saveState:nil];
+            [weakSelf notifyChange];
+            return;
+        }
+        NSString *installationID = [weakSelf.state[@"iCloudInstallationID"] isKindOfClass:NSString.class]
+            ? weakSelf.state[@"iCloudInstallationID"] : nil;
+        if (!installationID) {
+            installationID = NSUUID.UUID.UUIDString;
+            weakSelf.state[@"iCloudInstallationID"] = installationID;
+            [weakSelf saveState:nil];
+        }
+        [ApolloICloudBackupStore.sharedStore uploadLocalBackupURL:source expectedScope:expectedScope
+            identityToken:installationID
+            completion:^(__unused NSURL *cloudURL, NSError *cloudError) {
+                if (![weakSelf.iCloudMirrorInFlightFilename isEqualToString:filename]) return;
+                weakSelf.iCloudMirrorInFlightFilename = nil;
+                NSArray *currentPending = [weakSelf.state[@"iCloudPending"] isKindOfClass:NSArray.class]
+                    ? weakSelf.state[@"iCloudPending"] : @[];
+                NSMutableArray *remaining = [currentPending mutableCopy];
+                if (!cloudError) {
+                    [remaining removeObject:filename];
+                    weakSelf.state[@"iCloudPending"] = remaining;
+                    [weakSelf.state removeObjectForKey:@"iCloudLastError"];
+                } else {
+                    weakSelf.state[@"iCloudLastError"] = cloudError.localizedDescription;
+                    if ([cloudError.localizedDescription containsString:@"changed"]) {
+                        [weakSelf setICloudEnabled:NO];
+                        weakSelf.state[@"iCloudLastError"] = cloudError.localizedDescription;
+                    }
+                }
+                [weakSelf saveState:nil];
+                [weakSelf notifyChange];
+                if (!cloudError && remaining.count > 0) [weakSelf retryPendingICloudMirror];
+            }];
+    }];
 }
 
 - (void)setIntervalDays:(NSInteger)days {
@@ -443,7 +560,11 @@ static void ApolloAutomaticBackupPrune(__unused NSURL *justSaved, ApolloAutomati
                 if (automatic && !self.suspendedForRestore && ![self saveState:&persistError] && !resultError) {
                     resultError = persistError;
                 }
+                BOOL mirrorToICloud = self.iCloudEnabled && published && !job.isCancelled && !self.suspendedForRestore;
                 [self finishJob:job];
+                if (mirrorToICloud) {
+                    [self enqueueICloudMirrorForFilename:published.lastPathComponent];
+                }
                 if (completion) completion(resultError ? nil : published.lastPathComponent, resultError);
             });
         }

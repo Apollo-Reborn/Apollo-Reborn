@@ -11,6 +11,7 @@
 #import "settings/ApolloActionMenuSettingsViewController.h"
 #import "ApolloActionMenuLayout.h"
 #import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloICloudBackupsViewController.h"
 #import "settings/ApolloDeletedCommentsSettingsViewController.h"
 #import "settings/ApolloLinkPreviewSettingsViewController.h"
 #import "settings/ApolloOpenInAppViewController.h"
@@ -91,6 +92,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         }
         add(@"notification-backend", @"Notification Backend", @"Apollo Reborn → Advanced", ApolloSettingsInsetGrouped([ApolloNotificationBackendViewController class]));
         add(@"automatic-backups", @"Automatic Backups", @"Apollo Reborn → Data", ApolloSettingsInsetGrouped([ApolloAutomaticBackupViewController class]));
+        add(@"icloud-backups", @"iCloud Backups", @"Apollo Reborn → Data → Backup Settings", ApolloSettingsInsetGrouped([ApolloICloudBackupsViewController class]));
         add(@"saved-categories", @"Saved Categories", @"General → Other", ApolloSettingsInsetGrouped([SavedCategoriesViewController class]));
         add(@"translation", @"Translation", @"General → Other", ApolloSettingsInsetGrouped([TranslationSettingsViewController class]));
         add(@"tag-filters", @"Tag Filters", @"Filters & Blocks", ApolloSettingsInsetGrouped([TagFiltersViewController class]));
