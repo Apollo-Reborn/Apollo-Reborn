@@ -3976,7 +3976,11 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     if (sCommentLinkHost < CommentLinkHostOff || sCommentLinkHost > CommentLinkHostImgChest) sCommentLinkHost = CommentLinkHostOff;
     sCommentLinkPreferNative = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommentLinkPreferNative];
     sShareLinkHost = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyShareLinkHost];
-    if (sShareLinkHost < ShareLinkHostDefault || sShareLinkHost > ShareLinkHostFXReddit) sShareLinkHost = ShareLinkHostDefault;
+    if (sShareLinkHost == ShareLinkHostRetiredOldReddit ||
+        sShareLinkHost < ShareLinkHostDefault || sShareLinkHost > ShareLinkHostFXReddit) {
+        sShareLinkHost = ShareLinkHostDefault;
+        [[NSUserDefaults standardUserDefaults] setInteger:sShareLinkHost forKey:UDKeyShareLinkHost];
+    }
     sShowUserAvatars = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     sUseProfileAvatarTabIcon = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseProfileAvatarTabIcon];
     sHideTabBarTitles = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTabBarTitles];

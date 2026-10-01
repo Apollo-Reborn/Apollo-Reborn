@@ -641,6 +641,10 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)setShareLinkHost:(NSInteger)host {
+    if (host == ShareLinkHostRetiredOldReddit ||
+        host < ShareLinkHostDefault || host > ShareLinkHostFXReddit) {
+        host = ShareLinkHostDefault;
+    }
     sShareLinkHost = host;
     [[NSUserDefaults standardUserDefaults] setInteger:sShareLinkHost
                                                 forKey:UDKeyShareLinkHost];
@@ -649,19 +653,25 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)presentShareLinkHostSheetFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
+    NSArray<NSNumber *> *hostValues = @[
+        @(ShareLinkHostDefault), @(ShareLinkHostVXReddit), @(ShareLinkHostFXReddit)
+    ];
+    NSUInteger currentIndex = [hostValues indexOfObject:@(sShareLinkHost)];
+    if (currentIndex == NSNotFound) currentIndex = 0;
     ApolloSettingsPresentPicker(
         self,
         sourceView,
         @"Share Link Host",
         @[
             ApolloShareLinkHostDisplayName(ShareLinkHostDefault),
-            ApolloShareLinkHostDisplayName(ShareLinkHostOldReddit),
             ApolloShareLinkHostDisplayName(ShareLinkHostVXReddit),
             ApolloShareLinkHostDisplayName(ShareLinkHostFXReddit)
         ],
-        sShareLinkHost,
+        (NSInteger)currentIndex,
         ^(NSInteger pickedIndex) {
-            [weakSelf setShareLinkHost:pickedIndex];
+            if (pickedIndex >= 0 && pickedIndex < (NSInteger)hostValues.count) {
+                [weakSelf setShareLinkHost:hostValues[(NSUInteger)pickedIndex].integerValue];
+            }
         });
 }
 

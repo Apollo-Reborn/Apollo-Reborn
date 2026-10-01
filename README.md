@@ -114,12 +114,13 @@ Finally, **don't copy these examples verbatim**. If everyone adopts the same "sa
 ### Not seeing thumbnails or inline previews?
 
 > [!TIP]
-> If thumbnails or inline media previews aren't showing up, it's usually a Reddit account setting rather than a tweak issue. Open [old.reddit.com/prefs](https://old.reddit.com/prefs) and log in, then under the **Media** section:
+> Apollo Reborn loads preview metadata from Reddit's current authenticated JSON endpoints. If thumbnails or inline media previews stop appearing:
 >
-> - Set **Thumbnails** to *"show thumbnails next to links"*
-> - Set **Media previews** to *"auto-expand media previews"*
+> - Update Apollo Reborn and relaunch Apollo.
+> - For API-Key-Free Mode, open **Settings → Apollo Reborn → Accounts & API Keys** and reconnect the affected web session.
+> - For an API-key account, verify that account's Reddit API key and sign-in are still valid.
 >
-> Save your preferences and relaunch Apollo.
+> Reddit's legacy media-preference page is no longer used as a troubleshooting dependency.
 
 ### Self-hosted notifications (advanced)
 

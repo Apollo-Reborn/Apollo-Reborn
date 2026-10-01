@@ -15,13 +15,6 @@ Manual validation steps for the Share Link Host feature.
 - Share the post to Messages and confirm the shared URL uses `reddit.com`.
 - Share as Image with **Include Link** enabled and confirm the included URL uses `reddit.com`.
 
-## old.reddit
-
-- Select **old.reddit**.
-- Use **Copy Link** and confirm the copied URL uses `old.reddit.com`.
-- Share the post to Messages and confirm the shared URL uses `old.reddit.com`.
-- Share as Image with **Include Link** enabled and confirm the included URL uses `old.reddit.com`.
-
 ## vxReddit
 
 - Select **vxReddit**.
@@ -71,3 +64,5 @@ Manual validation steps for the Share Link Host feature.
 - Confirm image-only activities remain image-only.
 - Confirm the app does not crash when opening or dismissing the share sheet.
 - Confirm changing Share Link Host does not affect Media Upload Host or Comment Link Host.
+- Restore a settings backup that stored the retired host value `1` and confirm it
+  migrates to **Reddit** without changing the numeric values for vxReddit or fxReddit.

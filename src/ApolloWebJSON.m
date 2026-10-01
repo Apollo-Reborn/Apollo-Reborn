@@ -1220,7 +1220,7 @@ static NSDictionary<NSString *, NSDictionary *> *ApolloWebJSONFetchFullPostsForM
             continue;
         }
 
-        // www.reddit.com, not old.reddit.com: Reddit is limiting Old Reddit to
+        // Use the current www host: Reddit is limiting its legacy site to
         // accounts with recent Old Reddit use. Sharing the host with the listing
         // being serialized is fine, since this request runs on its own ephemeral
         // NSURLSession and so has its own per-host connection pool.

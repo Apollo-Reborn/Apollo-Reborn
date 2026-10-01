@@ -1,16 +1,14 @@
 // ==UserScript==
 // @name         Apollo Reddit OAuth Code Helper
 // @namespace    apollo-reborn
-// @version      1.2.0
+// @version      1.3.0
 // @description  On the Reddit "would like to connect to your account" page, captures the OAuth authorization code so you can paste it into Apollo. Works with both the legacy (/api/v1/authorize) and modern shreddit (/svc/shreddit/oauth-grant) consent flows. For iOS browsers (e.g. Reynard) where the apollo:// (or any custom URL scheme) app callback can't be handed off.
 // @author       Apollo-Reborn
-// @match        *://old.reddit.com/api/v1/authorize*
 // @match        *://www.reddit.com/api/v1/authorize*
 // @match        *://reddit.com/api/v1/authorize*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setClipboard
-// @connect      old.reddit.com
 // @connect      www.reddit.com
 // @connect      reddit.com
 // ==/UserScript==
@@ -24,7 +22,7 @@
  * On iOS the browser can't open that custom scheme, so the code is lost.
  *
  * Two consent flows exist:
- *   - legacy old.reddit:  POST /api/v1/authorize       (authorize=Allow, uh=...)
+ *   - legacy endpoint:     POST /api/v1/authorize       (authorize=Allow, uh=...)
  *   - modern shreddit:    POST /svc/shreddit/oauth-grant (authorize=ALLOW, csrf_token=...)
  * We don't hardcode either — we serialize whatever the real consent form is and
  * POST to its own action.

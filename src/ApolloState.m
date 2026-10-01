@@ -133,7 +133,7 @@ NSInteger sShareLinkHost = ShareLinkHostDefault;
 
 NSString *ApolloShareLinkHostDomain(ShareLinkHost host) {
     switch (host) {
-        case ShareLinkHostOldReddit: return @"old.reddit.com";
+        case ShareLinkHostRetiredOldReddit: return nil;
         case ShareLinkHostVXReddit:  return @"vxreddit.com";
         case ShareLinkHostFXReddit:  return @"fxddit.com";
         case ShareLinkHostDefault:
@@ -143,7 +143,7 @@ NSString *ApolloShareLinkHostDomain(ShareLinkHost host) {
 
 NSString *ApolloShareLinkHostDisplayName(ShareLinkHost host) {
     switch (host) {
-        case ShareLinkHostOldReddit: return @"old.reddit";
+        case ShareLinkHostRetiredOldReddit: return @"Reddit";
         case ShareLinkHostVXReddit:  return @"vxReddit";
         case ShareLinkHostFXReddit:  return @"fxReddit (fxddit.com)";
         case ShareLinkHostDefault:

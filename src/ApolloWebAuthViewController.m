@@ -14,8 +14,8 @@
 @property (nonatomic, copy) NSURL *redirectURL;
 @property (nonatomic, copy) ASWebAuthenticationSessionCompletionHandler completion;
 @property (nonatomic) BOOL finished;
-// Set once a rejected-sign-in alert has been shown, so Reddit's own 400
-// authorize page (Old Reddit's names the bad field) doesn't stack a second one.
+// Set once a rejected-sign-in alert has been shown so a grant failure and
+// Reddit's authorize response cannot stack duplicate explanations.
 @property (nonatomic) BOOL explainedRejectedSignIn;
 @end
 
@@ -44,21 +44,12 @@
                              target:self
                              action:@selector(_cancelTapped)];
 
-    // Options menu — "Switch to Old Reddit" (rewrite mid-flow to old.reddit.com,
-    // useful on any iOS) and "Manual Sign-In (Reynard)" (external-browser fallback
-    // for devices where neither the modern nor old login page renders, e.g. iOS
-    // 15.3.1). On iOS 15 and earlier we also auto-rewrite to old.reddit below.
+    // External-browser fallback for iOS versions whose WebKit cannot render the
+    // current Reddit consent flow, and for users who prefer Reynard.
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                  menu:nil];
     [self _rebuildOptionsMenu];
-
-    // iOS 15 and earlier can't render the modern Reddit login page.
-    // Rewrite www.reddit.com → old.reddit.com before the first load.
-    if (![self _isModernRedditSupported]) {
-        ApolloLog(@"[WebAuth] iOS < 16 detected — auto-switching to old.reddit.com");
-        self.authURL = [self _rewriteToOldReddit:self.authURL];
-    }
 
     // Non-persistent data store mirrors Apollo's prefersEphemeralWebBrowserSession = YES
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
@@ -76,13 +67,15 @@
     [self.view addSubview:self.spinner];
     [self.spinner startAnimating];
 
-    ApolloLog(@"[WebAuth] Loading auth URL: %@", self.authURL);
-    [self.webView loadRequest:[NSURLRequest requestWithURL:self.authURL]];
-    // Automate transition to manual sign-in for iOS 15.3.1 and below.
-    if (@available(iOS 15.4, *)) {
-        // iOS 15.4+ is supported. Let the web view load normally.
+    if ([self _isModernRedditSupported]) {
+        ApolloLog(@"[WebAuth] Loading auth URL: %@", self.authURL);
+        [self.webView loadRequest:[NSURLRequest requestWithURL:self.authURL]];
     } else {
-        ApolloLog(@"[WebAuth] iOS <= 15.3.1 detected. Automating manual sign-in fallback.");
+        // Reddit's current consent UI does not render reliably in pre-iOS-16
+        // WebKit. Use the existing external-browser handoff instead of routing
+        // authentication through a legacy site with access eligibility gates.
+        [self.spinner stopAnimating];
+        ApolloLog(@"[WebAuth] iOS < 16 detected. Opening manual sign-in fallback.");
         dispatch_async(dispatch_get_main_queue(), ^{
             [self _showManualSignIn];
         });
@@ -94,40 +87,8 @@
     return NO;
 }
 
-- (NSURL *)_rewriteToOldReddit:(NSURL *)url {
-    NSURLComponents *c = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-    if ([c.host isEqualToString:@"www.reddit.com"] || [c.host isEqualToString:@"reddit.com"]) {
-        c.host = @"old.reddit.com";
-    }
-    return c.URL ?: url;
-}
-
-- (void)_switchToOldReddit {
-    // The grant endpoint has no Old Reddit equivalent, so restart from the
-    // authorize request if the web view ever ends up sitting on it.
-    NSURL *current = self.webView.URL;
-    NSURL *base = (current && ![self _isGrantEndpointURL:current]) ? current : self.authURL;
-    NSURL *rewritten = [self _rewriteToOldReddit:base];
-    ApolloLog(@"[WebAuth] Switching to old Reddit: %@", rewritten);
-    [self.webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
-    // didFinishNavigation rebuilds the menu, disabling this action once loaded.
-}
-
-// Rebuilds the right-bar options menu, disabling "Switch to Old Reddit" when the
-// web view is already on old.reddit.com. Keeping it a menu (rather than toggling
-// the bar button's enabled state) means the manual fallback stays reachable.
 - (void)_rebuildOptionsMenu {
-    BOOL onOldReddit = [self.webView.URL.host isEqualToString:@"old.reddit.com"];
     __weak typeof(self) weakSelf = self;
-
-    UIAction *oldReddit = [UIAction actionWithTitle:@"Switch to Old Reddit"
-                                              image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
-                                         identifier:nil
-                                            handler:^(__kindof UIAction *action) {
-        [weakSelf _switchToOldReddit];
-    }];
-    if (onOldReddit) oldReddit.attributes = UIMenuElementAttributesDisabled;
-
     UIAction *manual = [UIAction actionWithTitle:@"Manual Sign-In (Reynard)"
                                            image:[UIImage systemImageNamed:@"doc.on.clipboard"]
                                       identifier:nil
@@ -135,7 +96,7 @@
         [weakSelf _showManualSignIn];
     }];
 
-    UIMenu *menu = [UIMenu menuWithTitle:@"Sign-In Options" children:@[oldReddit, manual]];
+    UIMenu *menu = [UIMenu menuWithTitle:@"Sign-In Options" children:@[manual]];
     self.navigationItem.rightBarButtonItem.menu = menu;
 }
 
@@ -193,9 +154,7 @@
 // match a registered Reddit app it still shows Accept/Decline (with no app name
 // and no permission list), and only the POST to /svc/shreddit/oauth-grant
 // fails, with a bare HTTP 400 "{}" body — which used to be all the user saw
-// (#1232). Old Reddit rejects the same request up front with a 400 page naming
-// the bad field ("invalid client id" / "invalid redirect_uri parameter").
-// Both verified against reddit.com on 2026-09-25.
+// (#1232). Surface a useful explanation instead of committing that bare body.
 - (BOOL)_isRedditHost:(NSString *)host {
     NSString *lower = host.lowercaseString;
     return [lower isEqualToString:@"reddit.com"] || [lower hasSuffix:@".reddit.com"];
@@ -205,15 +164,14 @@
     return [self _isRedditHost:url.host] && [url.path isEqualToString:@"/svc/shreddit/oauth-grant"];
 }
 
-// Old Reddit's consent page answers a bad key with a 400 page here. The new
-// page currently returns 200 regardless, but is matched on any reddit.com host
-// in case Reddit moves that check up front too. Apollo requests either
+// The current page usually returns 200 before the grant, but match the authorize
+// route too in case Reddit moves validation up front. Apollo requests either
 // /api/v1/authorize or /api/v1/authorize.compact.
 - (BOOL)_isAuthorizePageURL:(NSURL *)url {
     return [self _isRedditHost:url.host] && [url.path hasPrefix:@"/api/v1/authorize"];
 }
 
-- (void)_explainRejectedSignInWithStatus:(NSInteger)status offerOldReddit:(BOOL)offerOldReddit {
+- (void)_explainRejectedSignInWithStatus:(NSInteger)status {
     if (self.finished || self.presentedViewController) return;
     self.explainedRejectedSignIn = YES;
 
@@ -234,30 +192,14 @@
         title = @"Reddit Didn't Accept This API Key";
         message = [NSString stringWithFormat:@"The Reddit API Key and Redirect URI used for this sign-in don't match a Reddit app, so Reddit won't connect your account. Both have to match the app exactly (for Dystopia, the Redirect URI is dystopia://response).\n\nTo fix it, %@, or sign in without an API key instead.", settingsFix];
     } else {
-        // Can be an outage, but Old Reddit also answers some malformed client
-        // ids with a 500 "you broke reddit" page instead of its 400 one: any id
-        // whose length is one more than a multiple of 4, e.g. a 14- or
-        // 22-character key missing its last character (checked 2026-09-28).
-        // Only mention Old Reddit when the alert offers it: the authorize page
-        // path may already be on Old Reddit.
         title = @"Reddit Couldn't Finish Signing In";
-        NSString *retry = offerOldReddit
-            ? @"Wait a few minutes and try again, or switch to Old Reddit and accept there."
-            : @"Wait a few minutes and try again.";
+        NSString *retry = @"Wait a few minutes and try again.";
         message = [NSString stringWithFormat:@"Reddit returned an error (HTTP %ld). %@\n\nIf it keeps happening, %@.", (long)status, retry, settingsFix];
     }
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    if (offerOldReddit) {
-        __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:@"Switch to Old Reddit"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(__unused UIAlertAction *action) {
-            [weakSelf _switchToOldReddit];
-        }]];
-    }
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -317,21 +259,6 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
         return;
     }
 
-    // On iOS < 16 the modern Reddit web app fails to render. After the user logs in on
-    // old.reddit.com, Reddit's server redirects to www.reddit.com/api/v1/authorize (the
-    // consent page) via the `dest` query param — which is also the modern app and also
-    // fails. Intercept any mid-flow navigation to www.reddit.com and rewrite to
-    // old.reddit.com so the entire OAuth flow stays on old Reddit.
-    if (![self _isModernRedditSupported]) {
-        NSURL *rewritten = [self _rewriteToOldReddit:url];
-        if (![rewritten isEqual:url]) {
-            decisionHandler(WKNavigationActionPolicyCancel);
-            ApolloLog(@"[WebAuth] Rewriting mid-flow www.reddit.com → old.reddit.com: %@", rewritten);
-            [self.webView loadRequest:[NSURLRequest requestWithURL:rewritten]];
-            return;
-        }
-    }
-
     decisionHandler(WKNavigationActionPolicyAllow);
 }
 
@@ -356,7 +283,7 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
         // didFailProvisionalNavigation, which already ignores it.
         ApolloLog(@"[WebAuth] Reddit rejected the consent grant (HTTP %ld)", (long)status);
         decisionHandler(WKNavigationResponsePolicyCancel);
-        [self _explainRejectedSignInWithStatus:status offerOldReddit:YES];
+        [self _explainRejectedSignInWithStatus:status];
         return;
     }
 
@@ -366,7 +293,7 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
         ApolloLog(@"[WebAuth] Reddit rejected the authorize request on %@ (HTTP %ld)", http.URL.host, (long)status);
         decisionHandler(WKNavigationResponsePolicyAllow);
         if (!self.explainedRejectedSignIn) {
-            [self _explainRejectedSignInWithStatus:status offerOldReddit:NO];
+            [self _explainRejectedSignInWithStatus:status];
         }
         return;
     }
