@@ -159,6 +159,14 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
         options:NSDataWritingAtomic | NSDataWritingFileProtectionComplete error:error];
 }
 
+- (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL {
+    return [folderURL startAccessingSecurityScopedResource];
+}
+
+- (void)endAccessingSelectedFolderURL:(NSURL *)folderURL {
+    [folderURL stopAccessingSecurityScopedResource];
+}
+
 - (void)selectFolderURL:(NSURL *)folderURL completion:(void (^)(NSError *))completion {
     if (!NSThread.isMainThread) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self selectFolderURL:folderURL completion:completion]; });
@@ -166,9 +174,11 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
     }
     NSError *error = nil;
     if (!folderURL.isFileURL) error = ApolloICloudBackupError(@"Files did not return a usable backup folder.");
-    BOOL scoped = !error && [folderURL startAccessingSecurityScopedResource];
+    BOOL scoped = !error && [self beginAccessingSelectedFolderURL:folderURL];
+    if (!error && !scoped) error = ApolloICloudBackupError(
+        @"Files did not grant ongoing access to that folder. Choose a new folder using Move, or use local backups.");
     if (error) {
-        if (scoped) [folderURL stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:folderURL];
         if (completion) completion(error);
         return;
     }
@@ -208,6 +218,9 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
                     bookmark = [coordinatedURL bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
                         includingResourceValuesForKeys:@[NSURLNameKey, NSURLFileResourceIdentifierKey]
                         relativeToURL:nil error:&probeError];
+                    // iOS does not support permanent security-scoped bookmark
+                    // creation. This ordinary bookmark carries only the
+                    // implicit ephemeral scope, valid until reboot at latest.
                     folderName = coordinatedURL.lastPathComponent;
                 }];
             NSError *resultError = probeError ?: coordinationError;
@@ -223,7 +236,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
             } mutableCopy];
             if (!resultError && ![self writeSelectedFolderState:state error:&resultError]) state = nil;
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (scoped) [folderURL stopAccessingSecurityScopedResource];
+                if (scoped) [self endAccessingSelectedFolderURL:folderURL];
                 if (!resultError && state) {
                     self.selectedFolderName = state[@"name"];
                     self.scopeIdentifier = scope;
@@ -267,15 +280,23 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
     BOOL selectedBookmarkStale = NO;
     if (selection) {
         NSURLBookmarkResolutionOptions options = NSURLBookmarkResolutionWithoutUI;
+        if (@available(iOS 14.2, *)) options |= NSURLBookmarkResolutionWithoutImplicitStartAccessing;
         container = [NSURL URLByResolvingBookmarkData:selection[@"bookmark"] options:options
             relativeToURL:nil bookmarkDataIsStale:&selectedBookmarkStale error:error];
-        // iOS document-picker bookmarks carry an implicit ephemeral scope.
-        // Do not suppress it: some Files providers cannot reacquire that scope
-        // through startAccessingSecurityScopedResource after a relaunch.
-        if (container) scoped = YES;
+        if (container) {
+            if (@available(iOS 14.2, *)) scoped = [self beginAccessingSelectedFolderURL:container];
+            else scoped = YES; // resolution implicitly started access before iOS 14.2
+        }
         if (!container) {
             if (error && !*error) *error = ApolloICloudBackupError(
                 @"Apollo no longer has access to the selected folder. Reconnect it in Files; local backups are unchanged.");
+            [self publishState:ApolloICloudBackupAvailabilityAccountUnavailable
+                   description:@"Reconnect iCloud Drive Folder" working:NO];
+            return nil;
+        }
+        if (!scoped) {
+            if (error) *error = ApolloICloudBackupError(
+                @"Apollo no longer has permission to use the selected folder. Choose a new folder; local backups are unchanged.");
             [self publishState:ApolloICloudBackupAvailabilityAccountUnavailable
                    description:@"Reconnect iCloud Drive Folder" working:NO];
             return nil;
@@ -346,7 +367,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
                 rootReady = YES;
             }];
         if (!rootReady) {
-            if (scoped) [container stopAccessingSecurityScopedResource];
+            if (scoped) [self endAccessingSelectedFolderURL:container];
             if (error) *error = rootError ?: rootCoordinationError
                 ?: ApolloICloudBackupError(@"Reconnect the selected folder in Files.");
             [self publishState:ApolloICloudBackupAvailabilityAccountUnavailable
@@ -375,7 +396,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
         }
         if (bookmarkRefreshFailed ||
             (selectionChanged && ![self writeSelectedFolderState:updated error:&refreshError])) {
-            if (scoped) [container stopAccessingSecurityScopedResource];
+            if (scoped) [self endAccessingSelectedFolderURL:container];
             if (error) *error = refreshError ?: ApolloICloudBackupError(@"Reconnect the selected folder in Files.");
             [self publishState:ApolloICloudBackupAvailabilityAccountUnavailable
                    description:@"Reconnect iCloud Drive Folder" working:NO];
@@ -411,7 +432,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
             ready = [fm createDirectoryAtURL:newURL withIntermediateDirectories:YES attributes:nil error:&workError];
         }];
     if (!ready) {
-        if (scoped) [container stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:container];
         if (error) *error = workError ?: coordinationError ?: ApolloICloudBackupError(@"Could not open the iCloud backup folder.");
         [self publishState:ApolloICloudBackupAvailabilityAccountUnavailable
                description:@"iCloud Drive Unavailable" working:NO];
@@ -427,7 +448,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
     dispatch_async(self.workQueue, ^{
         NSURL *root = nil; BOOL scoped = NO;
         NSURL *directory = [self resolveDirectoryWithError:nil accessRoot:&root scoped:&scoped];
-        if (scoped) [root stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable description:@"Available" working:NO];
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(); });
     });
@@ -504,7 +525,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
         } else if (!error) {
             error = ApolloICloudBackupError(@"The local backup is unavailable or has an unexpected filename.");
         }
-        if (scoped) [root stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable
             description:error ? @"Last iCloud Save Failed" : @"Available" working:NO];
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(published, error); });
@@ -539,7 +560,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
             error = workError ?: coordinationError;
         }
         NSArray *sorted = ApolloICloudBackupSortURLsNewestFirst(backups);
-        if (scoped) [root stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable
             description:error ? @"Could Not Refresh iCloud" : @"Available" working:NO];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(sorted, error); });
@@ -609,7 +630,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
                 }
             }
         }
-        if (scoped) [root stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable
             description:error ? @"iCloud Download Failed" : @"Available" working:NO];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(localCopy, error); });
@@ -649,7 +670,7 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
                 }];
             error = workError ?: coordinationError;
         }
-        if (scoped) [root stopAccessingSecurityScopedResource];
+        if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable
             description:error ? @"iCloud Delete Failed" : @"Available" working:NO];
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(error); });

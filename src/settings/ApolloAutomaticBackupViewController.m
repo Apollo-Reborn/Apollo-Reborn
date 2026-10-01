@@ -180,7 +180,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             footer:@"Manual backups are kept locally and immediately open Files so you can save another copy in iCloud Drive or elsewhere. Export any backup again from Manage Backups."
             rows:@[manage]],
         [ApolloSettingsSection sectionWithTitle:@"iCloud Backups"
-            footer:@"Optional. Successful local backups are copied to the selected Files/iCloud Drive folder, or to the default iCloud container when this build is entitled. Local backups remain the primary copy. A selected folder may require reconnecting after a reboot or provider permission change."
+            footer:@"Optional. Successful local backups are copied to the selected Files/iCloud Drive folder, or to the default iCloud container when this build is entitled. Local backups remain the primary copy. Without iCloud Documents access, selected-folder permission is temporary and can require choosing a new folder after a reboot or provider permission change."
             rows:@[iCloudEnabled, iCloudStatus, chooseICloudFolder, manageICloud]],
     ];
 }
@@ -280,7 +280,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 - (void)chooseICloudFolder {
     if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
     UIAlertController *warning = [UIAlertController alertControllerWithTitle:@"Create a New Backup Folder?"
-        message:@"Files will create a uniquely named folder so existing backups are not replaced. If you rename it to an existing folder, choose Keep Both. Never choose Replace."
+        message:@"Files will move a uniquely named folder into the location you choose so Apollo receives write access. On a sideloaded build without iCloud Documents access, this permission can expire after a reboot or provider permission change. If you rename it to an existing folder, choose Keep Both. Never choose Replace."
         preferredStyle:UIAlertControllerStyleAlert];
     [warning addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
@@ -307,7 +307,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
     }
     self.folderExportTemplateURL = templateURL;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForExportingURLs:@[templateURL] asCopy:YES];
+        initForExportingURLs:@[templateURL] asCopy:NO];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;

@@ -4,6 +4,8 @@
 
 @interface ApolloICloudBackupStore (Testing)
 @property (atomic, readwrite, copy, nullable) NSString *scopeIdentifier;
+- (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL;
+- (void)endAccessingSelectedFolderURL:(NSURL *)folderURL;
 - (BOOL)writeSelectedFolderState:(NSDictionary *)state error:(NSError **)error;
 - (NSURL *)resolveDirectoryWithError:(NSError **)error
                           accessRoot:(NSURL **)accessRoot
@@ -15,6 +17,13 @@
 @end
 
 @implementation ApolloTestSelectingICloudBackupStore
+- (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL {
+    (void)folderURL;
+    return YES;
+}
+- (void)endAccessingSelectedFolderURL:(NSURL *)folderURL {
+    (void)folderURL;
+}
 - (NSDictionary *)selectedFolderState {
     return self.capturedSelection;
 }
@@ -22,6 +31,16 @@
     if (error) *error = nil;
     self.capturedSelection = state;
     return YES;
+}
+@end
+
+@interface ApolloTestDeniedICloudBackupStore : ApolloTestSelectingICloudBackupStore
+@end
+
+@implementation ApolloTestDeniedICloudBackupStore
+- (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL {
+    (void)folderURL;
+    return NO;
 }
 @end
 
@@ -117,7 +136,12 @@ int main(void) {
         Check(selectionError == nil && [[selectedDirectory URLByResolvingSymlinksInPath].path
             isEqualToString:[cloud URLByResolvingSymlinksInPath].path],
               @"immediate refresh reopens the selected marker-bearing folder");
-        if (selectionScoped) [selectionRoot stopAccessingSecurityScopedResource];
+        if (selectionScoped) [selectingStore endAccessingSelectedFolderURL:selectionRoot];
+
+        ApolloTestDeniedICloudBackupStore *deniedStore = [ApolloTestDeniedICloudBackupStore new];
+        NSError *deniedError = Select(deniedStore, cloud);
+        Check(deniedError != nil && deniedStore.capturedSelection == nil,
+              @"folder selection fails closed without ongoing security scope");
 
         ApolloTestICloudBackupStore *store = [ApolloTestICloudBackupStore new];
         store.testDirectory = cloud;

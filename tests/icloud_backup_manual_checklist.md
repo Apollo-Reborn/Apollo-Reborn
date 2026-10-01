@@ -8,11 +8,13 @@ contain API keys and logged-in Reddit credentials.
 1. Install an ad-hoc or free-account re-signed build without a ubiquity container.
 2. Open Apollo Reborn → Data → Backup Settings.
 3. Confirm `Save Copies to iCloud` is off and the status explains the missing
-   entitlement. Choose an iCloud Drive folder through Files and confirm the
-   toggle becomes available without changing the app's signature.
+   entitlement. Let Files move the uniquely named folder into iCloud Drive and
+   confirm the toggle becomes available without changing the app's signature.
 4. Create, list, restore, export, and delete a local backup. Confirm every local
    operation remains usable and no iCloud error blocks it.
-5. Open Restore Settings. Confirm Local Backup and Choose from Files work, while
+5. Force-quit and relaunch before reboot. Confirm the selected-folder bookmark
+   either reopens with write access or fails closed without changing local backups.
+6. Open Restore Settings. Confirm Local Backup and Choose from Files work, while
    iCloud Backup is disabled.
 
 ## Entitled build, account unavailable
@@ -41,9 +43,12 @@ contain API keys and logged-in Reddit credentials.
 6. Delete one iCloud archive and confirm the destructive warning explicitly says
    the deletion affects connected devices. Confirm the item disappears on both.
 7. For the entitlement-free selected-folder lane, reboot both devices and reopen
-   Apollo. Confirm the bookmark either reconnects cleanly or reports the folder
-   unavailable without blocking local backups. Re-select the same folder and
-   confirm pending copies resume without duplicate archives.
+   Apollo. The iOS bookmark scope is ephemeral and is valid only until reboot at
+   the latest. Confirm Apollo either reopens the folder or reports it unavailable
+   without blocking local backups. If access is gone, choose a new uniquely named
+   folder. Existing archives remain in Files, but this fallback lane cannot
+   promise reattachment or cross-device durability; use an entitled iCloud
+   container for that requirement.
 
 ## Signing changes
 
