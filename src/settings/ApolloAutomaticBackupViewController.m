@@ -21,6 +21,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 @property (nonatomic, strong) UIDocumentPickerViewController *manualExportPicker;
 @property (nonatomic, strong) NSURL *manualExportURL;
 @property (nonatomic, strong) UIDocumentPickerViewController *folderPicker;
+@property (nonatomic, strong) NSURL *folderExportTemplateURL;
 @end
 
 @implementation ApolloAutomaticBackupViewController
@@ -49,6 +50,12 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 }
 
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+
+- (void)cleanupFolderExportTemplate {
+    NSURL *templateURL = self.folderExportTemplateURL;
+    self.folderExportTemplateURL = nil;
+    if (templateURL) [NSFileManager.defaultManager removeItemAtURL:templateURL.URLByDeletingLastPathComponent error:nil];
+}
 
 - (BOOL)canPerformBackupAction {
     return !ApolloAutomaticBackup.sharedManager.isBackingUp && !self.presentedViewController;
@@ -272,8 +279,33 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 
 - (void)chooseICloudFolder {
     if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
+    UIAlertController *warning = [UIAlertController alertControllerWithTitle:@"Create a New Backup Folder?"
+        message:@"Files will create a new folder. If an Apollo Reborn Backups folder already exists, choose Keep Both or change the Save As name. Do not choose Replace, because that can remove existing backups."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [warning addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    __weak UIAlertController *weakWarning = warning;
+    [warning addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            [weakWarning dismissViewControllerAnimated:YES completion:^{ [weakSelf presentICloudFolderPicker]; }];
+        }]];
+    [self presentViewController:warning animated:YES completion:nil];
+}
+
+- (void)presentICloudFolderPicker {
+    if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
+    NSURL *staging = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+        URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    NSURL *templateURL = [staging URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL withIntermediateDirectories:YES
+        attributes:@{NSFileProtectionKey: NSFileProtectionComplete, NSFilePosixPermissions: @0700} error:&error]) {
+        [self showAlertWithTitle:@"Unable to Open Files" message:error.localizedDescription];
+        return;
+    }
+    self.folderExportTemplateURL = templateURL;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+        initForExportingURLs:@[templateURL] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -323,6 +355,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
         NSURL *folder = urls.firstObject;
         __weak typeof(self) weakSelf = self;
         [ApolloICloudBackupStore.sharedStore selectFolderURL:folder completion:^(NSError *error) {
+            [weakSelf cleanupFolderExportTemplate];
             if (error) [weakSelf showAlertWithTitle:@"Folder Unavailable" message:error.localizedDescription];
             else {
                 [ApolloAutomaticBackup.sharedManager setICloudEnabled:NO];
@@ -343,8 +376,16 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
         filename]];
 }
 
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
+    [self documentPicker:controller didPickDocumentsAtURLs:url ? @[url] : @[]];
+}
+
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    if (controller == self.folderPicker) { self.folderPicker = nil; return; }
+    if (controller == self.folderPicker) {
+        self.folderPicker = nil;
+        [self cleanupFolderExportTemplate];
+        return;
+    }
     if (controller != self.manualExportPicker) return;
     NSString *filename = self.manualExportURL.lastPathComponent ?: @"The manual backup";
     self.manualExportPicker = nil;
