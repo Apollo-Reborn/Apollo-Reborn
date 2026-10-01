@@ -280,7 +280,7 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
 - (void)chooseICloudFolder {
     if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
     UIAlertController *warning = [UIAlertController alertControllerWithTitle:@"Create a New Backup Folder?"
-        message:@"Files will create a new folder. If an Apollo Reborn Backups folder already exists, choose Keep Both or change the Save As name. Do not choose Replace, because that can remove existing backups."
+        message:@"Files will create a uniquely named folder so existing backups are not replaced. If you rename it to an existing folder, choose Keep Both. Never choose Replace."
         preferredStyle:UIAlertControllerStyleAlert];
     [warning addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
@@ -296,7 +296,9 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
     if (self.presentedViewController || ApolloICloudBackupStore.sharedStore.isWorking) return;
     NSURL *staging = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
         URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
-    NSURL *templateURL = [staging URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
+    NSString *suffix = [NSUUID.UUID.UUIDString substringToIndex:8];
+    NSString *folderName = [NSString stringWithFormat:@"Apollo Reborn Backups %@", suffix];
+    NSURL *templateURL = [staging URLByAppendingPathComponent:folderName isDirectory:YES];
     NSError *error = nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL withIntermediateDirectories:YES
         attributes:@{NSFileProtectionKey: NSFileProtectionComplete, NSFilePosixPermissions: @0700} error:&error]) {
