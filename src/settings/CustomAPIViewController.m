@@ -1751,6 +1751,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             [weakSelf showAlertWithTitle:@"iCloud Sync Unavailable"
                                  message:error.localizedDescription ?: @"This build cannot access iCloud."];
         }
+        [weakSelf reloadRowWithID:@"gen.iCloudReadState"];
+        [weakSelf reloadRowWithID:@"gen.iCloudReadStateStatus"];
     }];
 
     ApolloSettingsRow *iCloudReadStateStatus =
@@ -1776,6 +1778,10 @@ typedef NS_ENUM(NSInteger, Tag) {
             }]];
         [weakSelf presentViewController:reset animated:YES completion:nil];
     }];
+    iCloudReadStateStatus.enabled = ^BOOL {
+        ApolloICloudReadState *manager = ApolloICloudReadState.sharedManager;
+        return manager.enabled || manager.recoveryNeeded;
+    };
 
     return [ApolloSettingsSection sectionWithTitle:@"Recently Read"
                                             footer:@"Show thumbnails on posts you've already read, and cap how many Apollo remembers. iCloud sync is optional and requires usable iCloud key-value-store and iCloud Keychain access. Read state updates live; native comment highlighting uses received baselines after the next cold start."

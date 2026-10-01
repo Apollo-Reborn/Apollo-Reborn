@@ -24,6 +24,7 @@ FOUNDATION_EXPORT BOOL ApolloICloudReadStateParseResetMarker(NSData *data, long 
 
 @property (nonatomic, readonly, getter=isEnabled) BOOL enabled;
 @property (nonatomic, readonly, getter=isAvailable) BOOL available;
+@property (nonatomic, readonly, getter=isRecoveryNeeded) BOOL recoveryNeeded;
 @property (nonatomic, readonly, nullable) NSString *availabilityMessage;
 
 // Called after defaults are registered. The manager is completely dormant while

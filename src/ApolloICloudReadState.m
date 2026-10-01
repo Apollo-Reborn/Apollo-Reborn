@@ -349,6 +349,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
 @interface ApolloICloudReadState ()
 @property (nonatomic) BOOL started;
 @property (nonatomic) BOOL available;
+@property (nonatomic) BOOL recoveryNeeded;
 @property (nonatomic, copy) NSString *availabilityMessage;
 @property (nonatomic, strong) NSMutableDictionary *journal;
 @property (nonatomic, strong) NSData *encryptionKey;
@@ -425,6 +426,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
 }
 
 - (BOOL)prepareEncryptionKey:(NSError **)error {
+    self.recoveryNeeded = NO;
     NSData *key = [self existingEncryptionKey];
     NSData *cloudEnvelope = [NSUbiquitousKeyValueStore.defaultStore dataForKey:kCloudStateKey];
     long long resetGeneration = 0;
@@ -442,6 +444,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
         key = nil;
     }
     if (!key && cloudEnvelope.length > 0 && !resetMarker) {
+        self.recoveryNeeded = YES;
         self.availabilityMessage = @"The encrypted iCloud read-state key has not reached this device yet. Make sure iCloud Keychain is on, then try again.";
         if (error) *error = ApolloICloudReadStateError(self.availabilityMessage);
         return NO;
@@ -470,6 +473,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
         }
     }
     if (cloudEnvelope.length > 0 && !resetMarker && !ApolloICloudReadStateDecrypt(cloudEnvelope, key, nil)) {
+        self.recoveryNeeded = YES;
         self.availabilityMessage = @"The encrypted iCloud read-state key does not match this device yet. No cloud data was overwritten.";
         if (error) *error = ApolloICloudReadStateError(self.availabilityMessage);
         return NO;
@@ -502,6 +506,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
 - (BOOL)setEnabled:(BOOL)enabled error:(NSError **)error {
     NSAssert(NSThread.isMainThread, @"iCloud read-state setting is main-thread owned");
     if (enabled && ![self probeAvailability]) {
+        self.recoveryNeeded = NO;
         if (error) *error = ApolloICloudReadStateError(self.availabilityMessage);
         return NO;
     }
@@ -520,6 +525,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
         self.uploadTimer = nil;
         [NSNotificationCenter.defaultCenter removeObserver:self];
         self.started = NO;
+        self.recoveryNeeded = NO;
     }
     return YES;
 }
@@ -543,6 +549,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
     }
     [self setEnabled:NO error:nil];
     self.encryptionKey = nil;
+    self.recoveryNeeded = NO;
     self.journal[kJournalGeneration] = @(generation);
     [self saveJournal];
     self.availabilityMessage = @"Encrypted cloud state was reset. Enable sync on one device first, then enable the others.";
