@@ -167,24 +167,24 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
     NSError *error = nil;
     if (!folderURL.isFileURL) error = ApolloICloudBackupError(@"Files did not return a usable backup folder.");
     BOOL scoped = !error && [folderURL startAccessingSecurityScopedResource];
-    NSData *bookmark = !error ? [folderURL bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
-        includingResourceValuesForKeys:@[NSURLNameKey, NSURLFileResourceIdentifierKey]
-        relativeToURL:nil error:&error] : nil;
-    if (error || !bookmark) {
+    if (error) {
         if (scoped) [folderURL stopAccessingSecurityScopedResource];
-        if (completion) completion(error ?: ApolloICloudBackupError(@"Could not remember that folder."));
+        if (completion) completion(error);
         return;
     }
     [self publishState:self.availability description:@"Checking Selected Folder…" working:YES];
 
-    // Capture the bookmark while Files is still calling its delegate, then do
-    // provider coordination off main. A minimal bookmark URL can remain usable
-    // when startAccessingSecurityScopedResource returns NO, so the write probe
-    // is the authority and only a successful start is balanced.
+    // Coordinate the picker URL before bookmarking it. File providers may
+    // hand the delegate a transient export URL and map it to a different URL
+    // inside the accessor. The marker, probe, and persisted bookmark must all
+    // refer to that same coordinated representation or the immediate refresh
+    // can resolve a folder that does not contain the marker we just wrote.
     dispatch_async(self.workQueue, ^{
         @autoreleasepool {
             __block NSError *probeError = nil;
             __block NSString *folderIdentifier = nil;
+            __block NSData *bookmark = nil;
+            __block NSString *folderName = nil;
             NSError *coordinationError = nil;
             NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
             ApolloICloudBackupCancelCoordinatorAfterTimeout(coordinator);
@@ -205,13 +205,18 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
                     NSData *probeData = [@"Apollo" dataUsingEncoding:NSUTF8StringEncoding];
                     if (![probeData writeToURL:probe options:NSDataWritingWithoutOverwriting error:&probeError]) return;
                     if (![NSFileManager.defaultManager removeItemAtURL:probe error:&probeError]) return;
+                    bookmark = [coordinatedURL bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+                        includingResourceValuesForKeys:@[NSURLNameKey, NSURLFileResourceIdentifierKey]
+                        relativeToURL:nil error:&probeError];
+                    folderName = coordinatedURL.lastPathComponent;
                 }];
             NSError *resultError = probeError ?: coordinationError;
+            if (!resultError && !bookmark) resultError = ApolloICloudBackupError(@"Could not remember that folder.");
             NSData *scopeData = [folderIdentifier dataUsingEncoding:NSUTF8StringEncoding];
             NSString *scope = scopeData ? ApolloICloudBackupScopeIdentifier(scopeData) : nil;
             NSMutableDictionary *state = [@{
-                @"bookmark": bookmark,
-                @"name": folderURL.lastPathComponent ?: kApolloICloudBackupDirectoryName,
+                @"bookmark": bookmark ?: NSData.data,
+                @"name": folderName ?: kApolloICloudBackupDirectoryName,
                 @"isBackupDirectory": @YES,
                 @"folderIdentifier": folderIdentifier ?: @"",
                 @"scope": scope ?: @"",
