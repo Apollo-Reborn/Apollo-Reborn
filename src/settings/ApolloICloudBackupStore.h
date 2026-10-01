@@ -22,8 +22,8 @@ __END_DECLS
 @property (nonatomic, readonly) ApolloICloudBackupAvailability availability;
 @property (nonatomic, readonly, copy) NSString *availabilityDescription;
 @property (nonatomic, readonly, getter=isWorking) BOOL working;
-@property (nonatomic, readonly, copy, nullable) NSString *scopeIdentifier;
-@property (nonatomic, readonly, copy, nullable) NSString *selectedFolderName;
+@property (atomic, readonly, copy, nullable) NSString *scopeIdentifier;
+@property (atomic, readonly, copy, nullable) NSString *selectedFolderName;
 
 - (void)refreshAvailabilityWithCompletion:(nullable void (^)(void))completion;
 - (void)selectFolderURL:(NSURL *)folderURL completion:(void (^)(NSError *_Nullable error))completion;

@@ -5,7 +5,6 @@
 #import <fcntl.h>
 #import <sys/stat.h>
 #import <unistd.h>
-#import "ApolloCommon.h"
 #import "settings/ApolloICloudBackupSupport.h"
 
 NSNotificationName const ApolloICloudBackupStoreDidChangeNotification = @"ApolloICloudBackupStoreDidChangeNotification";
@@ -123,8 +122,8 @@ static NSDictionary *ApolloICloudBackupCurrentEntitlements(void) {
 @property (nonatomic, copy) NSString *availabilityDescription;
 @property (nonatomic, getter=isWorking) BOOL working;
 @property (nonatomic, strong) dispatch_queue_t workQueue;
-@property (nonatomic, copy) NSString *scopeIdentifier;
-@property (nonatomic, copy) NSString *selectedFolderName;
+@property (atomic, copy) NSString *scopeIdentifier;
+@property (atomic, copy) NSString *selectedFolderName;
 @end
 
 @implementation ApolloICloudBackupStore
@@ -447,38 +446,56 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
         [localURL getResourceValue:&sourceSymlink forKey:NSURLIsSymbolicLinkKey error:nil];
         if (directory && localURL.isFileURL && sourceRegular.boolValue && !sourceSymlink.boolValue &&
             ApolloICloudBackupArchiveNameIsSupported(localURL.lastPathComponent)) {
-            NSString *name = ApolloICloudBackupUniqueFilename(localURL.lastPathComponent, identityToken);
-            NSURL *destination = [directory URLByAppendingPathComponent:name isDirectory:NO];
-            NSURL *pending = [directory URLByAppendingPathComponent:
-                [NSString stringWithFormat:@".%@.%@.pending", name, NSUUID.UUID.UUIDString] isDirectory:NO];
-            NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
             __block NSError *workError = nil;
             __block BOOL copied = NO;
-            NSError *coordinationError = nil;
-            [coordinator coordinateWritingItemAtURL:pending options:NSFileCoordinatorWritingForMoving
-                                   writingItemAtURL:destination options:0
-                                              error:&coordinationError
-                                         byAccessor:^(NSURL *newPending, NSURL *newDestination) {
-                NSFileManager *fm = NSFileManager.defaultManager;
-                @try {
-                    if ([fm fileExistsAtPath:newDestination.path]) {
-                        copied = [fm contentsEqualAtPath:localURL.path andPath:newDestination.path];
-                        if (copied) published = newDestination;
-                        else workError = ApolloICloudBackupError(@"An iCloud backup with this identity already exists but has different contents.");
-                        return;
+            NSString *publicationToken = identityToken;
+            for (NSUInteger attempt = 0; attempt < 2 && !copied; attempt++) {
+                NSString *name = ApolloICloudBackupUniqueFilename(localURL.lastPathComponent, publicationToken);
+                NSURL *destination = [directory URLByAppendingPathComponent:name isDirectory:NO];
+                NSURL *pending = [directory URLByAppendingPathComponent:
+                    [NSString stringWithFormat:@".%@.%@.pending", name, NSUUID.UUID.UUIDString] isDirectory:NO];
+                NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                __block BOOL differentContents = NO;
+                __block NSError *attemptError = nil;
+                NSError *coordinationError = nil;
+                [coordinator coordinateWritingItemAtURL:pending options:NSFileCoordinatorWritingForMoving
+                                       writingItemAtURL:destination options:0
+                                                  error:&coordinationError
+                                             byAccessor:^(NSURL *newPending, NSURL *newDestination) {
+                    NSFileManager *fm = NSFileManager.defaultManager;
+                    @try {
+                        if ([fm fileExistsAtPath:newDestination.path]) {
+                            copied = [fm contentsEqualAtPath:localURL.path andPath:newDestination.path];
+                            if (copied) published = newDestination;
+                            else differentContents = YES;
+                            return;
+                        }
+                        if (![fm copyItemAtURL:localURL toURL:newPending error:&attemptError]) return;
+                        [coordinator itemAtURL:newPending willMoveToURL:newDestination];
+                        copied = [fm moveItemAtURL:newPending toURL:newDestination error:&attemptError];
+                        if (copied) {
+                            [coordinator itemAtURL:newPending didMoveToURL:newDestination];
+                            published = newDestination;
+                        }
+                    } @finally {
+                        [fm removeItemAtURL:newPending error:nil];
                     }
-                    if (![fm copyItemAtURL:localURL toURL:newPending error:&workError]) return;
-                    [coordinator itemAtURL:newPending willMoveToURL:newDestination];
-                    copied = [fm moveItemAtURL:newPending toURL:newDestination error:&workError];
-                    if (copied) {
-                        [coordinator itemAtURL:newPending didMoveToURL:newDestination];
-                        published = newDestination;
-                    }
-                } @finally {
-                    [fm removeItemAtURL:newPending error:nil];
+                }];
+                if (copied) break;
+                if (differentContents && attempt == 0) {
+                    // A local filename can be reused after its prior archive is
+                    // deleted. Preserve the byte-equal idempotent path, but
+                    // publish different bytes under a fresh identity so the
+                    // pending queue can continue to later backups.
+                    publicationToken = [NSString stringWithFormat:@"%@-%@",
+                        identityToken, NSUUID.UUID.UUIDString];
+                    continue;
                 }
-            }];
-            if (!copied) error = workError ?: coordinationError ?: ApolloICloudBackupError(@"Could not save the backup to iCloud Drive.");
+                workError = attemptError ?: coordinationError ?: (differentContents
+                    ? ApolloICloudBackupError(@"Could not choose a unique iCloud backup name.")
+                    : nil);
+            }
+            if (!copied) error = workError ?: ApolloICloudBackupError(@"Could not save the backup to iCloud Drive.");
         } else if (!error) {
             error = ApolloICloudBackupError(@"The local backup is unavailable or has an unexpected filename.");
         }

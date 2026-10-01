@@ -37,6 +37,12 @@ int main(void) {
         Check(![unique isEqualToString:manual], @"cloud filename is collision resistant");
         Check(ApolloICloudBackupArchiveNameIsSupported(unique), @"unique cloud filename remains discoverable");
         Check([unique.pathExtension isEqualToString:@"apollobackup"], @"custom backup extension is preserved");
+        NSString *collisionRetry = ApolloICloudBackupUniqueFilename(manual,
+            [NSString stringWithFormat:@"%@-%@", @"12345678-ABCD-1234-ABCD-1234567890AB",
+                @"87654321-DCBA-4321-DCBA-BA0987654321"]);
+        Check(![collisionRetry isEqualToString:unique], @"collision retry gets a fresh cloud filename");
+        Check(ApolloICloudBackupArchiveNameIsSupported(collisionRetry),
+              @"collision retry remains discoverable");
         NSData *scopeA = [@"team.container.a" dataUsingEncoding:NSUTF8StringEncoding];
         NSData *scopeB = [@"team.container.b" dataUsingEncoding:NSUTF8StringEncoding];
         Check(ApolloICloudBackupScopeIdentifier(scopeA).length == 64,
