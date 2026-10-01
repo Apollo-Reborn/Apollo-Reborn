@@ -56,6 +56,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInlineImageMetadata.m \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
+    $(SRC_DIR)/ApolloNitterInstances.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
     $(SRC_DIR)/settings/ApolloSettingsTableViewController.m \
     $(SRC_DIR)/settings/ApolloSettingsForm.m \
