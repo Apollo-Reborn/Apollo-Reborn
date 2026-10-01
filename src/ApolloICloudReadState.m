@@ -292,21 +292,28 @@ NSData *ApolloICloudReadStateProjectedCommentData(NSDictionary *merged, NSUInteg
 
 NSDictionary *ApolloICloudReadStateJournalByCapturing(NSDictionary *rawJournal,
     NSArray<NSString *> *readIDs, NSDictionary<NSString *, NSDictionary *> *comments,
-    NSSet<NSString *> *previousReadIDs, NSTimeInterval now, BOOL historicalSeed) {
+    NSArray<NSString *> *previousReadIDs, NSTimeInterval now, BOOL historicalSeed) {
     NSDictionary *validated = ApolloICloudReadStateValidatedJournal(rawJournal);
     if (!validated) return rawJournal ?: @{};
     NSMutableDictionary *journal = [validated mutableCopy];
     NSMutableDictionary *records = [journal[kJournalRecords] mutableCopy];
     NSString *writer = journal[kJournalWriter];
+    NSMutableDictionary<NSString *, NSNumber *> *previousIndexes = previousReadIDs
+        ? [NSMutableDictionary dictionaryWithCapacity:previousReadIDs.count] : nil;
+    [previousReadIDs enumerateObjectsUsingBlock:^(NSString *postID, NSUInteger index, __unused BOOL *stop) {
+        if (!previousIndexes[postID]) previousIndexes[postID] = @(index);
+    }];
     NSUInteger index = 0;
     for (NSString *rawID in readIDs) {
         NSString *postID = ApolloICloudBarePostID(rawID);
         if (!postID) continue;
         NSMutableDictionary *record = [records[postID] mutableCopy] ?: [NSMutableDictionary dictionary];
-        BOOL newlyObserved = previousReadIDs && ![previousReadIDs containsObject:postID];
+        NSNumber *previousIndex = previousIndexes[postID];
+        BOOL newlyObserved = previousReadIDs &&
+            (!previousIndex || index > previousIndex.unsignedIntegerValue);
         if (!record[kRecordRead] || newlyObserved) {
             record[kRecordRead] = historicalSeed && !previousReadIDs
-                ? @1 : @(now - (double)(readIDs.count - index) / 1000.0);
+                ? @(1 + (double)index / 1e6) : @(now - (double)(readIDs.count - index) / 1000.0);
             record[kRecordWriter] = writer;
         }
         index++;
@@ -355,7 +362,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
 @property (nonatomic, strong) NSData *encryptionKey;
 @property (nonatomic, strong) NSTimer *uploadTimer;
 @property (nonatomic) BOOL applyingProjection;
-@property (nonatomic, copy) NSSet<NSString *> *lastObservedReadIDs;
+@property (nonatomic, copy) NSArray<NSString *> *lastObservedReadIDs;
 @property (nonatomic) BOOL hasObservedReadIDs;
 @end
 
@@ -645,12 +652,16 @@ static NSURL *ApolloICloudReadStateURL(void) {
     NSDictionary *comments = ApolloRawPostCommentSnapshots();
     if (!readIDs) return;
     double now = [NSDate date].timeIntervalSince1970;
-    NSMutableSet *observed = [NSMutableSet set];
+    NSMutableArray *observed = [NSMutableArray array];
+    NSMutableSet *observedSet = [NSMutableSet set];
     for (NSString *rawID in readIDs) {
         NSString *postID = ApolloICloudBarePostID(rawID);
-        if (postID) [observed addObject:postID];
+        if (postID && ![observedSet containsObject:postID]) {
+            [observed addObject:postID];
+            [observedSet addObject:postID];
+        }
     }
-    self.journal = [ApolloICloudReadStateJournalByCapturing(self.journal, readIDs, comments,
+    self.journal = [ApolloICloudReadStateJournalByCapturing(self.journal, observed, comments,
         self.hasObservedReadIDs ? self.lastObservedReadIDs : nil, now, historicalSeed) mutableCopy];
     self.lastObservedReadIDs = observed;
     self.hasObservedReadIDs = YES;
@@ -730,7 +741,7 @@ static NSURL *ApolloICloudReadStateURL(void) {
     self.applyingProjection = YES;
     ApolloApplySyncedPostReadState(readIDs, comments);
     self.applyingProjection = NO;
-    self.lastObservedReadIDs = [NSSet setWithArray:readIDs];
+    self.lastObservedReadIDs = readIDs;
     self.hasObservedReadIDs = YES;
     [self flushNow];
 }

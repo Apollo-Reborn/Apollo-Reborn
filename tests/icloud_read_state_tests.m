@@ -57,9 +57,25 @@ int main(void) {
         NSMutableDictionary *adopted = [mergedAB mutableCopy];
         adopted[@"w"] = @"device-b";
         NSDictionary *capturedAgain = ApolloICloudReadStateJournalByCapturing(adopted, expected,
-            @{@"abc": @{@"timestamp": @22, @"totalComments": @7}}, [NSSet setWithArray:expected], 999, NO);
+            @{@"abc": @{@"timestamp": @22, @"totalComments": @7}}, expected, 999, NO);
         Check([capturedAgain isEqual:adopted],
               @"capturing a projected remote snapshot preserves timestamps and writer metadata");
+
+        NSArray *historicalOrder = @[@"z-last-alphabetically", @"a-first-alphabetically", @"middle"];
+        NSDictionary *historical = ApolloICloudReadStateJournalByCapturing(
+            Journal(@"device", 0, @{}), historicalOrder, @{}, nil, 100, YES);
+        Check([ApolloICloudReadStateProjectedReadIDs(historical, 5000) isEqual:historicalOrder],
+              @"historical seed timestamps preserve native Recently Read order");
+        NSArray *revisitedOrder = @[@"a-first-alphabetically", @"middle", @"z-last-alphabetically"];
+        NSDictionary *revisited = ApolloICloudReadStateJournalByCapturing(
+            historical, revisitedOrder, @{}, historicalOrder, 200, NO);
+        Check([ApolloICloudReadStateProjectedReadIDs(revisited, 5000) isEqual:revisitedOrder] &&
+              [revisited[@"records"][@"z-last-alphabetically"][@"r"] doubleValue] > 100,
+              @"moving a previously read post toward the tail refreshes its ordering clock");
+        NSDictionary *revisitedAgain = ApolloICloudReadStateJournalByCapturing(
+            revisited, revisitedOrder, @{}, revisitedOrder, 300, NO);
+        Check([revisitedAgain isEqual:revisited],
+              @"capturing unchanged ordered history does not churn timestamps");
 
         NSDictionary *cleared = ApolloICloudReadStateMergeJournals(@[first, Journal(@"writer-c", 25, @{})]);
         Check(ApolloICloudReadStateProjectedReadIDs(cleared, 5000).count == 0,

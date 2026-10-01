@@ -15,7 +15,7 @@ FOUNDATION_EXPORT NSData * _Nullable ApolloICloudReadStateDecrypt(NSData *envelo
                                                                    NSError **error);
 FOUNDATION_EXPORT NSDictionary *ApolloICloudReadStateJournalByCapturing(
     NSDictionary *journal, NSArray<NSString *> *readIDs, NSDictionary<NSString *, NSDictionary *> *comments,
-    NSSet<NSString *> * _Nullable previousReadIDs, NSTimeInterval now, BOOL historicalSeed);
+    NSArray<NSString *> * _Nullable previousReadIDs, NSTimeInterval now, BOOL historicalSeed);
 FOUNDATION_EXPORT NSData *ApolloICloudReadStateResetMarker(long long generation);
 FOUNDATION_EXPORT BOOL ApolloICloudReadStateParseResetMarker(NSData *data, long long * _Nullable generation);
 
