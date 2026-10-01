@@ -417,6 +417,16 @@ endif
 # run-in-sim.sh additionally builds with LOGOS_DEFAULT_GENERATOR=internal so the
 # dylib uses ObjC-runtime swizzling and has no CydiaSubstrate dependency.
 ifeq ($(APOLLO_SIM_BUILD),1)
+# The internal Logos generator cannot preprocess these device-only hooks: the
+# crosspost hook makes differently-parameterized %orig calls, while the posted
+# comment hook relies on Substrate's synchronous batch-update reentry, and the
+# video timing hook wraps a generated original call inside a C macro. None is
+# needed for simulator settings/auth validation; device builds keep all three.
+ApolloReborn_FILES := $(filter-out \
+    $(SRC_DIR)/ApolloCrosspostTitle.xm \
+    $(SRC_DIR)/ApolloPostedCommentInsert.xm \
+    $(SRC_DIR)/ApolloFeedVideoScrolling.xm, \
+    $(ApolloReborn_FILES))
 # The internal Logos generator does not auto-include <substrate.h> the way the
 # MobileSubstrate generator does, so force-include it for the MSHookIvar template
 # (a pure ObjC-runtime helper with no CydiaSubstrate link dependency).
