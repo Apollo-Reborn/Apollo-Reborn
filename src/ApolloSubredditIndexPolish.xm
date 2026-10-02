@@ -3721,9 +3721,19 @@ static void ApolloSubredditIndexApplyRedditListCellPolishOnce(UITableViewCell *c
     if (!skipLeadingMarginClamp) {
         UIEdgeInsets margins = cell.contentView.layoutMargins;
         if (margins.left < ApolloSubredditRowBalancedLeadingMargin) {
-            UIEdgeInsets nativeMargins = [nativeState[@"contentMargins"] UIEdgeInsetsValue];
-            margins.top = nativeMargins.top;
-            margins.bottom = nativeMargins.bottom;
+            // Only an inheriting content view reports inherited/safe-area
+            // padding in its vertical margins; replace those with the authored
+            // values. Once the drawer or closed rail isolates the content view,
+            // its current margins ARE the authored ones (copied from the
+            // cell). Writing the inheritance-free 0pt back there let a theme
+            // reload measure rows at 28pt and then squeeze their content to
+            // nothing when the 15pt margins returned.
+            if (cell.contentView.preservesSuperviewLayoutMargins
+                || cell.contentView.insetsLayoutMarginsFromSafeArea) {
+                UIEdgeInsets nativeMargins = [nativeState[@"contentMargins"] UIEdgeInsetsValue];
+                margins.top = nativeMargins.top;
+                margins.bottom = nativeMargins.bottom;
+            }
             margins.left = ApolloSubredditRowBalancedLeadingMargin;
             cell.contentView.layoutMargins = margins;
         }

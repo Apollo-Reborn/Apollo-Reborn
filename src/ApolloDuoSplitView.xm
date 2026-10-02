@@ -167,6 +167,11 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, strong) UIButton *listAddButton;
 @property(nonatomic, strong) UIButton *listEditButton;
 @property(nonatomic) UIEdgeInsets originalListInsets;
+@property(nonatomic) BOOL splitSafeAreaSyncScheduled;
+@property(nonatomic) NSInteger splitSafeAreaAttempts;
+- (void)scheduleSplitSafeAreaSync;
+- (void)syncSplitSafeArea;
+- (void)repairSplitSafeAreaNow;
 - (void)restoreListBackgrounds;
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated;
 @property(nonatomic, strong) UIView *accountHeader;
@@ -460,8 +465,95 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         ApolloLog(@"[DuoSplit] Overview top alignment left=%.1f right=%.1f adjustment=%.1f", left, right, adjustment);
     });
 }
+// The split fills this host, so its safe area must equal the host's. After a
+// Closed portrait -> Open landscape -> portrait sequence UIKit can leave the
+// split (and every page inside it) holding the landscape rail's {0,0,34,84}
+// insets while the host and its bottom tab bar already report the portrait
+// ones. Pages then reserve an 84pt trailing strip: posts are pushed left and
+// the navigation pill lands under the status region. Bounded: at most a few
+// attempts per stale episode, never a feedback loop.
+- (void)scheduleSplitSafeAreaSync {
+    if (self.splitSafeAreaSyncScheduled) return;
+    self.splitSafeAreaSyncScheduled = YES;
+    __weak ApolloDuoSplitHost *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloDuoSplitHost *host = weakSelf;
+        if (!host) return;
+        host.splitSafeAreaSyncScheduled = NO;
+        [host syncSplitSafeArea];
+    });
+}
+static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
+    return fabs(a.top - b.top) < 0.5 && fabs(a.left - b.left) < 0.5
+        && fabs(a.bottom - b.bottom) < 0.5 && fabs(a.right - b.right) < 0.5;
+}
+- (void)syncSplitSafeArea {
+    [self syncSplitSafeAreaWaiting:YES];
+}
+// A rotation or fold has just finished laying out: the host is settled, so a
+// remaining mismatch is real and is repaired at once (no visible wrong frame).
+- (void)repairSplitSafeAreaNow {
+    [self syncSplitSafeAreaWaiting:NO];
+}
+- (void)syncSplitSafeAreaWaiting:(BOOL)waiting {
+    UIView *hostView = self.viewIfLoaded;
+    UIView *splitView = self.split.viewIfLoaded;
+    if (!hostView.window || !splitView.window || (waiting && ApolloDuoSplitIsResizing())) return;
+    // Only a split that fills the host inherits the host's safe area verbatim.
+    if (fabs(splitView.frame.origin.x) > 1.0 || fabs(splitView.frame.origin.y) > 1.0
+        || fabs(CGRectGetWidth(splitView.frame) - CGRectGetWidth(hostView.bounds)) > 1.0
+        || fabs(CGRectGetHeight(splitView.frame) - CGRectGetHeight(hostView.bounds)) > 1.0) return;
+    UIEdgeInsets want = hostView.safeAreaInsets;
+    UIEdgeInsets have = splitView.safeAreaInsets;
+    if (ApolloDuoSafeAreaInsetsMatch(want, have)) {
+        self.splitSafeAreaAttempts = 0;
+        return;
+    }
+    if (self.splitSafeAreaAttempts >= 3) return;
+    self.splitSafeAreaAttempts++;
+    // Host and split legitimately disagree for a moment during a rotation or
+    // fold. Only intervene when the mismatch survives a full re-check.
+    if (waiting && self.splitSafeAreaAttempts == 1) {
+        __weak ApolloDuoSplitHost *weakFirst = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [weakFirst scheduleSplitSafeAreaSync]; });
+        return;
+    }
+    ApolloLog(@"[DuoSplit] split safe area stale (attempt %ld): host=%@ split=%@",
+              (long)self.splitSafeAreaAttempts, NSStringFromUIEdgeInsets(want), NSStringFromUIEdgeInsets(have));
+    // Nothing writable recomputes the stale value: neither the split's nor the
+    // host's additionalSafeAreaInsets moves it. Re-attaching the split's view
+    // makes UIKit derive its safe area from the host afresh. Same frame, same
+    // controller: scroll positions and navigation state are untouched.
+    UIView *content = splitView;
+    [UIView performWithoutAnimation:^{
+        [content removeFromSuperview];
+        [self.view insertSubview:content atIndex:0];
+        content.translatesAutoresizingMaskIntoConstraints = NO;
+        self.contentTopConstraint = [content.topAnchor constraintEqualToAnchor:self.view.topAnchor
+                                                                      constant:self.contentTopConstraint.constant];
+        [NSLayoutConstraint activateConstraints:@[
+            [content.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [content.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            self.contentTopConstraint,
+            [content.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+        ]];
+        [self.view layoutIfNeeded];
+    }];
+    ApolloLog(@"[DuoSplit] split safe area after remount: host=%@ split=%@",
+              NSStringFromUIEdgeInsets(hostView.safeAreaInsets), NSStringFromUIEdgeInsets(splitView.safeAreaInsets));
+    // Re-verify once UIKit has settled the transition.
+    __weak ApolloDuoSplitHost *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ [weakSelf scheduleSplitSafeAreaSync]; });
+}
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    [self scheduleSplitSafeAreaSync];
+}
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    [self scheduleSplitSafeAreaSync];
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
         self.listDismiss.frame = self.view.bounds;
@@ -558,6 +650,14 @@ static __weak UITabBarController *sDuoSplitResizingTabs;
 static CGSize sDuoSplitTargetSize;
 static __weak id<UIViewControllerTransitionCoordinator> sDuoSplitSizeCoordinator;
 
+// Repair every Duo split host in this tab controller after its size change.
+static void ApolloDuoSplitRepairSafeAreas(UITabBarController *tabs) {
+    for (UIViewController *tab in tabs.viewControllers) {
+        for (UIViewController *child in tab.childViewControllers) {
+            if ([child isKindOfClass:ApolloDuoSplitHost.class]) [(ApolloDuoSplitHost *)child repairSplitSafeAreaNow];
+        }
+    }
+}
 BOOL ApolloDuoSplitIsResizing(void) {
     return sDuoSplitResizingTabs != nil;
 }
@@ -1268,6 +1368,48 @@ static BOOL ApolloDuoSplitSelectRow(UIViewController *root, NSSet<NSString *> *l
         }
     }
     return NO;
+}
+
+extern void ApolloHiddenContentPresentFromProfile(UIViewController *profile);
+void ApolloDuoAccountOpenShortcut(UIViewController *profile, NSString *title) {
+    if (!profile || !title.length) return;
+    // Hidden & Deleted is a tweak-owned row nested beside Saved; every other
+    // shortcut is the native row with this label, selected through Apollo.
+    if ([title isEqualToString:@"Hidden & Deleted"]) {
+        ApolloHiddenContentPresentFromProfile(profile);
+        return;
+    }
+    // Match the native Texture node's own label. The visible anchor cell also
+    // hosts the portrait grid, so a cell-text search would find the grid's
+    // copy of every title on the first shortcut row.
+    UITableView *table = ApolloDuoSplitFindTable(profile.view);
+    SEL nodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    if ([table respondsToSelector:nodeSelector]
+        && [table.delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) {
+        NSInteger count = [table.dataSource tableView:table numberOfRowsInSection:0];
+        for (NSInteger row = 0; row < MIN(count, 60); row++) {
+            NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
+            id node = ((id (*)(id, SEL, id))objc_msgSend)(table, nodeSelector, path);
+            if (![node respondsToSelector:@selector(accessibilityLabel)]) continue;
+            if (![[node accessibilityLabel] isEqualToString:title]) continue;
+            [table.delegate tableView:table didSelectRowAtIndexPath:path];
+            return;
+        }
+    }
+    if (!ApolloDuoSplitSelectRow(profile, [NSSet setWithObject:title])) {
+        ApolloLog(@"[DuoAccount] no native row for shortcut %@", title);
+    }
+}
+
+// The Account tab profile, when its view exists (portrait or closed layout).
+static void ApolloDuoAccountRefreshPortraitGrid(UITabBarController *tabs) {
+    for (UIViewController *tab in tabs.viewControllers) {
+        if (![tab isKindOfClass:UINavigationController.class]) continue;
+        UIViewController *root = ((UINavigationController *)tab).viewControllers.firstObject;
+        if (!root.isViewLoaded || !ApolloDuoSplitIsOwnAccountController(root)) continue;
+        UITableView *table = ApolloDuoSplitFindTable(root.view);
+        if (table) ApolloDuoAccountGridRefresh(table);
+    }
 }
 
 static UIViewController *ApolloDuoSplitForwardPage(UINavigationController *nav) {
@@ -2330,6 +2472,11 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         // Commit that existing measurement during UIKit's size animation, so
         // the old wrapping does not remain until a second row animation runs.
         [self.view layoutIfNeeded];
+        // The split can keep the previous orientation's rail insets through
+        // this animation; correct them inside it so the navigation pill never
+        // renders under the status region.
+        ApolloDuoSplitRepairSafeAreas(self);
+        ApolloDuoAccountRefreshPortraitGrid(self);
         UINavigationController *selected = (id)self.selectedViewController;
         if ([selected isKindOfClass:UINavigationController.class]) {
             UIViewController *page = ApolloDuoSplitDetailNavigation(selected).topViewController;
@@ -2346,6 +2493,8 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         restoreSectionPosition();
         sDuoSplitResizingTabs = nil;
         sDuoSplitSizeCoordinator = nil;
+        ApolloDuoSplitRepairSafeAreas(self);
+        ApolloDuoAccountRefreshPortraitGrid(self);
         ApolloDuoSplitScheduleUpdate();
     }];
 }

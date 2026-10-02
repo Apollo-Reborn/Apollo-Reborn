@@ -20,5 +20,12 @@ __BEGIN_DECLS
 void ApolloDuoAccountConfigureOverviewTable(UITableView *table, BOOL hosted);
 BOOL ApolloDuoAccountIsOverviewTable(UITableView *table);
 BOOL ApolloDuoAccountHidesProfileRow(UITableView *table, NSIndexPath *path);
+// Open portrait Account tab: two-column shortcut group. Height is -1 when the
+// row is not affected.
+CGFloat ApolloDuoAccountGridRowHeight(UITableView *table, NSIndexPath *path);
+void ApolloDuoAccountGridDisplayCell(UITableView *table, UITableViewCell *cell, NSIndexPath *path);
+void ApolloDuoAccountGridRefresh(UITableView *table);
+// Performs a profile shortcut exactly as its native row would.
+void ApolloDuoAccountOpenShortcut(UIViewController *profile, NSString *title);
 
 __END_DECLS
