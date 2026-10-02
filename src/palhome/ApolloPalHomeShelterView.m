@@ -231,9 +231,20 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
 - (void)buildRoster {
     int W = self.panelWidth, cardW = (W - 12 - 3) / 2, cardH = 36, gap = 3;
     int rows = MAX(1, ((int)self.animals.count + 1) / 2);
-    int gridY = 24, H = gridY + rows * cardH + (rows - 1) * gap + 26;
+    // Pals you said goodbye to get their own row up top, so it's always there.
+    BOOL oldFriends = self.rehomed.count > 0;
+    int gridY = 24 + (oldFriends ? 19 : 0), H = gridY + rows * cardH + (rows - 1) * gap + 26;
     [self setPanelBackgroundWidth:W height:H];
     [self centerLabel:[self label:@"Paws & Claws" font:APFontLarge role:0 max:W - 8] y:5 width:W];
+    if (oldFriends) {
+        NSString *word = [NSString stringWithFormat:@"Old friends (%lu): welcome back", (unsigned long)self.rehomed.count];
+        ApolloPixelButton *home = [self wordButton:@"house" word:word action:@selector(showRehomed)];
+        if (home.tileWidth > W - 12) home = [self wordButton:@"house" word:[NSString stringWithFormat:@"Old friends (%lu)", (unsigned long)self.rehomed.count]
+                                                      action:@selector(showRehomed)];
+        home.accessibilityLabel = [NSString stringWithFormat:@"Old friends, %lu", (unsigned long)self.rehomed.count];
+        home.accessibilityHint = @"Pals you said goodbye to. Tap to welcome one back home.";
+        [self place:home x:(W - home.tileWidth) / 2 y:23];
+    }
     [self centerLabel:[self label:self.full ? @"Your home is full · just looking" : @"Shelter · new faces every day"
                                  font:APFontSmall role:self.full ? 2 : 1 max:W - 8] y:14 width:W];
     if (!self.animals.count) {
@@ -283,12 +294,6 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
                                              : [self wordButton:@"back" word:@"Maybe later" action:@selector(close)];
     if (close.tileWidth > W - 12) close = [self wordButton:@"back" word:@"Not now" action:@selector(close)];
     [self place:close x:6 y:footY];
-    if (self.rehomed.count) {
-        // Goodbyes aren't forever.
-        ApolloPixelButton *home = [self wordButton:@"house" word:@"Coming home?" action:@selector(showRehomed)];
-        home.accessibilityHint = @"Pals you said goodbye to can come back.";
-        if (close.tileWidth + home.tileWidth + 4 <= W - 12) [self place:home x:W - 6 - home.tileWidth y:footY];
-    }
 }
 
 - (void)showRehomed {
@@ -308,7 +313,7 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     int rows = MAX(1, ((int)entries.count + 1) / 2);
     int H = gridY + rows * cardH + (rows - 1) * gap + 26;
     [self setPanelBackgroundWidth:W height:H];
-    [self centerLabel:[self label:@"Coming home?" font:APFontLarge role:0 max:W - 8] y:5 width:W];
+    [self centerLabel:[self label:@"Old friends" font:APFontLarge role:0 max:W - 8] y:5 width:W];
     [self centerLabel:intro y:15 width:W];
     APChromeTheme t = APChromeCurrent();
     for (NSUInteger i = 0; i < entries.count; i++) {

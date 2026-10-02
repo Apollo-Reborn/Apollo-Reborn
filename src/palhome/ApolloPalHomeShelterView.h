@@ -24,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) UIEdgeInsets safeInsets;
 @property (nonatomic) CGFloat keyboardHeight; // points; lifts the name editor
 // Pals you said goodbye to ({id, name, species, coat, at}), offered from the
-// roster under "Coming home?". Set before -showRoster:.
+// roster under "Old friends". Set before -showRoster:.
 @property (nonatomic, copy) NSArray<NSDictionary *> *rehomed;
 // The home is full (APHouseholdLimit): browsing is fine, adopting isn't.
 @property (nonatomic) BOOL full;

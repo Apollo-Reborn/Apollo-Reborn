@@ -681,7 +681,7 @@ static NSString *APCareWeightText(double lbs) {
             innerSelf.homeID = nil;
             [innerSelf refreshHome];
             [innerSelf arriveHome];
-            [innerSelf toast:@[[NSString stringWithFormat:@"%@ found a lovely new family.", name], @"Changed your mind? They're in the shelter under Coming home."]];
+            [innerSelf toast:@[[NSString stringWithFormat:@"%@ found a lovely new family.", name], @"Changed your mind? Adopt a Pal → Old friends brings them back."]];
             UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ went to a new home.", name]);
         }];
     }];

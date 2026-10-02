@@ -114,7 +114,7 @@ no bounds check), so it is never extended. Instead:
 - **Goodbyes**: the Pal card's wave button rehomes a Pal (with a confirmation):
   they walk out the front to a loving new family, taking their room, stats and
   Apollo record (a borrowed slot is returned first). Never your only Pal.
-  The last 12 are archived (`document.rehomed`); the shelter's "Coming home?"
+  The last 12 are archived (`document.rehomed`); the shelter's "Old friends" row
   welcomes them back with their room and stats.
 - **Capybaras**: petting drops a yuzu on its head (up to three, "perfectly
   balanced"); they tumble off when it moves.
