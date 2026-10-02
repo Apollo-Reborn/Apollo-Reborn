@@ -350,6 +350,18 @@ int main(void) {
             Check(!store.residents.firstObject.reborn && [classicDB[@"pixelPals"] containsObject:[native stringForKey:@"ActivePixelPal"]], @"a real Apollo Pal is active");
             Check([store residentWithID:back] != nil, @"Fern is still part of the household");
 
+            // A full house: adoption (and welcoming back) stops at the limit.
+            [owned removePersistentDomainForName:ownedSuite];
+            NSMutableArray *many = [NSMutableArray array];
+            for (NSString *sp in @[@"cat", @"dog", @"fox", @"bat", @"otter", @"tiger", @"panda", @"parrot"]) { [many addObject:sp]; [many addObject:@{@"name": sp}]; }
+            [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"foodTokens": @0, @"pixelPals": many} options:0 error:nil] forKey:@"PixelPalsDatabase"];
+            [native setObject:@"cat" forKey:@"ActivePixelPal"];
+            store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
+            APShelterAnimal *ninth = [APShelterAnimal new];
+            ninth.species = @"capybara"; ninth.coat = @"original"; ninth.ageMonths = 3; ninth.weightInLbs = 30;
+            Check(store.household.count == 8 && store.householdFull && ![store adoptAnimal:ninth name:@"Nine"], @"no ninth adoption");
+            Check([store rehomeResident:@"apollo.bat"] && !store.householdFull && [store restoreRehomed:@"apollo.bat"] && store.householdFull, @"goodbye makes room; a comeback fills it");
+
             puts("pal_home_store_tests: all scenarios passed");
         } @finally {
             [owned removePersistentDomainForName:ownedSuite];

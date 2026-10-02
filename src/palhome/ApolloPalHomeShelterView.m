@@ -234,7 +234,8 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     int gridY = 24, H = gridY + rows * cardH + (rows - 1) * gap + 26;
     [self setPanelBackgroundWidth:W height:H];
     [self centerLabel:[self label:@"Paws & Claws" font:APFontLarge role:0 max:W - 8] y:5 width:W];
-    [self centerLabel:[self label:@"Shelter · new faces every day" font:APFontSmall role:1 max:W - 8] y:14 width:W];
+    [self centerLabel:[self label:self.full ? @"Your home is full · just looking" : @"Shelter · new faces every day"
+                                 font:APFontSmall role:self.full ? 2 : 1 max:W - 8] y:14 width:W];
     if (!self.animals.count) {
         [self centerLabel:[self label:@"Everyone found a home!" font:APFontSmall role:2 max:W - 8] y:gridY + 14 width:W];
     }
@@ -338,7 +339,12 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     [self place:[self wordButton:@"back" word:@"Back to the shelter" action:@selector(backToRoster)] x:6 y:H - 21];
 }
 
+- (void)homeIsFull {
+    [self.delegate shelterHomeIsFull:self];
+}
+
 - (void)bringBack:(ApolloPixelButton *)sender {
+    if (self.full) { [self homeIsFull]; return; }
     if (sender.tag < 0 || sender.tag >= (NSInteger)self.rehomed.count) return;
     [self.delegate shelter:self bringBack:self.rehomed[sender.tag][@"id"]];
 }
@@ -399,8 +405,10 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     [self centerLabel:quirk y:quirkY width:W];
     [self centerLabel:coat y:coatY width:W];
     ApolloPixelButton *back = [self button:@"back" label:@"Back to the shelter" action:@selector(backToRoster)];
-    ApolloPixelButton *adopt = [self wordButton:@"heart" word:@"Adopt" action:@selector(startNaming)];
-    adopt.accessibilityHint = [NSString stringWithFormat:@"Bring %@ home.", a.name];
+    ApolloPixelButton *adopt = [self wordButton:@"heart" word:@"Adopt" action:self.full ? @selector(homeIsFull) : @selector(startNaming)];
+    adopt.accessibilityHint = self.full ? @"Your home is full. Say goodbye to a Pal to make room."
+                                        : [NSString stringWithFormat:@"Bring %@ home.", a.name];
+    if (self.full) adopt.alpha = 0.45;
     [self place:back x:6 y:H - 21];
     [self place:adopt x:W - 6 - adopt.tileWidth y:H - 21];
 }

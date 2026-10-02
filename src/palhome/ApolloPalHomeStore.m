@@ -40,6 +40,7 @@ static void ApolloPalHomeNotifyApollo(void);
 @end
 
 const NSTimeInterval APCareCooldown = 5 * 3600;
+const NSUInteger APHouseholdLimit = 8;
 
 static NSString *const kApolloPrefix = @"apollo.";
 static NSString *const kRebornPrefix = @"pal.";
@@ -719,7 +720,7 @@ static NSNumber *APAddHeart(id hearts) {
     if (!self.canEdit) return nil;
     NSDictionary *entry = nil;
     for (NSDictionary *candidate in [self rehomed]) if ([candidate[@"id"] isEqual:identifier]) { entry = candidate; break; }
-    if (!entry) return nil;
+    if (!entry || self.householdFull) return nil;
     [self settleChannel]; // native writes below need the real records
     [self refresh];
     NSString *species = entry[@"species"];
@@ -774,9 +775,13 @@ static NSNumber *APAddHeart(id hearts) {
 
 #pragma mark - Adoption
 
+- (BOOL)isHouseholdFull { return self.household.count >= APHouseholdLimit; }
+
 - (BOOL)adoptAnimal:(APShelterAnimal *)animal name:(NSString *)name {
     NSString *clean = [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!clean.length || clean.length > 40 || ![APSpecies speciesWithID:animal.species]) return NO;
+    [self refresh];
+    if (self.householdFull) return NO;
     [self settleChannel]; // native writes below need the real records
     [self refresh];
     if (!self.canEdit) return NO;

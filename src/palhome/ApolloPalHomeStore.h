@@ -55,6 +55,10 @@ typedef NS_ENUM(NSInteger, APCareResult) {
     APCareUnavailable,
 };
 FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
+// How many Pals a home can adopt up to (adopting or welcoming one back stops
+// here). Never removes anyone: households from before the limit, or Classic
+// users with all 16 of Apollo's Pals, keep everyone.
+FOUNDATION_EXTERN const NSUInteger APHouseholdLimit; // 8
 
 @class APShelterAnimal;
 
@@ -87,6 +91,8 @@ FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
 @property (nonatomic, copy, readonly) NSArray<ApolloPalHomeResident *> *household;
 // Shown the shelter at least once (first-visit onboarding).
 @property (nonatomic, readonly) BOOL shelterSeen;
+// No room for another adoption (household at APHouseholdLimit or more).
+@property (nonatomic, readonly, getter=isHouseholdFull) BOOL householdFull;
 - (void)markShelterSeen;
 // Adoption creates the resident (an Apollo Pal for an Apollo species you
 // don't have yet, otherwise a Reborn one) and makes it the active Pal.

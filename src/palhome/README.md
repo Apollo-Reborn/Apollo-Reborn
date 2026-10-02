@@ -102,6 +102,9 @@ no bounds check), so it is never extended. Instead:
   `FauxCutOutView.nameTag` title is swapped ("the capybara"). Switching away
   (here, or via Apollo's own chooser, `reconcileIsland`) copies hearts and
   distance back and restores the slot exactly (stashed if it was taken).
+- **Household limit**: adopting (or welcoming a Pal back) stops at
+  `APHouseholdLimit` (8). It never removes anyone, so older or Classic
+  households with more keep them all; the shelter says when the home is full.
 - **The shelter** (`ApolloPalHomeShelter`): a daily roster of 8 (Reborn species
   always featured) with a coat (fixed for life), a silly name, gender, age,
   personality and quirk. Personalities steer the idle brain.

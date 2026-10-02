@@ -846,6 +846,7 @@ static NSString *APCareWeightText(double lbs) {
     for (ApolloPalHomeResident *resident in self.store.household) [owned addObject:resident.species];
     [self presentShelterView];
     self.shelter.rehomed = self.store.rehomed;
+    self.shelter.full = self.store.householdFull;
     [self.shelter showRoster:[APShelter animalsExcludingSpecies:owned] keepName:self.store.shelterSeen ? nil : self.store.residents.firstObject.name];
 }
 
@@ -878,6 +879,12 @@ static NSString *APCareWeightText(double lbs) {
     APHapticPlay(APHapticSuccess);
     if (movedIn) [self.ambience playJingle:APJingleAdopt]; // (moving-in day has its own)
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"Welcome home, %@!", name]);
+}
+
+- (void)shelterHomeIsFull:(ApolloPalHomeShelterView *)shelter {
+    APHapticPlay(APHapticNope);
+    [self toast:@[[NSString stringWithFormat:@"Your home is full (%lu Pals)!", (unsigned long)APHouseholdLimit],
+                  @"Say goodbye to someone to make room. They can always come home later."]];
 }
 
 - (void)shelter:(ApolloPalHomeShelterView *)shelter bringBack:(NSString *)archiveID {
