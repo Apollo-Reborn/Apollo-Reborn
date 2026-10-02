@@ -55,7 +55,7 @@ FOUNDATION_EXPORT void ApolloKagiCheckSessionToken(NSString *token,
 // Simulator debug bridge ("ksearch [p=N t=d|w|m|y x=1 |] <query>"): run a Kagi
 // search with the saved Session Link and log every result.
 FOUNDATION_EXPORT void ApolloKagiSearchDebugRun(NSString *query);
-// "ksearchdebug fixture=<path>|off expired=0|1 fail info=0|1 token=<link>|off":
+// "ksearchdebug fixture=<path>|off expired=0|1|welcome fail info=0|1 token=<link>|off":
 // feed a saved results page to the parser instead of the network, fake a
 // rejected session, fail the next search, skip the Reddit read, or seed/remove
 // the Session Link without the sheet.

@@ -194,7 +194,7 @@ void ApolloKagiCheckSessionToken(NSString *token, void (^completion)(ApolloKagiS
 
 #if APOLLO_SIM_BUILD
 static NSString *sApolloKagiDebugFixturePath;   // a saved results page instead of the network
-static BOOL sApolloKagiDebugExpired;            // answer every search as signed out
+static NSString *sApolloKagiDebugExpiredPath;   // answer every search as signed out, sent to this kagi.com path
 static BOOL sApolloKagiDebugFailNext;
 static BOOL sApolloKagiDebugSkipRedditInfo;
 
@@ -268,13 +268,14 @@ static void ApolloKagiDebugDumpPage(NSString *html, NSString *token) {
         });
         return;
     }
-    if (sApolloKagiDebugExpired || sApolloKagiDebugFixturePath.length) {
+    if (sApolloKagiDebugExpiredPath.length || sApolloKagiDebugFixturePath.length) {
         NSString *fixture = sApolloKagiDebugFixturePath.length
             ? [NSString stringWithContentsOfFile:sApolloKagiDebugFixturePath encoding:NSUTF8StringEncoding error:nil] : nil;
-        NSURL *finalURL = sApolloKagiDebugExpired ? [NSURL URLWithString:@"https://kagi.com/turnstile?r=/html/search"] : url;
+        NSURL *finalURL = sApolloKagiDebugExpiredPath.length
+            ? [NSURL URLWithString:[@"https://kagi.com" stringByAppendingString:sApolloKagiDebugExpiredPath]] : url;
         NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:finalURL statusCode:200 HTTPVersion:@"HTTP/1.1"
                                                                 headerFields:@{@"Content-Type": @"text/html; charset=utf-8"}];
-        ApolloLog(@"[KagiSearch][debug] %@", sApolloKagiDebugExpired ? @"answering as signed out"
+        ApolloLog(@"[KagiSearch][debug] %@", sApolloKagiDebugExpiredPath.length ? @"answering as signed out"
                   : [NSString stringWithFormat:@"loading fixture page (%lu chars)", (unsigned long)fixture.length]);
         NSData *data = [fixture ?: @"" dataUsingEncoding:NSUTF8StringEncoding];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -532,7 +533,12 @@ void ApolloKagiSearchDebugConfigure(NSString *arguments) {
             NSString *path = [token substringFromIndex:8];
             sApolloKagiDebugFixturePath = [path isEqualToString:@"off"] ? nil : path;
         } else if ([token hasPrefix:@"expired="]) {
-            sApolloKagiDebugExpired = [[token substringFromIndex:8] isEqualToString:@"1"];
+            // "1" is the Turnstile check, "welcome" the landing page (Kagi
+            // picks one per network, so both need covering).
+            NSString *value = [token substringFromIndex:8];
+            sApolloKagiDebugExpiredPath = [value isEqualToString:@"1"]         ? @"/turnstile?r=/html/search"
+                                        : [value isEqualToString:@"welcome"] ? @"/welcome"
+                                                                             : nil;
         } else if ([token isEqualToString:@"fail"]) {
             sApolloKagiDebugFailNext = YES;
         } else if ([token hasPrefix:@"info="]) {
@@ -546,8 +552,8 @@ void ApolloKagiSearchDebugConfigure(NSString *arguments) {
             else ApolloLog(@"[KagiSearch][debug] token= isn't a Session Link");
         }
     }
-    ApolloLog(@"[KagiSearch][debug] fixture=%@ expired=%d failNext=%d redditInfo=%d",
-              sApolloKagiDebugFixturePath ?: @"off", sApolloKagiDebugExpired, sApolloKagiDebugFailNext,
+    ApolloLog(@"[KagiSearch][debug] fixture=%@ expired=%@ failNext=%d redditInfo=%d",
+              sApolloKagiDebugFixturePath ?: @"off", sApolloKagiDebugExpiredPath ?: @"off", sApolloKagiDebugFailNext,
               !sApolloKagiDebugSkipRedditInfo);
 }
 #endif
