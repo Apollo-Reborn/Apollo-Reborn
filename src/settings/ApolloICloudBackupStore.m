@@ -167,6 +167,12 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
     [folderURL stopAccessingSecurityScopedResource];
 }
 
+- (NSData *)bookmarkDataForSelectedFolderURL:(NSURL *)folderURL error:(NSError **)error {
+    return [folderURL bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+        includingResourceValuesForKeys:@[NSURLNameKey, NSURLFileResourceIdentifierKey]
+        relativeToURL:nil error:error];
+}
+
 - (void)selectFolderURL:(NSURL *)folderURL completion:(void (^)(NSError *))completion {
     if (!NSThread.isMainThread) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self selectFolderURL:folderURL completion:completion]; });
@@ -193,36 +199,39 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
         @autoreleasepool {
             __block NSError *probeError = nil;
             __block NSString *folderIdentifier = nil;
-            __block NSData *bookmark = nil;
+            // Bookmark the exact security-scoped URL returned by Files, not
+            // the coordinator accessor URL. File providers may remap the URL
+            // used for coordinated I/O without transferring the picker URL's
+            // sandbox extension to that accessor representation. iOS ordinary
+            // bookmarks carry this implicit ephemeral scope until reboot at
+            // the latest.
+            NSData *bookmark = [self bookmarkDataForSelectedFolderURL:folderURL error:&probeError];
             __block NSString *folderName = nil;
             NSError *coordinationError = nil;
-            NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-            ApolloICloudBackupCancelCoordinatorAfterTimeout(coordinator);
-            [coordinator coordinateWritingItemAtURL:folderURL options:0 error:&coordinationError
-                byAccessor:^(NSURL *coordinatedURL) {
-                    NSNumber *directory = nil, *symlink = nil;
-                    [coordinatedURL getResourceValue:&directory forKey:NSURLIsDirectoryKey error:&probeError];
-                    if (!probeError) [coordinatedURL getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:&probeError];
-                    if (probeError) return;
-                    if (!directory.boolValue || symlink.boolValue) {
-                        probeError = ApolloICloudBackupError(@"Files did not return a safe backup folder.");
-                        return;
-                    }
-                    folderIdentifier = ApolloICloudBackupFolderIdentifierAtURL(coordinatedURL, YES, &probeError);
-                    if (!folderIdentifier) return;
-                    NSURL *probe = [coordinatedURL URLByAppendingPathComponent:
-                        [NSString stringWithFormat:@".apollo-access-%@", NSUUID.UUID.UUIDString] isDirectory:NO];
-                    NSData *probeData = [@"Apollo" dataUsingEncoding:NSUTF8StringEncoding];
-                    if (![probeData writeToURL:probe options:NSDataWritingWithoutOverwriting error:&probeError]) return;
-                    if (![NSFileManager.defaultManager removeItemAtURL:probe error:&probeError]) return;
-                    bookmark = [coordinatedURL bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
-                        includingResourceValuesForKeys:@[NSURLNameKey, NSURLFileResourceIdentifierKey]
-                        relativeToURL:nil error:&probeError];
-                    // iOS does not support permanent security-scoped bookmark
-                    // creation. This ordinary bookmark carries only the
-                    // implicit ephemeral scope, valid until reboot at latest.
-                    folderName = coordinatedURL.lastPathComponent;
-                }];
+            if (bookmark) {
+                NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                ApolloICloudBackupCancelCoordinatorAfterTimeout(coordinator);
+                [coordinator coordinateWritingItemAtURL:folderURL options:0 error:&coordinationError
+                    byAccessor:^(NSURL *coordinatedURL) {
+                        NSNumber *directory = nil, *symlink = nil;
+                        [coordinatedURL getResourceValue:&directory forKey:NSURLIsDirectoryKey error:&probeError];
+                        if (!probeError) [coordinatedURL getResourceValue:&symlink
+                            forKey:NSURLIsSymbolicLinkKey error:&probeError];
+                        if (probeError) return;
+                        if (!directory.boolValue || symlink.boolValue) {
+                            probeError = ApolloICloudBackupError(@"Files did not return a safe backup folder.");
+                            return;
+                        }
+                        folderIdentifier = ApolloICloudBackupFolderIdentifierAtURL(coordinatedURL, YES, &probeError);
+                        if (!folderIdentifier) return;
+                        NSURL *probe = [coordinatedURL URLByAppendingPathComponent:
+                            [NSString stringWithFormat:@".apollo-access-%@", NSUUID.UUID.UUIDString] isDirectory:NO];
+                        NSData *probeData = [@"Apollo" dataUsingEncoding:NSUTF8StringEncoding];
+                        if (![probeData writeToURL:probe options:NSDataWritingWithoutOverwriting error:&probeError]) return;
+                        if (![NSFileManager.defaultManager removeItemAtURL:probe error:&probeError]) return;
+                        folderName = coordinatedURL.lastPathComponent;
+                    }];
+            }
             NSError *resultError = probeError ?: coordinationError;
             if (!resultError && !bookmark) resultError = ApolloICloudBackupError(@"Could not remember that folder.");
             NSData *scopeData = [folderIdentifier dataUsingEncoding:NSUTF8StringEncoding];
@@ -444,13 +453,20 @@ static NSURL *ApolloICloudBackupSelectionURL(void) {
 }
 
 - (void)refreshAvailabilityWithCompletion:(void (^)(void))completion {
+    [self refreshAvailabilityWithErrorCompletion:^(__unused NSError *error) {
+        if (completion) completion();
+    }];
+}
+
+- (void)refreshAvailabilityWithErrorCompletion:(void (^)(NSError *))completion {
     [self publishState:self.availability description:self.availabilityDescription working:YES];
     dispatch_async(self.workQueue, ^{
+        NSError *error = nil;
         NSURL *root = nil; BOOL scoped = NO;
-        NSURL *directory = [self resolveDirectoryWithError:nil accessRoot:&root scoped:&scoped];
+        NSURL *directory = [self resolveDirectoryWithError:&error accessRoot:&root scoped:&scoped];
         if (scoped) [self endAccessingSelectedFolderURL:root];
         if (directory) [self publishState:ApolloICloudBackupAvailabilityAvailable description:@"Available" working:NO];
-        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(); });
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(error); });
     });
 }
 

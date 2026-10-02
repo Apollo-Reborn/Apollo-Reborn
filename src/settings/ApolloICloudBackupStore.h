@@ -26,6 +26,8 @@ __END_DECLS
 @property (atomic, readonly, copy, nullable) NSString *selectedFolderName;
 
 - (void)refreshAvailabilityWithCompletion:(nullable void (^)(void))completion;
+- (void)refreshAvailabilityWithErrorCompletion:
+    (nullable void (^)(NSError *_Nullable error))completion;
 - (void)selectFolderURL:(NSURL *)folderURL completion:(void (^)(NSError *_Nullable error))completion;
 - (void)uploadLocalBackupURL:(NSURL *)localURL
                expectedScope:(nullable NSString *)expectedScope

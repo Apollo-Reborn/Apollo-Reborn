@@ -361,9 +361,13 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
             if (error) [weakSelf showAlertWithTitle:@"Folder Unavailable" message:error.localizedDescription];
             else {
                 [ApolloAutomaticBackup.sharedManager setICloudEnabled:NO];
-                [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithCompletion:^{
+                [ApolloICloudBackupStore.sharedStore refreshAvailabilityWithErrorCompletion:^(NSError *refreshError) {
                     [weakSelf scheduleRefresh];
-                    [weakSelf confirmEnableICloud];
+                    if (refreshError) {
+                        [weakSelf showAlertWithTitle:@"Folder Unavailable"
+                            message:refreshError.localizedDescription];
+                    }
+                    else [weakSelf confirmEnableICloud];
                 }];
             }
         }];

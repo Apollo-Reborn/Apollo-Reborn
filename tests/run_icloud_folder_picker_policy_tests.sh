@@ -11,7 +11,12 @@ if grep -Fq 'initForExportingURLs:@[templateURL] asCopy:YES' "$controller"; then
     exit 1
 fi
 grep -Fq 'Files did not grant ongoing access to that folder' "$store"
+grep -Fq 'bookmarkDataForSelectedFolderURL:folderURL' "$store"
+if grep -Fq 'bookmarkDataForSelectedFolderURL:coordinatedURL' "$store"; then
+    echo "folder selection must bookmark the picker URL, not the coordinator accessor URL" >&2
+    exit 1
+fi
 grep -Fq 'NSURLBookmarkResolutionWithoutImplicitStartAccessing' "$store"
 grep -Fq 'selected-folder permission is temporary' "$controller"
 grep -Fq 'bookmark scope is ephemeral' "$checklist"
-echo "iCloud folder picker policy checks passed (6)"
+echo "iCloud folder picker policy checks passed (8)"

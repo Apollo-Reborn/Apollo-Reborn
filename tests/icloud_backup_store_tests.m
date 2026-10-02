@@ -6,6 +6,7 @@
 @property (atomic, readwrite, copy, nullable) NSString *scopeIdentifier;
 - (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL;
 - (void)endAccessingSelectedFolderURL:(NSURL *)folderURL;
+- (NSData *)bookmarkDataForSelectedFolderURL:(NSURL *)folderURL error:(NSError **)error;
 - (BOOL)writeSelectedFolderState:(NSDictionary *)state error:(NSError **)error;
 - (NSURL *)resolveDirectoryWithError:(NSError **)error
                           accessRoot:(NSURL **)accessRoot
@@ -14,18 +15,24 @@
 
 @interface ApolloTestSelectingICloudBackupStore : ApolloICloudBackupStore
 @property (nonatomic, copy) NSDictionary *capturedSelection;
+@property (nonatomic, strong) NSURL *bookmarkedURL;
+@property (nonatomic) BOOL denyAccess;
 @end
 
 @implementation ApolloTestSelectingICloudBackupStore
 - (BOOL)beginAccessingSelectedFolderURL:(NSURL *)folderURL {
     (void)folderURL;
-    return YES;
+    return !self.denyAccess;
 }
 - (void)endAccessingSelectedFolderURL:(NSURL *)folderURL {
     (void)folderURL;
 }
 - (NSDictionary *)selectedFolderState {
     return self.capturedSelection;
+}
+- (NSData *)bookmarkDataForSelectedFolderURL:(NSURL *)folderURL error:(NSError **)error {
+    self.bookmarkedURL = folderURL;
+    return [super bookmarkDataForSelectedFolderURL:folderURL error:error];
 }
 - (BOOL)writeSelectedFolderState:(NSDictionary *)state error:(NSError **)error {
     if (error) *error = nil;
@@ -108,6 +115,21 @@ static NSError *Select(ApolloICloudBackupStore *store, NSURL *folderURL) {
     return error;
 }
 
+static NSError *Refresh(ApolloICloudBackupStore *store) {
+    __block NSError *error = nil;
+    __block BOOL finished = NO;
+    [store refreshAvailabilityWithErrorCompletion:^(NSError *completionError) {
+        error = completionError;
+        finished = YES;
+    }];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+    while (!finished && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    Check(finished, @"availability refresh completion returns");
+    return error;
+}
+
 int main(void) {
     @autoreleasepool {
         NSFileManager *fm = NSFileManager.defaultManager;
@@ -121,12 +143,14 @@ int main(void) {
         ApolloTestSelectingICloudBackupStore *selectingStore = [ApolloTestSelectingICloudBackupStore new];
         NSError *selectionError = Select(selectingStore, cloud);
         NSData *bookmark = selectingStore.capturedSelection[@"bookmark"];
+        Check([selectingStore.bookmarkedURL isEqual:cloud],
+              @"selection bookmarks the security-scoped picker URL");
         BOOL stale = NO;
         NSURL *resolved = bookmark ? [NSURL URLByResolvingBookmarkData:bookmark options:0
             relativeToURL:nil bookmarkDataIsStale:&stale error:&selectionError] : nil;
         NSString *marker = [resolved URLByAppendingPathComponent:@".apollo-reborn-folder-id"].path;
         Check(selectionError == nil && resolved != nil && !stale,
-              @"selected folder stores a resolvable coordinated bookmark");
+              @"selected folder stores a resolvable picker bookmark");
         Check([fm fileExistsAtPath:marker],
               @"stored bookmark resolves to the marker-bearing folder");
         NSURL *selectionRoot = nil;
@@ -137,6 +161,12 @@ int main(void) {
             isEqualToString:[cloud URLByResolvingSymlinksInPath].path],
               @"immediate refresh reopens the selected marker-bearing folder");
         if (selectionScoped) [selectingStore endAccessingSelectedFolderURL:selectionRoot];
+
+        selectingStore.denyAccess = YES;
+        NSError *refreshError = Refresh(selectingStore);
+        Check(refreshError != nil,
+              @"availability refresh reports a lost folder scope");
+        selectingStore.denyAccess = NO;
 
         ApolloTestDeniedICloudBackupStore *deniedStore = [ApolloTestDeniedICloudBackupStore new];
         NSError *deniedError = Select(deniedStore, cloud);
