@@ -52,8 +52,10 @@ on a Mac.
 
 **Styles**: Cosy Cottage, Castle Keep, Grand Library, Space Station, Wild West
 Saloon, Treehouse, Under the Sea. A style repaints the shell, the world outside
-and the UI material, and furnishes a template room (Decorate → Styles, with
-Undo). **Fresh** resets to moving-in day.
+and the UI material. Picking one (Decorate → Styles) asks how: **Furnished**
+(its template room), **Bare room** (its walls and floor only) or **Keep my
+things** (its walls and floor around your furniture); all with Undo. **Fresh**
+resets to moving-in day. The drawer keeps your place in a list as you pick.
 
 **Outside decorate mode** tapping furniture does things: lamps and fires
 toggle, the cottage window's curtains open and close (closed blocks the
@@ -96,6 +98,9 @@ no bounds check), so it is never extended. Instead:
 - **The shelter** (`ApolloPalHomeShelter`): a daily roster of 8 (Reborn species
   always featured) with a coat (fixed for life), a silly name, gender, age,
   personality and quirk. Personalities steer the idle brain.
+- **Goodbyes**: the Pal card's wave button rehomes a Pal (with a confirmation):
+  they walk out the front to a loving new family, taking their room, stats and
+  Apollo record (a borrowed slot is returned first). Never your only Pal.
 - **Capybaras**: petting drops a yuzu on its head (up to three, "perfectly
   balanced"); they tumble off when it moves.
 

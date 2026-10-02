@@ -9,6 +9,10 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 @property (nonatomic, strong) ApolloPixelButton *doneButton, *flipButton, *variantButton, *toggleButton, *awayButton, *lightingButton, *undoButton;
 @property (nonatomic, copy) NSArray<ApolloPixelButton *> *tabs;
 @property (nonatomic, strong) UIScrollView *shelf;
+@property (nonatomic) APCategory shelfCategory;
+@property (nonatomic) BOOL shelfBuilt;
+@property (nonatomic, strong, nullable) APStyleSpec *pendingStyle; // choosing how to apply it
+@property (nonatomic) CGFloat styleListOffset;
 // Actions for the selected piece float in a little wooden bubble above the
 // drawer, so the header keeps room for the item's name.
 @property (nonatomic, strong) UIView *actionBar;
@@ -79,7 +83,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 
 - (void)setPixelScale:(CGFloat)pixelScale { _pixelScale = pixelScale; [self setNeedsLayout]; [self rebuildShelf]; }
 - (void)setPixelWidth:(int)pixelWidth { _pixelWidth = pixelWidth; [self setNeedsLayout]; }
-- (void)setCategory:(APCategory)category { _category = category; [self refreshHeader]; [self rebuildShelf]; }
+- (void)setCategory:(APCategory)category { _category = category; self.pendingStyle = nil; [self refreshHeader]; [self rebuildShelf]; }
 - (void)setCanUndo:(BOOL)canUndo { _canUndo = canUndo; [self refreshHeader]; }
 
 - (void)layoutSubviews {
@@ -187,7 +191,8 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         self.subtitleLabel.text = item.spec.toggleable && !item.on ? [variant stringByAppendingString:variant.length ? @" · Off" : @"Off"] : variant;
     } else {
         self.titleLabel.text = [APCatalog titleForCategory:self.category];
-        self.subtitleLabel.text = self.category == APCategoryStyles ? ([self isFreshRoom] ? @"Moving day" : self.layout.style.title ?: @"Pick a whole new home")
+        self.subtitleLabel.text = self.category == APCategoryStyles ? (self.pendingStyle ? self.pendingStyle.title
+                                                                       : [self isFreshRoom] ? @"Moving day" : self.layout.style.title ?: @"Pick a whole new home")
             : self.category >= APCategoryWallpaper ? @"Tap to redecorate" : @"Tap an item to add it";
     }
     for (ApolloPixelButton *tab in self.tabs) tab.toggled = tab.tag == self.category;
@@ -214,20 +219,64 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     });
 }
 
-// Still moving-in day: nothing but the window and the boxes.
+// Still moving-in day: the boxes, and at most the window.
 - (BOOL)isFreshRoom {
     if (self.layout.items.count > 2) return NO;
+    BOOL boxes = NO;
     for (APPlacedItem *item in self.layout.items) {
-        if (![item.spec.identifier isEqualToString:@"window"] && ![item.spec.identifier isEqualToString:@"boxes"]) return NO;
+        if ([item.spec.identifier isEqualToString:@"boxes"]) boxes = YES;
+        else if (![item.spec.identifier isEqualToString:@"window"]) return NO;
     }
-    return YES;
+    return boxes;
 }
 
 - (void)rebuildShelf {
+    // Rebuilding the same tab (a pick, a style swap) keeps your place in it.
+    BOOL sameTab = self.shelfCategory == self.category && self.shelfBuilt;
+    CGPoint keep = self.shelf.contentOffset;
+    self.shelfCategory = self.category;
+    self.shelfBuilt = YES;
     for (UIView *view in self.shelf.subviews) [view removeFromSuperview];
     CGFloat p = self.pixelScale;
     int x = 2;
-    if (self.category == APCategoryStyles) {
+    if (self.category == APCategoryStyles && self.pendingStyle) {
+        // How to apply the chosen style.
+        APCanvas *thumb = APStyleThumbnail(self.pendingStyle);
+        ApolloPixelButton *preview = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:self.pendingStyle.title];
+        preview.iconName = nil;
+        preview.flat = YES;
+        preview.toggled = YES;
+        preview.tileWidth = thumb->w + 6;
+        preview.tileHeight = kShelfH;
+        preview.content = [APCanvasBox boxWithCanvas:thumb];
+        preview.pixelScale = p;
+        preview.userInteractionEnabled = NO;
+        preview.frame = CGRectMake(x * p, 0, preview.tileWidth * p, preview.tileHeight * p);
+        [self.shelf addSubview:preview];
+        x += preview.tileWidth + 6;
+        NSArray *choices = @[@[@"sofa", @"Furnished", @"Their furnished room."],
+                             @[@"brush", @"Bare room", @"Just their walls and floor, nothing in it."],
+                             @[@"box", @"Keep my things", @"Their walls and floor around your furniture."]];
+        int columnW = 0;
+        for (NSUInteger i = 0; i < choices.count; i++) {
+            ApolloPixelButton *button = [self wordButton:choices[i][0] word:choices[i][1]];
+            button.accessibilityHint = choices[i][2];
+            button.tag = (NSInteger)i;
+            button.frame = CGRectMake(x * p, (i * 20) * p, button.tileWidth * p, button.tileHeight * p);
+            [button addTarget:self action:@selector(applyStyleTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [self.shelf addSubview:button];
+            columnW = MAX(columnW, button.tileWidth);
+        }
+        x += columnW + 4;
+        ApolloPixelButton *back = [[ApolloPixelButton alloc] initWithIcon:@"back" accessibilityLabel:@"Back to styles"];
+        back.tileWidth = 18;
+        back.tileHeight = 16;
+        back.pixelScale = p;
+        back.frame = CGRectMake(x * p, 0, 18 * p, 16 * p);
+        [back addTarget:self action:@selector(cancelStyleChoice) forControlEvents:UIControlEventTouchUpInside];
+        [self.shelf addSubview:back];
+        x += 20;
+    } else if (self.category == APCategoryStyles) {
         // Each style is a little painting of its furnished room.
         static NSMutableDictionary<NSString *, APCanvasBox *> *thumbs;
         if (!thumbs) thumbs = [NSMutableDictionary dictionary];
@@ -316,7 +365,8 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         }
     }
     self.shelf.contentSize = CGSizeMake((x + 2) * p, kShelfH * p);
-    self.shelf.contentOffset = CGPointZero;
+    CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
+    self.shelf.contentOffset = sameTab ? CGPointMake(MIN(MAX(0, keep.x), maxX), 0) : CGPointZero;
 }
 
 #pragma mark Actions
@@ -347,8 +397,46 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         return;
     }
     if (sender.tag < 0 || sender.tag >= (NSInteger)styles.count) return;
-    for (ApolloPixelButton *cell in self.shelf.subviews) if ([cell isKindOfClass:ApolloPixelButton.class]) cell.toggled = cell == sender;
-    [self.delegate drawer:self didPickStyle:styles[sender.tag]];
+    // Ask how: furnished, bare, or around your things.
+    self.styleListOffset = self.shelf.contentOffset.x;
+    self.pendingStyle = styles[sender.tag];
+    [self refreshHeader];
+    self.shelfBuilt = NO; // the choice row starts at its beginning
+    [self rebuildShelf];
+}
+
+- (void)applyStyleTapped:(ApolloPixelButton *)sender {
+    APStyleSpec *style = self.pendingStyle;
+    if (!style) return;
+    [self leaveStyleChoice];
+    [self.delegate drawer:self didPickStyle:style apply:(APStyleApply)sender.tag];
+}
+
+- (void)cancelStyleChoice { [self leaveStyleChoice]; }
+
+- (void)leaveStyleChoice {
+    self.pendingStyle = nil;
+    [self refreshHeader];
+    [self rebuildShelf];
+    // Back where you were in the list of styles.
+    CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
+    self.shelf.contentOffset = CGPointMake(MIN(self.styleListOffset, maxX), 0);
+}
+
+- (ApolloPixelButton *)wordButton:(NSString *)icon word:(NSString *)word {
+    APCanvas *icn = APIconCanvas(icon);
+    int tw = APTextWidth(word.uppercaseString, APFontSmall);
+    APCanvas *content = APCanvasCreate(icn->w + 3 + tw, MAX(icn->h, 6));
+    APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
+    APTextShadow(content, word.uppercaseString, icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    APCanvasFree(icn);
+    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
+    button.iconName = nil;
+    button.content = [APCanvasBox boxWithCanvas:content];
+    button.tileWidth = content->w + 10;
+    button.tileHeight = 16;
+    button.pixelScale = self.pixelScale;
+    return button;
 }
 
 - (void)undo { [self.delegate drawerUndo:self]; }

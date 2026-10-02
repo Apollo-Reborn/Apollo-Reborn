@@ -972,6 +972,27 @@ static int APCurrentMinute(void) {
     }]]]];
 }
 
+- (void)waveGoodbye:(void (^)(void))completion {
+    SKSpriteNode *pal = self.pal;
+    if (!pal || self.reducedMotion) { completion(); return; }
+    [pal removeAllActions];
+    [self removeActionForKey:@"brain"];
+    [self tumbleYuzus];
+    self.palMode = APPalWalking;
+    [self floatIcon:@"smallheart" count:2 color:0];
+    [self showThought:@"t.heart"];
+    CGPoint from = pal.position, out = CGPointMake(pal.position.x, -16);
+    NSArray *frames = [self framesForResident:self.resident action:@"walk"];
+    pal.zPosition = 990;
+    __weak typeof(self) weakSelf = self;
+    [pal runAction:[SKAction sequence:@[[SKAction waitForDuration:1.0], [SKAction runBlock:^{
+        if (frames.count) [weakSelf.pal runAction:[SKAction repeatActionForever:[SKAction animateWithTextures:frames timePerFrame:0.11]] withKey:@"legs"];
+    }], APPixelMove(from, out, 1.4), [SKAction runBlock:^{
+        [weakSelf.pal removeActionForKey:@"legs"];
+        completion();
+    }]]]];
+}
+
 // Breadth-first path over walkable tiles.
 - (NSArray<NSValue *> *)pathFromX:(int)sx y:(int)sy toX:(int)tx y:(int)ty {
     if (![self.layout isWalkableTileX:tx y:ty]) return nil;

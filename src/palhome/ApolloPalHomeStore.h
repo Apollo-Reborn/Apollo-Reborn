@@ -86,6 +86,10 @@ FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
 - (BOOL)adoptAnimal:(APShelterAnimal *)animal name:(NSString *)name;
 - (BOOL)renameResident:(NSString *)identifier to:(NSString *)name;
 - (BOOL)makeActiveResident:(NSString *)identifier;
+// Saying goodbye: the Pal goes to a loving new family, taking their room,
+// stats and Apollo record with them. Never your only Pal (returns NO). If
+// they're the active Pal, the next one in the household becomes active.
+- (BOOL)rehomeResident:(NSString *)identifier;
 // Apollo's "Enable Pixel Pals" (group default PixelPalsEnabled): the Pal on
 // the Dynamic Island (or the top of the screen on older iPhones).
 @property (nonatomic) BOOL islandEnabled;

@@ -47,6 +47,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)restResident;
 // A new (or newly chosen) Pal trots in from the door with hearts.
 - (void)welcomeHome;
+// Goodbye: the Pal waves (a heart) and trots out through the front.
+- (void)waveGoodbye:(void (^)(void))completion;
 // Moving-in day: the boxes thump down in puffs of dust, a "Moving Day!" sign
 // swings in, and the Pal hops in through the front. Any tap skips it.
 - (void)playMovingInDay:(nullable void (^)(void))completion;

@@ -204,11 +204,15 @@ static const int kWidth = 140, kPad = 6;
     ApolloPixelButton *island = [self button:self.islandEnabled ? @"island" : @"island.off" label:@"Show on the Dynamic Island" action:@selector(island)];
     island.accessibilityValue = self.islandEnabled ? @"On" : @"Off";
     island.accessibilityHint = @"Your Pal lives up on the Dynamic Island while you browse.";
+    ApolloPixelButton *goodbye = [self button:@"wave" label:[NSString stringWithFormat:@"Say goodbye to %@", pal.name] action:@selector(goodbye)];
+    goodbye.accessibilityHint = household ? @"Rehome them with a loving new family." : @"They're your only Pal.";
+    goodbye.alpha = household ? 1 : 0.45;
     ApolloPixelButton *done = [self button:@"check" label:@"Done" action:@selector(done)];
     [self add:rename x:kPad y:fy];
     [self add:shelter x:kPad + 20 y:fy];
     [self add:widget x:kPad + 40 y:fy];
     [self add:island x:kPad + 60 y:fy];
+    [self add:goodbye x:kPad + 80 y:fy];
     [self add:done x:kWidth - kPad - 18 y:fy];
     self.bounds = CGRectMake(0, 0, kWidth * p, self.height * p);
 }
@@ -237,5 +241,6 @@ static NSString *APWardrobeDistance(double km) {
 - (void)widget { [self.delegate wardrobeWantsWidgetCode:self]; }
 - (void)done { [self.delegate wardrobeDidFinish:self]; }
 - (void)island { [self.delegate wardrobeToggledIsland:self]; }
+- (void)goodbye { [self.delegate wardrobe:self wantsGoodbye:self.household.firstObject]; }
 
 @end

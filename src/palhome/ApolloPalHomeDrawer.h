@@ -9,7 +9,10 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol ApolloPalHomeDrawerDelegate <NSObject>
 - (void)drawer:(ApolloPalHomeDrawer *)drawer didPickItem:(APItemSpec *)spec sender:(ApolloPixelButton *)sender;
 - (void)drawer:(ApolloPalHomeDrawer *)drawer didPickSurface:(APSurfaceSpec *)surface isFloor:(BOOL)isFloor;
-- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style;
+// How to move into a style: its furnished template, just its walls and floor,
+// or its walls and floor around the furniture you already have.
+typedef NS_ENUM(NSInteger, APStyleApply) { APStyleFurnished = 0, APStyleBare, APStyleKeepThings };
+- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style apply:(APStyleApply)apply;
 - (void)drawerUndo:(ApolloPalHomeDrawer *)drawer;
 // "Start Fresh": back to moving-in day (an empty room and the boxes).
 - (void)drawerStartFresh:(ApolloPalHomeDrawer *)drawer;

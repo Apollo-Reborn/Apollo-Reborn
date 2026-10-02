@@ -540,6 +540,9 @@ APCanvas *APIconCanvas(NSString *name) {
         icons = @{
             @"heart": @[@[@".ooo.ooo.", @"oabaoaaao", @"oabaaaaao", @"oaaaaaaao", @".oaaaaao.", @"..oaaao..", @"...oao...", @"....o...."],
                         @{@"o": @0x5A1A24, @"a": @0xF06A7A, @"b": @0xFFC0C8}],
+            // A waving hand: saying goodbye.
+            @"wave": @[@[@"..o.o.o...", @".oaoaoao..", @".oaoaoao.o", @".oaaaaaoao", @"oaaaaaaaao", @"oaaaaaaao.", @".oaaaaao..", @"..ooooo..."],
+                       @{@"o": @0x5A3A2A, @"a": @0xF4CCA1}],
             // The Dynamic Island, with a tiny Pal on top.
             @"island": @[@[@"...oo....", @"..oaao...", @".ooooooo.", @"obbbbbbbo", @"obbbbbbbo", @".ooooooo."], @{@"o": @0x1A1A1E, @"a": @0xC08A5A, @"b": @0x3A3A44}],
             @"island.off": @[@[@".........", @".........", @".ooooooo.", @"obbbbbbbo", @"obbbbbbbo", @".ooooooo."], @{@"o": @0x1A1A1E, @"b": @0x3A3A44}],

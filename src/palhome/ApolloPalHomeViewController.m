@@ -622,6 +622,94 @@ static NSString *APCareWeightText(double lbs) {
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ is home.", resident.name]);
 }
 
+- (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsGoodbye:(ApolloPalHomeResident *)resident {
+    if (self.store.household.count < 2) {
+        APHapticPlay(APHapticNope);
+        [self closeWardrobe];
+        [self toast:@[[NSString stringWithFormat:@"%@ is your only Pal!", resident.name], @"They're staying right here with you."]];
+        return;
+    }
+    [self closeWardrobe];
+    NSString *name = resident.name, *identifier = resident.identifier;
+    __weak typeof(self) weakSelf = self;
+    [self confirmWithTitle:[NSString stringWithFormat:@"Say goodbye to %@?", name]
+                      body:@"They'll go to a loving new family, and take their room and memories with them."
+                    cancel:@"Stay" confirm:@"Goodbye" confirmIcon:@"wave" handler:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        APHapticPlay(APHapticRemove);
+        [strongSelf.homeScene waveGoodbye:^{
+            __strong typeof(weakSelf) innerSelf = weakSelf;
+            if (![innerSelf.store rehomeResident:identifier]) { [innerSelf refreshHome]; return; }
+            [innerSelf refreshHome];
+            [innerSelf arriveHome];
+            [innerSelf toast:@[[NSString stringWithFormat:@"%@ found a lovely new family.", name], @"They'll always remember you."]];
+            UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ went to a new home.", name]);
+        }];
+    }];
+}
+
+// A small pixel dialog: a headline, a sentence, and two choices.
+- (void)confirmWithTitle:(NSString *)title body:(NSString *)body cancel:(NSString *)cancel confirm:(NSString *)confirm
+             confirmIcon:(NSString *)icon handler:(void (^)(void))handler {
+    CGFloat p = self.pixelScale;
+    int W = 132;
+    UIControl *scrim = [[UIControl alloc] initWithFrame:self.view.bounds];
+    scrim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    UIView *dialog = [UIView new];
+    ApolloPixelLabel *head = [ApolloPixelLabel new];
+    head.pixelScale = p; head.font = APFontSmall; head.themeRole = 2; head.maxWidth = W - 10; head.text = title;
+    ApolloPixelLabel *text = [ApolloPixelLabel new];
+    text.pixelScale = p; text.font = APFontSmall; text.themeRole = 0; text.maxWidth = W - 14; text.smooth = YES; text.text = body;
+    int H = 6 + 8 + text.pixelHeight + 6 + 16 + 6;
+    APCanvas *panelCanvas = APPanelCanvas(W, H);
+    ApolloPixelImageView *panel = [ApolloPixelImageView new];
+    panel.pixelScale = p;
+    [panel setCanvas:panelCanvas];
+    APCanvasFree(panelCanvas);
+    [dialog addSubview:panel];
+    CGSize hs = head.intrinsicContentSize, ts = text.intrinsicContentSize;
+    head.frame = CGRectMake((W * p - hs.width) / 2, 6 * p, hs.width, hs.height);
+    text.frame = CGRectMake((W * p - ts.width) / 2, 14 * p, ts.width, ts.height);
+    [dialog addSubview:head];
+    [dialog addSubview:text];
+    __weak UIControl *weakScrim = scrim;
+    void (^dismiss)(void) = ^{
+        UIControl *s = weakScrim;
+        [UIView animateWithDuration:0.15 animations:^{ s.alpha = 0; } completion:^(BOOL finished) { [s removeFromSuperview]; }];
+    };
+    ApolloPixelButton *(^word)(NSString *, NSString *) = ^ApolloPixelButton *(NSString *iconName, NSString *label) {
+        APCanvas *icn = APIconCanvas(iconName);
+        int tw = APTextWidth(label.uppercaseString, APFontSmall);
+        APCanvas *content = APCanvasCreate(icn->w + 3 + tw, MAX(icn->h, 6));
+        APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
+        APTextShadow(content, label.uppercaseString, icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+        APCanvasFree(icn);
+        ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:label];
+        button.iconName = nil;
+        button.content = [APCanvasBox boxWithCanvas:content];
+        button.tileWidth = content->w + 10;
+        button.tileHeight = 16;
+        button.pixelScale = p;
+        return button;
+    };
+    ApolloPixelButton *stay = word(@"heart", cancel), *go = word(icon, confirm);
+    int by = H - 22;
+    stay.frame = CGRectMake(6 * p, by * p, stay.tileWidth * p, 16 * p);
+    go.frame = CGRectMake((W - 6 - go.tileWidth) * p, by * p, go.tileWidth * p, 16 * p);
+    [stay addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { dismiss(); }] forControlEvents:UIControlEventTouchUpInside];
+    [go addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { dismiss(); handler(); }] forControlEvents:UIControlEventTouchUpInside];
+    [scrim addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { dismiss(); }] forControlEvents:UIControlEventTouchUpInside];
+    [dialog addSubview:stay];
+    [dialog addSubview:go];
+    dialog.frame = CGRectMake(round((self.view.bounds.size.width - W * p) / 2 / p) * p, round((self.view.bounds.size.height - H * p) / 2 / p) * p, W * p, H * p);
+    dialog.accessibilityViewIsModal = YES;
+    [scrim addSubview:dialog];
+    [self.view addSubview:scrim];
+    scrim.alpha = 0;
+    [UIView animateWithDuration:0.15 animations:^{ scrim.alpha = 1; }];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, head);
+}
+
 - (void)wardrobeToggledIsland:(ApolloPalHomeWardrobe *)wardrobe {
     BOOL on = !self.store.islandEnabled;
     APHapticPlay(APHapticToggle);
@@ -852,26 +940,32 @@ static NSString *APCareWeightText(double lbs) {
     [drawer flashTitle:surface.title];
 }
 
-- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style {
-    if ([style.identifier isEqual:self.homeScene.layout.style.identifier] && !self.roomBeforeStyle) {
-        [drawer flashTitle:style.title];
-        return;
-    }
+- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style apply:(APStyleApply)apply {
     // Keep what was there so one tap brings it back.
-    if (!self.roomBeforeStyle) self.roomBeforeStyle = self.homeScene.roomDocument ?: [APCatalog starterRoom];
-    NSMutableDictionary *room = [style.room() mutableCopy];
-    // Fresh identities so nothing collides with the old room's records.
-    NSMutableArray *items = [NSMutableArray array];
-    for (NSDictionary *record in room[@"items"]) {
-        NSMutableDictionary *copy = [record mutableCopy];
-        copy[@"uid"] = NSUUID.UUID.UUIDString;
-        [items addObject:copy];
+    NSDictionary *current = self.homeScene.roomDocument ?: [APCatalog starterRoom];
+    if (!self.roomBeforeStyle) self.roomBeforeStyle = current;
+    NSDictionary *template = style.room();
+    NSMutableDictionary *room;
+    if (apply == APStyleFurnished) {
+        room = [template mutableCopy];
+        // Fresh identities so nothing collides with the old room's records.
+        NSMutableArray *items = [NSMutableArray array];
+        for (NSDictionary *record in room[@"items"]) {
+            NSMutableDictionary *copy = [record mutableCopy];
+            copy[@"uid"] = NSUUID.UUID.UUIDString;
+            [items addObject:copy];
+        }
+        room[@"items"] = items;
+    } else {
+        // The style's shell, walls, floor and light; your things or nothing.
+        room = [current mutableCopy];
+        for (NSString *key in @[@"style", @"wallpaper", @"floor", @"lighting"]) if (template[key]) room[key] = template[key];
+        if (apply == APStyleBare) room[@"items"] = @[];
     }
-    room[@"items"] = items;
     [self.homeScene replaceRoom:room];
     APHapticPlay(APHapticPop);
     drawer.canUndo = YES;
-    [drawer flashTitle:style.title];
+    [drawer flashTitle:apply == APStyleFurnished ? style.title : apply == APStyleBare ? @"A blank canvas" : @"Same things, new walls"];
 }
 
 - (void)drawerStartFresh:(ApolloPalHomeDrawer *)drawer {

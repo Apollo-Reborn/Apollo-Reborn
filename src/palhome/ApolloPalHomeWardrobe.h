@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsRename:(ApolloPalHomeResident *)resident;
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe switchTo:(ApolloPalHomeResident *)resident;
 - (void)wardrobeToggledIsland:(ApolloPalHomeWardrobe *)wardrobe;
+- (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsGoodbye:(ApolloPalHomeResident *)resident;
 @end
 
 // The Pal card: who your Pal is (age, personality, quirk, hearts), the rest

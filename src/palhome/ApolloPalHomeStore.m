@@ -577,6 +577,46 @@ static NSNumber *APAddHeart(id hearts) {
     return APCareDone;
 }
 
+#pragma mark - Goodbyes
+
+- (BOOL)rehomeResident:(NSString *)identifier {
+    [self refresh];
+    if (!self.canEdit || self.household.count < 2) return NO;
+    ApolloPalHomeResident *leaving = [self residentWithID:identifier];
+    if (!leaving) return NO;
+    if (leaving.active) {
+        ApolloPalHomeResident *next = nil;
+        for (ApolloPalHomeResident *resident in self.household) if (![resident.identifier isEqual:identifier]) { next = resident; break; }
+        if (!next || ![self makeActiveResident:next.identifier]) return NO;
+    }
+    // Give back any borrowed slot first, so native records are the real ones.
+    [self settleChannel];
+    [self refresh];
+    ApolloLog(@"[PalHome] %@ (%@) went to a new home", identifier, leaving.species);
+    [self updateDocument:^(NSMutableDictionary *document) {
+        [document[@"residents"] removeObjectForKey:identifier];
+        if ([document[@"rooms"] isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *rooms = [document[@"rooms"] mutableCopy];
+            [rooms removeObjectForKey:identifier];
+            document[@"rooms"] = rooms;
+        }
+        if ([document[@"movedIn"] isKindOfClass:NSArray.class]) {
+            NSMutableArray *movedIn = [document[@"movedIn"] mutableCopy];
+            [movedIn removeObject:identifier];
+            document[@"movedIn"] = movedIn;
+        }
+        if ([document[@"roomOwner"] isEqual:identifier]) [document removeObjectForKey:@"roomOwner"];
+        if ([document[@"active"] isEqual:identifier]) [document removeObjectForKey:@"active"];
+    }];
+    if (!leaving.reborn) {
+        // Apollo's own record goes too (as if it had never been adopted).
+        [self writeNativeSpecies:leaving.species create:NO change:^NSDictionary *(__unused NSMutableDictionary *info) { return nil; }];
+    }
+    [self refresh];
+    ApolloPalHomeNotifyApollo();
+    return YES;
+}
+
 #pragma mark - Adoption
 
 - (BOOL)adoptAnimal:(APShelterAnimal *)animal name:(NSString *)name {

@@ -235,6 +235,16 @@ int main(void) {
             for (ApolloPalHomeResident *r in store.household) if ([r.identifier isEqual:mochi]) home = r;
             Check([home.hearts isEqual:@0.25] && home.lastFed, @"the guest's meal goes home with it");
 
+            // Goodbyes: the guest leaves (slot returned, room gone); the last Pal stays.
+            NSUInteger before = store.household.count;
+            Check([store makeActiveResident:mochi], @"guest active again");
+            Check([store rehomeResident:mochi] && store.household.count == before - 1 && ![store.residents.firstObject.identifier isEqual:mochi], @"rehome the active guest");
+            NSDictionary *afterGoodbye = [NSJSONSerialization JSONObjectWithData:[native dataForKey:@"PixelPalsDatabase"] options:0 error:nil];
+            Check([afterGoodbye[@"pixelPals"] indexOfObject:@"otter"] == NSNotFound, @"borrowed slot returned");
+            Check([owned dictionaryForKey:UDKeyPalHome][@"residents"][mochi] == nil, @"profile gone");
+            NSString *dogID = @"apollo.dog";
+            Check([store.residents.firstObject.identifier isEqual:dogID] && ![store rehomeResident:dogID], @"never your only Pal");
+
             // Object-shaped database, and no database at all.
             [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"pixelPals": @{@"cat": @{@"name": @"Hugo"}}} options:0 error:nil]
                         forKey:@"PixelPalsDatabase"];
