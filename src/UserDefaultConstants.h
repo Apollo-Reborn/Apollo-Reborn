@@ -244,6 +244,13 @@ static NSString *const UDKeyUseProfileAvatarTabIcon = @"UseProfileAvatarTabIcon"
 // Default OFF. See ApolloTabBarTitles.xm.
 static NSString *const UDKeyHideTabBarTitles = @"HideTabBarTitles";
 static NSString *const ApolloTabBarTitlesChangedNotification = @"ApolloTabBarTitlesChangedNotification";
+
+// Controls the Inbox tab's unread badge presentation.
+// Default YES preserves Apollo's numbered unread badge.
+static NSString *const UDKeyInboxBadgeShowUnreadCount = @"InboxBadgeShowUnreadCount";
+// Default NO preserves Apollo's standard red badge color.
+static NSString *const UDKeyInboxBadgeUseThemeAccent = @"InboxBadgeUseThemeAccent";
+static NSString *const ApolloInboxBadgeChangedNotification = @"ApolloInboxBadgeChangedNotification";
 // When ON (default), profile pages show Reborn's detailed profile — the banner,
 // large avatar/snoovatar, display name, bio, and the Social Links band. When OFF,
 // the profile page reverts to Apollo's compact stock layout: the detailed header is

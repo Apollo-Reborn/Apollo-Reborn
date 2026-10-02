@@ -25,6 +25,7 @@
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
 #import "ApolloWebSessionStore.h"
+#import "UserDefaultConstants.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -186,7 +187,11 @@ static void ApolloApplyCombinedInboxBadge(void) {
     NSString *nativeValue = objc_getAssociatedObject(item, &kApolloInboxNativeBadgeValueKey);
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    item.badgeValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    NSString *combinedValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    NSString *displayValue = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyInboxBadgeShowUnreadCount]
+        ? combinedValue
+        : (combinedValue.length ? @"•" : nil);
+    item.badgeValue = displayValue;
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2779,10 +2784,13 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
     objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSString *combinedValue = ApolloCombinedInboxBadgeValue(badgeValue);
+    NSString *displayValue = [NSUserDefaults.standardUserDefaults boolForKey:UDKeyInboxBadgeShowUnreadCount]
+        ? combinedValue
+        : (combinedValue.length ? @"•" : nil);
     ChatsFilterLog(@"Inbox badge native=%@ chat=%ld combined=%@",
                    badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
                    combinedValue ?: @"none");
-    %orig(combinedValue);
+    %orig(displayValue);
 }
 
 %end
@@ -3089,5 +3097,14 @@ static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
                 usingBlock:^(__unused NSNotification *notification) {
         ApolloApplyCombinedInboxBadge();
     }];
+
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:ApolloInboxBadgeChangedNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        ApolloApplyCombinedInboxBadge();
+    }];
+
     ChatsFilterLog(@"module loaded");
 }
