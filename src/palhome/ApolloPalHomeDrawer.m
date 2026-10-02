@@ -41,10 +41,12 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         [_actionBar addSubview:_actionPanel];
         [self addSubview:_actionBar];
         _doneButton = [self button:@"check" label:@"Done decorating" action:@selector(done)];
-        _flipButton = [self button:@"flip" label:@"Flip" action:@selector(flip)];
-        _variantButton = [self button:@"palette" label:@"Change colour" action:@selector(variant)];
-        _toggleButton = [self button:@"bulb" label:@"Switch on or off" action:@selector(toggle)];
-        _awayButton = [self button:@"box" label:@"Put away" action:@selector(putAway)];
+        // The selected piece's actions say what they do.
+        _flipButton = [self wordOnlyButton:@"Flip" action:@selector(flip)];
+        _variantButton = [self wordOnlyButton:@"Colour" action:@selector(variant)];
+        _variantButton.accessibilityLabel = @"Change colour";
+        _toggleButton = [self wordOnlyButton:@"Turn off" action:@selector(toggle)];
+        _awayButton = [self wordOnlyButton:@"Put away" action:@selector(putAway)];
         _lightingButton = [self button:@"sun" label:@"Room lighting" action:@selector(lighting)];
         _undoButton = [self button:@"undo" label:@"Undo style change" action:@selector(undo)];
         _undoButton.hidden = YES;
@@ -141,20 +143,35 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         button.hidden = ![actions containsObject:button];
         if (!button.hidden && button.superview != self.actionBar) [self.actionBar addSubview:button];
     }
+    if (item.spec.toggleable) [self setWord:item.on ? @"Turn off" : @"Turn on" onButton:self.toggleButton];
     self.actionBar.hidden = actions.count == 0;
     if (actions.count) {
-        int pad = 3, barW = pad * 2 + (int)actions.count * 18 + ((int)actions.count - 1) * 2, barH = 16 + pad * 2;
+        // Words wrap onto a second row on narrow screens.
+        int pad = 3, gap = 2, maxRowW = self.pixelWidth - 8 - pad * 2;
+        NSMutableArray<NSMutableArray *> *rows = [NSMutableArray arrayWithObject:[NSMutableArray array]];
+        int rowW = 0, barW = 0;
+        for (ApolloPixelButton *button in actions) {
+            int w = button.tileWidth;
+            if (rowW && rowW + gap + w > maxRowW) { [rows addObject:[NSMutableArray array]]; rowW = 0; }
+            rowW += (rowW ? gap : 0) + w;
+            [rows.lastObject addObject:button];
+            barW = MAX(barW, rowW);
+        }
+        barW += pad * 2;
+        int barH = pad * 2 + (int)rows.count * 16 + ((int)rows.count - 1) * gap;
         APCanvas *panel = APPanelCanvas(barW, barH);
         self.actionPanel.pixelScale = p;
         [self.actionPanel setCanvas:panel];
         APCanvasFree(panel);
         self.actionBar.frame = CGRectMake((self.pixelWidth - 4 - barW) * p, -(barH + 2) * p, barW * p, barH * p);
         self.actionPanel.frame = self.actionBar.bounds;
-        int x = pad;
-        for (ApolloPixelButton *button in actions) {
-            button.pixelScale = p;
-            button.frame = CGRectMake(x * p, pad * p, 18 * p, 16 * p);
-            x += 20;
+        for (NSUInteger r = 0; r < rows.count; r++) {
+            int x = pad;
+            for (ApolloPixelButton *button in rows[r]) {
+                button.pixelScale = p;
+                button.frame = CGRectMake(x * p, (pad + (int)r * (16 + gap)) * p, button.tileWidth * p, 16 * p);
+                x += button.tileWidth + gap;
+            }
         }
     }
     int maxTitle = right - 8;
@@ -442,6 +459,24 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 - (void)undo { [self.delegate drawerUndo:self]; }
 - (void)done { [self.delegate drawerDidFinish:self]; }
 - (void)flip { [self.delegate drawerFlip:self]; }
+
+- (ApolloPixelButton *)wordOnlyButton:(NSString *)word action:(SEL)action {
+    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
+    button.iconName = nil;
+    button.tileHeight = 16;
+    [self setWord:word onButton:button];
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)setWord:(NSString *)word onButton:(ApolloPixelButton *)button {
+    NSString *text = word.uppercaseString;
+    APCanvas *content = APCanvasCreate(APTextWidth(text, APFontSmall), 6);
+    APTextShadow(content, text, 0, 0, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    button.content = [APCanvasBox boxWithCanvas:content];
+    button.tileWidth = content->w + 10;
+    if (button != self.variantButton) button.accessibilityLabel = word;
+}
 - (void)variant { [self.delegate drawerCycleVariant:self]; }
 - (void)toggle { [self.delegate drawerToggle:self]; }
 - (void)putAway { [self.delegate drawerPutAway:self]; }

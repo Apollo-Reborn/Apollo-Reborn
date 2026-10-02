@@ -62,15 +62,6 @@ static const int kWidth = 140, kPad = 6;
     [self addSubview:label];
 }
 
-- (ApolloPixelButton *)button:(NSString *)icon label:(NSString *)label action:(SEL)action {
-    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:icon accessibilityLabel:label];
-    button.tileWidth = 18;
-    button.tileHeight = 16;
-    button.pixelScale = self.pixelScale;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    return button;
-}
-
 - (ApolloPixelLabel *)body:(NSString *)text role:(int)role {
     ApolloPixelLabel *label = [self label:text font:APFontSmall role:role];
     label.smooth = YES;
@@ -130,7 +121,7 @@ static const int kWidth = 140, kPad = 6;
     int perRow = MAX(1, (kWidth - kPad * 2 + 2) / 26);
     int householdRows = household ? ((int)self.household.count - 1 + perRow - 1) / perRow : 0;
     if (household) y += 8 + householdRows * 19 - 1;
-    self.height = y + 22;
+    self.height = y + 52; // three rows of action buttons
 
     ApolloPixelImageView *panel = [ApolloPixelImageView new];
     panel.pixelScale = p;
@@ -216,25 +207,28 @@ static const int kWidth = 140, kPad = 6;
             [self add:cell x:x y:rowY];
         }
     }
-    int fy = self.height - 21;
-    ApolloPixelButton *rename = [self button:@"pencil" label:[NSString stringWithFormat:@"Rename %@", pal.name] action:@selector(rename)];
-    ApolloPixelButton *shelter = [self button:@"shelter" label:@"Visit the shelter" action:@selector(shelter)];
-    shelter.accessibilityHint = @"Adopt another Pal.";
-    ApolloPixelButton *widget = [self button:@"widget" label:@"Copy Pal code for the widget" action:@selector(widget)];
-    widget.accessibilityHint = @"Paste it into the Pal Home widget on your Home Screen.";
-    ApolloPixelButton *island = [self button:self.islandEnabled ? @"island" : @"island.off" label:@"Show on the Dynamic Island" action:@selector(island)];
+    // Actions as words, not riddles: a 2 × 3 grid of text buttons.
+    int fy = self.height - 51, colW = (kWidth - kPad * 2 - 3) / 2;
+    ApolloPixelButton *rename = [self textButton:@"Rename" width:colW action:@selector(rename)];
+    rename.accessibilityLabel = [NSString stringWithFormat:@"Rename %@", pal.name];
+    ApolloPixelButton *shelter = [self textButton:@"Adopt a Pal" width:colW action:@selector(shelter)];
+    shelter.accessibilityHint = @"Visit the shelter to adopt another Pal.";
+    ApolloPixelButton *widget = [self textButton:@"Widget code" width:colW action:@selector(widget)];
+    widget.accessibilityHint = @"Copies a code to paste into the Pal Home widget on your Home Screen.";
+    ApolloPixelButton *island = [self textButton:self.islandEnabled ? @"Island: On" : @"Island: Off" width:colW action:@selector(island)];
+    island.accessibilityLabel = @"Show on the Dynamic Island";
     island.accessibilityValue = self.islandEnabled ? @"On" : @"Off";
     island.accessibilityHint = @"Your Pal lives up on the Dynamic Island while you browse.";
-    ApolloPixelButton *goodbye = [self button:@"wave" label:[NSString stringWithFormat:@"Say goodbye to %@", pal.name] action:@selector(goodbye)];
-    goodbye.accessibilityHint = household ? @"Rehome them with a loving new family." : @"They're your only Pal.";
+    ApolloPixelButton *goodbye = [self textButton:@"Say goodbye" width:colW action:@selector(goodbye)];
+    goodbye.accessibilityLabel = [NSString stringWithFormat:@"Say goodbye to %@", pal.name];
+    goodbye.accessibilityHint = household ? @"Rehome them with a loving new family. You can bring them back from the shelter." : @"They're your only Pal.";
     goodbye.alpha = household ? 1 : 0.45;
-    ApolloPixelButton *done = [self button:@"check" label:@"Done" action:@selector(done)];
-    [self add:rename x:kPad y:fy];
-    [self add:shelter x:kPad + 20 y:fy];
-    [self add:widget x:kPad + 40 y:fy];
-    [self add:island x:kPad + 60 y:fy];
-    [self add:goodbye x:kPad + 80 y:fy];
-    [self add:done x:kWidth - kPad - 18 y:fy];
+    ApolloPixelButton *done = [self textButton:@"Done" width:colW action:@selector(done)];
+    done.toggled = YES;
+    NSArray *grid = @[rename, shelter, widget, island, goodbye, done];
+    for (NSUInteger i = 0; i < grid.count; i++) {
+        [self add:grid[i] x:kPad + (int)(i % 2) * (colW + 3) y:fy + (int)(i / 2) * 17];
+    }
     self.bounds = CGRectMake(0, 0, kWidth * p, self.height * p);
 }
 
@@ -262,6 +256,20 @@ static NSString *APWardrobeDistance(double km) {
 - (void)widget { [self.delegate wardrobeWantsWidgetCode:self]; }
 - (void)done { [self.delegate wardrobeDidFinish:self]; }
 - (void)island { [self.delegate wardrobeToggledIsland:self]; }
+- (ApolloPixelButton *)textButton:(NSString *)word width:(int)width action:(SEL)action {
+    NSString *text = word.uppercaseString;
+    APCanvas *content = APCanvasCreate(MIN(APTextWidth(text, APFontSmall), width - 6), 6);
+    APTextShadow(content, text, 0, 0, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
+    button.iconName = nil;
+    button.content = [APCanvasBox boxWithCanvas:content];
+    button.tileWidth = width;
+    button.tileHeight = 14;
+    button.pixelScale = self.pixelScale;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
 - (void)putOnIsland { [self.delegate wardrobe:self putOnIsland:self.household.firstObject]; }
 
 - (ApolloPixelButton *)wordButton:(NSString *)icon word:(NSString *)word {
