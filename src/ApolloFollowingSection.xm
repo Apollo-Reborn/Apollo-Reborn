@@ -56,6 +56,8 @@
 //    once the handler closes its point window. Apollo's name-based expansion
 //    state can affect more models than that batch accounts for; see
 //    ApolloMultiredditExpansion.h for the reproduced invalid-row-count case.
+//    The favorite star's batch takes the same route when the table's cached
+//    counts are already stale before it starts (#1335).
 //
 // Everything else Apollo does to this table is reloadData (unsubscribe commits,
 // model refreshes), which is remap-safe: our mapping is invalidated in a
@@ -1416,6 +1418,37 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
 - (void)endUpdates {
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     %orig;
+}
+
+// Apollo's favorite star (see ApolloTableSnapshotIsStale). The check runs
+// before the block, while UIKit's cached counts and the model should still
+// agree. When they don't, no row the block names can pass UIKit's validation,
+// so the favorite change lands and one reload presents it. The star resolved
+// its row from the on-screen layout before this call, so the tapped subreddit
+// is still the one toggled. No caller gate: a stale snapshot fails every batch,
+// whoever submits it.
+- (void)performBatchUpdates:(void (^)(void))updates completion:(void (^)(BOOL))completion {
+    UITableView *table = (UITableView *)self;
+    if (!ApolloFollowingTableIsList(table)) {
+        %orig;
+        return;
+    }
+    if (ApolloDeferMultiredditTableUpdate(table)) {
+        // Inside an expansion scope the row calls are deferred, so a real
+        // batch would register nothing and fail the same validation.
+        if (updates) updates();
+    } else if (ApolloTableSnapshotIsStale(table)) {
+        ApolloLog(@"[FollowingSection] list counts changed since the last reload; applying this batch with a reload");
+        ApolloPerformBatchAsReload(table, updates);
+    } else {
+        %orig;
+        return;
+    }
+    if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(YES);
+        });
+    }
 }
 
 - (NSIndexPath *)indexPathForRowAtPoint:(CGPoint)point {
