@@ -1990,29 +1990,19 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 // Interface → Menus: the ••• menus' item order and visibility live on their own
-// screen (ApolloActionMenuSettingsViewController); the hub row summarises how
-// many menus differ from Apollo's default.
-- (NSString *)actionMenusSummaryText {
-    NSMutableArray<NSString *> *customized = [NSMutableArray array];
-    for (ApolloActionMenuContext context in ApolloActionMenuAllContexts()) {
-        if (ApolloActionMenuContextIsCustomized(context)) [customized addObject:ApolloActionMenuContextTitle(context)];
-    }
-    if (customized.count == 0) return @"Default";
-    return [NSString stringWithFormat:@"Customized: %@", [customized componentsJoinedByString:@", "]];
-}
-
+// screen (ApolloActionMenuSettingsViewController).
 - (ApolloSettingsSection *)buildInterfaceMenusSection {
-    __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *actionMenus =
         [self hubDisclosureRowWithID:@"interface.actionMenus"
-                               title:@"Action Menus"
-                            subtitle:^NSString * { return [weakSelf actionMenusSummaryText]; }
+                               title:@"Customize Action Menus"
+                            subtitle:nil
                                 push:^UIViewController * {
             return [[ApolloActionMenuSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
-    return [ApolloSettingsSection sectionWithTitle:@"Menus"
-                                            footer:@"Reorder or hide the items in the ••• menus of feeds, posts and comments, and in the moderator menus. Touching and holding a post or comment opens the same menu."
-                                              rows:@[ actionMenus ]];
+    return [ApolloSettingsSection
+        sectionWithTitle:@"Menus"
+        footer:@"Reorder and hide actions in the ••• menus on posts and comments, as well as moderator menus."
+        rows:@[ actionMenus ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
@@ -5241,11 +5231,6 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     return @[ [self buildInterfaceTabBarSection],
               [self buildInterfaceDisplayNavigationSection],
               [self buildInterfaceMenusSection] ];
-}
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    // Refresh the Action Menus summary after returning from that screen.
-    [self reloadRowWithID:@"interface.actionMenus"];
 }
 @end
 

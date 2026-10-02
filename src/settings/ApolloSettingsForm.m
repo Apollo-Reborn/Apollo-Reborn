@@ -624,13 +624,20 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             static NSString *const reuseID = @"ApolloSFButton";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
             if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
+            BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             // Shared pool: reset what a sibling's configure block may have added
             // (e.g. Translation's "Add Language…" disclosure chevron).
             cell.accessoryType = UITableViewCellAccessoryNone;
-            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-            [self apollo_applyAccentActionTextColorToCell:cell];
+            cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+            cell.textLabel.enabled = enabled;
+            if (enabled) {
+                [self apollo_applyAccentActionTextColorToCell:cell];
+            } else {
+                [self apollo_removeAccentActionTextColorFromCell:cell];
+                cell.textLabel.textColor = [UIColor tertiaryLabelColor];
+            }
             break;
         }
         case ApolloSFRowKindCustom: {

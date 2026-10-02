@@ -53,7 +53,7 @@ extern ApolloActionMenuContext const ApolloActionMenuContextModeratorComment;
 
 // Presentation order for pickers.
 NSArray<ApolloActionMenuContext> *ApolloActionMenuAllContexts(void);
-// Short picker title ("Feed", "Post", "Post (Comments)", "Comment").
+// Short picker title ("Feed", "Post", "Post with Comments", "Comment").
 NSString *ApolloActionMenuContextTitle(ApolloActionMenuContext context);
 // One sentence saying where that menu is opened from.
 NSString *ApolloActionMenuContextDescription(ApolloActionMenuContext context);
@@ -134,6 +134,8 @@ NSUInteger ApolloActionMenuCustomizedContextCount(void);
 
 void ApolloActionMenuSetOrder(ApolloActionMenuContext context, NSArray<NSString *> *order);
 void ApolloActionMenuSetItemHidden(ApolloActionMenuContext context, NSString *itemID, BOOL hidden);
+// Restore native contextual ordering without changing visibility.
+void ApolloActionMenuResetOrder(ApolloActionMenuContext context);
 void ApolloActionMenuResetContext(ApolloActionMenuContext context);
 
 #pragma mark - What the menu actually offered
