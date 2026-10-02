@@ -257,7 +257,9 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     CGFloat p = self.pixelScale;
     int x = 2;
     if (self.category == APCategoryStyles && self.pendingStyle) {
-        // How to apply the chosen style.
+        // How to apply the chosen style. Laid out to the drawer's width (no
+        // scrolling): the style's painting, then a column of equal buttons.
+        int avail = self.pixelWidth - 6 - 4;
         APCanvas *thumb = APStyleThumbnail(self.pendingStyle);
         ApolloPixelButton *preview = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:self.pendingStyle.title];
         preview.iconName = nil;
@@ -268,31 +270,41 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         preview.content = [APCanvasBox boxWithCanvas:thumb];
         preview.pixelScale = p;
         preview.userInteractionEnabled = NO;
+        preview.isAccessibilityElement = NO;
         preview.frame = CGRectMake(x * p, 0, preview.tileWidth * p, preview.tileHeight * p);
         [self.shelf addSubview:preview];
-        x += preview.tileWidth + 6;
-        NSArray *choices = @[@[@"sofa", @"Furnished", @"Their furnished room."],
-                             @[@"brush", @"Bare room", @"Just their walls and floor, nothing in it."],
-                             @[@"box", @"Keep my things", @"Their walls and floor around your furniture."]];
-        int columnW = 0;
-        for (NSUInteger i = 0; i < choices.count; i++) {
-            ApolloPixelButton *button = [self wordButton:choices[i][0] word:choices[i][1]];
-            button.accessibilityHint = choices[i][2];
-            button.tag = (NSInteger)i;
-            button.frame = CGRectMake(x * p, (i * 20) * p, button.tileWidth * p, button.tileHeight * p);
-            [button addTarget:self action:@selector(applyStyleTapped:) forControlEvents:UIControlEventTouchUpInside];
-            [self.shelf addSubview:button];
-            columnW = MAX(columnW, button.tileWidth);
-        }
-        x += columnW + 4;
+        // Back: a small tile on the painting's corner.
         ApolloPixelButton *back = [[ApolloPixelButton alloc] initWithIcon:@"back" accessibilityLabel:@"Back to styles"];
-        back.tileWidth = 18;
-        back.tileHeight = 16;
+        back.tileWidth = 14;
+        back.tileHeight = 12;
         back.pixelScale = p;
-        back.frame = CGRectMake(x * p, 0, 18 * p, 16 * p);
+        back.frame = CGRectMake((x + 1) * p, 1 * p, 14 * p, 12 * p);
         [back addTarget:self action:@selector(cancelStyleChoice) forControlEvents:UIControlEventTouchUpInside];
         [self.shelf addSubview:back];
-        x += 20;
+        int colX = x + preview.tileWidth + 4, colW = MAX(30, avail - colX);
+        NSArray *choices = @[@[@"Furnished", @"Their furnished room."],
+                             @[@"Bare room", @"Just their walls and floor, nothing in it."],
+                             @[@"Keep my things", @"Their walls and floor around your furniture."]];
+        int rowH = 16, rowGap = (kShelfH - rowH * 3) / 2;
+        for (NSUInteger i = 0; i < choices.count; i++) {
+            NSString *word = choices[i][0];
+            NSString *text = word.uppercaseString;
+            while (text.length > 1 && APTextWidth(text, APFontSmall) > colW - 6) text = [text substringToIndex:text.length - 1];
+            APCanvas *content = APCanvasCreate(MAX(1, APTextWidth(text, APFontSmall)), 6);
+            APTextShadow(content, text, 0, 0, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+            ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
+            button.iconName = nil;
+            button.content = [APCanvasBox boxWithCanvas:content];
+            button.tileWidth = colW;
+            button.tileHeight = rowH;
+            button.pixelScale = p;
+            button.accessibilityHint = choices[i][1];
+            button.tag = (NSInteger)i;
+            button.frame = CGRectMake(colX * p, (int)(i * (rowH + rowGap)) * p, colW * p, rowH * p);
+            [button addTarget:self action:@selector(applyStyleTapped:) forControlEvents:UIControlEventTouchUpInside];
+            [self.shelf addSubview:button];
+        }
+        x = colX + colW;
     } else if (self.category == APCategoryStyles) {
         // Each style is a little painting of its furnished room.
         static NSMutableDictionary<NSString *, APCanvasBox *> *thumbs;
@@ -382,6 +394,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         }
     }
     self.shelf.contentSize = CGSizeMake((x + 2) * p, kShelfH * p);
+    if (self.pendingStyle && self.category == APCategoryStyles) self.shelf.contentSize = self.shelf.bounds.size; // fits: don't scroll
     CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
     self.shelf.contentOffset = sameTab ? CGPointMake(MIN(MAX(0, keep.x), maxX), 0) : CGPointZero;
 }
@@ -438,22 +451,6 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     // Back where you were in the list of styles.
     CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
     self.shelf.contentOffset = CGPointMake(MIN(self.styleListOffset, maxX), 0);
-}
-
-- (ApolloPixelButton *)wordButton:(NSString *)icon word:(NSString *)word {
-    APCanvas *icn = APIconCanvas(icon);
-    int tw = APTextWidth(word.uppercaseString, APFontSmall);
-    APCanvas *content = APCanvasCreate(icn->w + 3 + tw, MAX(icn->h, 6));
-    APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
-    APTextShadow(content, word.uppercaseString, icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
-    APCanvasFree(icn);
-    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
-    button.iconName = nil;
-    button.content = [APCanvasBox boxWithCanvas:content];
-    button.tileWidth = content->w + 10;
-    button.tileHeight = 16;
-    button.pixelScale = self.pixelScale;
-    return button;
 }
 
 - (void)undo { [self.delegate drawerUndo:self]; }
