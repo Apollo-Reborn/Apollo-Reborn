@@ -28,6 +28,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "Tweak.h"   // RDKLink, RDKComment
 
 // RedditKit accessors not in Tweak.h's shared surface; resolved at runtime
@@ -79,14 +80,13 @@ static BOOL ApolloIsRunningOnVisionOS(void) {
 // connectedScenes is unordered, so prefer the scene that owns the key window
 // before falling back to any foreground-active scene.
 static UIWindowScene *ApolloForegroundWindowScene(void) {
+    UIWindowScene *keyScene = ApolloKeyWindow().windowScene;
+    if (keyScene) return keyScene;
     UIWindowScene *foreground = nil;
     UIWindowScene *fallback = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-            if (window.isKeyWindow) return windowScene;
-        }
         if (!foreground &&
             windowScene.activationState == UISceneActivationStateForegroundActive) {
             foreground = windowScene;
@@ -162,9 +162,7 @@ static ASDisplayNode *ApolloNodeOfView(UIView *view) {
 // The RedditKit model stored under ivar `ivarName` on a Swift cell node,
 // provided it is an instance of the named class.
 static id ApolloModelIvar(id node, const char *ivarName, NSString *className) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(node), ivarName);
-    if (!ivar) return nil;
-    id value = object_getIvar(node, ivar);
+    id value = ApolloObjectIvar(node, ivarName);
     Class modelClass = NSClassFromString(className);
     return (value && modelClass && [value isKindOfClass:modelClass]) ? value : nil;
 }

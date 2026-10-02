@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 
 // =============================================================================
@@ -159,12 +160,6 @@ static dispatch_queue_t ApolloFeedVideoPrewarmQueue(void) {
     return queue;
 }
 
-static id ApolloFeedVideoIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
 // The asset whose player is being built for this node (main thread only).
 // Keyed by asset, not a flag: a node can leave and re-enter the preload range
 // while a build is in flight, which gives it a fresh asset; the build for the
@@ -183,7 +178,7 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
     if (!sFeedVideoPrewarmAvailable || !asset) return NO;
     // Texture reads the _player ivar here (an existing player takes the
     // replaceCurrentItemWithPlayerItem: path) — same test.
-    if (ApolloFeedVideoIvar(node, "_player")) return NO;
+    if (ApolloObjectIvar(node, "_player")) return NO;
     if (objc_getAssociatedObject(node, kApolloFeedVideoPrewarmAssetKey) == asset) return YES; // in flight
     // Texture's own preflight, so a failed key or an unplayable asset still
     // reaches its delegate error path (videoNode:didFailToLoadValueForKey:...).
@@ -216,7 +211,7 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
             objc_setAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             id currentAsset = [strongNode asset];
             BOOL assetMatches = currentAsset == asset || (itemAsset && currentAsset == itemAsset);
-            if (!assetMatches || ApolloFeedVideoIvar(strongNode, "_player")) {
+            if (!assetMatches || ApolloObjectIvar(strongNode, "_player")) {
                 // The node moved on (left the preload range, got a different
                 // asset, or Texture attached a player another way): drop the
                 // warm one; the next preload builds again.
@@ -267,11 +262,11 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
 
 // YES for a feed cell whose media (or crosspost media) is an inline video.
 static BOOL ApolloFeedCellHasInlineVideo(id cell) {
-    id richMediaNode = ApolloFeedVideoIvar(cell, "richMediaNode");
-    if (richMediaNode && ApolloFeedVideoIvar(richMediaNode, "videoNode")) return YES;
-    id crosspostNode = ApolloFeedVideoIvar(cell, "crosspostNode");
-    id crosspostMedia = crosspostNode ? ApolloFeedVideoIvar(crosspostNode, "richMediaNode") : nil;
-    return crosspostMedia && ApolloFeedVideoIvar(crosspostMedia, "videoNode") != nil;
+    id richMediaNode = ApolloObjectIvar(cell, "richMediaNode");
+    if (richMediaNode && ApolloObjectIvar(richMediaNode, "videoNode")) return YES;
+    id crosspostNode = ApolloObjectIvar(cell, "crosspostNode");
+    id crosspostMedia = crosspostNode ? ApolloObjectIvar(crosspostNode, "richMediaNode") : nil;
+    return crosspostMedia && ApolloObjectIvar(crosspostMedia, "videoNode") != nil;
 }
 
 // =============================================================================

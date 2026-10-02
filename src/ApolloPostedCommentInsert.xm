@@ -52,7 +52,7 @@ static Class ApolloPostedCommentCommentsClass(void) {
 static BOOL ApolloPostedCommentTableIsCommentsList(ASTableNode *tableNode) {
     Class commentsClass = ApolloPostedCommentCommentsClass();
     if (!commentsClass) return NO;
-    if (![tableNode respondsToSelector:@selector(isNodeLoaded)] || ![tableNode isNodeLoaded]) return NO;
+    if (![tableNode isNodeLoaded]) return NO;
     UIResponder *responder = [tableNode view];
     while (responder) {
         if ([responder isKindOfClass:commentsClass]) return YES;
@@ -145,10 +145,8 @@ static void ApolloPostedCommentDisplayPendingCell(UITableView *tableView, UITabl
         ApolloLogDebug(@"[PostedCommentInsert] row %ld has no cell node to draw (%@)", (long)indexPath.row, NSStringFromClass([cell class]));
         return;
     }
-    if ([node respondsToSelector:@selector(layoutIfNeeded)]) [node layoutIfNeeded];
-    if ([node respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
-        [node recursivelyEnsureDisplaySynchronously:YES];
-    }
+    [node layoutIfNeeded];
+    [node recursivelyEnsureDisplaySynchronously:YES];
     ApolloLogDebug(@"[PostedCommentInsert] drew fresh cell synchronously for row %ld", (long)indexPath.row);
 }
 
@@ -192,6 +190,7 @@ static void ApolloPostedCommentDisplayPendingCell(UITableView *tableView, UITabl
     sApolloPostedCommentInsertedRows = [NSMutableArray array];
     sApolloPostedCommentReloadedRows = [NSMutableArray array];
     sApolloPostedCommentDeletedRows = [NSMutableArray array];
+    ASTableNode *tableNode = self; // strong capture: hooked self is __unsafe_unretained
     void (^animatedUpdates)(void) = ^{
         sApolloPostedCommentBatchDepth++;
         @try {
@@ -199,7 +198,7 @@ static void ApolloPostedCommentDisplayPendingCell(UITableView *tableView, UITabl
         } @finally {
             sApolloPostedCommentBatchDepth--;
         }
-        ApolloPostedCommentRecordPendingRows(self);
+        ApolloPostedCommentRecordPendingRows(tableNode);
         sApolloPostedCommentInsertedRows = nil;
         sApolloPostedCommentReloadedRows = nil;
         sApolloPostedCommentDeletedRows = nil;

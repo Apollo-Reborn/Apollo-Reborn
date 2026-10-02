@@ -294,10 +294,6 @@ static NSString *ApolloNativeActionDefaultTitle(uint16_t actionKind) {
     return actionKind < count ? kApolloNativeActionDefaultTitles[actionKind] : nil;
 }
 
-static UIColor *ApolloNativeActionMenuModeratorColor(void) {
-    return ApolloModeratorColor();
-}
-
 static BOOL ApolloNativeActionKindOpensModeratorMenu(uint16_t actionKind) {
     return actionKind == 124;
 }
@@ -389,10 +385,6 @@ static void ApolloNativeActionMenuPrimeSource(UIView *sourceView, NSValue *sourc
     });
 }
 
-static void ApolloNativeActionMenuPrimeSourceView(UIView *sourceView) {
-    ApolloNativeActionMenuPrimeSource(sourceView, nil);
-}
-
 static void ApolloNativeActionMenuWrapSourceAction(UIAction *action, UIView *sourceView) {
     if (!action || !sourceView || objc_getAssociatedObject(action, &kApolloNativeActionMenuWrappedSourceActionKey)) return;
     if (![action respondsToSelector:@selector(handler)] || ![action respondsToSelector:@selector(setHandler:)]) return;
@@ -404,7 +396,7 @@ static void ApolloNativeActionMenuWrapSourceAction(UIAction *action, UIView *sou
     originalHandler = [originalHandler copy];
     __weak UIView *weakSourceView = sourceView;
     ApolloNativeActionMenuActionHandler wrappedHandler = ^(UIAction *selectedAction) {
-        ApolloNativeActionMenuPrimeSourceView(weakSourceView);
+        ApolloNativeActionMenuPrimeSource(weakSourceView, nil);
         originalHandler(selectedAction);
     };
 
@@ -447,7 +439,7 @@ static void ApolloNativeActionMenuStyleElement(UIMenuElement *element, BOOL mode
     NSString *title = element.title ?: @"";
     BOOL opensModeratorMenu = ApolloNativeActionMenuTitleIsModerator(title);
     BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
-    UIColor *moderatorTintColor = ApolloNativeActionMenuModeratorColor();
+    UIColor *moderatorTintColor = ApolloModeratorColor();
     UIColor *elementTintColor = (!destructive && (moderatorStyle || opensModeratorMenu)) ? moderatorTintColor : nil;
 
     ApolloNativeActionMenuStyleElementTitle(element, elementTintColor ? UIColor.labelColor : nil);
@@ -500,6 +492,11 @@ static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
+    // TODO: Modernization - the fallback assumes the main screen. The menu is built from the
+    // never-presented ActionController before a source view is resolved (and via the public
+    // ApolloNativeActionMenuBuildCaptured(controller), which has no view), so no trait source
+    // is reachable here. Asset-catalog images always carry scale > 0, so the image's own
+    // scale (picked by UIKit for the trait environment) is the branch that runs in practice.
     format.scale = image.scale > 0.0 ? image.scale : UIScreen.mainScreen.scale;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvasSize format:format];
     UIImage *resized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
@@ -910,7 +907,7 @@ BOOL ApolloNativeActionMenusActive(void) {
 UIMenuElement *ApolloNativeActionMenuPreviewAction(NSString *title, UIImage *image, BOOL moderator, BOOL enabled) {
     if (title.length == 0) return nil;
     BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
-    UIColor *tintColor = (moderator && !destructive) ? ApolloNativeActionMenuModeratorColor() : nil;
+    UIColor *tintColor = (moderator && !destructive) ? ApolloModeratorColor() : nil;
     if (tintColor && image) image = ApolloNativeActionMenuTintedImage(image, tintColor);
     UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {}];
     ApolloNativeActionMenuStyleElementTitle(action, tintColor ? UIColor.labelColor : nil);
@@ -1073,7 +1070,7 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     }
 
     NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
-    UIColor *moderatorTintColor = ApolloNativeActionMenuModeratorColor();
+    UIColor *moderatorTintColor = ApolloModeratorColor();
     UIColor *menuTintColor = moderatorStyle ? moderatorTintColor : nil;
 
     NSArray<UIMenuElement *> *reportSections = ApolloNativeActionMenuBuildModeratorReportSections(actionController);

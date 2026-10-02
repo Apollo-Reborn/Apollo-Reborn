@@ -56,6 +56,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // MARK: - minimal local Texture declarations
 //
@@ -119,12 +120,6 @@ static ptrdiff_t FICIvarOffset(id obj, const char *name) {
     return iv ? ivar_getOffset(iv) : -1;
 }
 
-static id FICObjectIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    return iv ? object_getIvar(obj, iv) : nil;
-}
-
 // The comments search state Swift struct stored inline in ASTableViewController:
 // { Int currentIndex; [CommentsSearchMatch] matches } — matches' storage pointer
 // is NULL when no search is active (verified against sub_1002bbe18, which
@@ -175,7 +170,7 @@ static BOOL FICVerifyOnce(long gen) {
     if (sFICMatchRange.location == NSNotFound) return NO;
     if (!FICSearchIsActive(vc)) return NO;   // bar dismissed / query cleared
 
-    ASTableNode *tableNode = FICObjectIvar(vc, "tableNode");
+    ASTableNode *tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = [tableNode isNodeLoaded] ? [tableNode view] : nil;
     if (!tableView || !tableView.window) return NO;
 
@@ -227,7 +222,7 @@ static BOOL FICVerifyOnce(long gen) {
     // while active) floats over the table WITHOUT contributing to the insets,
     // so "visible" would otherwise extend behind its translucent glass. Trim
     // the bottom to the bar's top edge so corrections keep the match clear of it.
-    UIView *barAncestor = [FICObjectIvar(vc, "searchTextField") superview];
+    UIView *barAncestor = [ApolloObjectIvar(vc, "searchTextField") superview];
     while (barAncestor && !strstr(object_getClassName(barAncestor), "SearchToolbar")) {
         barAncestor = barAncestor.superview;
     }

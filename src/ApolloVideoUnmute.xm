@@ -4,6 +4,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -148,11 +149,11 @@ static __weak id sSilencedForViewer = nil;
 static AVPlayer *GetPlayerFromVideoNode(id videoNode);
 static void SyncMuteButtonIcon(id richMediaNode, BOOL isMuted);
 
-// Safely read an ObjC object ivar by name. class_getInstanceVariable walks
-// the superclass chain, so this works for inherited ivars too.
-static id GetIvarObject(id obj, const char *ivarName) {
+// ApolloObjectIvar plus a diagnostic when the ivar is missing (an Apollo
+// layout change). Use ApolloObjectIvar directly where absence is expected.
+static APOLLO_IVAR_NAME id GetIvarObject(id obj, const char *ivarName) {
     if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
+    Ivar ivar = class_getInstanceVariable(object_getClass(obj), ivarName);
     if (!ivar) {
         ApolloLog(@"[VideoUnmute] GetIvarObject: ivar '%s' not found on %@", ivarName, [obj class]);
         return nil;
@@ -160,28 +161,12 @@ static id GetIvarObject(id obj, const char *ivarName) {
     return object_getIvar(obj, ivar);
 }
 
-static id GetIvarObjectQuiet(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
-// Read a Swift Bool ivar (1 byte) from an object. Returns NO if ivar not found.
-static BOOL GetIvarBool(id obj, const char *ivarName) {
-    if (!obj) return NO;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    if (!ivar) return NO;
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    return *(BOOL *)((uint8_t *)(__bridge void *)obj + offset);
-}
-
 static id GetVideoNodeFromRichMediaNode(id richMediaNode) {
-    return richMediaNode ? GetIvarObjectQuiet(richMediaNode, "videoNode") : nil;
+    return ApolloObjectIvar(richMediaNode, "videoNode");
 }
 
 static id GetCrosspostRichMediaNodeFromOwner(id owner) {
-    id crosspostNode = GetIvarObjectQuiet(owner, "crosspostNode");
-    return crosspostNode ? GetIvarObjectQuiet(crosspostNode, "richMediaNode") : nil;
+    return ApolloObjectIvar(ApolloObjectIvar(owner, "crosspostNode"), "richMediaNode");
 }
 
 static BOOL ObjectsMatch(id lhs, id rhs) {
@@ -216,7 +201,7 @@ static void EnumerateVisibleRichMediaNodes(UITableView *tableView, void (^block)
         id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
         if (!cellNode) continue;
 
-        id richMediaNode = GetIvarObjectQuiet(cellNode, "richMediaNode");
+        id richMediaNode = ApolloObjectIvar(cellNode, "richMediaNode");
         if (richMediaNode) block(richMediaNode);
 
         id crosspostRichMediaNode = GetCrosspostRichMediaNodeFromOwner(cellNode);
@@ -259,8 +244,8 @@ static BOOL NodeIsInSearchResultsController(id node) {
 static BOOL IsCommentsOwnerShowingSameLinkAsMediaPage(id mediaPageVC) {
     if (!mediaPageVC || !sCommentsVCOwner) return NO;
 
-    id mediaPageLink = GetIvarObjectQuiet(mediaPageVC, "link");
-    id commentsLink = GetIvarObjectQuiet(sCommentsVCOwner, "link");
+    id mediaPageLink = ApolloObjectIvar(mediaPageVC, "link");
+    id commentsLink = ApolloObjectIvar(sCommentsVCOwner, "link");
     return ObjectsMatch(mediaPageLink, commentsLink);
 }
 
@@ -287,25 +272,11 @@ static BOOL RichMediaNodeContainsPlayer(id richMediaNode, AVPlayer *targetPlayer
 static BOOL IsPlayerOnVisibleFeedCell(UIViewController *feedVC, AVPlayer *targetPlayer) {
     if (!feedVC || !targetPlayer) return NO;
 
-    UITableView *tableView = GetTableViewFromViewController(feedVC);
-    if (!tableView) return NO;
-
-    for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
-
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
-        if (!cellNode) continue;
-
-        if (RichMediaNodeContainsPlayer(GetIvarObjectQuiet(cellNode, "richMediaNode"), targetPlayer)) {
-            return YES;
-        }
-        if (RichMediaNodeContainsPlayer(GetCrosspostRichMediaNodeFromOwner(cellNode), targetPlayer)) {
-            return YES;
-        }
-    }
-
-    return NO;
+    __block BOOL found = NO;
+    EnumerateVisibleRichMediaNodes(GetTableViewFromViewController(feedVC), ^(id richMediaNode) {
+        if (!found && RichMediaNodeContainsPlayer(richMediaNode, targetPlayer)) found = YES;
+    });
+    return found;
 }
 
 // YES when layer's superlayer chain reaches ancestor.
@@ -368,12 +339,8 @@ static AVPlayer *GetPlayerFromVideoNode(id videoNode) {
 
     // Fallback: non-shareable videos — player is directly on videoNode
     SEL playerSel = NSSelectorFromString(@"player");
-    if ([videoNode respondsToSelector:playerSel]) {
-        player = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
-        if (player) return player;
-    }
-
-    return nil;
+    if (![videoNode respondsToSelector:playerSel]) return nil;
+    return ((id (*)(id, SEL))objc_msgSend)(videoNode, playerSel);
 }
 
 // Get the AVPlayer from a MediaPageViewController's currently-displayed child
@@ -468,7 +435,7 @@ static void SyncMuteButtonIcon(id richMediaNode, BOOL isMuted) {
     if (!muteButtonNode) return;
 
     // Skip if button state already matches — avoids redundant work during scroll
-    BOOL currentIsMuted = GetIvarBool(muteButtonNode, "isMuted");
+    BOOL currentIsMuted = ApolloReadBoolIvar(muteButtonNode, "isMuted", NO);
     if (currentIsMuted == isMuted) return;
 
     ApolloLog(@"[VideoUnmute] SyncMuteButtonIcon: %@ → %@",
@@ -506,7 +473,7 @@ static void SyncRichMediaNodeMuteButton(id richMediaNode) {
 static void SyncVisibleCellMuteButtons(id cellNode) {
     if (!cellNode) return;
 
-    SyncRichMediaNodeMuteButton(GetIvarObjectQuiet(cellNode, "richMediaNode"));
+    SyncRichMediaNodeMuteButton(ApolloObjectIvar(cellNode, "richMediaNode"));
     SyncRichMediaNodeMuteButton(GetCrosspostRichMediaNodeFromOwner(cellNode));
 }
 
@@ -795,7 +762,7 @@ static AVPlayer *FeedAudibleVideoHoldingSound(void) {
 static BOOL CellHasFeedSound(id cellNode) {
     id holder = sFeedAudibleRichMediaNode;
     if (!holder) return NO;
-    if (!ObjectsMatch(GetIvarObjectQuiet(cellNode, "richMediaNode"), holder)
+    if (!ObjectsMatch(ApolloObjectIvar(cellNode, "richMediaNode"), holder)
         && !ObjectsMatch(GetCrosspostRichMediaNodeFromOwner(cellNode), holder)) {
         return NO;
     }
@@ -845,7 +812,7 @@ static void NoteFeedVideoWaiting(AVPlayer *player, AVPlayer *holder) {
 static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if (sUnmuteFeedVideos == 0 || !richMediaNode) return NO;
     // The comments header runs on its own setting; the feed one must not reach it.
-    if (GetIvarBool(richMediaNode, "isShownInCommentsHeader")) return NO;
+    if (ApolloReadBoolIvar(richMediaNode, "isShownInCommentsHeader", NO)) return NO;
 
     id videoNode = GetVideoNodeFromRichMediaNode(richMediaNode);
     if (!videoNode) return NO;
@@ -944,7 +911,7 @@ static void ReleaseFeedAudioIfOwnedBy(id richMediaNode) {
 
     if (player && player == sAutoUnmutedPlayer) sAutoUnmutedPlayer = nil;
     if (!presentedFullscreen) {
-        if (player) [player setMuted:YES];
+        [player setMuted:YES];
         if (videoNode) {
             SEL setMutedSel = NSSelectorFromString(@"setMuted:");
             if ([videoNode respondsToSelector:setMutedSel]) {
@@ -1024,7 +991,7 @@ static void ScheduleFeedSoundHandoff(id scrollView) {
 // Apollo's midpoint check runs).
 static void HandleFeedCellVisibilityEvent(id cellNode, unsigned long long event,
                                           id scrollView, BOOL heldSound) {
-    id richMediaNode = GetIvarObjectQuiet(cellNode, "richMediaNode");
+    id richMediaNode = ApolloObjectIvar(cellNode, "richMediaNode");
     id crosspostNode = GetCrosspostRichMediaNodeFromOwner(cellNode);
 
     // ASCellNodeVisibilityEventInvisible
@@ -1087,7 +1054,7 @@ static void HandleCommentsRichMediaVisibilityEvent(id visibilityOwner,
             if ([videoNode respondsToSelector:setMutedSel]) {
                 ((void (*)(id, SEL, BOOL))objc_msgSend)(videoNode, setMutedSel, YES);
             }
-            if (player) [player setMuted:YES];
+            [player setMuted:YES];
         }
 
         sCommentsRichMediaNode = nil;
@@ -1234,7 +1201,7 @@ static void SilenceInlineVideoIfViewerShowsOtherVideo(id viewer, AVPlayer *fulls
     if (!audible || !fullscreenPlayer || fullscreenPlayer == audible) return;
     // The inline video's own post, in a player of the viewer's own.
     id inlineNode = InlineRichMediaNodeForAudiblePlayer(audible);
-    if (inlineNode && ObjectsMatch(GetIvarObjectQuiet(viewer, "link"), GetIvarObjectQuiet(inlineNode, "link"))) return;
+    if (inlineNode && ObjectsMatch(ApolloObjectIvar(viewer, "link"), ApolloObjectIvar(inlineNode, "link"))) return;
     SilenceInlineVideoForFullscreen(viewer, reason);
 }
 
@@ -1398,7 +1365,7 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     %orig;
 
     // Only fix for comments header videos
-    if (!GetIvarBool(self, "isShownInCommentsHeader") && self != sCommentsRichMediaNode) return;
+    if (!ApolloReadBoolIvar(self, "isShownInCommentsHeader", NO) && self != sCommentsRichMediaNode) return;
 
     id videoNode = GetIvarObject(self, "videoNode");
     if (!videoNode) return;
@@ -1479,7 +1446,7 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
     // The tap toggles, so the pre-tap state names the direction unambiguously —
     // post-%orig state can't, because the mute dance only lands at T+100ms.
     BOOL wasMutedBeforeTap = playerForResume && [playerForResume isMuted];
-    BOOL isFeedVideo = !GetIvarBool(self, "isShownInCommentsHeader");
+    BOOL isFeedVideo = !ApolloReadBoolIvar(self, "isShownInCommentsHeader", NO);
     BOOL wasMutedAndPaused = playerForResume
         && [playerForResume isMuted]
         && [playerForResume rate] == 0.0f;
@@ -1901,7 +1868,7 @@ static Class sTouchHintVideoNodeClass = nil;
 - (void)setMuted:(BOOL)muted {
     // Block mute-dance re-muting on our auto-unmuted player.
     // User manual mute clears sAutoUnmutedPlayer via the button tap hook first.
-    if (muted && !sIsAutoUnmuting && sAutoUnmutedPlayer && self == sAutoUnmutedPlayer) {
+    if (muted && !sIsAutoUnmuting && self == sAutoUnmutedPlayer) {
         ApolloLog(@"[VideoUnmute] AVPlayer.setMuted:YES — BLOCKED (protecting auto-unmuted player)");
         return;
     }
@@ -2181,7 +2148,7 @@ void ApolloVideoUnmute_FixDisconnectedPlayerLayer(id postsViewController) {
         if (!cellNode) continue;
 
         for (id richMediaNode in @[
-            GetIvarObjectQuiet(cellNode, "richMediaNode") ?: [NSNull null],
+            ApolloObjectIvar(cellNode, "richMediaNode") ?: [NSNull null],
             GetCrosspostRichMediaNodeFromOwner(cellNode) ?: [NSNull null]
         ]) {
             if (richMediaNode == (id)[NSNull null]) continue;

@@ -54,6 +54,7 @@
 // the cell, and it is retained by the node through an associated object.
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"          // sFeedVideoScrubber
 #import "UserDefaultConstants.h"
 
@@ -100,20 +101,6 @@ static const CGFloat kGestureVerticalFail = 8.0;
 static const NSTimeInterval kForwardTapMaxDuration = 0.3;
 
 #pragma mark - Helpers
-
-static id NodeIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            @try { return object_getIvar(object, ivar); }
-            @catch (__unused NSException *e) { return nil; }
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
 
 // A loaded node's view, without forcing a view to be created off-screen.
 static UIView *ViewForNode(id node) {
@@ -421,7 +408,7 @@ static char kFeedScrubStripKey;
 
     // From here down the touch is genuinely on the strip, so a refusal is
     // worth naming — it is the difference between "scrub" and "dead zone".
-    UIView *nativeStrip = NodeIvar(self.richMediaNode, "videoGIFProgressView");
+    UIView *nativeStrip = ApolloObjectIvar(self.richMediaNode, "videoGIFProgressView");
     if (![nativeStrip isKindOfClass:[UIView class]] || nativeStrip.hidden) {
         ApolloLog(@"[FeedScrubber] refusing touch: native strip %@",
                   nativeStrip ? @"hidden" : @"missing");
@@ -504,7 +491,7 @@ static char kFeedScrubStripKey;
 
             self.scrubbing = YES;
             self.hasPendingSeek = NO;
-            UIView *nativeStrip = NodeIvar(self.richMediaNode, "videoGIFProgressView");
+            UIView *nativeStrip = ApolloObjectIvar(self.richMediaNode, "videoGIFProgressView");
             self.nativeStripView = [nativeStrip isKindOfClass:[UIView class]] ? nativeStrip : nil;
 
             // UIKit's mutual exclusion already fails other recognizers on
@@ -621,7 +608,7 @@ static char kFeedScrubStripKey;
 // and layoutSubviews lays the `progressBarView` ivar out from it. Setting the
 // fill view's frame is the least invasive way in — no Swift ivar writes.
 - (void)trackFingerOnNativeStrip:(CGFloat)fraction {
-    UIView *fill = NodeIvar(self.nativeStripView, "progressBarView");
+    UIView *fill = ApolloObjectIvar(self.nativeStripView, "progressBarView");
     if (![fill isKindOfClass:[UIView class]] || !fill.superview) return;
     CGRect frame = fill.frame;
     frame.size.width = MAX(0.0, MIN(1.0, fraction)) * fill.superview.bounds.size.width;
@@ -718,7 +705,7 @@ static void EnsureScrubStrip(id richMediaNode) {
 
     UIView *host = ViewForNode(richMediaNode);
     if (!host) return;
-    id videoNode = NodeIvar(richMediaNode, "videoNode");
+    id videoNode = ApolloObjectIvar(richMediaNode, "videoNode");
     UIView *videoView = ViewForNode(videoNode);
     if (!videoView) return;   // image/text posts have no video to scrub
 
@@ -774,9 +761,9 @@ static void EnsureScrubStrip(id richMediaNode) {
     if (!sFeedVideoScrubber) return;   // feature off: no per-tick work at all
     if (event != 0 && event != 1) return;
 
-    EnsureScrubStrip(NodeIvar(self, "richMediaNode"));
-    id crosspostNode = NodeIvar(self, "crosspostNode");
-    if (crosspostNode) EnsureScrubStrip(NodeIvar(crosspostNode, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
+    id crosspostNode = ApolloObjectIvar(self, "crosspostNode");
+    if (crosspostNode) EnsureScrubStrip(ApolloObjectIvar(crosspostNode, "richMediaNode"));
 }
 
 %end
@@ -793,7 +780,7 @@ static void EnsureScrubStrip(id richMediaNode) {
     %orig;
     if (!sFeedVideoScrubber) return;
     if (event != 0 && event != 1) return;
-    EnsureScrubStrip(NodeIvar(self, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
 }
 
 %end
@@ -810,7 +797,7 @@ static void EnsureScrubStrip(id richMediaNode) {
     %orig;
     if (!sFeedVideoScrubber) return;
     if (event != 0 && event != 1) return;
-    EnsureScrubStrip(NodeIvar(self, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
 }
 
 %end

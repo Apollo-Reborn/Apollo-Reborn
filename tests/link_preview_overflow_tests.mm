@@ -261,8 +261,8 @@ static UIView *ApolloLPViewForNode(ASDisplayNode *n) {
 static ASDisplayNode *ApolloLPFindOwningCellNode(ASDisplayNode *n) {
     return n.owner;
 }
-static id ApolloLPModelFromNodeIvar(ASDisplayNode *n, const char *name) {
-    return n.footers[@(name)];
+static id ApolloObjectIvar(id n, const char *name) {
+    return ((ASDisplayNode *)n).footers[@(name)];
 }
 static void ApolloLPRenoteDroppedRowReload(ASDisplayNode *n, NSString *h, NSInteger row) {
     notes++;

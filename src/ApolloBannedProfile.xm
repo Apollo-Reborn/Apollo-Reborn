@@ -1,5 +1,6 @@
 #import "ApolloBannedProfile.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import <objc/message.h>
@@ -94,46 +95,15 @@ static BOOL ApolloBannedProfileIvarEncodingIsRetainableObject(const char *encodi
     return [type hasSuffix:@"C"] || [type hasSuffix:@"CSg"];
 }
 
+// Object ivar read gated on the ivar's type encoding being a retainable object
+// (see above) so inline Swift value types are never retained.
 static id ApolloBannedProfileObjectIvar(id object, NSString *name) {
     if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        if (!ApolloBannedProfileIvarEncodingIsRetainableObject(ivar_getTypeEncoding(ivar))) return nil;
-        @try {
-            return object_getIvar(object, ivar);
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
-    }
-    return nil;
-}
-
-// Decodes a Swift.String value held in two 64-bit words. Small strings (<= 15
-// bytes) are stored inline; longer strings use a buffer pointer and are decoded
-// via Swift's _bridgeToObjectiveC. Mirrors ApolloDecodeSwiftString in
-// ApolloTranslation.xm.
-static NSString *ApolloBannedProfileDecodeSwiftString(uint64_t w0, uint64_t w1) {
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-
-    return sBridge ? sBridge(w0, w1) : nil;
+    const char *ivarName = name.UTF8String;
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), ivarName);
+    if (!ivar) return nil;
+    if (!ApolloBannedProfileIvarEncodingIsRetainableObject(ivar_getTypeEncoding(ivar))) return nil;
+    return object_getIvar(object, ivar);
 }
 
 // Reads a Swift.String stored as an inline ivar. object_getIvar must NOT be
@@ -152,7 +122,7 @@ static NSString *ApolloBannedProfileSwiftStringIvar(id object, NSString *name) {
         const uint8_t *storage = (const uint8_t *)(__bridge const void *)object + ivar_getOffset(ivar);
         memcpy(words, storage, sizeof(words));
 
-        NSString *value = ApolloBannedProfileDecodeSwiftString(words[0], words[1]);
+        NSString *value = ApolloDecodeSwiftString(words[0], words[1]);
         return ApolloBannedProfileNormalizedUsername(value);
     }
     return nil;

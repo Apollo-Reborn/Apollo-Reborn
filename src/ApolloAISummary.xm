@@ -24,6 +24,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloAISummary.h"
 #import "ApolloAICloudBridge.h"
 #import "ApolloWebTextDecoding.h"
@@ -660,25 +661,9 @@ static void ApolloAIGenerateForController(UIViewController *vc);
 static void ApolloAIPrepareForController(UIViewController *vc);
 static void ApolloAIShowLoadingIfIdle(NSString *fullName, BOOL isPost);
 
-static id ApolloAIGetIvarObject(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 // Swift Optional<ObjCClass> ivars do not consistently report an '@' runtime
-// encoding. For known object ivars, object_getIvar is still the correct access
-// path and avoids rejecting CommentsViewController.link before reading it.
-static id ApolloAIKnownObjectIvar(id obj, const char *ivarName) {
-    if (!obj || !ivarName) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    if (!ivar) return nil;
-    @try {
-        return object_getIvar(obj, ivar);
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
+// encoding, so known object ivars are read with ApolloObjectIvar (no encoding
+// check — that would reject CommentsViewController.link).
 
 // Reddit fullName ("t3_xxxx") for the post; falls back to a stable key.
 static NSString *ApolloAILinkFullName(id link) {
@@ -705,7 +690,7 @@ static id ApolloAIScanForLink(id obj) {
         "link", "_link", "post", "_post", "currentLink", "currentPost", NULL
     };
     for (size_t i = 0; knownNames[i]; i++) {
-        id value = ApolloAIKnownObjectIvar(obj, knownNames[i]);
+        id value = ApolloObjectIvar(obj, knownNames[i]);
         if ([value isMemberOfClass:rdkLink]) return value;
     }
 
@@ -716,8 +701,7 @@ static id ApolloAIScanForLink(id obj) {
         for (unsigned int i = 0; i < count; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(obj, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(obj, ivars[i]);
             if ([v isMemberOfClass:rdkLink]) { free(ivars); return v; }
         }
         free(ivars);
@@ -726,7 +710,7 @@ static id ApolloAIScanForLink(id obj) {
 }
 
 static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
-    id tableNode = ApolloAIGetIvarObject(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = ApolloAICommentsTableView(vc);
     NSMutableArray *nodes = [NSMutableArray array];
     NSMutableSet<NSValue *> *seen = [NSMutableSet set];
@@ -822,7 +806,7 @@ static UITableView *ApolloAIFindTableViewInView(UIView *view) {
 }
 
 static UITableView *ApolloAICommentsTableView(UIViewController *vc) {
-    id tableNode = ApolloAIGetIvarObject(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     if (tableNode && [tableNode respondsToSelector:@selector(view)]) {
         UIView *v = ((id (*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
         if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
@@ -833,7 +817,7 @@ static UITableView *ApolloAICommentsTableView(UIViewController *vc) {
 // The RDKComment on a CommentCellNode (its `comment` ivar), or nil.
 static id ApolloAICommentFromCellNode(id cellNode) {
     if (!cellNode) return nil;
-    id comment = ApolloAIKnownObjectIvar(cellNode, "comment");
+    id comment = ApolloObjectIvar(cellNode, "comment");
     Class rdkComment = NSClassFromString(@"RDKComment");
     if (!rdkComment || ![comment isMemberOfClass:rdkComment]) return nil;
     return comment;
@@ -1033,8 +1017,7 @@ static void ApolloAICollectCommentsFromDataModel(UIViewController *vc,
         for (unsigned int i = 0; i < n; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id value = nil;
-            @try { value = object_getIvar(vc, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id value = object_getIvar(vc, ivars[i]);
             NSArray *arr = nil;
             if ([value isKindOfClass:[NSArray class]]) arr = value;
             else if ([value isKindOfClass:[NSOrderedSet class]]) arr = [(NSOrderedSet *)value array];
@@ -1782,18 +1765,10 @@ static NSAttributedString *ApolloAISummaryAttributedText(NSString *title,
                                                          UIColor *accent) {
     if (state == ApolloAIBoxStateNone) return nil;
 
-    UIColor *secondary = nil;
-    UIColor *tertiary = nil;
-    if (@available(iOS 13.0, *)) {
-        secondary = UIColor.secondaryLabelColor;
-        tertiary = UIColor.tertiaryLabelColor;
-    } else {
-        secondary = UIColor.darkGrayColor;
-        tertiary = UIColor.grayColor;
-    }
+    UIColor *secondary = UIColor.secondaryLabelColor;
+    UIColor *tertiary = UIColor.tertiaryLabelColor;
     UIColor *errorColor = UIColor.systemOrangeColor;
 
-    accent = accent ?: UIColor.systemBlueColor;
     UIFont *titleFont = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     UIFont *chevronFont = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     UIFont *captionFont = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
@@ -3385,8 +3360,7 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         id sectionController = weakSelf;
         if (!sectionController) return;
         UIViewController *vc = sVisibleCommentsController;
-        Ivar commentIvar = class_getInstanceVariable(object_getClass(sectionController), "comment");
-        id comment = commentIvar ? object_getIvar(sectionController, commentIvar) : nil;
+        id comment = ApolloObjectIvar(sectionController, "comment");
         if (!vc || !ApolloAICommentIsEligible(comment)) return;
         if (ApolloAICaptureCommentForController(comment, vc)) {
             ApolloAIScheduleCommentGeneration(vc);

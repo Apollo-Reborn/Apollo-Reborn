@@ -7,6 +7,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloDeletedCommentsData.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -220,13 +221,6 @@ static NSString *ApolloDeletedCommentsTrimmedString(NSString *s) {
     return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
-static UIColor *ApolloDeletedCommentsBadgeRed(void) {
-    if (@available(iOS 13.0, *)) {
-        return [UIColor systemRedColor];
-    }
-    return [UIColor redColor];
-}
-
 static BOOL ApolloDeletedCommentsLabelIsUserDeleted(NSString *label) {
     return [ApolloDeletedCommentsNormalizedReasonLabel(label) isEqualToString:@"DELETED BY USER"];
 }
@@ -235,7 +229,7 @@ static UIColor *ApolloDeletedCommentsHighlightColorForLabel(NSString *label) {
     if (ApolloDeletedCommentsLabelIsUserDeleted(label)) {
         return [[UIColor colorWithRed:0.82 green:0.02 blue:0.08 alpha:1.0] colorWithAlphaComponent:0.20];
     }
-    return [ApolloDeletedCommentsBadgeRed() colorWithAlphaComponent:0.24];
+    return [[UIColor systemRedColor] colorWithAlphaComponent:0.24];
 }
 
 static UIColor *ApolloDeletedCommentsChipBackgroundColor(void) {
@@ -290,11 +284,7 @@ static UIFont *ApolloDeletedCommentsRecoveredBodyFont(void) {
 static _Atomic NSInteger sApolloDeletedCommentsAppStyle = 0; // UIUserInterfaceStyleUnspecified
 
 static void ApolloDeletedCommentsCaptureAppStyle(void) {
-    UIWindow *window = nil;
-    for (UIWindow *candidate in ApolloAllWindows()) {
-        if (candidate.isKeyWindow) { window = candidate; break; }
-    }
-    if (!window) window = ApolloAllWindows().firstObject;
+    UIWindow *window = ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
     if (!window) return;
     sApolloDeletedCommentsAppStyle = window.traitCollection.userInterfaceStyle;
 }
@@ -307,10 +297,7 @@ static void ApolloDeletedCommentsCaptureAppStyle(void) {
 // keeps SetTextNodeAttributedText's no-op guard working for custom themes (#514).
 static UIColor *ApolloDeletedCommentsBodyTextColor(void) {
     UIColor *color = ApolloThemeSettingsTextColor();
-    if (![color isKindOfClass:[UIColor class]]) {
-        if (@available(iOS 13.0, *)) color = [UIColor labelColor];
-        else return [UIColor blackColor];
-    }
+    if (![color isKindOfClass:[UIColor class]]) color = [UIColor labelColor];
     NSInteger style = sApolloDeletedCommentsAppStyle;
     if (style == UIUserInterfaceStyleUnspecified) return color;
     return [color resolvedColorWithTraitCollection:
@@ -364,12 +351,7 @@ static NSString *ApolloDeletedCommentsFullNameForComment(RDKComment *comment) {
             if (!ivar) continue;
             const char *type = ivar_getTypeEncoding(ivar);
             if (!type || type[0] != '@') continue;
-            id value = nil;
-            @try {
-                value = object_getIvar(comment, ivar);
-            } @catch (__unused NSException *e) {
-                value = nil;
-            }
+            id value = object_getIvar(comment, ivar);
             NSString *fullName = ApolloDeletedCommentsNormalizeCommentFullName([value isKindOfClass:[NSString class]] ? value : nil);
             if (fullName.length > 0) return fullName;
         }
@@ -378,15 +360,7 @@ static NSString *ApolloDeletedCommentsFullNameForComment(RDKComment *comment) {
 }
 
 static RDKComment *ApolloDeletedCommentsCommentFromCellNode(id commentCellNode) {
-    if (!commentCellNode) return nil;
-    Ivar commentIvar = class_getInstanceVariable([commentCellNode class], "comment");
-    if (!commentIvar) return nil;
-    id comment = nil;
-    @try {
-        comment = object_getIvar(commentCellNode, commentIvar);
-    } @catch (__unused NSException *e) {
-        comment = nil;
-    }
+    id comment = ApolloObjectIvar(commentCellNode, "comment");
     Class rdkCommentClass = NSClassFromString(@"RDKComment");
     if (!rdkCommentClass || ![comment isMemberOfClass:rdkCommentClass]) return nil;
     return (RDKComment *)comment;
@@ -814,12 +788,7 @@ static id ApolloDeletedCommentsObjectIvarByNames(id object, const char **candida
             // names passed to this helper are deliberately object-only, so an
             // absent encoding is safe to probe and must not be treated as a
             // non-object ivar. Reject only a present, explicitly non-object type.
-            id value = nil;
-            @try {
-                value = object_getIvar(object, ivar);
-            } @catch (__unused NSException *e) {
-                value = nil;
-            }
+            id value = object_getIvar(object, ivar);
             if (value) return value;
         }
     }
@@ -861,6 +830,11 @@ static UIImage *ApolloDeletedCommentsReasonChipImage(NSString *text, UIFont *fon
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
+    // TODO: Modernization - assumes the chip is shown on the main screen. Every caller builds
+    // attributed text from a Texture cell/text NODE (often on a background layout thread),
+    // so no view traitCollection is safely reachable; threading the node's asyncTraitCollection
+    // display scale through ApolloDeletedCommentsReasonChipAttributedText(ForPlacement) and its
+    // ~10 call sites would be the real fix.
     format.scale = UIScreen.mainScreen.scale;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:imageSize format:format];
     return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {

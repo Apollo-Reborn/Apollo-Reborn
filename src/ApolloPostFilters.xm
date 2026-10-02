@@ -35,6 +35,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloPostFilterStore.h"
+#import "ApolloSwiftRuntime.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
 
@@ -171,19 +172,9 @@ static BOOL ApolloPFShouldHideLink(id link) {
 
 #pragma mark - Cell / node helpers
 
-static id ApolloPFIvarValueByName(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Class cls = object_getClass(obj);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(obj, ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
 
 static BOOL ApolloPFCellShouldHide(id cell) {
-    id link = ApolloPFIvarValueByName(cell, "link");
+    id link = ApolloObjectIvar(cell, "link");
     return ApolloPFShouldHideLink(link);
 }
 
@@ -411,13 +402,13 @@ static const void *kApolloPFAppliedGenKey = &kApolloPFAppliedGenKey;
 // relayoutItems alone does not for already-measured/cached nodes. This is the
 // reliable way to apply a filter change to an existing feed.
 static void ApolloPFReloadTableNode(id tableNode) {
-    if (tableNode && [tableNode respondsToSelector:@selector(reloadData)]) {
+    if ([tableNode respondsToSelector:@selector(reloadData)]) {
         @try { ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData)); } @catch (__unused id e) {}
     }
 }
 
 static void ApolloPFReloadTableNodeOfVC(id vc) {
-    ApolloPFReloadTableNode(ApolloPFIvarValueByName(vc, "tableNode"));
+    ApolloPFReloadTableNode(ApolloObjectIvar(vc, "tableNode"));
 }
 
 #pragma mark - Cell hooks
@@ -614,7 +605,7 @@ static NSString *ApolloPFSubredditNameFromSearchCell(UITableViewCell *cell) {
 static BOOL ApolloPFResultsRowBlocked(id vc, NSIndexPath *ip) {
     if (!ip || ip.section != 0) return NO;
     @try {
-        id arr = ApolloPFIvarValueByName(vc, "subreddits");
+        id arr = ApolloObjectIvar(vc, "subreddits");
         if (![arr isKindOfClass:[NSArray class]]) return NO;
         NSArray *subs = (NSArray *)arr;
         if (ip.row < 0 || ip.row >= (NSInteger)subs.count) return NO;

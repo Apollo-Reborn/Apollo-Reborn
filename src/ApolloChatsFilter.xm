@@ -21,6 +21,7 @@
 #import "ApolloCommon.h"
 #import "ApolloDirectChatWeb.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
@@ -236,10 +237,8 @@ static void ApolloRestyleAsDirectChat(UITableViewCell *cell) {
         [q addObjectsFromArray:v.subviews];
     }
     if (label) label.text = @"Direct Chat";
-    if (@available(iOS 13.0, *)) {
-        UIImage *glyph = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"];
-        if (icon && glyph) icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    }
+    UIImage *glyph = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"];
+    if (icon && glyph) icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
 static void ApolloRememberSpecialBoxesCell(ApolloBoxesRowState *state,
@@ -275,8 +274,7 @@ static BOOL ApolloBoxesUsesInsertedDirectChat(ApolloBoxesRowState *state) {
 // Mail appear without requiring a relaunch.
 static UITableView *ApolloBoxesTableView(id controller) {
     if (!controller) return nil;
-    Ivar ivar = class_getInstanceVariable([controller class], "tableView");
-    id value = ivar ? object_getIvar(controller, ivar) : nil;
+    id value = ApolloObjectIvar(controller, "tableView");
     return [value isKindOfClass:[UITableView class]] ? value : nil;
 }
 
@@ -1365,8 +1363,7 @@ static BOOL ApolloInboxControllerIsAll(id controller) {
 }
 
 static UITableView *ApolloInboxControllerTableView(id controller) {
-    Ivar ivar = class_getInstanceVariable([controller class], "tableNode");
-    id tableNode = ivar ? object_getIvar(controller, ivar) : nil;
+    id tableNode = ApolloObjectIvar(controller, "tableNode");
     if ([tableNode respondsToSelector:@selector(view)]) {
         id view = ((id (*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
         if ([view isKindOfClass:[UITableView class]]) return view;
@@ -2132,15 +2129,11 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
 // misclassified in either direction — raised by @jordanearle in review) lives
 // in ApolloChatRoomDirectory, which also uses it to tell an unnamed room's
 // mirror from a titled one when a tapped row is resolved to its Chat room.
-static BOOL ApolloMessageSubjectIsChatRoomMirror(NSString *subject) {
-    return ApolloChatSubjectIsRoomMarker(subject);
-}
-
 static BOOL ApolloMessageIsChatRoomMirror(id msg) {
     NSString *subject = nil;
     if ([msg respondsToSelector:@selector(subject)])
         subject = ((NSString *(*)(id, SEL))objc_msgSend)(msg, @selector(subject));
-    return ApolloMessageSubjectIsChatRoomMirror(subject);
+    return ApolloChatSubjectIsRoomMarker(subject);
 }
 
 // Keep only chat-mirror messages (direct + group chats; regular PMs/modmail
@@ -2528,18 +2521,6 @@ static CGRect ApolloNodeFrame(id node) {
     return ((CGRect (*)(id, SEL))objc_msgSend)(node, @selector(frame));
 }
 
-// Read a Swift/ObjC ivar by name off any object (the InboxCellNode's model + button-node ivars).
-static id ApolloInboxIvarValue(id object, NSString *name) {
-    if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        @try { return object_getIvar(object, ivar); }
-        @catch (__unused NSException *e) { return nil; }
-    }
-    return nil;
-}
-
 static NSString *ApolloInboxStringProp(id obj, SEL sel) {
     if (!obj || ![obj respondsToSelector:sel]) return nil;
     id v = ((id (*)(id, SEL))objc_msgSend)(obj, sel);
@@ -2588,7 +2569,7 @@ static ApolloInboxIconKind ApolloInboxResolveIdentity(id cellNode, NSString **ou
     *outIdentity = nil;
     if (outAnchor) *outAnchor = nil;
 
-    id msg = ApolloInboxIvarValue(cellNode, @"message");
+    id msg = ApolloObjectIvar(cellNode, "message");
     if (msg) {
         long long ct = [msg respondsToSelector:@selector(contentType)]
             ? ((long long (*)(id, SEL))objc_msgSend)(msg, @selector(contentType)) : -1;
@@ -2599,18 +2580,18 @@ static ApolloInboxIconKind ApolloInboxResolveIdentity(id cellNode, NSString **ou
         if (ct == 0 || ct == 1 || ct == 2) {
             // post reply / comment reply / username mention -> the other user (the replier/mentioner).
             NSString *u = ApolloInboxNormUser(author);
-            if (u) { *outIdentity = u; if (outAnchor) *outAnchor = ApolloInboxIvarValue(cellNode, @"authorButtonNode"); return ApolloInboxIconUser; }
+            if (u) { *outIdentity = u; if (outAnchor) *outAnchor = ApolloObjectIvar(cellNode, "authorButtonNode"); return ApolloInboxIconUser; }
             // Replier/mentioner is deleted/suspended: fall back to the community icon if we know it.
             NSString *s = ApolloInboxSubredditClean(subreddit);
             if (s) {
                 *outIdentity = s;
-                if (outAnchor) *outAnchor = ApolloInboxIvarValue(cellNode, @"subredditButtonNode") ?: ApolloInboxIvarValue(cellNode, @"authorButtonNode");
+                if (outAnchor) *outAnchor = ApolloObjectIvar(cellNode, "subredditButtonNode") ?: ApolloObjectIvar(cellNode, "authorButtonNode");
                 return ApolloInboxIconSubreddit;
             }
         } else {
             // PM (contentType 3) or unknown: a non-empty subreddit means a modmail/subreddit message.
             NSString *s = ApolloInboxSubredditClean(subreddit);
-            if (s) { *outIdentity = s; if (outAnchor) *outAnchor = ApolloInboxIvarValue(cellNode, @"subredditButtonNode"); return ApolloInboxIconSubreddit; }
+            if (s) { *outIdentity = s; if (outAnchor) *outAnchor = ApolloObjectIvar(cellNode, "subredditButtonNode"); return ApolloInboxIconSubreddit; }
 
             // Sent vs received: I sent it IFF I'm the author. recipientButtonNode exists on BOTH sent
             // and received rows (Apollo renders "to <other>" / the sender alike), so it can't decide
@@ -2618,15 +2599,15 @@ static ApolloInboxIconKind ApolloInboxResolveIdentity(id cellNode, NSString **ou
             NSString *me = ApolloInboxCurrentUser();
             BOOL sent;
             if (me.length && author.length) sent = ([me caseInsensitiveCompare:author] == NSOrderedSame);
-            else                            sent = (ApolloInboxIvarValue(cellNode, @"recipientButtonNode") != nil);
+            else                            sent = (ApolloObjectIvar(cellNode, "recipientButtonNode") != nil);
 
             NSString *other = sent ? ApolloInboxNormUser(recipient) : ApolloInboxNormUser(author);
             // Never paint the logged-in user's own avatar (e.g. a note-to-self where recipient == me).
             if (other.length && me.length && [other caseInsensitiveCompare:me] == NSOrderedSame) other = nil;
             if (other.length) {
                 *outIdentity = other;
-                if (outAnchor) *outAnchor = sent ? (ApolloInboxIvarValue(cellNode, @"recipientButtonNode") ?: ApolloInboxIvarValue(cellNode, @"authorButtonNode"))
-                                                 : ApolloInboxIvarValue(cellNode, @"authorButtonNode");
+                if (outAnchor) *outAnchor = sent ? (ApolloObjectIvar(cellNode, "recipientButtonNode") ?: ApolloObjectIvar(cellNode, "authorButtonNode"))
+                                                 : ApolloObjectIvar(cellNode, "authorButtonNode");
                 return ApolloInboxIconUser;
             }
         }
@@ -2636,17 +2617,17 @@ static ApolloInboxIconKind ApolloInboxResolveIdentity(id cellNode, NSString **ou
     // New-modmail rows (no classic RDKMessage). RDKModmailConversationInfo has no subreddit ivar — the
     // community lives in its `_owner` dict (Reddit owner:{type,displayName,id}); the participant is
     // RDKModmailMessage._author (an RDKModmailAuthor exposing `name`). Best-effort + fully defensive.
-    id mmConv = ApolloInboxIvarValue(cellNode, @"newModmailConversationInfo");
-    id mmMsg  = ApolloInboxIvarValue(cellNode, @"newModmailMessage");
+    id mmConv = ApolloObjectIvar(cellNode, "newModmailConversationInfo");
+    id mmMsg  = ApolloObjectIvar(cellNode, "newModmailMessage");
     if (mmConv || mmMsg) {
-        id owner = ApolloInboxIvarValue(mmConv, @"_owner") ?: ApolloInboxIvarValue(mmConv, @"owner");
+        id owner = ApolloObjectIvar(mmConv, "_owner") ?: ApolloObjectIvar(mmConv, "owner");
         if ([owner isKindOfClass:[NSDictionary class]]) {
             NSString *s = ApolloInboxSubredditClean([(NSDictionary *)owner objectForKey:@"displayName"]);
-            if (s) { *outIdentity = s; if (outAnchor) *outAnchor = ApolloInboxIvarValue(cellNode, @"subredditButtonNode"); return ApolloInboxIconSubreddit; }
+            if (s) { *outIdentity = s; if (outAnchor) *outAnchor = ApolloObjectIvar(cellNode, "subredditButtonNode"); return ApolloInboxIconSubreddit; }
         }
-        id mmAuthor = ApolloInboxIvarValue(mmMsg, @"_author") ?: ApolloInboxIvarValue(mmMsg, @"author");
+        id mmAuthor = ApolloObjectIvar(mmMsg, "_author") ?: ApolloObjectIvar(mmMsg, "author");
         NSString *u = ApolloInboxUsernameFromObject(mmAuthor);
-        if (u) { *outIdentity = u; if (outAnchor) *outAnchor = ApolloInboxIvarValue(cellNode, @"authorButtonNode"); return ApolloInboxIconUser; }
+        if (u) { *outIdentity = u; if (outAnchor) *outAnchor = ApolloObjectIvar(cellNode, "authorButtonNode"); return ApolloInboxIconUser; }
     }
     return ApolloInboxIconNone;
 }
@@ -2834,13 +2815,8 @@ static BOOL ApolloInboxMessageMayBeChatMirror(id message) {
 // Swap a Swift class-typed stored property — a plain strong reference the
 // ObjC runtime has no layout information for — the way the compiled setter
 // does: retain the new value, store it, release the old one.
-static BOOL ApolloInboxSwapObjectIvar(id object, const char *name, id value) {
-    if (!object || !name) return NO;
-    Ivar ivar = NULL;
-    for (Class cls = [object class]; cls && cls != [NSObject class] && !ivar; cls = class_getSuperclass(cls)) {
-        ivar = class_getInstanceVariable(cls, name);
-    }
-    ptrdiff_t offset = ivar ? ivar_getOffset(ivar) : 0;
+static APOLLO_IVAR_NAME BOOL ApolloInboxSwapObjectIvar(id object, const char *name, id value) {
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset <= 0) return NO;
     void **slot = (void **)((uint8_t *)(__bridge void *)object + offset);
     void *previous = *slot;
@@ -2854,12 +2830,8 @@ static BOOL ApolloInboxSwapObjectIvar(id object, const char *name, id value) {
 // guards the read).
 static id ApolloInboxSectionControllerForCellNode(id node) {
     Class sectionClass = objc_getClass("_TtC6Apollo22InboxSectionController");
-    Ivar ivar = node ? class_getInstanceVariable([node class], "actionDelegate") : NULL;
-    ptrdiff_t offset = ivar ? ivar_getOffset(ivar) : 0;
-    if (!sectionClass || offset <= 0) return nil;
-    void *candidate = *(void **)((uint8_t *)(__bridge void *)node + offset);
-    if (!candidate) return nil;
-    id object = (__bridge id)candidate;
+    if (!sectionClass) return nil;
+    id object = ApolloReadObjectIvar(node, "actionDelegate");
     return [object isKindOfClass:sectionClass] ? object : nil;
 }
 
@@ -2971,7 +2943,7 @@ static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIn
     id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, @selector(nodeForRowAtIndexPath:), indexPath);
     Class cellClass = objc_getClass("_TtC6Apollo13InboxCellNode");
     if (!cellClass || ![node isKindOfClass:cellClass]) return NO;
-    id message = ApolloInboxIvarValue(node, @"message");
+    id message = ApolloObjectIvar(node, "message");
     if (!ApolloInboxMessageMayBeChatMirror(message)) return NO;
     UIViewController *host = ApolloInboxHostControllerForTableNode(tableNode);
     if (!host) return NO;

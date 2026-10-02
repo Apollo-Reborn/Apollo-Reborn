@@ -10,15 +10,14 @@
 //
 // The search-results offset stabilizer runs regardless of Liquid Glass (the jump exists on stock Apollo
 // too, including subreddit views with headers); the nav-bar hide, round-X cancel and in-place mode are
-// Liquid Glass only. ApolloObjectIvar is duplicated from ApolloLiquidGlass.xm (which has its own
-// non-search caller) so this file is self-contained.
+// Liquid Glass only. Ivars are read with the shared ApolloObjectIvar (ApolloSwiftRuntime.h).
 
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloSearchNativeBar.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -27,20 +26,6 @@
 // ApolloLiquidGlass.xm; a forward @interface in a second .xm is fine).
 @interface ASTableView : UITableView
 @end
-
-// Runtime ivar reader; walks the superclass chain so inherited ivars resolve.
-static id ApolloObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            return object_getIvar(object, ivar);
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
 
 // MARK: - "Find in Comments" bar (in-thread search) — opaque backing
 //

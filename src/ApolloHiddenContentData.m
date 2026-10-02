@@ -474,10 +474,6 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
 
 #pragma mark - Public entry point
 
-void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentFetchCompletion completion) {
-    ApolloHiddenContentFetchWithProgress(username, kind, forceRefresh, nil, completion);
-}
-
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress progress, ApolloHiddenContentFetchCompletion completion) {
     if (!completion) return;
     if (progress) progress(0, @"Checking current content");

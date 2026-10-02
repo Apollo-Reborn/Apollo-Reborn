@@ -170,13 +170,8 @@ static NSString *ApolloGalleryMenuSourceDescription(NSString *listingIdentifier)
 // screen; reads are defensive so a layout surprise just means "nothing to
 // inherit".
 static ptrdiff_t ApolloGalleryMenuIvarOffset(id object, const char *name) {
-    Class cls = object ? object_getClass(object) : Nil;
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return ivar_getOffset(ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return -1;
+    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
+    return ivar ? ivar_getOffset(ivar) : -1;
 }
 
 static BOOL ApolloGalleryMenuReadOptionalEnumIvar(id object, const char *name, int64_t *outRaw) {

@@ -915,9 +915,9 @@ static long ApolloMirrorAccountsBlobLength(void) {
 // Device lock state — "protected data available" is NO while the device is locked. A keychain
 // read that fails only when this is NO is the accessibility-class signature of the warm signout.
 static NSString *ApolloProtectedDataString(void) {
-    id app = [UIApplication respondsToSelector:@selector(sharedApplication)] ? [UIApplication sharedApplication] : nil;
-    if (![app respondsToSelector:@selector(isProtectedDataAvailable)]) return @"?";
-    return [app isProtectedDataAvailable] ? @"unlocked" : @"LOCKED";
+    UIApplication *app = UIApplication.sharedApplication;
+    if (!app) return @"?";
+    return app.isProtectedDataAvailable ? @"unlocked" : @"LOCKED";
 }
 
 // Every physical copy of the account item across access groups, with each copy's group, byte
@@ -2136,22 +2136,7 @@ static const char kARCompletion = '\0';
     id<ASWebAuthenticationPresentationContextProviding> provider = [self presentationContextProvider];
     UIWindow *window = [provider presentationAnchorForWebAuthenticationSession:self];
 
-    if (!window) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (scene.activationState == UISceneActivationStateForegroundActive
-                    && [scene isKindOfClass:[UIWindowScene class]]) {
-                NSArray<UIWindow *> *sceneWindows = ((UIWindowScene *)scene).windows;
-                for (UIWindow *candidate in sceneWindows) {
-                    if (candidate.isKeyWindow) {
-                        window = candidate;
-                        break;
-                    }
-                }
-                window = window ?: sceneWindows.firstObject;
-                if (window) break;
-            }
-        }
-    }
+    if (!window) window = ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
 
     ApolloLog(@"[WebAuth] presenting from window=%@", window);
 

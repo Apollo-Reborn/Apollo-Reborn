@@ -270,31 +270,34 @@ static void ApolloLPInstallURLHidingObserver(void) {
     }];
 }
 
+// Shared by the ASTextNode/ASTextNode2 setAttributedText: hooks: returns the
+// URL-hidden replacement text, or nil when the hook should pass the original
+// through (feature off, our own reentrant set, unrelated node, nothing hidden).
+static NSAttributedString *ApolloLPHookRewrittenText(id textNode, NSAttributedString *attributedText, NSUInteger *hiddenCount) {
+    if (!ApolloLPURLHidingEnabled() ||
+        [objc_getAssociatedObject(textNode, kApolloLPURLHidingReentrancyKey) boolValue] ||
+        !ApolloLPURLHidingShouldProcessTextNode(textNode)) {
+        return nil;
+    }
+    NSArray<NSURL *> *candidateURLs = nil;
+    NSAttributedString *rewritten = ApolloLPAttributedTextByHidingStandalonePreviewURLs(attributedText, &candidateURLs, hiddenCount);
+    ApolloLPRegisterURLHidingTextNode(textNode, attributedText, candidateURLs);
+    return rewritten != attributedText ? rewritten : nil;
+}
+
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    if (!ApolloLPURLHidingEnabled()) {
-        %orig;
-        return;
-    }
-
-    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
-        %orig;
-        return;
-    }
-
-    NSArray<NSURL *> *candidateURLs = nil;
     NSUInteger hiddenCount = 0;
-    NSAttributedString *rewritten = ApolloLPAttributedTextByHidingStandalonePreviewURLs(attributedText, &candidateURLs, &hiddenCount);
-    ApolloLPRegisterURLHidingTextNode(self, attributedText, candidateURLs);
-    if (rewritten != attributedText) {
-        objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
-        objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLPLogURLHide(hiddenCount, self);
+    NSAttributedString *rewritten = ApolloLPHookRewrittenText(self, attributedText, &hiddenCount);
+    if (!rewritten) {
+        %orig;
         return;
     }
-    %orig;
+    objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+    objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLPLogURLHide(hiddenCount, self);
 }
 
 %end
@@ -302,28 +305,16 @@ static void ApolloLPInstallURLHidingObserver(void) {
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    if (!ApolloLPURLHidingEnabled()) {
-        %orig;
-        return;
-    }
-
-    if ([objc_getAssociatedObject(self, kApolloLPURLHidingReentrancyKey) boolValue] || !ApolloLPURLHidingShouldProcessTextNode(self)) {
-        %orig;
-        return;
-    }
-
-    NSArray<NSURL *> *candidateURLs = nil;
     NSUInteger hiddenCount = 0;
-    NSAttributedString *rewritten = ApolloLPAttributedTextByHidingStandalonePreviewURLs(attributedText, &candidateURLs, &hiddenCount);
-    ApolloLPRegisterURLHidingTextNode(self, attributedText, candidateURLs);
-    if (rewritten != attributedText) {
-        objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
-        objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLPLogURLHide(hiddenCount, self);
+    NSAttributedString *rewritten = ApolloLPHookRewrittenText(self, attributedText, &hiddenCount);
+    if (!rewritten) {
+        %orig;
         return;
     }
-    %orig;
+    objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+    objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLPLogURLHide(hiddenCount, self);
 }
 
 %end

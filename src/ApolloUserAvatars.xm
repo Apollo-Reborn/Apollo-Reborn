@@ -23,6 +23,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
+#import "ApolloSwiftRuntime.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileLayoutStructureChangedMarker = @"ApolloProfileLayoutStructureChanged";
@@ -1410,7 +1411,7 @@ static UIFont *ApolloProfileClassicNameFont(void) {
     if ([self.lastProfileInfoSignature isEqualToString:infoSignature]) return;
     self.lastProfileInfoSignature = infoSignature;
     self.contentGeneration++;
-    CGFloat layoutWidth = self.bounds.size.width > 1.0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat layoutWidth = self.bounds.size.width > 1.0 ? self.bounds.size.width : self.window.bounds.size.width;
     CGFloat previousHeight = [self preferredHeightForWidth:layoutWidth];
     NSString *displayName = info.displayName.length > 0 ? info.displayName : username;
     // "corderjones" + "u/corderjones" is the same string twice — drop the handle
@@ -1591,17 +1592,15 @@ static BOOL ApolloProfileUsernameCollectionContains(NSString *username, id value
     if ([value isKindOfClass:[NSData class]]) {
         id decoded = nil;
         @try {
-            if (@available(iOS 11.0, *)) {
-                decoded = [NSKeyedUnarchiver unarchivedObjectOfClasses:[NSSet setWithObjects:
-                    [NSDictionary class],
-                    [NSArray class],
-                    [NSString class],
-                    [NSNumber class],
-                    [NSData class],
-                    nil]
-                                                                 fromData:(NSData *)value
-                                                                    error:nil];
-            }
+            decoded = [NSKeyedUnarchiver unarchivedObjectOfClasses:[NSSet setWithObjects:
+                [NSDictionary class],
+                [NSArray class],
+                [NSString class],
+                [NSNumber class],
+                [NSData class],
+                nil]
+                                                             fromData:(NSData *)value
+                                                                error:nil];
             if (!decoded) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -2025,17 +2024,28 @@ static void ApolloAvatarRefreshInterfaceStyle(void) {
     // Apollo themes can override each window independently of the system
     // appearance, so UIScreen alone picks the wrong placeholder fill when a
     // dark Apollo theme is active on a light system (or vice versa).
-    UITraitCollection *traits = ApolloAllWindows().firstObject.traitCollection
-        ?: UIScreen.mainScreen.traitCollection;
+    UITraitCollection *traits = ApolloAllWindows().firstObject.traitCollection;
+    // No window yet (e.g. the %ctor warm-up before any scene connects): keep
+    // the previous flag; every main-thread avatar apply refreshes it again.
+    if (!traits) return;
     atomic_store_explicit(&sApolloAvatarInterfaceIsDark,
                           traits.userInterfaceStyle == UIUserInterfaceStyleDark,
                           memory_order_relaxed);
 }
 
+// TODO: Modernization - process-wide, dispatch_once-cached main-screen scale.
+// Its callers (ApolloClippedAvatarImage / ApolloStyledUserAvatarImage /
+// ApolloAvatarImageForInfo) render on Texture background queues from
+// setAttributedText: hooks with no view/trait collection reachable, and the
+// result is stored into shared attributed strings. A real fix threads the
+// displaying node's display scale (captured on main) through those renderers
+// and re-renders on a display-scale change; until then this assumes a single
+// display at the main screen's scale.
 static CGFloat ApolloAvatarScreenScale(void) {
     static CGFloat scale = 0.0;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // TODO: Modernization - see above; no trait source on this path.
         scale = UIScreen.mainScreen.scale;
     });
     return scale > 0.0 ? scale : 2.0;
@@ -2083,6 +2093,9 @@ static BOOL ApolloAvatarHasFrame(ApolloUserProfileInfo *info) {
 static UIImage *ApolloClippedAvatarImage(UIImage *sourceImage, CGFloat diameter, BOOL hexagon) {
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - ApolloAvatarScreenScale() is a process-wide cached
+    // main-screen scale (see the TODO there); this off-main render has no trait
+    // source to take the display scale from.
     format.scale = ApolloAvatarScreenScale();
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
@@ -2131,6 +2144,9 @@ static UIImage *ApolloStyledUserAvatarImage(UIImage *sourceImage,
                                              BOOL prefersPolygon) {
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - ApolloAvatarScreenScale() is a process-wide cached
+    // main-screen scale (see the TODO there); this off-main render has no trait
+    // source to take the display scale from.
     format.scale = ApolloAvatarScreenScale();
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
         initWithSize:size format:format];
@@ -2150,6 +2166,9 @@ static UIImage *ApolloAvatarImageForInfo(ApolloUserProfileInfo *info, UIImage *s
 
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - ApolloAvatarScreenScale() is a process-wide cached
+    // main-screen scale (see the TODO there); this off-main render has no trait
+    // source to take the display scale from.
     format.scale = ApolloAvatarScreenScale();
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
@@ -3566,7 +3585,7 @@ static void ApolloProfileSyncAmbient(ApolloProfileHeaderView *header) {
     CGFloat chromeHeight = tableView.adjustedContentInset.top;
     if (chromeHeight <= 0.0) chromeHeight = viewController.view.safeAreaInsets.top;
     CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
-        : UIScreen.mainScreen.bounds.size.width;
+        : (tableView.window.bounds.size.width ?: viewController.view.bounds.size.width);
     CGFloat regionHeight = chromeHeight + [header apollo_bannerHeight];
     if (sProfileShowBanner) {
         // Carry the art behind the avatar, then fade before the identity text.
@@ -3814,7 +3833,8 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
         return;
     }
 
-    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
+        : (tableView.window.bounds.size.width ?: viewController.view.bounds.size.width);
     if (!header) {
         header = ApolloProfileCreateHeader(width);
         objc_setAssociatedObject(viewControllerObject, kApolloProfileHeaderViewKey, header, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -4216,11 +4236,8 @@ static UITabBarItem *ApolloProfileTabItemForIconImageView(UIImageView *imageView
             if (item) return item;
             // Secondary buttons (e.g. the selected-content overlay) aren't registered
             // as the item's _tabBarButton — fall back to the button's own item ivar.
-            Ivar ivar = class_getInstanceVariable([cur class], "_item") ?: class_getInstanceVariable([cur class], "item");
-            if (ivar) {
-                id maybe = object_getIvar(cur, ivar);
-                if ([maybe isKindOfClass:[UITabBarItem class]]) return (UITabBarItem *)maybe;
-            }
+            id maybe = ApolloObjectIvar(cur, "_item") ?: ApolloObjectIvar(cur, "item");
+            if ([maybe isKindOfClass:[UITabBarItem class]]) return (UITabBarItem *)maybe;
         } else if ([cn containsString:@"FloatingTabBarItemView"]) {
             if ([cur respondsToSelector:@selector(item)]) {
                 id floatingItem = ((id (*)(id, SEL))objc_msgSend)(cur, @selector(item));
@@ -4730,14 +4747,6 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 // so didLoad never fires — hook layoutSpecThatFits: like
 // ApolloShareAsImageGallery does. It runs on Texture's background layout
 // threads and fires repeatedly; gate to one main-queue application per node.
-static BOOL ApolloAvatarIvarBool(id obj, const char *name) {
-    if (!obj || !name) return NO;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return NO;
-    const uint8_t *base = (const uint8_t *)(__bridge const void *)obj;
-    return base[ivar_getOffset(ivar)] != 0;
-}
-
 static char kApolloAvatarSharePreviewAppliedKey;
 
 // Apollo builds the preview's PostInfoNode with showSubredditIcon=NO — the
@@ -4835,9 +4844,9 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
         dispatch_async(dispatch_get_main_queue(), ^{
             id node = weakSelf;
             if (!node) return;
-            BOOL includePostDetails = ApolloAvatarIvarBool(node, "includePostDetails");
-            BOOL hideUsernames = ApolloAvatarIvarBool(node, "hideUsernames");
-            BOOL hideSubreddit = ApolloAvatarIvarBool(node, "hideSubreddit");
+            BOOL includePostDetails = ApolloReadBoolIvar(node, "includePostDetails", NO);
+            BOOL hideUsernames = ApolloReadBoolIvar(node, "hideUsernames", NO);
+            BOOL hideSubreddit = ApolloReadBoolIvar(node, "hideSubreddit", NO);
             NSString *username = ApolloUsernameFromCell(node, @"link");
             ApolloLog(@"[UserAvatars] Share preview layout details=%d hideUsernames=%d hideSubreddit=%d username=%@ node=%p",
                       includePostDetails, hideUsernames, hideSubreddit, username, node);
@@ -5343,7 +5352,7 @@ static void ApolloPinAccountToCurrentDefaultCredentialsIfNeeded(id client, id cu
 static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
     if (fullName.length == 0) return;
     UITableView *tableView = nil;
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+    for (UIWindow *window in ApolloAllWindows()) {
         if (window.hidden) continue;
         NSMutableArray *stack = [NSMutableArray arrayWithObject:window];
         while (stack.count && !tableView) {
@@ -5367,9 +5376,7 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
         if (![cell respondsToSelector:@selector(node)]) continue;
         id node = ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node));
         if (!node || ![NSStringFromClass([node class]) containsString:@"CommentCellNode"]) continue;
-        id comment = nil;
-        Ivar ivar = class_getInstanceVariable([node class], "comment");
-        if (ivar) comment = object_getIvar(node, ivar);
+        id comment = ApolloObjectIvar(node, "comment");
         if (!comment || ![comment respondsToSelector:@selector(fullName)]) continue;
         NSString *cellFullName = ((id (*)(id, SEL))objc_msgSend)(comment, @selector(fullName));
         if (![cellFullName isKindOfClass:[NSString class]] || ![cellFullName isEqualToString:fullName]) continue;
@@ -5383,6 +5390,7 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
     // Warm the off-main-safe render statics while we're guaranteed to be on
     // the main thread (see ApolloAvatarScreenScale / PlaceholderFillColor).
     ApolloAvatarRefreshInterfaceStyle();
+    // TODO: Modernization - warms the cached main-screen scale; see ApolloAvatarScreenScale.
     (void)ApolloAvatarScreenScale();
     (void)ApolloAvatarPlaceholderFillColor();
     // -init warms ApolloBannerMaxPixelDimension's UIScreen access. Pin the

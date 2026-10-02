@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -52,12 +53,6 @@ static const CGFloat kCommentsCollapseToolbarVisibleMargin = 12.0;
 static __weak UIViewController *sVisibleCommentsViewController = nil;
 static UIView *GetCommentsToolbarHostView(UIViewController *viewController);
 
-static id GetIvarObjectQuiet(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 static UITableView *FindFirstTableViewInView(UIView *view) {
     if (!view) return nil;
     if ([view isKindOfClass:[UITableView class]]) {
@@ -73,7 +68,7 @@ static UITableView *FindFirstTableViewInView(UIView *view) {
 }
 
 static UITableView *GetCommentsTableView(UIViewController *viewController) {
-    id tableNode = GetIvarObjectQuiet(viewController, "tableNode");
+    id tableNode = ApolloObjectIvar(viewController, "tableNode");
     if (tableNode) {
         SEL viewSelector = NSSelectorFromString(@"view");
         if ([tableNode respondsToSelector:viewSelector]) {
@@ -130,11 +125,7 @@ static CGFloat GetNavigationBarBottom(UIViewController *viewController) {
 static CGFloat GetCommentsTableTopOffset(UITableView *tableView) {
     if (!tableView) return 0.0;
 
-    UIEdgeInsets adjustedInsets = tableView.contentInset;
-    if (@available(iOS 11.0, *)) {
-        adjustedInsets = tableView.adjustedContentInset;
-    }
-    return -adjustedInsets.top;
+    return -tableView.adjustedContentInset.top;
 }
 
 static CGRect GetViewFrameInRootView(UIView *view, UIView *rootView) {
@@ -169,19 +160,16 @@ static UIColor *GetCommentsCoverColor(UIViewController *viewController, UITableV
     UIColor *color = tableView.backgroundColor;
     if (color) return color;
 
-    if (@available(iOS 13.0, *)) {
-        return [UIColor systemBackgroundColor];
-    }
-    return [UIColor blackColor];
+    return [UIColor systemBackgroundColor];
 }
 
 static UIView *GetCommentsToolbarHostView(UIViewController *viewController) {
-    UIView *upperToolbar = GetIvarObjectQuiet(viewController, "upperToolbar");
+    UIView *upperToolbar = ApolloObjectIvar(viewController, "upperToolbar");
     if ([upperToolbar isKindOfClass:[UIView class]]) {
         return upperToolbar;
     }
 
-    UIView *searchTextField = GetIvarObjectQuiet(viewController, "searchTextField");
+    UIView *searchTextField = ApolloObjectIvar(viewController, "searchTextField");
     if ([searchTextField isKindOfClass:[UIView class]] &&
         [searchTextField.superview isKindOfClass:[UIView class]] &&
         searchTextField.superview != viewController.view) {
@@ -325,7 +313,7 @@ static void LayoutCommentsCollapseCover(UIViewController *viewController) {
     }
 
     UIView *toolbarHostView = GetCommentsToolbarHostView(viewController);
-    UIView *searchTextField = GetIvarObjectQuiet(viewController, "searchTextField");
+    UIView *searchTextField = ApolloObjectIvar(viewController, "searchTextField");
     if (rootCoverView) {
         if (rootCoverView.superview != rootView) {
             if (toolbarHostView && toolbarHostView.superview == rootView) {

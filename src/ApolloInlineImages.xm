@@ -10,6 +10,7 @@
 //
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloImageChestResolver.h"
 #import "ApolloInlineImageMetadata.h"
@@ -754,10 +755,7 @@ static NSDictionary *ApolloMediaMetadataForHostWithState(ASDisplayNode *hostMark
     if (foundHostModelOut) *foundHostModelOut = NO;
     for (ASDisplayNode *n = hostMarkdownNode; n; n = n.supernode) {
         for (const char *ivarName : (const char *[]){"comment", "link"}) {
-            Ivar ivar = class_getInstanceVariable([n class], ivarName);
-            if (!ivar) continue;
-            id model = nil;
-            @try { model = object_getIvar(n, ivar); } @catch (__unused NSException *e) {}
+            id model = ApolloObjectIvar(n, ivarName);
             if (!model || ![model respondsToSelector:@selector(mediaMetadata)]) continue;
             if (foundHostModelOut) *foundHostModelOut = YES;
             id md = [model performSelector:@selector(mediaMetadata)];
@@ -1577,9 +1575,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         zoomScrollView.showsVerticalScrollIndicator = NO;
         zoomScrollView.backgroundColor = UIColor.blackColor;
         zoomScrollView.panGestureRecognizer.enabled = NO;
-        if (@available(iOS 11.0, *)) {
-            zoomScrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-        }
+        zoomScrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
 
         UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectZero];
         imageView.tag = 3000 + (NSInteger)i;
@@ -1746,9 +1742,9 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
     NSURL *fileURL = self.imageFileURLsByIndex[index];
     if (!fileURL) return;
     [self.decodingImageIndexes addObject:index];
-    CGFloat displayScale = UIScreen.mainScreen.scale;
+    CGFloat displayScale = self.view.traitCollection.displayScale;
     CGFloat longestViewDimension = MAX(self.view.bounds.size.width, self.view.bounds.size.height);
-    NSUInteger maximumPixelSize = (NSUInteger)ceil(longestViewDimension * MAX(displayScale, 1.0) * 2.0);
+    NSUInteger maximumPixelSize = (NSUInteger)ceil(longestViewDimension * displayScale * 2.0);
     maximumPixelSize = MAX((NSUInteger)2048, MIN((NSUInteger)4096, maximumPixelSize));
 
     __weak typeof(self) weakSelf = self;
@@ -2095,15 +2091,13 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         }
     }
 
-    CGFloat safeTop = 16.0;
-    if (@available(iOS 11.0, *)) safeTop += self.view.safeAreaInsets.top;
+    CGFloat safeTop = 16.0 + self.view.safeAreaInsets.top;
     self.closeButton.frame = CGRectMake(bounds.size.width - 84.0, safeTop, 68.0, 32.0);
     self.actionButton.frame = CGRectMake(16.0, safeTop, 44.0, 32.0);
     self.counterLabel.frame = CGRectMake((bounds.size.width - 86.0) * 0.5, safeTop, 86.0, 28.0);
     self.loadingLabel.frame = CGRectMake((bounds.size.width - 132.0) * 0.5, CGRectGetMaxY(self.counterLabel.frame) + 8.0, 132.0, 26.0);
     self.progressBar.frame = CGRectMake(24.0, CGRectGetMaxY(self.loadingLabel.frame) + 8.0, bounds.size.width - 48.0, 3.0);
-    CGFloat safeBottom = 24.0;
-    if (@available(iOS 11.0, *)) safeBottom += self.view.safeAreaInsets.bottom;
+    CGFloat safeBottom = 24.0 + self.view.safeAreaInsets.bottom;
     self.toastLabel.frame = CGRectMake((bounds.size.width - 200.0) * 0.5, bounds.size.height - safeBottom - 30.0, 200.0, 28.0);
     [self.scrollView setContentOffset:CGPointMake(bounds.size.width * self.initialIndex, 0.0) animated:NO];
     self.lastLayoutSize = bounds.size;
@@ -2719,16 +2713,7 @@ static id ApolloFindResponderForSelector(SEL sel, id imageNode) {
 
 // Find the topmost presented view controller from a view in the hierarchy.
 static UIViewController *ApolloTopVCFromView(UIView *v) {
-    UIWindow *window = v.window;
-    if (!window) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                if (w.isKeyWindow) { window = w; break; }
-            }
-            if (window) break;
-        }
-    }
+    UIWindow *window = v.window ?: ApolloKeyWindow();
     UIViewController *vc = window.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     return vc;
@@ -3443,12 +3428,8 @@ static void ApolloHostRelayoutPerform(ASDisplayNode *host) {
     ASDisplayNode *cellNode = nil;
     while (n) {
         NSString *cls = NSStringFromClass([n class]);
-        if ([n respondsToSelector:@selector(invalidateCalculatedLayout)]) {
-            [n invalidateCalculatedLayout];
-        }
-        if ([n respondsToSelector:@selector(setNeedsLayout)]) {
-            [n setNeedsLayout];
-        }
+        [n invalidateCalculatedLayout];
+        [n setNeedsLayout];
         if ([cls containsString:@"CellNode"]) cellNode = n;
         n = n.supernode;
     }
@@ -3742,8 +3723,7 @@ static void ApolloTrackInlineGIFPendingPolicyBlock(ASDisplayNode *node, dispatch
 
 static NSUInteger ApolloInlineGIFGenerationForNode(id node) {
     if (!node) return 0;
-    NSNumber *generation = objc_getAssociatedObject(node, &kApolloInlineGIFGenerationKey);
-    return generation ? generation.unsignedIntegerValue : 0;
+    return [objc_getAssociatedObject(node, &kApolloInlineGIFGenerationKey) unsignedIntegerValue];
 }
 
 static NSUInteger ApolloInlineGIFBumpGeneration(id node) {
@@ -3794,7 +3774,6 @@ static BOOL ApolloInlineGIFImageNodeIsLiveForRefresh(ASNetworkImageNode *node) {
         ApolloLogDebug(@"[AutoplayGIF] live-check node=%p ineligible", node);
         return NO;
     }
-    if (!node) return NO;
     if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) {
         ApolloUnregisterInlineGIFNode(node);
         ApolloLogDebug(@"[AutoplayGIF] live-check node=%p no-anim-flag", node);
@@ -4483,13 +4462,18 @@ static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL) {
                     }
                 }
                 if (dashURL && assetID.length) {
-                    CGFloat displayScale = v.window.screen.scale ?: UIScreen.mainScreen.scale;
+                    CGFloat displayScale = v.traitCollection.displayScale;
                     CGSize displayPoints = v.bounds.size;
                     if (displayPoints.width < 1.0 || displayPoints.height < 1.0) {
+                        // TODO: Modernization - this runs from onDidLoad, before the
+                        // node's view is sized or attached to a window, so neither
+                        // v.window nor a sized superview is reliably reachable here.
+                        // Still assumes the main screen as the poster's upper bound;
+                        // ideally the caller would pass the container width.
                         displayPoints = UIScreen.mainScreen.bounds.size;
                     }
-                    CGSize targetPixels = CGSizeMake(displayPoints.width * MAX(displayScale, 1.0),
-                                                     displayPoints.height * MAX(displayScale, 1.0));
+                    CGSize targetPixels = CGSizeMake(displayPoints.width * displayScale,
+                                                     displayPoints.height * displayScale);
                     ApolloFetchDashPoster(assetID, dashURL, targetPixels, ^(UIImage *poster) {
                         ASNetworkImageNode *strong = weakImage;
                         if (!strong) return;
@@ -4736,6 +4720,12 @@ static void ApolloRefreshInlineMediaLayout(void) {
               (unsigned long)nodes.count, (unsigned long)relaid);
 }
 
+// TODO: Modernization - the viewport height cap below still reads
+// UIScreen.mainScreen.bounds. Both callers are Texture layoutSpecThatFits:
+// passes that can run off the main thread, where no UIView/UIWindow may be
+// touched, and rowMaxWidth (constrainedSize) carries no height. A correct fix
+// captures the hosting window's height on main (e.g. when the host node
+// enters the visible state) and threads it in as a parameter.
 static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
                                                    CGFloat rowMaxWidth) {
     ApolloRegisterInlineMediaLayoutNode((ASDisplayNode *)imageNode);
@@ -4770,6 +4760,8 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         if (sInlineMediaSizePercent > 0 && sInlineMediaSizePercent < 100) {
             sizedWidth *= sInlineMediaSizePercent / 100.0;
         }
+        // TODO: Modernization - main-screen viewport height; see the note on
+        // ApolloWrapImageNodeForLayout (off-main layout, no window reachable).
         CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
         CGFloat viewportRatioCap = (screenHeight * kApolloMaxScreenHeightFraction)
                                  / MAX(sizedWidth, 1.0);
@@ -4784,6 +4776,8 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         // to image-tight (no letterbox) unless that would make the
         // container too narrow, in which case pin to a min width and
         // letterbox inside (still height-capped).
+        // TODO: Modernization - main-screen viewport height; see the note on
+        // ApolloWrapImageNodeForLayout (off-main layout, no window reachable).
         CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
         CGFloat maxContainerHeight = MIN(rowMaxWidth * kApolloMaxContainerRatio,
                                           screenHeight * kApolloMaxScreenHeightFraction);
@@ -4807,6 +4801,8 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         // Normal aspect. Tight-wrap, but enforce the screen height cap
         // so a landscape-wide normal image (e.g. 16:9 at full row width)
         // doesn't dominate the viewport.
+        // TODO: Modernization - main-screen viewport height; see the note on
+        // ApolloWrapImageNodeForLayout (off-main layout, no window reachable).
         CGFloat screenHeight = [UIScreen mainScreen].bounds.size.height;
         CGFloat heightCap = screenHeight * kApolloMaxScreenHeightFraction;
         CGFloat naturalHeight = rowMaxWidth * naturalRatio;
@@ -4924,12 +4920,8 @@ static void ApolloRequestMarkdownRelayout(ASDisplayNode *hostMarkdownNode) {
     dispatch_async(dispatch_get_main_queue(), ^{
         ASDisplayNode *n = hostMarkdownNode;
         while (n) {
-            if ([n respondsToSelector:@selector(invalidateCalculatedLayout)]) {
-                [n invalidateCalculatedLayout];
-            }
-            if ([n respondsToSelector:@selector(setNeedsLayout)]) {
-                [n setNeedsLayout];
-            }
+            [n invalidateCalculatedLayout];
+            [n setNeedsLayout];
             n = n.supernode;
         }
         SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
@@ -5351,20 +5343,6 @@ static BOOL ApolloChildrenContentMatches(NSArray *a, NSArray *b) {
     return YES;
 }
 
-static id ApolloModelFromNodeIvar(ASDisplayNode *node, const char *ivarName) {
-    if (!node || !ivarName) return nil;
-    Ivar ivar = class_getInstanceVariable([node class], ivarName);
-    if (!ivar) return nil;
-    id model = nil;
-    @try {
-        model = object_getIvar(node, ivar);
-    } @catch (NSException *e) {
-        ApolloLog(@"[InlineImages] ivar read failed node=%@ ivar=%s err=%@",
-                  NSStringFromClass([node class]), ivarName, e.reason ?: e.name);
-    }
-    return model;
-}
-
 static BOOL ApolloModelRepresentsInlineHost(id model, BOOL isComment) {
     if (!model) return NO;
     if (isComment) return YES;
@@ -5394,12 +5372,12 @@ static NSUInteger ApolloUniqueImageChestPostLinkCount(NSAttributedString *attr) 
 
 static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
     for (ASDisplayNode *n = linkButtonNode; n; n = n.supernode) {
-        id comment = ApolloModelFromNodeIvar(n, "comment");
+        id comment = ApolloObjectIvar(n, "comment");
         if (ApolloModelRepresentsInlineHost(comment, YES)) {
             return YES;
         }
 
-        id link = ApolloModelFromNodeIvar(n, "link");
+        id link = ApolloObjectIvar(n, "link");
         if (ApolloModelRepresentsInlineHost(link, NO)) {
             return YES;
         }

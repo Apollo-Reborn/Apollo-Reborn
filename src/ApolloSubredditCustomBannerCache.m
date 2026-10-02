@@ -152,6 +152,10 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
     CGSize targetSize = CGSizeMake(targetWidth / cropped.scale, targetHeight / cropped.scale);
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - the normalized banner is persisted and served from a
+    // subreddit-keyed cache to every window, so there is no single display
+    // scale to use; the fallback only matters for a zero-scale source. Needs a
+    // scale-independent pipeline (pixel-sized render) rather than a caller's traits.
     format.scale = cropped.scale > 0.0 ? cropped.scale : [UIScreen mainScreen].scale;
     format.opaque = YES;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:targetSize format:format];
@@ -202,6 +206,10 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
             [self postChangedNotificationForSubreddit:key];
             return;
         }
+        // TODO: Modernization - rehydrates the shared, subreddit-keyed cache entry
+        // (any window may read it) with no caller trait source. Keep in step with
+        // the save-path decode in -saveBanner:forSubreddit:error:; a fix needs a
+        // scale-independent decode, which changes image.size for all consumers.
         UIImage *diskImage = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
         if (!diskImage) {
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -265,6 +273,9 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
         return NO;
     }
 
+    // TODO: Modernization - must decode at the same scale as the cold-cache
+    // rehydrate in -cachedBannerForSubreddit: (no trait source there), so the
+    // in-memory entry matches whichever path populated it.
     UIImage *stored = [UIImage imageWithData:jpeg scale:[UIScreen mainScreen].scale];
     if (stored) [self cacheImage:stored forKey:key];
 

@@ -954,20 +954,17 @@ UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFl
 }
 
 NSAttributedString *ApolloSymbolAttachment(NSString *symbolName, UIFont *font, UIColor *tint) {
-    if (@available(iOS 13.0, *)) {
-        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithFont:font];
-        UIImage *image = [UIImage systemImageNamed:symbolName withConfiguration:config];
-        if (!image) return nil;
-        image = [image imageWithTintColor:tint renderingMode:UIImageRenderingModeAlwaysOriginal];
-        NSTextAttachment *attachment = [NSTextAttachment new];
-        attachment.image = image;
-        // Center the glyph on the font's cap height so it sits on the text
-        // baseline rather than floating above it.
-        CGFloat y = (font.capHeight - image.size.height) / 2.0;
-        attachment.bounds = CGRectMake(0, y, image.size.width, image.size.height);
-        return [NSAttributedString attributedStringWithAttachment:attachment];
-    }
-    return nil;
+    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithFont:font];
+    UIImage *image = [UIImage systemImageNamed:symbolName withConfiguration:config];
+    if (!image) return nil;
+    image = [image imageWithTintColor:tint renderingMode:UIImageRenderingModeAlwaysOriginal];
+    NSTextAttachment *attachment = [NSTextAttachment new];
+    attachment.image = image;
+    // Center the glyph on the font's cap height so it sits on the text
+    // baseline rather than floating above it.
+    CGFloat y = (font.capHeight - image.size.height) / 2.0;
+    attachment.bounds = CGRectMake(0, y, image.size.width, image.size.height);
+    return [NSAttributedString attributedStringWithAttachment:attachment];
 }
 
 static NSString *ApolloBundledResourcePNGPath(NSString *resourceName) {
@@ -1294,6 +1291,19 @@ NSArray<UIWindow *> *ApolloAllWindows(void) {
             [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
     }
     return windows;
+}
+
+UIWindow *ApolloKeyWindow(void) {
+    UIWindow *anyKey = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            if (!window.isKeyWindow) continue;
+            if (scene.activationState == UISceneActivationStateForegroundActive) return window;
+            anyKey = anyKey ?: window;
+        }
+    }
+    return anyKey;
 }
 
 static UIViewController *ApolloTabBarControllerIvarOn(id object) {

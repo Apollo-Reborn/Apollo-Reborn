@@ -4,6 +4,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
@@ -18,12 +19,8 @@ static char kApolloTabBarHasScrubbedAppearanceKey;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
-static BOOL ApolloDictionaryHasForegroundColor(NSDictionary *attributes) {
-    return [attributes isKindOfClass:[NSDictionary class]] && attributes[NSForegroundColorAttributeName] != nil;
-}
-
 static NSDictionary *ApolloTitleTextAttributesWithoutForegroundColor(NSDictionary *attributes) {
-    if (!ApolloDictionaryHasForegroundColor(attributes)) {
+    if (!attributes[NSForegroundColorAttributeName]) {
         return attributes;
     }
 
@@ -176,19 +173,6 @@ static UITabBar *FindAncestorTabBar(UIView *view) {
     return (UITabBar *)view;
 }
 
-static id ApolloObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            return object_getIvar(object, ivar);
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static id ApolloSendObjectReturningSelector(id target, SEL selector) {
     if (!target || !selector || ![target respondsToSelector:selector]) return nil;
     id (*send)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
@@ -260,8 +244,10 @@ static BOOL ApolloIsProfileTabView(UIView *view) {
     return items.count > 2 && items[2] == item;
 }
 
-// Opens Apollo's account switcher by invoking ProfileViewController's bar button action
-static void OpenAccountManager(void) {
+// Opens Apollo's account switcher by invoking ProfileViewController's bar button action.
+// sourceWindow is the window of the long-pressed tab button (the scene the user is in);
+// the app-wide key window / first visible window is only a fallback.
+static void OpenAccountManager(UIWindow *sourceWindow) {
     static CFTimeInterval lastOpen = 0;
     CFTimeInterval now = CACurrentMediaTime();
     if (now - lastOpen < 0.75) {
@@ -269,14 +255,13 @@ static void OpenAccountManager(void) {
     }
     lastOpen = now;
 
-    UIWindow *lastKeyWindow = nil;
-    for (UIWindow *window in ApolloAllWindows()) {
-        if (window.isKeyWindow) {
-            lastKeyWindow = window;
-            break;
-        }
-        if (!lastKeyWindow && !window.hidden && window.alpha > 0.01) {
-            lastKeyWindow = window;
+    UIWindow *lastKeyWindow = sourceWindow ?: ApolloKeyWindow();
+    if (!lastKeyWindow) {
+        for (UIWindow *window in ApolloAllWindows()) {
+            if (!window.hidden && window.alpha > 0.01) {
+                lastKeyWindow = window;
+                break;
+            }
         }
     }
 
@@ -314,7 +299,8 @@ static void OpenAccountManager(void) {
         }
     }
 
-    if (profileVC && [profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
+    // isMemberOfClass:ProfileViewController above guarantees the @objc action exists.
+    if (profileVC) {
         [profileVC performSelector:@selector(accountsBarButtonItemTappedWithSender:) withObject:nil];
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         [feedback impactOccurred];
@@ -343,7 +329,7 @@ static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureReco
     UITabBar *tabBar = FindAncestorTabBar(view);
     if (ApolloIsProfileTabView(view)) {
         ApolloCancelLiquidLensGesture(tabBar);
-        OpenAccountManager();
+        OpenAccountManager(view.window);
     }
 }
 
@@ -706,33 +692,13 @@ static Class ApolloTableVCClass(void) {
     return cls;
 }
 
-static Ivar ApolloTableVCTableViewIvar(void) {
-    static Ivar iv = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class c = ApolloTableVCClass();
-        if (c) iv = class_getInstanceVariable(c, "tableView");
-    });
-    return iv;
-}
-
 // Hide the translucent grey statusBarBackgroundView Apollo overlays on the window when
 // "Hide Bars on Scroll" is enabled. Pre-26 it blended with the opaque nav bar; on Liquid
 // Glass it shows through as a visible strip at the top of the screen.
 static void HideApolloStatusBarBackgroundView(UINavigationController *navController) {
     if (!IsLiquidGlass() || !navController) return;
 
-    static Ivar sIvar = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class cls = objc_getClass("_TtC6Apollo26ApolloNavigationController");
-        if (cls) {
-            sIvar = class_getInstanceVariable(cls, "statusBarBackgroundView");
-        }
-    });
-    if (!sIvar) return;
-
-    UIView *bgView = object_getIvar(navController, sIvar);
+    UIView *bgView = ApolloObjectIvar(navController, "statusBarBackgroundView");
     if ([bgView isKindOfClass:[UIView class]] && !bgView.hidden) {
         bgView.hidden = YES;
         ApolloLog(@"[ApolloNavigationController] Hid statusBarBackgroundView for Liquid Glass");
@@ -760,13 +726,12 @@ static void HideApolloStatusBarBackgroundView(UINavigationController *navControl
     if (self.navigationBar.frame.origin.y < 0) return;
 
     Class apolloTblCls = ApolloTableVCClass();
-    Ivar tvIvar = ApolloTableVCTableViewIvar();
-    if (!apolloTblCls || !tvIvar) return;
+    if (!apolloTblCls) return;
 
     UIViewController *topVC = self.topViewController;
     if (![topVC isKindOfClass:apolloTblCls]) return;
 
-    UIScrollView *tv = object_getIvar(topVC, tvIvar);
+    UIScrollView *tv = ApolloObjectIvar(topVC, "tableView");
     if (![tv isKindOfClass:[UIScrollView class]]) return;
 
     UIEdgeInsets ci = tv.contentInset;
@@ -1245,7 +1210,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         }
     }
 
-    CGFloat scale = hostView.window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGFloat scale = hostView.traitCollection.displayScale;
     frame.origin.x = round(frame.origin.x * scale) / scale;
     frame.origin.y = round(frame.origin.y * scale) / scale;
     frame.size.width = round(frame.size.width * scale) / scale;

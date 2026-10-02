@@ -1196,6 +1196,16 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
         [cell.contentView addSubview:sep];
 
         NSLayoutConstraint *thumbWidth = [thumbnailView.widthAnchor constraintEqualToConstant:kRecentlyReadThumbnailSmallSize];
+        NSLayoutConstraint *sepHeight = [sep.heightAnchor constraintEqualToConstant:1.0 / tableView.traitCollection.displayScale];
+        // Keep the hairline one pixel tall when the display scale changes. Registered once,
+        // here where the cell's subviews are first built.
+        if (@available(iOS 17.0, *)) {
+            __weak NSLayoutConstraint *weakSepHeight = sepHeight;
+            [sep registerForTraitChanges:@[UITraitDisplayScale.class]
+                             withHandler:^(__kindof UIView *v, __unused UITraitCollection *previous) {
+                weakSepHeight.constant = 1.0 / v.traitCollection.displayScale;
+            }];
+        }
         NSLayoutConstraint *stackLeadingWithThumb = [stack.leadingAnchor constraintEqualToAnchor:thumbnailView.trailingAnchor constant:12];
         NSLayoutConstraint *stackLeadingNoThumb = [stack.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12];
         stackLeadingNoThumb.active = YES;
@@ -1212,7 +1222,7 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
             [sep.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
             [sep.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
             [sep.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
-            [sep.heightAnchor constraintEqualToConstant:1.0 / [UIScreen mainScreen].scale],
+            sepHeight,
         ]];
 
         objc_setAssociatedObject(cell, &kThumbWidthConstraintKey, thumbWidth, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

@@ -487,11 +487,9 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
     }
     NSMutableArray<ApolloActionMenuSpec *> *matched = [NSMutableArray array];
     for (ApolloActionMenuSpec *spec in sApolloActionMenuRegistry) {
-        BOOL (^matches)(id, NSString *) = spec.matches;
-        if (!matches) continue;
         BOOL specMatches = NO;
         @try {
-            specMatches = matches(controller, menuTitle);
+            specMatches = spec.matches(controller, menuTitle);
         } @catch (NSException *exception) {
             ApolloLog(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
         }
@@ -835,7 +833,7 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
                                                     image:image
                                                identifier:nil
                                                   handler:^(__unused __kindof UIAction *sender) {
-                if (perform) perform(actionController);
+                perform(actionController);
             }];
 
             UIMenuElement *element = action;
@@ -1019,9 +1017,7 @@ static UIMenu *ApolloActionMenuLayoutContextMenu(UIMenu *menu, ApolloActionMenuC
     return [menu menuByReplacingChildren:result];
 }
 
-#pragma mark - Legacy path: the single table/geometry owner
-
-#pragma mark - Injected-row tap dispatch
+#pragma mark - Legacy path: injected-row tap dispatch
 
 // The spec behind `indexPath`, or nil when the row is native or was appended
 // by someone else (a third-party tweak stacking its own row after ours).
@@ -1053,14 +1049,16 @@ static void ApolloActionMenuPerformSpec(id controller, UITableView *tableView,
         [cell setHighlighted:NO animated:YES];
     }
 
-    __strong id strongSelf = controller;
+    // `controller` is a strong parameter here, so the completion block keeps
+    // the sheet alive until perform runs. ApolloActionMenuRegister guarantees
+    // every spec has a perform block.
     void (^perform)(id) = spec.perform;
     if (spec.legacyDismissesSheet) {
         [(UIViewController *)controller dismissViewControllerAnimated:YES completion:^{
-            if (perform) perform(strongSelf);
+            perform(controller);
         }];
-    } else if (perform) {
-        perform(strongSelf);
+    } else {
+        perform(controller);
     }
 }
 
@@ -1089,7 +1087,7 @@ static ApolloActionMenuWillSelectIMP sApolloActionMenuOrigWillSelect = NULL;
 // The native kind at a row of the (already permuted) actions buffer.
 static uint16_t ApolloActionMenuNativeKindAtRow(id controller, NSInteger row) {
     void *buffer = ApolloReadRawIvar(controller, "actions");
-    int64_t count = buffer ? ApolloSwiftArrayCount(buffer) : 0;
+    int64_t count = ApolloSwiftArrayCount(buffer);
     if (row < 0 || row >= count) return UINT16_MAX;
     return *(uint16_t *)((uint8_t *)buffer + kApolloActionMenuNativeElementsOffset
                          + (NSUInteger)row * kApolloActionMenuNativeElementStride);

@@ -135,7 +135,7 @@ static UIView *ApolloNavMakeShadowView(CGRect frame, UITraitCollection *traits) 
     layer.shadowOpacity = 0.3f;
     layer.shadowPath = [UIBezierPath bezierPathWithRect:shadow.bounds].CGPath;
     layer.shouldRasterize = YES;
-    layer.rasterizationScale = UIScreen.mainScreen.scale;
+    layer.rasterizationScale = traits.displayScale;
     return shadow;
 }
 
@@ -157,10 +157,7 @@ static UIView *ApolloNavMakeShadowView(CGRect frame, UITraitCollection *traits) 
 @end
 
 static UITextField *ApolloNavSearchFieldForItem(UINavigationItem *item) {
-    UISearchBar *bar = item.searchController.searchBar;
-    if (!bar) return nil;
-    if (@available(iOS 13.0, *)) return bar.searchTextField;
-    return nil;
+    return item.searchController.searchBar.searchTextField;
 }
 
 static BOOL ApolloNavSearchFieldHasMaterialLayer(UITextField *field) {

@@ -23,10 +23,10 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <dlfcn.h>
 #import "ApolloCommon.h"
 #import "ApolloScrapeWebView.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloWebJSON.h"          // keyless widgets: token_v2 bearer + probe marker
 #import "ApolloWebSessionStore.h"  // ApolloActiveWebSessionUsername
 
@@ -227,48 +227,6 @@ static Class ApolloSBImageClass(void)   { static Class c; static dispatch_once_t
 static Class ApolloSBStackClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASStackLayoutSpec"); }); return c; }
 static Class ApolloSBInsetClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASInsetLayoutSpec"); }); return c; }
 static Class ApolloSBRatioClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASRatioLayoutSpec"); }); return c; }
-
-#pragma mark - Swift ivar helpers
-
-static NSString *ApolloSBDecodeSwiftString(uint64_t w0, uint64_t w1) {
-    if (w1 == 0) return nil;
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF"); });
-    return sBridge ? sBridge(w0, w1) : nil;
-}
-
-static ptrdiff_t ApolloSBIvarOffset(Class cls, const char *name) {
-    Ivar ivar = class_getInstanceVariable(cls, name);
-    return ivar ? ivar_getOffset(ivar) : -1;
-}
-
-static id ApolloSBReadObjectIvar(id object, const char *name) {
-    if (!object) return nil;
-    ptrdiff_t offset = ApolloSBIvarOffset(object_getClass(object), name);
-    if (offset < 0) return nil;
-    uint8_t *base = (uint8_t *)(__bridge void *)object;
-    return (__bridge id)(*(void **)(base + offset));
-}
-
-static NSString *ApolloSBReadSwiftStringIvar(id object, const char *name) {
-    if (!object) return nil;
-    ptrdiff_t offset = ApolloSBIvarOffset(object_getClass(object), name);
-    if (offset < 0) return nil;
-    uint8_t *base = (uint8_t *)(__bridge void *)object;
-    return ApolloSBDecodeSwiftString(*(uint64_t *)(base + offset), *(uint64_t *)(base + offset + 0x08));
-}
 
 #pragma mark - Small utilities
 
@@ -925,13 +883,6 @@ static ASDisplayNode *ApolloSBMakeCollapsibleEx(NSString *title, ASDisplayNode *
     return container;
 }
 
-// Back-compat shim: existing top-level callers (community-list, etc.) keep the
-// 20pt-bold header, no sub-section styling, no nested relayout node.
-static ASDisplayNode *ApolloSBMakeCollapsible(NSString *title, ASDisplayNode *body, BOOL startCollapsed,
-                                              ASDisplayNode *scrollNode, NSMutableArray *tapTargets) {
-    return ApolloSBMakeCollapsibleEx(title, body, startCollapsed, NO, nil, scrollNode, tapTargets);
-}
-
 // Builds the "Community Bookmarks" section from a topbar "menu" widget. Top-level
 // entries are walked IN ORDER: a direct {text,url} entry renders as a normal pill
 // in place; a {text, children:[...]} entry renders as a COLLAPSED pill cell (looks
@@ -1173,7 +1124,7 @@ static void ApolloSBReplaceStatsSection(ASDisplayNode *scrollNode, ASDisplayNode
         ASDisplayNode *old = s.node;
         s.node = newNode;
         [scrollNode addSubnode:newNode];
-        if (old) [old removeFromSupernode];
+        [old removeFromSupernode];
         [scrollNode setNeedsLayout];
         return;
     }
@@ -1182,18 +1133,18 @@ static void ApolloSBReplaceStatsSection(ASDisplayNode *scrollNode, ASDisplayNode
 // Builds all sidebar sections. Called only once Apollo's nodes are ready (see
 // ApolloSBTryBuild). vc/root/subredditName/tapTargets come from the VC hook.
 static void ApolloSBBuildSidebarSections(UIViewController *vc, NSDictionary *root, NSString *subredditName, NSMutableArray *tapTargets) {
-    ASDisplayNode *scrollNode = (ASDisplayNode *)ApolloSBReadObjectIvar(vc, "scrollNode");
+    ASDisplayNode *scrollNode = (ASDisplayNode *)ApolloReadObjectIvar(vc, "scrollNode");
     if (!scrollNode || !scrollNode.layoutSpecBlock) return;
 
     // Collapse Apollo's native 2-stat header — we render our own stats instead.
-    id hn = ApolloSBReadObjectIvar(vc, "headerNode");
+    id hn = ApolloReadObjectIvar(vc, "headerNode");
     if (hn) {
         objc_setAssociatedObject(hn, &kApolloSBCollapseHeaderKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [(ASDisplayNode *)hn setNeedsLayout];
     }
 
-    id rdkSub = ApolloSBReadObjectIvar(vc, "subreddit");
-    ASDisplayNode *markdownNode = (ASDisplayNode *)ApolloSBReadObjectIvar(vc, "markdownNode");
+    id rdkSub = ApolloReadObjectIvar(vc, "subreddit");
+    ASDisplayNode *markdownNode = (ASDisplayNode *)ApolloReadObjectIvar(vc, "markdownNode");
 
     // Titles of widgets we render — used to strip duplicate sections from the bio.
     // "Rules" is always included (Apollo has a Rules button top-right).
@@ -1202,8 +1153,8 @@ static void ApolloSBBuildSidebarSections(UIViewController *vc, NSDictionary *roo
     ApolloSBAddTitle(widgetTitles, @"Subreddit Rules");
 
     // ---- Collapsible bio: clip the description markdown to ~2 lines + "Show more". ----
-    NSString *mdSource = markdownNode ? ApolloSBReadSwiftStringIvar(markdownNode, "source") : nil;
-    if (mdSource.length == 0 && markdownNode) mdSource = ApolloSBReadSwiftStringIvar(markdownNode, "sourceHTML");
+    NSString *mdSource = markdownNode ? ApolloReadSwiftStringIvar(markdownNode, "source") : nil;
+    if (mdSource.length == 0 && markdownNode) mdSource = ApolloReadSwiftStringIvar(markdownNode, "sourceHTML");
 
     // If the sub links Discord from its bio markdown, surface a "Join our Discord"
     // banner — unless an image widget already renders one (e.g. r/apple). Detected here
@@ -1322,7 +1273,7 @@ static void ApolloSBBuildSidebarSections(UIViewController *vc, NSDictionary *roo
             NSString *shortName = ApolloSBString(w[@"shortName"]) ?: @"Related Communities";
             ASDisplayNode *body = ApolloSBBuildCommunityListSection(shortName, data, vc, tapTargets);
             // Long lists start collapsed so the sidebar stays compact; tap to reveal.
-            ASDisplayNode *section = ApolloSBMakeCollapsible(shortName, body, data.count > 5, scrollNode, tapTargets);
+            ASDisplayNode *section = ApolloSBMakeCollapsibleEx(shortName, body, data.count > 5, NO, nil, scrollNode, tapTargets);
             ApolloSBAddSection(vc, scrollNode, section, seqOrder++, shortName, UIEdgeInsetsMake(20, 16, 0, 16));
             ApolloSBAddTitle(widgetTitles, shortName);
         } else if ([kind isEqualToString:@"image"]) {
@@ -1377,9 +1328,9 @@ static void ApolloSBBuildSidebarSections(UIViewController *vc, NSDictionary *roo
 // until they exist, then build once. (Plain recursion — no self-freeing block.)
 static void ApolloSBTryBuild(UIViewController *vc, NSDictionary *root, NSString *subredditName, NSMutableArray *tapTargets, NSInteger attempt) {
     if (!vc) return;
-    ASDisplayNode *scrollNode = (ASDisplayNode *)ApolloSBReadObjectIvar(vc, "scrollNode");
-    id hn = ApolloSBReadObjectIvar(vc, "headerNode");
-    id md = ApolloSBReadObjectIvar(vc, "markdownNode");
+    ASDisplayNode *scrollNode = (ASDisplayNode *)ApolloReadObjectIvar(vc, "scrollNode");
+    id hn = ApolloReadObjectIvar(vc, "headerNode");
+    id md = ApolloReadObjectIvar(vc, "markdownNode");
     if ((!scrollNode || !scrollNode.layoutSpecBlock || !hn || !md) && attempt < 15) {
         __weak UIViewController *weakVC = vc;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1403,13 +1354,13 @@ static void ApolloSBTryBuild(UIViewController *vc, NSDictionary *root, NSString 
     if ([objc_getAssociatedObject(self, &kApolloSBInstalledKey) boolValue]) return;
     objc_setAssociatedObject(self, &kApolloSBInstalledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSString *subredditName = ApolloSBReadSwiftStringIvar(self, "subredditName");
+    NSString *subredditName = ApolloReadSwiftStringIvar(self, "subredditName");
     if (subredditName.length == 0) return;
 
     // Collapse Apollo's native 2-stat header — we render our own custom-labeled
     // stats as the first section instead. Flag the header node now (before it
     // lays out) so it returns a zero-size spec.
-    id headerNode = ApolloSBReadObjectIvar(self, "headerNode");
+    id headerNode = ApolloReadObjectIvar(self, "headerNode");
     if (headerNode) {
         objc_setAssociatedObject(headerNode, &kApolloSBCollapseHeaderKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [(ASDisplayNode *)headerNode setNeedsLayout];

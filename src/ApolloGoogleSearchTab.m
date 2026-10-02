@@ -33,6 +33,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloGoogleSearchViewController.h"
+#import "ApolloSwiftRuntime.h"
 
 @interface _TtC6Apollo20SearchViewController : UIViewController
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText;
@@ -45,25 +46,15 @@ static const void *kApolloGSPlaceholderKey = &kApolloGSPlaceholderKey;
 static NSString *const kApolloGSGooglePlaceholder = @"Search Reddit with Google";
 
 static UITableView *ApolloGSApolloTable(UIViewController *vc) {
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "tableView");
-        if (!ivar) continue;
-        id table = object_getIvar(vc, ivar);
-        return [table isKindOfClass:UITableView.class] ? table : nil;
-    }
-    return nil;
+    id table = ApolloObjectIvar(vc, "tableView");
+    return [table isKindOfClass:UITableView.class] ? table : nil;
 }
 
 static UISearchBar *ApolloGSSearchBar(UIViewController *vc) {
     UIView *titleView = vc.navigationItem.titleView;
     if ([titleView isKindOfClass:UISearchBar.class]) return (UISearchBar *)titleView;
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "searchBar");
-        if (!ivar) continue;
-        id bar = object_getIvar(vc, ivar);
-        return [bar isKindOfClass:UISearchBar.class] ? bar : nil;
-    }
-    return nil;
+    id bar = ApolloObjectIvar(vc, "searchBar");
+    return [bar isKindOfClass:UISearchBar.class] ? bar : nil;
 }
 
 static ApolloGoogleSearchResultsViewController *ApolloGSOverlay(UIViewController *vc) {

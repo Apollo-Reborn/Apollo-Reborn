@@ -2,6 +2,7 @@
 
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
+#import <os/lock.h>
 
 // Deliberately outside Apollo's Valet service prefix: draft traffic must not
 // enter the account keychain self-heal/mirror pipeline.
@@ -14,26 +15,45 @@ static NSString *ApolloMessageDraftAccountHash(NSString *account);
 static dispatch_queue_t ApolloMessageDraftStoreQueue(void) { static dispatch_queue_t q; static dispatch_once_t once; dispatch_once(&once, ^{ q = dispatch_queue_create("app.apolloreborn.message-drafts", DISPATCH_QUEUE_SERIAL); }); return q; }
 void ApolloMessageDraftStoreAsync(dispatch_block_t block) { if (block) dispatch_async(ApolloMessageDraftStoreQueue(), block); }
 void ApolloMessageDraftStoreBarrier(dispatch_block_t block) { if (block) dispatch_sync(ApolloMessageDraftStoreQueue(), block); }
+// Generation tokens have their own short lock so the main thread's per-keystroke
+// snapshot reads never wait behind keychain I/O, which runs on the store queue
+// under the store lock (@synchronized ApolloMessageDraftKeychainService). The
+// store lock still wraps "check generation + write" and "advance generation +
+// mark index", so a stale save is either rejected or marked for deletion.
+static os_unfair_lock sApolloMessageDraftGenerationLock = OS_UNFAIR_LOCK_INIT;
 static NSUInteger sApolloMessageDraftInvalidationGeneration = 0;
 static NSMutableDictionary<NSString *, NSNumber *> *sApolloMessageDraftAccountGenerations;
-NSUInteger ApolloMessageDraftStoreInvalidationGeneration(void) { @synchronized (ApolloMessageDraftKeychainService) { return sApolloMessageDraftInvalidationGeneration; } }
-NSUInteger ApolloMessageDraftStoreAccountGeneration(NSString *account) {
-    NSString *key = ApolloMessageDraftAccountHash(account);
-    if (!key) return 0;
-    @synchronized (ApolloMessageDraftKeychainService) {
-        return sApolloMessageDraftAccountGenerations[key].unsignedIntegerValue;
-    }
+
+static NSUInteger ApolloMessageDraftAccountGenerationForHash(NSString *accountHash) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
+    NSUInteger generation = sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue;
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
+    return generation;
 }
 
-// Callers hold the same lock while advancing a generation and changing its
+NSUInteger ApolloMessageDraftStoreInvalidationGeneration(void) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
+    NSUInteger generation = sApolloMessageDraftInvalidationGeneration;
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
+    return generation;
+}
+
+NSUInteger ApolloMessageDraftStoreAccountGeneration(NSString *account) {
+    NSString *key = ApolloMessageDraftAccountHash(account);
+    return key ? ApolloMessageDraftAccountGenerationForHash(key) : 0;
+}
+
+// Callers hold the store lock while advancing a generation and changing its
 // index entries, so a queued save cannot slip between those two operations.
 static void ApolloMessageDraftAdvanceGenerationLocked(NSString *accountHash) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
     if (!accountHash) {
         sApolloMessageDraftInvalidationGeneration += 1;
-        return;
+    } else {
+        if (!sApolloMessageDraftAccountGenerations) sApolloMessageDraftAccountGenerations = [NSMutableDictionary dictionary];
+        sApolloMessageDraftAccountGenerations[accountHash] = @(sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue + 1);
     }
-    if (!sApolloMessageDraftAccountGenerations) sApolloMessageDraftAccountGenerations = [NSMutableDictionary dictionary];
-    sApolloMessageDraftAccountGenerations[accountHash] = @(sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue + 1);
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
 }
 
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
@@ -161,8 +181,8 @@ BOOL ApolloMessageDraftStoreTextIfCurrent(NSString *account, NSString *conversat
     // a write lands and cleanup subsequently marks its index entry, or cleanup
     // advances a token first and the stale write is rejected.
     @synchronized (ApolloMessageDraftKeychainService) {
-        if (globalGeneration != sApolloMessageDraftInvalidationGeneration ||
-            accountGeneration != sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue) return NO;
+        if (globalGeneration != ApolloMessageDraftStoreInvalidationGeneration() ||
+            accountGeneration != ApolloMessageDraftAccountGenerationForHash(accountHash)) return NO;
         return ApolloMessageDraftStoreText(account, conversation, text);
     }
 }

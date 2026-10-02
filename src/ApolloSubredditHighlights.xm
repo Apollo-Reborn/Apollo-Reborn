@@ -230,7 +230,7 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     NSString *rawName = nil;
     if (rawTitle.length == 0) {
         id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
-        if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
+        if ([subreddit respondsToSelector:@selector(name)]) {
             id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
             if ([nameValue isKindOfClass:[NSString class]]) rawName = nameValue;
         }
@@ -290,7 +290,7 @@ static UITableView *ApolloHLFindTableView(UIViewController *viewController) {
 // restore inline stickied cells we optimistically collapsed).
 static void ApolloHLReloadFeed(UIViewController *vc) {
     id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
-    if (tableNode && [tableNode respondsToSelector:@selector(reloadData)]) {
+    if ([tableNode respondsToSelector:@selector(reloadData)]) {
         ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
     }
 }
@@ -2074,7 +2074,6 @@ static void ApolloHLClearDeDup(NSString *subreddit) {
 }
 @end
 
-static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
 static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
 static void ApolloHLInstall(UIViewController *vc); // defined with the PostsViewController hooks
 
@@ -2110,7 +2109,7 @@ UIView *ApolloHLHeaderOriginalSubstitute(NSString *subreddit, UIViewController *
         return realOriginal;
     }
     NSString *sub = subreddit.lowercaseString;
-    if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
+    if (width <= 0) width = hostVC.view.bounds.size.width;
 
     // De-dup membership now (the header installs before cells render).
     ApolloHLHideSubsAdd(sub);
@@ -2446,7 +2445,8 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
         return;
     }
 
-    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
+        : (tableView.window.bounds.size.width ?: vc.view.bounds.size.width);
 
     if (sameContent && wrapper) {
         // A deferred snap-free change for this same content is still waiting for
@@ -2508,20 +2508,11 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
     ApolloLog(@"[Highlights] installed carousel r/%@ items=%lu width=%.0f", subreddit, (unsigned long)items.count, width);
 }
 
-// Collect all live root view controllers across every connected window scene
-// (iOS 13+/scene apps; UIApplication.windows alone can miss the active scene).
+// Collect all live root view controllers across every connected window scene.
 static NSArray<UIViewController *> *ApolloHLRootViewControllers(void) {
     NSMutableArray<UIViewController *> *roots = [NSMutableArray array];
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.rootViewController) [roots addObject:window.rootViewController];
-        }
-    }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        if (window.rootViewController && ![roots containsObject:window.rootViewController]) {
-            [roots addObject:window.rootViewController];
-        }
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (window.rootViewController) [roots addObject:window.rootViewController];
     }
     return roots;
 }
@@ -2602,7 +2593,7 @@ static void ApolloHLApplyItems(NSString *sub, NSArray<ApolloHLItem *> *items) {
         } else {
             ApolloHLHeaderContainerView *c = objc_getAssociatedObject(postsVC, kApolloHLContainerKey);
             if (![c isMemberOfClass:[ApolloHLHeaderContainerView class]]) return;
-            CGFloat w = c.bounds.size.width > 0 ? c.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+            CGFloat w = c.bounds.size.width > 0 ? c.bounds.size.width : c.window.bounds.size.width;
             UIView *newCarousel = ApolloHLBuildCarousel(sub, items, w);
             UIView *wrapper = c.superview;
             UITableView *tv = ApolloHLFindTableView(postsVC);
@@ -3188,7 +3179,7 @@ static BOOL ApolloHLShouldHideCell(id cellNode) {
     if (!sCommunityHighlights) return NO;
     if (ApolloHLHideSubsIsEmpty()) return NO;
     RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(cellNode, @"link", objc_getClass("RDKLink"));
-    if (!link || ![link respondsToSelector:@selector(stickied)] || !link.stickied) return NO;
+    if (![link respondsToSelector:@selector(stickied)] || !link.stickied) return NO;
     // …except a live interactive post while the feed renders those widgets: the
     // feed owns it, so it keeps its row (the widget IS the post) and the carousel
     // dropped it instead — no duplicate. Read straight off the link so this can
@@ -3243,13 +3234,11 @@ static void ApolloHLZeroNodeHeight(id node) {
 // as the single breaker. (kApolloHLHiddenRowsKey declared up top so teardown can clear it.)
 
 static id ApolloHLOwningTableNode(id cellNode) {
-    id me = (id)cellNode;
-    return [me respondsToSelector:@selector(owningNode)] ? ((id (*)(id, SEL))objc_msgSend)(me, @selector(owningNode)) : nil;
+    return [cellNode respondsToSelector:@selector(owningNode)] ? ((id (*)(id, SEL))objc_msgSend)(cellNode, @selector(owningNode)) : nil;
 }
 static NSInteger ApolloHLNodeRow(id cellNode) {
-    id me = (id)cellNode;
-    if (![me respondsToSelector:@selector(indexPath)]) return -1;
-    NSIndexPath *ip = ((NSIndexPath *(*)(id, SEL))objc_msgSend)(me, @selector(indexPath));
+    if (![cellNode respondsToSelector:@selector(indexPath)]) return -1;
+    NSIndexPath *ip = ((NSIndexPath *(*)(id, SEL))objc_msgSend)(cellNode, @selector(indexPath));
     return ip ? ip.row : -1;
 }
 // Caller MUST hold @synchronized(owningTable). The set is associated with the
@@ -3506,7 +3495,7 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     }
 
     // Re-wrap: stack our carousel above whatever Apollo is installing.
-    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : self.window.bounds.size.width;
     UIView *wrapper = ApolloHLBuildWrapper(carousel, tableHeaderView, width);
     objc_setAssociatedObject(vc, kApolloHLWrapperKey, wrapper, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(vc, kApolloHLOriginalHeaderKey, tableHeaderView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

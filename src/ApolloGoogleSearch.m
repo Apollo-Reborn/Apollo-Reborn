@@ -763,8 +763,6 @@ static NSArray<NSHTTPCookie *> *ApolloGoogleJarUnarchive(NSData *data) {
     return cookies;
 }
 
-static WKWebsiteDataStore *ApolloGoogleSearchDataStore(void);
-
 static void ApolloGoogleJarSave(void) {
     if (!sApolloGoogleJarMirrored || sApolloGoogleJarRestoring || sApolloGoogleJarFileUnreadable) return;
     [ApolloGoogleSearchDataStore().httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
@@ -1054,8 +1052,6 @@ static BOOL sApolloGoogleSearchDebugStall;
             loadURL = debug.URL ?: url;
             ApolloLog(@"[GoogleSearch][debug] opening %@ first", loadURL.host);
         }
-#endif
-#if APOLLO_SIM_BUILD
         NSString *fixture = sApolloGoogleSearchDebugFixturePath.length
             ? [NSString stringWithContentsOfFile:sApolloGoogleSearchDebugFixturePath encoding:NSUTF8StringEncoding error:nil] : nil;
         if (fixture.length) {
@@ -1293,11 +1289,10 @@ static BOOL sApolloGoogleSearchDebugStall;
 // ("30+ comments · 2 weeks ago", "5 answers · 1 year ago"), or at least a
 // relative date. Language-neutral on purpose — digits and "·" survive
 // localization, the words don't.
-- (NSString *)metaFromLines:(id)lines result:(ApolloGoogleSearchResult *)result {
-    if (![lines isKindOfClass:[NSArray class]]) return nil;
+- (NSString *)metaFromLines:(NSArray *)lines result:(ApolloGoogleSearchResult *)result {
     NSString *fallback = nil;
     NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
-    for (NSString *line in (NSArray *)lines) {
+    for (NSString *line in lines) {
         if (![line isKindOfClass:[NSString class]] || line.length < 3) continue;
         NSString *lower = line.lowercaseString;
         if ([lower hasPrefix:@"reddit"] || [lower hasPrefix:@"r/"] || [lower hasPrefix:@"http"] ||
@@ -1388,7 +1383,6 @@ static NSUInteger ApolloGoogleApplyRedditInfo(id json, NSArray<ApolloGoogleSearc
         if (created > 0) result.created = [NSDate dateWithTimeIntervalSince1970:created];
         NSString *body = comment ? ApolloGoogleString(comment[@"body"]) : ApolloGoogleString(post[@"selftext"]);
         if ([body isEqualToString:@"[removed]"] || [body isEqualToString:@"[deleted]"]) {
-            result.removedOrDeleted = YES;
             body = nil;
         }
         result.bodyText = body;
@@ -1523,19 +1517,7 @@ static NSURLSessionDataTask *ApolloGoogleFetchRedditInfo(NSArray<ApolloGoogleSea
               mayHaveMore:(BOOL)more
                     error:(NSError *)error {
     ApolloGoogleSearchCompletion completion = _completion;
-    _completion = nil;
-    _loading = NO;
-    _generation++;
-    [_infoTask cancel];
-    _infoTask = nil;
-    if (_verifying) {
-        _verifying = NO;
-        if (self.dismissVerification) self.dismissVerification();
-    }
-    if (_web) {
-        ApolloScrapeWebViewDestroy(_web);
-        _web = nil;
-    }
+    [self tearDownSilently];
     // Below iOS 17: keep what this search left in the jar (a sign-in, a
     // solved check) even where WebKit doesn't report cookie changes.
     ApolloGoogleJarSaveSoon();

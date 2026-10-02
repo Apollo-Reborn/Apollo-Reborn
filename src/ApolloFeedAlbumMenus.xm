@@ -9,6 +9,7 @@
 #import "ApolloCommon.h"
 #import "ApolloSaveAllMedia.h"
 #import "ApolloSaveAllMediaItems.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloToast.h"
 
 // This is our own carousel class. Its native-open helper also serves its
@@ -54,11 +55,6 @@ static char kApolloFeedAlbumShareFile;
 }
 @end
 
-static id ApolloFeedAlbumIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
 static id ApolloFeedAlbumGet(id object, NSString *name) {
     SEL selector = NSSelectorFromString(name);
     return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
@@ -94,7 +90,7 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
     id cell = ApolloFeedAlbumGet(source, @"asyncdisplaykit_node") ?: ApolloFeedAlbumGet(source, @"node");
     BOOL compact = [cell isKindOfClass:NSClassFromString(@"Apollo.CompactPostCellNode")];
     if (!compact && ![cell isKindOfClass:NSClassFromString(@"Apollo.LargePostCellNode")]) return nil;
-    id link = ApolloFeedAlbumIvar(cell, "link");
+    id link = ApolloObjectIvar(cell, "link");
     if (!ApolloSaveAllMediaLinkHasCollection(link)) return nil;
     UIViewController *presenter = ApolloFeedAlbumGet(cell, @"closestViewController");
     if (![presenter isKindOfClass:UIViewController.class] || !presenter.viewIfLoaded.window) return nil;
@@ -108,14 +104,14 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
     context.albumOverview = compact;
     context.items = ApolloSaveAllMediaItemsFromLink(link, nil);
     if (compact) {
-        id thumbnail = ApolloFeedAlbumIvar(cell, "thumbnailNode");
+        id thumbnail = ApolloObjectIvar(cell, "thumbnailNode");
         context.sourceView = ApolloFeedAlbumNodeView(thumbnail);
         if (!ApolloFeedAlbumContainsPoint(context.sourceView, source, location)) return nil;
         context.thumbnail = thumbnail;
-        context.previewImage = ApolloFeedAlbumGet(ApolloFeedAlbumIvar(thumbnail, "thumbnailNode"), @"image");
+        context.previewImage = ApolloFeedAlbumGet(ApolloObjectIvar(thumbnail, "thumbnailNode"), @"image");
     } else {
-        id rich = ApolloFeedAlbumIvar(cell, "richMediaNode");
-        id album = ApolloFeedAlbumIvar(rich, "albumThumbnailsNode");
+        id rich = ApolloObjectIvar(cell, "richMediaNode");
+        id album = ApolloObjectIvar(rich, "albumThumbnailsNode");
         UIView *richView = ApolloFeedAlbumNodeView(rich);
         ApolloFeedGalleryCarouselView *carousel = ApolloFeedAlbumCarouselInView(richView);
         context.richMedia = rich;
@@ -136,15 +132,15 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
         } else {
             // The count badge and the space between mosaic thumbnails refer
             // to the whole album. Individual image holds retain image actions.
-            UIView *cover = ApolloFeedAlbumNodeView(ApolloFeedAlbumIvar(album, "obscuredContentInfoOverlayNode"));
+            UIView *cover = ApolloFeedAlbumNodeView(ApolloObjectIvar(album, "obscuredContentInfoOverlayNode"));
             if (ApolloFeedAlbumContainsPoint(cover, source, location)) return nil;
             UIView *albumView = ApolloFeedAlbumNodeView(album);
             if (!ApolloFeedAlbumContainsPoint(albumView, source, location)) return nil;
-            UIView *countView = ApolloFeedAlbumNodeView(ApolloFeedAlbumIvar(album, "totalImagesNode"));
+            UIView *countView = ApolloFeedAlbumNodeView(ApolloObjectIvar(album, "totalImagesNode"));
             context.albumOverview = ApolloFeedAlbumContainsPoint(countView, source, location);
             const char *slots[] = { "thumbnailNode1", "thumbnailNode2", "thumbnailNode3" };
             for (NSUInteger index = 0; !context.albumOverview && index < 3; index++) {
-                id thumbnail = ApolloFeedAlbumIvar(album, slots[index]);
+                id thumbnail = ApolloObjectIvar(album, slots[index]);
                 UIView *view = ApolloFeedAlbumNodeView(thumbnail);
                 if (!ApolloFeedAlbumContainsPoint(view, source, location)) continue;
                 context.index = index;
@@ -157,7 +153,7 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
                 context.albumOverview = YES;
                 context.sourceView = albumView;
                 // Committing the album preview opens its first item.
-                context.thumbnail = ApolloFeedAlbumIvar(album, "thumbnailNode1");
+                context.thumbnail = ApolloObjectIvar(album, "thumbnailNode1");
             }
         }
         if (!context.albumOverview) {
@@ -335,7 +331,7 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
     }
     [animator addCompletion:^{
         // A recycled cell must not open another post when the preview commits.
-        if (ApolloFeedAlbumIvar(context.cell, "link") != context.link) return;
+        if (ApolloObjectIvar(context.cell, "link") != context.link) return;
         if (context.carousel) [context.carousel apollo_openPageAtIndex:(NSInteger)context.index];
         else {
             id target = context.compact ? context.cell : context.richMedia;

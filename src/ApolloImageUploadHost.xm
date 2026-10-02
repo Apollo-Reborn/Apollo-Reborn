@@ -2061,51 +2061,47 @@ static void ApolloRedditResolveSubmittedLinkIDViaWebsocket(NSString *webSocketUR
     if (webSocketURLString.length == 0) { completion(nil, nil); return; }
     NSURL *webSocketURL = [NSURL URLWithString:webSocketURLString];
     if (!webSocketURL) { completion(nil, nil); return; }
-    if (@available(iOS 13.0, *)) {
-        NSURLSessionWebSocketTask *task = [[NSURLSession sharedSession] webSocketTaskWithURL:webSocketURL];
-        __block BOOL finished = NO;
-        [task resume];
-        [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
-            if (finished) return;
+    NSURLSessionWebSocketTask *task = [[NSURLSession sharedSession] webSocketTaskWithURL:webSocketURL];
+    __block BOOL finished = NO;
+    [task resume];
+    [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
+        if (finished) return;
+        finished = YES;
+
+        NSString *messageString = message.type == NSURLSessionWebSocketMessageTypeString
+            ? message.string
+            : [[NSString alloc] initWithData:message.data encoding:NSUTF8StringEncoding];
+        [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
+
+        if (error || messageString.length == 0) {
+            ApolloLog(@"[RedditUpload] Websocket linkID resolve failed: %@", error.localizedDescription ?: @"empty message");
+            completion(nil, nil);
+            return;
+        }
+
+        NSString *linkID = nil, *postURL = nil;
+        NSData *messageData = [messageString dataUsingEncoding:NSUTF8StringEncoding];
+        id json = messageData.length > 0 ? [NSJSONSerialization JSONObjectWithData:messageData options:0 error:nil] : nil;
+        if (json) linkID = ApolloRedditExtractLinkIDFromWebsocketJSON(json);
+        if (!linkID) linkID = ApolloRedditExtractLinkIDFromPostURL(messageString);
+
+        if (linkID && [json isKindOfClass:[NSDictionary class]]) {
+            id payload = ((NSDictionary *)json)[@"payload"];
+            if ([payload isKindOfClass:[NSDictionary class]]) {
+                id redirect = ((NSDictionary *)payload)[@"redirect"];
+                if ([redirect isKindOfClass:[NSString class]]) postURL = redirect;
+            }
+        }
+        completion(linkID, postURL);
+    }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSubmitWebsocketTimeout * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        if (!finished) {
             finished = YES;
-
-            NSString *messageString = message.type == NSURLSessionWebSocketMessageTypeString
-                ? message.string
-                : [[NSString alloc] initWithData:message.data encoding:NSUTF8StringEncoding];
-            [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
-
-            if (error || messageString.length == 0) {
-                ApolloLog(@"[RedditUpload] Websocket linkID resolve failed: %@", error.localizedDescription ?: @"empty message");
-                completion(nil, nil);
-                return;
-            }
-
-            NSString *linkID = nil, *postURL = nil;
-            NSData *messageData = [messageString dataUsingEncoding:NSUTF8StringEncoding];
-            id json = messageData.length > 0 ? [NSJSONSerialization JSONObjectWithData:messageData options:0 error:nil] : nil;
-            if (json) linkID = ApolloRedditExtractLinkIDFromWebsocketJSON(json);
-            if (!linkID) linkID = ApolloRedditExtractLinkIDFromPostURL(messageString);
-
-            if (linkID && [json isKindOfClass:[NSDictionary class]]) {
-                id payload = ((NSDictionary *)json)[@"payload"];
-                if ([payload isKindOfClass:[NSDictionary class]]) {
-                    id redirect = ((NSDictionary *)payload)[@"redirect"];
-                    if ([redirect isKindOfClass:[NSString class]]) postURL = redirect;
-                }
-            }
-            completion(linkID, postURL);
-        }];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kApolloSubmitWebsocketTimeout * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            if (!finished) {
-                finished = YES;
-                [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeGoingAway reason:nil];
-                ApolloLog(@"[RedditUpload] Websocket linkID resolve timed out");
-                completion(nil, nil);
-            }
-        });
-    } else {
-        completion(nil, nil);
-    }
+            [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeGoingAway reason:nil];
+            ApolloLog(@"[RedditUpload] Websocket linkID resolve timed out");
+            completion(nil, nil);
+        }
+    });
 }
 
 static NSString *ApolloUsernameFromSubmittedPage(NSString *userSubmittedPage) {

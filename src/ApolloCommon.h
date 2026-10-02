@@ -143,6 +143,13 @@ BOOL ApolloRouteURLThroughApp(NSURL *url);
 // Returns all UIWindows across every connected UIWindowScene.
 // Use instead of the deprecated UIApplication.windows property.
 NSArray<UIWindow *> *ApolloAllWindows(void);
+// The key window, preferring a foreground-active scene's (each iPad scene can
+// have its own key window), else any key window; nil when none is key (e.g.
+// mid scene transition) — callers keep their own fallback policy.
+// This is app-global state: on multi-window iPad it is the window the user
+// last interacted with, not necessarily the one a given piece of UI lives in.
+// When a view or view controller is in scope, use its view.window instead.
+UIWindow *ApolloKeyWindow(void);
 // Refresh title geometry/capsules on one known bar after a local content or
 // action change. Never walks the window/page hierarchy (no-op off Liquid Glass).
 void ApolloNavigationTitlesRefreshBar(UINavigationBar *bar);

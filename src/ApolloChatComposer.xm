@@ -16,6 +16,7 @@
 //      the token to a plain giphy URL at the send layer makes the send succeed.
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloState.h"
 #import "ApolloImgChestUpload.h"
@@ -27,19 +28,16 @@
 
 static char kApolloComposerHeaderUserKey;   // on titleViewButton: username we set an avatar for
 static char kApolloComposerSetupKey;        // on VC: header-avatar resolution already started
+static char kApolloComposerScaleObservedKey; // on titleViewButton: display-scale handler registered
 
-static id ApolloComposerIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    return iv ? object_getIvar(obj, iv) : nil;
-}
+static void ApolloComposerResolveTitle(id vc, NSInteger attempt);   // defined below
 
 // Circular avatar of diameter d, drawn at the LEFT of a (d + rightPad) wide canvas
 // (transparent right padding). Baking the gap into the image lets the title button centre
 // its title on the nav bar with the avatar poking out to the left.
-static UIImage *ApolloComposerCircularAvatar(UIImage *src, CGFloat d, CGFloat rightPad) {
+static UIImage *ApolloComposerCircularAvatar(UIImage *src, CGFloat d, CGFloat rightPad, UITraitCollection *traitCollection) {
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
-    fmt.scale = [UIScreen mainScreen].scale; fmt.opaque = NO;
+    fmt.scale = traitCollection.displayScale; fmt.opaque = NO;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(d + rightPad, d) format:fmt];
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         CGRect rect = CGRectMake(0, 0, d, d);
@@ -57,8 +55,25 @@ static UIImage *ApolloComposerCircularAvatar(UIImage *src, CGFloat d, CGFloat ri
 // line is the other user (or "r/sub" for modmail, which we skip). Gated on Show User Avatars.
 static void ApolloComposerApplyHeaderAvatar(id vc, NSString *title) {
     if (!sShowUserAvatars) return;
-    UIButton *titleBtn = ApolloComposerIvar(vc, "titleViewButton");
+    UIButton *titleBtn = ApolloObjectIvar(vc, "titleViewButton");
     if (![titleBtn isKindOfClass:[UIButton class]]) return;
+
+    // The avatar is a bitmap baked at the button's display scale: re-stamp it when
+    // that scale changes (e.g. the window moves to an external display). Registered
+    // once per button; the handler re-runs the title resolution for this VC.
+    if (@available(iOS 17.0, *)) {
+        if (!objc_getAssociatedObject(titleBtn, &kApolloComposerScaleObservedKey)) {
+            objc_setAssociatedObject(titleBtn, &kApolloComposerScaleObservedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            __weak id weakVC = vc;
+            [titleBtn registerForTraitChanges:@[UITraitDisplayScale.class]
+                                  withHandler:^(__kindof UIView *button, __unused UITraitCollection *previous) {
+                id strongVC = weakVC;
+                if (!strongVC) return;
+                objc_setAssociatedObject(button, &kApolloComposerHeaderUserKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                ApolloComposerResolveTitle(strongVC, 0);
+            }];
+        }
+    }
 
     // For a chat, show the username on a SINGLE truncating line so a long name (e.g. "IllIIll…")
     // can never wrap to a 2nd line. The "[direct chat room]" subtitle is redundant for a chat, so
@@ -80,13 +95,10 @@ static void ApolloComposerApplyHeaderAvatar(id vc, NSString *title) {
     void (^apply)(UIImage *) = ^(UIImage *img) {
         if (![objc_getAssociatedObject(titleBtn, &kApolloComposerHeaderUserKey) isEqualToString:username]) return;
         // AlwaysOriginal so the button doesn't tint the avatar with the accent (it showed solid green).
-        // The avatar image bakes in `gap` of right padding; a matching right contentEdgeInset shifts the
-        // [avatar][title] content left by (d+gap)/2 so the TITLE lands on the nav-bar centre and the
-        // avatar pokes out to its left (instead of centring the avatar+title pair as one unit).
         // Just place the avatar (with its baked-in right gap) to the left of the title as one
         // centred unit. No contentEdgeInset widening — that squeezed the title's available width
         // and forced a long username ("IllIIll…") to wrap to a 2nd line, hiding the subtitle.
-        UIImage *circ = [ApolloComposerCircularAvatar(img, d, gap) imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+        UIImage *circ = [ApolloComposerCircularAvatar(img, d, gap, titleBtn.traitCollection) imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
         [titleBtn setImage:circ forState:UIControlStateNormal];
         titleBtn.imageEdgeInsets = UIEdgeInsetsZero;
         // Adding the avatar image grows the button's content; force the nav bar to re-measure the
@@ -113,7 +125,7 @@ static void ApolloComposerApplyHeaderAvatar(id vc, NSString *title) {
 // poll briefly for it, then stamp the header avatar.
 static void ApolloComposerResolveTitle(id vc, NSInteger attempt) {
     if (!vc || attempt > 80) return;   // VC already gone: stop polling
-    UIButton *titleBtn = ApolloComposerIvar(vc, "titleViewButton");
+    UIButton *titleBtn = ApolloObjectIvar(vc, "titleViewButton");
     NSString *title = titleBtn.currentAttributedTitle.string ?: titleBtn.titleLabel.text ?: titleBtn.currentTitle;
     if (title.length) { ApolloComposerApplyHeaderAvatar(vc, title); return; }
     // Poll quickly so we collapse the title to a single avatar line the instant Apollo sets it —
@@ -158,7 +170,6 @@ void ApolloChatClearImageUpload(void) {
 #endif
 
 static void ApolloChatPromptImgChestSetup(UIViewController *vc) {
-    if (![vc isKindOfClass:[UIViewController class]]) return;
     UIAlertController *a = [UIAlertController
         alertControllerWithTitle:@"Image Chest API Key Needed"
                          message:@"To send images in chat, add a free Image Chest API key under Settings → Apollo Reborn → Accounts & API Keys. Reddit can't reliably host images in private messages, so chat images upload to Image Chest instead."
@@ -202,7 +213,6 @@ static void ApolloChatPromptImgChestSetup(UIViewController *vc) {
 // url>). Both make a chat send fail with "Error Sending". Rewrite every embed to its plain URL so
 // the message sends as text (and still renders inline in Apollo via the image overlay).
 static NSString *ApolloChatRewriteGifTokens(NSString *body) {
-    if (![body isKindOfClass:[NSString class]]) return body;
     if ([body rangeOfString:@"!["].location == NSNotFound) return body;   // no media embed
     static NSRegularExpression *re; static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -231,6 +241,7 @@ static NSString *ApolloChatRewriteGifTokens(NSString *body) {
 // button inserts ![img](url)). Chat photo uploads are routed to ImgChest (see the photo-button hook
 // below + ApolloImageUploadHost), giving a public CDN URL that renders inline in Apollo. Gated on the
 // master chat-media toggle so OFF reverts to stock Apollo send behaviour.
+// Returns `body` itself (same pointer) when nothing was rewritten.
 static NSString *ApolloChatFixOutgoing(NSString *body) {
     if (![body isKindOfClass:[NSString class]]) return body;
     if (!sEnableChatMedia) return body;
@@ -240,17 +251,17 @@ static NSString *ApolloChatFixOutgoing(NSString *body) {
 %hook RDKClient
 - (id)sendMessage:(id)message subject:(id)subject recipient:(id)recipient completion:(id)completion {
     NSString *fixed = ApolloChatFixOutgoing(message);
-    if ([message isKindOfClass:[NSString class]] && ![fixed isEqualToString:message]) return %orig(fixed, subject, recipient, completion);
+    if (fixed != message) return %orig(fixed, subject, recipient, completion);
     return %orig;
 }
 - (id)replyToMessage:(id)message withText:(id)text completion:(id)completion {
     NSString *fixed = ApolloChatFixOutgoing(text);
-    if ([text isKindOfClass:[NSString class]] && ![fixed isEqualToString:text]) return %orig(message, fixed, completion);
+    if (fixed != text) return %orig(message, fixed, completion);
     return %orig;
 }
 - (id)replyToMessageWithFullname:(id)fullname withText:(id)text completion:(id)completion {
     NSString *fixed = ApolloChatFixOutgoing(text);
-    if ([text isKindOfClass:[NSString class]] && ![fixed isEqualToString:text]) return %orig(fullname, fixed, completion);
+    if (fixed != text) return %orig(fullname, fixed, completion);
     return %orig;
 }
 %end

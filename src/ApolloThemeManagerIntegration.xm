@@ -779,7 +779,7 @@ static UIImage *CustomPickerSwatch(void) {
         UITableViewCell *cell = %orig(tv, [NSIndexPath indexPathForRow:0 inSection:0]);
         cell.accessoryView = nil;
         cell.textLabel.text = @"Custom";
-        if ([cell.detailTextLabel respondsToSelector:@selector(setText:)]) {
+        if (cell.detailTextLabel) {
             ApolloThemeStore *store = [ApolloThemeStore shared];
             NSDictionary *active = [store activeTheme];
             NSString *name = [active[@"name"] isKindOfClass:NSString.class] ? active[@"name"] : nil;

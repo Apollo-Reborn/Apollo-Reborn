@@ -5,6 +5,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -75,31 +76,24 @@ extern NSString *const ApolloPictureInPictureChangedNotification;
 // MARK: - Small helpers (per-TU statics; mirrors ApolloVideoUnmute.xm patterns)
 // =============================================================================
 
-static id PiPGetIvar(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 static id PiPRichMediaNodeFromCell(id cellNode) {
-    id richMediaNode = PiPGetIvar(cellNode, "richMediaNode");
+    id richMediaNode = ApolloObjectIvar(cellNode, "richMediaNode");
     if (richMediaNode) return richMediaNode;
-    id crosspostNode = PiPGetIvar(cellNode, "crosspostNode");
-    return crosspostNode ? PiPGetIvar(crosspostNode, "richMediaNode") : nil;
+    return ApolloObjectIvar(ApolloObjectIvar(cellNode, "crosspostNode"), "richMediaNode");
 }
 
 static id PiPVideoNodeFromRichMedia(id richMediaNode) {
-    return richMediaNode ? PiPGetIvar(richMediaNode, "videoNode") : nil;
+    return ApolloObjectIvar(richMediaNode, "videoNode");
 }
 
 static UIView *PiPViewForNode(id node) {
-    if (!node || ![node respondsToSelector:@selector(view)]) return nil;
+    if (![node respondsToSelector:@selector(view)]) return nil;
     return ((UIView *(*)(id, SEL))objc_msgSend)(node, @selector(view));
 }
 
 static BOOL PiPNodeIsShareable(id videoNode) {
     SEL sel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-    if (!videoNode || ![videoNode respondsToSelector:sel]) return NO;
+    if (![videoNode respondsToSelector:sel]) return NO;
     return ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, sel);
 }
 
@@ -144,7 +138,7 @@ static NSURL *PiPAssetURLForNode(id videoNode, AVPlayer *player) {
         return [(AVURLAsset *)asset URL];
     }
     SEL assetURLSel = NSSelectorFromString(@"assetURL");
-    if (videoNode && [videoNode respondsToSelector:assetURLSel]) {
+    if ([videoNode respondsToSelector:assetURLSel]) {
         return ((id (*)(id, SEL))objc_msgSend)(videoNode, assetURLSel);
     }
     return nil;
@@ -745,7 +739,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
             // (autoplay off — the header shows a static poster) can't double-
             // display anything, and a fullscreen-initiated card legitimately
             // floats over exactly that cell.
-            id cellLink = PiPGetIvar(richMediaNode, "link");
+            id cellLink = ApolloObjectIvar(richMediaNode, "link");
             BOOL sameLink = self.link && cellLink
                          && (cellLink == self.link || [cellLink isEqual:self.link]);
             // Fullscreen-origin cards legitimately float over their own post's
@@ -930,7 +924,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
         BOOL done = YES;
         if (strongSelf && strongSelf.active && strongSelf.generation == generation) {
             // Re-verify against CURRENT content — cell reuse can swap the post.
-            id cellLink = PiPGetIvar(weakRich, "link");
+            id cellLink = ApolloObjectIvar(weakRich, "link");
             BOOL sameLink = strongSelf.link && cellLink
                          && (cellLink == strongSelf.link || [cellLink isEqual:strongSelf.link]);
             if (sameLink) {
@@ -985,7 +979,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     self.playerItem = player.currentItem;
     self.richMediaNode = richMediaNode;
     self.videoNode = videoNode;
-    self.link = PiPGetIvar(richMediaNode, "link");
+    self.link = ApolloObjectIvar(richMediaNode, "link");
     self.ownedNonShareable = !PiPNodeIsShareable(videoNode);
     // GIF content (always loops, no audio session, no mute button): a GIF by
     // origin URL — incl. a Reddit .gif served as MP4 that carries a silent audio
@@ -1208,6 +1202,9 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 
     ApolloPiPWindow *window = scene
         ? [[ApolloPiPWindow alloc] initWithWindowScene:scene]
+        // TODO: Modernization - no foreground-active window scene was found, so
+        // this sceneless fallback window still assumes the main screen's bounds.
+        // It should instead defer creating the window until a scene activates.
         : [[ApolloPiPWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     window.windowLevel = UIWindowLevelNormal + 50; // above app UI, below alerts/keyboard
     window.backgroundColor = [UIColor clearColor];
@@ -3120,7 +3117,7 @@ static BOOL PiPHandleFeedVisibilityEvent(id cellNode, unsigned long long event) 
         // when the gesture is cancelled, mirroring the owned path's deferral
         // below.
         if (controller.cardFromFullscreen && !controller.restoring && controller.link) {
-            id cellLink = PiPGetIvar(richMediaNode, "link");
+            id cellLink = ApolloObjectIvar(richMediaNode, "link");
             BOOL sameLink = cellLink
                 && (cellLink == controller.link || [cellLink isEqual:controller.link]);
             if (sameLink && player && player.rate != 0
@@ -3277,10 +3274,10 @@ static UIViewController *PiPMediaPageVCForChild(UIViewController *child) {
 // for image pages AND adopted shared-layer pages — a shared player has a live
 // inline home the card would double-render.
 static AVPlayer *PiPOwnedPlayerFromMediaPageVC(id pageVC) {
-    if (!pageVC || ![pageVC respondsToSelector:@selector(viewControllers)]) return nil;
+    if (![pageVC respondsToSelector:@selector(viewControllers)]) return nil;
     id mediaVC = [[(UIPageViewController *)pageVC viewControllers] firstObject];
     if (!mediaVC || (sPiPMediaViewerClass && ![mediaVC isMemberOfClass:sPiPMediaViewerClass])) return nil;
-    return PiPGetIvar(mediaVC, "player");
+    return ApolloObjectIvar(mediaVC, "player");
 }
 
 // Spoiler/NSFW-tagged posts never autoplay inline: RichMediaNode's video setup
@@ -3290,7 +3287,7 @@ static AVPlayer *PiPOwnedPlayerFromMediaPageVC(id pageVC) {
 // (the post then autoplays like any other), the owned-player check still
 // hides the button for adopted shared layers.
 static BOOL PiPPagerLinkNeverAutoplays(id pageVC) {
-    id link = PiPGetIvar(pageVC, "link"); // RDKLink
+    id link = ApolloObjectIvar(pageVC, "link"); // RDKLink
     if (!link) return NO;
     // getter=isSpoiler / getter=isNSFW — the binary has no plain `spoiler`
     // getter (verified: only -[RDKLink isSpoiler] / -[RDKLink isNSFW] exist).
@@ -3309,7 +3306,7 @@ static BOOL PiPPagerLinkNeverAutoplays(id pageVC) {
 // PiP-safe as autoplay-off. Image-only nil-link viewers are filtered by the
 // owned-player check.
 static BOOL PiPPagerIsURLOpened(id pageVC) {
-    return pageVC && PiPGetIvar(pageVC, "link") == nil;
+    return pageVC && ApolloObjectIvar(pageVC, "link") == nil;
 }
 
 // Restore the user's fullscreen playback state on the card after the native
@@ -3402,7 +3399,7 @@ static void PiPResolveFullscreenPiPRequest(void) {
 static void PiPRefreshFullscreenPiPButton(id pageVC) {
     if (!pageVC) return;
     UIViewController *pageViewController = (UIViewController *)pageVC;
-    UIButton *closeButton = PiPGetIvar(pageVC, "closeButton");
+    UIButton *closeButton = ApolloObjectIvar(pageVC, "closeButton");
     UIButton *pipButton = objc_getAssociatedObject(pageVC, kPiPFullscreenButtonKey);
     if (!closeButton || !closeButton.superview || !pageViewController.isViewLoaded) {
         pipButton.hidden = YES;
@@ -3424,9 +3421,7 @@ static void PiPRefreshFullscreenPiPButton(id pageVC) {
         pipButton.accessibilityLabel = @"Picture in Picture";
         [pipButton addTarget:pageVC action:NSSelectorFromString(@"apolloPiP_enterTapped:")
             forControlEvents:UIControlEventTouchUpInside];
-        if (@available(iOS 13.4, *)) {
-            pipButton.pointerInteractionEnabled = YES;
-        }
+        pipButton.pointerInteractionEnabled = YES;
         objc_setAssociatedObject(pageVC, kPiPFullscreenButtonKey, pipButton,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloPiPFullscreenButtonMirror *mirror =
@@ -3524,7 +3519,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
 %hook RichMediaNode
 
 - (void)pauseAllAVPlayersNotificationReceivedWithNotification:(id)notification {
-    id videoNode = PiPGetIvar(self, "videoNode");
+    id videoNode = ApolloObjectIvar(self, "videoNode");
     if (videoNode) {
         AVPlayer *player = ApolloVideoUnmute_GetPlayerFromVideoNode(videoNode);
         if (player && (ApolloPiP_IsOwnedPlayer(player) || PiPInlineShieldEngaged(player) ||
@@ -3537,7 +3532,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
 }
 
 - (void)didExitPreloadState {
-    id videoNode = PiPGetIvar(self, "videoNode");
+    id videoNode = ApolloObjectIvar(self, "videoNode");
     if (videoNode && !PiPNodeIsShareable(videoNode)) {
         AVPlayer *player = ApolloVideoUnmute_GetPlayerFromVideoNode(videoNode);
         if (player && (ApolloPiP_IsOwnedPlayer(player) ||
@@ -3595,10 +3590,10 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
     if (!controller) return;
     if (!controller.active && !controller.inlineNativePiP) return;
 
-    AVPlayer *fullscreenPlayer = PiPGetIvar(self, "player");
+    AVPlayer *fullscreenPlayer = ApolloObjectIvar(self, "player");
     if (!fullscreenPlayer) {
-        id container = PiPGetIvar(self, "playerLayerContainerView");
-        id playerLayer = container ? PiPGetIvar(container, "playerLayer") : nil;
+        id container = ApolloObjectIvar(self, "playerLayerContainerView");
+        id playerLayer = ApolloObjectIvar(container, "playerLayer");
         if ([playerLayer isKindOfClass:[AVPlayerLayer class]]) {
             fullscreenPlayer = [(AVPlayerLayer *)playerLayer player];
         }
@@ -3614,7 +3609,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
         // node, so re-tapping the post media creates a fresh one). Two live
         // players of the same content — close the card, fullscreen wins.
         UIViewController *pager = PiPMediaPageVCForChild((UIViewController *)self);
-        id pageLink = pager ? PiPGetIvar(pager, "link") : nil;
+        id pageLink = ApolloObjectIvar(pager, "link");
         if (pageLink && (pageLink == controller.link || [pageLink isEqual:controller.link])) {
             ApolloLog(@"[PiP] Fullscreen re-opened our post with a new player — closing card");
             // Clear sessionClaimedAudibly FIRST (mirrors
@@ -3700,7 +3695,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
     // for content the user never audibly played (issue #560).
     sFSPiPWasMuted = !PiPPlayerIsDeliberatelyAudible(player);
     sFSPiPWasPlaying = player.rate != 0;
-    sFSPiPLink = PiPGetIvar(self, "link");
+    sFSPiPLink = ApolloObjectIvar(self, "link");
     NSUInteger token = ++sFSPiPRequestToken;
     ApolloLog(@"[PiP] Fullscreen PiP button tapped (muted=%d, playing=%d) — dismissing viewer",
               sFSPiPWasMuted, sFSPiPWasPlaying);
