@@ -10,7 +10,7 @@ fi
 test_build_dir=$(mktemp -d "${TMPDIR:-/tmp}/apollo-multireddit-expansion.XXXXXX")
 trap 'rm -rf -- "$test_build_dir"' EXIT HUP INT TERM
 
-# Execute the shipping scope helper AND the complete six UITableView hook
+# Execute the shipping scope helpers AND the complete seven UITableView hook
 # bodies. Only the unrelated Following-map helpers and UIKit are doubled.
 python3 - "$test_repo_root" "$test_build_dir" <<'PY'
 from pathlib import Path
@@ -21,7 +21,7 @@ root, output = map(Path, sys.argv[1:])
 source = (root / 'src/ApolloFollowingSection.xm').read_text()
 group = source.split('%group ApolloFollowingTable', 1)[1].split('%end // group ApolloFollowingTable', 1)[0]
 names = ('reloadData', 'beginUpdates', 'endUpdates', 'insertRowsAtIndexPaths',
-         'deleteRowsAtIndexPaths', 'reloadRowsAtIndexPaths')
+         'deleteRowsAtIndexPaths', 'reloadRowsAtIndexPaths', 'performBatchUpdates')
 methods = []
 for name in names:
     start = re.search(r'^- \(void\)' + name + r'(?=[: {])', group, re.M)

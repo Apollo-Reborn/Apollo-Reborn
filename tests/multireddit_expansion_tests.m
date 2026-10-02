@@ -19,10 +19,16 @@ typedef NSInteger UITableViewRowAnimation;
 }
 @end
 
-@interface UIViewController : NSObject
-@property (nonatomic) NSUInteger mapInvalidations;
+@class UITableView;
+@protocol UITableViewDataSource <NSObject>
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section;
+@optional
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView;
 @end
-@implementation UIViewController
+
+// The list controller: its row count is whatever the model holds right now.
+@interface UIViewController : NSObject <UITableViewDataSource>
+@property (nonatomic) NSUInteger mapInvalidations;
 @end
 
 // This double enforces UIKit's row-count invariant, rather than implementing
@@ -35,18 +41,39 @@ typedef NSInteger UITableViewRowAnimation;
 @property (nonatomic) NSUInteger batchDepth;
 @property (nonatomic) NSUInteger begins;
 @property (nonatomic) NSUInteger ends;
+@property (nonatomic) NSUInteger batches;
 @property (nonatomic) NSUInteger inserts;
 @property (nonatomic) NSUInteger deletes;
 @property (nonatomic) NSUInteger rowReloads;
 @property (nonatomic) NSUInteger reloads;
+- (NSInteger)numberOfSections;
+- (NSInteger)numberOfRowsInSection:(NSInteger)section;
 - (void)reloadData;
 - (void)beginUpdates;
 - (void)endUpdates;
+- (void)performBatchUpdates:(void (^)(void))updates completion:(void (^)(BOOL))completion;
 - (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(UITableViewRowAnimation)animation;
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(UITableViewRowAnimation)animation;
 - (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(UITableViewRowAnimation)animation;
 @end
+
+@implementation UIViewController
+- (NSInteger)numberOfSectionsInTableView:(__unused UITableView *)tableView {
+    return 1;
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(__unused NSInteger)section {
+    return tableView.modelRows;
+}
+@end
+
 @implementation UITableView
+// UIKit's cached layout: what it presented at the last reload or batch.
+- (NSInteger)numberOfSections {
+    return 1;
+}
+- (NSInteger)numberOfRowsInSection:(__unused NSInteger)section {
+    return self.presentedRows;
+}
 - (void)reloadData {
     self.reloads++;
     self.presentedRows = self.modelRows;
@@ -69,6 +96,21 @@ typedef NSInteger UITableViewRowAnimation;
     }
     self.presentedRows = self.modelRows;
     self.pendingDelta = 0;
+}
+// UIKit checks the counts after the block against the ones it presented before.
+- (void)performBatchUpdates:(void (^)(void))updates completion:(void (^)(BOOL))completion {
+    self.batches++;
+    self.batchDepth++;
+    if (updates) updates();
+    self.batchDepth--;
+    if (self.presentedRows + self.pendingDelta != self.modelRows) {
+        [NSException raise:NSInternalInconsistencyException
+                    format:@"Invalid batch updates: before %ld + changes %ld != after %ld",
+                           self.presentedRows, self.pendingDelta, self.modelRows];
+    }
+    self.presentedRows = self.modelRows;
+    self.pendingDelta = 0;
+    if (completion) completion(YES);
 }
 - (void)insertRowsAtIndexPaths:(NSArray<NSIndexPath *> *)paths withRowAnimation:(__unused UITableViewRowAnimation)animation {
     self.inserts++;
@@ -97,6 +139,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(__unused UITableV
 static ApolloFollowingMap *ApolloFollowingActiveMapForTable(__unused UITableView *table) { return nil; }
 static NSIndexPath *ApolloFollowingVisiblePathForNative(__unused ApolloFollowingMap *map, NSIndexPath *path) { return path; }
 static BOOL ApolloFollowingCallerIsApolloBinary(__unused void *address) { return NO; }
+// The list-editing removal spring (#1174) is idle throughout these checks.
+static char kApolloRemovalTransition;
+static UITableView *sApolloVisibleRemovalTable;
+static BOOL ApolloFollowingApplyRemovalAnimation(__unused UITableView *table) { return NO; }
 
 #include "ApolloMultiredditExpansion.h"
 
@@ -123,6 +169,27 @@ static NSArray<NSIndexPath *> *ChildPaths(NSUInteger count) {
         [paths addObject:[NSIndexPath indexPathForRow:(NSInteger)i + 1 inSection:2]];
     }
     return paths;
+}
+
+// Apollo's favorite star (#1335): the FavoriteSubreddits change and its one
+// row registration both happen INSIDE performBatchUpdates:.
+static NSUInteger favoriteCompletions;
+static BOOL favoriteFinished;
+static void NativeFavoriteToggle(UITableView *table, BOOL add) {
+    [table performBatchUpdates:^{
+        table.modelRows += add ? 1 : -1;
+        NSArray<NSIndexPath *> *row = @[[NSIndexPath indexPathForRow:0 inSection:1]];
+        if (add) [table insertRowsAtIndexPaths:row withRowAnimation:0];
+        else [table deleteRowsAtIndexPaths:row withRowAnimation:0];
+    } completion:^(BOOL finished) {
+        favoriteCompletions++;
+        favoriteFinished = finished;
+    }];
+}
+static void DrainMainQueue(void) {
+    __block BOOL drained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+    while (!drained) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
 }
 
 // Native Apollo's shared name key can expand both parents, while the tapped
@@ -173,16 +240,17 @@ int main(void) {
             ^{ [ordinary endUpdates]; },
             ^{ [ordinary insertRowsAtIndexPaths:ChildPaths(1) withRowAnimation:0]; },
             ^{ [ordinary deleteRowsAtIndexPaths:ChildPaths(1) withRowAnimation:0]; },
-            ^{ [ordinary reloadRowsAtIndexPaths:ChildPaths(1) withRowAnimation:0]; }
+            ^{ [ordinary reloadRowsAtIndexPaths:ChildPaths(1) withRowAnimation:0]; },
+            ^{ [ordinary performBatchUpdates:nil completion:nil]; }
         ];
         for (dispatch_block_t mutation in mutations) {
             NSUInteger beforeReloads = ordinary.reloads;
             ApolloPerformMultiredditExpansion(ordinary, mutation);
             Check(ordinary.reloads == beforeReloads + 1, @"every deferred table API triggers one completed reload");
         }
-        Check(ordinary.begins == 0 && ordinary.ends == 0 && ordinary.inserts == 0 &&
+        Check(ordinary.begins == 0 && ordinary.ends == 0 && ordinary.batches == 0 && ordinary.inserts == 0 &&
               ordinary.deletes == 0 && ordinary.rowReloads == 0,
-              @"all six production hooks defer their scoped native work");
+              @"all seven production hooks defer their scoped native work");
 
         UITableView *other = Table(1);
         NSUInteger beforeReloads = ordinary.reloads;
@@ -267,7 +335,60 @@ int main(void) {
               @"background calls neither join nor replace a main-thread expansion scope");
         Check(!ApolloDeferMultiredditTableUpdate(ordinary) && !ApolloDeferMultiredditTableUpdate(other),
               @"all successful scopes are removed before returning");
-        printf("PASS: %lu multireddit expansion checks (production scope and six table hooks)\n", (unsigned long)checks);
+
+        // #1335: the favorite star's batch when another section changed since
+        // the last reload (e.g. Moderator Posts dropped by an account refresh).
+        UITableView *unlisted = Table(4);
+        unlisted.dataSource = nil;
+        unlisted.modelRows = 3;
+        caught = NO;
+        @try { NativeFavoriteToggle(unlisted, NO); }
+        @catch (NSException *exception) { caught = [exception.name isEqualToString:NSInternalInconsistencyException]; }
+        Check(caught && unlisted.batches == 1, @"negative control: UIKit rejects a batch over a stale snapshot");
+
+        UITableView *stale = Table(4);
+        stale.modelRows = 3;
+        favoriteCompletions = 0;
+        NativeFavoriteToggle(stale, NO);
+        Check(stale.modelRows == 2, @"stale list: the favorite change itself still lands");
+        Check(stale.batches == 0 && stale.deletes == 0, @"stale list: no part of the doomed batch reaches UIKit");
+        Check(stale.reloads == 1 && stale.presentedRows == 2, @"stale list: one reload presents the new model");
+        Check(stale.dataSource.mapInvalidations == 1, @"stale list: that reload invalidates the Following map once");
+        Check(favoriteCompletions == 0, @"stale list: completion is delivered asynchronously, like UIKit's");
+        DrainMainQueue();
+        Check(favoriteCompletions == 1 && favoriteFinished, @"stale list: completion runs once, finished");
+        Check(!ApolloDeferMultiredditTableUpdate(stale), @"stale list: the deferral scope does not leak");
+
+        UITableView *staleAdd = Table(2);
+        staleAdd.modelRows = 3;
+        NativeFavoriteToggle(staleAdd, YES);
+        Check(staleAdd.batches == 0 && staleAdd.inserts == 0 && staleAdd.reloads == 1 && staleAdd.presentedRows == 4,
+              @"stale list: favoriting (an insert) also presents through one reload");
+
+        UITableView *staleEmpty = Table(4);
+        staleEmpty.modelRows = 3;
+        [staleEmpty performBatchUpdates:nil completion:nil];
+        Check(staleEmpty.reloads == 1 && staleEmpty.presentedRows == 3,
+              @"stale list: a batch that registers no rows still resyncs the table");
+
+        UITableView *current = Table(4);
+        favoriteCompletions = 0;
+        NativeFavoriteToggle(current, NO);
+        Check(current.batches == 1 && current.deletes == 1 && current.reloads == 0 && current.presentedRows == 3,
+              @"current list: Apollo's own row batch runs unchanged");
+        Check(favoriteCompletions == 1, @"current list: UIKit's completion still runs");
+
+        UITableView *scoped = Table(2);
+        ApolloPerformMultiredditExpansion(scoped, ^{
+            [scoped performBatchUpdates:^{
+                scoped.modelRows += 2;
+                [scoped insertRowsAtIndexPaths:ChildPaths(2) withRowAnimation:0];
+            } completion:nil];
+        });
+        Check(scoped.batches == 0 && scoped.inserts == 0 && scoped.reloads == 1 && scoped.presentedRows == 4,
+              @"inside an expansion scope a batch defers like the other table APIs");
+        DrainMainQueue();
+        printf("PASS: %lu multireddit expansion checks (production scope and seven table hooks)\n", (unsigned long)checks);
     }
     return 0;
 }
