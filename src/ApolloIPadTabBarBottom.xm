@@ -8,8 +8,10 @@
 #import "ApolloNavigationTitlePresentation.h"
 
 #import "ApolloThemeRuntime.h"
+#import "ApolloIPadTabBarBottom.h"
 
 static char kIPadSearchReservation;
+static char kIPadTabBarSuppressed;
 static char kIPadBottomTabsKey;
 static char kIPadBottomInset;
 static char kIPadClearanceScheduled;
@@ -138,6 +140,16 @@ static UIView *ApolloIPadNavigationButtonHit(UINavigationBar *bar, CGPoint point
 @end
 
 static void ApolloIPadUpdateTabPlacement(UITabBarController *tabs) {
+    if ([objc_getAssociatedObject(tabs, &kIPadTabBarSuppressed) boolValue]) {
+        if (@available(iOS 18.0, *)) {
+            if (!tabs.isTabBarHidden) [tabs setTabBarHidden:YES animated:NO];
+        } else {
+            tabs.tabBar.hidden = YES;
+        }
+        UIView *bar = objc_getAssociatedObject(tabs, &kIPadBottomTabsKey);
+        bar.hidden = YES;
+        return;
+    }
     if (!IsLiquidGlass()) return;
     BOOL bottom = sIPadTabBarBottom;
     if (@available(iOS 18.0, *)) {
@@ -170,6 +182,21 @@ static void ApolloIPadUpdateTabPlacement(UITabBarController *tabs) {
             page.additionalSafeAreaInsets = insets;
         }
     }
+}
+
+void ApolloIPadSetTabBarSuppressed(UITabBarController *tabs, BOOL suppressed) {
+    if (!tabs || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) return;
+    objc_setAssociatedObject(tabs, &kIPadTabBarSuppressed, suppressed ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!suppressed) {
+        // Hand visibility back: the placement rules decide again.
+        if (@available(iOS 18.0, *)) {
+            if (!IsLiquidGlass() || !sIPadTabBarBottom) [tabs setTabBarHidden:NO animated:NO];
+        } else {
+            tabs.tabBar.hidden = NO;
+        }
+    }
+    ApolloIPadUpdateTabPlacement(tabs);
+    [tabs.view setNeedsLayout];
 }
 
 static void ApolloIPadPrepareSearchReservation(UINavigationController *nav, UIViewController *page) {

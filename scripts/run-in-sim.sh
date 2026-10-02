@@ -43,6 +43,10 @@
 #   SIM_NAME (Apollo-Sim)  SIM_DEVICE_TYPE (iPhone 16 Pro)  SIM_RUNTIME (newest iOS)
 #   DEPLOY_MIN (15.0)  WORK_DIR (./.sim)  IDB (idb on PATH)
 #   BACKUP_ZIP (--backup)  APPEARANCE (light|dark, --dark/--light)  GLASS (0|1, --glass)
+#   WIDGETS (0|1, --widgets): build the Reborn widget extension for the simulator
+#     and swap it in for the stock AthenaWidgetExtension, like release builds
+#     do (scripts/inject-widgets.sh). Re-applied every run, so it survives a
+#     re-prepared app shell.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
@@ -60,6 +64,7 @@ APP_GROUP_SUITE="group.com.christianselig.apollo"   # tweak hardcodes this regar
 BACKUP_ZIP="${BACKUP_ZIP:-}"
 APPEARANCE="${APPEARANCE:-}"
 GLASS="${GLASS:-0}"
+WIDGETS="${WIDGETS:-0}"
 
 DO_BUILD=1; FRESH_APP=0; DO_LOGS=0; DO_DRIVE=0
 while [[ $# -gt 0 ]]; do
@@ -72,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --light)      APPEARANCE=light ;;
         --glass)      GLASS=1 ;;
         --no-glass)   GLASS=0 ;;
+        --widgets)    WIDGETS=1 ;;
         --backup)     BACKUP_ZIP="${2:-}"; shift ;;
         --backup=*)   BACKUP_ZIP="${1#*=}" ;;
         -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -266,6 +272,21 @@ if [[ "$FRESH_APP" == 1 || ! -d "$APP_DIR" ]]; then
         done
     fi
     codesign -f -s - "$APP_DIR" >/dev/null 2>&1
+fi
+
+# Reborn widgets, as shipped: remove the stock AthenaWidgetExtension (its dead
+# API keys crash-loop, which poisons WidgetKit's enumeration of every widget in
+# the app) and inject ApolloRebornWidgets built for the simulator.
+if [[ "$WIDGETS" == "1" ]]; then
+    WIDGET_APPEX="widgets/build-sim/Build/Products/Debug-iphonesimulator/ApolloRebornWidgets.appex"
+    log "Building Reborn widgets for the simulator"
+    ( cd widgets && xcodegen generate >/dev/null && \
+      xcodebuild -project ApolloRebornWidgets.xcodeproj -scheme ApolloRebornWidgets -sdk iphonesimulator \
+                 -configuration Debug CODE_SIGNING_ALLOWED=NO -derivedDataPath build-sim build >/dev/null ) \
+        || die "widget build failed (run the xcodebuild in widgets/ for details)"
+    rm -rf "$APP_DIR/PlugIns/AthenaWidgetExtension.appex" "$APP_DIR/PlugIns/ApolloRebornWidgets.appex"
+    cp -R "$WIDGET_APPEX" "$APP_DIR/PlugIns/"
+    codesign -f -s - "$APP_DIR/PlugIns/ApolloRebornWidgets.appex" >/dev/null 2>&1
 fi
 
 # Refresh document registration even for a cached simulator shell.

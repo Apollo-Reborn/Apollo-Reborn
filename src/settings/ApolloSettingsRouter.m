@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
+#import "palhome/ApolloPalHomeViewController.h"
 
 #import <objc/message.h>
 
@@ -79,6 +80,9 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
+        add(@"pal-home", @"Pal Home", @"Apollo Reborn → Features", ^UIViewController *{
+            return [[ApolloPalHomeViewController alloc] init];
+        });
         add(@"action-menus", @"Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
         // One route per menu editor (settings search indexes a screen per route,
         // so each menu's items stay searchable and open in the right editor).
