@@ -2826,7 +2826,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list.\nConfirm Favorite Changes asks before adding or removing a favorite from the Subreddits list star."
+                                            footer:@"Per-Account Favorites keeps a separate favorites list for each account. Turning it off restores the shared list.\nConfirm Favorite Changes asks before adding or removing favorites."
                                               rows:@[ perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
