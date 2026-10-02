@@ -1,23 +1,25 @@
 // ApolloGoogleSearchTab.m
 //
-// Search tab: search Reddit directly or through Google, picked from the search
-// field's magnifier (feature request "In-app Google Search").
+// Search tab: search Reddit directly, or through Google or Kagi, picked from
+// the search field's magnifier (feature request "In-app Google Search").
 //
-// Reddit mode is Apollo's own search, untouched. Google mode searches Reddit
-// through Google (ApolloGoogleSearch.{h,m}) and lists the results in the same
-// tab (ApolloGoogleSearchViewController.{h,m}); tapping one opens the post or
-// comment natively through Apollo's router.
+// Reddit mode is Apollo's own search, untouched. Google and Kagi modes search
+// Reddit through that engine (ApolloGoogleSearch.{h,m}, ApolloKagiSearch.{h,m})
+// and list the results in the same tab (ApolloGoogleSearchViewController.{h,m});
+// tapping one opens the post or comment natively through Apollo's router.
 //
 // How it attaches to Apollo's SearchViewController (the hooks themselves live
 // in ApolloSearchTabFixes.xm, the Search tab's one hook module; it calls the
 // entry points at the bottom of this file):
 //   * The engine picker is the search field's own magnifier: its leftView
 //     becomes an ApolloSearchEngineButton (tap or press-and-hold → Reddit /
-//     Google).
+//     Google / Kagi). Picking Kagi with no Session Link saved asks for one
+//     first (ApolloKagiSessionLinkViewController).
 //     Nothing is added to Apollo's table, so Reddit mode looks exactly as
 //     before apart from a small chevron next to the magnifier.
-//   * The Google list is a child view controller laid over Apollo's table
-//     while Google mode has text.
+//   * The Google/Kagi list is a child view controller laid over Apollo's
+//     table while an external mode has text. ("Google mode" below means
+//     either external engine: they share the list and all of this glue.)
 //   * Apollo's own text handling keeps running underneath in Google mode, so
 //     its suggestions are current the moment the engine goes back to Reddit
 //     (and ApolloSearchTabFixes' row bookkeeping, which wraps Apollo's text
@@ -33,6 +35,8 @@
 
 #import "ApolloCommon.h"
 #import "ApolloGoogleSearchViewController.h"
+#import "ApolloKagiSearch.h"
+#import "settings/ApolloKagiSessionLinkViewController.h"
 
 @interface _TtC6Apollo20SearchViewController : UIViewController
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText;
@@ -41,8 +45,6 @@
 static const void *kApolloGSOverlayKey = &kApolloGSOverlayKey;
 static const void *kApolloGSButtonKey = &kApolloGSButtonKey;
 static const void *kApolloGSPlaceholderKey = &kApolloGSPlaceholderKey;
-
-static NSString *const kApolloGSGooglePlaceholder = @"Search Reddit with Google";
 
 static UITableView *ApolloGSApolloTable(UIViewController *vc) {
     for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
@@ -70,8 +72,18 @@ static ApolloGoogleSearchResultsViewController *ApolloGSOverlay(UIViewController
     return objc_getAssociatedObject(vc, kApolloGSOverlayKey);
 }
 
+// Google or Kagi: the tweak's list handles the search.
 static BOOL ApolloGSGoogleMode(void) {
-    return ApolloSearchEngineCurrent() == ApolloSearchEngineGoogle;
+    return ApolloSearchEngineIsExternal(ApolloSearchEngineCurrent());
+}
+
+// One of the tweak's own placeholders (so not Apollo's).
+static BOOL ApolloGSIsTweakPlaceholder(NSString *placeholder) {
+    for (ApolloSearchEngine engine = ApolloSearchEngineReddit; engine <= ApolloSearchEngineKagi; engine++) {
+        NSString *ours = ApolloSearchEnginePlaceholder(engine);
+        if (ours && [placeholder isEqualToString:ours]) return YES;
+    }
+    return NO;
 }
 
 // Swap the field's placeholder text. Set through UISearchBar.placeholder, the
@@ -83,13 +95,13 @@ static void ApolloGSApplyPlaceholder(UIViewController *vc) {
     if (!bar) return;
     NSString *current = bar.placeholder;
     NSString *apolloPlaceholder = objc_getAssociatedObject(vc, kApolloGSPlaceholderKey);
-    if (current.length && ![current isEqualToString:kApolloGSGooglePlaceholder] &&
+    if (current.length && !ApolloGSIsTweakPlaceholder(current) &&
         ![current isEqualToString:apolloPlaceholder]) {
         // First sighting, or Apollo rewrote its placeholder since: remember Apollo's.
         apolloPlaceholder = [current copy];
         objc_setAssociatedObject(vc, kApolloGSPlaceholderKey, apolloPlaceholder, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
-    NSString *wanted = ApolloGSGoogleMode() ? kApolloGSGooglePlaceholder : apolloPlaceholder;
+    NSString *wanted = ApolloSearchEnginePlaceholder(ApolloSearchEngineCurrent()) ?: apolloPlaceholder;
     if (wanted.length && ![current isEqualToString:wanted]) bar.placeholder = wanted;
 }
 
@@ -168,12 +180,24 @@ static void ApolloGSSubmit(UIViewController *vc, NSString *text) {
 }
 
 static void ApolloGSSetEngine(UIViewController *vc, ApolloSearchEngine engine) {
+    if (engine == ApolloSearchEngineKagi && !ApolloKagiHasSessionToken()) {
+        // Kagi searches with the subscriber's Session Link: ask for it first,
+        // and switch once it's saved. Cancel leaves the engine as it was.
+        ApolloLog(@"[GoogleSearch] Kagi picked with no Session Link saved; asking for one");
+        __weak UIViewController *weakVC = vc;
+        ApolloKagiPresentSessionLinkSheet(vc, ^{
+            UIViewController *strongVC = weakVC;
+            if (strongVC && ApolloKagiHasSessionToken()) ApolloGSSetEngine(strongVC, ApolloSearchEngineKagi);
+        });
+        return;
+    }
     ApolloSearchEngineSetCurrent(engine);   // the button re-reads it
     ApolloGSApplyPlaceholder(vc);
     UISearchBar *bar = ApolloGSSearchBar(vc);
     ApolloGoogleSearchResultsViewController *overlay = ApolloGSOverlay(vc);
-    if (engine == ApolloSearchEngineGoogle && bar.text.length) {
-        // Still typing: suggest. Query already entered: run it on Google.
+    if (ApolloSearchEngineIsExternal(engine) && bar.text.length) {
+        // Still typing: suggest. Query already entered: run it on the new
+        // engine (the list swaps its session to follow).
         if (bar.isFirstResponder) [overlay showSuggestionsForText:bar.text];
         else [overlay searchForQuery:bar.text];
     } else if (engine == ApolloSearchEngineReddit) {
@@ -204,10 +228,18 @@ static void ApolloGSInstallEngineButton(UIViewController *vc) {
     field.leftView = button;
     field.leftViewMode = UITextFieldViewModeAlways;
     ApolloLog(@"[GoogleSearch] engine button installed in the search field (engine %@)",
-              ApolloGSGoogleMode() ? @"Google" : @"Reddit");
+              ApolloSearchEngineName(ApolloSearchEngineCurrent()));
 }
 
+#if APOLLO_SIM_BUILD
+// The Search tab the list was last installed on, for "searchtab <query>".
+static __weak UIViewController *sApolloGSDebugSearchVC;
+#endif
+
 static void ApolloGSInstall(UIViewController *vc) {
+#if APOLLO_SIM_BUILD
+    sApolloGSDebugSearchVC = vc;
+#endif
     if (objc_getAssociatedObject(vc, kApolloGSOverlayKey)) return;
     UITableView *table = ApolloGSApolloTable(vc);
     if (!table || !vc.isViewLoaded) {
@@ -235,7 +267,7 @@ static void ApolloGSInstall(UIViewController *vc) {
 
     ApolloGSInstallEngineButton(vc);
     ApolloGSApplyPlaceholder(vc);
-    ApolloLog(@"[GoogleSearch] Search tab Google mode installed (engine %@)", ApolloGSGoogleMode() ? @"Google" : @"Reddit");
+    ApolloLog(@"[GoogleSearch] Search tab Google mode installed (engine %@)", ApolloSearchEngineName(ApolloSearchEngineCurrent()));
 }
 
 #pragma mark - Entry points (called from ApolloSearchTabFixes.xm's hooks)
@@ -248,6 +280,9 @@ void ApolloGoogleSearchTabViewDidAppear(UIViewController *searchVC) {
     ApolloGSInstall(searchVC);
     ApolloGSInstallEngineButton(searchVC);
     ApolloGSApplyPlaceholder(searchVC);
+    // The engine can change while the tab is away: removing the Kagi Session
+    // Link in Settings puts Kagi mode back on Reddit.
+    ApolloGSUpdateOverlay(searchVC, NO);
     ApolloGoogleSearchResultsViewController *overlay = ApolloGSOverlay(searchVC);
     if (overlay && !overlay.view.hidden) {
         overlay.pageBackgroundColor = ApolloGSApolloTable(searchVC).backgroundColor;
@@ -287,3 +322,19 @@ BOOL ApolloGoogleSearchTabHandleReselect(UIViewController *searchVC) {
     }
     return YES;
 }
+
+#if APOLLO_SIM_BUILD
+void ApolloGoogleSearchTabDebugSubmit(NSString *query) {
+    UIViewController *vc = sApolloGSDebugSearchVC;
+    NSString *text = [query stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!vc || !text.length) {
+        ApolloLog(@"[GoogleSearch][debug] searchtab: no Search tab yet (open it once) or empty query");
+        return;
+    }
+    if (!ApolloGSGoogleMode()) {
+        ApolloLog(@"[GoogleSearch][debug] searchtab: the engine is Reddit; pick Google or Kagi first");
+        return;
+    }
+    ApolloGSSubmit(vc, text);
+}
+#endif

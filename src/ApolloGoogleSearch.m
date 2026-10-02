@@ -71,14 +71,14 @@ static NSError *ApolloGoogleSearchError(ApolloGoogleSearchErrorCode code, NSStri
     // snippet, so those stay separate; the same thread listed again on a
     // later page matches.
     return [NSString stringWithFormat:@"google:%@|%@|%@|%@", self.subreddit.lowercaseString ?: @"",
-            self.title.lowercaseString ?: @"", self.googleMeta.lowercaseString ?: @"",
+            self.title.lowercaseString ?: @"", self.engineMeta.lowercaseString ?: @"",
             self.snippet.lowercaseString ?: @""];
 }
 
 - (NSString *)description {
     return [NSString stringWithFormat:@"<%@ kind=%ld r/%@ post=%@ comment=%@ title=%@ meta=%@>",
             NSStringFromClass(self.class), (long)self.kind, self.subreddit, self.postID,
-            self.commentID, self.title, self.googleMeta];
+            self.commentID, self.title, self.engineMeta];
 }
 
 @end
@@ -357,7 +357,7 @@ static BOOL ApolloGoogleApplyURL(ApolloGoogleSearchResult *result, NSURL *url) {
 
 // Google result titles for Reddit carry a site suffix: "Title : r/PTCGP",
 // "Title - Reddit", "Title | Reddit", "Title : reddit". Strip the suffix only.
-static NSString *ApolloGoogleCleanTitle(NSString *title) {
+NSString *ApolloGoogleSearchCleanTitle(NSString *title) {
     NSString *clean = [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
     static NSRegularExpression *suffix;
     static dispatch_once_t once;
@@ -1275,7 +1275,7 @@ static BOOL sApolloGoogleSearchDebugStall;
             continue;
         }
 
-        result.title = ApolloGoogleCleanTitle(title);
+        result.title = ApolloGoogleSearchCleanTitle(title);
         NSString *key = result.dedupeKey;
         if (key.length && [seen containsObject:key]) continue;
         if (key.length) [seen addObject:key];
@@ -1283,7 +1283,7 @@ static BOOL sApolloGoogleSearchDebugStall;
         NSString *marked = [raw[@"snippet"] isKindOfClass:[NSString class]] ? raw[@"snippet"] : @"";
         result.snippet = ApolloGoogleParseMarkedSnippet(marked, &bold);
         result.snippetBoldRanges = bold ?: @[];
-        result.googleMeta = [self metaFromLines:lines result:result];
+        result.engineMeta = [self metaFromLines:lines result:result];
         [results addObject:result];
     }
     return results;
@@ -1401,8 +1401,8 @@ static NSUInteger ApolloGoogleApplyRedditInfo(id json, NSArray<ApolloGoogleSearc
 // captured bearer in API-key mode; www.reddit.com in API-key-free mode, where
 // the request chokepoint signs it with the web session. Completion on main;
 // nil task (and an async completion) when there is nothing to read.
-static NSURLSessionDataTask *ApolloGoogleFetchRedditInfo(NSArray<ApolloGoogleSearchResult *> *results,
-                                                         void (^completion)(NSUInteger applied, NSInteger status, NSError *error)) {
+NSURLSessionDataTask *ApolloGoogleSearchFetchRedditInfo(NSArray<ApolloGoogleSearchResult *> *results,
+                                                        void (^completion)(NSUInteger applied, NSInteger status, NSError *error)) {
     NSMutableOrderedSet<NSString *> *fullnames = [NSMutableOrderedSet orderedSet];
     for (ApolloGoogleSearchResult *result in results) {
         if (result.postID) [fullnames addObject:[@"t3_" stringByAppendingString:result.postID]];
@@ -1456,7 +1456,7 @@ static NSURLSessionDataTask *ApolloGoogleFetchRedditInfo(NSArray<ApolloGoogleSea
         return;
     }
     __weak typeof(self) weakSelf = self;
-    _infoTask = ApolloGoogleFetchRedditInfo(known, ^(NSUInteger applied, NSInteger status, NSError *error) {
+    _infoTask = ApolloGoogleSearchFetchRedditInfo(known, ^(NSUInteger applied, NSInteger status, NSError *error) {
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf || generation != strongSelf->_generation || !strongSelf->_loading) return;
         strongSelf->_infoTask = nil;
@@ -1482,7 +1482,7 @@ static NSURLSessionDataTask *ApolloGoogleFetchRedditInfo(NSArray<ApolloGoogleSea
             finish(nil);
             return;
         }
-        ApolloGoogleFetchRedditInfo(@[result], ^(NSUInteger applied, NSInteger status, NSError *error) {
+        ApolloGoogleSearchFetchRedditInfo(@[result], ^(NSUInteger applied, NSInteger status, NSError *error) {
             ApolloLog(@"[GoogleSearch] Reddit info for one result: status=%ld applied=%lu", (long)status, (unsigned long)applied);
             finish(nil);
         });

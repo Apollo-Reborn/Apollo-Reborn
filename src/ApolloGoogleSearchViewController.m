@@ -5,8 +5,10 @@
 
 #import "ApolloCommon.h"
 #import "ApolloGoogleSearch.h"
+#import "ApolloKagiSearch.h"
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
+#import "settings/ApolloKagiSessionLinkViewController.h"
 
 static NSString *const ApolloSearchEngineDidChangeNotification = @"ApolloSearchEngineDidChangeNotification";
 static NSString *const ApolloGoogleSearchFiltersDidChangeNotification = @"ApolloGoogleSearchFiltersDidChangeNotification";
@@ -28,14 +30,59 @@ static const NSTimeInterval kSlowSearchHintDelay = 8.0;
 
 ApolloSearchEngine ApolloSearchEngineCurrent(void) {
     NSInteger raw = [NSUserDefaults.standardUserDefaults integerForKey:UDKeySearchEngine];
-    return raw == ApolloSearchEngineGoogle ? ApolloSearchEngineGoogle : ApolloSearchEngineReddit;
+    if (raw == ApolloSearchEngineGoogle) return ApolloSearchEngineGoogle;
+    // Kagi needs the subscriber's Session Link; without one (removed in
+    // Settings, a restore without it) the tab is back on Reddit.
+    if (raw == ApolloSearchEngineKagi && ApolloKagiHasSessionToken()) return ApolloSearchEngineKagi;
+    return ApolloSearchEngineReddit;
 }
 
 void ApolloSearchEngineSetCurrent(ApolloSearchEngine engine) {
     if (ApolloSearchEngineCurrent() == engine) return;
     [NSUserDefaults.standardUserDefaults setInteger:engine forKey:UDKeySearchEngine];
-    ApolloLog(@"[GoogleSearch] search engine → %@", engine == ApolloSearchEngineGoogle ? @"Google" : @"Reddit");
+    ApolloLog(@"[GoogleSearch] search engine → %@", ApolloSearchEngineName(engine));
     [NSNotificationCenter.defaultCenter postNotificationName:ApolloSearchEngineDidChangeNotification object:nil];
+}
+
+BOOL ApolloSearchEngineIsExternal(ApolloSearchEngine engine) {
+    return engine == ApolloSearchEngineGoogle || engine == ApolloSearchEngineKagi;
+}
+
+NSString *ApolloSearchEngineName(ApolloSearchEngine engine) {
+    switch (engine) {
+        case ApolloSearchEngineGoogle: return @"Google";
+        case ApolloSearchEngineKagi: return @"Kagi";
+        case ApolloSearchEngineReddit: default: return @"Reddit";
+    }
+}
+
+NSString *ApolloSearchEnginePlaceholder(ApolloSearchEngine engine) {
+    if (!ApolloSearchEngineIsExternal(engine)) return nil;
+    return [@"Search Reddit with " stringByAppendingString:ApolloSearchEngineName(engine)];
+}
+
+static id<ApolloExternalSearchSession> ApolloSearchEngineMakeSession(ApolloSearchEngine engine) {
+    if (engine == ApolloSearchEngineKagi) return [[ApolloKagiSearchSession alloc] init];
+    return [[ApolloGoogleSearchSession alloc] init];
+}
+
+// The engine's suggestions endpoint. Both answer in the OpenSearch
+// suggestions shape: ["query", ["suggestion", ...]]. Kagi's is the one its
+// own OpenSearch description names, and needs no session.
+static NSURL *ApolloSearchEngineSuggestURL(ApolloSearchEngine engine, NSString *text) {
+    NSURLComponents *components;
+    if (engine == ApolloSearchEngineKagi) {
+        components = [NSURLComponents componentsWithString:@"https://kagisuggest.com/api/autosuggest"];
+        components.queryItems = @[[NSURLQueryItem queryItemWithName:@"q" value:text]];
+    } else {
+        components = [NSURLComponents componentsWithString:@"https://suggestqueries.google.com/complete/search"];
+        NSString *language = [NSLocale.preferredLanguages.firstObject componentsSeparatedByString:@"-"].firstObject ?: @"en";
+        components.queryItems = @[[NSURLQueryItem queryItemWithName:@"client" value:@"firefox"],
+                                  [NSURLQueryItem queryItemWithName:@"hl" value:language],
+                                  [NSURLQueryItem queryItemWithName:@"q" value:text]];
+    }
+    components.percentEncodedQuery = [components.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
+    return components.URL;
 }
 
 static ApolloGoogleSearchOptions *ApolloGoogleSearchCurrentOptions(void) {
@@ -179,21 +226,20 @@ static const CGFloat kEngineButtonWidth = 30.0;
 static const CGFloat kEngineButtonHeight = 28.0;
 static const CGFloat kEngineChevronWidth = 8.0;
 
-// Google mode's mark: a plain capital "G", filled from the system font's own
-// glyph outline so it draws like the magnifier symbol it replaces (a template
-// image in the same tint). It keeps the default SF design whatever font the
-// theme sets for text, as the magnifier symbol does: the theme runtime turns
-// +systemFontOfSize:weight: calls from the tweak into the theme's design, so
-// the design is set back explicitly. `inkHeight` is the letter's drawn height;
-// it is centered vertically in a `canvas`-sized image, and horizontally too
-// unless `right` > 0 puts its right edge there. nil only if the font has no
-// "G".
-static UIImage *ApolloSearchEngineGoogleMark(CGFloat inkHeight, CGSize canvas, CGFloat right) {
+// An external engine's mark: a plain capital letter ("G" for Google, "K" for
+// Kagi), filled from the system font's own glyph outline so it draws like the
+// magnifier symbol it replaces (a template image in the same tint). It keeps
+// the default SF design whatever font the theme sets for text, as the
+// magnifier symbol does: the theme runtime turns +systemFontOfSize:weight:
+// calls from the tweak into the theme's design, so the design is set back
+// explicitly. `inkHeight` is the letter's drawn height; it is centered
+// vertically in a `canvas`-sized image, and horizontally too unless `right` >
+// 0 puts its right edge there. nil only if the font has no such letter.
+static UIImage *ApolloSearchEngineLetterMark(UniChar character, CGFloat inkHeight, CGSize canvas, CGFloat right) {
     UIFont *font = [UIFont systemFontOfSize:100 weight:UIFontWeightSemibold];
     UIFontDescriptor *plain = [font.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignDefault];
     if (plain) font = [UIFont fontWithDescriptor:plain size:100];
     CTFontRef ctFont = (__bridge CTFontRef)font;
-    UniChar character = 'G';
     CGGlyph glyph = 0;
     if (!CTFontGetGlyphsForCharacters(ctFont, &character, &glyph, 1)) return nil;
     CGPathRef path = CTFontCreatePathForGlyph(ctFont, glyph, NULL);
@@ -218,13 +264,14 @@ static UIImage *ApolloSearchEngineGoogleMark(CGFloat inkHeight, CGSize canvas, C
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
-// The "G" in the search field, drawn into the magnifier's slot. The magnifier
-// only reaches toward the chevron with its handle, below the chevron's
-// height; level with the chevron its ring ends 5 pt before the chevron's ink.
-// A "G" is widest at that height, so its right edge goes at that same x:
-// 15.35 pt into the slot (the chevron's ink starts at 20.35 pt). Measured on
-// device pixels, as is the 13 pt height that matches the magnifier's weight
-// (the whole magnifier glyph is 15.7 pt).
+// The letter in the search field, drawn into the magnifier's slot. The
+// magnifier only reaches toward the chevron with its handle, below the
+// chevron's height; level with the chevron its ring ends 5 pt before the
+// chevron's ink. A "G" is widest at that height, so its right edge goes at
+// that same x: 15.35 pt into the slot (the chevron's ink starts at 20.35 pt).
+// Measured on device pixels, as is the 13 pt height that matches the
+// magnifier's weight (the whole magnifier glyph is 15.7 pt). "K" uses the same
+// box, so both marks sit the same distance from the chevron.
 static const CGFloat kEngineGoogleMarkRight = 15.35;
 static const CGFloat kEngineGoogleMarkHeight = 13.0;
 // The menu draws this image at its own size, in the default magnifier
@@ -233,28 +280,42 @@ static const CGFloat kEngineGoogleMarkHeight = 13.0;
 // (measured on screen).
 static const CGFloat kEngineMenuMarkScale = 0.72;
 
-static UIImage *ApolloSearchEngineGoogleFieldMark(void) {
-    static UIImage *mark;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
+static UniChar ApolloSearchEngineLetter(ApolloSearchEngine engine) {
+    return engine == ApolloSearchEngineKagi ? 'K' : 'G';
+}
+
+// Fallback SF Symbols, if the system font ever lacks the letter.
+static NSString *ApolloSearchEngineFallbackSymbol(ApolloSearchEngine engine) {
+    return engine == ApolloSearchEngineKagi ? @"k.circle" : @"g.circle";
+}
+
+static UIImage *ApolloSearchEngineFieldMark(ApolloSearchEngine engine) {
+    static NSMutableDictionary<NSNumber *, UIImage *> *marks;
+    if (!marks) marks = [NSMutableDictionary dictionary];
+    UIImage *mark = marks[@(engine)];
+    if (!mark) {
         CGSize slot = CGSizeMake(kEngineButtonWidth - kEngineChevronWidth - 1, kEngineButtonHeight);
-        mark = ApolloSearchEngineGoogleMark(kEngineGoogleMarkHeight, slot, kEngineGoogleMarkRight);
-    });
+        mark = ApolloSearchEngineLetterMark(ApolloSearchEngineLetter(engine), kEngineGoogleMarkHeight, slot,
+                                            kEngineGoogleMarkRight);
+        if (mark) marks[@(engine)] = mark;
+    }
     return mark;
 }
 
-// The same "G" for the engine menu, in the box the menu's magnifier symbol
+// The same letter for the engine menu, in the box the menu's magnifier symbol
 // gets, at the field mark's height relative to the magnifier.
-static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
-    static UIImage *mark;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
+static UIImage *ApolloSearchEngineMenuMark(ApolloSearchEngine engine) {
+    static NSMutableDictionary<NSNumber *, UIImage *> *marks;
+    if (!marks) marks = [NSMutableDictionary dictionary];
+    UIImage *mark = marks[@(engine)];
+    if (!mark) {
         CGSize box = [UIImage systemImageNamed:@"magnifyingglass"].size;
         if (box.width > 0 && box.height > 0) {
-            mark = ApolloSearchEngineGoogleMark(box.height * kEngineMenuMarkScale, box, 0);
+            mark = ApolloSearchEngineLetterMark(ApolloSearchEngineLetter(engine), box.height * kEngineMenuMarkScale, box, 0);
         }
-    });
-    return mark;
+        if (mark) marks[@(engine)] = mark;
+    }
+    return mark ?: [UIImage systemImageNamed:ApolloSearchEngineFallbackSymbol(engine)];
 }
 
 @implementation ApolloSearchEngineButton {
@@ -274,9 +335,13 @@ static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
         _chevronView.userInteractionEnabled = NO;
         [self addSubview:_chevronView];
         self.showsMenuAsPrimaryAction = YES;   // tap opens it; press-and-hold does too
-        self.accessibilityHint = @"Choose whether to search with Reddit or Google.";
+        self.accessibilityHint = @"Choose whether to search with Reddit, Google or Kagi.";
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadFromDefaults)
                                                    name:ApolloSearchEngineDidChangeNotification object:nil];
+        // Saving or removing the Kagi Session Link changes the menu's Kagi row
+        // (and, when removed, the engine itself).
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadFromDefaults)
+                                                   name:ApolloKagiSessionTokenDidChangeNotification object:nil];
         [self reloadFromDefaults];
     }
     return self;
@@ -317,16 +382,18 @@ static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
 }
 
 - (void)reloadFromDefaults {
-    BOOL google = ApolloSearchEngineCurrent() == ApolloSearchEngineGoogle;
+    ApolloSearchEngine engine = ApolloSearchEngineCurrent();
+    BOOL external = ApolloSearchEngineIsExternal(engine);
     UIColor *iconColor = self.iconColor ?: UIColor.secondaryLabelColor;
-    // Reddit keeps Apollo's magnifier exactly; Google shows a plain capital
-    // "G" in the same color, as far from the chevron as the magnifier is
-    // (ApolloSearchEngineGoogleFieldMark).
-    UIImage *icon = google ? ApolloSearchEngineGoogleFieldMark() : nil;
+    // Reddit keeps Apollo's magnifier exactly; Google and Kagi show a plain
+    // capital "G" / "K" in the same color, as far from the chevron as the
+    // magnifier is (ApolloSearchEngineFieldMark).
+    UIImage *icon = external ? ApolloSearchEngineFieldMark(engine) : nil;
     if (!icon) {
         UIImageSymbolConfiguration *iconConfig =
-            [UIImageSymbolConfiguration configurationWithPointSize:google ? 15 : 16 weight:UIImageSymbolWeightMedium];
-        icon = [UIImage systemImageNamed:google ? @"g.circle" : @"magnifyingglass" withConfiguration:iconConfig];
+            [UIImageSymbolConfiguration configurationWithPointSize:external ? 15 : 16 weight:UIImageSymbolWeightMedium];
+        icon = [UIImage systemImageNamed:external ? ApolloSearchEngineFallbackSymbol(engine) : @"magnifyingglass"
+                       withConfiguration:iconConfig];
     }
     _iconView.image = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     _iconView.tintColor = iconColor;
@@ -337,27 +404,36 @@ static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
     _chevronView.tintColor = [iconColor colorWithAlphaComponent:0.8];
 
     self.menu = [self apollo_engineMenu];
-    self.accessibilityLabel = google ? @"Search with Google" : @"Search with Reddit";
+    self.accessibilityLabel = [@"Search with " stringByAppendingString:ApolloSearchEngineName(engine)];
 }
 
 - (UIMenu *)apollo_engineMenu {
     ApolloSearchEngine current = ApolloSearchEngineCurrent();
     __weak typeof(self) weakSelf = self;
-    UIAction *reddit = [UIAction actionWithTitle:@"Reddit"
-                                           image:[UIImage systemImageNamed:@"magnifyingglass"]
-                                      identifier:nil
-                                         handler:^(__kindof UIAction *a) { [weakSelf apollo_choose:ApolloSearchEngineReddit]; }];
-    UIAction *google = [UIAction actionWithTitle:@"Google"
-                                           image:ApolloSearchEngineGoogleMenuMark() ?: [UIImage systemImageNamed:@"g.circle"]
-                                      identifier:nil
-                                         handler:^(__kindof UIAction *a) { [weakSelf apollo_choose:ApolloSearchEngineGoogle]; }];
-    if (@available(iOS 15.0, *)) {
-        reddit.subtitle = @"Posts, subreddits and users";
-        google.subtitle = @"Reddit threads, found with Google";
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    for (ApolloSearchEngine engine = ApolloSearchEngineReddit; engine <= ApolloSearchEngineKagi; engine++) {
+        UIImage *image = ApolloSearchEngineIsExternal(engine) ? ApolloSearchEngineMenuMark(engine)
+                                                              : [UIImage systemImageNamed:@"magnifyingglass"];
+        UIAction *action = [UIAction actionWithTitle:ApolloSearchEngineName(engine)
+                                               image:image
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *a) { [weakSelf apollo_choose:engine]; }];
+        if (@available(iOS 15.0, *)) {
+            switch (engine) {
+                case ApolloSearchEngineReddit: action.subtitle = @"Posts, subreddits and users"; break;
+                case ApolloSearchEngineGoogle: action.subtitle = @"Reddit threads, found with Google"; break;
+                case ApolloSearchEngineKagi:
+                    // Picking it without a link asks for one first. Kept to one
+                    // line: the pre-glass menu caps subtitles at two.
+                    action.subtitle = ApolloKagiHasSessionToken() ? @"Reddit threads, found with Kagi"
+                                                                  : @"Needs your Session Link";
+                    break;
+            }
+        }
+        action.state = current == engine ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
     }
-    reddit.state = current == ApolloSearchEngineReddit ? UIMenuElementStateOn : UIMenuElementStateOff;
-    google.state = current == ApolloSearchEngineGoogle ? UIMenuElementStateOn : UIMenuElementStateOff;
-    return [UIMenu menuWithTitle:@"Search With" children:@[reddit, google]];
+    return [UIMenu menuWithTitle:@"Search With" children:actions];
 }
 
 - (void)apollo_choose:(ApolloSearchEngine)engine {
@@ -424,7 +500,7 @@ static UIImage *ApolloSearchEngineGoogleMenuMark(void) {
     NSString *exactSymbol = @"text.quote";   // quote.opening only exists from iOS 15
     if (@available(iOS 15.0, *)) exactSymbol = @"quote.opening";
     ApolloGoogleStyleChip(_exactChip, @"Exact Words", exactSymbol, options.exactWords, self);
-    _exactChip.accessibilityHint = @"Google's Verbatim mode: no synonyms or spelling fixes.";
+    _exactChip.accessibilityHint = @"Match the words as typed: no synonyms or spelling fixes.";
     [self setNeedsLayout];
 }
 
@@ -709,8 +785,8 @@ static NSString *ApolloGoogleExpandedBody(ApolloGoogleSearchResult *result, BOOL
             [stats appendAttributedString:gap];
             [stats appendAttributedString:ApolloGoogleSymbolRun(mediaSymbol, mediaText, statsFont, secondary)];
         }
-    } else if (result.googleMeta.length) {
-        [stats appendAttributedString:[[NSAttributedString alloc] initWithString:result.googleMeta
+    } else if (result.engineMeta.length) {
+        [stats appendAttributedString:[[NSAttributedString alloc] initWithString:result.engineMeta
                                                                       attributes:@{NSFontAttributeName: statsFont,
                                                                                    NSForegroundColorAttributeName: secondary}]];
     }
@@ -907,7 +983,10 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     NSArray<NSString *> *_autocomplete;
     NSURLSessionDataTask *_autocompleteTask;
     NSUInteger _autocompleteGeneration;
-    ApolloGoogleSearchSession *_session;
+    // The engine the list is serving and its session (Google or Kagi),
+    // swapped by -apollo_syncEngine when the Search With choice changes.
+    ApolloSearchEngine _engine;
+    id<ApolloExternalSearchSession> _session;
     NSString *_submittedQuery;
     NSMutableArray<ApolloGoogleSearchResult *> *_results;
     NSMutableSet<NSString *> *_resultKeys;
@@ -938,12 +1017,34 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
         _fetchAttempted = [NSMutableSet set];
         _rowHeights = [NSMapTable strongToStrongObjectsMapTable];
         _autocomplete = @[];
-        _session = [[ApolloGoogleSearchSession alloc] init];
-        __weak typeof(self) weakSelf = self;
-        _session.presentVerification = ^(WKWebView *webView) { [weakSelf apollo_presentVerification:webView]; };
-        _session.dismissVerification = ^{ [weakSelf apollo_dismissVerification]; };
+        ApolloSearchEngine engine = ApolloSearchEngineCurrent();
+        [self apollo_useEngine:ApolloSearchEngineIsExternal(engine) ? engine : ApolloSearchEngineGoogle];
     }
     return self;
+}
+
+- (void)apollo_useEngine:(ApolloSearchEngine)engine {
+    [_session cancel];
+    _engine = engine;
+    _session = ApolloSearchEngineMakeSession(engine);
+    if ([_session isKindOfClass:ApolloGoogleSearchSession.class]) {
+        // Only Google ever asks the user to answer a check.
+        ApolloGoogleSearchSession *google = (ApolloGoogleSearchSession *)_session;
+        __weak typeof(self) weakSelf = self;
+        google.presentVerification = ^(WKWebView *webView) { [weakSelf apollo_presentVerification:webView]; };
+        google.dismissVerification = ^{ [weakSelf apollo_dismissVerification]; };
+    }
+}
+
+// Follows the Search With choice. YES when the engine changed (anything the
+// list showed came from the other engine).
+- (BOOL)apollo_syncEngine {
+    ApolloSearchEngine engine = ApolloSearchEngineCurrent();
+    if (!ApolloSearchEngineIsExternal(engine) || engine == _engine) return NO;
+    ApolloLog(@"[GoogleSearch] list switches to %@", ApolloSearchEngineName(engine));
+    [self apollo_stopSearch];
+    [self apollo_useEngine:engine];
+    return YES;
 }
 
 - (void)dealloc {
@@ -1044,7 +1145,8 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
 - (void)showSuggestionsForText:(NSString *)text {
     [self loadViewIfNeeded];
     NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (_phase == ApolloGooglePhaseResults && [trimmed isEqualToString:_submittedQuery]) return;
+    BOOL engineChanged = [self apollo_syncEngine];
+    if (!engineChanged && _phase == ApolloGooglePhaseResults && [trimmed isEqualToString:_submittedQuery]) return;
     if (_phase == ApolloGooglePhaseResults) [self apollo_stopSearch];
     _phase = ApolloGooglePhaseSuggestions;
     _typedText = trimmed;
@@ -1059,6 +1161,7 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     if (trimmed.length == 0) return;
     _autocompleteGeneration++;
     [_autocompleteTask cancel];
+    [self apollo_syncEngine];
     [self apollo_stopSearch];
     _phase = ApolloGooglePhaseResults;
     _submittedQuery = trimmed;
@@ -1171,18 +1274,13 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     NSUInteger generation = ++_autocompleteGeneration;
     [_autocompleteTask cancel];
     if (text.length == 0) return;
+    ApolloSearchEngine engine = _engine;
     __weak typeof(self) weakSelf = self;
     // Debounce: only the text the user pauses on goes out.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         typeof(self) strongSelf = weakSelf;
         if (!strongSelf || generation != strongSelf->_autocompleteGeneration) return;
-        NSURLComponents *components = [NSURLComponents componentsWithString:@"https://suggestqueries.google.com/complete/search"];
-        NSString *language = [NSLocale.preferredLanguages.firstObject componentsSeparatedByString:@"-"].firstObject ?: @"en";
-        components.queryItems = @[[NSURLQueryItem queryItemWithName:@"client" value:@"firefox"],
-                                  [NSURLQueryItem queryItemWithName:@"hl" value:language],
-                                  [NSURLQueryItem queryItemWithName:@"q" value:text]];
-        components.percentEncodedQuery = [components.percentEncodedQuery stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:components.URL
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:ApolloSearchEngineSuggestURL(engine, text)
                                                                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                            timeoutInterval:6];
         strongSelf->_autocompleteTask = [NSURLSession.sharedSession dataTaskWithRequest:request
@@ -1216,26 +1314,53 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     });
 }
 
+#pragma mark Kagi Session Link
+
+// The "Kagi Session Expired" card's button: ask for a new link, then run the
+// search again with it.
+- (void)apollo_updateKagiSessionLink {
+    __weak typeof(self) weakSelf = self;
+    ApolloKagiPresentSessionLinkSheet(self.parentViewController ?: self, ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSString *query = strongSelf->_submittedQuery;
+        if (strongSelf->_phase != ApolloGooglePhaseResults || !query.length) return;
+        if (strongSelf->_results.count == 0) {
+            [strongSelf searchForQuery:query];
+        } else {
+            // Mid-list: pick up where the next page left off.
+            strongSelf->_moreError = nil;
+            [strongSelf apollo_loadPage:strongSelf->_nextPage];
+            [strongSelf->_tableView reloadData];
+        }
+    });
+}
+
 #pragma mark Verification
 
 - (void)apollo_presentVerification:(WKWebView *)webView {
     UIViewController *presenter = self.parentViewController ?: self;
     while (presenter.presentedViewController) presenter = presenter.presentedViewController;
     if (!presenter.view.window) {
-        [_session verificationCancelledByUser];
+        [self apollo_verificationCancelled];
         return;
     }
     ApolloGoogleVerificationViewController *controller = [[ApolloGoogleVerificationViewController alloc] init];
     controller.webView = webView;
     __weak typeof(self) weakSelf = self;
     controller.cancelled = ^{
-        typeof(self) strongSelf = weakSelf;
-        if (strongSelf) [strongSelf->_session verificationCancelledByUser];
+        [weakSelf apollo_verificationCancelled];
     };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
     navigation.presentationController.delegate = controller;
     _verificationNav = navigation;
     [presenter presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)apollo_verificationCancelled {
+    if ([_session isKindOfClass:ApolloGoogleSearchSession.class]) {
+        [(ApolloGoogleSearchSession *)_session verificationCancelledByUser];
+    }
 }
 
 - (void)apollo_dismissVerification {
@@ -1287,15 +1412,23 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     if ([self apollo_showsStatus]) {
         ApolloGoogleStatusCell *cell = [tableView dequeueReusableCellWithIdentifier:kStatusCellID forIndexPath:indexPath];
         __weak typeof(self) weakSelf = self;
+        NSString *engine = ApolloSearchEngineName(_engine);
         if (_loadingFirstPage) {
-            [cell configureSpinning:YES title:@"Searching Google…"
-                             detail:_slowFirstPage ? @"Google is taking longer than usual." : nil
+            [cell configureSpinning:YES title:[NSString stringWithFormat:@"Searching %@…", engine]
+                             detail:_slowFirstPage ? [engine stringByAppendingString:@" is taking longer than usual."] : nil
                              action:nil];
             cell.action = nil;
+        } else if (_error.code == ApolloGoogleSearchErrorSessionExpired) {
+            // Kagi turned the saved Session Link away: only a new one helps.
+            [cell configureSpinning:NO
+                              title:@"Kagi Session Expired"
+                             detail:@"Paste a new Session Link to keep searching with Kagi."
+                             action:@"Update Session Link"];
+            cell.action = ^{ [weakSelf apollo_updateKagiSessionLink]; };
         } else if (_error) {
             BOOL cancelled = _error.code == ApolloGoogleSearchErrorVerificationCancelled;
             [cell configureSpinning:NO
-                              title:cancelled ? @"Google Check Not Finished" : @"Couldn't Search Google"
+                              title:cancelled ? @"Google Check Not Finished" : [@"Couldn't Search " stringByAppendingString:engine]
                              detail:cancelled ? @"Google wanted to check this search first." : _error.localizedDescription
                              action:@"Try Again"];
             cell.action = ^{
@@ -1308,7 +1441,7 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
             if (options.exactWords) [tips addObject:@"turn off Exact Words"];
             if (options.timeRange != ApolloGoogleSearchTimeRangeAny) [tips addObject:@"pick a longer time range"];
             NSString *detail = [[tips componentsJoinedByString:@", "] stringByAppendingString:@"."];
-            [cell configureSpinning:NO title:@"No Reddit Results on Google" detail:detail action:nil];
+            [cell configureSpinning:NO title:[@"No Reddit Results on " stringByAppendingString:engine] detail:detail action:nil];
             cell.action = nil;
         }
         return cell;
@@ -1317,7 +1450,11 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     if (indexPath.section >= (NSInteger)_results.count) {
         ApolloGoogleStatusCell *cell = [tableView dequeueReusableCellWithIdentifier:kStatusCellID forIndexPath:indexPath];
         __weak typeof(self) weakSelf = self;
-        if (_moreError) {
+        if (_moreError.code == ApolloGoogleSearchErrorSessionExpired) {
+            [cell configureSpinning:NO title:nil detail:@"Kagi didn't accept the saved Session Link."
+                             action:@"Update Session Link"];
+            cell.action = ^{ [weakSelf apollo_updateKagiSessionLink]; };
+        } else if (_moreError) {
             [cell configureSpinning:NO title:nil detail:@"Couldn't load more results." action:@"Try Again"];
             cell.action = ^{
                 typeof(self) strongSelf = weakSelf;
@@ -1353,7 +1490,8 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
     UIColor *text = ApolloGoogleTextColor();
     cell.textLabel.numberOfLines = 2;
     if (indexPath.row == 0) {
-        NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:@"Search Google for “"
+        NSString *prefix = [NSString stringWithFormat:@"Search %@ for “", ApolloSearchEngineName(_engine)];
+        NSMutableAttributedString *title = [[NSMutableAttributedString alloc] initWithString:prefix
                                                                                   attributes:@{NSFontAttributeName: font,
                                                                                                NSForegroundColorAttributeName: text}];
         [title appendAttributedString:[[NSAttributedString alloc] initWithString:_typedText ?: @""
@@ -1377,7 +1515,8 @@ static NSString *const kSuggestionCellID = @"ApolloGoogleSuggestionCell";
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (_phase != ApolloGooglePhaseSuggestions) return nil;
-    return @"Searches Reddit through Google. Add r/name to search one subreddit, put a phrase in \"quotes\" to match it exactly, or add -word to leave a word out.";
+    return [NSString stringWithFormat:@"Searches Reddit through %@. Add r/name to search one subreddit, put a phrase in \"quotes\" to match it exactly, or add -word to leave a word out.",
+            ApolloSearchEngineName(_engine)];
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
