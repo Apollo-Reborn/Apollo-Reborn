@@ -153,9 +153,12 @@ static NSDictionary *APChannelFromDocument(NSDictionary *document) {
     NSMutableArray<ApolloPalHomeResident *> *household = [NSMutableArray array];
     for (NSString *species in [APSpecies apolloIDs]) {
         BOOL isActive = !guestActive && [species isEqual:nativeActive];
-        if (!isActive && !apolloPets[species]) continue;
         NSString *identifier = [kApolloPrefix stringByAppendingString:species];
         NSDictionary *profile = [profiles[identifier] isKindOfClass:NSDictionary.class] ? profiles[identifier] : @{};
+        // Adopted here but Apollo has no record yet (it only creates its
+        // database once Pixel Pals is used): still part of the household.
+        BOOL adoptedHere = [profile[@"adopted"] isKindOfClass:NSNumber.class];
+        if (!isActive && !apolloPets[species] && !adoptedHere) continue;
         ApolloPalHomeResident *resident = [self residentWithID:identifier species:species profile:profile
                                                          stats:apolloPets[species] ?: @{} nameFromStats:YES];
         resident.active = isActive;
@@ -265,7 +268,8 @@ static BOOL APValidRoom(id room) {
     resident.lastFed = date(info[@"lastTimeFed"]);
     resident.lastPlayed = date(info[@"lastTimePlayedWith"]);
     // Profile: the shelter's, or a stable made-up one for older Pals.
-    APShelterAnimal *fallback = [APShelter profileForExistingSpecies:species name:resident.name];
+    // Seeded by the resident's id, so renaming never reshuffles it.
+    APShelterAnimal *fallback = [APShelter profileForExistingSpecies:species seed:identifier];
     resident.adopted = [profile[@"adopted"] isKindOfClass:NSNumber.class];
     resident.coat = [profile[@"coat"] isKindOfClass:NSString.class] ? profile[@"coat"]
         : ([APPixelPalCoats legacyCoatForSpecies:species] ?: fallback.coat);
@@ -274,7 +278,11 @@ static BOOL APValidRoom(id room) {
     id personality = profile[@"personality"];
     resident.personality = [personality isKindOfClass:NSNumber.class] && [personality integerValue] >= 0 &&
         [personality integerValue] < APPersonalityCount ? [personality integerValue] : fallback.personality;
-    id born = profile[@"born"];
+    // Age: Apollo's own record first (its `age` is the birthday, seconds since
+    // the reference date; adoption writes the shelter birthday there), then
+    // the profile's, then the made-up one.
+    id born = info[@"age"];
+    if (![born isKindOfClass:NSNumber.class] || !isfinite([born doubleValue])) born = profile[@"born"];
     if ([born isKindOfClass:NSNumber.class] && isfinite([born doubleValue])) {
         resident.ageMonths = MAX(1, (int)((NSDate.date.timeIntervalSinceReferenceDate - [born doubleValue]) / (86400 * 30.44)));
     } else {
@@ -434,7 +442,11 @@ static BOOL APValidRoom(id room) {
         // Borrow a slot nobody's using (or, with all of them taken, stash one).
         NSDictionary *pets = [self nativePets];
         NSString *host = nil;
-        for (NSString *candidate in APIslandHosts()) if (!pets[candidate]) { host = candidate; break; }
+        NSDictionary *profiles = [self.document[@"residents"] isKindOfClass:NSDictionary.class] ? self.document[@"residents"] : @{};
+        for (NSString *candidate in APIslandHosts()) {
+            // Free: no Apollo record, and not a Pal of ours waiting for one.
+            if (!pets[candidate] && !profiles[[kApolloPrefix stringByAppendingString:candidate]]) { host = candidate; break; }
+        }
         if (!host) host = APIslandHosts().firstObject;
         NSDictionary *stash = pets[host];
         NSDictionary *profile = self.document[@"residents"][identifier];

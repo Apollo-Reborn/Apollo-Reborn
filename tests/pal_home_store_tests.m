@@ -256,6 +256,29 @@ int main(void) {
             otter.species = @"panda";
             Check([store adoptAnimal:otter name:@"Bao"] && [native objectForKey:@"PixelPalsDatabase"] == nil &&
                   [store.residents.firstObject.name isEqual:@"Bao"], @"no native database: profile only, Apollo creates its own");
+            // Review: adoptions without Apollo's database stay in the household.
+            otter.species = @"tiger";
+            Check([store adoptAnimal:otter name:@"Stripes"] && [native objectForKey:@"PixelPalsDatabase"] == nil, @"second adoption, still no database");
+            BOOL hasPanda = NO, hasTiger = NO;
+            for (ApolloPalHomeResident *r in store.household) { hasPanda |= [r.species isEqual:@"panda"]; hasTiger |= [r.species isEqual:@"tiger"]; }
+            Check(hasPanda && hasTiger, @"both adopted Pals are in the household");
+            Check([store makeActiveResident:@"apollo.panda"] && [[native stringForKey:@"ActivePixelPal"] isEqual:@"panda"], @"switch back to the earlier adoption");
+
+            // Review: an existing Pal's age comes from Apollo's record and survives renaming.
+            [owned removePersistentDomainForName:ownedSuite];
+            NSTimeInterval threeYears = NSDate.date.timeIntervalSinceReferenceDate - 36 * 30.44 * 86400;
+            [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"pixelPals": @[@"dog", @{@"name": @"Rex", @"age": @(threeYears)}]} options:0 error:nil]
+                        forKey:@"PixelPalsDatabase"];
+            [native setObject:@"dog" forKey:@"ActivePixelPal"];
+            store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
+            ApolloPalHomeResident *rex = store.residents.firstObject;
+            Check(rex.ageMonths >= 35 && rex.ageMonths <= 37, @"age from Apollo's record");
+            NSInteger personality = rex.personality;
+            NSString *quirk = rex.quirk;
+            Check([store renameResident:@"apollo.dog" to:@"Rexington"], @"rename");
+            rex = store.residents.firstObject;
+            Check(rex.ageMonths >= 35 && rex.ageMonths <= 37 && rex.personality == personality && [rex.quirk isEqual:quirk], @"renaming changes nothing else");
+
             puts("pal_home_store_tests: all scenarios passed");
         } @finally {
             [owned removePersistentDomainForName:ownedSuite];

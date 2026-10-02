@@ -46,8 +46,9 @@ typedef NS_ENUM(NSInteger, APPersonality) {
 // "Girl · 2 yrs · Cat" style summary line.
 + (NSString *)summaryForSpecies:(NSString *)species gender:(NSString *)gender ageMonths:(int)months;
 // A stable made-up profile for a Pal that was already home before the shelter
-// existed (seeded by species + name so it never changes).
-+ (APShelterAnimal *)profileForExistingSpecies:(NSString *)species name:(NSString *)name;
+// existed (seeded by species + a stable seed, the resident id, so renaming
+// never changes it). Only for what Apollo doesn't store.
++ (APShelterAnimal *)profileForExistingSpecies:(NSString *)species seed:(NSString *)seed;
 @end
 
 NS_ASSUME_NONNULL_END

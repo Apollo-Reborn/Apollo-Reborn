@@ -89,6 +89,22 @@ int main(void) {
         for (NSString *junk in @[@"", @"PAL1:", @"PAL1:!!!!", @"PAL1:aGVsbG8=", @"hello", [code substringToIndex:code.length / 2]]) {
             Check([APPalWidget decode:junk] == nil, [@"junk rejected: " stringByAppendingString:junk]);
         }
+        // Review: hostile nested fields are rejected or dropped, never rendered.
+        NSString *(^raw)(NSDictionary *) = ^NSString *(NSDictionary *payload) {
+            NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+            NSData *packed = [json compressedDataUsingAlgorithm:NSDataCompressionAlgorithmZlib error:nil];
+            return [@"PAL1:" stringByAppendingString:[packed base64EncodedStringWithOptions:0]];
+        };
+        Check([APPalWidget decode:raw(@{@"v": @1, @"pal": @{@"species": @123}, @"room": @{}})] == nil, @"non-string species rejected");
+        Check([APPalWidget decode:raw(@{@"v": @2, @"pal": @{@"species": @"cat"}, @"room": @{}})] == nil, @"unknown version rejected");
+        NSDictionary *hostileCode = [APPalWidget decode:raw(@{@"v": @1, @"pal": @{@"species": @"cat", @"personality": [NSNull null], @"name": @42,
+                                                                          @"hearts": @"lots", @"coat": @[@1]},
+                                                          @"room": @{@"wallpaper": @7, @"items": @[@"x", @{@"item": @"sofa", @"x": @"?", @"y": [NSNull null], @"uid": @"a"}]}})];
+        Check(hostileCode && hostileCode[@"pal"][@"personality"] == nil && hostileCode[@"pal"][@"name"] == nil && hostileCode[@"pal"][@"hearts"] == nil &&
+              hostileCode[@"room"][@"wallpaper"] == nil && [hostileCode[@"room"][@"items"] count] == 1, @"bad fields dropped");
+        CGImageRef hostileImage = [APPalWidget renderPayload:hostileCode family:APPalWidgetLarge minute:600 state:@{@"pose": @"idle"} sprites:^CGImageRef(NSString *n) { return NULL; }];
+        Check(hostileImage != NULL, @"hostile payload renders");
+        CGImageRelease(hostileImage);
         APSpriteSheetProvider none = ^CGImageRef(NSString *n) { return NULL; };
         for (NSInteger family = APPalWidgetSmall; family <= APPalWidgetExtraLargePortrait; family++) {
             for (NSString *pose in @[@"idle", @"pet", @"play", @"sleep"]) {

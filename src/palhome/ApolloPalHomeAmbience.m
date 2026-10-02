@@ -166,6 +166,10 @@ static float APAmbienceSample(APAmbienceState *s) {
 @property (nonatomic, copy, nullable) NSString *previousCategory;
 @property (nonatomic) AVAudioSessionCategoryOptions previousOptions;
 @property (nonatomic) BOOL running;
+// Whether Pal Home wants sound at all (start until stop). Separate from
+// `running` (is the engine going right now): interruptions and route changes
+// stop the engine, and only a still-wanted engine may come back.
+@property (nonatomic) BOOL wanted;
 @property (nonatomic) BOOL resumeAfterInterruption;
 @end
 
@@ -200,10 +204,10 @@ static float APAmbienceSample(APAmbienceState *s) {
 // (a call); forget we were running and start again if we still should.
 - (void)engineStopped:(NSNotification *)note {
     self.jingles = nil; // rendered for the old format
-    BOOL wasRunning = self.running;
     self.running = NO;
-    if (!wasRunning) return;
-    dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });
+    if (!self.wanted) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ if (weakSelf.wanted) [weakSelf start]; });
 }
 
 #if TARGET_OS_IPHONE
@@ -214,7 +218,8 @@ static float APAmbienceSample(APAmbienceState *s) {
         self.running = NO;
     } else if (self.resumeAfterInterruption) {
         self.resumeAfterInterruption = NO;
-        dispatch_async(dispatch_get_main_queue(), ^{ [self start]; });
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ if (weakSelf.wanted) [weakSelf start]; });
     }
 }
 #endif
@@ -250,7 +255,9 @@ static float APAmbienceSample(APAmbienceState *s) {
 }
 
 - (void)start {
-    if (!ApolloPalHomeAmbience.isEnabled || self.running) return;
+    if (!ApolloPalHomeAmbience.isEnabled) return;
+    self.wanted = YES;
+    if (self.running) return;
     NSError *error = nil;
 #if TARGET_OS_IPHONE
     AVAudioSession *session = AVAudioSession.sharedInstance;
@@ -326,6 +333,9 @@ static float APAmbienceSample(APAmbienceState *s) {
 }
 
 - (void)stop {
+    // Not wanted any more: cancels any pending restart too.
+    self.wanted = NO;
+    self.resumeAfterInterruption = NO;
     if (!self.running) return;
     self.running = NO;
     self.state->masterTarget = 0;

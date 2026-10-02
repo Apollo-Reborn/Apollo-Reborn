@@ -148,10 +148,9 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
     return animals;
 }
 
-+ (APShelterAnimal *)profileForExistingSpecies:(NSString *)species name:(NSString *)name {
-    APShelterRand r = {APShelterHash([NSString stringWithFormat:@"%@|%@", species, name])};
++ (APShelterAnimal *)profileForExistingSpecies:(NSString *)species seed:(NSString *)seed {
+    APShelterRand r = {APShelterHash([NSString stringWithFormat:@"%@|%@", species, seed])};
     APShelterAnimal *a = [self animalForSpecies:species rand:&r];
-    a.name = name;
     a.coat = @"original";
     return a;
 }

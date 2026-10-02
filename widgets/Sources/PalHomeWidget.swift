@@ -34,12 +34,15 @@ enum PalStash {
     /// Resolve a widget's code: its own field (if valid), else the stash.
     static func resolve(_ field: String?) -> [AnyHashable: Any]? {
         offer(field)
-        // A full setup code (base64 JSON) may carry a Pal code too.
-        if let raw = SharedSetup.load() ?? field,
-           let data = Data(base64Encoded: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let pal = json["palHome"] as? String {
-            offer(pal)
+        // Full setup codes (base64 JSON) carry a Pal code too: look at both the
+        // shared setup and this widget's own field, and let each Pal code's
+        // `issued` time decide which wins (offer keeps the newest).
+        for raw in [field, SharedSetup.load()].compactMap({ $0 }) {
+            if let data = Data(base64Encoded: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let pal = json["palHome"] as? String {
+                offer(pal)
+            }
         }
         guard let code = load() else { return nil }
         return APPalWidget.decode(code)
@@ -120,6 +123,8 @@ struct PalHomeEntry: TimelineEntry {
     let needsCode: Bool
     let pose: String
     let lightsOff: Bool
+    /// The Pal's name, for VoiceOver ("Biscuit is napping").
+    var palName: String = "Your Pal"
 }
 
 /// Pal sprites live in Apollo's own asset catalog, in the app bundle that
@@ -200,8 +205,9 @@ struct PalHomeProvider: IntentTimelineProvider {
         let image = APPalWidget.renderPayload(payload, family: apFamily(family), minute: minuteOfDay(date), state: state,
                                               sprites: { spriteSheet($0) })
         let style = (payload["room"] as? [String: Any])?["style"] as? String
+        let name = ((payload["pal"] as? [String: Any])?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Your Pal"
         return PalHomeEntry(date: date, images: [family: image], style: style,
-                            needsCode: false, pose: pose, lightsOff: PalState.lightsOff)
+                            needsCode: false, pose: pose, lightsOff: PalState.lightsOff, palName: name)
     }
 }
 
@@ -223,6 +229,9 @@ struct PalHomeWidgetView: View {
                     .interpolation(.none)
                     .aspectRatio(contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityElement()
+                    .accessibilityLabel("Pal Home")
+                    .accessibilityHint("To set up, open Apollo, tap your Pal's card, copy the Pal code, then edit this widget and paste it into Pal Code.")
             } else if let image = entry.images[family] {
                 ZStack(alignment: .topTrailing) {
                     Image(decorative: image, scale: 1)
@@ -230,6 +239,8 @@ struct PalHomeWidgetView: View {
                         .interpolation(.none)
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityElement()
+                        .accessibilityLabel(roomDescription)
                     buttons.padding(family == .systemSmall ? 5 : 8)
                 }
             } else {
@@ -240,20 +251,34 @@ struct PalHomeWidgetView: View {
         .widgetURL(URL(string: "apollo://reborn/settings/pal-home"))
     }
 
+    /// What VoiceOver hears for the room: who, and what they're up to.
+    private var roomDescription: String {
+        let name = entry.palName
+        switch entry.pose {
+        case "sleep": return "\(name) is napping at home\(entry.lightsOff ? ", lights off" : "")."
+        case "pet": return "\(name) is at home, happy after a pet."
+        case "play": return "\(name) is at home, chasing the yarn."
+        default: return "\(name) at home\(entry.lightsOff ? ", lights off" : "")."
+        }
+    }
+
     @ViewBuilder private var buttons: some View {
         let style = entry.style
         // Top corner, clear of the caption strip along the bottom.
         HStack(spacing: family == .systemSmall ? 3 : 4) {
             if family != .systemSmall {
-                tile(PalLightsIntent(), icon: "bulb", toggled: !entry.lightsOff, style: style)
-                tile(PalNapIntent(), icon: "moon", toggled: entry.pose == "sleep", style: style)
-                tile(PalPlayIntent(), icon: "ball", toggled: entry.pose == "play", style: style)
+                tile(PalLightsIntent(), icon: "bulb", toggled: !entry.lightsOff, style: style,
+                     label: "Lights", value: entry.lightsOff ? "Off" : "On")
+                tile(PalNapIntent(), icon: "moon", toggled: entry.pose == "sleep", style: style,
+                     label: entry.pose == "sleep" ? "Wake \(entry.palName)" : "Nap time", value: entry.pose == "sleep" ? "Napping" : nil)
+                tile(PalPlayIntent(), icon: "ball", toggled: entry.pose == "play", style: style, label: "Play", value: nil)
             }
-            tile(PalPetIntent(), icon: "heart", toggled: entry.pose == "pet", style: style)
+            tile(PalPetIntent(), icon: "heart", toggled: entry.pose == "pet", style: style, label: "Pet \(entry.palName)", value: nil)
         }
     }
 
-    private func tile<I: AppIntent>(_ intent: I, icon: String, toggled: Bool, style: String?) -> some View {
+    private func tile<I: AppIntent>(_ intent: I, icon: String, toggled: Bool, style: String?,
+                                    label: String, value: String?) -> some View {
         let image = APPalWidget.buttonImage(forIcon: icon, style: style, toggled: toggled)
         let scale: CGFloat = family == .systemSmall ? 1.5 : 1.75
         return Button(intent: intent) {
@@ -263,6 +288,8 @@ struct PalHomeWidgetView: View {
                 .frame(width: 18 * scale, height: 16 * scale)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityValue(value ?? "")
     }
 }
 

@@ -282,7 +282,8 @@ if [[ "$WIDGETS" == "1" ]]; then
     log "Building Reborn widgets for the simulator"
     ( cd widgets && xcodegen generate >/dev/null && \
       xcodebuild -project ApolloRebornWidgets.xcodeproj -scheme ApolloRebornWidgets -sdk iphonesimulator \
-                 -configuration Debug CODE_SIGNING_ALLOWED=NO -derivedDataPath build-sim build >/dev/null ) \
+                 -configuration Debug CODE_SIGNING_ALLOWED=NO -derivedDataPath build-sim \
+                 PRODUCT_BUNDLE_IDENTIFIER="${BUNDLE_ID}.RebornWidgets" build >/dev/null ) \
         || die "widget build failed (run the xcodebuild in widgets/ for details)"
     rm -rf "$APP_DIR/PlugIns/AthenaWidgetExtension.appex" "$APP_DIR/PlugIns/ApolloRebornWidgets.appex"
     cp -R "$WIDGET_APPEX" "$APP_DIR/PlugIns/"

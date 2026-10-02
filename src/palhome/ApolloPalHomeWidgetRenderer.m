@@ -33,9 +33,28 @@ static NSString *const kPrefix = @"PAL1:";
     NSData *json = [packed decompressedDataUsingAlgorithm:NSDataCompressionAlgorithmZlib error:nil];
     if (!json || json.length > 512 * 1024) return nil;
     id payload = [NSJSONSerialization JSONObjectWithData:json options:0 error:nil];
-    if (![payload isKindOfClass:NSDictionary.class]) return nil;
+    if (![payload isKindOfClass:NSDictionary.class] || ![payload[@"v"] isEqual:@1]) return nil;
     if (![payload[@"pal"] isKindOfClass:NSDictionary.class] || ![payload[@"room"] isKindOfClass:NSDictionary.class]) return nil;
-    return payload;
+    // Rebuild the payload from correctly typed fields only: the widget saves
+    // codes and renders them on every refresh, so nothing malformed may get in.
+    NSDictionary *pal = payload[@"pal"], *room = payload[@"room"];
+    BOOL (^text)(id, NSUInteger) = ^BOOL(id value, NSUInteger max) { return [value isKindOfClass:NSString.class] && [value length] <= max; };
+    BOOL (^number)(id) = ^BOOL(id value) { return [value isKindOfClass:NSNumber.class] && isfinite([value doubleValue]); };
+    if (!text(pal[@"species"], 64) || ![pal[@"species"] length]) return nil;
+    NSMutableDictionary *cleanPal = [NSMutableDictionary dictionary];
+    for (NSString *key in @[@"species", @"coat", @"gender"]) if (text(pal[key], 64)) cleanPal[key] = pal[key];
+    for (NSString *key in @[@"name", @"summary", @"personalityTitle", @"personalityBlurb", @"quirk"]) if (text(pal[key], 200)) cleanPal[key] = pal[key];
+    for (NSString *key in @[@"hearts", @"personality", @"ageMonths"]) if (number(pal[key])) cleanPal[key] = pal[key];
+    NSMutableDictionary *cleanRoom = [NSMutableDictionary dictionary];
+    for (NSString *key in @[@"style", @"wallpaper", @"floor", @"lighting"]) if (text(room[key], 64)) cleanRoom[key] = room[key];
+    NSMutableArray *items = [NSMutableArray array];
+    if ([room[@"items"] isKindOfClass:NSArray.class]) {
+        for (id record in room[@"items"]) if ([record isKindOfClass:NSDictionary.class] && items.count < 256) [items addObject:record];
+    }
+    cleanRoom[@"items"] = items; // each record is validated again by APRoomLayout
+    NSMutableDictionary *clean = [@{@"v": @1, @"pal": cleanPal, @"room": cleanRoom} mutableCopy];
+    if (number(payload[@"issued"])) clean[@"issued"] = payload[@"issued"];
+    return clean;
 }
 
 #pragma mark - Geometry
