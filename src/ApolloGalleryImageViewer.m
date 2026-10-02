@@ -143,9 +143,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
         // Panning is only meaningful once zoomed in; while at 1x the paging
         // scroll view and the dismiss gesture own the touch.
         _zoomView.panGestureRecognizer.enabled = NO;
-        if (@available(iOS 11.0, *)) {
-            _zoomView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-        }
+        _zoomView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
         [self.contentView addSubview:_zoomView];
 
         _mediaContainerView = [[UIView alloc] initWithFrame:_zoomView.bounds];
@@ -699,9 +697,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self.collectionView.backgroundColor = UIColor.blackColor;
     self.collectionView.showsHorizontalScrollIndicator = NO;
     self.collectionView.alwaysBounceVertical = NO;
-    if (@available(iOS 11.0, *)) {
-        self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    }
+    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self.collectionView registerClass:[ApolloGalleryViewerCell class] forCellWithReuseIdentifier:kApolloGalleryViewerCellID];
     [self.view addSubview:self.collectionView];
 
@@ -967,11 +963,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (UIInterfaceOrientation)apollo_currentInterfaceOrientation {
-    if (@available(iOS 13.0, *)) {
-        UIWindowScene *scene = self.view.window.windowScene;
-        if (scene) return scene.interfaceOrientation;
-    }
-    return UIInterfaceOrientationPortrait;
+    UIWindowScene *scene = self.view.window.windowScene;
+    return scene ? scene.interfaceOrientation : UIInterfaceOrientationPortrait;
 }
 
 // Debounced: a physical turn passes through several intermediate readings
@@ -1120,8 +1113,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 
 - (void)apollo_layoutChrome {
     CGRect bounds = self.view.bounds;
-    UIEdgeInsets safe = UIEdgeInsetsZero;
-    if (@available(iOS 11.0, *)) safe = self.view.safeAreaInsets;
+    UIEdgeInsets safe = self.view.safeAreaInsets;
 
     CGFloat top = safe.top + 12.0;
     CGFloat side = MAX(16.0, safe.left + 16.0);

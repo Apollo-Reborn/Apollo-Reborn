@@ -43,10 +43,7 @@ static NSString *ApolloDirectChatHex(NSString *hex) {
 static NSString *ApolloDirectChatHexFromColor(UIColor *color,
                                                UITraitCollection *traits,
                                                NSString *fallback) {
-    UIColor *resolved = color;
-    if (@available(iOS 13.0, *)) {
-        resolved = [color resolvedColorWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
-    }
+    UIColor *resolved = [color resolvedColorWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
     CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
     if ([resolved getRed:&red green:&green blue:&blue alpha:&alpha]) {
         return [NSString stringWithFormat:@"#%02X%02X%02X",
@@ -4606,10 +4603,6 @@ void ApolloMigrateModernMailboxPreferences(void) {
         ApolloLog(@"[DirectChatWeb] Recorded modern Chat/Modmail as on for this web-session setup "
                   @"(previously implied); both are now switchable in Settings");
     }
-}
-
-UIViewController *ApolloCreateModernChatViewController(void) {
-    return ApolloCreateModernChatViewControllerForPath(nil);
 }
 
 UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinationPath) {

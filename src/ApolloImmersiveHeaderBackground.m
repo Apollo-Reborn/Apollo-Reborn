@@ -16,8 +16,9 @@ static CGFloat const ApolloImmersiveSharpFeatherHeight = 44.0;
 
 static BOOL ApolloImmersiveColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
     if (!color) return NO;
-    UIColor *resolved = [color resolvedColorWithTraitCollection:
-        traits ?: UIScreen.mainScreen.traitCollection];
+    // Callers must supply the host view's traits (every caller of
+    // ApolloImmersiveResolvedPageColor passes a view/VC traitCollection).
+    UIColor *resolved = [color resolvedColorWithTraitCollection:traits];
     return resolved && CGColorGetAlpha(resolved.CGColor) > 0.01;
 }
 
@@ -33,15 +34,12 @@ UIColor *ApolloImmersiveResolvedPageColor(UIColor *fallback, UITraitCollection *
 UIVisualEffect *ApolloImmersiveGlassEffect(UIColor *tintColor, CGFloat tintAlpha, BOOL interactive) {
     if (!IsLiquidGlass()) return nil;
     Class glassClass = NSClassFromString(@"UIGlassEffect");
-    if (!glassClass || ![glassClass respondsToSelector:@selector(effectWithStyle:)]) return nil;
     id effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassClass, @selector(effectWithStyle:), 0);
-    if (tintColor && [effect respondsToSelector:@selector(setTintColor:)]) {
+    if (tintColor) {
         ((void (*)(id, SEL, id))objc_msgSend)(effect, @selector(setTintColor:),
                                                [tintColor colorWithAlphaComponent:tintAlpha]);
     }
-    if ([effect respondsToSelector:@selector(setInteractive:)]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, @selector(setInteractive:), interactive);
-    }
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, @selector(setInteractive:), interactive);
     return effect;
 }
 

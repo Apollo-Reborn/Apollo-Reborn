@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloSwiftRuntime.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities, kEditingSelection;
@@ -18,11 +19,6 @@ static BOOL ApolloEditingIsList(UITableView *table) {
     return cls && [(id)table.dataSource isKindOfClass:cls];
 }
 
-static id ApolloEditingIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable([object class], name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
 // Keep the stars in place while editing; restore on exit. Apply at lifecycle
 // entry points to avoid layoutSubviews recursion.
 //
@@ -33,7 +29,7 @@ static id ApolloEditingIvar(id object, const char *name) {
 // Enhancements' wider inset, 8pt without it), so a fixed 23pt there moved the
 // non-Favorites stars 15pt left on some lists.
 static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
-    UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
+    UIButton *star = ApolloObjectIvar(cell, "accessoryButton");
     if (![star isKindOfClass:UIButton.class]) return;
     NSNumber *original = objc_getAssociatedObject(cell, &kEditingRightMargin);
     NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
@@ -203,7 +199,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [surface addSubview:button];
     [cell addSubview:panel];
     // Preserve native button sizing, rounded to the display pixel.
-    CGFloat scale = MAX(1.0, cell.traitCollection.displayScale);
+    CGFloat scale = cell.traitCollection.displayScale;
     CGFloat textWidth = [title sizeWithAttributes:@{NSFontAttributeName: button.titleLabel.font}].width;
     CGFloat width = ceil((textWidth + 24.0) * scale) / scale;
     [NSLayoutConstraint activateConstraints:@[
@@ -244,7 +240,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
         }
     }
     [cell bringSubviewToFront:panel];
-    state.star = ApolloEditingIvar(cell, "accessoryButton");
+    state.star = ApolloObjectIvar(cell, "accessoryButton");
     state.starTransform = state.star.transform;
     state.contentMargins = cell.contentView.layoutMargins;
     CGRect starFrame = [state.star convertRect:state.star.bounds toView:cell];

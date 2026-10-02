@@ -52,6 +52,7 @@
 
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryViewController.h"
 
 // Defined in ApolloUserAvatars.xm.
@@ -83,10 +84,7 @@ static BOOL ApolloProfileMoreMenuIsNormalizing(UINavigationItem *navigationItem)
 // Apollo's own "..." item. The ivar always exists (it's a stored `let` on the
 // Swift class); whether it's INSTALLED in the navigation item is what varies.
 static UIBarButtonItem *ApolloProfileMoreMenuApolloItem(UIViewController *viewController) {
-    if (!viewController) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(viewController), "moreOptionsBarButtonItem");
-    if (!ivar) return nil;
-    id value = object_getIvar(viewController, ivar);
+    id value = ApolloObjectIvar(viewController, "moreOptionsBarButtonItem");
     return [value isKindOfClass:[UIBarButtonItem class]] ? (UIBarButtonItem *)value : nil;
 }
 

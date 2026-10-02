@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloScrapeWebView.h"
 #import "ApolloOwnCommentFlair.h"
@@ -38,6 +39,9 @@ static const NSUInteger kApolloUserFlairMaxLength = 64;
 static NSObject *sApolloUserFlairEmojiCacheLock;
 static NSObject *sApolloUserFlairCapturedOptionsLock;
 static NSMutableDictionary<NSString *, NSArray *> *sApolloUserFlairEmojiListCache;
+// Old Reddit's flair selector embeds only the emoji used by its visible
+// templates. Keep track of those cache entries as partial so opening the editor
+// still fetches Reddit's complete user-flair-allowed emoji catalogue.
 static NSMutableSet<NSString *> *sApolloUserFlairPartialEmojiCacheKeys;
 static NSMutableDictionary<NSString *, id> *sApolloUserFlairWebEmojiFetches;
 static NSObject *sApolloUserFlairSpriteCacheLock;
@@ -126,20 +130,15 @@ extern void ApolloSwiftAssignOptionalString(void *storage, const char *utf8Value
 
 #pragma mark - Runtime Access
 
+// Only '@'-encoded ivars: Swift value-type ivars sharing a name must not be
+// handed to object_getIvar. Dynamic names (with/without '_') come from callers.
 static id ApolloUserFlairObjectIvar(id object, NSString *name) {
     if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        const char *type = ivar_getTypeEncoding(ivar);
-        if (!type || type[0] != '@') return nil;
-        @try {
-            return object_getIvar(object, ivar);
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
-    }
-    return nil;
+    const char *ivarName = name.UTF8String;
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), ivarName);
+    const char *type = ivar ? ivar_getTypeEncoding(ivar) : NULL;
+    if (!type || type[0] != '@') return nil;
+    return object_getIvar(object, ivar);
 }
 
 static NSString *ApolloUserFlairSwiftStringIvar(id object, NSString *name) {
@@ -254,19 +253,6 @@ static BOOL ApolloUserFlairSetByteIvar(id object, NSString *name, uint8_t value)
         return YES;
     }
     return NO;
-}
-
-static id ApolloUserFlairRawObjectIvar(id object, NSString *name) {
-    if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        void *rawValue = NULL;
-        memcpy(&rawValue, (uint8_t *)(__bridge void *)object + offset, sizeof(rawValue));
-        return (__bridge id)rawValue;
-    }
-    return nil;
 }
 
 static id ApolloUserFlairSendObject(id target, NSString *selectorName) {
@@ -643,7 +629,7 @@ static BOOL ApolloUserFlairOptionIsLinkInstruction(id option, NSURL **outURL) {
     if (!marked) marked = ApolloUserFlairSetByteIvar(self.controller, @"hasMadeChanges", 1);
 
     id updateButton = ApolloUserFlairObjectIvar(self.controller, @"updateBarButtonItem");
-    if (!updateButton) updateButton = ApolloUserFlairRawObjectIvar(self.controller, @"updateBarButtonItem");
+    if (!updateButton) updateButton = ApolloReadObjectIvar(self.controller, "updateBarButtonItem");
     BOOL buttonEnabled = NO;
     if ([updateButton respondsToSelector:@selector(setEnabled:)]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(updateButton, @selector(setEnabled:), YES);
@@ -762,13 +748,6 @@ static NSRegularExpression *ApolloUserFlairEmojiTokenRegex(void) {
 // Each item: @{ @"name": <token without colons>, @"url": <png url> }.
 static NSMutableDictionary<NSString *, NSArray *> *ApolloUserFlairEmojiListCache(void) {
     return sApolloUserFlairEmojiListCache;
-}
-
-// Old Reddit's flair selector embeds only the emoji used by its visible
-// templates. Keep track of those cache entries as partial so opening the editor
-// still fetches Reddit's complete user-flair-allowed emoji catalogue.
-static NSMutableSet<NSString *> *ApolloUserFlairPartialEmojiCacheKeys(void) {
-    return sApolloUserFlairPartialEmojiCacheKeys;
 }
 
 static NSMutableDictionary<NSString *, id> *ApolloUserFlairWebEmojiFetches(void);
@@ -948,7 +927,7 @@ static NSArray<NSHTTPCookie *> *ApolloUserFlairCookiesFromHeader(NSString *heade
         @synchronized (sApolloUserFlairEmojiCacheLock) {
             retiredEmojis = ApolloUserFlairEmojiListCache()[self.cacheKey];
             ApolloUserFlairEmojiListCache()[self.cacheKey] = emojis;
-            [ApolloUserFlairPartialEmojiCacheKeys() removeObject:self.cacheKey];
+            [sApolloUserFlairPartialEmojiCacheKeys removeObject:self.cacheKey];
         }
     }
 
@@ -1006,7 +985,7 @@ static void ApolloUserFlairFetchEmojis(NSString *subreddit, void (^completion)(N
     BOOL cachedIsPartial = NO;
     @synchronized (sApolloUserFlairEmojiCacheLock) {
         cached = ApolloUserFlairEmojiListCache()[key];
-        cachedIsPartial = [ApolloUserFlairPartialEmojiCacheKeys() containsObject:key];
+        cachedIsPartial = [sApolloUserFlairPartialEmojiCacheKeys containsObject:key];
     }
     if (cached && !cachedIsPartial) { if (completion) completion(cached); return; }
 
@@ -1057,7 +1036,7 @@ static void ApolloUserFlairFetchEmojis(NSString *subreddit, void (^completion)(N
                 if (validCatalogue && http.statusCode == 200) {
                     retiredEmojis = ApolloUserFlairEmojiListCache()[key];
                     ApolloUserFlairEmojiListCache()[key] = emojis;
-                    [ApolloUserFlairPartialEmojiCacheKeys() removeObject:key];
+                    [sApolloUserFlairPartialEmojiCacheKeys removeObject:key];
                 } else if (cached.count > 0) {
                     // Preserve template-embedded icons if Reddit temporarily
                     // rejects or fails the complete catalogue request.
@@ -1083,14 +1062,14 @@ static NSCache<NSString *, UIImage *> *ApolloUserFlairEmojiImageCache(void) {
     return cache;
 }
 
-static void ApolloUserFlairLoadEmojiImage(NSString *urlStr, void (^completion)(UIImage *image)) {
+static void ApolloUserFlairLoadEmojiImage(NSString *urlStr, UITraitCollection *traitCollection, void (^completion)(UIImage *image)) {
     if (urlStr.length == 0) { if (completion) completion(nil); return; }
     UIImage *cached = [ApolloUserFlairEmojiImageCache() objectForKey:urlStr];
     if (cached) { if (completion) completion(cached); return; }
     NSURL *url = [NSURL URLWithString:urlStr];
     if (!url) { if (completion) completion(nil); return; }
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
-        UIImage *image = data ? [UIImage imageWithData:data scale:UIScreen.mainScreen.scale] : nil;
+        UIImage *image = data ? [UIImage imageWithData:data scale:traitCollection.displayScale] : nil;
         if (image) [ApolloUserFlairEmojiImageCache() setObject:image forKey:urlStr cost:ApolloImageByteCost(image)];
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(image); });
     }] resume];
@@ -1528,7 +1507,7 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
         if (img) {
             att.image = img;
         } else {
-            ApolloUserFlairLoadEmojiImage(url, ^(UIImage *image) {
+            ApolloUserFlairLoadEmojiImage(url, self.view.traitCollection, ^(UIImage *image) {
                 typeof(self) self = weakSelf;
                 if (self && image) [self refreshPreview];
             });
@@ -1684,7 +1663,7 @@ static void ApolloUserFlairEnsureTemplateLimits(NSString *subreddit, void (^comp
         // doesn't keep it alive while scrolling thousands of emoji; the urlKey guard
         // still prevents a stale image from landing on a reused cell.
         __weak ApolloUserFlairEmojiCell *weakCell = cell;
-        ApolloUserFlairLoadEmojiImage(url, ^(UIImage *image) {
+        ApolloUserFlairLoadEmojiImage(url, collectionView.traitCollection, ^(UIImage *image) {
             ApolloUserFlairEmojiCell *strongCell = weakCell;
             if (image && strongCell && [strongCell.urlKey isEqualToString:url]) strongCell.imageView.image = image;
         });
@@ -1772,7 +1751,7 @@ static BOOL ApolloUserFlairMaybePresentEditorForOption(UIViewController *control
 // `[RDKFlairOption]?` ivar bridges to a _ContiguousArrayStorage which responds
 // to NSArray selectors (verified at runtime); nil/empty read back safely.
 static NSArray *ApolloUserFlairControllerOptions(UIViewController *controller) {
-    id raw = ApolloUserFlairRawObjectIvar(controller, @"flairOptions");
+    id raw = ApolloReadObjectIvar(controller, "flairOptions");
     if ([raw isKindOfClass:[NSArray class]]) return (NSArray *)raw;
     return nil;
 }
@@ -2026,7 +2005,7 @@ void ApolloUserFlairEnsureEmojisForSubreddit(NSString *subreddit, void (^complet
     BOOL partial = NO;
     @synchronized (sApolloUserFlairEmojiCacheLock) {
         cached = ApolloUserFlairEmojiListCache()[key];
-        partial = [ApolloUserFlairPartialEmojiCacheKeys() containsObject:key];
+        partial = [sApolloUserFlairPartialEmojiCacheKeys containsObject:key];
     }
     if (cached && !partial) { completion(); return; }
 
@@ -2512,11 +2491,11 @@ static NSArray *ApolloUserFlairWebOptionsFromHTML(NSData *data, NSString *subred
     if (cacheKey.length > 0) {
         NS_VALID_UNTIL_END_OF_SCOPE NSArray *retiredEmojis = nil;
         @synchronized (sApolloUserFlairEmojiCacheLock) {
-            BOOL existingIsPartial = [ApolloUserFlairPartialEmojiCacheKeys() containsObject:cacheKey];
+            BOOL existingIsPartial = [sApolloUserFlairPartialEmojiCacheKeys containsObject:cacheKey];
             if (!ApolloUserFlairEmojiListCache()[cacheKey] || existingIsPartial) {
                 retiredEmojis = ApolloUserFlairEmojiListCache()[cacheKey];
                 ApolloUserFlairEmojiListCache()[cacheKey] = cachedEmojis;
-                [ApolloUserFlairPartialEmojiCacheKeys() addObject:cacheKey];
+                [sApolloUserFlairPartialEmojiCacheKeys addObject:cacheKey];
             }
         }
     }
@@ -2774,7 +2753,7 @@ static void ApolloUserFlairFetchCurrentFlair(UIViewController *controller, NSStr
                 if (!strongController) return;
                 objc_setAssociatedObject(strongController, &kApolloUserFlairCurrentFlairKey,
                     @{ @"text": text ?: @"", @"templateID": templateID ?: @"" }, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                id tableNode = ApolloUserFlairRawObjectIvar(strongController, @"tableNode");
+                id tableNode = ApolloReadObjectIvar(strongController, "tableNode");
                 BOOL reloaded = [tableNode respondsToSelector:@selector(reloadData)];
                 if (reloaded) ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
                 ApolloLog(@"[UserFlair] current flair r/%@ textLen=%lu template=%@ reloaded=%d", subreddit, (unsigned long)text.length, templateID.length ? @"yes" : @"none", reloaded);
@@ -3045,7 +3024,7 @@ static void ApolloUserFlairFetchSpriteData(UIViewController *controller, NSStrin
         UIViewController *c = wc; if (!c) return;
         // Drop the cached collapse model so it rebuilds (css-class subs stop collapsing).
         objc_setAssociatedObject(c, &kApolloUserFlairCollapseModelKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        id tableNode = ApolloUserFlairRawObjectIvar(c, @"tableNode");
+        id tableNode = ApolloReadObjectIvar(c, "tableNode");
         if ([tableNode respondsToSelector:@selector(reloadData)]) ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
     };
 

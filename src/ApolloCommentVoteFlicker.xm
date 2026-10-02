@@ -45,6 +45,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTranslation.h"
 #import "ApolloState.h"
 
@@ -230,15 +231,8 @@ static void ApolloVFTrackCell(id cell, BOOL visible) {
     else [sApolloVFVisibleCells removeObject:cell];
 }
 
-static id ApolloVFIvar(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    @try { return object_getIvar(obj, iv); } @catch (__unused NSException *e) { return nil; }
-}
-
 static NSString *ApolloVFFullName(id model) {
-    if (!model || ![model respondsToSelector:@selector(fullName)]) return nil;
+    if (![model respondsToSelector:@selector(fullName)]) return nil;
     @try {
         NSString *fn = ((NSString *(*)(id, SEL))objc_msgSend)(model, @selector(fullName));
         return [fn isKindOfClass:[NSString class]] ? fn : nil;
@@ -254,7 +248,7 @@ static NSArray *ApolloVFCellsForUpdatedModel(id note) {
     if (fullName.length == 0) return @[];
     NSMutableArray *hits = [NSMutableArray array];
     for (id cell in sApolloVFVisibleCells.allObjects) {
-        id m = ApolloVFIvar(cell, "comment") ?: ApolloVFIvar(cell, "link");
+        id m = ApolloObjectIvar(cell, "comment") ?: ApolloObjectIvar(cell, "link");
         if ([ApolloVFFullName(m) isEqualToString:fullName]) [hits addObject:cell];
     }
     return hits;
@@ -318,9 +312,8 @@ static void ApolloVFStabilizeCommentsInfoNode(ASDisplayNode *node, BOOL flush) {
 }
 
 static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
-    if (!postInfo) return;
     @try {
-        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(postInfo, "commentsInfoNode");
+        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(postInfo, "commentsInfoNode");
         if (!commentsInfo) return;
         ApolloVFStabilizeCommentsInfoNode(commentsInfo, NO);
         if ([postInfo respondsToSelector:@selector(setNeedsLayout)]) {
@@ -386,8 +379,8 @@ static BOOL ApolloVFAccessoryNodeIsLive(id node) {
 }
 
 static BOOL ApolloVFCellRendersCollapsed(id cell) {
-    return ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "totalCollapsedChildrenIndicator")) ||
-           ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "collapseDisclosureIndicator"));
+    return ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "totalCollapsedChildrenIndicator")) ||
+           ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "collapseDisclosureIndicator"));
 }
 
 static void ApolloVFNeutralizeCarriedOverCollapse(id note) {
@@ -562,7 +555,7 @@ static void ApolloVFHandleModelUpdate(id note, void (^origCall)(void)) {
 %hook _TtC6Apollo12PostInfoNode
 - (void)didEnterHierarchy {
     %orig;
-    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(self, "commentsInfoNode");
+    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(self, "commentsInfoNode");
     ApolloVFStabilizeCommentsInfoNode(commentsInfo, YES);
 }
 

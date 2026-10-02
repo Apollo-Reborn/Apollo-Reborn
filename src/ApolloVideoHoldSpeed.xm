@@ -70,6 +70,7 @@
 //       (the scrub's pause) and fight the seek.
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"   // sVideoHoldSpeedEnabled, sVideoHoldSpeed, ApolloSanitizedHoldSpeed
 
 #import <UIKit/UIKit.h>
@@ -163,19 +164,13 @@ static AVPlayer *PlayerFromView(UIView *view) {
 static AVPlayer *MediaViewerPlayer(UIViewController *mvc) {
     if (!mvc) return nil;
 
-    Ivar playerIvar = class_getInstanceVariable([mvc class], "player");
-    if (playerIvar) {
-        id player = object_getIvar(mvc, playerIvar);
-        if ([player isKindOfClass:[AVPlayer class]]) return (AVPlayer *)player;
-    }
+    id player = ApolloObjectIvar(mvc, "player");
+    if ([player isKindOfClass:[AVPlayer class]]) return (AVPlayer *)player;
 
-    Ivar containerIvar = class_getInstanceVariable([mvc class], "playerLayerContainerView");
-    if (containerIvar) {
-        id container = object_getIvar(mvc, containerIvar);
-        if ([container isKindOfClass:[UIView class]]) {
-            AVPlayer *p = PlayerFromView((UIView *)container);
-            if (p) return p;
-        }
+    id container = ApolloObjectIvar(mvc, "playerLayerContainerView");
+    if ([container isKindOfClass:[UIView class]]) {
+        AVPlayer *p = PlayerFromView((UIView *)container);
+        if (p) return p;
     }
 
     return PlayerFromView(mvc.isViewLoaded ? mvc.view : nil);
@@ -204,11 +199,8 @@ static UIView *DeepestViewHostingPlayer(UIView *view) {
 
 static UIView *MediaVideoView(UIViewController *mvc) {
     if (!mvc) return nil;
-    Ivar containerIvar = class_getInstanceVariable([mvc class], "playerLayerContainerView");
-    if (containerIvar) {
-        id c = object_getIvar(mvc, containerIvar);
-        if ([c isKindOfClass:[UIView class]]) return (UIView *)c;
-    }
+    id c = ApolloObjectIvar(mvc, "playerLayerContainerView");
+    if ([c isKindOfClass:[UIView class]]) return (UIView *)c;
     UIView *host = DeepestViewHostingPlayer(mvc.isViewLoaded ? mvc.view : nil);
     return host ?: (mvc.isViewLoaded ? mvc.view : nil);
 }

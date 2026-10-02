@@ -22,6 +22,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloHostedVideo.h"
 
 // ASSizeRange is { CGSize min; CGSize max; }. The rest of the repo matches the
@@ -51,15 +52,6 @@ static const CGFloat kApolloShareGalleryCornerRadius = 12.0;
 static const NSInteger kApolloShareGalleryMaxVisible = 4; // beyond this -> "+N"
 
 #pragma mark - Runtime ivar helpers
-
-static id ApolloShareIvarObject(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return nil;
-    id value = nil;
-    @try { value = object_getIvar(obj, ivar); } @catch (__unused NSException *e) {}
-    return value;
-}
 
 // Writes an object into one of SaveAsImagePreviewNode's Swift stored properties
 // (`imageNode`, `imageForImagePost`, `linkButtonNode` — all `let`s with no ObjC
@@ -115,16 +107,6 @@ static void ApolloShareSetIvarBool(id obj, const char *name, BOOL value) {
     base[offset] = value ? 1 : 0;
 }
 
-// Reads a Swift Bool ivar (a single byte at the ivar offset). Returns NO when the
-// ivar is missing. Mirror of ApolloShareSetIvarBool's offset math.
-static BOOL ApolloShareIvarBool(id obj, const char *name) {
-    if (!obj || !name) return NO;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return NO;
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    const unsigned char *base = (const unsigned char *)(__bridge const void *)obj;
-    return base[offset] != 0;
-}
 
 #pragma mark - Gallery model extraction
 
@@ -371,7 +353,11 @@ static UIImage *ApolloShareGalleryRenderCollage(NSArray *images, NSInteger total
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
-    format.scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+    // TODO: Modernization - this bitmap is baked into the exported share image,
+    // which has no display of its own; the preview node is usually measured
+    // offscreen (asyncTraitCollection scale 0), so UIScreen.mainScreen stays the
+    // resolution source until export resolution is decided independently.
+    format.scale = UIScreen.mainScreen.scale;
 
     CGSize canvas = CGSizeMake(width, totalHeight);
     UIGraphicsImageRenderer *renderer =
@@ -440,7 +426,11 @@ static UIImage *ApolloShareGalleryRenderSingle(UIImage *image, CGSize aspect) {
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
-    format.scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+    // TODO: Modernization - this bitmap is baked into the exported share image,
+    // which has no display of its own; the preview node is usually measured
+    // offscreen (asyncTraitCollection scale 0), so UIScreen.mainScreen stays the
+    // resolution source until export resolution is decided independently.
+    format.scale = UIScreen.mainScreen.scale;
 
     CGSize canvas = CGSizeMake(width, height);
     UIGraphicsImageRenderer *renderer =
@@ -583,7 +573,7 @@ static CGSize ApolloShareResolvePosterAspect(id link) {
 // rounded image. Leaves genuine text/self/external-link posts untouched.
 static void ApolloShareGalleryPrepareSingle(id previewNode, id link) {
     // Only act on cards Apollo didn't fill itself — never override a real image.
-    if (ApolloShareIvarObject(previewNode, "imageForImagePost") != nil) {
+    if (ApolloObjectIvar(previewNode, "imageForImagePost") != nil) {
         objc_setAssociatedObject(previewNode, &kApolloShareGalleryStateKey,
                                  @(ApolloShareGalleryStateApplied),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -731,13 +721,13 @@ static void ApolloShareGalleryPrepare(id previewNode) {
         // Image") back OFF on a comment share, the preview is meant to be the bare
         // comment, so re-injecting would leak the post collage back in. Re-using the
         // same condition as the bail check below keeps the two in lock-step.
-        BOOL postMediaShown = (ApolloShareIvarObject(previewNode, "comment") == nil) ||
-                              ApolloShareIvarBool(previewNode, "includePostDetails") ||
-                              ApolloShareIvarBool(previewNode, "includePostTextPollOrImage");
+        BOOL postMediaShown = (ApolloObjectIvar(previewNode, "comment") == nil) ||
+                              ApolloReadBoolIvar(previewNode, "includePostDetails", NO) ||
+                              ApolloReadBoolIvar(previewNode, "includePostTextPollOrImage", NO);
         UIImage *cached = objc_getAssociatedObject(previewNode, &kApolloShareGalleryCollageKey);
         if (postMediaShown &&
             [cached isKindOfClass:[UIImage class]] &&
-            ApolloShareIvarObject(previewNode, "imageForImagePost") == nil) {
+            ApolloObjectIvar(previewNode, "imageForImagePost") == nil) {
             ApolloLog(@"[ShareGallery] collage reset by a toggle, re-injecting cached image");
             ApolloShareGalleryInstallImageOnMain(previewNode, cached, YES);
         }
@@ -774,13 +764,13 @@ static void ApolloShareGalleryPrepare(id previewNode) {
     // Leaving the state untouched (None) makes each layout pass re-check, so the
     // collage is injected the moment post media is turned on. The check is cheap
     // (ivar reads) and no network fetch starts until a gallery is actually detected.
-    if (ApolloShareIvarObject(previewNode, "comment") != nil &&
-        !ApolloShareIvarBool(previewNode, "includePostTextPollOrImage") &&
-        !ApolloShareIvarBool(previewNode, "includePostDetails")) {
+    if (ApolloObjectIvar(previewNode, "comment") != nil &&
+        !ApolloReadBoolIvar(previewNode, "includePostTextPollOrImage", NO) &&
+        !ApolloReadBoolIvar(previewNode, "includePostDetails", NO)) {
         return;
     }
 
-    id link = ApolloShareIvarObject(previewNode, "link");
+    id link = ApolloObjectIvar(previewNode, "link");
     NSArray<NSURL *> *urls = ApolloShareGalleryImageURLs(link);
     if (urls.count < 2) {
         // Not a multi-image gallery — try the single-still path (video /

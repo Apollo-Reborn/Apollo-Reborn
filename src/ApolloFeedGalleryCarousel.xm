@@ -23,6 +23,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloFeedGalleryGesturePolicy.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -166,24 +167,12 @@ static ApolloFeedGalleryOwnerBox *sApolloFeedGalleryOpeningCarousel;
 @implementation ApolloFeedGalleryApplyState
 @end
 
-static id ApolloFeedGalleryObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Ivar ivar = class_getInstanceVariable([object class], name);
-    if (!ivar) return nil;
-    @try {
-        return object_getIvar(object, ivar);
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
-
 // Swift.Bool occupies one byte at the runtime ivar offset. This is only used
 // for the two documented Bool fields on AlbumThumbnailsNode/RichMediaNode; no
 // Swift value-type/object bridging is attempted here. The type-encoding guard
 // makes an Apollo-update field retype degrade to "carousel stays native"
 // instead of silently reading a byte of an adjacent field.
-static BOOL ApolloFeedGalleryBoolIvar(id object, const char *name) {
-    if (!object || !name) return NO;
+static APOLLO_IVAR_NAME BOOL ApolloFeedGalleryBoolIvar(id object, const char *name) {
     Ivar ivar = class_getInstanceVariable([object class], name);
     if (!ivar) return NO;
     const char *encoding = ivar_getTypeEncoding(ivar);
@@ -226,7 +215,7 @@ static id ApolloFeedGalleryRichMediaNode(id albumNode) {
 }
 
 static RDKLink *ApolloFeedGalleryLink(id albumNode) {
-    return ApolloFeedGalleryObjectIvar(ApolloFeedGalleryRichMediaNode(albumNode), "link");
+    return ApolloObjectIvar(ApolloFeedGalleryRichMediaNode(albumNode), "link");
 }
 
 // Reddit preview arrays are normally ascending by width. Select the smallest
@@ -251,7 +240,7 @@ static NSURL *ApolloFeedGalleryPreviewURL(RDKGalleryItem *item) {
 // fail-safe renderer. The returned dictionaries contain only immutable values
 // safe to carry from Texture's background layout thread onto the main thread.
 static NSArray<NSDictionary *> *ApolloFeedGalleryItems(id albumNode) {
-    RDKGallery *gallery = ApolloFeedGalleryObjectIvar(albumNode, "redditGallery");
+    RDKGallery *gallery = ApolloObjectIvar(albumNode, "redditGallery");
     if (![gallery isKindOfClass:NSClassFromString(@"RDKGallery")]) return nil;
     if (![gallery.items isKindOfClass:[NSArray class]] || gallery.items.count < 2) return nil;
 
@@ -316,7 +305,7 @@ static UINavigationController *ApolloFeedGalleryAncestorNavigationController(UIV
 // ivar on a future Apollo, nil/empty array) returns NO, which keeps the
 // carousel's native rubber-band.
 static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationController) {
-    id popped = ApolloFeedGalleryObjectIvar(navigationController, "poppedViewControllers");
+    id popped = ApolloObjectIvar(navigationController, "poppedViewControllers");
     if (![popped respondsToSelector:@selector(count)]) return NO;
     @try {
         return ((NSUInteger (*)(id, SEL))objc_msgSend)(popped, @selector(count)) > 0;
@@ -466,9 +455,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     _scrollView.showsVerticalScrollIndicator = NO;
     _scrollView.alwaysBounceHorizontal = YES;
     _scrollView.delegate = self;
-    if (@available(iOS 11.0, *)) {
-        _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    }
+    _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self addSubview:_scrollView];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_pageTapped:)];
@@ -479,7 +466,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     [_scrollView addGestureRecognizer:tap];
 
     _pageControl = [[UIPageControl alloc] initWithFrame:CGRectZero];
-    if (@available(iOS 14.0, *)) _pageControl.backgroundStyle = UIPageControlBackgroundStyleMinimal;
+    _pageControl.backgroundStyle = UIPageControlBackgroundStyleMinimal;
     _pageControl.currentPageIndicatorTintColor = ApolloFeedGalleryPageIndicatorColor(YES);
     _pageControl.pageIndicatorTintColor = ApolloFeedGalleryPageIndicatorColor(NO);
     [_pageControl addTarget:self action:@selector(apollo_pageControlChanged:)
@@ -687,7 +674,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     if (self.contentIsObscured || index < 0 || index >= (NSInteger)self.items.count) return;
 
     id richMediaNode = ApolloFeedGalleryRichMediaNode(self.albumNode);
-    RDKLink *link = ApolloFeedGalleryObjectIvar(richMediaNode, "link");
+    RDKLink *link = ApolloObjectIvar(richMediaNode, "link");
 
     // Apollo's tap route maps the sender's identity against thumbnailNode1..3
     // to pick the opening page, builds the viewer's placeholder dictionary as
@@ -699,9 +686,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     // page image and the tapped page's on-screen rect.
     const char *senderNames[3] = { "thumbnailNode1", "thumbnailNode2", "thumbnailNode3" };
     id senderNode = index <= 2
-        ? ApolloFeedGalleryObjectIvar(self.albumNode, senderNames[index]) : nil;
+        ? ApolloObjectIvar(self.albumNode, senderNames[index]) : nil;
     BOOL senderMapsNatively = senderNode != nil;
-    if (!senderNode) senderNode = ApolloFeedGalleryObjectIvar(self.albumNode, "thumbnailNode1");
+    if (!senderNode) senderNode = ApolloObjectIvar(self.albumNode, "thumbnailNode1");
     if (!richMediaNode || !senderNode || !link ||
         ![richMediaNode respondsToSelector:@selector(albumThumbnailButtonTappedWithSender:)]) {
         ApolloLog(@"[FeedGallery] cannot open native viewer: missing owner/thumbnail/link");
@@ -1007,7 +994,7 @@ static void ApolloFeedGalleryScheduleApply(ASDisplayNode *host,
         if (objc_getAssociatedObject(host, &kApolloFeedGalleryApplyStateKey) != state) return;
         for (NSString *name in @[ @"thumbnailNode1", @"thumbnailNode2", @"thumbnailNode3",
                                   @"totalImagesNode", @"obscuredContentInfoOverlayNode" ]) {
-            ASDisplayNode *node = ApolloFeedGalleryObjectIvar(albumNode, name.UTF8String);
+            ASDisplayNode *node = ApolloObjectIvar(albumNode, name.UTF8String);
             if (node) node.hidden = enabled;
         }
         host.hidden = !enabled;
@@ -1060,7 +1047,7 @@ static void ApolloFeedGallerySettingChanged(void) {
     // when the child's background layout pass starts. Capture the owner from
     // the parent BEFORE its original layout triggers child measurement; a weak
     // box avoids a RichMedia <-> album cycle.
-    id albumNode = ApolloFeedGalleryObjectIvar(self, "albumThumbnailsNode");
+    id albumNode = ApolloObjectIvar(self, "albumThumbnailsNode");
     if (albumNode) {
         ApolloFeedGalleryOwnerBox *box = objc_getAssociatedObject(albumNode, &kApolloFeedGalleryOwnerBoxKey);
         if (!box) {
@@ -1192,7 +1179,7 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
                                  sApolloFeedGalleryOpeningCarousel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLogDebug(@"[FeedGallery] bound fullscreen return carousel");
     }
-    RDKLink *link = ApolloFeedGalleryObjectIvar(self, "link");
+    RDKLink *link = ApolloObjectIvar(self, "link");
     ApolloFeedGalleryPendingSelection *selection = objc_getAssociatedObject(
         link, &kApolloFeedGalleryPendingViewerIndexKey);
     if ([selection isKindOfClass:[ApolloFeedGalleryPendingSelection class]]) {

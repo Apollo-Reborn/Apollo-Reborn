@@ -4,12 +4,9 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloSaveAllMedia.h"
 
-static id ApolloMediaActionIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 static id ApolloMediaActionGet(id object, NSString *name) {
     SEL selector = NSSelectorFromString(name);
     return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
@@ -71,7 +68,7 @@ static UIMenu *ApolloInlineVideoReplaceDownload(UIMenu *menu, ApolloInlineVideoA
 
 %hook _TtC6Apollo19PostCellActionTaker
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
-    NSURL *url = ApolloInlineVideoPreviewURL(ApolloMediaActionIvar(self, "link"));
+    NSURL *url = ApolloInlineVideoPreviewURL(ApolloObjectIvar(self, "link"));
     ApolloInlineVideoActionContext *context = nil;
     if (url) {
         UIViewController *presenter = nil;

@@ -10,6 +10,7 @@
 #import "ApolloNativeActionMenus.h"
 #import "ApolloSaveAllMedia.h"
 #import "ApolloSaveAllMediaItems.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloToast.h"
 
 extern "C" CFArrayRef ApolloSaveAllMediaCopyURLs(const void *storage);
@@ -36,13 +37,6 @@ static const CFTimeInterval kApolloSaveAllInlineShareGrace = 5.0;
 static ApolloSaveAllMenuContext *sApolloSaveAllInlineShareContext;
 static CFTimeInterval sApolloSaveAllInlineShareAt;
 
-// Only use this on the verified, strong Objective-C reference ivars below.
-// Swift weak references (notably parentMediaPageViewController) are boxes.
-static id ApolloSaveAllObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
 static UIViewController *ApolloSaveAllPageForController(UIViewController *controller) {
     Class pageClass = objc_getClass("_TtC6Apollo23MediaPageViewController");
     for (UIViewController *vc = controller; vc; vc = vc.parentViewController) {
@@ -67,12 +61,12 @@ static ApolloSaveAllMenuContext *ApolloSaveAllContextForPage(UIViewController *p
     if (!page) return nil;
     ApolloSaveAllMenuContext *context = [ApolloSaveAllMenuContext new];
     context.presenter = page;
-    context.link = ApolloSaveAllObjectIvar(page, "link");
+    context.link = ApolloObjectIvar(page, "link");
     NSError *error = nil;
     // Prefer original post metadata (including animated/video originals).
     NSArray *items = ApolloSaveAllMediaItemsFromLink(context.link, &error);
     if (items.count < 2 && !error) {
-        items = ApolloSaveAllMediaItemsFromGallery(ApolloSaveAllObjectIvar(page, "foundRedditGallery"), &error);
+        items = ApolloSaveAllMediaItemsFromGallery(ApolloObjectIvar(page, "foundRedditGallery"), &error);
     }
     if (items.count < 2 && !error) {
         NSArray *urls = ApolloSaveAllPageURLs(page);
@@ -92,8 +86,8 @@ static void ApolloSaveAllArmInlineShare(id node, UIGestureRecognizer *recognizer
     // or a hold that only reveals its spoiler. The native image share manager
     // can encode its temporary JPEG asynchronously before building the sheet.
     sApolloSaveAllInlineShareContext = nil;
-    id mediaNode = ApolloSaveAllObjectIvar(node, "richMediaNode") ?: node;
-    id link = ApolloSaveAllObjectIvar(mediaNode, "link");
+    id mediaNode = ApolloObjectIvar(node, "richMediaNode") ?: node;
+    id link = ApolloObjectIvar(mediaNode, "link");
     if (!link) return;
     SEL closestSelector = NSSelectorFromString(@"closestViewController");
     id owner = [node respondsToSelector:closestSelector]
@@ -338,8 +332,8 @@ static UIViewController *ApolloFullScreenCurrentViewer(UIViewController *page) {
 
 static ApolloFullScreenImageMenu *ApolloFullScreenImageContext(UIViewController *page, UIView *source) {
     UIViewController *viewer = ApolloFullScreenCurrentViewer(page);
-    id imageView = ApolloSaveAllObjectIvar(viewer, "imageView");
-    if (!viewer || ApolloSaveAllObjectIvar(viewer, "player") ||
+    id imageView = ApolloObjectIvar(viewer, "imageView");
+    if (!viewer || ApolloObjectIvar(viewer, "player") ||
         ![imageView isKindOfClass:UIImageView.class] || !((UIImageView *)imageView).image) return nil;
     SEL animated = NSSelectorFromString(@"animatedImage");
     if ([imageView respondsToSelector:animated] && ((id (*)(id, SEL))objc_msgSend)(imageView, animated)) return nil;
@@ -429,7 +423,7 @@ static UIMenu *ApolloFullScreenImageMenuBuild(ApolloFullScreenImageMenu *context
 static void ApolloFullScreenShowShareMenu(ApolloFullScreenImageMenu *context) {
     if (!context.page.viewIfLoaded.window) return;
     context.ended = NO;
-    UIView *source = ApolloSaveAllObjectIvar(context.page, "shareButton") ?: context.source;
+    UIView *source = ApolloObjectIvar(context.page, "shareButton") ?: context.source;
     __weak ApolloFullScreenImageMenu *weakContext = context;
     ApolloNativeActionMenuPresentCaptured(ApolloFullScreenImageMenuBuild(context, YES), source, context, ^{
         weakContext.ended = YES;

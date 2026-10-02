@@ -3,6 +3,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloSubredditInfoCache.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloSettingsRouter.h"
@@ -73,7 +74,6 @@ static CGRect sApolloMarkdownGifKeyboardFrameEnd = (CGRect){ {0, 0}, {0, 0} };
 
 static void ApolloMarkdownGifCancelPendingInjections(UIViewController *composeController);
 static void ApolloMarkdownGifPresentMissingAPIKeyAlert(UIViewController *composeController);
-static UIViewController *ApolloMarkdownGifActiveComposeController(void);
 static ApolloMarkdownGifInsertResult ApolloMarkdownGifTryInjectInRoot(UIView *root, UIViewController *composeController);
 static ApolloMarkdownGifInjectOutcome ApolloMarkdownGifTryInjectForComposeController(UIViewController *composeController);
 static NSString *ApolloMarkdownGifResolveCommentSubreddit(UIViewController *composeController);
@@ -269,6 +269,10 @@ static UIView *ApolloMarkdownGifFindToolbarRowContainer(UIView *imageView, NSArr
         }
     }
     if (referenceWidth <= 0.0) {
+        // TODO: Modernization - assumes the main screen's width. This branch only runs while the
+        // toolbar is not in a window yet, so there is no window (and no display-sized container)
+        // to measure; the width filter below already tolerates referenceWidth == 0, so the
+        // right fix is probably to drop this fallback (or defer until the toolbar has a window).
         referenceWidth = UIScreen.mainScreen.bounds.size.width;
     }
 
@@ -499,7 +503,7 @@ static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewContro
 }
 
 - (void)gifTapped:(__unused id)sender {
-    UIViewController *composeController = ApolloMarkdownGifActiveComposeController();
+    UIViewController *composeController = sApolloMarkdownGifActiveComposeController;
     if (!composeController) {
         ApolloLog(@"[MarkdownGif] giphy picker skipped: no compose controller");
         return;
@@ -544,7 +548,7 @@ static void ApolloMarkdownGifUploadSelectedGIF(ApolloGiphyGIF *gif, UIViewContro
 }
 
 - (void)imageGateTapped:(id)sender {
-    UIViewController *composeController = ApolloMarkdownGifActiveComposeController();
+    UIViewController *composeController = sApolloMarkdownGifActiveComposeController;
     NSString *subreddit = objc_getAssociatedObject(sender, &kApolloMarkdownGifGateSubredditKey);
     NSString *message = ([subreddit isKindOfClass:[NSString class]] && subreddit.length > 0)
         ? [NSString stringWithFormat:@"r/%@ doesn't allow images in comments", subreddit]
@@ -1035,15 +1039,6 @@ static ApolloMarkdownGifInsertResult ApolloMarkdownGifTryInjectInRoot(UIView *ro
 
 static void ApolloMarkdownGifEnumerateWindows(void (^block)(UIWindow *window)) {
     if (!block) return;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.hidden || window.alpha < 0.01) continue;
-                block(window);
-            }
-        }
-    }
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.hidden || window.alpha < 0.01) continue;
         block(window);
@@ -1079,17 +1074,6 @@ static void ApolloMarkdownGifCollectScanRoots(NSMutableArray<UIView *> *roots, U
 
 #pragma mark - Comment media permission gating
 
-// Read an ObjC-object ivar by name from a (possibly Swift) instance. Apollo's
-// Swift compose controllers store the post/comment being acted on as Optional
-// ivars wrapping ObjC RDKLink/RDKComment pointers, so object_getIvar returns the
-// underlying object (or nil) directly.
-static id ApolloMarkdownGifIvarObject(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(obj), name);
-    if (!ivar) return nil;
-    return object_getIvar(obj, ivar);
-}
-
 static NSString *ApolloMarkdownGifSubredditFromModel(id model) {
     if (!model || ![model respondsToSelector:@selector(subreddit)]) return nil;
     NSString *(*msgSend)(id, SEL) = (NSString *(*)(id, SEL))objc_msgSend;
@@ -1111,7 +1095,10 @@ static NSString *ApolloMarkdownGifResolveCommentSubreddit(UIViewController *comp
         "commentBeingEdited",      // editing an existing comment
     };
     for (size_t i = 0; i < sizeof(kCommentModelIvars) / sizeof(kCommentModelIvars[0]); i++) {
-        id model = ApolloMarkdownGifIvarObject(composeController, kCommentModelIvars[i]);
+        // Apollo's Swift compose controllers store the post/comment being acted
+        // on as Optional ivars wrapping ObjC RDKLink/RDKComment pointers, so
+        // object_getIvar returns the underlying object (or nil) directly.
+        id model = ApolloObjectIvar(composeController, kCommentModelIvars[i]);
         NSString *sub = ApolloMarkdownGifSubredditFromModel(model);
         if (sub.length > 0) return sub;
     }
@@ -1135,17 +1122,7 @@ static UIButton *ApolloMarkdownGifFindInjectedButtonInView(UIView *root, NSUInte
 }
 
 static void ApolloMarkdownGifShowGatingToastImpl(UIViewController *host, NSString *message) {
-    UIWindow *window = host.view.window;
-    if (!window) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (scene.activationState != UISceneActivationStateForegroundActive) continue;
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
-                if (candidate.isKeyWindow) { window = candidate; break; }
-            }
-            if (window) break;
-        }
-    }
+    UIWindow *window = host.view.window ?: ApolloKeyWindow();
     if (!window) return;
 
     UIView *bubble = [[UIView alloc] init];
@@ -1253,7 +1230,7 @@ static void ApolloMarkdownGifApplyGatingStates(UIControl *imageControl,
             // never opens, while letting us surface the explanatory toast.
             UIView *parent = imageControl.superview;
             if (!overlay || overlay.superview != parent) {
-                if (overlay) [overlay removeFromSuperview];
+                [overlay removeFromSuperview];
                 overlay = [UIButton buttonWithType:UIButtonTypeCustom];
                 overlay.accessibilityIdentifier = kApolloMarkdownGifImageGateIdentifier;
                 overlay.backgroundColor = UIColor.clearColor;
@@ -1430,14 +1407,6 @@ static void ApolloMarkdownGifPresentMissingAPIKeyAlert(UIViewController *compose
     [composeController presentViewController:alert animated:YES completion:nil];
 }
 
-static UIViewController *ApolloMarkdownGifActiveComposeController(void) {
-    return sApolloMarkdownGifActiveComposeController;
-}
-
-static void ApolloMarkdownGifSetActiveComposeController(UIViewController *controller) {
-    sApolloMarkdownGifActiveComposeController = controller;
-}
-
 #pragma mark - Comment Link Host (plain-link comment uploads)
 
 // When a Comment Link Host is set (sCommentLinkHost != Off), a photo picked from
@@ -1500,7 +1469,7 @@ void ApolloCommentLinkClearUpload(void) {
 }
 void ApolloCommentLinkShowUploadedToast(NSString *hostName) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *composer = sApolloCommentLinkArmedComposer ?: ApolloMarkdownGifActiveComposeController();
+        UIViewController *composer = sApolloCommentLinkArmedComposer ?: sApolloMarkdownGifActiveComposeController;
         if (!composer) return;
         if (objc_getAssociatedObject(composer, &kApolloCommentLinkToastShownKey)) return;   // once per compose session
         objc_setAssociatedObject(composer, &kApolloCommentLinkToastShownKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1516,13 +1485,13 @@ void ApolloCommentLinkShowUploadedToast(NSString *hostName) {
 static void ApolloMarkdownGifScheduleInjection(UIViewController *composeController, NSString *reason) {
     if (composeController && ApolloMarkdownGifComposeSessionHasGif(composeController)) return;
 
-    UIViewController *targetController = composeController ?: ApolloMarkdownGifActiveComposeController();
+    UIViewController *targetController = composeController ?: sApolloMarkdownGifActiveComposeController;
     if (targetController) {
         ApolloMarkdownGifCancelPendingInjections(targetController);
     }
 
     if (composeController) {
-        ApolloMarkdownGifSetActiveComposeController(composeController);
+        sApolloMarkdownGifActiveComposeController = composeController;
         ApolloLog(@"[MarkdownGif] compose appeared class=%@ reason=%@",
                   NSStringFromClass(composeController.class), reason ?: @"");
     }
@@ -1531,7 +1500,7 @@ static void ApolloMarkdownGifScheduleInjection(UIViewController *composeControll
         __block dispatch_block_t block = nil;
         block = dispatch_block_create((dispatch_block_flags_t)0, ^{
             if (dispatch_block_testcancel(block)) return;
-            UIViewController *strong = weakController ?: ApolloMarkdownGifActiveComposeController();
+            UIViewController *strong = weakController ?: sApolloMarkdownGifActiveComposeController;
             if (strong && ApolloMarkdownGifComposeSessionHasGif(strong)) return;
             ApolloMarkdownGifInjectOutcome outcome = ApolloMarkdownGifTryInjectForComposeController(strong);
             if (outcome == ApolloMarkdownGifInjectOutcomeFresh) {
@@ -1553,7 +1522,7 @@ static void ApolloMarkdownGifThrottledTryInject(UIViewController *controller, NS
         return;
     }
     objc_setAssociatedObject(controller, &kApolloMarkdownGifToolbarLastAttemptKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloMarkdownGifSetActiveComposeController(controller);
+    sApolloMarkdownGifActiveComposeController = controller;
     ApolloMarkdownGifTryInjectForComposeController(controller);
     (void)reason;
 }
@@ -1562,7 +1531,7 @@ static void ApolloMarkdownGifKeyboardShown(NSNotification *note) {
     sApolloMarkdownGifKeyboardVisible = YES;
     NSValue *frameValue = note.userInfo[UIKeyboardFrameEndUserInfoKey];
     if (frameValue) sApolloMarkdownGifKeyboardFrameEnd = frameValue.CGRectValue;
-    ApolloMarkdownGifScheduleInjection(ApolloMarkdownGifActiveComposeController(), @"keyboard");
+    ApolloMarkdownGifScheduleInjection(sApolloMarkdownGifActiveComposeController, @"keyboard");
 }
 
 static void ApolloMarkdownGifKeyboardHidden(NSNotification *note) {
@@ -1671,7 +1640,7 @@ void ApolloMarkdownGifInstall(void) {
 
 - (void)cameraButtonTapped:(id)sender {
     if (sCommentLinkHost != CommentLinkHostOff) {
-        UIViewController *composer = ApolloMarkdownGifActiveComposeController();
+        UIViewController *composer = sApolloMarkdownGifActiveComposeController;
         NSString *subreddit = ApolloMarkdownGifResolveCommentSubreddit(composer);
         if (subreddit.length > 0) {
             // Auto mode: force Reddit's native upload where the subreddit is
@@ -1797,7 +1766,7 @@ void ApolloMarkdownGifInstall(void) {
     // re-apply the media gating so the image button's blocked/enabled state
     // reflects the new setting immediately instead of after the next appearance.
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloCommentLinkHostChangedNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
-        UIViewController *composer = ApolloMarkdownGifActiveComposeController();
+        UIViewController *composer = sApolloMarkdownGifActiveComposeController;
         if (composer) ApolloMarkdownGifApplyMediaGating(composer);
     }];
 }

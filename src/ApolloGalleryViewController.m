@@ -424,8 +424,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 - (void)apollo_startPlayerWithURL:(NSURL *)url {
     AVPlayerItem *playerItem = [AVPlayerItem playerItemWithURL:url];
     playerItem.preferredPeakBitRate = kApolloGalleryTilePeakBitRate;
-    CGFloat scale = self.traitCollection.displayScale > 0.0 ? self.traitCollection.displayScale
-                                                            : UIScreen.mainScreen.scale;
+    CGFloat scale = self.traitCollection.displayScale;
     CGSize size = self.contentView.bounds.size;
     if (size.width > 0.0 && size.height > 0.0) {
         playerItem.preferredMaximumResolution = CGSizeMake(size.width * scale, size.height * scale);

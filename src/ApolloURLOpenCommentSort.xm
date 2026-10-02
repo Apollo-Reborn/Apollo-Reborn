@@ -187,8 +187,7 @@ static NSString *UCSSortAccessibilityLabel(int64_t raw) {
 // the whole job. Goes through UIButton's setter so the Liquid Glass item strip's re-templating
 // hook sees the change like it sees Apollo's own.
 static void UCSRedrawSortButton(id vc, int64_t raw) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(vc), "sortBarButtonItem");
-    UIButton *button = ivar ? object_getIvar(vc, ivar) : nil;
+    UIButton *button = ApolloObjectIvar(vc, "sortBarButtonItem");
     if (![button isKindOfClass:[UIButton class]]) return;
     NSString *asset = UCSSortAssetName(raw);
     UIImage *image = asset ? [UIImage imageNamed:asset] : nil;

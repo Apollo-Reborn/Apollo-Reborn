@@ -11,6 +11,7 @@
 #import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
@@ -41,8 +42,7 @@ static const void *kApolloRouteButtonStyleLoggedKey = &kApolloRouteButtonStyleLo
 // color hides the feed at rest, while view alpha supplies the smooth opening,
 // drag, dismissal, and cancelled-drag transitions.
 static UIView *ApolloMediaPresentationView(id owner, const char *name) {
-    Ivar ivar = class_getInstanceVariable([owner class], name);
-    id value = ivar ? object_getIvar(owner, ivar) : nil;
+    id value = ApolloObjectIvar(owner, name);
     return [value isKindOfClass:UIView.class] ? value : nil;
 }
 
@@ -240,7 +240,7 @@ static void ApolloMediaStyleVideoControlsAirPlayButton(UIButton *button, NSStrin
 
     BOOL activeRoute = button.selected || ((button.state & UIControlStateSelected) == UIControlStateSelected);
     if (activeRoute) {
-        button.tintColor = [UIColor respondsToSelector:@selector(systemBlueColor)] ? [UIColor systemBlueColor] : [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+        button.tintColor = [UIColor systemBlueColor];
     } else {
         button.tintColor = [UIColor whiteColor];
     }
@@ -412,13 +412,9 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
 
             // Fix for 120Hz displays: use preferredFramesPerSecond instead of duration * frameInterval
             double *accumulatorPtr = &MSHookIvar<double>(self, "_accumulator");
-            if (@available(iOS 10.0, *)) {
-                NSInteger preferredFPS = displayLink.preferredFramesPerSecond;
-                if (preferredFPS > 0) {
-                    *accumulatorPtr += 1.0 / (double)preferredFPS;
-                } else {
-                    *accumulatorPtr += displayLink.duration;
-                }
+            NSInteger preferredFPS = displayLink.preferredFramesPerSecond;
+            if (preferredFPS > 0) {
+                *accumulatorPtr += 1.0 / (double)preferredFPS;
             } else {
                 *accumulatorPtr += displayLink.duration;
             }

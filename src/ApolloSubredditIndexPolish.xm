@@ -434,7 +434,10 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     self.translatesAutoresizingMaskIntoConstraints = NO;
     ApolloSubredditFeedLayout layout = ApolloMetaFeedEffectiveLayout(tableView, visibleFeedIndexes);
     CGFloat availableWidth = CGRectGetWidth(tableView.bounds);
-    if (availableWidth <= 0.0) availableWidth = CGRectGetWidth(UIScreen.mainScreen.bounds);
+    // TODO: Modernization - when the table has no width yet and is not in a
+    // window, this still reads 0 (compact four-up); the caller should defer
+    // the layout decision until the table is sized instead.
+    if (availableWidth <= 0.0) availableWidth = CGRectGetWidth(tableView.window.bounds);
     BOOL usesCompactFourUp = ApolloMetaFeedUsesCompactFourUp(layout,
                                                              visibleFeedIndexes.count,
                                                              availableWidth);
@@ -782,11 +785,8 @@ static void ApolloSubredditIndexHideNativeIndex(UITableView *tableView) {
 }
 
 static UIColor *ApolloSubredditIndexResolvedColor(UIColor *color, UITraitCollection *traitCollection) {
-    if (!color) return nil;
-    if (@available(iOS 13.0, *)) {
-        return [color resolvedColorWithTraitCollection:traitCollection ?: UIScreen.mainScreen.traitCollection];
-    }
-    return color;
+    // Callers must supply the traits of the view the color is drawn into.
+    return [color resolvedColorWithTraitCollection:traitCollection];
 }
 
 static void ApolloSubredditIndexScrollToTitle(UITableView *tableView, NSString *title, NSInteger titleIndex) {
@@ -3438,7 +3438,9 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
     NSArray<UITableView *> *tables = sApolloSubredditKnownTables.allObjects;
     ApolloLog(@"[SubredditIndex][diag] enhancements=%d modern=%d knownTables=%lu accent=%@",
               sSubredditListEnhancements, sModernSubredditDividers, (unsigned long)tables.count,
-              ApolloSubredditIndexDebugColor(ApolloThemeAccentColor(), nil));
+              // TODO: Modernization - no view is in scope for the global accent line; resolve
+              // against the first known table (nil when none are tracked yet).
+              ApolloSubredditIndexDebugColor(ApolloThemeAccentColor(), tables.firstObject.traitCollection));
     for (UITableView *tableView in tables) {
         UITraitCollection *traits = tableView.traitCollection;
         UIView *indexView = nil;

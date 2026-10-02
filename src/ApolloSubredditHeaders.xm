@@ -13,6 +13,7 @@
 #import "ApolloSubredditHeaderPreview.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditLayout.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditHighlights.h"
@@ -734,7 +735,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
 }
 
 - (void)applyInfo:(ApolloSubredditInfo *)info fallbackSubredditName:(NSString *)subredditName {
-    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : self.window.bounds.size.width;
     CGFloat heightBefore = [self preferredHeightForWidth:width];
 
     // Use the short name with Apollo's display casing, not Reddit's custom title.
@@ -823,7 +824,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     // state is known and for the whole subscribe/unsubscribe round trip.
     self.subscribeButton.alpha = enabled ? 1.0 : ApolloSubredditDisabledControlAlpha;
 
-    UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
+    UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor;
     // Resolve against the real trait context before reading components —
     // ApolloThemeAccentColor() can be a dynamic-provider color, and ambient
     // resolution can pick the wrong light/dark variant (project convention).
@@ -1211,7 +1212,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
         [self addSubview:originalHeader];
     }
 
-    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : self.window.bounds.size.width;
     ApolloSubredditLayoutWrappedHeader(self, header, originalHeader, width);
     self.hidden = NO;
     self.alpha = 1.0;
@@ -1283,23 +1284,15 @@ static BOOL ApolloSubredditIsLikelyObjectPointer(id value) {
 // on object_getIvar + type encoding, which is unreliable for Swift-emitted
 // ivars) and guards every read with isKindOfClass:, so a stale/garbage slot
 // can't be mistaken for a real object.
-static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClass) {
-    if (!object || name.length == 0 || !expectedClass) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        void *raw = NULL;
-        memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
-        id value = (__bridge id)raw;
-        if (!ApolloSubredditIsLikelyObjectPointer(value)) return nil;
-        @try {
-            return [value isKindOfClass:expectedClass] ? value : nil;
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
+static id ApolloSubredditTypedIvar(id object, const char *name, Class expectedClass) {
+    if (!expectedClass) return nil;
+    id value = ApolloReadObjectIvar(object, name);
+    if (!ApolloSubredditIsLikelyObjectPointer(value)) return nil;
+    @try {
+        return [value isKindOfClass:expectedClass] ? value : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
     }
-    return nil;
 }
 
 // MARK: - Subscription state resolution
@@ -1320,7 +1313,7 @@ static id ApolloSubredditTypedIvar(id object, NSString *name, Class expectedClas
 static BOOL ApolloSubredditSubscribedFromCurrentSubreddit(UIViewController *viewController,
                                                           NSString *subredditName,
                                                           BOOL *outSubscribed) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
     if (![currentSubreddit respondsToSelector:@selector(isSubscriber)]) return NO;
     if ([currentSubreddit respondsToSelector:@selector(name)]) {
         NSString *ivarName = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
@@ -1442,7 +1435,7 @@ static void ApolloSubredditRefreshSubscriptionState(ApolloSubredditHeaderView *h
 
 // The controller's own RDKSubreddit, when it is the subreddit being drawn.
 static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
     if (!currentSubreddit || ![currentSubreddit respondsToSelector:@selector(name)]) return nil;
     NSString *name = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
     return ApolloSubredditNamesEqual(name, subredditName) ? currentSubreddit : nil;
@@ -1474,7 +1467,7 @@ static BOOL ApolloSubredditWriteCurrentSubredditSubscribed(UIViewController *vie
 static void ApolloSubredditRefreshUserFlairAvailability(ApolloSubredditHeaderView *header,
                                                         UIViewController *viewController) {
     if (!header || !viewController) return;
-    id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit",
+    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit",
                                             objc_getClass("RDKSubreddit"));
     if ([subreddit respondsToSelector:@selector(name)]) {
         NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
@@ -1550,7 +1543,7 @@ NSString *ApolloSubredditNameFromViewController(UIViewController *viewController
     if (haveTag && tag != kApolloPostsTypeSubreddit && tag != kApolloPostsTypeRandom) return nil;
 
     NSString *loadedName = nil;
-    id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
     if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
         id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
         if ([nameValue isKindOfClass:[NSString class]]) loadedName = ApolloNormalizedSubredditName(nameValue);
@@ -1620,7 +1613,7 @@ NSString *ApolloMultiredditPathFromViewController(UIViewController *viewControll
     uint8_t tag = 0;
     if (!ApolloSubredditPostsTypeTag(viewController, &tag) || tag != kApolloPostsTypeMultireddit) return nil;
 
-    id multireddit = ApolloSubredditTypedIvar(viewController, @"currentMultireddit",
+    id multireddit = ApolloSubredditTypedIvar(viewController, "currentMultireddit",
                                               objc_getClass("RDKMultireddit"));
     if (![multireddit respondsToSelector:@selector(path)]) return nil;
     id pathValue = ((id (*)(id, SEL))objc_msgSend)(multireddit, @selector(path));
@@ -1681,13 +1674,16 @@ static UITableView *ApolloSubredditFindTableView(UIViewController *viewControlle
     return (UITableView *)ApolloSubredditFindSubviewOfClass(viewController.view, [UITableView class]);
 }
 
-static UIImage *ApolloSubredditPlaceholderIconForUserInterfaceStyle(UIUserInterfaceStyle style) {
+// TODO: Modernization - the icons are cached once per process, so they keep the
+// display scale of the first header that asked; a per-scale cache is needed for
+// correct rendering when headers later appear on a display with another scale.
+static UIImage *ApolloSubredditPlaceholderIcon(UITraitCollection *traitCollection) {
     static UIImage *darkIcon = nil;
     static UIImage *lightIcon = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         CGFloat diameter = ApolloIdentityHeaderAvatarDiameter();
-        CGFloat scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+        CGFloat scale = traitCollection.displayScale;
         CGSize size = CGSizeMake(diameter, diameter);
         UIColor *darkFill = [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
         UIColor *lightFill = [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
@@ -1717,56 +1713,29 @@ static UIImage *ApolloSubredditPlaceholderIconForUserInterfaceStyle(UIUserInterf
         lightIcon = drawIcon(lightFill, UIColor.blackColor);
     });
 
-    UIUserInterfaceStyle resolved = style;
-    if (resolved == UIUserInterfaceStyleUnspecified) {
-        resolved = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
-    }
-    if (@available(iOS 13.0, *)) {
-        return resolved == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
-    }
-    return darkIcon ?: lightIcon;
+    return traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
 }
 
-static UIImage *ApolloSubredditPlaceholderIcon(void) {
-    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
-    if (@available(iOS 13.0, *)) {
-        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
-    }
-    return ApolloSubredditPlaceholderIconForUserInterfaceStyle(style);
-}
-
-static UIImage *ApolloSubredditDefaultBanner(void) {
+// TODO: Modernization - cached once per process, so the image keeps the display
+// scale of the first header that asked; key the cache by scale if headers can
+// appear on displays with different scales.
+static UIImage *ApolloSubredditDefaultBanner(UITraitCollection *traitCollection) {
     static UIImage *cached = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultBannerJPG
                                             length:ApolloSubredditDefaultBannerJPG_len
                                       freeWhenDone:NO];
-        cached = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
+        cached = [UIImage imageWithData:data scale:traitCollection.displayScale];
     });
     return cached;
 }
 
-static UIColor *ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(UIUserInterfaceStyle style) {
-    UIUserInterfaceStyle resolved = style;
-    if (resolved == UIUserInterfaceStyleUnspecified) {
-        resolved = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
+static UIColor *ApolloSubredditBannerBackgroundColor(UITraitCollection *traitCollection) {
+    if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+        return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
     }
-    if (@available(iOS 13.0, *)) {
-        if (resolved == UIUserInterfaceStyleDark) {
-            return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
-        }
-        return [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
-    }
-    return [UIColor colorWithRed:39.0 / 255.0 green:39.0 / 255.0 blue:41.0 / 255.0 alpha:1.0];
-}
-
-static UIColor *ApolloSubredditBannerBackgroundColor(void) {
-    UIUserInterfaceStyle style = UIUserInterfaceStyleUnspecified;
-    if (@available(iOS 13.0, *)) {
-        style = UIScreen.mainScreen.traitCollection.userInterfaceStyle;
-    }
-    return ApolloSubredditBannerBackgroundColorForUserInterfaceStyle(style);
+    return [UIColor colorWithRed:218.0 / 255.0 green:219.0 / 255.0 blue:220.0 / 255.0 alpha:1.0];
 }
 
 static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header) {
@@ -1774,13 +1743,13 @@ static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header)
     header.bannerImageView.image = nil;
     header.bannerProvenanceKey = nil;
     header.pendingBannerURL = nil;
-    header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor();
+    header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor(header.traitCollection);
     ApolloSubredditSyncAmbient(header);
 }
 
 static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    UIImage *defaultBanner = ApolloSubredditDefaultBanner();
+    UIImage *defaultBanner = ApolloSubredditDefaultBanner(header.traitCollection);
     header.bannerImageView.image = defaultBanner;
     // The default banner is a shared singleton: a constant provenance key means
     // every header showing it shares one blur cache entry, and no header can
@@ -1793,7 +1762,7 @@ static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header)
 
 static void ApolloSubredditApplyPlaceholderIcon(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
     header.iconImageView.backgroundColor = [UIColor clearColor];
 }
 
@@ -1947,7 +1916,7 @@ static void ApolloSubredditApplyIconForHeader(ApolloSubredditHeaderView *header,
 
 static ApolloSubredditHeaderView *ApolloSubredditCreateHeader(CGFloat width) {
     ApolloSubredditHeaderView *header = [[ApolloSubredditHeaderView alloc] initWithFrame:CGRectMake(0.0, 0.0, width, 210.0)];
-    header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+    header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
     ApolloSubredditApplyLoadingBanner(header);
     return header;
 }
@@ -1978,8 +1947,8 @@ void ApolloSubredditHeaderPreviewContentConfigure(UIView *contentView,
     header.userFlairAvailabilityKnown = YES;
     header.userCanSetFlair = YES;
     [header applyInfo:info fallbackSubredditName:fallbackSubredditName];
-    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon();
-    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner();
+    header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header.traitCollection);
+    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner(header.traitCollection);
     [header apollo_applySubscriptionState:YES known:YES];
 }
 
@@ -2109,8 +2078,8 @@ static void ApolloSubredditSyncAssociations(UITableView *tableView,
 
 static BOOL ApolloSubredditColorProvidesSurface(UIColor *color, UITraitCollection *traits) {
     if (!color) return NO;
-    UIColor *resolved = [color resolvedColorWithTraitCollection:
-        traits ?: UIScreen.mainScreen.traitCollection];
+    // Callers must supply the host view controller's traits.
+    UIColor *resolved = [color resolvedColorWithTraitCollection:traits];
     return resolved && CGColorGetAlpha(resolved.CGColor) > 0.01;
 }
 
@@ -2156,7 +2125,7 @@ static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header) {
     CGFloat chromeHeight = tableView.adjustedContentInset.top;
     if (chromeHeight <= 0.0) chromeHeight = viewController.view.safeAreaInsets.top;
     CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
-        : UIScreen.mainScreen.bounds.size.width;
+        : (tableView.window.bounds.size.width ?: viewController.view.bounds.size.width);
     // Must match apollo_identityForWidth:'s actual banner height (subreddit's
     // own compact constant, respecting the Show Banner toggle) — the shared
     // ApolloIdentityHeaderBannerHeight() default (150pt) is the profile
@@ -2664,7 +2633,8 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     ApolloLog(@"[SubredditHeaders] install vc=%p subreddit=%@", viewController, subredditName);
 
-    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
+        : (tableView.window.bounds.size.width ?: viewController.view.bounds.size.width);
     if (!header) {
         header = ApolloSubredditCreateHeader(width);
         objc_setAssociatedObject(viewController, kApolloSubredditHeaderViewKey, header, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2775,7 +2745,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
         // feed back into an active navigation-bar layout pass.
         ApolloSubredditRequestTitleRelayout(viewController.navigationItem);
         objc_setAssociatedObject(viewController, kApolloSubredditNameKey, subredditName, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        header.iconImageView.image = ApolloSubredditPlaceholderIcon();
+        header.iconImageView.image = ApolloSubredditPlaceholderIcon(header.traitCollection);
         header.usesCustomIcon = NO;
         header.usesCustomBanner = NO;
         header.subscriptionStateKnown = NO;
@@ -3024,7 +2994,7 @@ static void ApolloSubredditWatchFeedTable(UIViewController *viewController) {
         return;
     }
 
-    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : self.window.bounds.size.width;
     UIView *wrapper = ApolloSubredditBuildWrapper(ourHeader, tableHeaderView, width);
     UIViewController *viewController = ourHeader.hostViewController;
     UIView *originalHeader = [wrapper isKindOfClass:[ApolloSubredditHeaderWrapperView class]]

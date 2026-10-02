@@ -16,6 +16,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 typedef void (^ApolloProfileOverviewCompletion)(NSArray *items, id pagination, NSError *error);
 
@@ -37,13 +38,9 @@ static char kApolloProfilePageStateKey;
 static NSHashTable<UIViewController *> *sApolloProfilePageOwners;
 static NSMapTable<id, ApolloProfilePageBinding *> *sApolloProfilePageBindings;
 
-static id ApolloProfilePageObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 
 static id ApolloProfileCurrentPagination(UIViewController *owner) {
-    return ApolloProfilePageObjectIvar(owner, "pagination");
+    return ApolloObjectIvar(owner, "pagination");
 }
 
 static ApolloProfilePageState *ApolloProfilePageStateForOwner(UIViewController *owner) {
@@ -62,10 +59,9 @@ static void ApolloProfilePageCompleteOldBatch(UIViewController *owner) {
     // arrives: by then the same context may belong to a new account's fetch.
     // ASDK's completeBatchFetching:NO leaves the context fetching; YES frees it
     // for future pages. No table mutation or synthetic native response is needed.
-    id node = ApolloProfilePageObjectIvar(owner, "tableNode");
+    id node = ApolloObjectIvar(owner, "tableNode");
     if (![node respondsToSelector:@selector(isNodeLoaded)] ||
         !((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded))) return;
-    if (![node respondsToSelector:@selector(view)]) return;
     id table = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
     SEL contextSelector = NSSelectorFromString(@"batchContext");
     if (![table respondsToSelector:contextSelector]) return;

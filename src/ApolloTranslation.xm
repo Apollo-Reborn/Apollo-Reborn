@@ -10,6 +10,7 @@
 #include <string.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloDeletedCommentsData.h"
@@ -665,12 +666,6 @@ static NSString *ApolloCommentFullName(RDKComment *comment) {
     return nil;
 }
 
-static id GetIvarObjectQuiet(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 static UITableView *FindFirstTableViewInView(UIView *view) {
     if (!view) return nil;
     if ([view isKindOfClass:[UITableView class]]) {
@@ -686,7 +681,7 @@ static UITableView *FindFirstTableViewInView(UIView *view) {
 }
 
 static UITableView *GetCommentsTableView(UIViewController *viewController) {
-    id tableNode = GetIvarObjectQuiet(viewController, "tableNode");
+    id tableNode = ApolloObjectIvar(viewController, "tableNode");
     if (tableNode) {
         SEL viewSelector = NSSelectorFromString(@"view");
         if ([tableNode respondsToSelector:viewSelector]) {
@@ -1260,16 +1255,25 @@ static void ApolloMarkVisibleTranslationApplied(NSString *sourceText, NSString *
 // "right" target is always the visible one. This avoids all the parent /
 // child / nav-stack indirection that fails on Home (where the title node's
 // responder chain doesn't reach the marked feed VC).
-static UIViewController *ApolloFindTopmostVisibleFeedVC(void) {
-    UIWindow *keyWindow = nil;
-    for (UIWindowScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        if (scene.activationState != UISceneActivationStateForegroundActive) continue;
-        for (UIWindow *w in scene.windows) {
-            if (w.isKeyWindow) { keyWindow = w; break; }
+// BFS the foreground key window's VC tree (children + presented) and refresh
+// the translation UI of every VC marked as a feed.
+static void ApolloUpdateTranslationUIForAllFeedControllers(void) {
+    UIViewController *root = ApolloKeyWindow().rootViewController;
+    NSMutableArray *queue = [NSMutableArray array];
+    if (root) [queue addObject:root];
+    while (queue.count) {
+        UIViewController *vc = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        if ([objc_getAssociatedObject(vc, kApolloFeedTranslationVCKey) boolValue]) {
+            ApolloUpdateTranslationUIForController(vc);
         }
-        if (keyWindow) break;
+        for (UIViewController *child in vc.childViewControllers) [queue addObject:child];
+        if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
     }
+}
+
+static UIViewController *ApolloFindTopmostVisibleFeedVC(void) {
+    UIWindow *keyWindow = ApolloKeyWindow();
     if (!keyWindow) return nil;
 
     // BFS from the root, return the deepest VC marked with the feed key
@@ -2139,29 +2143,6 @@ static BOOL ApolloActionTitleLooksTranslate(NSString *title) {
     return NO;
 }
 
-static NSString *ApolloDecodeSwiftString(uint64_t w0, uint64_t w1) {
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-
-    return sBridge ? sBridge(w0, w1) : nil;
-}
-
 static NSUInteger ApolloRemoveNativeTranslateActions(id actionController) {
     Class cls = object_getClass(actionController);
     Ivar actionsIvar = class_getInstanceVariable(cls, "actions");
@@ -2331,8 +2312,7 @@ static id ApolloKnownBodyTextNode(id commentCellNode) {
             if (!iv) continue;
             const char *type = ivar_getTypeEncoding(iv);
             if (!type || type[0] != '@') continue;
-            id node = nil;
-            @try { node = object_getIvar(commentCellNode, iv); } @catch (__unused NSException *e) { continue; }
+            id node = object_getIvar(commentCellNode, iv);
             if (!node) continue;
             if (![node respondsToSelector:@selector(attributedText)]) continue;
             return node;
@@ -2894,8 +2874,7 @@ static RDKLink *ApolloLinkFromHeaderCellNode(id cellNode) {
             if (!iv) continue;
             const char *type = ivar_getTypeEncoding(iv);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(cellNode, iv); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(cellNode, iv);
             if ([v isMemberOfClass:rdkLink]) return (RDKLink *)v;
         }
     }
@@ -2910,8 +2889,7 @@ static RDKLink *ApolloLinkFromHeaderCellNode(id cellNode) {
         for (unsigned int i = 0; i < count; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(cellNode, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(cellNode, ivars[i]);
             if ([v isMemberOfClass:rdkLink]) {
                 free(ivars);
                 return (RDKLink *)v;
@@ -2935,8 +2913,7 @@ static RDKLink *ApolloLinkFromController(UIViewController *vc) {
             if (!iv) continue;
             const char *type = ivar_getTypeEncoding(iv);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(vc, iv); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(vc, iv);
             if ([v isMemberOfClass:rdkLink]) return (RDKLink *)v;
         }
     }
@@ -2947,8 +2924,7 @@ static RDKLink *ApolloLinkFromController(UIViewController *vc) {
         for (unsigned int i = 0; i < count; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(vc, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(vc, ivars[i]);
             if ([v isMemberOfClass:rdkLink]) {
                 free(ivars);
                 return (RDKLink *)v;
@@ -3002,8 +2978,7 @@ static NSString *ApolloPostBodyTextFromLink(RDKLink *link) {
             if (!iv) continue;
             const char *type = ivar_getTypeEncoding(iv);
             if (!type || type[0] != '@') continue;
-            id value = nil;
-            @try { value = object_getIvar(link, iv); } @catch (__unused NSException *e) { continue; }
+            id value = object_getIvar(link, iv);
             if ([value isKindOfClass:[NSString class]]) {
                 NSString *string = (NSString *)value;
                 if (strstr(kBodyIvarNames[i], "HTML")) string = ApolloPlainTextFromHTMLString(string) ?: string;
@@ -3040,8 +3015,7 @@ static id ApolloKnownPostBodyTextNode(id headerCellNode) {
             if (!iv) continue;
             const char *type = ivar_getTypeEncoding(iv);
             if (!type || type[0] != '@') continue;
-            id node = nil;
-            @try { node = object_getIvar(headerCellNode, iv); } @catch (__unused NSException *e) { continue; }
+            id node = object_getIvar(headerCellNode, iv);
             if (!node) continue;
             if (![node respondsToSelector:@selector(attributedText)]) continue;
             return node;
@@ -5182,10 +5156,7 @@ NSString *ApolloRichPreviewTranslatedTextIfAvailable(NSURL *url, NSString *field
 static RDKComment *ApolloCommentFromCellNode(id commentCellNode) {
     if (!commentCellNode) return nil;
 
-    Ivar commentIvar = class_getInstanceVariable([commentCellNode class], "comment");
-    if (!commentIvar) return nil;
-
-    id comment = object_getIvar(commentCellNode, commentIvar);
+    id comment = ApolloObjectIvar(commentCellNode, "comment");
     Class rdkCommentClass = NSClassFromString(@"RDKComment");
     if (!rdkCommentClass || ![comment isMemberOfClass:rdkCommentClass]) return nil;
     return (RDKComment *)comment;
@@ -6849,13 +6820,7 @@ static void ApolloToggleTranslationForTitleNode(id textNode) {
     NSURL *linkURL = nil;
     id rdkLink = nil;
     if (cellNode) {
-        Ivar linkIvar = NULL;
-        for (Class c = [cellNode class]; c && c != [NSObject class] && !linkIvar; c = class_getSuperclass(c)) {
-            linkIvar = class_getInstanceVariable(c, "link");
-        }
-        if (linkIvar) {
-            @try { rdkLink = object_getIvar(cellNode, linkIvar); } @catch (__unused NSException *e) {}
-        }
+        rdkLink = ApolloObjectIvar(cellNode, "link");
         // Comments-header cells don't expose a `link` ivar; the header apply
         // stashes the RDKLink on the cell instead.
         if (!rdkLink) rdkLink = objc_getAssociatedObject(cellNode, kApolloAppliedHeaderLinkKey);
@@ -7098,13 +7063,8 @@ static UIFont *ApolloStatFontFromNode(id node, int depth) {
     } @catch (__unused NSException *e) {}
     const char *ivarNames[] = { "titleNode", "_titleNode", "textNode", "_textNode" };
     for (size_t i = 0; i < sizeof(ivarNames) / sizeof(ivarNames[0]); i++) {
-        Ivar iv = NULL;
-        for (Class c = [node class]; c && c != [NSObject class] && !iv; c = class_getSuperclass(c)) {
-            iv = class_getInstanceVariable(c, ivarNames[i]);
-        }
-        if (!iv) continue;
         @try {
-            id tn = object_getIvar(node, iv);
+            id tn = ApolloObjectIvar(node, ivarNames[i]);
             if (tn && tn != node) { UIFont *f = ApolloStatFontFromNode(tn, depth - 1); if (f) return f; }
         } @catch (__unused NSException *e) {}
     }
@@ -7127,7 +7087,7 @@ static UIFont *ApolloStatFontFromPostInfoNode(id postInfoNode, id ageNode) {
     // reliably they're present/bound.
     const char *siblings[] = { "pointsButtonNode", "editedButtonNode", "percentageLikedButtonNode" };
     for (size_t i = 0; i < sizeof(siblings) / sizeof(siblings[0]); i++) {
-        id sib = GetIvarObjectQuiet(postInfoNode, siblings[i]);
+        id sib = ApolloObjectIvar(postInfoNode, siblings[i]);
         if (sib && sib != ageNode) {
             f = ApolloStatFontFromNode(sib, 3);
             if ([f isKindOfClass:[UIFont class]]) return f;
@@ -7168,7 +7128,7 @@ static CGFloat ApolloPostInfoMarkerLeadForAgeView(id postInfoNode, UIView *ageVi
     CGFloat ageWidth = ageView.bounds.size.width;
     for (size_t i = 0; i < sizeof(kApolloPostInfoStatsAfterAge) / sizeof(kApolloPostInfoStatsAfterAge[0]); i++) {
         const char *name = kApolloPostInfoStatsAfterAge[i];
-        id node = GetIvarObjectQuiet(postInfoNode, name);
+        id node = ApolloObjectIvar(postInfoNode, name);
         if (!node) continue;
         // Never load a node just to measure it: an unloaded node isn't on screen.
         BOOL loaded = NO;
@@ -7226,18 +7186,12 @@ static void ApolloUpdatePostInfoMarkerForNode(id anyNode, NSString *sourceCode, 
     id ageNode = nil;
     UIView *ageView = nil;
     {
-        Ivar iv = NULL;
-        for (Class cls = [postInfoNode class]; cls && cls != [NSObject class] && !iv; cls = class_getSuperclass(cls)) {
-            iv = class_getInstanceVariable(cls, "ageButtonNode");
-        }
-        if (iv) {
-            @try {
-                ageNode = object_getIvar(postInfoNode, iv);
-                if (ageNode && [ageNode respondsToSelector:@selector(view)]) {
-                    ageView = ((UIView *(*)(id, SEL))objc_msgSend)(ageNode, @selector(view));
-                }
-            } @catch (__unused NSException *e) {}
-        }
+        ageNode = ApolloObjectIvar(postInfoNode, "ageButtonNode");
+        @try {
+            if (ageNode && [ageNode respondsToSelector:@selector(view)]) {
+                ageView = ((UIView *(*)(id, SEL))objc_msgSend)(ageNode, @selector(view));
+            }
+        } @catch (__unused NSException *e) {}
     }
     // Match the metadata stat font EXACTLY by reading Apollo's real stat font off a
     // stat node's attributed string (age, then points as a sibling — see
@@ -7442,7 +7396,7 @@ static void ApolloReanchorPostInfoMarkerIfFallback(id postInfoNode, BOOL allowRe
     // (or the real font still isn't readable) AND the lead matches do we bail.
     NSString *reason = anchored ? @"detached" : @"fallback-pin";
     if (anchored && label.window) {
-        id ageNode = GetIvarObjectQuiet(postInfoNode, "ageButtonNode");
+        id ageNode = ApolloObjectIvar(postInfoNode, "ageButtonNode");
         UIFont *realFont = ApolloStatFontFromPostInfoNode(postInfoNode, ageNode);
         CGFloat builtAt = [objc_getAssociatedObject(label, kApolloPostInfoMarkerSizeKey) doubleValue];
         BOOL sizeStale = [realFont isKindOfClass:[UIFont class]] && fabs(realFont.pointSize - builtAt) >= 0.5;
@@ -7491,7 +7445,7 @@ static void ApolloReserveMarkerSlotInCompactRow(UILabel *label, id postInfoNode,
         }
         if (civ) infoIsCompact = *((uint8_t *)(__bridge void *)postInfoNode + ivar_getOffset(civ)) != 0;
     }
-    id dotsNode = (show && infoIsCompact) ? GetIvarObjectQuiet(postInfoNode, "moreOptionsButtonNode") : nil;
+    id dotsNode = (show && infoIsCompact) ? ApolloObjectIvar(postInfoNode, "moreOptionsButtonNode") : nil;
     id target = dotsNode ?: previous;
     if (!target) return;
     CGFloat want = 0.0;
@@ -11144,27 +11098,7 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
             });
         }
         // Refresh any visible feed VCs so titles re-run their apply passes.
-        UIWindow *keyWindow = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                    if (w.isKeyWindow) { keyWindow = w; break; }
-                }
-                if (keyWindow) break;
-            }
-        }
-        UIViewController *root = keyWindow.rootViewController;
-        NSMutableArray *queue = [NSMutableArray array];
-        if (root) [queue addObject:root];
-        while (queue.count) {
-            UIViewController *vc = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            if ([objc_getAssociatedObject(vc, kApolloFeedTranslationVCKey) boolValue]) {
-                ApolloUpdateTranslationUIForController(vc);
-            }
-            for (UIViewController *child in vc.childViewControllers) [queue addObject:child];
-            if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
-        }
+        ApolloUpdateTranslationUIForAllFeedControllers();
     }];
 
 #if APOLLO_SIM_BUILD
@@ -11305,28 +11239,7 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
             sLastFeedTitleTranslatedMode = YES;
         }
         // Walk the keyWindow's VC tree and update any feed VC.
-        UIWindow *keyWindow = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                    if (w.isKeyWindow) { keyWindow = w; break; }
-                }
-                if (keyWindow) break;
-            }
-        }
-        if (!keyWindow) return;
-        UIViewController *root = keyWindow.rootViewController;
-        NSMutableArray *queue = [NSMutableArray array];
-        if (root) [queue addObject:root];
-        while (queue.count) {
-            UIViewController *vc = queue.firstObject;
-            [queue removeObjectAtIndex:0];
-            if ([objc_getAssociatedObject(vc, kApolloFeedTranslationVCKey) boolValue]) {
-                ApolloUpdateTranslationUIForController(vc);
-            }
-            for (UIViewController *child in vc.childViewControllers) [queue addObject:child];
-            if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
-        }
+        ApolloUpdateTranslationUIForAllFeedControllers();
     }];
 
 #if APOLLO_SIM_BUILD

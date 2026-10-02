@@ -90,6 +90,7 @@
 #import <objc/message.h>
 #import "Tweak.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "ApolloTextureDecls.h"
@@ -1134,11 +1135,9 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     // whole cover tappable (see coverTapped).
     UIImageView *retryIcon = [UIImageView new];
     retryIcon.translatesAutoresizingMaskIntoConstraints = NO;
-    if (@available(iOS 13.0, *)) {
-        retryIcon.image = [UIImage systemImageNamed:@"arrow.clockwise"
-                                  withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22.0
-                                                                                                    weight:UIImageSymbolWeightMedium]];
-    }
+    retryIcon.image = [UIImage systemImageNamed:@"arrow.clockwise"
+                              withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22.0
+                                                                                                weight:UIImageSymbolWeightMedium]];
     retryIcon.tintColor = status.textColor;
     retryIcon.hidden = YES;
     [cover addSubview:retryIcon];
@@ -2692,11 +2691,7 @@ static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName) {
     dispatch_async(dispatch_get_main_queue(), ^{
         Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
         for (id parent in sDevvitHostParents.allObjects) {
-            RDKLink *link = nil;
-            @try {
-                Ivar iv = class_getInstanceVariable(object_getClass(parent), "link");
-                if (iv) link = object_getIvar(parent, iv);
-            } @catch (__unused id e) {}
+            RDKLink *link = ApolloDevvitLinkOfParent(parent);
             if (fullName && link && ![ApolloDevvitFullName(link) isEqualToString:fullName]) continue;
             ASDisplayNode *host = objc_getAssociatedObject(parent, kApolloDevvitHostNodeKey);
             CGFloat target = ApolloDevvitHeightForFullName(fullName);
@@ -2770,9 +2765,7 @@ static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
                     if (!cellClass || ![node isKindOfClass:cellClass]) continue;
                     RDKLink *link = ApolloDevvitLinkOfParent(node);
                     if (!ApolloDevvitLinkIsInteractive(link)) continue;
-                    id mediaNode = nil;
-                    Ivar iv = class_getInstanceVariable(object_getClass(node), "richMediaNode");
-                    if (iv) mediaNode = object_getIvar(node, iv);
+                    id mediaNode = ApolloObjectIvar(node, "richMediaNode");
                     if (mediaNode && ApolloDevvitWidgetInHost(objc_getAssociatedObject(mediaNode, kApolloDevvitHostNodeKey))) continue;
                     ApolloDevvitScheduleRowReload(table, indexPath, ApolloDevvitFullName(link), 0);
                 }
@@ -3017,9 +3010,7 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
     @try {
         RDKLink *link = MSHookIvar<RDKLink *>(self, "link");
         if (!ApolloDevvitLinkIsInteractive(link)) return;
-        id mediaNode = nil;
-        Ivar iv = class_getInstanceVariable(object_getClass(self), "richMediaNode");
-        if (iv) mediaNode = object_getIvar(self, iv);
+        id mediaNode = ApolloObjectIvar(self, "richMediaNode");
         if (!mediaNode) return;
         ASDisplayNode *host = objc_getAssociatedObject(mediaNode, kApolloDevvitHostNodeKey);
         ApolloDevvitRegisterFeedTable(ApolloDevvitTableViewForNode(mediaNode));
@@ -3051,9 +3042,7 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
 - (void)didExitPreloadState {
     %orig;
     @try {
-        id mediaNode = nil;
-        Ivar iv = class_getInstanceVariable(object_getClass(self), "richMediaNode");
-        if (iv) mediaNode = object_getIvar(self, iv);
+        id mediaNode = ApolloObjectIvar(self, "richMediaNode");
         if (!mediaNode) return;
         ASDisplayNode *host = objc_getAssociatedObject(mediaNode, kApolloDevvitHostNodeKey);
         if ([host isNodeLoaded]) ApolloDevvitRemoveGhost(host.view);
@@ -3067,12 +3056,7 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
 #pragma mark - Comments screen lifecycle (handoff + keep-alive)
 
 static RDKLink *ApolloDevvitLinkOfParent(id parent) {
-    RDKLink *link = nil;
-    @try {
-        Ivar iv = class_getInstanceVariable(object_getClass(parent), "link");
-        if (iv) link = object_getIvar(parent, iv);
-    } @catch (__unused id e) {}
-    return link;
+    return ApolloObjectIvar(parent, "link");
 }
 
 // Mount a widget into every registered comments-header host under `root`

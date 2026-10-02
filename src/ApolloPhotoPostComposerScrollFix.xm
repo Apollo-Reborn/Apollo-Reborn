@@ -7,6 +7,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "fishhook.h"
 
@@ -638,6 +639,9 @@ static UIImage *ApolloMediaComposerPosterImageForVideoURL(NSURL *videoURL) {
         ApolloLog(@"[MediaComposer] failed to generate selected-video poster: %@", error.localizedDescription ?: @"unknown error");
         return nil;
     }
+    // TODO: Modernization - assumes the main screen's scale for the poster's point size. All
+    // callers are NSItemProvider load completions on a background queue with no view or
+    // trait collection reachable; the poster is handed to Apollo's picker pipeline as data.
     UIImage *image = [UIImage imageWithCGImage:cgImage scale:UIScreen.mainScreen.scale orientation:UIImageOrientationUp];
     CGImageRelease(cgImage);
     return image;
@@ -895,6 +899,17 @@ static void ApolloMediaComposerMarkVideoProvider(NSItemProvider *provider, NSStr
     }
 }
 
+// Host window for the picker warning once the picker's own window is gone:
+// the key window, else the frontmost visible window.
+static UIWindow *ApolloMediaComposerWarningFallbackWindow(void) {
+    UIWindow *keyWindow = ApolloKeyWindow();
+    if (keyWindow) return keyWindow;
+    for (UIWindow *window in [ApolloAllWindows() reverseObjectEnumerator]) {
+        if (!window.hidden && window.alpha > 0.01) return window;
+    }
+    return nil;
+}
+
 static void ApolloMediaComposerPresentPickerWarning(id picker, NSString *title, NSString *message) {
     if (title.length == 0 || message.length == 0) return;
     if (![NSThread isMainThread]) {
@@ -907,12 +922,7 @@ static void ApolloMediaComposerPresentPickerWarning(id picker, NSString *title, 
     // dismisses the PHPicker (which it does immediately after didFinishPicking returns) the
     // picker's `presentingViewController` becomes nil and we can't find a host to present from.
     UIViewController *pickerController = [picker isKindOfClass:[UIViewController class]] ? (UIViewController *)picker : nil;
-    UIWindow *initialWindow = nil;
-    for (UIWindow *window in [ApolloAllWindows() reverseObjectEnumerator]) {
-        if (window.isKeyWindow) { initialWindow = window; break; }
-        if (!initialWindow && !window.hidden && window.alpha > 0.01) initialWindow = window;
-    }
-    __block __weak UIViewController *weakPresenter = pickerController.presentingViewController ?: pickerController.view.window.rootViewController ?: initialWindow.rootViewController;
+    __block __weak UIViewController *weakPresenter = pickerController.presentingViewController ?: pickerController.view.window.rootViewController ?: ApolloMediaComposerWarningFallbackWindow().rootViewController;
     NSString *capturedTitle = [title copy];
     NSString *capturedMessage = [message copy];
 
@@ -922,14 +932,7 @@ static void ApolloMediaComposerPresentPickerWarning(id picker, NSString *title, 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (didPresent) return;
             UIViewController *baseController = weakPresenter;
-            if (!baseController) {
-                UIWindow *retryWindow = nil;
-                for (UIWindow *window in [ApolloAllWindows() reverseObjectEnumerator]) {
-                    if (window.isKeyWindow) { retryWindow = window; break; }
-                    if (!retryWindow && !window.hidden && window.alpha > 0.01) retryWindow = window;
-                }
-                baseController = retryWindow.rootViewController;
-            }
+            if (!baseController) baseController = ApolloMediaComposerWarningFallbackWindow().rootViewController;
             UIViewController *targetController = ApolloMediaComposerVisibleControllerFromController(baseController);
             if (!targetController) return;
             if ([targetController isKindOfClass:[UIAlertController class]]) return;
@@ -1286,21 +1289,6 @@ static UITableView *ApolloMediaComposerFindPrimaryTableView(UIViewController *co
     return bestTableView;
 }
 
-static UIColor *ApolloMediaComposerBodyBackgroundColor(void) {
-    if (@available(iOS 13.0, *)) return UIColor.secondarySystemBackgroundColor;
-    return [UIColor colorWithWhite:0.96 alpha:1.0];
-}
-
-static UIColor *ApolloMediaComposerBodyTextColor(void) {
-    if (@available(iOS 13.0, *)) return UIColor.labelColor;
-    return UIColor.blackColor;
-}
-
-static UIColor *ApolloMediaComposerBodyPlaceholderColor(void) {
-    if (@available(iOS 13.0, *)) return UIColor.secondaryLabelColor;
-    return [UIColor colorWithWhite:0.55 alpha:1.0];
-}
-
 static NSString *ApolloMediaComposerBodyPreviewText(NSString *text) {
     NSString *trimmed = ApolloMediaComposerTrimmedBodyText(text);
     if (trimmed.length == 0) return nil;
@@ -1408,7 +1396,6 @@ static UIViewController *ApolloMediaComposerVisibleComposerController(void) {
 }
 
 static BOOL ApolloMediaComposerButtonLooksLikeMediaRemove(UIButton *button) {
-    if (![button isKindOfClass:[UIButton class]]) return NO;
     CGRect bounds = button.bounds;
     if (bounds.size.width > 54.0 || bounds.size.height > 54.0) return NO;
 
@@ -1577,11 +1564,8 @@ static UITextView *ApolloMediaComposerNativeBodyTextView(UIViewController *edito
     @try { value = [editor valueForKey:@"composeTextView"]; } @catch (__unused NSException *e) {}
     if ([value isKindOfClass:[UITextView class]]) return (UITextView *)value;
 
-    Ivar ivar = class_getInstanceVariable(editor.class, "composeTextView");
-    if (ivar) {
-        id ivarValue = object_getIvar(editor, ivar);
-        if ([ivarValue isKindOfClass:[UITextView class]]) return (UITextView *)ivarValue;
-    }
+    id ivarValue = ApolloObjectIvar(editor, "composeTextView");
+    if ([ivarValue isKindOfClass:[UITextView class]]) return (UITextView *)ivarValue;
 
     UITextView *bestTextView = nil;
     CGFloat bestHeight = 0.0;
@@ -1788,11 +1772,8 @@ static void ApolloComposeFormBodyEditorApplyDoneItem(UIViewController *editor) {
 static UISegmentedControl *ApolloMediaComposerFindPostTypeSegmentedControl(UIViewController *controller) {
     if (!controller.isViewLoaded) return nil;
 
-    Ivar ivar = class_getInstanceVariable(controller.class, "postTypeSegmentedControl");
-    if (ivar) {
-        id value = object_getIvar(controller, ivar);
-        if ([value isKindOfClass:[UISegmentedControl class]]) return (UISegmentedControl *)value;
-    }
+    id value = ApolloObjectIvar(controller, "postTypeSegmentedControl");
+    if ([value isKindOfClass:[UISegmentedControl class]]) return (UISegmentedControl *)value;
 
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:controller.view];
     NSUInteger inspected = 0;
@@ -2094,7 +2075,7 @@ static void ApolloMediaComposerConfigureTitleBodyControl(UITableViewCell *cell, 
     if (![control isKindOfClass:[UIControl class]]) {
         control = [[UIControl alloc] initWithFrame:CGRectZero];
         control.tag = ApolloMediaComposerTitleBodyControlTag();
-        control.backgroundColor = ApolloMediaComposerBodyBackgroundColor();
+        control.backgroundColor = UIColor.secondarySystemBackgroundColor;
         control.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
 
         UIView *separator = [[UIView alloc] initWithFrame:CGRectZero];
@@ -2102,6 +2083,16 @@ static void ApolloMediaComposerConfigureTitleBodyControl(UITableViewCell *cell, 
         separator.backgroundColor = [UIColor separatorColor];
         separator.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
         [control addSubview:separator];
+        // The hairline height is baked from the display scale in the configure pass below;
+        // keep it one pixel when that scale changes. Registered once, at creation.
+        if (@available(iOS 17.0, *)) {
+            [separator registerForTraitChanges:@[UITraitDisplayScale.class]
+                                   withHandler:^(__kindof UIView *v, __unused UITraitCollection *previous) {
+                CGRect frame = v.frame;
+                frame.size.height = 1.0 / v.traitCollection.displayScale;
+                v.frame = frame;
+            }];
+        }
 
         UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
         label.tag = ApolloMediaComposerTitleBodyLabelTag();
@@ -2114,7 +2105,7 @@ static void ApolloMediaComposerConfigureTitleBodyControl(UITableViewCell *cell, 
         chevron.tag = ApolloMediaComposerTitleBodyChevronTag();
         chevron.text = @">";
         chevron.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];
-        chevron.textColor = ApolloMediaComposerBodyPlaceholderColor();
+        chevron.textColor = UIColor.secondaryLabelColor;
         chevron.textAlignment = NSTextAlignmentCenter;
         chevron.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleHeight;
         [control addSubview:chevron];
@@ -2138,17 +2129,17 @@ static void ApolloMediaComposerConfigureTitleBodyControl(UITableViewCell *cell, 
     CGFloat height = ApolloMediaComposerEmbeddedBodyRowHeight();
     CGFloat y = MAX(0.0, cell.contentView.bounds.size.height - height);
     control.frame = CGRectMake(0.0, y, width, height);
-    control.backgroundColor = cell.contentView.backgroundColor ?: cell.backgroundColor ?: ApolloMediaComposerBodyBackgroundColor();
+    control.backgroundColor = cell.contentView.backgroundColor ?: cell.backgroundColor ?: UIColor.secondarySystemBackgroundColor;
 
     UIView *separator = [control viewWithTag:ApolloMediaComposerTitleBodySeparatorTag()];
-    CGFloat scale = UIScreen.mainScreen.scale ?: 2.0;
+    CGFloat scale = cell.traitCollection.displayScale;
     separator.frame = CGRectMake(30.0, 0.0, MAX(0.0, width - 60.0), 1.0 / scale);
 
     UILabel *label = (UILabel *)[control viewWithTag:ApolloMediaComposerTitleBodyLabelTag()];
     UILabel *chevron = (UILabel *)[control viewWithTag:ApolloMediaComposerTitleBodyChevronTag()];
     BOOL hasBody = NO;
     label.text = ApolloMediaComposerBodyDisplayText(controller, &hasBody);
-    label.textColor = hasBody ? ApolloMediaComposerBodyTextColor() : ApolloMediaComposerBodyPlaceholderColor();
+    label.textColor = hasBody ? UIColor.labelColor : UIColor.secondaryLabelColor;
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCallout];
     label.frame = CGRectMake(32.0, 1.0, MAX(0.0, width - 78.0), height - 1.0);
     chevron.frame = CGRectMake(MAX(16.0, width - 42.0), 1.0, 22.0, height - 1.0);
@@ -2930,19 +2921,16 @@ static UIViewController *ApolloMediaComposerActiveComposeControllerForToken(void
 
     // Fallback: walk window roots and presented chains. We expect at most a
     // handful of UIWindows, and presented-controller depth is small.
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            UIViewController *vc = window.rootViewController;
-            NSUInteger guard = 0;
-            while (vc && guard++ < 32) {
-                NSString *cls = NSStringFromClass(vc.class) ?: @"";
-                if ([cls hasPrefix:@"_TtC6Apollo"] &&
-                    ([cls hasSuffix:@"ComposePostViewController"] || [cls hasSuffix:@"ComposeViewController"])) {
-                    return vc;
-                }
-                vc = vc.presentedViewController;
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *vc = window.rootViewController;
+        NSUInteger guard = 0;
+        while (vc && guard++ < 32) {
+            NSString *cls = NSStringFromClass(vc.class) ?: @"";
+            if ([cls hasPrefix:@"_TtC6Apollo"] &&
+                ([cls hasSuffix:@"ComposePostViewController"] || [cls hasSuffix:@"ComposeViewController"])) {
+                return vc;
             }
+            vc = vc.presentedViewController;
         }
     }
     return nil;
@@ -3164,8 +3152,9 @@ static UIColor *ApolloPhotoComposerAccentColor(UIViewController *controller) {
     return ApolloThemeAccentColor() ?: controller.view.tintColor;
 }
 
+// Only caller (…PostButtonTintInView) has already type-checked the button and
+// nil-checked the accent.
 static BOOL ApolloPhotoComposerApplyAccentToPostButton(UIButton *button, UIColor *accentColor) {
-    if (![button isKindOfClass:[UIButton class]] || ![accentColor isKindOfClass:[UIColor class]]) return NO;
     NSString *title = [button currentTitle] ?: button.titleLabel.text ?: button.accessibilityLabel;
     if (!ApolloPhotoComposerTextEqualsPost(title)) return NO;
 
@@ -4105,14 +4094,16 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
         NSString *typeIdentifier = context[@"typeIdentifier"];
         ApolloLog(@"[MediaComposer] video provider loadObjectOfClass:UIImage via %@", typeIdentifier ?: @"(missing)");
         NSProgress *progress = [NSProgress progressWithTotalUnitCount:1];
-        [self loadFileRepresentationForTypeIdentifier:typeIdentifier completionHandler:^(NSURL *url, NSError *error) {
+        // Hooked self is __unsafe_unretained; the completion runs async, so hold the provider strongly.
+        NSItemProvider *provider = (NSItemProvider *)self;
+        [provider loadFileRepresentationForTypeIdentifier:typeIdentifier completionHandler:^(NSURL *url, NSError *error) {
             if (error || !url) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, error ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Video provider did not return a file"}]);
                 return;
             }
             NSError *validationError = nil;
-            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider((NSItemProvider *)self, context, url, typeIdentifier, &validationError);
+            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider(provider, context, url, typeIdentifier, &validationError);
             if (!stableURL) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, validationError ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:7 userInfo:@{NSLocalizedDescriptionKey: @"Selected video is not allowed"}]);
@@ -4135,14 +4126,16 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
         NSString *videoType = context[@"typeIdentifier"];
         ApolloLog(@"[MediaComposer] video provider loadDataRepresentation image request=%@ via %@", typeIdentifier ?: @"(nil)", videoType ?: @"(missing)");
         NSProgress *progress = [NSProgress progressWithTotalUnitCount:1];
-        [self loadFileRepresentationForTypeIdentifier:videoType completionHandler:^(NSURL *url, NSError *error) {
+        // Hooked self is __unsafe_unretained; the completion runs async, so hold the provider strongly.
+        NSItemProvider *provider = (NSItemProvider *)self;
+        [provider loadFileRepresentationForTypeIdentifier:videoType completionHandler:^(NSURL *url, NSError *error) {
             if (error || !url) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, error ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:3 userInfo:@{NSLocalizedDescriptionKey: @"Video provider did not return a file"}]);
                 return;
             }
             NSError *validationError = nil;
-            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider((NSItemProvider *)self, context, url, videoType, &validationError);
+            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider(provider, context, url, videoType, &validationError);
             if (!stableURL) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, validationError ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:8 userInfo:@{NSLocalizedDescriptionKey: @"Selected video is not allowed"}]);
@@ -4167,14 +4160,16 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
         NSString *videoType = context[@"typeIdentifier"];
         ApolloLog(@"[MediaComposer] video provider loadFileRepresentation image request=%@ via %@", typeIdentifier ?: @"(nil)", videoType ?: @"(missing)");
         NSProgress *progress = [NSProgress progressWithTotalUnitCount:1];
-        [self loadFileRepresentationForTypeIdentifier:videoType completionHandler:^(NSURL *url, NSError *error) {
+        // Hooked self is __unsafe_unretained; the completion runs async, so hold the provider strongly.
+        NSItemProvider *provider = (NSItemProvider *)self;
+        [provider loadFileRepresentationForTypeIdentifier:videoType completionHandler:^(NSURL *url, NSError *error) {
             if (error || !url) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, error ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:5 userInfo:@{NSLocalizedDescriptionKey: @"Video provider did not return a file"}]);
                 return;
             }
             NSError *validationError = nil;
-            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider((NSItemProvider *)self, context, url, videoType, &validationError);
+            NSURL *stableURL = ApolloMediaComposerPrepareValidatedVideoProvider(provider, context, url, videoType, &validationError);
             if (!stableURL) {
                 progress.completedUnitCount = 1;
                 completionHandler(nil, validationError ?: [NSError errorWithDomain:@"ApolloMediaComposerVideoBridge" code:9 userInfo:@{NSLocalizedDescriptionKey: @"Selected video is not allowed"}]);

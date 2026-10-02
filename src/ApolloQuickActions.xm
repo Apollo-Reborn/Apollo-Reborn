@@ -68,6 +68,14 @@ static NSString *ApolloQuickActionNameFromURL(NSURL *url) {
     return nil;
 }
 
+// The navigation controller of the tab bar's selected tab, or nil.
+static UINavigationController *ApolloQuickActionsSelectedNavigationController(id tabBarController) {
+    if (![tabBarController isKindOfClass:[UITabBarController class]]) return nil;
+    UIViewController *selected = [(UITabBarController *)tabBarController selectedViewController];
+    if ([selected isKindOfClass:[UINavigationController class]]) return (UINavigationController *)selected;
+    return selected.navigationController;
+}
+
 // Opens Apollo's front-page feed (the aggregated "Posts from subscriptions"
 // listing), NOT the subreddit picker list that goToHomeTab lands on.
 //
@@ -88,20 +96,9 @@ static BOOL ApolloQuickActionsOpenHomeFeed(id tabBarController) {
         }
     }
 
-    if (![tabBarController isKindOfClass:UITabBarController.class]) {
-        ApolloLog(@"[QuickActions] Home: tab controller is not a UITabBarController: %@", tabBarController);
-        return NO;
-    }
-
-    UIViewController *selected = [(UITabBarController *)tabBarController selectedViewController];
-    UINavigationController *nav = nil;
-    if ([selected isKindOfClass:UINavigationController.class]) {
-        nav = (UINavigationController *)selected;
-    } else if ([selected.navigationController isKindOfClass:UINavigationController.class]) {
-        nav = selected.navigationController;
-    }
+    UINavigationController *nav = ApolloQuickActionsSelectedNavigationController(tabBarController);
     if (!nav) {
-        ApolloLog(@"[QuickActions] Home: no navigation controller for selected tab %@", selected);
+        ApolloLog(@"[QuickActions] Home: no navigation controller for selected tab of %@", tabBarController);
         return NO;
     }
 
@@ -197,14 +194,7 @@ static BOOL ApolloQuickActionsOpenModernMailboxNow(NSDictionary<NSString *, NSSt
         }
     }
 
-    if (![tabBarController isKindOfClass:[UITabBarController class]]) return NO;
-    UIViewController *selected = [(UITabBarController *)tabBarController selectedViewController];
-    UINavigationController *navigationController = nil;
-    if ([selected isKindOfClass:[UINavigationController class]]) {
-        navigationController = (UINavigationController *)selected;
-    } else if ([selected.navigationController isKindOfClass:[UINavigationController class]]) {
-        navigationController = selected.navigationController;
-    }
+    UINavigationController *navigationController = ApolloQuickActionsSelectedNavigationController(tabBarController);
     if (!navigationController) return NO;
 
     NSString *kind = route[@"kind"];
@@ -224,28 +214,16 @@ static BOOL ApolloQuickActionsOpenModernMailboxNow(NSDictionary<NSString *, NSSt
     return YES;
 }
 
-static void ApolloQuickActionsPerformWithRetry(NSString *action, NSUInteger attempt) {
-    if (ApolloQuickActionsPerformNow(action)) return;
+// Retries `perform` every 250ms (the tab bar controller may not exist yet on a
+// cold launch from a URL), giving up after 8 retries.
+static void ApolloQuickActionsRetry(NSString *description, BOOL (^perform)(void), NSUInteger attempt) {
+    if (perform()) return;
     if (attempt >= 8) {
-        ApolloLog(@"[QuickActions] Gave up performing %@", action);
+        ApolloLog(@"[QuickActions] Gave up %@", description);
         return;
     }
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        ApolloQuickActionsPerformWithRetry(action, attempt + 1);
-    });
-}
-
-static void ApolloQuickActionsOpenModernMailboxWithRetry(NSDictionary<NSString *, NSString *> *route,
-                                                         NSUInteger attempt) {
-    if (ApolloQuickActionsOpenModernMailboxNow(route)) return;
-    if (attempt >= 8) {
-        ApolloLog(@"[QuickActions] Gave up opening modern mailbox notification destination");
-        return;
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        ApolloQuickActionsOpenModernMailboxWithRetry(route, attempt + 1);
+        ApolloQuickActionsRetry(description, perform, attempt + 1);
     });
 }
 
@@ -254,7 +232,9 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url) {
     NSDictionary<NSString *, NSString *> *mailboxRoute = ApolloModernMailboxRouteFromURL(url);
     if (mailboxRoute) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            ApolloQuickActionsOpenModernMailboxWithRetry(mailboxRoute, 0);
+            ApolloQuickActionsRetry(@"opening modern mailbox notification destination", ^BOOL{
+                return ApolloQuickActionsOpenModernMailboxNow(mailboxRoute);
+            }, 0);
         });
         return YES;
     }
@@ -263,7 +243,9 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url) {
     if (!action) return NO;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        ApolloQuickActionsPerformWithRetry(action, 0);
+        ApolloQuickActionsRetry([@"performing " stringByAppendingString:action], ^BOOL{
+            return ApolloQuickActionsPerformNow(action);
+        }, 0);
     });
     return YES;
 }

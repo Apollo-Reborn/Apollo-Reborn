@@ -418,13 +418,14 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
         tf.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
     __weak UIAlertController *weakAlert = alert;
+    __weak __typeof__(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Add" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         NSString *sub = [ApolloPostFilterStore normalizeSubreddit:weakAlert.textFields.firstObject.text];
         if (sub.length == 0) return;
         [ApolloPostFilterStore ensureSubreddit:sub];
         [tableView reloadData];
-        [self apollo_pfOpenDetailForSubreddit:sub fromTable:tableView];
+        [weakSelf apollo_pfOpenDetailForSubreddit:sub fromTable:tableView];
     }]];
     [(UIViewController *)self presentViewController:alert animated:YES completion:nil];
 }

@@ -1367,7 +1367,14 @@ static inline NSIndexPath *LGRewriteForActiveScope(UITableView *tv, NSIndexPath 
     iv.contentMode = UIViewContentModeScaleAspectFill;
     iv.clipsToBounds = YES;
     iv.layer.cornerCurve = kCACornerCurveContinuous;
-    iv.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    iv.layer.borderWidth = 1.0 / iv.traitCollection.displayScale;
+    // Hairline border is cached on the layer; recompute it when the display
+    // scale changes (e.g. the view lands on a different screen).
+    if (@available(iOS 17.0, *)) {
+        [iv registerForTraitChanges:@[UITraitDisplayScale.class] withHandler:^(__kindof UIView *v, UITraitCollection *previous) {
+            v.layer.borderWidth = 1.0 / v.traitCollection.displayScale;
+        }];
+    }
     iv.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
     iv.backgroundColor = UIColor.secondarySystemBackgroundColor;
     return iv;
@@ -1775,7 +1782,14 @@ typedef void (^LGGroupCardTapHandler)(NSInteger groupIndex);
         iv.clipsToBounds = YES;
         iv.layer.cornerRadius = kLGFanCorner;
         iv.layer.cornerCurve = kCACornerCurveContinuous;
-        iv.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+        iv.layer.borderWidth = 1.0 / iv.traitCollection.displayScale;
+        // Hairline border is cached on the layer; recompute it when the
+        // display scale changes (e.g. the view lands on a different screen).
+        if (@available(iOS 17.0, *)) {
+            [iv registerForTraitChanges:@[UITraitDisplayScale.class] withHandler:^(__kindof UIView *v, UITraitCollection *previous) {
+                v.layer.borderWidth = 1.0 / v.traitCollection.displayScale;
+            }];
+        }
         iv.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
         iv.backgroundColor = UIColor.secondarySystemBackgroundColor;
         [_fanContainer addSubview:iv];
@@ -2847,7 +2861,11 @@ static void LGSetApolloCellNativeCheckmark(UITableViewCell *cell, BOOL selected)
     }
 }
 
-static UIImage *LGNormalizedEAPThumbnail(void) {
+// TODO: Modernization - the thumbnail is rendered once (dispatch_once) at the
+// first caller's display scale and reused for every later caller, so a cell on
+// a screen with a different scale gets a resampled bitmap. Cache per scale if
+// multi-display support ever needs it.
+static UIImage *LGNormalizedEAPThumbnail(UITraitCollection *traitCollection) {
     static UIImage *thumbnail;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -2856,7 +2874,7 @@ static UIImage *LGNormalizedEAPThumbnail(void) {
 
         // Render onto the native 76-point canvas so the raw icon is not cropped.
         CGSize size = CGSizeMake(76.0, 76.0);
-        UIGraphicsBeginImageContextWithOptions(size, NO, UIScreen.mainScreen.scale);
+        UIGraphicsBeginImageContextWithOptions(size, NO, traitCollection.displayScale);
         CGRect bounds = (CGRect){ CGPointZero, size };
         [[UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:17.0] addClip];
         [source drawInRect:bounds];
@@ -2869,7 +2887,7 @@ static UIImage *LGNormalizedEAPThumbnail(void) {
 static UITableViewCell *LGConfigureEAPCell(UITableViewCell *cell) {
     cell.textLabel.text = @"Icons Drop Test";
     cell.detailTextLabel.text = nil;
-    cell.imageView.image = LGNormalizedEAPThumbnail();
+    cell.imageView.image = LGNormalizedEAPThumbnail(cell.traitCollection);
     cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
     cell.imageView.clipsToBounds = NO;
     BOOL selected = [UIApplication.sharedApplication.alternateIconName isEqualToString:kLGEAPIconID];
@@ -2912,7 +2930,10 @@ static void LGSetNativeIconCellCheckmark(UITableViewCell *cell, BOOL selected);
 
 @end
 
-static UIImage *LGNormalizedUltraThumbnail(NSString *baseName) {
+// TODO: Modernization - the cache is keyed by baseName only, so the bitmap is
+// rendered at the first caller's display scale and reused for later callers on
+// a screen with a different scale. Key by scale if multi-display matters.
+static UIImage *LGNormalizedUltraThumbnail(NSString *baseName, UITraitCollection *traitCollection) {
     static NSMutableDictionary<NSString *, UIImage *> *cache;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{ cache = [NSMutableDictionary dictionary]; });
@@ -2931,7 +2952,7 @@ static UIImage *LGNormalizedUltraThumbnail(NSString *baseName) {
     if (!source) return nil;
 
     CGSize size = CGSizeMake(76.0, 76.0);
-    UIGraphicsBeginImageContextWithOptions(size, NO, UIScreen.mainScreen.scale);
+    UIGraphicsBeginImageContextWithOptions(size, NO, traitCollection.displayScale);
     CGRect bounds = (CGRect){ CGPointZero, size };
     [[UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:17.0] addClip];
     if ([baseName isEqualToString:@"palette"]) {
@@ -2982,7 +3003,7 @@ static void LGFixLegacyUltraPreview(UITableViewCell *cell, NSInteger row) {
     else if (row == kLGUltraPaletteRow)
         baseName = @"palette";
 
-    UIImage *thumbnail = baseName ? LGNormalizedUltraThumbnail(baseName) : nil;
+    UIImage *thumbnail = baseName ? LGNormalizedUltraThumbnail(baseName, cell.traitCollection) : nil;
     if (thumbnail) cell.imageView.image = thumbnail;
 }
 
@@ -4448,10 +4469,12 @@ static void LGStyleCommunityIconCell(id controller,
         // its checkmark and ends only the table's temporary pressed state.
         [tableView deselectRowAtIndexPath:indexPath animated:YES];
         __weak UITableView *weakTable = tableView;
+        __weak id weakSelf = self;
         LGPerformNativeIconSelectionWithFeedback(tableView, ^{
             UITableView *strongTable = weakTable;
-            if (!strongTable) return;
-            LGStyleCommunityIconCell(self,
+            id strongSelf = weakSelf;
+            if (!strongTable || !strongSelf) return;
+            LGStyleCommunityIconCell(strongSelf,
                                      [strongTable cellForRowAtIndexPath:indexPath],
                                      strongTable, indexPath);
         });
@@ -4604,7 +4627,7 @@ static void LGKeepMainSettingsIconSquare(UITableViewCell *cell) {
     // above already renders correctly.
     if (!LGAlternateIconsAvailable()) return;
     UITableView *tableView = LGRememberedTableView(self);
-    if (tableView) [tableView reloadData];
+    [tableView reloadData];
 }
 
 %end

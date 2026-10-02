@@ -4,6 +4,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // =============================================================================
 // MARK: - Overview
@@ -50,19 +51,14 @@ static NSString *ApolloLinkCardWebsiteNameForURLString(NSString *urlString) {
     return ApolloWebsiteNameFromHost(host);
 }
 
-static id ApolloLinkCardTitleNode(id linkButtonNode) {
-    if (!linkButtonNode) return nil;
-    Ivar ivar = class_getInstanceVariable([linkButtonNode class], "titleTextNode");
-    return ivar ? object_getIvar(linkButtonNode, ivar) : nil;
-}
 
 // Main-thread: re-resolve the node's current title + URL and, if still junk,
 // swap in the website name. Re-resolving here (rather than trusting values
 // captured on the layout thread) keeps the swap correct if the cell was reused
 // for a different post between scheduling and running.
 static void ApolloLinkCardApplyTitleFix(id linkButtonNode) {
-    id titleNode = ApolloLinkCardTitleNode(linkButtonNode);
-    if (!titleNode || ![titleNode respondsToSelector:@selector(attributedText)]) return;
+    id titleNode = ApolloObjectIvar(linkButtonNode, "titleTextNode");
+    if (![titleNode respondsToSelector:@selector(attributedText)]) return;
 
     NSAttributedString *current = [titleNode attributedText];
     NSString *text = current.string;
@@ -88,13 +84,11 @@ static void ApolloLinkCardApplyTitleFix(id linkButtonNode) {
 // the main thread. The in-flight flag collapses repeated layout passes into a
 // single scheduled fix.
 static void ApolloLinkCardScheduleTitleFix(id linkButtonNode) {
-    if (!linkButtonNode) return;
-
     NSNumber *inFlight = objc_getAssociatedObject(linkButtonNode, &kApolloLinkCardTitleFixInFlightKey);
     if ([inFlight boolValue]) return;
 
-    id titleNode = ApolloLinkCardTitleNode(linkButtonNode);
-    if (!titleNode || ![titleNode respondsToSelector:@selector(attributedText)]) return;
+    id titleNode = ApolloObjectIvar(linkButtonNode, "titleTextNode");
+    if (![titleNode respondsToSelector:@selector(attributedText)]) return;
     if (!ApolloIsJunkNumericTitle([[titleNode attributedText] string])) return;
 
     objc_setAssociatedObject(linkButtonNode, &kApolloLinkCardTitleFixInFlightKey,

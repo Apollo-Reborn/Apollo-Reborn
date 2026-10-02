@@ -40,6 +40,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 @interface _TtC6Apollo22CommentsViewController : UIViewController
 @end
@@ -67,30 +68,6 @@ static long gICSGen = 0;
 
 // MARK: - runtime helpers
 
-static id ICSObjectIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-// Read a Swift.Bool / BOOL ivar (one byte, stored inline) by walking the superclass chain.
-static BOOL ICSReadBool(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) {
-            ptrdiff_t off = ivar_getOffset(iv);
-            return *(((uint8_t *)(__bridge void *)obj) + off) != 0;
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return NO;
-}
-
 static UITableView *ICSFindTable(UIView *v) {
     if (!v) return nil;
     if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
@@ -115,8 +92,8 @@ static UITableView *ICSTableView(UIViewController *vc, id tableNode) {
 // Isolated single-comment-thread: has the "View All Comments" footer node, or is a
 // continued-thread view. Either way the linked comment lives near the bottom.
 static BOOL ICSIsIsolatedThread(UIViewController *vc) {
-    if (ICSObjectIvar(vc, "viewFullPostNode") != nil) return YES;
-    if (ICSReadBool(vc, "continuingThread")) return YES;
+    if (ApolloObjectIvar(vc, "viewFullPostNode") != nil) return YES;
+    if (ApolloReadBoolIvar(vc, "continuingThread", NO)) return YES;
     return NO;
 }
 
@@ -138,7 +115,7 @@ static NSIndexPath *ICSLinkedIndexPath(id tableNode, UITableView *tableView) {
         for (NSInteger r = 0; r < rows; r++) {
             NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
             id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
-            if (node && ICSReadBool(node, "isLinkedToComment")) linked = ip;
+            if (node && ApolloReadBoolIvar(node, "isLinkedToComment", NO)) linked = ip;
         }
     }
     return linked;
@@ -157,7 +134,7 @@ static CGFloat ICSDesiredOffsetForRow(UITableView *tableView, NSIndexPath *ip) {
 // Pin the linked comment to the top (instant). Returns: -1 not ready, 0 corrected (was off),
 // 1 already on target. Safe to call from both the poll and viewDidLayoutSubviews.
 static int ICSPinLinked(UIViewController *vc) {
-    id tableNode = ICSObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tv = ICSTableView(vc, tableNode);
     if (!tv) return -1;
 
@@ -217,7 +194,7 @@ static void ICSTick(__weak UIViewController *weakVC, long gen, NSDate *deadline,
     }
     if (!everIso) ICSSet(vc, kEverIsoKey, @YES);
 
-    id tableNode = ICSObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = ICSTableView(vc, tableNode);
     if (!tableView) {
         if (!pastDeadline) ICSScheduleTick(weakVC, gen, deadline, armDate);

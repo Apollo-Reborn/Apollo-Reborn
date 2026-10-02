@@ -335,7 +335,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     for (UISearchBar *searchBar in sApolloHeaderStyleSearchBars) {
         if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
     }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+    for (UIWindow *window in ApolloAllWindows()) {
         ApolloApplyAndNudgeViewTree(window);
     }
     // The rebuild that runs in the same turn as an un-hide/style change can
@@ -343,7 +343,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     // missing its status-bar cover until the next scroll tick). A second
     // nudge on the next runloop turn recomputes from settled geometry.
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        for (UIWindow *window in ApolloAllWindows()) {
             ApolloNudgeViewTree(window);
         }
     });

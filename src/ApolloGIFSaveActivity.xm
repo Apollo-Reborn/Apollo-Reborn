@@ -103,9 +103,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
                 // Native completion only displays Apollo's ordinary Saved!
                 // banner; it does not issue another Photos write.
                 id manager = [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init];
-                SEL selector = @selector(image:didFinishSavingWithError:contextInfo:);
-                if ([manager respondsToSelector:selector]) ((void (*)(id,SEL,id,id,void *))objc_msgSend)(manager,selector,nil,nil,NULL);
-                else ApolloShowToastWithStyle(@"Saved!", nil, ApolloToastStyleSuccess, nil);
+                ((void (*)(id,SEL,id,id,void *))objc_msgSend)(manager, @selector(image:didFinishSavingWithError:contextInfo:), nil, nil, NULL);
             } else {
                 ApolloLog(@"[GIFSaveActivity] Photos rejected GIF domain=%@ code=%ld", error.domain, (long)error.code);
                 [self reportError:error.localizedDescription ?: @"Photos couldn't save this GIF. Try again." permission:NO];

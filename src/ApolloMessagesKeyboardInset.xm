@@ -59,6 +59,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 @interface _TtC6Apollo22MessagesViewController : UIViewController
 @end
@@ -140,8 +141,7 @@ static NSNotification *ApolloMessagesNormalizedKeyboardNotification(UIViewContro
     // bar docks again.
     if (!controller.isViewLoaded || !controller.view.window) return nil;
 
-    NSDictionary *userInfo = [notification.userInfo isKindOfClass:NSDictionary.class]
-        ? notification.userInfo : nil;
+    NSDictionary *userInfo = notification.userInfo;
     id beginValue = userInfo[UIKeyboardFrameBeginUserInfoKey];
     id endValue = userInfo[UIKeyboardFrameEndUserInfoKey];
     if (![beginValue respondsToSelector:@selector(CGRectValue)] ||
@@ -174,13 +174,7 @@ static NSNotification *ApolloMessagesNormalizedKeyboardNotification(UIViewContro
 }
 
 static UIScrollView *ApolloMessagesCollectionView(UIViewController *controller) {
-    static Ivar ivar = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class cls = objc_getClass("_TtC6Apollo22MessagesViewController");
-        if (cls) ivar = class_getInstanceVariable(cls, "messagesCollectionView");
-    });
-    id view = ivar ? object_getIvar(controller, ivar) : nil;
+    id view = ApolloObjectIvar(controller, "messagesCollectionView");
     return [view isKindOfClass:UIScrollView.class] ? (UIScrollView *)view : nil;
 }
 

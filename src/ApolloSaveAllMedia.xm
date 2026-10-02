@@ -1,5 +1,6 @@
 #import "ApolloSaveAllMedia.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloToast.h"
 #import "ApolloThemeRuntime.h"
@@ -54,8 +55,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 - (void)didMoveToSuperview {
     %orig;
     if (!sApolloSaveAllPendingBannerToken || !((UIView *)self).superview) return;
-    Ivar labelIvar = class_getInstanceVariable(object_getClass(self), "textLabel");
-    id value = labelIvar ? object_getIvar(self, labelIvar) : nil;
+    id value = ApolloObjectIvar(self, "textLabel");
     if (![value isKindOfClass:UILabel.class]) return;
     UILabel *label = value;
     if (![label.text isEqualToString:@"Saved!"]) return;

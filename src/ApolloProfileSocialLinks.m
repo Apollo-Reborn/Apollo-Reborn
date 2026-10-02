@@ -104,9 +104,7 @@ static UIImage *ApolloSLPlaceholderIcon(void) {
     static UIImage *icon;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        if (@available(iOS 13.0, *)) {
-            icon = [[UIImage systemImageNamed:@"link"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        }
+        icon = [[UIImage systemImageNamed:@"link"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     });
     return icon;
 }

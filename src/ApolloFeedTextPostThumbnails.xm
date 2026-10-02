@@ -34,6 +34,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloState.h"
 #import "Tweak.h"
@@ -530,7 +531,6 @@ static BOOL ApolloFeedRouteURLToNativeHandler(id startNode, NSURL *url) {
 // Shared tap handler: opens the tapped text post's embedded image the same
 // way a normal image post opens its media, instead of confusingly opening
 // the thread.
-static id ApolloFeedIvar(id obj, const char *name);
 
 @interface ApolloFeedHeroTapHandler : NSObject
 @end
@@ -584,7 +584,7 @@ static id ApolloFeedIvar(id obj, const char *name);
             ApolloLog(@"[FeedThumb] compact thumb tap: no cell handler in chain");
             return;
         }
-        RDKLink *link = ApolloFeedIvar(target, "link");
+        RDKLink *link = ApolloObjectIvar(target, "link");
         if (!(link.selfPost && ApolloFeedThumbnailURLForLink(link))) return;
         ((void (*)(id, SEL, id))objc_msgSend)(target, @selector(thumbnailTappedWithSender:), sender);
     } @catch (__unused NSException *e) {}
@@ -689,14 +689,6 @@ static NSHashTable *ApolloFeedInjectedNodes(void) {
     return table;
 }
 
-// Read an ivar by name via the ObjC runtime (works outside %hook blocks).
-static id ApolloFeedIvar(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    return object_getIvar(obj, iv);
-}
-
 // Hide the redundant link card and strip the naked image URL on a RichMediaNode.
 //
 // IMPORTANT: when called from inside layoutSpecThatFits: (a layout pass),
@@ -707,7 +699,7 @@ static id ApolloFeedIvar(id obj, const char *name) {
 static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
     if (!node) return;
     @try {
-        id linkButton = ApolloFeedIvar(node, "linkButtonNode");
+        id linkButton = ApolloObjectIvar(node, "linkButtonNode");
         if (linkButton) {
             ASDisplayNode *lb = (ASDisplayNode *)linkButton;
             if ([lb respondsToSelector:@selector(setHidden:)]) lb.hidden = YES;
@@ -720,7 +712,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                 ((ApolloFeedLayoutStyle *)st).preferredSize = CGSizeZero;
             }
         }
-        id previewText = ApolloFeedIvar(node, "selfPostPreviewNode");
+        id previewText = ApolloObjectIvar(node, "selfPostPreviewNode");
         ApolloFeedStripImageURLsFromTextNode(previewText);
         if (triggerLayout && [node respondsToSelector:@selector(setNeedsLayout)]) {
             [(ASDisplayNode *)node setNeedsLayout];
@@ -762,7 +754,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                     @try {
                         ASDisplayNode *wrapper = weakWrapper;
                         if (!wrapper) return;
-                        id thumbNode = ApolloFeedIvar(wrapper, "thumbnailNode");
+                        id thumbNode = ApolloObjectIvar(wrapper, "thumbnailNode");
                         if (![thumbNode respondsToSelector:@selector(addTarget:action:forControlEvents:)] ||
                             ![thumbNode respondsToSelector:@selector(setUserInteractionEnabled:)]) {
                             ApolloLog(@"[FeedThumb] compact wiring skipped: thumb=%@ lacks control surface",
@@ -849,7 +841,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
         @try {
             RDKLink *link = MSHookIvar<RDKLink *>(self, "link");
             if (link && link.selfPost && ApolloFeedThumbnailURLForLink(link)) {
-                ApolloFeedStripImageURLsFromTextNode(ApolloFeedIvar(self, "selfPostPreviewNode"));
+                ApolloFeedStripImageURLsFromTextNode(ApolloObjectIvar(self, "selfPostPreviewNode"));
                 [ApolloFeedInjectedNodes() addObject:self];
             }
         } @catch (__unused NSException *e) {}
@@ -1006,7 +998,7 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                             ApolloFeedReapplyCleanup(node, YES);
                         } else {
                             // Toggle off: only keep the preview text clean.
-                            ApolloFeedStripImageURLsFromTextNode(ApolloFeedIvar(node, "selfPostPreviewNode"));
+                            ApolloFeedStripImageURLsFromTextNode(ApolloObjectIvar(node, "selfPostPreviewNode"));
                         }
                     }
                 } @catch (__unused NSException *e) {}

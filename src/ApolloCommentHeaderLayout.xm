@@ -1,3 +1,4 @@
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTextureDecls.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -5,10 +6,6 @@
 // The author is an ApolloButtonNode (ASButtonNode), not a UILabel. Let
 // Texture remeasure it at the space left after the score, badges and age;
 // changing view frames after layout would leave its hit target out of sync.
-static id ApolloCommentHeaderNode(id cell, const char *name) {
-    Ivar ivar = class_getInstanceVariable([cell class], name);
-    return ivar ? object_getIvar(cell, ivar) : nil;
-}
 
 static BOOL ApolloCommentHeaderAllowAuthorShrink(id element, id author) {
     if (element == author) return YES;
@@ -33,7 +30,7 @@ static BOOL ApolloCommentHeaderAllowAuthorShrink(id element, id author) {
 
 - (id)layoutSpecThatFits:(struct ApolloTextureSizeRange)constrainedSize {
     id spec = %orig;
-    id author = ApolloCommentHeaderNode(self, "authorNode");
+    id author = ApolloObjectIvar(self, "authorNode");
     if (!author || !ApolloCommentHeaderAllowAuthorShrink(spec, author)) return spec;
 
     SEL titleSelector = NSSelectorFromString(@"titleNode");

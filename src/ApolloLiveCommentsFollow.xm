@@ -42,6 +42,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 
@@ -110,27 +111,6 @@ static BOOL LCFBool(id vc, const void *key) { return [LCFNum(vc, key) boolValue]
 
 // MARK: - runtime helpers
 
-// Walk the superclass chain to read an object ivar (matches ApolloInboxCommentScroll).
-static id LCFObjectIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-static ptrdiff_t LCFIvarOffset(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return ivar_getOffset(iv);
-        cls = class_getSuperclass(cls);
-    }
-    return -1;
-}
-
 // Is the comments VC currently in Live Update sort?
 //
 // currentSort is an optional Swift enum (RDKCommentSortingMethod?). Layout read straight
@@ -138,7 +118,7 @@ static ptrdiff_t LCFIvarOffset(id obj, const char *name) {
 // offset+0, raw==8 == Live Update. This is more robust than reading the `weak liveSortTimer`
 // ivar (which would need swift_unknownObjectWeakLoadStrong, not object_getIvar).
 static BOOL LCFIsLive(id vc) {
-    ptrdiff_t off = LCFIvarOffset(vc, "currentSort");
+    ptrdiff_t off = ApolloIvarOffset(object_getClass(vc), "currentSort");
     if (off < 0) return NO;
     const uint8_t *base = (const uint8_t *)(__bridge const void *)vc;
     uint8_t nilFlag = *(base + off + 8);
@@ -148,27 +128,17 @@ static BOOL LCFIsLive(id vc) {
     return raw == 8;                          // .liveUpdate
 }
 
-// Read a Swift.Bool / BOOL ivar (one inline byte) by walking the superclass chain.
-static BOOL LCFReadBool(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return *(((uint8_t *)(__bridge void *)obj) + ivar_getOffset(iv)) != 0;
-        cls = class_getSuperclass(cls);
-    }
-    return NO;
-}
-
+// Read a Swift.Bool / BOOL ivar (one inline byte).
 // An isolated single-comment thread (Inbox permalink / continued thread). ApolloInboxCommentScroll
 // owns the scroll position there, so this module stays dormant to avoid two contentOffset writers
 // fighting on the same VC (matters if the user's default sort happens to be Live Update).
 static BOOL LCFIsIsolatedThread(UIViewController *vc) {
-    if (LCFObjectIvar(vc, "viewFullPostNode") != nil) return YES;
-    if (LCFReadBool(vc, "continuingThread")) return YES;
+    if (ApolloObjectIvar(vc, "viewFullPostNode") != nil) return YES;
+    if (ApolloReadBoolIvar(vc, "continuingThread", NO)) return YES;
     return NO;
 }
 
-static id LCFTableNode(id vc) { return LCFObjectIvar(vc, "tableNode"); }
+static id LCFTableNode(id vc) { return ApolloObjectIvar(vc, "tableNode"); }
 
 static UITableView *LCFTableView(UIViewController *vc) {
     id tableNode = LCFTableNode(vc);
@@ -184,7 +154,7 @@ static UITableView *LCFTableView(UIViewController *vc) {
 
 // fullName ("t1_xxx") of a comment cell node, or nil for header/footer/spinner/load-more rows.
 static NSString *LCFNodeCommentFullName(id node) {
-    id comment = LCFObjectIvar(node, "comment");   // RDKComment on _TtC6Apollo15CommentCellNode
+    id comment = ApolloObjectIvar(node, "comment");   // RDKComment on _TtC6Apollo15CommentCellNode
     if (!comment) return nil;
     SEL fnSel = NSSelectorFromString(@"fullName");
     if (![comment respondsToSelector:fnSel]) return nil;
@@ -231,7 +201,7 @@ static BOOL LCFQuickBarTopContentY(UIViewController *vc, UITableView *tv, CGFloa
     NSIndexPath *ip0 = [NSIndexPath indexPathForRow:0 inSection:0];
     id header = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip0);
     if (![header isMemberOfClass:NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode")]) return NO;
-    id qb = LCFObjectIvar(header, "quickBarNode");
+    id qb = ApolloObjectIvar(header, "quickBarNode");
     SEL boundsSel = NSSelectorFromString(@"bounds");
     SEL convSel = NSSelectorFromString(@"convertRect:toNode:");
     if (!qb || ![qb respondsToSelector:boundsSel] || ![qb respondsToSelector:convSel]) return NO;
@@ -353,9 +323,9 @@ static CGFloat LCFNavBarBottom(UIViewController *vc) {
 static CGFloat LCFToolbarBottom(UIViewController *vc) {
     UIView *root = vc.view;
     if (!root) return 0.0;
-    UIView *host = LCFObjectIvar(vc, "upperToolbar");
+    UIView *host = ApolloObjectIvar(vc, "upperToolbar");
     if (![host isKindOfClass:[UIView class]]) {
-        UIView *search = LCFObjectIvar(vc, "searchTextField");
+        UIView *search = ApolloObjectIvar(vc, "searchTextField");
         if ([search isKindOfClass:[UIView class]] && search.superview && search.superview != root) {
             host = search.superview;
         } else {
@@ -373,22 +343,6 @@ static CGFloat LCFToolbarBottom(UIViewController *vc) {
 
 static UIColor *LCFThemeAccent(UIViewController *vc) {
     return ApolloThemeAccentColor() ?: vc.view.tintColor ?: UIColor.systemBlueColor;
-}
-
-static NSAttributedString *LCFSymbolAttachment(NSString *symbolName, UIFont *font, UIColor *tint) {
-    if (@available(iOS 13.0, *)) {
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithFont:font];
-        UIImage *image = [UIImage systemImageNamed:symbolName withConfiguration:cfg];
-        if (image) {
-            image = [image imageWithTintColor:tint renderingMode:UIImageRenderingModeAlwaysOriginal];
-            NSTextAttachment *att = [[NSTextAttachment alloc] init];
-            att.image = image;
-            CGFloat y = (font.capHeight - image.size.height) / 2.0;
-            att.bounds = CGRectMake(0, y, image.size.width, image.size.height);
-            return [NSAttributedString attributedStringWithAttachment:att];
-        }
-    }
-    return nil;
 }
 
 // MARK: - pill view
@@ -436,7 +390,7 @@ static void LCFSetPillContent(UIViewController *vc, NSString *text) {
         ? UIColor.blackColor : UIColor.whiteColor;
 
     NSMutableAttributedString *title = [[NSMutableAttributedString alloc] init];
-    NSAttributedString *chevron = LCFSymbolAttachment(@"chevron.up", btn.titleLabel.font, fg);
+    NSAttributedString *chevron = ApolloSymbolAttachment(@"chevron.up", btn.titleLabel.font, fg);
     if (chevron) {
         [title appendAttributedString:chevron];
         [title appendAttributedString:[[NSAttributedString alloc] initWithString:@"  "]];

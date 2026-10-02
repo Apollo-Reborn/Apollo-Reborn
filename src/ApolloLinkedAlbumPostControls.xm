@@ -7,6 +7,7 @@
 #import <dlfcn.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 extern "C" CFURLRef ApolloLinkedAlbumCopyURL(const void *storage, size_t size);
 
@@ -21,11 +22,6 @@ extern "C" CFURLRef ApolloLinkedAlbumCopyURL(const void *storage, size_t size);
 
 static ApolloLinkedAlbumContext *sApolloLinkedAlbumTapContext;
 static char kApolloLinkedAlbumContextKey;
-
-static id ApolloLinkedAlbumObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable(object_getClass(object), name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 
 static NSString *ApolloLinkedAlbumImgurID(NSURL *url) {
     if (![url isKindOfClass:NSURL.class]) return nil;
@@ -57,8 +53,8 @@ static ApolloLinkedAlbumContext *ApolloLinkedAlbumContextForTap(id markdownNode,
         // parent post. Never infer a source post from the visible controller.
         if (commentClass && [node isKindOfClass:commentClass]) return nil;
         if (headerClass && [node isKindOfClass:headerClass]) {
-            if (ApolloLinkedAlbumObjectIvar(node, "bodyNode") != descendant) return nil;
-            id link = ApolloLinkedAlbumObjectIvar(node, "link");
+            if (ApolloObjectIvar(node, "bodyNode") != descendant) return nil;
+            id link = ApolloObjectIvar(node, "link");
             if (!linkClass || ![link isKindOfClass:linkClass]) return nil;
             UIViewController *owner = [node respondsToSelector:controllerSelector]
                 ? ((id (*)(id, SEL))objc_msgSend)(node, controllerSelector) : nil;

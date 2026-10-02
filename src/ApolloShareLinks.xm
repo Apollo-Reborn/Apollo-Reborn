@@ -424,17 +424,16 @@ static BOOL ApolloOpensLinksInSystemBrowser(void) {
     return [ApolloOpenLinksInToken() isEqualToString:@"external-safari"];
 }
 
-// UIWindowScene.keyWindow is iOS 15-only, while the tweak still supports iOS
-// 14. Walk the scene windows through the shared compatibility helper and use
-// UIWindow.isKeyWindow, which is available at our deployment floor.
+// The shared key-window lookup (foreground-active scene first; iOS 14-safe),
+// provided it is visible; else the first visible window in any scene.
 static UIWindow *ApolloSharePresentationWindow(void) {
-    UIWindow *fallback = nil;
+    UIWindow *keyWindow = ApolloKeyWindow();
+    if (keyWindow && !keyWindow.hidden && keyWindow.alpha > 0.01) return keyWindow;
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.hidden || window.alpha <= 0.01) continue;
-        if (window.isKeyWindow) return window;
-        fallback = fallback ?: window;
+        return window;
     }
-    return fallback;
+    return nil;
 }
 
 // Present `url` in Apollo's in-app browser (the same SFSafariViewController

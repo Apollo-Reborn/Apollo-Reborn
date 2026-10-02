@@ -68,7 +68,6 @@ static BOOL ApolloFavoriteConfirmIsFavorited(NSString *name) {
     if (name.length == 0) return NO;
     NSArray<NSString *> *favorites =
         [[NSUserDefaults standardUserDefaults] stringArrayForKey:UDKeyApolloFavoriteSubreddits];
-    if (![favorites isKindOfClass:[NSArray class]]) return NO;
     for (NSString *entry in favorites) {
         if ([entry caseInsensitiveCompare:name] == NSOrderedSame) return YES;
     }

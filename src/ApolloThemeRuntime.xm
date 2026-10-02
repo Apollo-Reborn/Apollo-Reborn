@@ -5,6 +5,7 @@
 #import "ApolloClassicBarTheme.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import <CoreText/CoreText.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -271,8 +272,7 @@ static void ApolloThemePinSeparatorNode(ASDisplayNode *node) {
 
 static void ApplyThemeThinSeparatorNode(_TtC6Apollo21ThinSeparatorCellNode *cellNode) {
     if (!ApolloThemeCurrentSnapshot()->enabled || !cellNode) return;
-    Ivar separatorIvar = class_getInstanceVariable(object_getClass(cellNode), "separatorNode");
-    ASDisplayNode *separatorNode = separatorIvar ? object_getIvar(cellNode, separatorIvar) : nil;
+    ASDisplayNode *separatorNode = ApolloObjectIvar(cellNode, "separatorNode");
     UIColor *separator = ApolloThemeRuntimeColor(ApolloThemeTokenSeparator);
     if (separatorNode && separator) {
         ApolloThemePinSeparatorNode(separatorNode);
@@ -280,19 +280,14 @@ static void ApplyThemeThinSeparatorNode(_TtC6Apollo21ThinSeparatorCellNode *cell
     }
 }
 
-static ASDisplayNode *ApolloThemeObjectIvar(id owner, const char *name) {
-    if (!owner || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(owner), name);
-    return ivar ? object_getIvar(owner, ivar) : nil;
-}
 
 static void ApplyThemeCommentsHeaderSeparators(_TtC6Apollo22CommentsHeaderCellNode *headerNode) {
     if (!ApolloThemeCurrentSnapshot()->enabled || !headerNode) return;
     UIColor *separator = ApolloThemeRuntimeColor(ApolloThemeTokenSeparator);
     if (!separator) return;
 
-    ASDisplayNode *quickBarSeparator = ApolloThemeObjectIvar(headerNode, "quickBarSeparatorNode");
-    ASDisplayNode *commentsSeparator = ApolloThemeObjectIvar(headerNode, "commentsSeparatorNode");
+    ASDisplayNode *quickBarSeparator = ApolloObjectIvar(headerNode, "quickBarSeparatorNode");
+    ASDisplayNode *commentsSeparator = ApolloObjectIvar(headerNode, "commentsSeparatorNode");
     if (quickBarSeparator) {
         ApolloThemePinSeparatorNode(quickBarSeparator);
         quickBarSeparator.backgroundColor = separator;
@@ -2448,8 +2443,7 @@ static const void *kApolloThemePillRestoredKey = &kApolloThemePillRestoredKey;
 
 static void ApolloThemeRestoreOverlayPillText(id node) {
     if (!node || !ApolloThemeCurrentSnapshot()->enabled) return;
-    Ivar ivar = class_getInstanceVariable(object_getClass(node), "textNode");
-    id textNode = ivar ? object_getIvar(node, ivar) : nil;
+    id textNode = ApolloObjectIvar(node, "textNode");
     if (![textNode respondsToSelector:@selector(attributedText)]) return;
 
     NSAttributedString *text = [textNode attributedText];
