@@ -14,6 +14,10 @@ extern void ApolloVideoUnmute_FixDisconnectedPlayerLayer(id postsViewController)
 // Exported from ApolloVideoUnmute.xm — puts the header's mute icon back in step
 // with the player it just got back.
 extern void ApolloVideoUnmute_SyncMuteButtonIcon(id richMediaNode, BOOL isMuted);
+// Exported from ApolloSwipeUpComments.xm. When the pane's collapsed media
+// header takes the fullscreen viewer's shared layer, schedule a page-scoped
+// hand-back after Apollo finishes its take sequence.
+extern void ApolloSwipeCommentsSharedPlayerLayerMoved(AVPlayerLayer *playerLayer);
 
 // =============================================================================
 // MARK: - Overview
@@ -490,6 +494,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
 - (void)setPlayerLayer:(id)playerLayer {
     %orig;
     if (![NSThread isMainThread] || ![playerLayer isKindOfClass:[AVPlayerLayer class]]) return;
+    ApolloSwipeCommentsSharedPlayerLayerMoved((AVPlayerLayer *)playerLayer);
     if (![self respondsToSelector:@selector(supernode)]) return;
     id supernode = ((id (*)(id, SEL))objc_msgSend)(self, @selector(supernode));
     if (!sRichMediaNodeClass || ![supernode isKindOfClass:sRichMediaNodeClass]) return;

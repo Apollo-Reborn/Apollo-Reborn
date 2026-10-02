@@ -4,10 +4,15 @@ name: PR build IPA variants
 # pr-build-ipa-comment.yml, which posts a sticky comment with per-variant
 # download links so reviewers can sideload a test build without building locally.
 #
-# Gated to CODEOWNERS authors (read from the trusted base ref). The build runs on
-# both same-repo and fork PRs, but fork PRs get a read-only token here, so this
-# workflow never comments directly: it uploads the comment body as an artifact
-# and a separate workflow_run workflow (write-scoped) posts it. No GitHub App.
+# Gated to code owners (read from the trusted base ref): a run builds when the PR
+# author is a code owner, or when a code owner started the run. GitHub holds fork
+# PR runs from outside contributors until a maintainer clicks "Approve and run",
+# and approving (or "Re-run jobs") starts a new attempt whose triggering actor is
+# that maintainer, so approving a contributor's run is what opts it into a build.
+# The build runs on both same-repo and fork PRs, but fork PRs get a read-only
+# token here, so this workflow never comments directly: it uploads the comment
+# body as an artifact and a separate workflow_run workflow (write-scoped) posts
+# it. No GitHub App.
 
 on:
   pull_request:
@@ -38,14 +43,16 @@ permissions:
 
 jobs:
   authorize:
-    name: Check PR author is a code owner
-    # Cheap pre-filter to skip the expensive build for non-code-owner PRs. This
-    # is NOT the security boundary for forks (a fork controls this workflow file
-    # and could bypass it) — the authoritative code-owner gate runs in the
-    # fork-uneditable pr-build-ipa-comment.yml before any comment is posted.
+    name: Check PR author or run approver is a code owner
+    # Cheap pre-filter to skip the expensive build unless a code owner authored
+    # the PR or started this run. This is NOT the security boundary for forks (a
+    # fork controls this workflow file and could bypass it) — the authoritative
+    # code-owner gate runs in the fork-uneditable pr-build-ipa-comment.yml before
+    # any comment is posted.
     runs-on: ubuntu-latest
     outputs:
-      is_owner: ${{ steps.check.outputs.is_owner }}
+      authorized: ${{ steps.check.outputs.authorized }}
+      via: ${{ steps.check.outputs.via }}
     steps:
       - name: Checkout CODEOWNERS
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -60,34 +67,51 @@ jobs:
         id: check
         env:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          # Who started this run attempt. On an outside contributor's fork PR the
+          # first attempt is held for approval; "Approve and run" (or a re-run)
+          # starts a new attempt with the maintainer here, while github.actor and
+          # the PR author stay the contributor.
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
-          # Match the PR author against individual @users on the global owners
-          # line (`* ...`) in CODEOWNERS. @org/team entries are not expanded.
+          # Match against individual @users on the global owners line (`* ...`)
+          # in CODEOWNERS. @org/team entries are not expanded.
           OWNERS=$(grep -E '^\*[[:space:]]' .github/CODEOWNERS \
             | sed 's/#.*//' \
             | grep -oE '@[A-Za-z0-9_-]+' \
             | sed 's/@//')
           echo "Global code owners: $(echo "$OWNERS" | tr '\n' ' ')"
           echo "PR author: ${PR_AUTHOR}"
-          is_owner=false
-          while IFS= read -r owner; do
-            [ -z "$owner" ] && continue
-            if [ "$(echo "$owner" | tr '[:upper:]' '[:lower:]')" = "$(echo "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')" ]; then
-              is_owner=true
-              break
-            fi
-          done <<< "$OWNERS"
-          echo "is_owner=${is_owner}" >> "$GITHUB_OUTPUT"
-          if [ "$is_owner" = "true" ]; then
+          echo "Run started by: ${TRIGGERING_ACTOR}"
+          is_code_owner() {
+            local user
+            user=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+            [ -n "$user" ] || return 1
+            while IFS= read -r owner; do
+              [ -z "$owner" ] && continue
+              [ "$(echo "$owner" | tr '[:upper:]' '[:lower:]')" = "$user" ] && return 0
+            done <<< "$OWNERS"
+            return 1
+          }
+          authorized=false
+          via=none
+          if is_code_owner "$PR_AUTHOR"; then
+            authorized=true
+            via=author
             echo "${PR_AUTHOR} is a code owner; IPA build will run."
+          elif is_code_owner "$TRIGGERING_ACTOR"; then
+            authorized=true
+            via=approval
+            echo "Code owner ${TRIGGERING_ACTOR} approved or re-ran this run; IPA build will run."
           else
-            echo "${PR_AUTHOR} is not a code owner; skipping IPA build."
+            echo "Neither ${PR_AUTHOR} nor ${TRIGGERING_ACTOR} is a code owner; skipping IPA build."
           fi
+          echo "authorized=${authorized}" >> "$GITHUB_OUTPUT"
+          echo "via=${via}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build IPA variants and comment
     needs: authorize
-    if: needs.authorize.outputs.is_owner == 'true'
+    if: needs.authorize.outputs.authorized == 'true'
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -287,9 +311,16 @@ jobs:
           URL_DEB: ${{ steps.art_deb.outputs.artifact-url }}
           DEB_PATH: ${{ steps.rootful_deb.outputs.deb_path }}
           BASE: ${{ steps.meta.outputs.base }}
+          AUTHORIZED_VIA: ${{ needs.authorize.outputs.via }}
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           size_of() { du -h "dist/out/$1" 2>/dev/null | cut -f1 || echo "?"; }
+          # A contributor's next push only builds once a code owner approves (or
+          # re-runs) it too, so tell them the comment won't refresh on its own.
+          REBUILD_NOTE="Pushing a new commit rebuilds the IPAs and updates this comment."
+          if [ "$AUTHORIZED_VIA" = "approval" ]; then
+            REBUILD_NOTE="Pushing a new commit rebuilds the IPAs and updates this comment once a maintainer approves the new run."
+          fi
           {
             echo "<!-- apollo-pr-ipa-build -->"
             echo "### 📦 PR Test IPAs"
@@ -307,7 +338,7 @@ jobs:
             echo "Debug symbols: [⬇️ dSYMs](${URL_SYMBOLS}) · [workflow run](${RUN_URL})"
             echo ""
             echo "> [!NOTE]"
-            echo "> Download links require being signed in to GitHub with access to this repository, and expire when the artifacts do (${ARTIFACT_RETENTION_DAYS} days). Pushing a new commit rebuilds the IPAs and updates this comment."
+            echo "> Download links require being signed in to GitHub with access to this repository, and expire when the artifacts do (${ARTIFACT_RETENTION_DAYS} days). ${REBUILD_NOTE}"
           } > comment.md
           cat comment.md
 

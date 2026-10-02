@@ -182,8 +182,8 @@ static NSString *const UDKeyOpenVideosInYouTubeApp = @"OpenVideosInYouTubeApp";
 //   in-app-safari (In-App Safari), external-safari (Safari), chrome, firefox,
 //   firefox-focus, edge, dolphin, brave, duckduckgo, icab
 // Reborn's "Open in App" screen mirrors this key (same gather-and-hide pattern
-// as UDKeyOpenVideosInYouTubeApp above; the token literal is also read in
-// ApolloShareLinks.xm's ApolloOpensLinksInSystemBrowser()).
+// as UDKeyOpenVideosInYouTubeApp above; the key is also read in
+// ApolloShareLinks.xm's ApolloOpenLinksInToken()).
 static NSString *const UDKeyNativeOpenLinksIn = @"OpenLinksIn";
 // Apollo NATIVE key + change notification for its "Hide Username on Tab Bar"
 // switch. Apollo observes the notification (hideUsernameOnTabBarChangedWithNotification:)
@@ -202,6 +202,14 @@ static NSString *const UDKeyIconOnlySavedHideUsernameOnTabBar = @"IconOnlySavedH
 // key string literals are duplicated in ApolloShareLinks.xm; keep them in sync.
 static NSString *const UDKeyOpenLinksInGitHubApp  = @"OpenLinksInGitHubApp";
 static NSString *const UDKeyOpenLinksInBlueskyApp = @"OpenLinksInBlueskyApp";
+// "Open via Nitter": open tapped x.com / twitter.com links on a Nitter mirror
+// instead of X (BOOL, default OFF / unset), and the instance to use ("host" or
+// "host:port" for https, "http://"-prefixed for a plain-http self-hosted
+// instance, as produced by ApolloNitterNormalizeHost; empty = none
+// picked, which leaves the feature inactive even when the toggle is on). Read
+// at tap time in ApolloShareLinks.xm; set in Settings > Open in App.
+static NSString *const UDKeyOpenTwitterLinksViaNitter = @"OpenTwitterLinksViaNitter";
+static NSString *const UDKeyNitterInstanceHost = @"NitterInstanceHost";
 static NSString *const UDKeyCollapsePinnedComments = @"CollapsePinnedComments";
 static NSString *const UDKeyShowDeletedComments = @"ShowDeletedComments";
 static NSString *const UDKeyTapToRevealDeletedComments = @"TapToRevealDeletedComments";
@@ -322,6 +330,8 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
+static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.

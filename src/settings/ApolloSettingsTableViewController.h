@@ -20,6 +20,11 @@ void ApolloSettingsApplySectionHeaderTypography(UIView *view);
 - (void)apollo_applyAccentActionTextColorToCell:(UITableViewCell *)cell;
 - (void)apollo_applyThemeToCell:(UITableViewCell *)cell;
 - (void)apollo_applyTheme;
+// The updates pass that lets the table take section title heights again after
+// a theme font change restyled them (see -viewWillAppear:). The base runs it
+// with the first row on screen kept in place; the form also measures its
+// footers again in it.
+- (void)apollo_takeSectionTitleHeights;
 @end
 
 @interface ApolloFooterLinkTextView : UITextView
