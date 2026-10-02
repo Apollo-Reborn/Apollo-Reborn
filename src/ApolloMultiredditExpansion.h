@@ -1,6 +1,8 @@
 #ifndef APOLLO_MULTIREDDIT_EXPANSION_H
 #define APOLLO_MULTIREDDIT_EXPANSION_H
 
+#include "ApolloTableSnapshot.h"
+
 // Included only by ApolloFollowingSection.xm, which already owns this list's
 // coordinate translation and UITableView hooks. UITableView and Foundation
 // must be declared by the caller (host tests provide a small table double).
@@ -13,7 +15,7 @@
 // the same way. Let Apollo update its state and chevron, but defer that one
 // table's synchronous row batch and rebuild from the resulting model once.
 // The favorite star's batch reuses the same deferral when the table's cached
-// counts are already stale (ApolloTableSnapshotIsStale below).
+// counts are already stale (see the note above ApolloPerformBatchAsReload).
 
 typedef struct ApolloMultiredditExpansionScope {
     __unsafe_unretained UITableView *table;
@@ -72,20 +74,8 @@ static inline void ApolloPerformMultiredditExpansion(UITableView *table, dispatc
 // whichever row it names (#1335). fetchSubredditData() is one such source: it
 // assigns currentUser.moderatedSubreddits (Moderator Posts + the MODERATOR
 // rows) and .multireddits as each request returns, and reloads only later.
-static inline BOOL ApolloTableSnapshotIsStale(UITableView *table) {
-    id<UITableViewDataSource> source = table.dataSource;
-    if (!source) return NO;
-    NSInteger sections = [source respondsToSelector:@selector(numberOfSectionsInTableView:)]
-        ? [source numberOfSectionsInTableView:table] : 1;
-    if (sections != table.numberOfSections) return YES;
-    for (NSInteger section = 0; section < sections; section++) {
-        if ([source tableView:table numberOfRowsInSection:section] != [table numberOfRowsInSection:section]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
+// ApolloTableSnapshotIsStale (ApolloTableSnapshot.h) detects that state.
+//
 // Applies a batch's model change under the expansion deferral, then presents
 // it with one reload. The reload is requested even when the block registers no
 // rows, because the counts it would have animated from are already wrong.

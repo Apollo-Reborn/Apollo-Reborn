@@ -7,6 +7,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloTableSnapshot.h"
 #import "ApolloThemeRuntime.h"
 #import "fishhook.h"
 
@@ -2016,6 +2017,15 @@ static void ApolloMediaComposerScheduleTitleRowRemeasure(UIViewController *contr
         if (!ApolloMediaComposerShouldInsertBodyRow(strongController)) return; // non-Media tabs self-size natively
         UITableView *tableView = ApolloMediaComposerFindPrimaryTableView(strongController);
         if (!tableView || !tableView.window) return;
+        // Even an empty pass is a batch, and UIKit checks it against the row counts it cached
+        // at the last reload. If the composer's rows changed since then and the table hasn't
+        // been told yet, the pass throws "Invalid batch updates" (#1339). There's nothing to
+        // re-measure on a table in that state: the reload that brings it up to date asks for
+        // the row heights again, and its title cell schedules a fresh pass from cellForRow.
+        if (ApolloTableSnapshotIsStale(tableView)) {
+            ApolloLog(@"[MediaPostBody] skipped title row height pass: composer rows changed since the table's last reload");
+            return;
+        }
         // Height-only pass: re-queries heightForRowAtIndexPath (our measured title height)
         // without reloading cells, so the keyboard and first responder stay untouched.
         [tableView beginUpdates];
