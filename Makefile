@@ -180,6 +180,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsTabMenu.xm \
     $(SRC_DIR)/settings/ApolloShortcutListEditing.xm \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
+    $(SRC_DIR)/ApolloIntelligenceBridge.xm \
+    $(SRC_DIR)/settings/ApolloSiriSettingsViewController.m \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
     $(SRC_DIR)/ApolloSaveAllMediaItems.m \
     $(SRC_DIR)/ApolloSaveAllMedia.xm \

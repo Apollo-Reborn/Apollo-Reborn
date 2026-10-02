@@ -3,6 +3,9 @@
 static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
 
 // UserDefaults keys
+// Optional iOS 27 Siri framework's preference; default OFF. The actor owns
+// state, with no duplicate BOOL mirror (Shortcuts can change it out of UI).
+static NSString *const UDKeySiriContentIndexing = @"ApolloSiriContentEnabled";
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
 // when the self-hosted notification backend stores per-account creds and
