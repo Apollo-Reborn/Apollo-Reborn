@@ -48,6 +48,8 @@ typedef CGImageRef _Nullable (^APSpriteSheetProvider)(NSString *assetName);
 // The Pal code for the Pal Home widget: the active Pal and the room
 // (`room`, or the saved one, or the starter room when nil).
 - (nullable NSString *)widgetCodeWithRoom:(nullable NSDictionary *)room;
+// Any Pal's code (whoever you're visiting), with their room (or `room`).
+- (nullable NSString *)widgetCodeForResident:(nullable NSString *)identifier room:(nullable NSDictionary *)room;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -309,6 +309,47 @@ int main(void) {
             [store refresh];
             Check(store.room == nil, @"…even after another refresh");
 
+            // Visiting: care and rooms for a Pal who isn't on the island.
+            [owned removePersistentDomainForName:ownedSuite];
+            [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"foodTokens": @5, @"pixelPals": @[@"cat", @{@"name": @"Tom"}, @"dog", @{@"name": @"Rex", @"hearts": @1}]} options:0 error:nil]
+                        forKey:@"PixelPalsDatabase"];
+            [native setObject:@"cat" forKey:@"ActivePixelPal"];
+            store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
+            Check([store feedResident:@"apollo.dog" gain:NULL] == APCareDone && [[native stringForKey:@"ActivePixelPal"] isEqual:@"cat"], @"feed a visited Pal; the island is untouched");
+            NSDictionary *visitDB = [NSJSONSerialization JSONObjectWithData:[native dataForKey:@"PixelPalsDatabase"] options:0 error:nil];
+            Check([visitDB[@"pixelPals"][3][@"hearts"] isEqual:@1.25] && visitDB[@"pixelPals"][1][@"hearts"] == nil, @"the dog's own record");
+            Check([store saveRoom:@{@"wallpaper": @"wp.sky", @"items": @[]} forResident:@"apollo.dog"] &&
+                  [[store roomForResident:@"apollo.dog"][@"wallpaper"] isEqual:@"wp.sky"] && store.room == nil, @"decorate a visited Pal's room");
+            APShelterAnimal *fern = [APShelterAnimal new];
+            fern.species = @"capybara"; fern.coat = @"original"; fern.ageMonths = 5; fern.weightInLbs = 40;
+            Check([store adoptAnimal:fern name:@"Fern"], @"adopt");
+            NSString *fernID = store.residents.firstObject.identifier;
+            Check([store makeActiveResident:@"apollo.cat"], @"cat back on the island");
+            Check([store playWithResident:fernID] == APCareDone && [[owned dictionaryForKey:UDKeyPalHome][@"residents"][fernID][@"stats"][@"hearts"] isEqual:@0.25],
+                  @"a Reborn Pal at home keeps its own stats");
+
+            // Recoverable goodbyes.
+            Check([store saveRoom:@{@"wallpaper": @"wp.brick", @"items": @[]} forResident:fernID], @"Fern's room");
+            Check([store rehomeResident:fernID] && store.rehomed.count == 1 && [store.rehomed.firstObject[@"name"] isEqual:@"Fern"], @"archived");
+            NSString *back = [store restoreRehomed:fernID];
+            ApolloPalHomeResident *fernAgain = back ? [store residentWithID:back] : nil;
+            Check(fernAgain && [fernAgain.hearts isEqual:@0.25] && [[store roomForResident:back][@"wallpaper"] isEqual:@"wp.brick"] && store.rehomed.count == 0,
+                  @"Fern came home with her room and hearts");
+            Check([store rehomeResident:@"apollo.dog"], @"rehome the dog");
+            NSString *dogBack = [store restoreRehomed:@"apollo.dog"];
+            visitDB = [NSJSONSerialization JSONObjectWithData:[native dataForKey:@"PixelPalsDatabase"] options:0 error:nil];
+            Check([dogBack isEqual:@"apollo.dog"] && [visitDB[@"pixelPals"] containsObject:@"dog"], @"an Apollo Pal comes back into its own slot");
+
+            // Back to Classic: the capybara goes home with its progress, the
+            // slot is returned, and an Apollo Pal takes the island.
+            Check([store makeActiveResident:back], @"Fern on the island");
+            NSString *host = [owned dictionaryForKey:UDKeyPalHome][@"channel"][@"host"];
+            [store returnToClassic];
+            NSDictionary *classicDB = [NSJSONSerialization JSONObjectWithData:[native dataForKey:@"PixelPalsDatabase"] options:0 error:nil];
+            Check(host && [owned dictionaryForKey:UDKeyPalHome][@"channel"] == nil && ![classicDB[@"pixelPals"] containsObject:host], @"slot returned");
+            Check(!store.residents.firstObject.reborn && [classicDB[@"pixelPals"] containsObject:[native stringForKey:@"ActivePixelPal"]], @"a real Apollo Pal is active");
+            Check([store residentWithID:back] != nil, @"Fern is still part of the household");
+
             puts("pal_home_store_tests: all scenarios passed");
         } @finally {
             [owned removePersistentDomainForName:ownedSuite];

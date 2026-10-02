@@ -90,7 +90,7 @@ static const int kWidth = 140, kPad = 6;
     if (pal.weightInLbs) [stats addObject:APWardrobeWeight(pal.weightInLbs.doubleValue)];
     [stats addObject:[APWardrobeDistance(pal.kilometersScrolled) stringByAppendingString:@" scrolled together"]];
     NSTimeInterval wait = pal.lastFed ? APCareCooldown + pal.lastFed.timeIntervalSinceNow : 0;
-    NSString *meal = !pal.active ? @"" : wait > 60 ? [NSString stringWithFormat:@" · hungry in %dh %02dm", (int)(wait / 3600), (int)fmod(wait / 60, 60)]
+    NSString *meal = wait > 60 ? [NSString stringWithFormat:@" · hungry in %dh %02dm", (int)(wait / 3600), (int)fmod(wait / 60, 60)]
                                                    : @" · ready for a snack";
     NSString *pantry = [NSString stringWithFormat:@"%ld food in the pantry%@", (long)self.foodTokens, meal];
     NSArray<NSArray *> *copy = @[
@@ -105,6 +105,18 @@ static const int kWidth = 140, kPad = 6;
     int summaryY = 15;
     int sy = 22, heartsY = 51;
     int ty = heartsY + 8;
+    // On the island, or just visiting (with a way to put them up there).
+    BOOL onIsland = [pal.identifier isEqual:self.islandResidentID];
+    ApolloPixelLabel *islandNote = nil;
+    ApolloPixelButton *putOnIsland = nil;
+    if (onIsland) {
+        islandNote = [self body:self.islandEnabled ? @"On your Dynamic Island" : @"Your island Pal (the island is off)" role:2];
+    } else {
+        putOnIsland = [self wordButton:@"island" word:@"Put on the island"];
+        putOnIsland.accessibilityHint = [NSString stringWithFormat:@"%@ takes over the Dynamic Island.", pal.name];
+        [putOnIsland addTarget:self action:@selector(putOnIsland) forControlEvents:UIControlEventTouchUpInside];
+    }
+    int islandY = ty; ty += islandNote ? islandNote.pixelHeight + 1 : putOnIsland ? 18 : 0;
     int statsY = ty; ty += text(1).pixelHeight;
     int pantryY = ty; ty += text(2).pixelHeight + 4;
     int titleY = ty; ty += 8;
@@ -158,6 +170,8 @@ static const int kWidth = 140, kPad = 6;
         heartsView.accessibilityLabel = [NSString stringWithFormat:@"%g of 6 friendship hearts", floor(hearts * 4) / 4];
         [self add:heartsView x:(kWidth - 35) / 2 y:heartsY];
     }
+    if (islandNote) [self centre:islandNote y:islandY];
+    if (putOnIsland) [self add:putOnIsland x:(kWidth - putOnIsland.tileWidth) / 2 y:islandY];
     [self centre:text(1) y:statsY];
     [self centre:text(2) y:pantryY];
     [self centre:text(3) y:titleY];
@@ -170,7 +184,9 @@ static const int kWidth = 140, kPad = 6;
         for (NSUInteger i = 1; i < self.household.count; i++) {
             int slot = (int)i - 1, x = kPad + (slot % perRow) * 26, rowY = householdY + 7 + (slot / perRow) * 19;
             ApolloPalHomeResident *other = self.household[i];
-            ApolloPixelButton *cell = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:[NSString stringWithFormat:@"Switch to %@", other.name]];
+            BOOL otherOnIsland = [other.identifier isEqual:self.islandResidentID];
+            ApolloPixelButton *cell = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:[NSString stringWithFormat:@"Visit %@", other.name]];
+            if (otherOnIsland) cell.accessibilityValue = @"On the Dynamic Island";
             cell.iconName = nil;
             cell.flat = YES;
             cell.tileWidth = 24;
@@ -187,6 +203,11 @@ static const int kWidth = 140, kPad = 6;
                 APCanvasFree(whole);
                 int left = maxX >= minX ? MAX(0, MIN(8, (minX + maxX + 1) / 2 - 12)) : 4;
                 APCanvas *full = APCanvasCreateFromCGImage(face.CGImage, CGRectMake(left, 0, 24, 14));
+                if (otherOnIsland) {
+                    // A tiny island pill in the corner: this one's up there.
+                    APRect(full, 17, 0, 6, 3, 0x1A1A1E);
+                    APPx(full, 16, 1, 0x1A1A1E); APPx(full, 23, 1, 0x1A1A1E);
+                }
                 cell.content = [APCanvasBox boxWithCanvas:full];
             }
             cell.pixelScale = p;
@@ -241,6 +262,24 @@ static NSString *APWardrobeDistance(double km) {
 - (void)widget { [self.delegate wardrobeWantsWidgetCode:self]; }
 - (void)done { [self.delegate wardrobeDidFinish:self]; }
 - (void)island { [self.delegate wardrobeToggledIsland:self]; }
+- (void)putOnIsland { [self.delegate wardrobe:self putOnIsland:self.household.firstObject]; }
+
+- (ApolloPixelButton *)wordButton:(NSString *)icon word:(NSString *)word {
+    APCanvas *icn = APIconCanvas(icon);
+    int tw = APTextWidth(word.uppercaseString, APFontSmall);
+    APCanvas *content = APCanvasCreate(icn->w + 3 + tw, MAX(icn->h, 6));
+    APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
+    APTextShadow(content, word.uppercaseString, icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    APCanvasFree(icn);
+    ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
+    button.iconName = nil;
+    button.content = [APCanvasBox boxWithCanvas:content];
+    button.tileWidth = content->w + 10;
+    button.tileHeight = 16;
+    button.pixelScale = self.pixelScale;
+    return button;
+}
+
 - (void)goodbye { [self.delegate wardrobe:self wantsGoodbye:self.household.firstObject]; }
 
 @end

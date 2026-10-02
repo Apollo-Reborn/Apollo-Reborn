@@ -297,6 +297,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloPollVoting.xm \
     $(SRC_DIR)/ApolloPollCompose.xm \
     $(SRC_DIR)/settings/ApolloPollSettingsViewController.m \
+    $(SRC_DIR)/settings/ApolloPalHomeSettingsViewController.m \
     $(SRC_DIR)/ApolloSimDebugTap.xm \
     $(SRC_DIR)/ApolloManualSignInViewController.m \
     $(SRC_DIR)/ApolloAccountCredentials.m \
@@ -324,6 +325,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/palhome/ApolloPalHomeAmbience.m \
     $(SRC_DIR)/palhome/ApolloPalHomeChiptune.m \
     $(SRC_DIR)/palhome/ApolloPalHomeHaptics.m \
+    $(SRC_DIR)/palhome/ApolloPalHomePrompt.m \
     $(SRC_DIR)/palhome/ApolloPalHomeWidgetRenderer.m \
     $(SRC_DIR)/palhome/ApolloPalHomeRenderer.m \
     $(SRC_DIR)/palhome/ApolloPalHomeStore.m \

@@ -61,7 +61,7 @@ NSArray<UIImage *> *APPalSpriteFrames(NSString *species, NSString *coat, NSStrin
 
 #pragma mark - View
 
-typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMeet, APShelterModeName };
+typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMeet, APShelterModeName, APShelterModeRehomed };
 
 @interface ApolloPalHomeShelterView () <UITextFieldDelegate>
 @property (nonatomic) APShelterMode mode;
@@ -223,6 +223,7 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
         case APShelterModeRoster: [self buildRoster]; break;
         case APShelterModeMeet: [self buildMeet]; break;
         case APShelterModeName: [self buildName]; break;
+        case APShelterModeRehomed: [self buildRehomed]; break;
     }
     [self positionPanel];
 }
@@ -281,6 +282,65 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
                                              : [self wordButton:@"back" word:@"Maybe later" action:@selector(close)];
     if (close.tileWidth > W - 12) close = [self wordButton:@"back" word:@"Not now" action:@selector(close)];
     [self place:close x:6 y:footY];
+    if (self.rehomed.count) {
+        // Goodbyes aren't forever.
+        ApolloPixelButton *home = [self wordButton:@"house" word:@"Coming home?" action:@selector(showRehomed)];
+        home.accessibilityHint = @"Pals you said goodbye to can come back.";
+        if (close.tileWidth + home.tileWidth + 4 <= W - 12) [self place:home x:W - 6 - home.tileWidth y:footY];
+    }
+}
+
+- (void)showRehomed {
+    self.mode = APShelterModeRehomed;
+    [self rebuild];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.panel);
+}
+
+// The Pals you've said goodbye to, newest first: tap one to welcome them back
+// (with their room and memories).
+- (void)buildRehomed {
+    int W = self.panelWidth, cardW = (W - 12 - 3) / 2, cardH = 36, gap = 3;
+    NSArray<NSDictionary *> *entries = self.rehomed.count > 8 ? [self.rehomed subarrayWithRange:NSMakeRange(0, 8)] : self.rehomed;
+    ApolloPixelLabel *intro = [self label:@"Pals you said goodbye to. Tap one to welcome them back." font:APFontSmall role:1 max:W - 12];
+    intro.smooth = YES;
+    int gridY = 16 + intro.pixelHeight + 4;
+    int rows = MAX(1, ((int)entries.count + 1) / 2);
+    int H = gridY + rows * cardH + (rows - 1) * gap + 26;
+    [self setPanelBackgroundWidth:W height:H];
+    [self centerLabel:[self label:@"Coming home?" font:APFontLarge role:0 max:W - 8] y:5 width:W];
+    [self centerLabel:intro y:15 width:W];
+    APChromeTheme t = APChromeCurrent();
+    for (NSUInteger i = 0; i < entries.count; i++) {
+        NSDictionary *entry = entries[i];
+        APCanvas *content = APCanvasCreate(cardW - 4, cardH - 5);
+        APCanvas *sprite = APPalSpriteCanvas(entry[@"species"], [entry[@"coat"] isKindOfClass:NSString.class] ? entry[@"coat"] : @"original", @"sit", 0);
+        if (sprite) { APDraw(content, sprite, (content->w - 32) / 2, 0, NO); APCanvasFree(sprite); }
+        NSString *name = [entry[@"name"] uppercaseString];
+        while (name.length > 1 && APTextWidth(name, APFontSmall) > content->w - 2) name = [name substringToIndex:name.length - 1];
+        APTextShadow(content, name, (content->w - APTextWidth(name, APFontSmall)) / 2, 16, APFontSmall, t.text, t.shadow);
+        double at = [entry[@"at"] isKindOfClass:NSNumber.class] ? [entry[@"at"] doubleValue] : NSDate.date.timeIntervalSinceReferenceDate;
+        int days = MAX(0, (int)((NSDate.date.timeIntervalSinceReferenceDate - at) / 86400));
+        NSString *when = days == 0 ? @"TODAY" : days == 1 ? @"YESTERDAY" : [NSString stringWithFormat:@"%d DAYS AGO", days];
+        APText(content, when, (content->w - APTextWidth(when, APFontSmall)) / 2, 24, APFontSmall, t.subtext);
+        ApolloPixelButton *card = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:entry[@"name"]];
+        card.iconName = nil;
+        card.flat = YES;
+        card.tileWidth = cardW;
+        card.tileHeight = cardH;
+        card.content = [APCanvasBox boxWithCanvas:content];
+        card.pixelScale = self.pixelScale;
+        card.tag = (NSInteger)i;
+        card.accessibilityValue = [NSString stringWithFormat:@"%@, rehomed %@", [APShelter titleForSpecies:entry[@"species"]], when.lowercaseString];
+        card.accessibilityHint = @"Welcome them back home.";
+        [card addTarget:self action:@selector(bringBack:) forControlEvents:UIControlEventTouchUpInside];
+        [self place:card x:6 + (int)(i % 2) * (cardW + gap) y:gridY + (int)(i / 2) * (cardH + gap)];
+    }
+    [self place:[self wordButton:@"back" word:@"Back to the shelter" action:@selector(backToRoster)] x:6 y:H - 21];
+}
+
+- (void)bringBack:(ApolloPixelButton *)sender {
+    if (sender.tag < 0 || sender.tag >= (NSInteger)self.rehomed.count) return;
+    [self.delegate shelter:self bringBack:self.rehomed[sender.tag][@"id"]];
 }
 
 - (void)buildMeet {

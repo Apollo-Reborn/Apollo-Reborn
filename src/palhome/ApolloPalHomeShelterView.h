@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)shelter:(ApolloPalHomeShelterView *)shelter adopt:(APShelterAnimal *)animal name:(NSString *)name;
 - (void)shelter:(ApolloPalHomeShelterView *)shelter rename:(NSString *)residentID name:(NSString *)name;
 - (void)shelterDidClose:(ApolloPalHomeShelterView *)shelter;
+// A rehomed Pal is welcomed back (its archive id).
+- (void)shelter:(ApolloPalHomeShelterView *)shelter bringBack:(NSString *)archiveID;
 @end
 
 // The Paws & Claws Shelter: browse today's animals, meet one, adopt and name
@@ -19,6 +21,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) CGFloat pixelScale;
 @property (nonatomic) UIEdgeInsets safeInsets;
 @property (nonatomic) CGFloat keyboardHeight; // points; lifts the name editor
+// Pals you said goodbye to ({id, name, species, coat, at}), offered from the
+// roster under "Coming home?". Set before -showRoster:.
+@property (nonatomic, copy) NSArray<NSDictionary *> *rehomed;
 - (void)showRoster:(NSArray<APShelterAnimal *> *)animals keepName:(nullable NSString *)keepName;
 - (void)showRenameForResident:(NSString *)residentID species:(NSString *)species coat:(NSString *)coat currentName:(NSString *)name;
 @end

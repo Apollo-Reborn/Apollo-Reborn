@@ -43,6 +43,9 @@
 @property (nonatomic, strong) ApolloPixelImageView *toolbarPanel;
 @property (nonatomic, copy) NSArray<ApolloPixelButton *> *toolbarButtons;
 @property (nonatomic) BOOL movedInHinted;
+// Whose home we're in: nil = the Pal on the island. Visiting another Pal
+// shows their room and cares for them without changing the island.
+@property (nonatomic, copy, nullable) NSString *homeID;
 @property (nonatomic, strong) ApolloPixelButton *decorateButton, *feedButton;
 @property (nonatomic, strong) ApolloPixelLabel *foodBadge;
 @property (nonatomic, strong) ApolloPalHomeDrawer *drawer;
@@ -153,6 +156,26 @@
 
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
+// The Pal whose home this is (the visited one, else the island Pal).
+- (ApolloPalHomeResident *)homeResident {
+    ApolloPalHomeResident *visited = self.homeID ? [self.store residentWithID:self.homeID] : nil;
+    if (self.homeID && !visited) self.homeID = nil; // gone (rehomed elsewhere)
+    return visited ?: self.store.residents.firstObject;
+}
+
+- (NSArray<ApolloPalHomeResident *> *)homeResidents {
+    ApolloPalHomeResident *home = [self homeResident];
+    return home ? @[home] : @[];
+}
+
+// The household with whoever's home first (the Pal card shows them).
+- (NSArray<ApolloPalHomeResident *> *)homeHousehold {
+    ApolloPalHomeResident *home = [self homeResident];
+    NSMutableArray *list = [NSMutableArray arrayWithObject:home ?: self.store.household.firstObject];
+    for (ApolloPalHomeResident *resident in self.store.household) if (![resident.identifier isEqual:home.identifier]) [list addObject:resident];
+    return list;
+}
+
 #pragma mark - Appearance
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -179,7 +202,7 @@
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (weakSelf.visible && !weakSelf.store.shelterSeen) [weakSelf openShelter];
         });
-    } else if (!self.store.activeMovedIn && !self.movedInHinted) {
+    } else if (![self.store hasMovedIn:self.homeResident.identifier] && !self.movedInHinted) {
         self.movedInHinted = YES;
         __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -247,7 +270,8 @@
     [self.store reconcileIsland]; // also refreshes; settles a slot Apollo's chooser moved away from
     [self.homeScene setMotionReduced:UIAccessibilityIsReduceMotionEnabled()];
     self.homeScene.readOnly = !self.store.canEdit;
-    [self.homeScene configureWithRoom:self.store.room ?: [APCatalog starterRoom] residents:self.store.residents];
+    ApolloPalHomeResident *home = [self homeResident];
+    [self.homeScene configureWithRoom:[self.store roomForResident:home.identifier] ?: [APCatalog starterRoom] residents:[self homeResidents]];
     [self applyChrome];
     for (ApolloPixelButton *button in [self.toolbarButtons subarrayWithRange:NSMakeRange(0, 4)]) button.enabled = self.homeScene.hasPalArtwork;
     [self updateFoodBadge];
@@ -256,7 +280,7 @@
 }
 
 - (void)updateRoomDescription {
-    ApolloPalHomeResident *pal = self.store.residents.firstObject;
+    ApolloPalHomeResident *pal = [self homeResident];
     NSMutableArray *names = [NSMutableArray array];
     for (APPlacedItem *item in self.homeScene.layout.items) if (item.spec.layer != APLayerTrim) [names addObject:item.spec.title.lowercaseString];
     NSString *home = [NSString stringWithFormat:@"%@’s home: %@ walls and %@. ", pal.name,
@@ -350,24 +374,25 @@
 - (void)pet { [self.homeScene petResident]; }
 - (void)play {
     // Always fun; earns a heart (Apollo's rule) once every 5 hours.
-    APCareResult result = [self.store playWithActive];
+    NSString *home = [self homeResident].identifier;
+    APCareResult result = home ? [self.store playWithResident:home] : APCareUnavailable;
     [self.homeScene playWithResident];
     if (result == APCareDone) {
         [self.ambience playJingle:APJingleHeart];
         APHapticPlay(APHapticHeart);
-        [self.homeScene refreshResidents:self.store.residents];
-        [self toast:@[@"+1/4 heart!", [NSString stringWithFormat:@"%@ had a great time.", self.store.residents.firstObject.name]]];
+        [self.homeScene refreshResidents:[self homeResidents]];
+        [self toast:@[@"+1/4 heart!", [NSString stringWithFormat:@"%@ had a great time.", [self homeResident].name]]];
     }
 }
 
 - (void)feed {
     double gain = 0;
-    ApolloPalHomeResident *pal = self.store.residents.firstObject;
-    APCareResult result = [self.store feedActive:&gain];
+    ApolloPalHomeResident *pal = [self homeResident];
+    APCareResult result = pal ? [self.store feedResident:pal.identifier gain:&gain] : APCareUnavailable;
     switch (result) {
         case APCareDone: {
             [self.homeScene feedResident];
-            [self.homeScene refreshResidents:self.store.residents];
+            [self.homeScene refreshResidents:[self homeResidents]];
             [self updateFoodBadge];
             [self.ambience playJingle:APJingleYum];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ APHapticPlay(APHapticHeart); });
@@ -385,7 +410,7 @@
             APHapticPlay(APHapticNope);
             [self.feedButton shake];
             [self toast:@[[NSString stringWithFormat:@"%@ is full!", pal.name],
-                          [NSString stringWithFormat:@"Hungry again in %@.", APCareWaitText(self.store.waitBeforeFeeding)]]];
+                          [NSString stringWithFormat:@"Hungry again in %@.", APCareWaitText([self.store waitBeforeFeeding:pal.identifier])]]];
             break;
         case APCareUnavailable:
             [self.feedButton shake];
@@ -542,7 +567,7 @@ static NSString *APCareWeightText(double lbs) {
 #pragma mark - Wardrobe
 
 - (void)openWardrobe {
-    ApolloPalHomeResident *pal = self.store.residents.firstObject;
+    ApolloPalHomeResident *pal = [self homeResident];
     if (!pal || self.wardrobe) return;
     self.wardrobeScrim = [UIControl new];
     self.wardrobeScrim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
@@ -555,7 +580,8 @@ static NSString *APCareWeightText(double lbs) {
     self.wardrobe.pixelScale = self.pixelScale;
     self.wardrobe.foodTokens = self.store.foodTokens;
     self.wardrobe.islandEnabled = self.store.islandEnabled;
-    [self.wardrobe configureWithHousehold:self.store.household];
+    self.wardrobe.islandResidentID = self.store.residents.firstObject.identifier;
+    [self.wardrobe configureWithHousehold:[self homeHousehold]];
     [self.view addSubview:self.wardrobe];
     [self layoutWardrobe];
     self.wardrobeScrim.alpha = 0;
@@ -614,12 +640,24 @@ static NSString *APCareWeightText(double lbs) {
     [self.shelter showRenameForResident:resident.identifier species:resident.species coat:resident.coat currentName:resident.name];
 }
 
+// Visiting: their home, their care; the island keeps its Pal.
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe switchTo:(ApolloPalHomeResident *)resident {
-    [self.store makeActiveResident:resident.identifier];
+    self.homeID = resident.active ? nil : resident.identifier;
     [self closeWardrobe];
     [self refreshHome];
     [self arriveHome];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ is home.", resident.name]);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"Visiting %@.", resident.name]);
+}
+
+- (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe putOnIsland:(ApolloPalHomeResident *)resident {
+    if (![self.store makeActiveResident:resident.identifier]) { APHapticPlay(APHapticNope); return; }
+    APHapticPlay(APHapticSuccess);
+    self.homeID = nil;
+    wardrobe.islandResidentID = self.store.residents.firstObject.identifier;
+    [wardrobe configureWithHousehold:[self homeHousehold]];
+    [self layoutWardrobe];
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+        [NSString stringWithFormat:@"%@ is on the Dynamic Island now.", resident.name]);
 }
 
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsGoodbye:(ApolloPalHomeResident *)resident {
@@ -640,9 +678,10 @@ static NSString *APCareWeightText(double lbs) {
         [strongSelf.homeScene waveGoodbye:^{
             __strong typeof(weakSelf) innerSelf = weakSelf;
             if (![innerSelf.store rehomeResident:identifier]) { [innerSelf refreshHome]; return; }
+            innerSelf.homeID = nil;
             [innerSelf refreshHome];
             [innerSelf arriveHome];
-            [innerSelf toast:@[[NSString stringWithFormat:@"%@ found a lovely new family.", name], @"They'll always remember you."]];
+            [innerSelf toast:@[[NSString stringWithFormat:@"%@ found a lovely new family.", name], @"Changed your mind? They're in the shelter under Coming home."]];
             UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ went to a new home.", name]);
         }];
     }];
@@ -715,7 +754,7 @@ static NSString *APCareWeightText(double lbs) {
     APHapticPlay(APHapticToggle);
     self.store.islandEnabled = on;
     wardrobe.islandEnabled = on;
-    [wardrobe configureWithHousehold:self.store.household];
+    [wardrobe configureWithHousehold:[self homeHousehold]];
     [self layoutWardrobe];
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
         on ? [NSString stringWithFormat:@"%@ is back on the Dynamic Island.", self.store.residents.firstObject.name]
@@ -723,7 +762,7 @@ static NSString *APCareWeightText(double lbs) {
 }
 
 - (void)wardrobeWantsWidgetCode:(ApolloPalHomeWardrobe *)wardrobe {
-    NSString *code = [self.store widgetCodeWithRoom:self.homeScene.roomDocument];
+    NSString *code = [self.store widgetCodeForResident:[self homeResident].identifier room:self.homeScene.roomDocument];
     if (!code) return;
     [UIPasteboard.generalPasteboard setItems:@[@{@"public.utf8-plain-text": code}]
                                      options:@{UIPasteboardOptionLocalOnly: @YES,
@@ -806,6 +845,7 @@ static NSString *APCareWeightText(double lbs) {
     NSMutableSet *owned = [NSMutableSet set];
     for (ApolloPalHomeResident *resident in self.store.household) [owned addObject:resident.species];
     [self presentShelterView];
+    self.shelter.rehomed = self.store.rehomed;
     [self.shelter showRoster:[APShelter animalsExcludingSpecies:owned] keepName:self.store.shelterSeen ? nil : self.store.residents.firstObject.name];
 }
 
@@ -822,7 +862,7 @@ static NSString *APCareWeightText(double lbs) {
     if (firstVisit) [self.store markShelterSeen];
     [self closeShelter];
     // "Maybe later" on the first visit: your current Pal still moves in.
-    if (firstVisit && !self.store.activeMovedIn) [self arriveHome];
+    if (firstVisit && ![self.store hasMovedIn:self.homeResident.identifier]) [self arriveHome];
 }
 
 - (void)shelter:(ApolloPalHomeShelterView *)shelter adopt:(APShelterAnimal *)animal name:(NSString *)name {
@@ -831,11 +871,27 @@ static NSString *APCareWeightText(double lbs) {
         return;
     }
     [self closeShelter];
+    self.homeID = nil; // the new Pal is on the island: their home
     [self refreshHome];
+    BOOL movedIn = [self.store hasMovedIn:self.homeResident.identifier];
     [self arriveHome];
     APHapticPlay(APHapticSuccess);
-    if (self.store.activeMovedIn) [self.ambience playJingle:APJingleAdopt]; // (moving-in day has its own)
+    if (movedIn) [self.ambience playJingle:APJingleAdopt]; // (moving-in day has its own)
     UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"Welcome home, %@!", name]);
+}
+
+- (void)shelter:(ApolloPalHomeShelterView *)shelter bringBack:(NSString *)archiveID {
+    NSString *name = nil;
+    for (NSDictionary *entry in self.store.rehomed) if ([entry[@"id"] isEqual:archiveID]) name = entry[@"name"];
+    NSString *restored = [self.store restoreRehomed:archiveID];
+    if (!restored) { APHapticPlay(APHapticNope); return; }
+    [self closeShelter];
+    self.homeID = restored; // visit them; the island keeps its Pal
+    [self refreshHome];
+    [self.homeScene welcomeHome];
+    APHapticPlay(APHapticSuccess);
+    [self.ambience playJingle:APJingleAdopt];
+    [self toast:@[[NSString stringWithFormat:@"%@ came home!", name ?: @"Your Pal"], @"Their room was just as they left it."]];
 }
 
 - (void)shelter:(ApolloPalHomeShelterView *)shelter rename:(NSString *)residentID name:(NSString *)name {
@@ -885,7 +941,8 @@ static NSString *APCareWeightText(double lbs) {
 // Coming home: moving-in day for a Pal who hasn't moved in yet (their own
 // empty room, the boxes), otherwise the usual hop-in-through-the-front.
 - (void)arriveHome {
-    if (self.store.activeMovedIn || !self.store.canEdit || self.editing) {
+    NSString *home = [self homeResident].identifier;
+    if ([self.store hasMovedIn:home] || !self.store.canEdit || self.editing) {
         [self.homeScene welcomeHome];
         return;
     }
@@ -893,7 +950,7 @@ static NSString *APCareWeightText(double lbs) {
     __weak typeof(self) weakSelf = self;
     [self.homeScene playMovingInDay:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf.store markActiveMovedIn];
+        [strongSelf.store markMovedIn:home];
         if (!strongSelf.visible || strongSelf.shelter || strongSelf.editing) return;
         [strongSelf toast:@[@"Welcome to your new place!", @"Tap the boxes to unpack, or the brush to decorate."]];
         [strongSelf.decorateButton shake];
@@ -910,7 +967,7 @@ static NSString *APCareWeightText(double lbs) {
 - (void)palHomeSceneDidChangeRoom:(ApolloPalHomeScene *)scene {
     [self applyChrome];
     [self.ambience updateForLayout:scene.layout minuteOfDay:[self minuteOfDay]];
-    if (![self.store saveRoom:scene.roomDocument]) ApolloLog(@"[PalHome] Room not saved (read-only or invalid document)");
+    if (![self.store saveRoom:scene.roomDocument forResident:[self homeResident].identifier]) ApolloLog(@"[PalHome] Room not saved (read-only or invalid document)");
     [self updateRoomDescription];
 }
 

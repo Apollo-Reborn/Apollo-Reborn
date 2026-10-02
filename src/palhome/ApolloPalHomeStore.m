@@ -231,18 +231,29 @@ static BOOL APValidRoom(id room) {
         rooms = document[@"rooms"];
         ApolloLog(@"[PalHome] Rooms: the household room is now %@'s", active);
     }
-    self.room = active && APValidRoom(rooms[active]) ? rooms[active] : nil;
-    NSArray *movedIn = [self.document[@"movedIn"] isKindOfClass:NSArray.class] ? self.document[@"movedIn"] : @[];
-    // A Pal with a room has moved in, whether or not they saw the show.
-    self.activeMovedIn = active && (self.room || [movedIn containsObject:active]);
+    self.room = active ? [self roomForResident:active] : nil;
+    self.activeMovedIn = active && [self hasMovedIn:active];
 }
 
-- (void)markActiveMovedIn {
-    NSString *active = self.household.firstObject.identifier;
-    if (!active || self.activeMovedIn) return;
+- (NSDictionary *)roomForResident:(NSString *)identifier {
+    NSDictionary *rooms = [self.document[@"rooms"] isKindOfClass:NSDictionary.class] ? self.document[@"rooms"] : @{};
+    return [identifier isKindOfClass:NSString.class] && APValidRoom(rooms[identifier]) ? rooms[identifier] : nil;
+}
+
+- (BOOL)hasMovedIn:(NSString *)identifier {
+    if (!identifier) return NO;
+    NSArray *movedIn = [self.document[@"movedIn"] isKindOfClass:NSArray.class] ? self.document[@"movedIn"] : @[];
+    // A Pal with a room has moved in, whether or not they saw the show.
+    return [self roomForResident:identifier] || [movedIn containsObject:identifier];
+}
+
+- (void)markActiveMovedIn { [self markMovedIn:self.household.firstObject.identifier]; }
+
+- (void)markMovedIn:(NSString *)identifier {
+    if (!identifier || [self hasMovedIn:identifier]) return;
     [self updateDocument:^(NSMutableDictionary *document) {
         NSMutableArray *movedIn = [document[@"movedIn"] isKindOfClass:NSArray.class] ? [document[@"movedIn"] mutableCopy] : [NSMutableArray array];
-        if (![movedIn containsObject:active]) [movedIn addObject:active];
+        if (![movedIn containsObject:identifier]) [movedIn addObject:identifier];
         document[@"movedIn"] = movedIn;
     }];
 }
@@ -497,17 +508,6 @@ static BOOL APValidRoom(id room) {
     return [tokens isKindOfClass:NSNumber.class] ? MAX(0, [tokens integerValue]) : 0;
 }
 
-// The Apollo species whose native record is the active Pal's live record:
-// its own, or the slot a Reborn guest is borrowing.
-- (nullable NSString *)activeNativeSpecies {
-    [self refresh];
-    ApolloPalHomeResident *active = self.household.firstObject;
-    if (!active.active) return nil;
-    if (!active.reborn) return active.species;
-    NSDictionary *channel = APChannelFromDocument(self.document);
-    return [channel[@"resident"] isEqual:active.identifier] ? channel[@"host"] : nil;
-}
-
 static NSTimeInterval APCareWait(NSDate *last) {
     if (!last) return 0;
     NSTimeInterval since = -last.timeIntervalSinceNow;
@@ -516,28 +516,61 @@ static NSTimeInterval APCareWait(NSDate *last) {
 
 - (NSTimeInterval)waitBeforeFeeding { [self refresh]; return APCareWait(self.household.firstObject.lastFed); }
 - (NSTimeInterval)waitBeforePlaying { [self refresh]; return APCareWait(self.household.firstObject.lastPlayed); }
+- (NSTimeInterval)waitBeforeFeeding:(NSString *)identifier { [self refresh]; return APCareWait([self residentWithID:identifier].lastFed); }
+- (NSTimeInterval)waitBeforePlaying:(NSString *)identifier { [self refresh]; return APCareWait([self residentWithID:identifier].lastPlayed); }
 
-// Writes the active Pal's record the way Apollo does, creating Apollo's
-// database if it doesn't exist yet (its shape: {foodTokens, pixelPals}).
-- (BOOL)updateActiveRecord:(void (^)(NSMutableDictionary *info))change {
-    NSString *species = [self activeNativeSpecies];
-    ApolloPalHomeResident *active = self.household.firstObject;
-    if (!species || !active) return NO;
-    if (![self nativeDatabase]) {
-        NSDictionary *fresh = @{@"foodTokens": @0, @"pixelPals": @[]};
-        [self.nativeDefaults setObject:[NSJSONSerialization dataWithJSONObject:fresh options:0 error:nil] forKey:@"PixelPalsDatabase"];
-    }
+// Writes a Pal's live care record, wherever it lives:
+//  - an Apollo Pal: its own native record (or, while a guest borrows its
+//    slot, the stashed copy in the channel);
+//  - a Reborn Pal on the island: the borrowed slot's native record;
+//  - a Reborn Pal at home: its stats in the Pal Home document.
+// New records get the fields Apollo always writes. Apollo's database is
+// created if it doesn't exist yet (its shape: {foodTokens, pixelPals}).
+- (BOOL)updateRecordForResident:(ApolloPalHomeResident *)resident change:(void (^)(NSMutableDictionary *info))change {
+    if (!resident) return NO;
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    NSString *name = active.name;
-    double weight = [APSpecies speciesWithID:active.species].weightInLbs;
-    return [self writeNativeSpecies:species create:YES change:^NSDictionary *(NSMutableDictionary *info) {
-        // A record Apollo hasn't made yet gets the fields it always writes.
+    NSString *name = resident.name;
+    double weight = [APSpecies speciesWithID:resident.species].weightInLbs;
+    void (^fill)(NSMutableDictionary *) = ^(NSMutableDictionary *info) {
         if (![info[@"name"] isKindOfClass:NSString.class]) info[@"name"] = name;
         if (![info[@"age"] isKindOfClass:NSNumber.class]) info[@"age"] = @(now);
         if (![info[@"weightInLbs"] isKindOfClass:NSNumber.class]) info[@"weightInLbs"] = @(weight);
         if (![info[@"hearts"] isKindOfClass:NSNumber.class]) info[@"hearts"] = @0;
         if (![info[@"totalKilometersScrolled"] isKindOfClass:NSNumber.class]) info[@"totalKilometersScrolled"] = @0;
         change(info);
+    };
+    NSDictionary *channel = APChannelFromDocument(self.document);
+    NSString *identifier = resident.identifier;
+    if (resident.reborn && ![channel[@"resident"] isEqual:identifier]) {
+        // At home: the document holds their stats.
+        return [self updateDocument:^(NSMutableDictionary *document) {
+            NSMutableDictionary *profile = [document[@"residents"][identifier] mutableCopy];
+            if (!profile) return;
+            NSMutableDictionary *stats = [profile[@"stats"] isKindOfClass:NSDictionary.class] ? [profile[@"stats"] mutableCopy] : [NSMutableDictionary dictionary];
+            fill(stats);
+            profile[@"stats"] = stats;
+            document[@"residents"][identifier] = profile;
+        }];
+    }
+    if (!resident.reborn && [channel[@"host"] isEqual:resident.species]) {
+        // A guest is borrowing their slot: their real record is the stash.
+        if (![channel[@"stash"] isKindOfClass:NSDictionary.class]) return NO;
+        return [self updateDocument:^(NSMutableDictionary *document) {
+            NSMutableDictionary *slot = [document[@"channel"] mutableCopy];
+            NSMutableDictionary *stash = [slot[@"stash"] mutableCopy];
+            fill(stash);
+            slot[@"stash"] = stash;
+            document[@"channel"] = slot;
+        }];
+    }
+    NSString *species = resident.reborn ? channel[@"host"] : resident.species;
+    if (!species) return NO;
+    if (![self nativeDatabase]) {
+        NSDictionary *fresh = @{@"foodTokens": @0, @"pixelPals": @[]};
+        [self.nativeDefaults setObject:[NSJSONSerialization dataWithJSONObject:fresh options:0 error:nil] forKey:@"PixelPalsDatabase"];
+    }
+    return [self writeNativeSpecies:species create:YES change:^NSDictionary *(NSMutableDictionary *info) {
+        fill(info);
         return info;
     }];
 }
@@ -547,16 +580,20 @@ static NSNumber *APAddHeart(id hearts) {
     return @(MIN(6.0, MAX(0.0, h) + 0.25));
 }
 
-- (APCareResult)feedActive:(double *)gain {
+- (APCareResult)feedActive:(double *)gain { return [self feedResident:self.household.firstObject.identifier gain:gain]; }
+- (APCareResult)playWithActive { return [self playWithResident:self.household.firstObject.identifier]; }
+
+- (APCareResult)feedResident:(NSString *)identifier gain:(double *)gain {
     [self refresh];
-    if (![self activeNativeSpecies]) return APCareUnavailable;
+    ApolloPalHomeResident *resident = [self residentWithID:identifier];
+    if (!resident || !self.canEdit) return APCareUnavailable;
     if (self.foodTokens < 1) return APCareNoFood;
-    if ([self waitBeforeFeeding] > 0) return APCareTooSoon;
-    APSpecies *species = [APSpecies speciesWithID:self.household.firstObject.species];
+    if (APCareWait(resident.lastFed) > 0) return APCareTooSoon;
+    APSpecies *species = [APSpecies speciesWithID:resident.species];
     // Apollo: (random in [0, 1) × 1.8 + 0.4) × the species' factor.
     double grams = (arc4random_uniform(1u << 30) / (double)(1u << 30) * 1.8 + 0.4) * (species.feedWeightFactor ?: 1.0);
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    BOOL saved = [self updateActiveRecord:^(NSMutableDictionary *info) {
+    BOOL saved = [self updateRecordForResident:resident change:^(NSMutableDictionary *info) {
         info[@"hearts"] = APAddHeart(info[@"hearts"]);
         double w = [info[@"weightInLbs"] doubleValue];
         info[@"weightInLbs"] = @(round((w + grams) * 1000) / 1000);
@@ -569,23 +606,24 @@ static NSNumber *APAddHeart(id hearts) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:database options:0 error:nil];
     if (data) [self.nativeDefaults setObject:data forKey:@"PixelPalsDatabase"];
     if (gain) *gain = grams;
-    ApolloLog(@"[PalHome] Fed %@ (+%.2f lbs, %ld food left)", self.household.firstObject.identifier, grams, (long)self.foodTokens);
+    ApolloLog(@"[PalHome] Fed %@ (+%.2f lbs, %ld food left)", identifier, grams, (long)self.foodTokens);
     [self refresh];
     ApolloPalHomeNotifyApollo();
     return APCareDone;
 }
 
-- (APCareResult)playWithActive {
+- (APCareResult)playWithResident:(NSString *)identifier {
     [self refresh];
-    if (![self activeNativeSpecies]) return APCareUnavailable;
-    if ([self waitBeforePlaying] > 0) return APCareTooSoon;
+    ApolloPalHomeResident *resident = [self residentWithID:identifier];
+    if (!resident || !self.canEdit) return APCareUnavailable;
+    if (APCareWait(resident.lastPlayed) > 0) return APCareTooSoon;
     NSTimeInterval now = NSDate.date.timeIntervalSinceReferenceDate;
-    BOOL saved = [self updateActiveRecord:^(NSMutableDictionary *info) {
+    BOOL saved = [self updateRecordForResident:resident change:^(NSMutableDictionary *info) {
         info[@"hearts"] = APAddHeart(info[@"hearts"]);
         info[@"lastTimePlayedWith"] = @(now);
     }];
     if (!saved) return APCareUnavailable;
-    ApolloLog(@"[PalHome] Played with %@", self.household.firstObject.identifier);
+    ApolloLog(@"[PalHome] Played with %@", identifier);
     [self refresh];
     ApolloPalHomeNotifyApollo();
     return APCareDone;
@@ -621,7 +659,22 @@ static NSNumber *APAddHeart(id hearts) {
     }
     ApolloLog(@"[PalHome] %@ (%@) went to a new home", identifier, leaving.species);
     NSDictionary *leavingRoom = [self.document[@"rooms"] isKindOfClass:NSDictionary.class] ? self.document[@"rooms"][identifier] : nil;
+    // Not gone for good: keep everything needed to bring them back.
+    NSMutableDictionary *archive = [NSMutableDictionary dictionary];
+    archive[@"id"] = identifier;
+    archive[@"species"] = leaving.species;
+    archive[@"name"] = leaving.name;
+    archive[@"coat"] = leaving.coat ?: @"original";
+    archive[@"at"] = @(NSDate.date.timeIntervalSinceReferenceDate);
+    NSDictionary *profile = self.document[@"residents"][identifier];
+    if ([profile isKindOfClass:NSDictionary.class]) archive[@"profile"] = profile;
+    if (leavingRoom) archive[@"room"] = leavingRoom;
+    if (!leaving.reborn && [self nativePets][leaving.species]) archive[@"record"] = [self nativePets][leaving.species];
     [self updateDocument:^(NSMutableDictionary *document) {
+        NSMutableArray *rehomed = [document[@"rehomed"] isKindOfClass:NSArray.class] ? [document[@"rehomed"] mutableCopy] : [NSMutableArray array];
+        [rehomed insertObject:archive atIndex:0];
+        while (rehomed.count > 12) [rehomed removeLastObject];
+        document[@"rehomed"] = rehomed;
         [document[@"residents"] removeObjectForKey:identifier];
         if ([document[@"rooms"] isKindOfClass:NSDictionary.class]) {
             NSMutableDictionary *rooms = [document[@"rooms"] mutableCopy];
@@ -649,6 +702,74 @@ static NSNumber *APAddHeart(id hearts) {
     [self refresh];
     ApolloPalHomeNotifyApollo();
     return YES;
+}
+
+- (NSArray<NSDictionary *> *)rehomed {
+    NSArray *list = [self.document[@"rehomed"] isKindOfClass:NSArray.class] ? self.document[@"rehomed"] : @[];
+    NSMutableArray *valid = [NSMutableArray array];
+    for (NSDictionary *entry in list) {
+        if ([entry isKindOfClass:NSDictionary.class] && [entry[@"id"] isKindOfClass:NSString.class] &&
+            [entry[@"species"] isKindOfClass:NSString.class] && [entry[@"name"] isKindOfClass:NSString.class]) [valid addObject:entry];
+    }
+    return valid;
+}
+
+- (NSString *)restoreRehomed:(NSString *)identifier {
+    [self refresh];
+    if (!self.canEdit) return nil;
+    NSDictionary *entry = nil;
+    for (NSDictionary *candidate in [self rehomed]) if ([candidate[@"id"] isEqual:identifier]) { entry = candidate; break; }
+    if (!entry) return nil;
+    [self settleChannel]; // native writes below need the real records
+    [self refresh];
+    NSString *species = entry[@"species"];
+    NSDictionary *profile = [entry[@"profile"] isKindOfClass:NSDictionary.class] ? entry[@"profile"] : @{};
+    NSDictionary *record = [entry[@"record"] isKindOfClass:NSDictionary.class] ? entry[@"record"] : nil;
+    // Back as an Apollo Pal if their species' slot is free; otherwise (a
+    // Reborn species, or you've adopted another of theirs) as a Reborn Pal
+    // carrying the same stats.
+    BOOL slotFree = [APSpecies isApolloSpecies:species] && ![self nativePets][species] &&
+                    ![self.document[@"residents"][[kApolloPrefix stringByAppendingString:species]] isKindOfClass:NSDictionary.class];
+    NSString *newID = slotFree ? [kApolloPrefix stringByAppendingString:species]
+                    : ([identifier hasPrefix:kRebornPrefix] && ![self residentWithID:identifier] ? identifier
+                       : [kRebornPrefix stringByAppendingString:NSUUID.UUID.UUIDString.lowercaseString]);
+    NSMutableDictionary *restored = [profile mutableCopy];
+    restored[@"id"] = newID;
+    restored[@"species"] = species;
+    restored[@"source"] = slotFree ? @"apollo" : @"reborn";
+    if (!restored[@"name"]) restored[@"name"] = entry[@"name"];
+    if (!slotFree && record && ![restored[@"stats"] isKindOfClass:NSDictionary.class]) restored[@"stats"] = APStatsFromInfo(record);
+    BOOL saved = [self updateDocument:^(NSMutableDictionary *document) {
+        document[@"residents"][newID] = restored;
+        NSMutableArray *rehomed = [document[@"rehomed"] mutableCopy];
+        [rehomed filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *e, __unused id b) { return ![e[@"id"] isEqual:identifier]; }]];
+        document[@"rehomed"] = rehomed;
+        if ([entry[@"room"] isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *rooms = [document[@"rooms"] isKindOfClass:NSDictionary.class] ? [document[@"rooms"] mutableCopy] : [NSMutableDictionary dictionary];
+            rooms[newID] = entry[@"room"];
+            document[@"rooms"] = rooms;
+        }
+        NSMutableArray *movedIn = [document[@"movedIn"] isKindOfClass:NSArray.class] ? [document[@"movedIn"] mutableCopy] : [NSMutableArray array];
+        if (![movedIn containsObject:newID]) [movedIn addObject:newID];
+        document[@"movedIn"] = movedIn;
+    }];
+    if (!saved) return nil;
+    if (slotFree) {
+        if (![self nativeDatabase]) {
+            [self.nativeDefaults setObject:[NSJSONSerialization dataWithJSONObject:@{@"foodTokens": @0, @"pixelPals": @[]} options:0 error:nil]
+                                    forKey:@"PixelPalsDatabase"];
+        }
+        NSString *name = restored[@"name"];
+        [self writeNativeSpecies:species create:YES change:^NSDictionary *(NSMutableDictionary *info) {
+            if (record) [info setDictionary:record];
+            if (![info[@"name"] isKindOfClass:NSString.class]) info[@"name"] = name;
+            return info;
+        }];
+    }
+    ApolloLog(@"[PalHome] %@ came home as %@", identifier, newID);
+    [self refresh];
+    ApolloPalHomeNotifyApollo();
+    return newID;
 }
 
 #pragma mark - Adoption
@@ -749,6 +870,33 @@ static void ApolloPalHomeNotifyApollo(void) {
     if (NSThread.isMainThread) post(); else dispatch_async(dispatch_get_main_queue(), post);
 }
 
++ (BOOL)isPalHomeEnabled { return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyPalHomeEnabled]; }
+
++ (void)setPalHomeEnabled:(BOOL)enabled {
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:UDKeyPalHomeEnabled];
+    ApolloLog(@"[PalHome] Pal Home %@", enabled ? @"on" : @"off (Classic Pixel Pals)");
+    if (!enabled) [[ApolloPalHomeStore new] returnToClassic];
+}
+
+- (void)returnToClassic {
+    [self refresh];
+    if (!self.canEdit) return;
+    // A Reborn Pal on the island goes home (its progress saved), the slot is
+    // returned, and one of Apollo's own Pals takes the island.
+    NSDictionary *channel = APChannelFromDocument(self.document);
+    if (channel) [self settleChannel];
+    [self refresh];
+    ApolloPalHomeResident *now = self.household.firstObject;
+    BOOL real = now && !now.reborn && [self nativePets][now.species];
+    if (!real) {
+        for (ApolloPalHomeResident *resident in self.household) {
+            if (!resident.reborn && [self nativePets][resident.species]) { [self makeActiveResident:resident.identifier]; break; }
+        }
+    }
+    [self refresh];
+    ApolloPalHomeNotifyApollo();
+}
+
 + (NSString *)coatForSpecies:(NSString *)species {
     id document = [NSUserDefaults.standardUserDefaults objectForKey:UDKeyPalHome];
     id residents = [document isKindOfClass:NSDictionary.class] ? document[@"residents"] : nil;
@@ -788,7 +936,9 @@ static BOOL ApolloPalHomeValidItem(id record) {
     return YES;
 }
 
-- (BOOL)saveRoom:(NSDictionary *)room {
+- (BOOL)saveRoom:(NSDictionary *)room { return [self saveRoom:room forResident:nil]; }
+
+- (BOOL)saveRoom:(NSDictionary *)room forResident:(NSString *)identifier {
     if (![room isKindOfClass:NSDictionary.class]) return NO;
     for (NSString *key in @[@"wallpaper", @"floor", @"lighting", @"style"]) {
         if (room[key] && !ApolloPalHomeValidString(room[key])) return NO;
@@ -800,8 +950,8 @@ static BOOL ApolloPalHomeValidItem(id record) {
     if (!self.canEdit) return NO;
     NSMutableDictionary *document = [self.document mutableCopy];
     // This Pal's own home. Preserve room fields this version doesn't know about.
-    NSString *active = self.household.firstObject.identifier;
-    if (!active) return NO;
+    NSString *active = identifier ?: self.household.firstObject.identifier;
+    if (!active || ![self residentWithID:active]) return NO;
     NSMutableDictionary *rooms = [document[@"rooms"] isKindOfClass:NSDictionary.class] ? [document[@"rooms"] mutableCopy] : [NSMutableDictionary dictionary];
     NSMutableDictionary *merged = [rooms[active] isKindOfClass:NSDictionary.class] ? [rooms[active] mutableCopy] : [NSMutableDictionary dictionary];
     [merged addEntriesFromDictionary:room];
@@ -809,7 +959,7 @@ static BOOL ApolloPalHomeValidItem(id record) {
     document[@"rooms"] = rooms;
     if (!document[@"roomOwner"]) document[@"roomOwner"] = active;
     document[@"roomsMigrated"] = @YES;
-    document[@"room"] = merged; // mirror for older versions
+    if ([active isEqual:self.household.firstObject.identifier]) document[@"room"] = merged; // mirror for older versions
     // Keep room styling separate from the resident catalogue. Preserve unrecognised
     // residents/fields for forward compatibility; never copy mutable native stats.
     NSMutableDictionary *residents = [document[@"residents"] mutableCopy];

@@ -1,9 +1,16 @@
 # Pal Home
 
-Pal Home replaces Apollo's Pixel Pals: a full-screen, Animal Crossing-style
-pixel-art home for every Pal, with Apollo's care (feeding, playing, hearts,
-stats) on the same data. Tapping the Pal on the Dynamic Island, Settings →
-Pixel Pals, and Settings → Apollo Reborn → Features → Pal Home all open it.
+Pal Home is an opt-in replacement for Apollo's Pixel Pals: a full-screen,
+Animal Crossing-style pixel-art home for every Pal, with Apollo's care
+(feeding, playing, hearts, stats) on the same data.
+
+**Opt-in** (Apollo Reborn → Features → Pal Home → Use Pal Home, default off).
+Off ("Classic"), Apollo's own care sheet and chooser are untouched apart from
+an occasional "Try Pal Home" card (`ApolloPalHomePrompt`; at most daily, never
+after ×). On, tapping the Pal on the Dynamic Island and Settings → Pixel Pals
+open Pal Home. Turning it off runs `-returnToClassic`: a Reborn Pal on the
+island goes home with its progress, the borrowed slot is returned, and one of
+Apollo's own Pals takes the island; homes and adopted Pals are kept.
 
 Everything on screen is procedural pixel art drawn at runtime at true art
 resolution (one unit = one art pixel) and shown with nearest-neighbour scaling.
@@ -98,9 +105,14 @@ no bounds check), so it is never extended. Instead:
 - **The shelter** (`ApolloPalHomeShelter`): a daily roster of 8 (Reborn species
   always featured) with a coat (fixed for life), a silly name, gender, age,
   personality and quirk. Personalities steer the idle brain.
+- **Visiting**: the household strip visits a Pal's home without changing the
+  island; their room and care (`feedResident:`, `saveRoom:forResident:`…) are
+  their own. "Put on the island" on the Pal card makes them the island Pal.
 - **Goodbyes**: the Pal card's wave button rehomes a Pal (with a confirmation):
   they walk out the front to a loving new family, taking their room, stats and
   Apollo record (a borrowed slot is returned first). Never your only Pal.
+  The last 12 are archived (`document.rehomed`); the shelter's "Coming home?"
+  welcomes them back with their room and stats.
 - **Capybaras**: petting drops a yuzu on its head (up to three, "perfectly
   balanced"); they tumble off when it moves.
 
@@ -124,10 +136,12 @@ Home never disagree:
    imageNamed:]` answer `<species>-<action>` names with the coat recolour, or
    with the Reborn guest drawn into its borrowed slot. Pal Home loads its own
    sprites through `APPalCreateSheetForUI` (not hooked).
-2. **Entrances**: island taps (`pixelPalTapped…`, `dogBarked…`) push Pal Home on
-   the current tab; pushing `PixelPalChooserViewController` pushes Pal Home
-   instead; the `pal-home` settings route (deep link
-   `apollo://reborn/settings/pal-home`).
+2. **Entrances** (only while Pal Home is on): island taps (`pixelPalTapped…`,
+   `dogBarked…`) push Pal Home on the current tab; pushing
+   `PixelPalChooserViewController` pushes Pal Home instead. Always: the
+   `pal-home-settings` screen and the `pal-home` route (deep link
+   `apollo://reborn/settings/pal-home`, used by the widget). In Classic the
+   chooser and care sheet show the "Try Pal Home" card.
 3. **Reconciling**: `PixelPalSettingChanged` / app activation settle the island
    channel; Pal Home posts `PixelPalSettingChanged` after native writes so the
    island reloads live.

@@ -1,6 +1,7 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
 #import "palhome/ApolloPalHomeViewController.h"
+#import "settings/ApolloPalHomeSettingsViewController.h"
 
 #import <objc/message.h>
 
@@ -80,7 +81,9 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
-        add(@"pal-home", @"Pal Home", @"Apollo Reborn → Features", ^UIViewController *{
+        add(@"pal-home-settings", @"Pal Home", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloPalHomeSettingsViewController class]));
+        // Pal Home itself (deep link apollo://reborn/settings/pal-home, the widget).
+        add(@"pal-home", @"Pal Home", @"Apollo Reborn → Features → Pal Home", ^UIViewController *{
             return [[ApolloPalHomeViewController alloc] init];
         });
         add(@"action-menus", @"Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));

@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe switchTo:(ApolloPalHomeResident *)resident;
 - (void)wardrobeToggledIsland:(ApolloPalHomeWardrobe *)wardrobe;
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsGoodbye:(ApolloPalHomeResident *)resident;
+- (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe putOnIsland:(ApolloPalHomeResident *)resident;
 @end
 
 // The Pal card: who your Pal is (age, personality, quirk, hearts), the rest
@@ -25,6 +26,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) NSInteger foodTokens;
 // Whether your Pal is on the Dynamic Island (Apollo's Enable Pixel Pals).
 @property (nonatomic) BOOL islandEnabled;
+// Which Pal is on the island (the card may be showing one you're visiting).
+@property (nonatomic, copy, nullable) NSString *islandResidentID;
 - (void)configureWithHousehold:(NSArray<ApolloPalHomeResident *> *)household;
 @end
 

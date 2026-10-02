@@ -540,8 +540,14 @@ static void APPalCard(APCanvas *c, APChromeTheme t, NSDictionary *pal, int x, in
 
 - (NSString *)widgetCodeWithRoom:(NSDictionary *)room {
     [self refresh];
-    ApolloPalHomeResident *pal = self.residents.firstObject;
+    return [self widgetCodeForResident:self.residents.firstObject.identifier room:room];
+}
+
+- (NSString *)widgetCodeForResident:(NSString *)identifier room:(NSDictionary *)room {
+    [self refresh];
+    ApolloPalHomeResident *pal = identifier ? [self residentWithID:identifier] : self.residents.firstObject;
     if (!pal) return nil;
+    if (!room) room = [self roomForResident:pal.identifier];
     NSMutableDictionary *info = [@{@"species": pal.species, @"coat": pal.coat ?: @"original", @"name": pal.name,
                                    @"gender": pal.gender ?: @"", @"ageMonths": @(pal.ageMonths), @"personality": @(pal.personality),
                                    @"quirk": pal.quirk ?: @"",
@@ -549,7 +555,7 @@ static void APPalCard(APCanvas *c, APChromeTheme t, NSDictionary *pal, int x, in
                                    @"personalityTitle": [APShelter titleForPersonality:pal.personality],
                                    @"personalityBlurb": [APShelter blurbForPersonality:pal.personality]} mutableCopy];
     if (pal.hearts) info[@"hearts"] = pal.hearts;
-    return [APPalWidget encodePal:info room:room ?: self.room ?: [APCatalog starterRoom]];
+    return [APPalWidget encodePal:info room:room ?: [APCatalog starterRoom]];
 }
 
 @end

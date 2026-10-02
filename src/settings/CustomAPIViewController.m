@@ -1153,8 +1153,8 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *polls = [self buildPollsRow];
     ApolloSettingsRow *apolloAI = [self buildApolloAIRow];
     ApolloSettingsRow *palHome = [self hubDisclosureRowWithID:@"feat.palHome" title:@"Pal Home"
-        subtitle:^NSString * { return @"A cosy room for your Pixel Pal"; }
-        push:^UIViewController * { return ApolloSettingsRouteInstantiate(@"pal-home"); }];
+        subtitle:^NSString * { return ApolloPalHomeStore.isPalHomeEnabled ? @"A cosy home for every Pixel Pal" : @"Try a cosy home for your Pixel Pals"; }
+        push:^UIViewController * { return ApolloSettingsRouteInstantiate(@"pal-home-settings"); }];
     palHome.iconSystemName = @"house.fill";
     palHome.iconTileColor = [UIColor systemBrownColor];
 

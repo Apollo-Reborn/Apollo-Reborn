@@ -73,6 +73,13 @@ FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
 // they haven't moved in yet (moving-in day: an empty room and the boxes).
 @property (nonatomic, readonly) BOOL activeMovedIn; // moving-in day has been shown
 - (void)markActiveMovedIn;
+// Any Pal's home (Pal Home can visit a Pal without putting them on the island).
+- (nullable NSDictionary<NSString *, id> *)roomForResident:(NSString *)identifier;
+- (BOOL)hasMovedIn:(NSString *)identifier;
+- (void)markMovedIn:(NSString *)identifier;
+// nil = the active Pal's room.
+- (BOOL)saveRoom:(NSDictionary<NSString *, id> *)room forResident:(nullable NSString *)identifier;
+- (nullable ApolloPalHomeResident *)residentWithID:(NSString *)identifier;
 - (void)refresh;
 - (BOOL)saveRoom:(NSDictionary<NSString *, id> *)room;
 
@@ -87,9 +94,15 @@ FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
 - (BOOL)renameResident:(NSString *)identifier to:(NSString *)name;
 - (BOOL)makeActiveResident:(NSString *)identifier;
 // Saying goodbye: the Pal goes to a loving new family, taking their room,
-// stats and Apollo record with them. Never your only Pal (returns NO). If
-// they're the active Pal, the next one in the household becomes active.
+// stats and Apollo record with them (archived: see -restoreRehomed:). Never
+// your only Pal (returns NO). If they're the active Pal, the next one in the
+// household becomes active.
 - (BOOL)rehomeResident:(NSString *)identifier;
+// Goodbyes aren't forever: the last 12 rehomed Pals ({id, name, species,
+// coat, at}, newest first) can come back with their room and stats. Returns
+// the restored resident's id (it changes if their Apollo slot is taken now).
+@property (nonatomic, readonly) NSArray<NSDictionary *> *rehomed;
+- (nullable NSString *)restoreRehomed:(NSString *)identifier;
 // Apollo's "Enable Pixel Pals" (group default PixelPalsEnabled): the Pal on
 // the Dynamic Island (or the top of the screen on older iPhones).
 @property (nonatomic) BOOL islandEnabled;
@@ -102,10 +115,22 @@ FOUNDATION_EXTERN const NSTimeInterval APCareCooldown; // 5 hours
 // returned through `gain`.
 - (APCareResult)feedActive:(nullable double *)gain;
 - (APCareResult)playWithActive;
+// The same for any Pal (whoever you're visiting), on their own record.
+- (NSTimeInterval)waitBeforeFeeding:(NSString *)identifier;
+- (NSTimeInterval)waitBeforePlaying:(NSString *)identifier;
+- (APCareResult)feedResident:(NSString *)identifier gain:(nullable double *)gain;
+- (APCareResult)playWithResident:(NSString *)identifier;
 // Settles the island channel after someone else (Apollo's own chooser)
 // changed the active Pal: the borrowed slot's stats go home and the slot is
 // restored. Cheap and idempotent; call whenever the active Pal may have moved.
 - (void)reconcileIsland;
+
+// Pal Home replaces Apollo's Pixel Pals screens only when this is on
+// (default off: Classic Pixel Pals). Turning it off returns any borrowed
+// island slot and puts one of Apollo's own Pals back on the island; homes and
+// adopted Pals are kept for next time.
+@property (class, nonatomic, getter=isPalHomeEnabled) BOOL palHomeEnabled;
+- (void)returnToClassic;
 
 // The coat an Apollo species' resident wears (Pal Home profile).
 + (nullable NSString *)coatForSpecies:(NSString *)species;

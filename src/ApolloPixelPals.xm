@@ -85,6 +85,7 @@
 #import "palhome/ApolloPalHomeStore.h"
 #import "palhome/ApolloPalSpecies.h"
 #import "palhome/ApolloRebornPalSprites.h"
+#import "palhome/ApolloPalHomePrompt.h"
 #import <SpriteKit/SpriteKit.h>
 
 // Apollo's stock strip height (sub_10030c494) and y (sub_10030c880).
@@ -507,8 +508,8 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
         ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
-    if (ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
-    %orig; // no navigation stack to push onto: Apollo's own sheet
+    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
+    %orig; // Classic (or no navigation stack to push onto): Apollo's own sheet
 }
 
 // Tapping the Pal sprite itself (the scene posts "dog barked") opens the
@@ -518,7 +519,7 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
         ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
-    if (ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
+    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
     %orig;
 }
 
@@ -526,20 +527,57 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
 
 #pragma mark - Pal Home
 
-// Pal Home replaces Pixel Pals: Settings → Pixel Pals opens it instead of
-// Apollo's chooser. (Everything the chooser did lives in Pal Home: the island
-// on/off is on the Pal card, choosing is the household + shelter.)
+// With Pal Home on, it replaces Pixel Pals: Settings → Pixel Pals opens it
+// instead of Apollo's chooser. (Everything the chooser did lives in Pal Home:
+// the island on/off is on the Pal card, choosing is the household + shelter.)
+// With it off (Classic, the default) Apollo's screens are untouched apart from
+// the occasional "Try Pal Home" card (ApolloPalHomePrompt).
 %hook UINavigationController
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
     static Class chooser;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ chooser = objc_getClass("_TtC6Apollo29PixelPalChooserViewController"); });
-    if (chooser && [viewController isKindOfClass:chooser]) {
+    if (chooser && [viewController isKindOfClass:chooser] && ApolloPalHomeStore.isPalHomeEnabled) {
         ApolloLog(@"[PixelPals] Settings → Pixel Pals → Pal Home");
         %orig([ApolloPalHomeViewController new], animated);
         return;
     }
     %orig;
+}
+%end
+
+%hook _TtC6Apollo29PixelPalChooserViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    UIViewController *chooser = (UIViewController *)self;
+    __weak UIViewController *weakChooser = chooser;
+    [ApolloPalHomePrompt showInView:chooser.view bottomInset:chooser.view.safeAreaInsets.bottom onTry:^{
+        UINavigationController *nav = weakChooser.navigationController;
+        if (nav) [nav pushViewController:[ApolloPalHomeViewController new] animated:YES];
+    }];
+}
+%end
+
+// Apollo's care sheet (Classic): the same card, floating at the bottom.
+%hook _TtC6Apollo29PixelPalOverlayViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    UIViewController *overlay = (UIViewController *)self;
+    UIView *host = overlay.view.window ?: overlay.view;
+    if (!host) return;
+    __weak UIViewController *weakOverlay = overlay;
+    // Clear of the tab bar under the sheet.
+    [ApolloPalHomePrompt showInView:host bottomInset:host.safeAreaInsets.bottom + 56 onTry:^{
+        UIViewController *sheet = weakOverlay;
+        UIWindow *window = sheet.view.window;
+        [sheet dismissViewControllerAnimated:YES completion:^{ if (window) ApolloPalHomeOpenFromIsland(window); }];
+    }];
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    %orig;
+    // The card belongs to the sheet: it leaves with it.
+    UIView *window = ((UIViewController *)self).view.window;
+    for (UIView *view in window.subviews) if ([view isKindOfClass:ApolloPalHomePrompt.class]) [view removeFromSuperview];
 }
 %end
 
