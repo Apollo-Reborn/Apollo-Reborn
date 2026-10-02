@@ -1706,7 +1706,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             NSString *readPostMaxStr = sReadPostMaxCount > 0 ? [NSString stringWithFormat:@"%ld", (long)sReadPostMaxCount] : @"";
             return [weakSelf textFieldCellWithIdentifier:@"Cell_Gen_ReadMax"
                                                    label:@"Recently Read Posts Limit"
-                                             placeholder:@"(unlimited)"
+                                             placeholder:@"Unlimited"
                                                     text:readPostMaxStr
                                                      tag:TagReadPostMaxCount
                                                numerical:YES]
@@ -2856,7 +2856,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
             return [weakSelf textFieldCellWithIdentifier:@"Cell_Sub_TrendLimit"
                                                    label:@"Trending Subreddits Limit"
-                                             placeholder:@"(unlimited)"
+                                             placeholder:@"Unlimited"
                                                     text:sTrendingSubredditsLimit
                                                      tag:TagTrendingLimit
                                                numerical:YES]
@@ -3203,7 +3203,15 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.textLabel.text = label;
+        cell.textLabel.text = nil;
+
+        UILabel *titleLabel = [[UILabel alloc] init];
+        titleLabel.text = label;
+        titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        titleLabel.adjustsFontForContentSizeCategory = YES;
+        titleLabel.numberOfLines = 0;
+        titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
         UITextField *textField = [[UITextField alloc] init];
         textField.placeholder = placeholder;
@@ -3220,16 +3228,32 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             textField.keyboardType = UIKeyboardTypeNumberPad;
         }
 
+        CGFloat placeholderWidth = ceil([placeholder sizeWithAttributes:@{
+            NSFontAttributeName: textField.font
+        }].width);
+        CGFloat digitsWidth = ceil([@"99999" sizeWithAttributes:@{
+            NSFontAttributeName: textField.font
+        }].width);
+        CGFloat valueWidth = MAX(placeholderWidth, digitsWidth) + 24.0;
+
+        [textField.widthAnchor constraintEqualToConstant:valueWidth].active = YES;
+
         textField.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:titleLabel];
         [cell.contentView addSubview:textField];
+
+        UILayoutGuide *margins = cell.contentView.layoutMarginsGuide;
         [NSLayoutConstraint activateConstraints:@[
-            [textField.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
+            [titleLabel.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+            [titleLabel.topAnchor constraintEqualToAnchor:margins.topAnchor],
+            [titleLabel.bottomAnchor constraintEqualToAnchor:margins.bottomAnchor],
+
+            [textField.leadingAnchor constraintGreaterThanOrEqualToAnchor:titleLabel.trailingAnchor constant:8.0],
+            [textField.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
             [textField.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-            [textField.widthAnchor constraintEqualToAnchor:cell.contentView.widthAnchor multiplier:0.55],
         ]];
     }
 
-    // Update text value (handles cell reuse)
     UITextField *textField = nil;
     for (UIView *subview in cell.contentView.subviews) {
         if ([subview isKindOfClass:[UITextField class]]) {
@@ -3237,9 +3261,10 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             break;
         }
     }
+
     textField.text = text;
-    textField.accessibilityLabel = label;   // VoiceOver: tie the field to its caption
-    cell.textLabel.text = label;
+    textField.placeholder = placeholder;
+    textField.accessibilityLabel = label;
     [self apollo_applyPrimaryTextColorToCell:cell];
 
     return cell;
@@ -4107,6 +4132,18 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 
 #pragma mark - UITextFieldDelegate
+
+- (BOOL)textField:(UITextField *)textField
+shouldChangeCharactersInRange:(NSRange)range
+replacementString:(NSString *)string {
+    if (textField.tag == TagReadPostMaxCount || textField.tag == TagTrendingLimit) {
+        NSString *updated = [textField.text stringByReplacingCharactersInRange:range
+                                                                    withString:string];
+        return updated.length <= 5;
+    }
+
+    return YES;
+}
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     [textField resignFirstResponder];
