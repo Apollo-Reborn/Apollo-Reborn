@@ -216,11 +216,13 @@ static BOOL APValidRoom(id room) {
     NSString *active = self.household.firstObject.identifier;
     NSDictionary *rooms = [self.document[@"rooms"] isKindOfClass:NSDictionary.class] ? self.document[@"rooms"] : @{};
     NSDictionary *legacy = APValidRoom(self.document[@"room"]) ? self.document[@"room"] : nil;
-    if (legacy && !self.document[@"roomOwner"] && !rooms.count && active && self.canEdit && [self.defaults objectForKey:UDKeyPalHome]) {
+    BOOL migrated = [self.document[@"roomsMigrated"] isKindOfClass:NSNumber.class] && [self.document[@"roomsMigrated"] boolValue];
+    if (legacy && !migrated && !self.document[@"roomOwner"] && !rooms.count && active && self.canEdit && [self.defaults objectForKey:UDKeyPalHome]) {
         // One-time migration: the existing room is the current Pal's.
         NSMutableDictionary *document = [self.document mutableCopy];
         document[@"rooms"] = @{active: legacy};
         document[@"roomOwner"] = active;
+        document[@"roomsMigrated"] = @YES;
         NSMutableArray *movedIn = [document[@"movedIn"] isKindOfClass:NSArray.class] ? [document[@"movedIn"] mutableCopy] : [NSMutableArray array];
         if (![movedIn containsObject:active]) [movedIn addObject:active];
         document[@"movedIn"] = movedIn;
@@ -596,15 +598,29 @@ static NSNumber *APAddHeart(id hearts) {
     if (!self.canEdit || self.household.count < 2) return NO;
     ApolloPalHomeResident *leaving = [self residentWithID:identifier];
     if (!leaving) return NO;
-    if (leaving.active) {
-        ApolloPalHomeResident *next = nil;
-        for (ApolloPalHomeResident *resident in self.household) if (![resident.identifier isEqual:identifier]) { next = resident; break; }
-        if (!next || ![self makeActiveResident:next.identifier]) return NO;
+    // If the departing Pal is on the island through a borrowed slot, or owns
+    // the slot a guest is borrowing, give it back *before* choosing who's
+    // next, so the replacement's own channel is never dismantled.
+    // Pick the replacement from the real household now, before any slot is
+    // returned (returning one can briefly point Apollo at an empty slot).
+    BOOL wasActive = leaving.active;
+    ApolloPalHomeResident *next = nil;
+    for (ApolloPalHomeResident *resident in self.household) if (![resident.identifier isEqual:identifier]) { next = resident; break; }
+    NSDictionary *channel = APChannelFromDocument(self.document);
+    if (channel && ([channel[@"resident"] isEqual:identifier] || (!leaving.reborn && [channel[@"host"] isEqual:leaving.species]))) {
+        [self settleChannel];
+        [self refresh];
     }
-    // Give back any borrowed slot first, so native records are the real ones.
-    [self settleChannel];
-    [self refresh];
+    // Hand the island to the replacement if the departing Pal had it, or if
+    // returning a slot left Apollo pointing at an empty one.
+    ApolloPalHomeResident *now = self.household.firstObject;
+    BOOL emptySlot = now && !now.reborn && ![self nativePets][now.species] && !now.adopted;
+    if (wasActive || emptySlot) {
+        if (!next || ![self makeActiveResident:next.identifier]) return NO;
+        [self refresh];
+    }
     ApolloLog(@"[PalHome] %@ (%@) went to a new home", identifier, leaving.species);
+    NSDictionary *leavingRoom = [self.document[@"rooms"] isKindOfClass:NSDictionary.class] ? self.document[@"rooms"][identifier] : nil;
     [self updateDocument:^(NSMutableDictionary *document) {
         [document[@"residents"] removeObjectForKey:identifier];
         if ([document[@"rooms"] isKindOfClass:NSDictionary.class]) {
@@ -617,7 +633,13 @@ static NSNumber *APAddHeart(id hearts) {
             [movedIn removeObject:identifier];
             document[@"movedIn"] = movedIn;
         }
-        if ([document[@"roomOwner"] isEqual:identifier]) [document removeObjectForKey:@"roomOwner"];
+        // Their room leaves with them: if the legacy mirror (document.room) is
+        // theirs, empty it, and mark migration done so it can never be handed
+        // to another Pal as "the household room".
+        NSDictionary *mirror = document[@"room"];
+        BOOL mirrorIsTheirs = [document[@"roomOwner"] isEqual:identifier] || [mirror isEqual:leavingRoom];
+        if (mirrorIsTheirs) document[@"room"] = @{};
+        document[@"roomsMigrated"] = @YES;
         if ([document[@"active"] isEqual:identifier]) [document removeObjectForKey:@"active"];
     }];
     if (!leaving.reborn) {
@@ -786,6 +808,7 @@ static BOOL ApolloPalHomeValidItem(id record) {
     rooms[active] = merged;
     document[@"rooms"] = rooms;
     if (!document[@"roomOwner"]) document[@"roomOwner"] = active;
+    document[@"roomsMigrated"] = @YES;
     document[@"room"] = merged; // mirror for older versions
     // Keep room styling separate from the resident catalogue. Preserve unrecognised
     // residents/fields for forward compatibility; never copy mutable native stats.

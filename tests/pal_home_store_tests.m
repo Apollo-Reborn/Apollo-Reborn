@@ -279,6 +279,36 @@ int main(void) {
             rex = store.residents.firstObject;
             Check(rex.ageMonths >= 35 && rex.ageMonths <= 37 && rex.personality == personality && [rex.quirk isEqual:quirk], @"renaming changes nothing else");
 
+            // Review: rehoming the active native Pal hands the island to the
+            // remaining capybara without dismantling its borrowed slot.
+            [owned removePersistentDomainForName:ownedSuite];
+            [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"foodTokens": @0, @"pixelPals": @[@"cat", @{@"name": @"Tom"}]} options:0 error:nil]
+                        forKey:@"PixelPalsDatabase"];
+            [native setObject:@"cat" forKey:@"ActivePixelPal"];
+            store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
+            APShelterAnimal *capy2 = [APShelterAnimal new];
+            capy2.species = @"capybara"; capy2.coat = @"original"; capy2.ageMonths = 12; capy2.weightInLbs = 90;
+            Check([store adoptAnimal:capy2 name:@"Moss"], @"adopt capybara");
+            NSString *moss = store.residents.firstObject.identifier;
+            Check([store makeActiveResident:@"apollo.cat"], @"back to the cat");
+            Check([store rehomeResident:@"apollo.cat"], @"rehome the active cat");
+            Check([store.residents.firstObject.identifier isEqual:moss] && store.residents.firstObject.active, @"the capybara is now active");
+            Check(store.household.count == 1, @"no phantom Apollo Pal from the borrowed slot");
+            NSDictionary *chan = [owned dictionaryForKey:UDKeyPalHome][@"channel"];
+            Check([chan[@"resident"] isEqual:moss] && [[native stringForKey:@"ActivePixelPal"] isEqual:chan[@"host"]], @"its slot is intact");
+
+            // Review: a departing Pal's room never migrates to someone else.
+            [owned removePersistentDomainForName:ownedSuite];
+            [native setObject:[NSJSONSerialization dataWithJSONObject:@{@"foodTokens": @0, @"pixelPals": @[@"cat", @{@"name": @"Tom"}, @"dog", @{@"name": @"Rex"}]} options:0 error:nil]
+                        forKey:@"PixelPalsDatabase"];
+            [native setObject:@"cat" forKey:@"ActivePixelPal"];
+            store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
+            Check([store saveRoom:@{@"wallpaper": @"wp.castle", @"items": @[sofa]}], @"furnish the cat's room");
+            Check([store rehomeResident:@"apollo.cat"], @"rehome the cat");
+            Check([store.residents.firstObject.identifier isEqual:@"apollo.dog"] && store.room == nil && !store.activeMovedIn, @"the dog still gets moving-in day");
+            [store refresh];
+            Check(store.room == nil, @"…even after another refresh");
+
             puts("pal_home_store_tests: all scenarios passed");
         } @finally {
             [owned removePersistentDomainForName:ownedSuite];
