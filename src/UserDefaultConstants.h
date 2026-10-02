@@ -203,8 +203,9 @@ static NSString *const UDKeyIconOnlySavedHideUsernameOnTabBar = @"IconOnlySavedH
 static NSString *const UDKeyOpenLinksInGitHubApp  = @"OpenLinksInGitHubApp";
 static NSString *const UDKeyOpenLinksInBlueskyApp = @"OpenLinksInBlueskyApp";
 // "Open via Nitter": open tapped x.com / twitter.com links on a Nitter mirror
-// instead of X (BOOL, default OFF / unset), and the instance to use (bare
-// "host" or "host:port", as produced by ApolloNitterNormalizeHost; empty = none
+// instead of X (BOOL, default OFF / unset), and the instance to use ("host" or
+// "host:port" for https, "http://"-prefixed for a plain-http self-hosted
+// instance, as produced by ApolloNitterNormalizeHost; empty = none
 // picked, which leaves the feature inactive even when the toggle is on). Read
 // at tap time in ApolloShareLinks.xm; set in Settings > Open in App.
 static NSString *const UDKeyOpenTwitterLinksViaNitter = @"OpenTwitterLinksViaNitter";

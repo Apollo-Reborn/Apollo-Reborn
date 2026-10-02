@@ -48,9 +48,11 @@ void ApolloNitterFetchHealthyInstances(void (^completion)(NSArray<ApolloNitterIn
                                                           NSError *_Nullable error));
 
 /// Normalizes user input ("nitter.example.org", "https://nitter.example.org/foo",
-/// "Nitter.Example.org:8443") to a lowercase "host" or "host:port". Returns nil
-/// for anything that isn't a plausible dotted hostname, and for X/Twitter's own
-/// domains (pointing the mirror at X would loop straight back to X).
+/// "Nitter.Example.org:8443") to a lowercase "host" or "host:port", meaning
+/// https. Input that explicitly says http:// keeps it, as "http://host" or
+/// "http://host:port", for self-hosted instances served without TLS. Returns
+/// nil for anything that isn't a plausible dotted hostname, and for X/Twitter's
+/// own domains (pointing the mirror at X would loop straight back to X).
 NSString *_Nullable ApolloNitterNormalizeHost(NSString *_Nullable input);
 
 /// Rewrites an X/Twitter web URL onto `instanceHost` (as returned by

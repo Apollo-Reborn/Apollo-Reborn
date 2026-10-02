@@ -78,13 +78,27 @@ NSString *ApolloNitterNormalizeHost(NSString *input) {
     if (!ApolloNitterIsPlausibleHostname(host)) return nil;
     if (ApolloNitterHostIsXOwned(host)) return nil;
 
+    // https stays bare (the common case, and the format saved before plain
+    // http was supported). An explicit http:// is kept, so a self-hosted
+    // instance on a home network without TLS opens over http rather than
+    // being silently upgraded to an https address that doesn't answer.
+    BOOL plainHTTP = [components.scheme isEqualToString:@"http"];
+    NSString *address = plainHTTP ? [@"http://" stringByAppendingString:host] : host;
+
     NSNumber *port = components.port;
     if (port) {
         NSInteger value = port.integerValue;
         if (value <= 0 || value > 65535) return nil;
-        if (value != 443) return [NSString stringWithFormat:@"%@:%ld", host, (long)value];
+        if (value != (plainHTTP ? 80 : 443)) return [NSString stringWithFormat:@"%@:%ld", address, (long)value];
     }
-    return host;
+    return address;
+}
+
+// Builds the instance's base URL from an ApolloNitterNormalizeHost result:
+// bare "host[:port]" means https, an "http://" prefix means plain http.
+static NSURLComponents *ApolloNitterInstanceComponents(NSString *instanceHost) {
+    NSString *base = [instanceHost hasPrefix:@"http://"] ? instanceHost : [@"https://" stringByAppendingString:instanceHost];
+    return [NSURLComponents componentsWithString:base];
 }
 
 #pragma mark - URL rewriting
@@ -129,7 +143,7 @@ NSURL *ApolloNitterURLForTwitterURL(NSURL *url, NSString *instanceHost) {
     if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) return nil;
     if (!ApolloNitterHostIsRewritable(source.host.lowercaseString ?: @"")) return nil;
 
-    NSURLComponents *instance = [NSURLComponents componentsWithString:[@"https://" stringByAppendingString:instanceHost]];
+    NSURLComponents *instance = ApolloNitterInstanceComponents(instanceHost);
     if (instance.host.length == 0) return nil;
 
     NSMutableArray<NSString *> *segments = [NSMutableArray array];
@@ -146,7 +160,7 @@ NSURL *ApolloNitterURLForTwitterURL(NSURL *url, NSString *instanceHost) {
     }
 
     NSURLComponents *rewritten = [NSURLComponents new];
-    rewritten.scheme = @"https";
+    rewritten.scheme = instance.scheme;
     rewritten.host = instance.host;
     rewritten.port = instance.port;
     rewritten.percentEncodedPath = segments.count > 0
@@ -199,7 +213,9 @@ NSArray<ApolloNitterInstance *> *ApolloNitterParseInstanceList(NSData *data) {
 
         id domain = dict[@"domain"];
         NSString *host = [domain isKindOfClass:[NSString class]] ? ApolloNitterNormalizeHost(domain) : nil;
-        if (!host || [seen containsObject:host]) continue;
+        // Public instances are https only; plain http is for an address the
+        // user typed themselves, never one the tracker hands us.
+        if (!host || [host hasPrefix:@"http://"] || [seen containsObject:host]) continue;
         [seen addObject:host];
 
         ApolloNitterInstance *instance = [ApolloNitterInstance new];

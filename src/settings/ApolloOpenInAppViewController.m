@@ -310,7 +310,7 @@ static NSString *ApolloOpenInAppSavedNitterHost(void) {
 
 - (void)presentNitterCustomHostAlertWithText:(NSString *)text enabling:(BOOL)enabling {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Custom Instance"
-                                                                   message:@"Enter the address of a Nitter instance."
+                                                                   message:@"Enter the address of a Nitter instance. Start it with http:// if it doesn't use HTTPS, like one you host at home."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"nitter.example.org";

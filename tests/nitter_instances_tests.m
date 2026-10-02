@@ -65,11 +65,22 @@ int main(void) {
         Check([ported.absoluteString isEqualToString:@"https://nitter.example.org:8443/jack"], @"rewrite keeps instance port");
         Check(ApolloNitterURLForTwitterURL([NSURL URLWithString:@"https://x.com/jack"], @"") == nil, @"empty instance -> nil");
 
+        // A plain-http instance (self-hosted, no TLS) is opened over http, not upgraded.
+        NSURL *plain = ApolloNitterURLForTwitterURL([NSURL URLWithString:@"https://x.com/jack/status/20?s=20"], @"http://192.168.1.5:8080");
+        Check([plain.absoluteString isEqualToString:@"http://192.168.1.5:8080/jack/status/20"], @"rewrite keeps plain-http instance scheme and port");
+        NSURL *plainNoPort = ApolloNitterURLForTwitterURL([NSURL URLWithString:@"https://x.com/jack"], @"http://nitter.lan.example");
+        Check([plainNoPort.absoluteString isEqualToString:@"http://nitter.lan.example/jack"], @"rewrite keeps plain-http instance scheme");
+
         // Host normalization.
         CheckHost(@"nitter.example.org", @"nitter.example.org");
         CheckHost(@"  Nitter.Example.ORG  ", @"nitter.example.org");
         CheckHost(@"https://nitter.example.org/foo?bar=1", @"nitter.example.org");
-        CheckHost(@"http://nitter.example.org", @"nitter.example.org");
+        CheckHost(@"http://nitter.example.org", @"http://nitter.example.org");
+        CheckHost(@"HTTP://192.168.1.5:8080/", @"http://192.168.1.5:8080");
+        CheckHost(@"http://nitter.example.org:80", @"http://nitter.example.org");
+        CheckHost(@"http://nitter.example.org:443", @"http://nitter.example.org:443");
+        CheckHost(@"https://nitter.example.org:80", @"nitter.example.org:80");
+        CheckHost(@"http://x.com", nil);
         CheckHost(@"nitter.example.org:8443", @"nitter.example.org:8443");
         CheckHost(@"https://nitter.example.org:443", @"nitter.example.org");
         CheckHost(@"x.com", nil);
@@ -90,7 +101,8 @@ int main(void) {
             "{\"domain\":\"BEST.example.org\",\"healthy\":true,\"points\":10},"
             "{\"domain\":42,\"healthy\":true},"
             "\"junk\","
-            "{\"domain\":\"x.com\",\"healthy\":true,\"points\":99}"
+            "{\"domain\":\"x.com\",\"healthy\":true,\"points\":99},"
+            "{\"domain\":\"http://plain.example.org\",\"healthy\":true,\"points\":90}"
             "],\"last_update\":\"2026-10-01T18:11:47Z\"}";
         NSArray<ApolloNitterInstance *> *parsed = ApolloNitterParseInstanceList([payload dataUsingEncoding:NSUTF8StringEncoding]);
         Check(parsed.count == 2, [NSString stringWithFormat:@"parse keeps 2 healthy hosts (got %lu)", (unsigned long)parsed.count]);
