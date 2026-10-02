@@ -1628,6 +1628,42 @@ UIColor *ApolloThemeSubredditListHeaderBackgroundColor(void) { return ApolloThem
 UIColor *ApolloThemeSubredditListTextColor(void) { return ApolloThemeSubredditListColor(2); }
 UIColor *ApolloThemeSubredditListSecondaryTextColor(void) { return ApolloThemeSubredditListColor(3); }
 
+BOOL ApolloThemeUsesPureBlackDarkMode(UITraitCollection *traits) {
+    if (traits.userInterfaceStyle != UIUserInterfaceStyleDark) return NO;
+    if (ApolloThemeCurrentSnapshot()->enabled) return NO;
+
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw)) return NO;
+    if (raw >= kStockThemeCount || kStockThemes[raw].tinted) return NO;
+
+    return [GroupDefaults() boolForKey:kUsePureBlackDarkModeKey];
+}
+
+UIColor *ApolloThemeSecondaryTextColor(UITraitCollection *traits) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel);
+    if (custom) return custom;
+
+    if (traits.userInterfaceStyle != UIUserInterfaceStyleDark) {
+        return [UIColor secondaryLabelColor];
+    }
+
+    uint32_t rgb = ApolloThemeUsesPureBlackDarkMode(traits) ? 0x75777A : 0x94969D;
+
+    sBypassHook++;
+    UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+    sBypassHook--;
+    return color;
+}
+
+UIColor *ApolloThemePureBlackCardColor(UITraitCollection *traits) {
+    if (!ApolloThemeUsesPureBlackDarkMode(traits)) return nil;
+
+    sBypassHook++;
+    UIColor *color = ApolloThemeUIColorFromRGB(0x131516);
+    sBypassHook--;
+    return color;
+}
+
 static BOOL ApolloStockNonTintedDarkSeparatorRGB(uint32_t *outRGB) {
     NSUserDefaults *d = GroupDefaults();
     if (![d boolForKey:kUsePureBlackDarkModeKey]) return NO;
