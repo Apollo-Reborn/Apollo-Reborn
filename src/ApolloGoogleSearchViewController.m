@@ -423,9 +423,10 @@ static UIImage *ApolloSearchEngineMenuMark(ApolloSearchEngine engine) {
                 case ApolloSearchEngineReddit: action.subtitle = @"Posts, subreddits and users"; break;
                 case ApolloSearchEngineGoogle: action.subtitle = @"Reddit threads, found with Google"; break;
                 case ApolloSearchEngineKagi:
-                    // Picking it without a link asks for one first.
+                    // Picking it without a link asks for one first. Kept to one
+                    // line: the pre-glass menu caps subtitles at two.
                     action.subtitle = ApolloKagiHasSessionToken() ? @"Reddit threads, found with Kagi"
-                                                                  : @"Reddit threads, found with Kagi (needs your Session Link)";
+                                                                  : @"Needs your Session Link";
                     break;
             }
         }

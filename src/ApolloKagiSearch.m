@@ -130,15 +130,17 @@ static NSMutableURLRequest *ApolloKagiRequest(NSURL *url, NSString *token, NSTim
 }
 
 // Kagi answers a request without a valid session by redirecting it to its
-// Cloudflare Turnstile check (kagi.com/turnstile) or to sign-in
-// (kagi.com/signin → account.kagi.com). Redirects are followed, so the final
-// URL tells.
+// landing page (kagi.com/welcome), its Cloudflare Turnstile check
+// (kagi.com/turnstile) or to sign-in (kagi.com/signin → account.kagi.com).
+// Which one depends on the client (seen both from different networks).
+// Redirects are followed, so the final URL tells.
 static BOOL ApolloKagiResponseIsSignedOut(NSHTTPURLResponse *response) {
     if (response.statusCode == 401 || response.statusCode == 403) return YES;
     NSString *host = response.URL.host.lowercaseString ?: @"";
     NSString *path = response.URL.path.lowercaseString ?: @"";
     if ([host isEqualToString:@"account.kagi.com"]) return YES;
-    return [path hasPrefix:@"/turnstile"] || [path hasPrefix:@"/signin"] || [path hasPrefix:@"/loginname"];
+    return [path hasPrefix:@"/welcome"] || [path hasPrefix:@"/turnstile"] || [path hasPrefix:@"/signin"] ||
+           [path hasPrefix:@"/loginname"];
 }
 
 static NSURL *ApolloKagiSearchURL(NSString *rawQuery, ApolloGoogleSearchOptions *options, NSUInteger page) {
