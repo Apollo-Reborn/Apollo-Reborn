@@ -80,6 +80,13 @@
 #import <sys/sysctl.h>
 
 #import "ApolloCommon.h"
+#import "palhome/ApolloPalHomeViewController.h"
+#import "palhome/ApolloPixelPalCoats.h"
+#import "palhome/ApolloPalHomeStore.h"
+#import "palhome/ApolloPalSpecies.h"
+#import "palhome/ApolloRebornPalSprites.h"
+#import "palhome/ApolloPalHomePrompt.h"
+#import <SpriteKit/SpriteKit.h>
 
 // Apollo's stock strip height (sub_10030c494) and y (sub_10030c880).
 static const CGFloat kApolloPalStripHeight = 14.0;
@@ -237,7 +244,46 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
 
 #pragma mark - Pill and pal strip
 
+// The pill's "SIR SOAKS / the otter" caption. Apollo keeps it in
+// FauxCutOutView.nameTag, a (name: String, title: String) tuple, set in
+// sub_10030bae8 from PixelPal's title switch (sub_10074a6a8) and drawn in
+// -drawRect:. The name is right already (the borrowed slot's record carries
+// the guest's name); the title is the host species', so a Reborn guest gets
+// its own. Only ever swaps one *small* ASCII Swift string (<= 15 bytes,
+// stored inline in the two words, nothing to retain/release) for another.
+typedef struct { uint64_t lo, hi; } ApolloSwiftString;
+
+static BOOL ApolloSwiftSmallString(NSString *text, ApolloSwiftString *out) {
+    NSData *bytes = [text dataUsingEncoding:NSASCIIStringEncoding];
+    if (!bytes || bytes.length > 15) return NO;
+    uint8_t raw[16] = {0};
+    memcpy(raw, bytes.bytes, bytes.length);
+    raw[15] = (uint8_t)(0xE0 | bytes.length); // small + ASCII, count
+    memcpy(out, raw, 16);
+    return YES;
+}
+
+static void ApolloPalRetitleNameTag(UIView *view) {
+    NSDictionary<NSString *, NSString *> *channel = [ApolloPalHomeStore islandChannel];
+    if (!channel) return;
+    static Ivar nameTag;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ nameTag = class_getInstanceVariable(object_getClass(view), "nameTag"); });
+    if (!nameTag) return;
+    ApolloSwiftString hostTitle, guestTitle;
+    // Apollo's own title for the host (see APSpecies: the 9 host titles match).
+    if (!ApolloSwiftSmallString([APSpecies speciesWithID:channel[@"host"]].title ?: @"", &hostTitle) ||
+        !ApolloSwiftSmallString([APSpecies speciesWithID:channel[@"species"]].title ?: @"", &guestTitle)) return;
+    ApolloSwiftString *title = (ApolloSwiftString *)((uint8_t *)(__bridge void *)view + ivar_getOffset(nameTag) + sizeof(ApolloSwiftString));
+    if (title->lo == hostTitle.lo && title->hi == hostTitle.hi) *title = guestTitle;
+}
+
 %hook _TtC6Apollo14FauxCutOutView
+
+- (void)drawRect:(CGRect)rect {
+    ApolloPalRetitleNameTag((UIView *)self);
+    %orig;
+}
 
 // Apollo writes the stock pill here on every portrait layout. Capture it as the
 // baseline, then hand UIKit the island-aligned pill instead.
@@ -387,6 +433,24 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
     return NO;
 }
 
+static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
+    UIViewController *root = window.rootViewController;
+    UITabBarController *tabs = [root isKindOfClass:UITabBarController.class] ? (UITabBarController *)root : nil;
+    UIViewController *selected = tabs ? tabs.selectedViewController : root;
+    UINavigationController *nav = [selected isKindOfClass:UINavigationController.class] ? (UINavigationController *)selected : selected.navigationController;
+    if (!nav || nav.transitionCoordinator) return NO;
+    if ([nav.topViewController isKindOfClass:ApolloPalHomeViewController.class]) return YES; // already home
+    for (UIViewController *screen in nav.viewControllers) {
+        if ([screen isKindOfClass:ApolloPalHomeViewController.class]) {
+            [nav popToViewController:screen animated:YES];
+            return YES;
+        }
+    }
+    [nav pushViewController:[ApolloPalHomeViewController new] animated:YES];
+    ApolloLog(@"[PixelPals] Island tap → Pal Home");
+    return YES;
+}
+
 %hook _TtC6Apollo15ThemeableWindow
 
 // Views Apollo adds to the window positioned from the stock pill: the tap flash
@@ -436,23 +500,160 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 
 // Suppress the Pixel Pals menu while media / a website / any modal is open or
 // mid-transition — opening it then races UIKit and freezes the app (issue #305).
+// Pal Home replaces Apollo's Pixel Pals care sheet (PixelPalOverlayViewController):
+// tapping the island Pal opens Pal Home, pushed onto the tab you're on so
+// you come straight back to where you were.
 - (void)pixelPalTappedWithTapGestureRecognizer:(id)recognizer {
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
-    %orig;
+    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
+    %orig; // Classic (or no navigation stack to push onto): Apollo's own sheet
 }
 
-// Same guard for the auto-open path when a pal barks for attention.
+// Tapping the Pal sprite itself (the scene posts "dog barked") opens the
+// care sheet too: same destination.
 - (void)dogBarkedWithNotification:(id)notification {
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
+    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
     %orig;
 }
 
+%end
+
+#pragma mark - Pal Home
+
+// With Pal Home on, it replaces Pixel Pals: Settings → Pixel Pals opens it
+// instead of Apollo's chooser. (Everything the chooser did lives in Pal Home:
+// the island on/off is on the Pal card, choosing is the household + shelter.)
+// With it off (Classic, the default) Apollo's screens are untouched apart from
+// the occasional "Try Pal Home" card (ApolloPalHomePrompt).
+%hook UINavigationController
+- (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    static Class chooser;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ chooser = objc_getClass("_TtC6Apollo29PixelPalChooserViewController"); });
+    if (chooser && [viewController isKindOfClass:chooser] && ApolloPalHomeStore.isPalHomeEnabled) {
+        ApolloLog(@"[PixelPals] Settings → Pixel Pals → Pal Home");
+        %orig([ApolloPalHomeViewController new], animated);
+        return;
+    }
+    %orig;
+}
+%end
+
+%hook _TtC6Apollo29PixelPalChooserViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    UIViewController *chooser = (UIViewController *)self;
+    __weak UIViewController *weakChooser = chooser;
+    [ApolloPalHomePrompt showInView:chooser.view bottomInset:chooser.view.safeAreaInsets.bottom onTry:^{
+        UINavigationController *nav = weakChooser.navigationController;
+        if (nav) [nav pushViewController:[ApolloPalHomeViewController new] animated:YES];
+    }];
+}
+%end
+
+// Apollo's care sheet (Classic): the same card, floating at the bottom.
+%hook _TtC6Apollo29PixelPalOverlayViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    UIViewController *overlay = (UIViewController *)self;
+    UIView *host = overlay.view.window ?: overlay.view;
+    if (!host) return;
+    __weak UIViewController *weakOverlay = overlay;
+    // Clear of the tab bar under the sheet.
+    [ApolloPalHomePrompt showInView:host bottomInset:host.safeAreaInsets.bottom + 56 onTry:^{
+        UIViewController *sheet = weakOverlay;
+        UIWindow *window = sheet.view.window;
+        [sheet dismissViewControllerAnimated:YES completion:^{ if (window) ApolloPalHomeOpenFromIsland(window); }];
+    }];
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    %orig;
+    // The card belongs to the sheet: it leaves with it.
+    UIView *window = ((UIViewController *)self).view.window;
+    for (UIView *view in window.subviews) if ([view isKindOfClass:ApolloPalHomePrompt.class]) [view removeFromSuperview];
+}
+%end
+
+#pragma mark - Pal coats
+
+// Coat colours (see palhome/ApolloPixelPalCoats.h) and Reborn species on the
+// island. Apollo loads every Pal sprite by asset name ("<rawValue>-<action>",
+// Hopper: sub_10004a784 & co.) through +[SKTexture textureWithImageNamed:]
+// (the island/strip) or +[UIImage imageNamed:] (the chooser). Answering those
+// two lets us:
+//  - recolour an Apollo Pal to its coat, and
+//  - while a Reborn resident is borrowing a slot (ApolloPalHomeStore's island
+//    channel), draw that resident (e.g. a capybara) wherever Apollo asks for
+//    the slot's species. Apollo's island has no per-species behaviour beyond
+//    asset names (only superAI's tap sounds, and it's never a host), so the
+//    guest walks, sits and sleeps exactly like a native Pal.
+// Sheets are cached per asset + species + coat. Pal Home and the shelter load
+// through APPalCreateSheetForUI (not hooked) so they always get exactly the
+// resident they ask for.
+static UIImage *ApolloPixelPalCoatImage(NSString *name) {
+    NSString *species = [APPixelPalCoats speciesForAssetName:name];
+    if (!species) return nil;
+    NSString *action = [name substringFromIndex:species.length + 1];
+    NSString *coat = nil;
+    NSDictionary<NSString *, NSString *> *channel = [ApolloPalHomeStore islandChannel];
+    if (channel && [species isEqualToString:channel[@"host"]]) {
+        if (!APRebornHasSprites(channel[@"species"]) && ![APSpecies isApolloSpecies:channel[@"species"]]) return nil;
+        species = channel[@"species"];
+        coat = channel[@"coat"];
+    } else {
+        coat = [APPixelPalCoats selectedCoatForSpecies:species];
+        if ([coat isEqualToString:@"original"] && !APRebornHasSprites(species)) return nil;
+    }
+    static NSCache<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSCache new]; });
+    NSString *key = [NSString stringWithFormat:@"%@|%@|%@", name, species, coat];
+    UIImage *hit = [cache objectForKey:key];
+    if (hit) return hit;
+    // A different selector from the one hooked below, so no recursion.
+    __block CGFloat scale = 1;
+    CGImageRef sheet = APPalCreateSheet(species, coat, action, ^CGImageRef(NSString *assetName) {
+        UIImage *original = [UIImage imageNamed:assetName inBundle:nil compatibleWithTraitCollection:nil];
+        scale = original.scale ?: 1;
+        return original.CGImage;
+    });
+    // A Reborn guest with no sheet for this action (e.g. "settings"): let
+    // Apollo's own image through rather than show nothing.
+    if (!sheet) return nil;
+    UIImage *image = [UIImage imageWithCGImage:sheet scale:scale orientation:UIImageOrientationUp];
+    CGImageRelease(sheet);
+    [cache setObject:image forKey:key];
+    return image;
+}
+
+// Apollo's own chooser can switch Pals behind our back; when it does, the
+// island channel gives its borrowed slot back (stats go home with the guest).
+static void ApolloPalHomeReconcileIsland(void) {
+    static BOOL busy = NO;
+    if (busy) return; // our own PixelPalSettingChanged post
+    busy = YES;
+    [[ApolloPalHomeStore new] reconcileIsland];
+    busy = NO;
+}
+
+%hook SKTexture
++ (instancetype)textureWithImageNamed:(NSString *)name {
+    UIImage *coat = ApolloPixelPalCoatImage(name);
+    return coat ? [SKTexture textureWithImage:coat] : %orig;
+}
+%end
+
+%hook UIImage
++ (UIImage *)imageNamed:(NSString *)name {
+    return ApolloPixelPalCoatImage(name) ?: %orig;
+}
 %end
 
 #pragma mark - Carrot Weather pal
@@ -466,3 +667,11 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
     return %orig;
 }
 %end
+
+%ctor {
+    %init; // this file's hooks (an explicit %ctor replaces Logos' implicit one)
+    [NSNotificationCenter.defaultCenter addObserverForName:@"PixelPalSettingChanged" object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) { ApolloPalHomeReconcileIsland(); }];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) { ApolloPalHomeReconcileIsland(); }];
+}

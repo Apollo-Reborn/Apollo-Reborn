@@ -21,6 +21,15 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Versioned Pal Home room/resident document. Absent = the cosy starter room.
+// Separate from Apollo's native PixelPalsDatabase; included in settings backups.
+static NSString *const UDKeyPalHome = @"ApolloRebornPalHome";
+// Pal Home replaces Apollo's Pixel Pals screens (island tap, Settings → Pixel
+// Pals). Default OFF: Apollo's Classic Pixel Pals until you opt in.
+static NSString *const UDKeyPalHomeEnabled = @"ApolloRebornPalHomeEnabled";
+// The "Try Pal Home" prompt: dismissed for good / last shown (seconds since 1970).
+static NSString *const UDKeyPalHomePromptDismissed = @"ApolloRebornPalHomePromptDismissed";
+static NSString *const UDKeyPalHomePromptLastShown = @"ApolloRebornPalHomePromptLastShown";
 // Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
 // days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
 // Folder permission, installation identity and last-run state live separately

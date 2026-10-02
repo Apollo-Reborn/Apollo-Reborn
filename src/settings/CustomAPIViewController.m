@@ -1,3 +1,4 @@
+#import "palhome/ApolloPalHomeWidgetRenderer.h"
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
 #import "ApolloCommon.h"
@@ -1151,6 +1152,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *linkPreviews = [self buildLinkPreviewsRow];
     ApolloSettingsRow *polls = [self buildPollsRow];
     ApolloSettingsRow *apolloAI = [self buildApolloAIRow];
+    ApolloSettingsRow *palHome = [self hubDisclosureRowWithID:@"feat.palHome" title:@"Pal Home"
+        subtitle:^NSString * { return ApolloPalHomeStore.isPalHomeEnabled ? @"A cosy home for every Pixel Pal" : @"Try a cosy home for your Pixel Pals"; }
+        push:^UIViewController * { return ApolloSettingsRouteInstantiate(@"pal-home-settings"); }];
+    palHome.iconSystemName = @"house.fill";
+    palHome.iconTileColor = [UIColor systemBrownColor];
 
     posts.iconSystemName        = @"newspaper.fill";              posts.iconTileColor        = [UIColor systemOrangeColor];
     comments.iconSystemName     = @"text.bubble.fill";            comments.iconTileColor     = [UIColor systemGreenColor];
@@ -1165,7 +1171,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Features"
                                             footer:@"Fine-tune posts, comments, media, subreddits, profile layout and the interface."
                                               rows:@[ posts, comments, media, subreddits, profileLayout, interface_,
-                                                      linkPreviews, polls, apolloAI ]];
+                                                      linkPreviews, polls, apolloAI, palHome ]];
 }
 
 - (ApolloSettingsSection *)buildAdvancedSection {
@@ -3784,6 +3790,9 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     if (sUserAgent.length > 0) payload[@"userAgent"] = sUserAgent;
     NSString *secret = ApolloSecretForClientId(clientID);
     if (secret.length > 0) payload[@"clientSecret"] = secret;
+    // Pal Home rides along, so one paste sets up the Pal Home widget too.
+    NSString *palCode = [[ApolloPalHomeStore new] widgetCodeWithRoom:nil];
+    if (palCode.length) payload[@"palHome"] = palCode;
     if (account) {
         payload[@"refreshToken"] = account[@"refreshToken"];
         if ([account[@"username"] length] > 0) payload[@"username"] = account[@"username"];

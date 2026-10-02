@@ -1,7 +1,7 @@
 # Apollo Reborn Widgets
 
 Home Screen, Lock Screen, and StandBy widgets for Apollo, shipped as a single
-WidgetKit extension (`ApolloRebornWidgets.appex`) injected into the app. Nine
+WidgetKit extension (`ApolloRebornWidgets.appex`) injected into the app. Ten
 widgets live in one extension (one App ID), built with classic SiriKit
 `IntentConfiguration` so their configuration survives third-party re-signing.
 
@@ -18,6 +18,7 @@ widgets live in one extension (one App ID), built with classic SiriKit
 | **Apollo Actions** | M | — (static) | fixed actions |
 | **Calendar** | S · M · L | Subreddit or Multireddit, Date Style, Show Title | r/EarthPorn · Top: Week (fixed) |
 | **Headline** | Lock (rect, inline) | Subreddit or Multireddit | r/worldnews · Hot |
+| **Pal Home** | S · M · L · XL · XL Portrait (iOS 27) | Pal Code | your Pal + room |
 
 Sizes: **S** = small (2×2), **M** = medium (4×2), **L** = large (4×4), **Lock**
 = Lock Screen / StandBy accessory slots. Any widget that supports **S** also
@@ -228,3 +229,23 @@ what's hot.
 - The widget extension is self-contained; it doesn't depend on Apollo's app
   version, only on the Apollo Reborn tweak being installed (for the setup-code
   button).
+
+### Pal Home
+Your Pixel Pal at home, in the room you decorated in Apollo's Pal Home, drawn
+by the same Objective-C pixel renderer the app uses (`../src/palhome`,
+compiled in via `Sources/PalHomeBridge.h`), so it matches exactly.
+- **Sizes:** Small (close-up), Medium (room strip), Large (room under its name
+  sign), Extra Large (room + Pal card, iPad) and Extra Large Portrait (iOS 27:
+  room, sign and personality card). The XL Portrait family is behind
+  `#if compiler(>=6.4)` so the Xcode 26 CI toolchain still builds.
+- **Config:** Pal Code. In Apollo: Pal Home → paw → Widget copies a `PAL1:`
+  code (the Pal + the whole room, zlib + base64). Apollo's Widget Setup Code
+  carries it too (`palHome`), so one paste covers every widget. The most
+  recently copied code wins (`PalStash`).
+- **Interactive:** Pet (hearts for a few minutes), Nap (off to bed / wake up),
+  Lights (every lamp and fire). Between taps the Pal moves to a new spot every
+  20 minutes, the window sky follows the clock, and from 10pm it sleeps.
+- **Sprites:** read from Apollo's own asset catalog in the containing app
+  bundle (`…/Apollo.app`), recoloured to the Pal's coat.
+- **No code yet:** a pixel "paste your Pal code" card; the widget gallery
+  shows a sample Pal (Biscuit).

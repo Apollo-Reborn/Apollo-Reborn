@@ -13,6 +13,7 @@ struct ApolloRebornWidgetBundle: WidgetBundle {
         ApolloQuickActionsWidget()
         CalendarWidget()
         HeadlineWidget()
+        PalHomeWidget()
         // Restores the "follow thread" Live Activity that the stock
         // AthenaWidgetExtension used to render (removed in the widget swap).
         FollowThreadLiveActivity()

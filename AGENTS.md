@@ -66,6 +66,7 @@ scripts/run-in-sim.sh --drive      # after launch, capture the idb accessibility
 scripts/run-in-sim.sh --fresh-app  # re-patch the base IPA from scratch (after a new apollo-base.ipa)
 scripts/run-in-sim.sh --dark       # boot the simulator in dark mode (--light forces light)
 scripts/run-in-sim.sh --glass      # apply the iOS 26 Liquid Glass patch (--no-glass disables)
+scripts/run-in-sim.sh --widgets    # swap in the Reborn widgets (sim build) for the stock Athena widget, as release builds do
 scripts/run-in-sim.sh --backup B.zip  # preload an Apollo settings backup (API keys + account)
 BUNDLE_ID=com.you.Build scripts/run-in-sim.sh   # run under a custom (rebranded) bundle id
 ```
@@ -106,6 +107,7 @@ xcrun simctl spawn "$(cat .sim/device.txt)" log show --last 2m --predicate 'subs
 | `src/ApolloWebTextDecoding.{h,m}` | Charset-aware decode of bytes fetched from arbitrary third-party pages (BOM → `Content-Type` → `<meta charset>`, plus the WHATWG label upgrades). Use this instead of `initWithData:encoding:NSUTF8StringEncoding` for any *foreign* page — a UTF-8 guess mojibakes EUC-KR/Shift_JIS/GB18030/Big5 sites. Foundation-only, so the `.m` compiles straight into a host-side harness |
 | `src/ApolloWebJSONWriteRepair.{h,m}` | The comment/self-text write-response repair (legacy old-reddit shape → modern JSON), split out of `ApolloWebJSON.m` so it stays Foundation-only. Network-free by design: it runs inside `RDKResponseSerializer`; edits are filled from the pre-edit model captured at submit time. Host-side harness: `tests/run_web_json_write_repair_tests.sh` |
 | `src/ApolloState.{h,m}` | Global state, captured singletons, and feature flags |
+| `src/palhome/` | Pal Home, which replaces Pixel Pals (rooms, care on Apollo's own data, Reborn species, shelter, widget). Read `src/palhome/README.md` first; host tests are `tests/run_pal_home_*.sh` |
 
 ### Settings & UI (`src/settings/`)
 
