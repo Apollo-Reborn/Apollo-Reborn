@@ -2132,15 +2132,6 @@ static NSString *ApolloUserFlairCSSClassFromClassAttribute(NSString *classAttrib
     return nil;
 }
 
-static NSSet<NSString *> *ApolloUserFlairHTMLClassSet(NSString *classAttribute) {
-    NSMutableSet *classes = [NSMutableSet set];
-    for (NSString *candidate in [classAttribute componentsSeparatedByCharactersInSet:
-                                  [NSCharacterSet whitespaceAndNewlineCharacterSet]]) {
-        if (candidate.length > 0) [classes addObject:candidate];
-    }
-    return classes;
-}
-
 static NSMutableDictionary<NSString *, NSDictionary *> *ApolloUserFlairWebCurrentCache(void) {
     static NSMutableDictionary *cache;
     static dispatch_once_t onceToken;
@@ -2164,7 +2155,7 @@ static NSDictionary *ApolloUserFlairWebCurrentForSubreddit(NSString *subreddit) 
     return current;
 }
 
-// Old reddit's subreddit page (our only source for the current flair) can keep
+// The subreddit's about.json (our only source for the current flair) can keep
 // serving the previous flair briefly after a save; within this window the saved
 // value wins.
 static const NSTimeInterval kApolloUserFlairWebRecentSaveWindow = 180.0;
@@ -2216,92 +2207,36 @@ static void ApolloUserFlairWebNoteSaved(NSString *subreddit, NSString *text, NSS
               enabled ? enabled.stringValue : @"unchanged");
 }
 
-// A signed-in old-Reddit subreddit page renders the user's applied flair in the
-// sidebar immediately before their own `flairselectable` author link. Unlike the
-// HTML returned by /api/flairselector, this also exposes the actual customized
-// text and the current Show Flair checkbox. Restrict parsing to the titlebox and
-// require the active username so a post author's flair can never be mistaken for
-// the signed-in user's current selection.
-static NSDictionary *ApolloUserFlairWebCurrentFromHTML(NSData *data, NSString *username) {
-    NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (html.length == 0 || username.length == 0) return nil;
+// The signed-in user's applied flair, from www.reddit.com/r/<sub>/about.json:
+// with the session cookie its user_flair_* fields describe the requesting
+// account. Unlike the HTML returned by /api/flairselector, this exposes the
+// actual customized text, the template ID, and the Show Flair toggle. (This
+// used to scrape the old-Reddit sidebar, which Reddit is restricting to
+// accounts with recent Old Reddit use.)
+static NSDictionary *ApolloUserFlairWebCurrentFromAboutJSON(NSData *data) {
+    id root = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    if (![root isKindOfClass:[NSDictionary class]] || ![root[@"kind"] isEqual:@"t5"]) return nil;
+    NSDictionary *about = [root[@"data"] isKindOfClass:[NSDictionary class]] ? root[@"data"] : nil;
+    // user_is_subscriber is a boolean only for a logged-in request (null otherwise),
+    // so an expired session can't pass itself off as "no flair set".
+    if (!about || ![about[@"user_is_subscriber"] isKindOfClass:[NSNumber class]]) return nil;
 
-    NSRange titleStart = [html rangeOfString:@"<div class=\"titlebox\"" options:NSCaseInsensitiveSearch];
-    if (titleStart.location == NSNotFound) return nil;
-    NSRange remainder = NSMakeRange(titleStart.location, html.length - titleStart.location);
-    NSRange titleEnd = [html rangeOfString:@"<div class=\"sidecontentbox" options:NSCaseInsensitiveSearch range:remainder];
-    NSUInteger end = titleEnd.location == NSNotFound ? MIN(html.length, titleStart.location + 150000) : titleEnd.location;
-    if (end <= titleStart.location) return nil;
-    NSString *titlebox = [html substringWithRange:NSMakeRange(titleStart.location, end - titleStart.location)];
-
-    NSRegularExpression *anchorRegex = [NSRegularExpression regularExpressionWithPattern:@"<a\\b([^>]*)>(.*?)</a>"
-        options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators error:NULL];
-    NSTextCheckingResult *userAnchor = nil;
-    for (NSTextCheckingResult *match in [anchorRegex matchesInString:titlebox options:0 range:NSMakeRange(0, titlebox.length)]) {
-        if (match.numberOfRanges < 3) continue;
-        NSString *attrs = [titlebox substringWithRange:[match rangeAtIndex:1]];
-        NSSet *classes = ApolloUserFlairHTMLClassSet(ApolloUserFlairHTMLAttribute(attrs, @"class") ?: @"");
-        if (![classes containsObject:@"flairselectable"]) continue;
-        NSString *label = ApolloUserFlairDecodeHTML([titlebox substringWithRange:[match rangeAtIndex:2]]);
-        label = [label stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        if ([label caseInsensitiveCompare:username] == NSOrderedSame) {
-            userAnchor = match;
-            break;
-        }
-    }
-    if (!userAnchor) return nil;
-
-    NSString *beforeUser = [titlebox substringToIndex:userAnchor.range.location];
-    NSRange taglineStart = [beforeUser rangeOfString:@"<div class=\"tagline\"" options:
-                            NSCaseInsensitiveSearch | NSBackwardsSearch];
-    if (taglineStart.location == NSNotFound) return nil;
-    NSString *taglinePrefix = [beforeUser substringFromIndex:taglineStart.location];
-
-    // old.reddit puts the flair span after the author link, up to the tagline's
-    // </div>; the before-the-link search stays as a fallback.
-    NSString *afterUser = [titlebox substringFromIndex:NSMaxRange(userAnchor.range)];
-    NSRange taglineEnd = [afterUser rangeOfString:@"</div>" options:NSCaseInsensitiveSearch];
-    if (taglineEnd.location != NSNotFound) afterUser = [afterUser substringToIndex:taglineEnd.location];
-
-    NSString *currentText = @"";
-    NSString *currentCSSClass = @"";
-    NSRegularExpression *spanRegex = [NSRegularExpression regularExpressionWithPattern:@"<span\\b([^>]*)>"
-        options:NSRegularExpressionCaseInsensitive error:NULL];
-    BOOL foundFlairSpan = NO;
-    for (NSString *segment in @[afterUser, taglinePrefix]) {
-        for (NSTextCheckingResult *match in [spanRegex matchesInString:segment options:0
-                                                                  range:NSMakeRange(0, segment.length)]) {
-            if (match.numberOfRanges < 2) continue;
-            NSString *attrs = [segment substringWithRange:[match rangeAtIndex:1]];
-            NSString *classAttribute = ApolloUserFlairHTMLAttribute(attrs, @"class") ?: @"";
-            if (![ApolloUserFlairHTMLClassSet(classAttribute) containsObject:@"flair"]) continue;
-            currentText = ApolloUserFlairDecodeHTML(ApolloUserFlairHTMLAttribute(attrs, @"title")) ?: @"";
-            currentCSSClass = ApolloUserFlairCSSClassFromClassAttribute(classAttribute) ?: @"";
-            foundFlairSpan = YES;
-            break;
-        }
-        if (foundFlairSpan) break;
-    }
-
-    BOOL enabled = NO;
-    NSRegularExpression *formRegex = [NSRegularExpression regularExpressionWithPattern:@"<form\\b([^>]*)>(.*?)</form>"
-        options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators error:NULL];
-    for (NSTextCheckingResult *match in [formRegex matchesInString:titlebox options:0 range:NSMakeRange(0, titlebox.length)]) {
-        if (match.numberOfRanges < 3) continue;
-        NSString *attrs = [titlebox substringWithRange:[match rangeAtIndex:1]];
-        if (![ApolloUserFlairHTMLClassSet(ApolloUserFlairHTMLAttribute(attrs, @"class") ?: @"")
-              containsObject:@"flairtoggle"]) continue;
-        NSString *body = [titlebox substringWithRange:[match rangeAtIndex:2]];
-        enabled = [body rangeOfString:@"checked" options:NSCaseInsensitiveSearch].location != NSNotFound;
-        break;
-    }
+    NSString *text = [about[@"user_flair_text"] isKindOfClass:[NSString class]] ? about[@"user_flair_text"] : @"";
+    NSString *cssClass = [about[@"user_flair_css_class"] isKindOfClass:[NSString class]]
+        ? about[@"user_flair_css_class"] : @"";
+    NSString *templateID = [about[@"user_flair_template_id"] isKindOfClass:[NSString class]]
+        ? about[@"user_flair_template_id"] : @"";
+    // user_sr_flair_enabled is the per-user Show Flair toggle; null means the
+    // user never changed it, which Reddit treats as shown.
+    NSNumber *enabled = [about[@"user_sr_flair_enabled"] isKindOfClass:[NSNumber class]]
+        ? about[@"user_sr_flair_enabled"] : @YES;
 
     return @{
         @"known": @YES,
-        @"text": currentText,
-        @"cssClass": currentCSSClass,
-        @"enabled": @(enabled),
-        @"templateID": @"",
+        @"text": text,
+        @"cssClass": cssClass,
+        @"enabled": enabled,
+        @"templateID": templateID,
     };
 }
 
@@ -2321,6 +2256,9 @@ static NSDictionary *ApolloUserFlairMatchWebCurrent(NSDictionary *current, NSArr
         current = merged;
     }
     NSString *savedTemplateID = [recentSave[@"templateID"] isKindOfClass:[NSString class]] ? recentSave[@"templateID"] : nil;
+    // Without a recent save, about.json's own template ID is authoritative; the
+    // CSS/text heuristics below only cover flair that has none.
+    if (!recentSave && [current[@"templateID"] isKindOfClass:[NSString class]]) savedTemplateID = current[@"templateID"];
     NSString *currentText = [current[@"text"] isKindOfClass:[NSString class]] ? current[@"text"] : @"";
     NSString *currentCSS = [current[@"cssClass"] isKindOfClass:[NSString class]] ? current[@"cssClass"] : @"";
     id matchedOption = nil;
@@ -2585,8 +2523,10 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
     NSMutableURLRequest *selectorRequest = ApolloUserFlairWebRequest(@"/api/flairselector", fields, webSession);
     NSString *encodedSubreddit = [subreddit stringByAddingPercentEncodingWithAllowedCharacters:
                                   [NSCharacterSet URLPathAllowedCharacterSet]] ?: subreddit;
-    NSMutableURLRequest *currentRequest = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
-        [NSString stringWithFormat:@"https://old.reddit.com/r/%@/", encodedSubreddit]]];
+    // Probe-tagged so the listing rewrite in Tweak.xm leaves this self-authenticated
+    // GET (and its User-Agent) alone.
+    NSMutableURLRequest *currentRequest = [NSMutableURLRequest requestWithURL:ApolloWebJSONProbeURL([NSURL URLWithString:
+        [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", encodedSubreddit]])];
     currentRequest.HTTPMethod = @"GET";
     currentRequest.HTTPShouldHandleCookies = NO;
     currentRequest.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
@@ -2629,7 +2569,7 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
                     @"Reddit returned an unexpected response while loading user flair.");
             }
             NSDictionary *current = (!currentError && currentHTTP.statusCode == 200)
-                ? ApolloUserFlairWebCurrentFromHTML(currentData, username) : nil;
+                ? ApolloUserFlairWebCurrentFromAboutJSON(currentData) : nil;
             // A page that fails to parse shouldn't erase a recent save.
             if (!current && choices && ApolloUserFlairWebRecentSave(currentKey)) {
                 current = @{ @"known": @YES, @"text": @"", @"cssClass": @"", @"enabled": @YES, @"templateID": @"" };
@@ -2637,7 +2577,7 @@ static id ApolloUserFlairFetchWebOptions(NSString *subreddit, id completion) {
             if (choices && current) ApolloUserFlairMatchWebCurrent(current, choices, subreddit, username);
             ApolloLog(@"[UserFlair][Web] selector r/%@ HTTP %ld choices=%lu error=%@",
                       subreddit, (long)selectorHTTP.statusCode, (unsigned long)choices.count, error ? @"yes" : @"no");
-            ApolloLog(@"[UserFlair][Web] current-page r/%@ HTTP %ld parsed=%@ error=%@",
+            ApolloLog(@"[UserFlair][Web] current about.json r/%@ HTTP %ld parsed=%@ error=%@",
                       subreddit, (long)currentHTTP.statusCode, current ? @"yes" : @"no",
                       currentError ? @"yes" : @"no");
             dispatch_async(dispatch_get_main_queue(), ^{ if (callback) callback(choices, error); });
