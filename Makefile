@@ -55,6 +55,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCommon.m \
     $(SRC_DIR)/ApolloInlineImageMetadata.m \
     $(SRC_DIR)/ApolloProfilePagination.xm \
+    $(SRC_DIR)/ApolloListEmptyState.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloNitterInstances.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
