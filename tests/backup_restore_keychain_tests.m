@@ -32,6 +32,7 @@ int main(void) {
             Row(kValet, @"VAL_KeychainCanaryUsername", blob),
             Row(@"com.christianselig.Apollo.webjson", @"websession:someone:cookie", blob),
             Row(@"com.christianselig.Apollo.webjson", @"websession:someone:modhash", blob),
+            Row(@"com.christianselig.Apollo.kagi", @"sessionToken", blob),
         ];
 
         // What a 3.7.x exporter wrote on a signed-in device (#1209, #1214): the
@@ -69,6 +70,8 @@ int main(void) {
             Row(@"com.christianselig.Apollo.webjson.evil", @"sessionCookieHeader", blob),
             Row(@"com.christianselig.Apollo.webjson", @"sessionCookieHeader2", blob),
             Row(@"com.christianselig.Apollo.webjson", @"websession:a:b:cookie", blob),
+            Row(@"com.christianselig.Apollo.kagi", @"sessionToken2", blob),
+            Row(@"com.christianselig.Apollo.kagi.evil", @"sessionToken", blob),
             Row(@"VAL_VALValet_initWithIdentifier:accessibility:_com.christianselig.ApolloX_AccessibleAfterFirstUnlock", @"2RedditAccounts2", blob),
             Row(@"com.example.other", @"token", blob),
             Row(kValet, @"", blob), Row(kValet, @"acct\nline", blob), Row(kValet, @42, blob), Row(kValet, nil, blob),
@@ -78,7 +81,7 @@ int main(void) {
         ];
         NSArray *mixed = [lookalikes arrayByAddingObjectsFromArray:owned];
         Check([ApolloBackupRestorableKeychainItems(mixed) isEqualToArray:owned], @"only exact owned identities survive");
-        Check([sLogs.lastObject containsString:@"Skipping 13 keychain record(s)"], @"every dropped lookalike is counted");
+        Check([sLogs.lastObject containsString:@"Skipping 15 keychain record(s)"], @"every dropped lookalike is counted");
         Check([ApolloBackupRestorableKeychainItems(@[Row(@42, @"a", blob), Row(nil, @"b", blob)]) isEqualToArray:@[]] &&
               [sLogs.lastObject hasSuffix:@": (no service)"], @"rows without a string service are reported once");
         Check([ApolloBackupRestorableKeychainItems(@[Row(@"forged\n[BackupRestore] Backup validated", @"a", blob)]) isEqualToArray:@[]] &&

@@ -53,11 +53,14 @@ static NSString *const UDKeyDebugForceAccountReadMiss = @"ApolloDebugForceAccoun
 static NSString *const UDKeyDebugDisableKeychainRecovery = @"ApolloDebugDisableKeychainRecovery";
 static NSString *const UDKeyShowRandNsfw = @"ShowRandNsfwButton";
 // Search tab engine (ApolloGoogleSearchTab.m): 0 = Reddit (Apollo's own
-// search), 1 = Google (Reddit results found through Google). Remembered across
-// launches; picked from the search field's magnifier, not in Settings.
+// search), 1 = Google (Reddit results found through Google), 2 = Kagi (found
+// through Kagi with the subscriber's Session Link, which lives in the Keychain,
+// not here; Kagi reads back as Reddit while no link is saved). Remembered
+// across launches; picked from the search field's magnifier, not in Settings.
 static NSString *const UDKeySearchEngine = @"SearchEngine";
-// Google mode filters, set from the chips above the Google results: an
-// ApolloGoogleSearchTimeRange raw value, and Google's "Verbatim" mode.
+// Google and Kagi mode filters (shared by both engines), set from the chips
+// above the results: an ApolloGoogleSearchTimeRange raw value, and "Exact
+// Words" (Google's Verbatim mode, Kagi's verbatim=1).
 static NSString *const UDKeyGoogleSearchTimeRange = @"GoogleSearchTimeRange";
 static NSString *const UDKeyGoogleSearchExactWords = @"GoogleSearchExactWords";
 static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
@@ -182,8 +185,8 @@ static NSString *const UDKeyOpenVideosInYouTubeApp = @"OpenVideosInYouTubeApp";
 //   in-app-safari (In-App Safari), external-safari (Safari), chrome, firefox,
 //   firefox-focus, edge, dolphin, brave, duckduckgo, icab
 // Reborn's "Open in App" screen mirrors this key (same gather-and-hide pattern
-// as UDKeyOpenVideosInYouTubeApp above; the token literal is also read in
-// ApolloShareLinks.xm's ApolloOpensLinksInSystemBrowser()).
+// as UDKeyOpenVideosInYouTubeApp above; the key is also read in
+// ApolloShareLinks.xm's ApolloOpenLinksInToken()).
 static NSString *const UDKeyNativeOpenLinksIn = @"OpenLinksIn";
 // Apollo NATIVE key + change notification for its "Hide Username on Tab Bar"
 // switch. Apollo observes the notification (hideUsernameOnTabBarChangedWithNotification:)
@@ -202,6 +205,14 @@ static NSString *const UDKeyIconOnlySavedHideUsernameOnTabBar = @"IconOnlySavedH
 // key string literals are duplicated in ApolloShareLinks.xm; keep them in sync.
 static NSString *const UDKeyOpenLinksInGitHubApp  = @"OpenLinksInGitHubApp";
 static NSString *const UDKeyOpenLinksInBlueskyApp = @"OpenLinksInBlueskyApp";
+// "Open via Nitter": open tapped x.com / twitter.com links on a Nitter mirror
+// instead of X (BOOL, default OFF / unset), and the instance to use ("host" or
+// "host:port" for https, "http://"-prefixed for a plain-http self-hosted
+// instance, as produced by ApolloNitterNormalizeHost; empty = none
+// picked, which leaves the feature inactive even when the toggle is on). Read
+// at tap time in ApolloShareLinks.xm; set in Settings > Open in App.
+static NSString *const UDKeyOpenTwitterLinksViaNitter = @"OpenTwitterLinksViaNitter";
+static NSString *const UDKeyNitterInstanceHost = @"NitterInstanceHost";
 static NSString *const UDKeyCollapsePinnedComments = @"CollapsePinnedComments";
 static NSString *const UDKeyShowDeletedComments = @"ShowDeletedComments";
 static NSString *const UDKeyTapToRevealDeletedComments = @"TapToRevealDeletedComments";
@@ -322,6 +333,8 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
+static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.
@@ -493,6 +506,12 @@ static NSString *const UDKeyGeminiAIModel     = @"GeminiAIModel";
 static NSString *const UDKeyCustomAIAPIKey    = @"CustomAIAPIKey";
 static NSString *const UDKeyCustomAIModel     = @"CustomAIModel";
 static NSString *const UDKeyCustomAIBaseURL   = @"CustomAIBaseURL"; // OpenAI-compatible base URL, e.g. https://api.example.com/v1
+// Extra HTTP headers sent with every "custom" provider request, for services
+// that need more than the Bearer key (OpenCode Go rejects requests without
+// x-opencode-session since 2026-09-06). An ordered array of
+// @{@"name": NSString, @"value": NSString}; unset = none. Validated on load and
+// on save by ApolloAICloudSanitizedCustomHeaders (ApolloAICloudBridge.h).
+static NSString *const UDKeyCustomAIHeaders   = @"CustomAIHeaders";
 
 // Picture-in-Picture: floating in-app mini-player for comments-page videos.
 static NSString *const UDKeyPictureInPictureEnabled = @"PictureInPictureEnabled";       // master switch

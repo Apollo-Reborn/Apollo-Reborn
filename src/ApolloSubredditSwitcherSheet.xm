@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
+#import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloDuoUIKitCompatibility.h"
 
 @interface _TtC6Apollo7JumpBar : UIControl
@@ -187,6 +188,11 @@ static char kApolloSubredditSheetReference;
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     return self.sectionTitles[section];
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    // Same section-header size, case and color as the Apollo Reborn settings screens.
+    ApolloSettingsApplySectionHeaderTypography(view);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

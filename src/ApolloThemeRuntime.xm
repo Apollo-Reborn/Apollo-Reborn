@@ -477,7 +477,7 @@ static BOOL FontLooksLikeAppleSystemDesign(UIFont *font) {
 // including one whose font choice is plain SF Pro (the sink/refresh/attach
 // paths don't short-circuit on System the way ThemedFont() does; they still
 // call ApolloThemeFontApply(System, font), which rebuilds from a proportional
-// Body descriptor). Exempt anything already monospaced, independent of design.
+// text-style descriptor). Exempt anything already monospaced, independent of design.
 static BOOL FontIsMonospaced(UIFont *font) {
     if (![font isKindOfClass:[UIFont class]]) return NO;
     if (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitMonoSpace) return YES;

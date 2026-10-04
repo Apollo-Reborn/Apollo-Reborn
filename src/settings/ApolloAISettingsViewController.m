@@ -907,6 +907,25 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     }
 }
 
+// Header names are case-insensitive. Either side may be nil (a new header has
+// no original name), which -caseInsensitiveCompare: must never be handed.
+static BOOL ApolloAIHeaderNamesMatch(NSString *a, NSString *b) {
+    return a.length > 0 && b.length > 0 && [a caseInsensitiveCompare:b] == NSOrderedSame;
+}
+
+// Header names and values are tokens and keys: autocorrect, auto-caps and smart
+// punctuation would all silently corrupt them.
+static void ApolloAIConfigureHeaderTextField(UITextField *field) {
+    field.autocorrectionType = UITextAutocorrectionTypeNo;
+    field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    field.spellCheckingType = UITextSpellCheckingTypeNo;
+    field.smartQuotesType = UITextSmartQuotesTypeNo;
+    field.smartDashesType = UITextSmartDashesTypeNo;
+    field.smartInsertDeleteType = UITextSmartInsertDeleteTypeNo;
+    field.keyboardType = UIKeyboardTypeASCIICapable;
+    field.clearButtonMode = UITextFieldViewModeWhileEditing;
+}
+
 // ObjC surface exported by ApolloFoundationModels.swift. Resolve it dynamically
 // so this settings screen remains loadable when the build SDK does not contain
 // FoundationModels and the Swift bridge reports the feature unavailable.
@@ -919,6 +938,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 @property (nonatomic, copy) NSString *pendingModelConfirmation;
 - (void)presentModelPicker;
 - (void)presentMessageWithTitle:(NSString *)title message:(NSString *)message;
+- (void)presentCustomHeaderEditorForName:(NSString *)originalName;
 @end
 
 @implementation ApolloAISettingsViewController
@@ -1136,6 +1156,44 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
                                   onSelect:nil];
     providerBaseURL.visible = ^BOOL { return [sAISummaryProvider isEqualToString:@"custom"]; };
 
+    // Custom Headers: extra HTTP headers for the custom provider (e.g. OpenCode
+    // Go's required x-opencode-session). One row per header in the order added,
+    // then "Add Header…"; add/edit/delete rebuild the form (see
+    // -saveCustomHeaders:). The section is only visible while Custom is selected.
+    NSMutableArray<ApolloSettingsRow *> *headerRows = [NSMutableArray array];
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        NSString *name = header[ApolloAICloudCustomHeaderNameKey];
+        ApolloSettingsRow *headerRow =
+            [ApolloSettingsRow customRowWithID:[@"customHeaders.header." stringByAppendingString:name.lowercaseString]
+                                          cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+                // A fresh cell, not the form's shared Value1 pool, so the
+                // hidden-value accessibility label can't carry over to another row.
+                UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.textLabel.text = name;
+                cell.textLabel.numberOfLines = 0;
+                // Masked like the API key field, since values are often
+                // credentials; the editor shows the value.
+                cell.detailTextLabel.text = @"••••••••";
+                cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+                cell.detailTextLabel.accessibilityLabel = @"Value hidden";
+                [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+                return cell;
+            }
+                                      onSelect:^{ [weakSelf presentCustomHeaderEditorForName:name]; }];
+        [headerRows addObject:headerRow];
+    }
+    ApolloSettingsRow *addHeader =
+        [ApolloSettingsRow buttonRowWithID:@"customHeaders.add"
+                                     title:@"Add Header…"
+                                    action:^{ [weakSelf presentCustomHeaderEditorForName:nil]; }];
+    [headerRows addObject:addHeader];
+    ApolloSettingsSection *customHeaders =
+        [ApolloSettingsSection sectionWithTitle:@"Custom Headers"
+                                         footer:@"Extra headers sent with every request to your custom provider. For example, OpenCode Go requires x-opencode-session (any fixed value, such as a UUID). Values are stored in Apollo's settings on this device and are included in settings backups."
+                                           rows:headerRows];
+    customHeaders.visible = ^BOOL { return [sAISummaryProvider isEqualToString:@"custom"]; };
+
     ApolloSettingsRow *availability =
         [ApolloSettingsRow valueRowWithID:@"availability"
                                     title:(ApolloAIIsCloudProvider() ? ApolloAIProviderDisplayName(sAISummaryProvider)
@@ -1193,6 +1251,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         [ApolloSettingsSection sectionWithTitle:@"Provider"
                                          footer:providerFooter
                                            rows:@[ provider, providerKey, providerModel, providerModels, providerBaseURL ]],
+        customHeaders,
         [ApolloSettingsSection sectionWithTitle:@"Summaries"
                                          footer:@"Minimum Post Length only applies to text posts, not linked articles. Brief, Balanced and In-depth set how much detail a summary goes into.\n\nWhen Opening a Thread: Generate on Open prepares summaries in the background and keeps them collapsed until you tap. Open Automatically expands them on their own. Tap to Summarize only starts when you tap a summary card."
                                            rows:@[ postSummaries, postThreshold, postDetail, commentSummaries, commentDetail, summaryMode ]],
@@ -1352,6 +1411,120 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
     // are all provider-aware and computed in -buildForm, and the Provider
     // section's row set changes with the provider — rebuild the whole form.
     [self rebuildForm];
+}
+
+#pragma mark - Custom headers
+
+- (void)presentCustomHeaderEditorForName:(NSString *)originalName {
+    NSString *value = nil;
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        if (ApolloAIHeaderNamesMatch(header[ApolloAICloudCustomHeaderNameKey], originalName)) {
+            value = header[ApolloAICloudCustomHeaderValueKey];
+            break;
+        }
+    }
+    [self presentCustomHeaderEditorWithOriginalName:originalName name:originalName value:value message:nil];
+}
+
+// Add (originalName nil) or edit one header. message carries the reason a
+// previous Save was refused.
+- (void)presentCustomHeaderEditorWithOriginalName:(NSString *)originalName
+                                             name:(NSString *)name
+                                            value:(NSString *)value
+                                          message:(NSString *)message {
+    [self.view endEditing:YES]; // commit an in-progress provider field first
+    BOOL editing = originalName.length > 0;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:(editing ? @"Edit Header" : @"Add Header")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        ApolloAIConfigureHeaderTextField(field);
+        field.placeholder = @"Name, e.g. x-opencode-session";
+        field.accessibilityLabel = @"Header name";
+        field.text = name;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        ApolloAIConfigureHeaderTextField(field);
+        field.placeholder = @"Value";
+        field.accessibilityLabel = @"Header value";
+        field.text = value;
+    }];
+
+    __weak __typeof(self) weakSelf = self;
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    if (editing) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Delete"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(__unused UIAlertAction *action) {
+            [weakSelf removeCustomHeaderNamed:originalName];
+        }]];
+    }
+    UIAlertAction *save = [UIAlertAction actionWithTitle:@"Save"
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(__unused UIAlertAction *action) {
+        NSArray<UITextField *> *fields = weakAlert.textFields;
+        NSCharacterSet *whitespace = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+        [weakSelf commitCustomHeaderName:[fields.firstObject.text stringByTrimmingCharactersInSet:whitespace] ?: @""
+                                   value:[fields.lastObject.text stringByTrimmingCharactersInSet:whitespace] ?: @""
+                               replacing:originalName];
+    }];
+    [alert addAction:save];
+    alert.preferredAction = save;
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)commitCustomHeaderName:(NSString *)name value:(NSString *)value replacing:(NSString *)originalName {
+    NSString *problem = ApolloAICloudCustomHeaderProblem(name, value);
+    if (problem) {
+        // Reopen the editor with what was typed and the reason as its message,
+        // so one bad character doesn't cost the whole entry.
+        [self presentCustomHeaderEditorWithOriginalName:originalName name:name value:value message:problem];
+        return;
+    }
+    // An edit keeps the header's slot. A name already in the list replaces that
+    // entry rather than adding a second one the request would overwrite anyway.
+    NSDictionary<NSString *, NSString *> *entry = @{ApolloAICloudCustomHeaderNameKey: name,
+                                                    ApolloAICloudCustomHeaderValueKey: value};
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *headers = [NSMutableArray array];
+    BOOL placed = NO;
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        NSString *existingName = header[ApolloAICloudCustomHeaderNameKey];
+        if (ApolloAIHeaderNamesMatch(existingName, originalName) || ApolloAIHeaderNamesMatch(existingName, name)) {
+            if (!placed) [headers addObject:entry];
+            placed = YES;
+            continue;
+        }
+        [headers addObject:header];
+    }
+    if (!placed) [headers addObject:entry];
+    [self saveCustomHeaders:headers];
+}
+
+- (void)removeCustomHeaderNamed:(NSString *)name {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *headers = [NSMutableArray array];
+    for (NSDictionary<NSString *, NSString *> *header in sCustomAIHeaders) {
+        if (!ApolloAIHeaderNamesMatch(header[ApolloAICloudCustomHeaderNameKey], name)) [headers addObject:header];
+    }
+    [self saveCustomHeaders:headers];
+}
+
+- (void)saveCustomHeaders:(NSArray<NSDictionary<NSString *, NSString *> *> *)headers {
+    sCustomAIHeaders = ApolloAICloudSanitizedCustomHeaders(headers);
+    if (sCustomAIHeaders) {
+        [[NSUserDefaults standardUserDefaults] setObject:sCustomAIHeaders forKey:UDKeyCustomAIHeaders];
+    } else {
+        [[NSUserDefaults standardUserDefaults] removeObjectForKey:UDKeyCustomAIHeaders];
+    }
+    ApolloLog(@"[AICloud] Saved %lu custom header(s)", (unsigned long)sCustomAIHeaders.count);
+    // Only this section is rebuilt: its rows are generated per header, and the
+    // other sections keep their measured heights. Save and Delete come with the
+    // list scrolled down to it, where the reload alone moved the list ~210pt
+    // (the top edge of the screen sits in the General footer), so the rows on
+    // screen are kept where they were.
+    [self performUpdateKeepingVisibleRowsInPlace:^{
+        [self rebuildSectionContainingRowID:@"customHeaders.add" withRowAnimation:UITableViewRowAnimationNone];
+    }];
 }
 
 #pragma mark - UITextFieldDelegate
