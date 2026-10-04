@@ -189,6 +189,37 @@ static NSString *sPendingVisit;
 
 #pragma mark - Appearance
 
+// On phones without a Dynamic Island, Apollo's Pal walks along the tab bar
+// (a PixelPalView in the window). Inside Pal Home that's a second copy of the
+// Pal wandering under the room, so it steps out while we're on screen. The
+// island Pal (inside the FauxCutOutView pill) stays: it's the island.
+- (void)setTabBarPalHidden:(BOOL)hidden {
+    static Class palView, cutOut;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        palView = NSClassFromString(@"_TtC6Apollo12PixelPalView");
+        cutOut = NSClassFromString(@"_TtC6Apollo14FauxCutOutView");
+    });
+    UIWindow *window = self.view.window ?: self.navigationController.view.window;
+    if (!palView || !window) return;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if ([view isKindOfClass:palView]) {
+            BOOL inIsland = NO;
+            for (UIView *up = view.superview; up && !inIsland; up = up.superview) inIsland = cutOut && [up isKindOfClass:cutOut];
+            // alpha, not hidden: Apollo re-sets `hidden` as it updates the Pal.
+            if (!inIsland && (view.alpha < 0.5) != hidden) {
+                view.alpha = hidden ? 0 : 1;
+                ApolloLog(@"[PalHome] tab-bar Pal %@ (%@)", hidden ? @"hidden" : @"shown", NSStringFromCGRect(view.frame));
+            }
+            continue;
+        }
+        [stack addObjectsFromArray:view.subviews];
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.hadNavigationBarHidden = self.navigationController.navigationBarHidden;
@@ -200,6 +231,7 @@ static NSString *sPendingVisit;
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    [self setTabBarPalHidden:YES];
     // Switched off from the Pal card's Settings: Classic it is, so step out.
     if (!ApolloPalHomeStore.isPalHomeEnabled && self.navigationController.topViewController == self &&
         self.navigationController.viewControllers.firstObject != self) {
@@ -231,6 +263,7 @@ static NSString *sPendingVisit;
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    [self setTabBarPalHidden:NO];
     self.visible = NO;
     if (self.editing) [self setEditingMode:NO];
     UIGestureRecognizer *pop = self.navigationController.interactivePopGestureRecognizer;
