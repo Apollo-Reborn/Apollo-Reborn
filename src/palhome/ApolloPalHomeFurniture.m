@@ -764,11 +764,156 @@ static void APRegisterRugs(NSMutableArray *items) {
     })];
 }
 
+
+#pragma mark - Computers
+
+// A tiny rainbow apple badge (4 × 5), stripes top to bottom.
+static void APRainbowApple(APCanvas *c, int x, int y) {
+    uint32_t stripes[] = {0x61BB46, 0xFDB827, 0xF5821F, 0xE03A3E, 0x963D97, 0x009DDC};
+    APPx(c, x + 2, y, 0x61BB46); // leaf
+    for (int r = 0; r < 4; r++) APHLine(c, x, y + 1 + r, r == 0 || r == 3 ? 4 : 4, stripes[1 + r]);
+    APPx(c, x + 3, y + 2, 0); // the bite
+}
+
+// A small desk/side table: top at `top`, legs to the floor (H).
+static void APLittleDesk(APCanvas *c, int x, int w, int top, int H, uint32_t wood, uint32_t dark) {
+    APRect(c, x, top, w, 2, wood);
+    APHLine(c, x, top, w, APShade(wood, 1.15f));
+    APRect(c, x + 1, top + 2, 1, H - top - 6, dark);
+    APRect(c, x + w - 2, top + 2, 1, H - top - 6, dark);
+}
+
+static void APScreenLight(APDrawContext *ctx, int x, int y, uint32_t colour) {
+    if (!ctx.on) return;
+    [ctx addLight:[APLight x:x y:y radius:30 color:colour strength:0.35f]];
+    APAnim *glow = [APAnim kind:APAnimGlow x:x y:y w:0 h:0];
+    glow.size = 10; glow.color = colour;
+    [ctx addAnim:glow];
+}
+
+static void APRegisterComputers(NSMutableArray *items) {
+    // The 1984 compact: beige box, happy face, rainbow badge.
+    APItemSpec *classic = APSpec(@"computer.classic", @"Classic Computer", APLayerFloor, APCategoryFurniture, 1, 1, 18,
+                                 @[@"Beige", @"Platinum"], ^(APDrawContext *ctx) {
+        APCanvas *c = ctx.base;
+        int H = ctx.height; // 34
+        uint32_t body = ctx.variant ? 0xD8D8D4 : 0xE4DCC4, shade = ctx.variant ? 0xA8A8A6 : 0xBCB096;
+        APLittleDesk(c, 0, 16, H - 13, H, 0x8A5A36, 0x5A3820);
+        int top = H - 31;
+        APRect(c, 2, top, 12, 17, body);
+        APVLine(c, 13, top + 1, 16, shade);
+        APHLine(c, 2, top + 16, 12, shade);
+        APRect(c, 3, top + 13, 10, 2, shade); // the base step
+        APRect(c, 8, top + 13, 4, 1, 0x5A5650); // floppy slot
+        APRainbowApple(c, 3, top + 11);
+        // Screen, with the happy face when it's on.
+        APRect(c, 3, top + 2, 10, 8, 0x2A2A30);
+        if (ctx.on) {
+            APRect(ctx.emissive, 4, top + 3, 8, 6, 0xE8ECE4);
+            APPx(ctx.emissive, 6, top + 4, 0x1A1A1E); APPx(ctx.emissive, 9, top + 4, 0x1A1A1E);
+            APPx(ctx.emissive, 5, top + 6, 0x1A1A1E); APPx(ctx.emissive, 6, top + 7, 0x1A1A1E);
+            APPx(ctx.emissive, 7, top + 7, 0x1A1A1E); APPx(ctx.emissive, 8, top + 7, 0x1A1A1E);
+            APPx(ctx.emissive, 9, top + 7, 0x1A1A1E); APPx(ctx.emissive, 10, top + 6, 0x1A1A1E);
+        } else {
+            APRect(c, 4, top + 3, 8, 6, 0x3A3E40);
+        }
+        APOutlineInside(c, 0x3A2A1A);
+        APScreenLight(ctx, 8, top + 5, 0xE8F0FF);
+        APShadow(c, 0, H - 4, 16, 5);
+    });
+    classic.toggleable = YES;
+    [items addObject:classic];
+
+    // The candy-coloured translucent egg.
+    NSArray *candy = @[@[@"Blueberry", @0x1F7AB8], @[@"Tangerine", @0xF0841C], @[@"Grape", @0x6A3A8E], @[@"Lime", @0x6EBE3A], @[@"Strawberry", @0xD83A5A]];
+    NSMutableArray *candyNames = [NSMutableArray array];
+    for (NSArray *k in candy) [candyNames addObject:k[0]];
+    APItemSpec *g3 = APSpec(@"computer.candy", @"Candy Computer", APLayerFloor, APCategoryFurniture, 1, 1, 18, candyNames, ^(APDrawContext *ctx) {
+        APCanvas *c = ctx.base;
+        int H = ctx.height; // 34
+        uint32_t tint = [candy[ctx.variant % candy.count][1] unsignedIntValue];
+        APLittleDesk(c, 0, 16, H - 13, H, 0xF0F0EC, 0xBCBCB8);
+        int top = H - 30;
+        // The translucent shell: tint behind, a white front bezel, a bulbous back.
+        APEllipse(c, 1, top + 1, 14, 16, APMix(tint, 0xFFFFFF, 0.25f));
+        APEllipse(c, 2, top + 3, 12, 12, tint);
+        for (int y = top + 3; y < top + 15; y += 2) APHLine(c, 3, y, 10, APShade(tint, 0.85f)); // the see-through innards
+        APRect(c, 3, top, 10, 12, 0xF4F4F0); // white bezel; the colour wraps round the sides
+        APHLine(c, 3, top, 10, 0xFFFFFF);
+        APVLine(c, 2, top + 2, 10, APMix(tint, 0xFFFFFF, 0.55f)); // a highlight down the shell
+        APRect(c, 3, top + 12, 10, 3, APMix(tint, 0xFFFFFF, 0.4f)); // tinted chin
+        APPx(c, 7, top + 13, 0xF4F4F0); APPx(c, 8, top + 13, 0xF4F4F0); // the little apple on the chin
+        APRect(c, 6, top + 15, 4, 2, APShade(tint, 0.9f)); // foot
+        // Screen.
+        if (ctx.on) {
+            APRect(ctx.emissive, 4, top + 1, 8, 9, 0x5A8AD8);
+            APRect(ctx.emissive, 5, top + 3, 5, 4, 0xF4F4F4); // a window
+            APHLine(ctx.emissive, 5, top + 3, 5, 0xB8B8C0);
+            APHLine(ctx.emissive, 4, top + 1, 8, 0xE8E8EC); // menu bar
+        } else {
+            APRect(c, 4, top + 1, 8, 9, 0x2A2C34);
+        }
+        APOutlineInside(c, 0x3A3A44);
+        APScreenLight(ctx, 8, top + 5, 0x9AB8F0);
+        APShadow(c, 0, H - 4, 16, 5);
+    });
+    g3.toggleable = YES;
+    [items addObject:g3];
+
+    // The thin, bright all-in-one, on a desk with keyboard and mouse.
+    NSArray *imac = @[@[@"Blue", @0x3A6EC8, @0xB8CCEC], @[@"Green", @0x3A9A6A, @0xB8E0C8], @[@"Pink", @0xE07A8A, @0xF6CCD2],
+                      @[@"Silver", @0x9A9CA4, @0xE4E4E8], @[@"Yellow", @0xE8B030, @0xF6E0A0], @[@"Orange", @0xE8743A, @0xF6C4A4],
+                      @[@"Purple", @0x8A5AC8, @0xD4C4EC]];
+    NSMutableArray *imacNames = [NSMutableArray array];
+    for (NSArray *k in imac) [imacNames addObject:k[0]];
+    APItemSpec *slab = APSpec(@"computer.imac", @"iMac", APLayerFloor, APCategoryFurniture, 2, 1, 22, imacNames, ^(APDrawContext *ctx) {
+        APCanvas *c = ctx.base;
+        int H = ctx.height, W = ctx.width; // 38 × 32
+        uint32_t deep = [imac[ctx.variant % imac.count][1] unsignedIntValue], pale = [imac[ctx.variant % imac.count][2] unsignedIntValue];
+        APLittleDesk(c, 1, W - 2, H - 13, H, 0xC8A27A, 0x8A6A4A);
+        int top = H - 35;
+        // Stand.
+        APRect(c, 13, top + 18, 6, 4, deep); APHLine(c, 11, top + 21, 10, APShade(deep, 0.85f));
+        // Pale front: screen with white bezel, coloured chin; deep colour at the edge.
+        APRect(c, 4, top, 24, 19, pale);
+        APVLine(c, 27, top, 19, deep);
+        APRect(c, 4, top + 15, 24, 4, deep);
+        APHLine(c, 4, top + 15, 23, APMix(deep, pale, 0.4f));
+        APRect(c, 5, top + 1, 22, 13, 0xF6F6F6); // bezel
+        if (ctx.on) {
+            // The bloom wallpaper.
+            for (int y = 0; y < 11; y++) for (int x = 0; x < 20; x++) {
+                float t = (float)(x + y) / 30.0f;
+                uint32_t col = APMix(APMix(deep, 0xFFFFFF, 0.15f), APMix(pale, 0xFFE8F0, 0.3f), t);
+                if (APBayer(x, y) < 0.25f) col = APShade(col, 1.08f);
+                APPx(ctx.emissive, 6 + x, top + 2 + y, col);
+            }
+            APHLine(ctx.emissive, 6, top + 2, 20, 0xF4F4F8); // menu bar
+            APRect(ctx.emissive, 9, top + 5, 9, 6, 0xF8F8FA); // a window
+            APHLine(ctx.emissive, 9, top + 5, 9, 0xD0D0D8);
+            APPx(ctx.emissive, 10, top + 5, 0xE8604A); APPx(ctx.emissive, 11, top + 5, 0xF0C040); APPx(ctx.emissive, 12, top + 5, 0x6AC060);
+            APRect(ctx.emissive, 11, top + 13, 10, 1, APMix(deep, pale, 0.5f)); // dock
+        } else {
+            APRect(c, 6, top + 2, 20, 11, 0x1E2026);
+        }
+        // Keyboard and mouse.
+        APRect(c, 6, H - 15, 14, 2, pale); APHLine(c, 6, H - 15, 14, 0xFFFFFF);
+        for (int x = 7; x < 19; x += 2) APPx(c, x, H - 14, APShade(pale, 0.85f));
+        APEllipse(c, 23, H - 16, 4, 3, pale);
+        APOutlineInside(c, 0x3A3A44);
+        APScreenLight(ctx, 16, top + 7, APMix(pale, 0xFFFFFF, 0.4f));
+        APShadow(c, 0, H - 4, W, 5);
+    });
+    slab.toggleable = YES;
+    [items addObject:slab];
+}
+
 void APRegisterFurniture(NSMutableArray<APItemSpec *> *items) {
     APRegisterHearths(items);
     APRegisterSeating(items);
     APRegisterTables(items);
     APRegisterLamps(items);
+    APRegisterComputers(items);
     APRegisterPlants(items);
     APRegisterStorage(items);
     APRegisterPetBeds(items);
