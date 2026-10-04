@@ -13,6 +13,13 @@ NS_ASSUME_NONNULL_BEGIN
 // or its walls and floor around the furniture you already have.
 typedef NS_ENUM(NSInteger, APStyleApply) { APStyleFurnished = 0, APStyleBare, APStyleKeepThings };
 - (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style apply:(APStyleApply)apply;
+@optional
+// A style was tapped (nil = Start Fresh): show it in the room, applied the
+// chosen way, without saving.
+- (void)drawer:(ApolloPalHomeDrawer *)drawer previewStyle:(nullable APStyleSpec *)style apply:(APStyleApply)apply;
+// Back out of choosing (or about to apply): put the real room back.
+- (void)drawerEndStylePreview:(ApolloPalHomeDrawer *)drawer;
+@required
 - (void)drawerUndo:(ApolloPalHomeDrawer *)drawer;
 // "Start Fresh": back to moving-in day (an empty room and the boxes).
 - (void)drawerStartFresh:(ApolloPalHomeDrawer *)drawer;

@@ -46,6 +46,7 @@ typedef NS_ENUM(NSInteger, APPalMode) { APPalIdle, APPalWalking, APPalSleeping, 
 
 @interface ApolloPalHomeScene ()
 @property (nonatomic, copy, readwrite) NSDictionary *roomDocument;
+@property (nonatomic, copy, nullable) NSDictionary *previewSaved; // the real room while previewing
 @property (nonatomic, strong, readwrite) APRoomLayout *layout;
 @property (nonatomic, copy) NSArray<ApolloPalHomeResident *> *residents;
 @property (nonatomic, readwrite) BOOL hasPalArtwork;
@@ -2529,6 +2530,7 @@ static SKTexture *APEyesTexture(int look) {
 }
 
 - (void)commitRoom:(NSDictionary *)room selecting:(nullable NSString *)uid {
+    self.previewSaved = nil;
     self.roomDocument = room;
     [self rebuildRoomKeepingPal:YES];
     if (uid) self.selectedItem = [self.layout itemWithUID:uid];
@@ -2629,6 +2631,23 @@ static SKTexture *APEyesTexture(int look) {
     room[@"floor"] = identifier;
     [self commitRoom:room selecting:self.selectedItem.uid];
 }
+
+- (void)previewRoom:(NSDictionary *)room {
+    if (room) {
+        if (!self.previewSaved) self.previewSaved = self.roomDocument ?: [APCatalog starterRoom];
+        self.selectedItem = nil;
+        self.roomDocument = room;
+    } else {
+        if (!self.previewSaved) return;
+        self.roomDocument = self.previewSaved;
+        self.previewSaved = nil;
+    }
+    [self rebuildRoomKeepingPal:YES];
+    [self relayout:NO]; // the backdrop belongs to the style
+    [self showSelection];
+}
+
+- (NSDictionary *)committedRoomDocument { return self.previewSaved ?: self.roomDocument; }
 
 - (void)replaceRoom:(NSDictionary *)room {
     self.selectedItem = nil;

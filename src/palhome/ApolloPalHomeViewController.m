@@ -516,6 +516,7 @@ static NSString *APCareWeightText(double lbs) {
 - (void)setEditingMode:(BOOL)editing {
     if (self.editing == editing) return;
     if (editing && !self.store.canEdit) return;
+    if (!editing) [self.homeScene previewRoom:nil]; // however editing ends, an unchosen style isn't kept
     self.editing = editing;
     self.homeScene.editing = editing;
     self.roomBeforeStyle = nil;
@@ -1075,10 +1076,9 @@ static NSString *APCareWeightText(double lbs) {
     [drawer flashTitle:surface.title];
 }
 
-- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style apply:(APStyleApply)apply {
-    // Keep what was there so one tap brings it back.
-    NSDictionary *current = self.homeScene.roomDocument ?: [APCatalog starterRoom];
-    if (!self.roomBeforeStyle) self.roomBeforeStyle = current;
+// The room a style makes from `current`: its template (furnished), its walls
+// and floor with nothing in them (bare), or around your things.
+- (NSDictionary *)room:(NSDictionary *)current withStyle:(APStyleSpec *)style apply:(APStyleApply)apply {
     NSDictionary *template = style.room();
     NSMutableDictionary *room;
     if (apply == APStyleFurnished) {
@@ -1097,14 +1097,36 @@ static NSString *APCareWeightText(double lbs) {
         for (NSString *key in @[@"style", @"wallpaper", @"floor", @"lighting"]) if (template[key]) room[key] = template[key];
         if (apply == APStyleBare) room[@"items"] = @[];
     }
-    [self.homeScene replaceRoom:room];
+    return room;
+}
+
+- (void)drawer:(ApolloPalHomeDrawer *)drawer previewStyle:(APStyleSpec *)style apply:(APStyleApply)apply {
+    NSDictionary *current = self.homeScene.committedRoomDocument ?: [APCatalog starterRoom];
+    NSDictionary *preview = style ? [self room:current withStyle:style apply:apply] : [APCatalog starterRoom];
+    [self.homeScene previewRoom:preview];
+    APHapticPlay(APHapticSelect);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+        [NSString stringWithFormat:@"Previewing %@.", style.title ?: @"a fresh start"]);
+}
+
+- (void)drawerEndStylePreview:(ApolloPalHomeDrawer *)drawer {
+    [self.homeScene previewRoom:nil];
+}
+
+- (void)drawer:(ApolloPalHomeDrawer *)drawer didPickStyle:(APStyleSpec *)style apply:(APStyleApply)apply {
+    // Built from the saved room (never the preview); keep it so one tap brings it back.
+    [self.homeScene previewRoom:nil];
+    NSDictionary *current = self.homeScene.committedRoomDocument ?: [APCatalog starterRoom];
+    if (!self.roomBeforeStyle) self.roomBeforeStyle = current;
+    [self.homeScene replaceRoom:[self room:current withStyle:style apply:apply]];
     APHapticPlay(APHapticPop);
     drawer.canUndo = YES;
     [drawer flashTitle:apply == APStyleFurnished ? style.title : apply == APStyleBare ? @"A blank canvas" : @"Same things, new walls"];
 }
 
 - (void)drawerStartFresh:(ApolloPalHomeDrawer *)drawer {
-    if (!self.roomBeforeStyle) self.roomBeforeStyle = self.homeScene.roomDocument ?: [APCatalog starterRoom];
+    [self.homeScene previewRoom:nil];
+    if (!self.roomBeforeStyle) self.roomBeforeStyle = self.homeScene.committedRoomDocument ?: [APCatalog starterRoom];
     NSMutableDictionary *room = [[APCatalog starterRoom] mutableCopy];
     NSMutableArray *items = [NSMutableArray array];
     for (NSDictionary *record in room[@"items"]) {
@@ -1129,7 +1151,10 @@ static NSString *APCareWeightText(double lbs) {
     [drawer flashTitle:@"Back as it was"];
 }
 
-- (void)drawerDidFinish:(ApolloPalHomeDrawer *)drawer { [self setEditingMode:NO]; }
+- (void)drawerDidFinish:(ApolloPalHomeDrawer *)drawer {
+    [self.homeScene previewRoom:nil]; // a style left unchosen isn't kept
+    [self setEditingMode:NO];
+}
 - (void)drawerFlip:(ApolloPalHomeDrawer *)drawer { [self.homeScene flipSelected]; }
 - (void)drawerCycleVariant:(ApolloPalHomeDrawer *)drawer { [self.homeScene cycleSelectedVariant]; }
 - (void)drawerToggle:(ApolloPalHomeDrawer *)drawer { [self.homeScene toggleSelected]; }

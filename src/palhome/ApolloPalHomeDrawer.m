@@ -11,8 +11,14 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 @property (nonatomic, strong) UIScrollView *shelf;
 @property (nonatomic) APCategory shelfCategory;
 @property (nonatomic) BOOL shelfBuilt;
-@property (nonatomic, strong, nullable) APStyleSpec *pendingStyle; // choosing how to apply it
-@property (nonatomic) CGFloat styleListOffset;
+@property (nonatomic, strong, nullable) APStyleSpec *pendingStyle; // the style being previewed
+@property (nonatomic) BOOL previewingFresh;                          // previewing Start Fresh
+@property (nonatomic) APStyleApply previewMode;                      // Furnished / Bare / My things
+@property (nonatomic, copy, nullable) NSString *committedStyleID;    // the room's real style while previewing
+@property (nonatomic) BOOL committedFresh;
+@property (nonatomic, strong) NSArray<ApolloPixelButton *> *modeButtons;
+@property (nonatomic, strong) ApolloPixelButton *useButton, *cancelPreviewButton;
+@property (nonatomic, strong) ApolloPixelImageView *segmentBackdrop;
 // Actions for the selected piece float in a little wooden bubble above the
 // drawer, so the header keeps room for the item's name.
 @property (nonatomic, strong) UIView *actionBar;
@@ -50,6 +56,42 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         _lightingButton = [self button:@"sun" label:@"Room lighting" action:@selector(lighting)];
         _undoButton = [self button:@"undo" label:@"Undo style change" action:@selector(undo)];
         _undoButton.hidden = YES;
+        // Previewing a style: how to apply it, and a button to use it.
+        NSArray *modes = @[@[@"Furnished", @"Their furnished room."], @[@"Bare", @"Just their walls and floor, nothing in it."],
+                           @[@"My stuff", @"Their walls and floor around your furniture."]];
+        NSMutableArray *modeButtons = [NSMutableArray array];
+        for (NSUInteger i = 0; i < modes.count; i++) {
+            ApolloPixelButton *mode = [self wordOnlyButton:modes[i][0] action:@selector(modeTapped:)];
+            mode.tag = (NSInteger)i;
+            mode.accessibilityHint = modes[i][1];
+            [modeButtons addObject:mode];
+        }
+        _modeButtons = modeButtons;
+        _segmentBackdrop = [ApolloPixelImageView new];
+        _segmentBackdrop.hidden = YES;
+        [self addSubview:_segmentBackdrop];
+        for (ApolloPixelButton *mode in modeButtons) { [mode removeFromSuperview]; [self addSubview:mode]; mode.hidden = YES; }
+        // Use: a check and a word. Cancel: a small ✕ where Done usually sits.
+        _useButton = [self wordOnlyButton:@"Use" action:@selector(useTapped)];
+        {
+            // ✓ USE: the check says "this one".
+            APCanvas *check = APIconCanvas(@"check");
+            int tw = APTextWidth(@"USE", APFontSmall), h = MAX(check->h, 6);
+            APCanvas *content = APCanvasCreate(check->w + 3 + tw, h);
+            APDraw(content, check, 0, (h - check->h) / 2, NO);
+            APTextShadow(content, @"USE", check->w + 3, (h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+            APCanvasFree(check);
+            _useButton.content = [APCanvasBox boxWithCanvas:content];
+            _useButton.tileWidth = content->w + 10;
+        }
+        _useButton.accessibilityLabel = @"Use this style";
+        _useButton.accessibilityHint = @"Makes this your home's style. You can undo it.";
+        [self addSubview:_useButton];
+        _useButton.hidden = YES;
+        _cancelPreviewButton = [self button:@"" label:@"Cancel preview" action:@selector(leaveStyleChoice)];
+        _cancelPreviewButton.iconName = nil;
+        _cancelPreviewButton.accessibilityHint = @"Puts your room back as it was.";
+        _cancelPreviewButton.hidden = YES;
         NSArray *icons = @[@"house", @"sofa", @"candle", @"rug", @"window", @"art", @"wallpaper", @"floor"];
         NSMutableArray *tabs = [NSMutableArray array];
         for (NSInteger i = 0; i < APCategoryCount; i++) {
@@ -85,7 +127,18 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 
 - (void)setPixelScale:(CGFloat)pixelScale { _pixelScale = pixelScale; [self setNeedsLayout]; [self rebuildShelf]; }
 - (void)setPixelWidth:(int)pixelWidth { _pixelWidth = pixelWidth; [self setNeedsLayout]; }
-- (void)setCategory:(APCategory)category { _category = category; self.pendingStyle = nil; [self refreshHeader]; [self rebuildShelf]; }
+- (void)setCategory:(APCategory)category {
+    if (self.isPreviewing) [self endStylePreview];
+    _category = category;
+    self.pendingStyle = nil;
+    self.previewingFresh = NO;
+    [self refreshHeader];
+    [self rebuildShelf];
+}
+
+- (void)endStylePreview {
+    if ([self.delegate respondsToSelector:@selector(drawerEndStylePreview:)]) [self.delegate drawerEndStylePreview:self];
+}
 - (void)setCanUndo:(BOOL)canUndo { _canUndo = canUndo; [self refreshHeader]; }
 
 - (void)layoutSubviews {
@@ -100,12 +153,60 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     self.panel.frame = CGRectMake(0, 0, self.pixelWidth * p, panelH * p);
     [self layoutHeader];
     int x = 6;
+    BOOL previewing = !self.selection && self.isPreviewing;
     for (ApolloPixelButton *tab in self.tabs) {
         tab.pixelScale = p;
+        tab.hidden = previewing; // switching tabs would end the preview anyway
         tab.frame = CGRectMake(x * p, kTabsY * p, tab.tileWidth * p, tab.tileHeight * p);
         x += tab.tileWidth + 1;
     }
+    [self layoutPreviewRow:previewing];
     self.shelf.frame = CGRectMake(3 * p, kShelfY * p, (self.pixelWidth - 6) * p, kShelfH * p);
+}
+
+// While previewing a style, the tab row becomes: [ FURNISHED | BARE | MY STUFF ]
+// as one segmented strip (only the chosen mode raised), then [ USE ].
+- (void)layoutPreviewRow:(BOOL)previewing {
+    CGFloat p = self.pixelScale;
+    BOOL modes = previewing && !self.previewingFresh;
+    for (ApolloPixelButton *mode in self.modeButtons) mode.hidden = !modes;
+    self.segmentBackdrop.hidden = !modes;
+    self.useButton.hidden = !previewing;
+    if (!previewing) return;
+    int h = 15, right = self.pixelWidth - 6;
+    self.useButton.pixelScale = p;
+    self.useButton.tileHeight = h;
+    right -= self.useButton.tileWidth;
+    self.useButton.frame = CGRectMake(right * p, kTabsY * p, self.useButton.tileWidth * p, h * p);
+    if (!modes) return;
+    // Full labels if they fit beside Use, else short ones.
+    NSArray *longWords = @[@"Furnished", @"Bare", @"My stuff"], *shortWords = @[@"Full", @"Bare", @"Mine"];
+    int segW = 0, pad = 1, gap = 3, room = right - gap - 6 - pad * 2;
+    for (NSArray *words in @[longWords, shortWords]) {
+        segW = 0;
+        for (ApolloPixelButton *mode in self.modeButtons) {
+            [self setWord:words[mode.tag] onButton:mode];
+            mode.accessibilityLabel = longWords[mode.tag];
+            segW += mode.tileWidth;
+        }
+        if (segW <= room) break;
+    }
+    int x = 6;
+    APCanvas *slot = APChromeSlot(APChromeCurrent(), segW + pad * 2, h, NO, NO);
+    self.segmentBackdrop.pixelScale = p;
+    [self.segmentBackdrop setCanvas:slot];
+    APCanvasFree(slot);
+    self.segmentBackdrop.frame = CGRectMake(x * p, kTabsY * p, (segW + pad * 2) * p, h * p);
+    x += pad;
+    for (ApolloPixelButton *mode in self.modeButtons) {
+        BOOL on = mode.tag == self.previewMode;
+        mode.toggled = on;
+        mode.flat = !on; // only the chosen one stands up
+        mode.pixelScale = p;
+        mode.tileHeight = h - 2;
+        mode.frame = CGRectMake(x * p, (kTabsY + 1) * p, mode.tileWidth * p, (h - 2) * p);
+        x += mode.tileWidth;
+    }
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
@@ -121,10 +222,18 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     CGFloat p = self.pixelScale;
     int right = self.pixelWidth - 6;
     APPlacedItem *item = self.selection;
-    NSMutableArray *header = [NSMutableArray arrayWithObject:self.doneButton];
-    if (!item) [header addObject:self.lightingButton];
-    if (!item && self.canUndo) [header addObject:self.undoButton];
-    self.lightingButton.hidden = item != nil;
+    BOOL previewing = !item && self.isPreviewing;
+    self.doneButton.hidden = previewing;
+    self.cancelPreviewButton.hidden = !previewing;
+    if (previewing) {
+        APCanvas *x = APCanvasCreate(7, 7);
+        for (int i = 0; i < 7; i++) { APPx(x, i, i, APChromeCurrent().text); APPx(x, 6 - i, i, APChromeCurrent().text); }
+        self.cancelPreviewButton.content = [APCanvasBox boxWithCanvas:x];
+    }
+    NSMutableArray *header = [NSMutableArray arrayWithObject:previewing ? self.cancelPreviewButton : self.doneButton];
+    if (!item && !previewing) [header addObject:self.lightingButton];
+    if (!item && !previewing && self.canUndo) [header addObject:self.undoButton];
+    self.lightingButton.hidden = item != nil || previewing;
     self.undoButton.hidden = ![header containsObject:self.undoButton];
     for (ApolloPixelButton *button in header) {
         button.pixelScale = p;
@@ -208,12 +317,14 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         self.subtitleLabel.text = item.spec.toggleable && !item.on ? [variant stringByAppendingString:variant.length ? @" · Off" : @"Off"] : variant;
     } else {
         self.titleLabel.text = [APCatalog titleForCategory:self.category];
-        self.subtitleLabel.text = self.category == APCategoryStyles ? (self.pendingStyle ? self.pendingStyle.title
-                                                                       : [self isFreshRoom] ? @"Moving day" : self.layout.style.title ?: @"Pick a whole new home")
+        self.subtitleLabel.text = self.category == APCategoryStyles
+            ? (self.previewingFresh ? @"Preview: Moving day" : self.pendingStyle ? [@"Preview: " stringByAppendingString:self.pendingStyle.title]
+               : [self isFreshRoom] ? @"Moving day" : self.layout.style.title ?: @"Pick a whole new home")
             : self.category >= APCategoryWallpaper ? @"Tap to redecorate" : @"Tap an item to add it";
     }
     for (ApolloPixelButton *tab in self.tabs) tab.toggled = tab.tag == self.category;
     [self layoutHeader];
+    [self setNeedsLayout];
 }
 
 - (void)updateWithSelection:(APPlacedItem *)item layout:(APRoomLayout *)layout {
@@ -256,55 +367,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     for (UIView *view in self.shelf.subviews) [view removeFromSuperview];
     CGFloat p = self.pixelScale;
     int x = 2;
-    if (self.category == APCategoryStyles && self.pendingStyle) {
-        // How to apply the chosen style. Laid out to the drawer's width (no
-        // scrolling): the style's painting, then a column of equal buttons.
-        int avail = self.pixelWidth - 6 - 4;
-        APCanvas *thumb = APStyleThumbnail(self.pendingStyle);
-        ApolloPixelButton *preview = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:self.pendingStyle.title];
-        preview.iconName = nil;
-        preview.flat = YES;
-        preview.toggled = YES;
-        preview.tileWidth = thumb->w + 6;
-        preview.tileHeight = kShelfH;
-        preview.content = [APCanvasBox boxWithCanvas:thumb];
-        preview.pixelScale = p;
-        preview.userInteractionEnabled = NO;
-        preview.isAccessibilityElement = NO;
-        preview.frame = CGRectMake(x * p, 0, preview.tileWidth * p, preview.tileHeight * p);
-        [self.shelf addSubview:preview];
-        // Back: a small tile on the painting's corner.
-        ApolloPixelButton *back = [[ApolloPixelButton alloc] initWithIcon:@"back" accessibilityLabel:@"Back to styles"];
-        back.tileWidth = 14;
-        back.tileHeight = 12;
-        back.pixelScale = p;
-        back.frame = CGRectMake((x + 1) * p, 1 * p, 14 * p, 12 * p);
-        [back addTarget:self action:@selector(cancelStyleChoice) forControlEvents:UIControlEventTouchUpInside];
-        [self.shelf addSubview:back];
-        int colX = x + preview.tileWidth + 4, colW = MAX(30, avail - colX);
-        NSArray *choices = @[@[@"Furnished", @"Their furnished room."],
-                             @[@"Bare room", @"Just their walls and floor, nothing in it."],
-                             @[@"Keep my things", @"Their walls and floor around your furniture."]];
-        int rowH = 16, rowGap = (kShelfH - rowH * 3) / 2;
-        for (NSUInteger i = 0; i < choices.count; i++) {
-            NSString *word = choices[i][0];
-            NSString *text = word.uppercaseString;
-            while (text.length > 1 && APTextWidth(text, APFontSmall) > colW - 6) text = [text substringToIndex:text.length - 1];
-            APCanvas *content = APCanvasCreate(MAX(1, APTextWidth(text, APFontSmall)), 6);
-            APTextShadow(content, text, 0, 0, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
-            ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
-            button.iconName = nil;
-            button.content = [APCanvasBox boxWithCanvas:content];
-            button.tileWidth = colW;
-            button.tileHeight = rowH;
-            button.pixelScale = p;
-            button.accessibilityHint = choices[i][1];
-            button.tag = (NSInteger)i;
-            button.frame = CGRectMake(colX * p, (int)(i * (rowH + rowGap)) * p, colW * p, rowH * p);
-            [button addTarget:self action:@selector(applyStyleTapped:) forControlEvents:UIControlEventTouchUpInside];
-            [self.shelf addSubview:button];
-        }
-        x = colX + colW;
+    if (NO) {
     } else if (self.category == APCategoryStyles) {
         // Each style is a little painting of its furnished room.
         static NSMutableDictionary<NSString *, APCanvasBox *> *thumbs;
@@ -325,8 +388,9 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         APRect(freshArt, (freshArt->w - tw) / 2, freshArt->h - 9, tw, 7, t.accent);
         APText(freshArt, @"FRESH", (freshArt->w - tw) / 2 + 2, freshArt->h - 8, APFontSmall, 0x1A1410);
         freshCell.content = [APCanvasBox boxWithCanvas:freshArt];
-        freshCell.accessibilityHint = @"Clears the room back to moving-in day. You can undo it.";
-        BOOL isFresh = [self isFreshRoom];
+        freshCell.accessibilityHint = @"Previews an empty moving-in room. Use style to start fresh; you can undo it.";
+        BOOL isFresh = self.isPreviewing ? self.previewingFresh : [self isFreshRoom];
+        NSString *highlighted = self.isPreviewing ? self.pendingStyle.identifier : self.layout.style.identifier;
         freshCell.toggled = isFresh;
         freshCell.pixelScale = p;
         freshCell.tag = -1;
@@ -344,8 +408,8 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
             cell.tileWidth = thumb.canvas->w + 6;
             cell.tileHeight = kShelfH;
             cell.content = [APCanvasBox boxWithCanvas:APCanvasCopy(thumb.canvas)];
-            cell.toggled = !isFresh && [style.identifier isEqual:self.layout.style.identifier];
-            cell.accessibilityHint = @"Replaces your room with this furnished style. You can undo it.";
+            cell.toggled = !isFresh && [style.identifier isEqual:highlighted];
+            cell.accessibilityHint = @"Previews this style in your room. Flick through them, then Use style.";
             cell.pixelScale = p;
             cell.tag = (NSInteger)i;
             cell.frame = CGRectMake(x * p, 0, cell.tileWidth * p, cell.tileHeight * p);
@@ -394,7 +458,6 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         }
     }
     self.shelf.contentSize = CGSizeMake((x + 2) * p, kShelfH * p);
-    if (self.pendingStyle && self.category == APCategoryStyles) self.shelf.contentSize = self.shelf.bounds.size; // fits: don't scroll
     CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
     self.shelf.contentOffset = sameTab ? CGPointMake(MIN(MAX(0, keep.x), maxX), 0) : CGPointZero;
 }
@@ -419,38 +482,54 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     [self.delegate drawer:self didPickSurface:surfaces[sender.tag] isFloor:floor];
 }
 
+- (BOOL)isPreviewing { return self.pendingStyle != nil || self.previewingFresh; }
+
+// Tap a style: the whole room previews it, and you can flick on to the next.
+// Tapping your room's own style again (or the ✓, or another tab) puts the
+// room back; "Use style" makes the preview real.
 - (void)styleTapped:(ApolloPixelButton *)sender {
     NSArray<APStyleSpec *> *styles = [APCatalog stylesForDisplay];
-    if (sender.tag == -1) {
-        for (ApolloPixelButton *cell in self.shelf.subviews) if ([cell isKindOfClass:ApolloPixelButton.class]) cell.toggled = cell == sender;
-        [self.delegate drawerStartFresh:self];
-        return;
+    if (sender.tag != -1 && (sender.tag < 0 || sender.tag >= (NSInteger)styles.count)) return;
+    if (!self.isPreviewing) {
+        self.committedStyleID = self.layout.style.identifier;
+        self.committedFresh = [self isFreshRoom];
     }
-    if (sender.tag < 0 || sender.tag >= (NSInteger)styles.count) return;
-    // Ask how: furnished, bare, or around your things.
-    self.styleListOffset = self.shelf.contentOffset.x;
-    self.pendingStyle = styles[sender.tag];
+    BOOL fresh = sender.tag == -1;
+    APStyleSpec *style = fresh ? nil : styles[sender.tag];
+    BOOL backToOwn = fresh ? self.committedFresh : (!self.committedFresh && [style.identifier isEqual:self.committedStyleID]);
+    if (backToOwn && self.isPreviewing) { [self leaveStyleChoice]; return; }
+    self.previewingFresh = fresh;
+    self.pendingStyle = style;
     [self refreshHeader];
-    self.shelfBuilt = NO; // the choice row starts at its beginning
+    [self rebuildShelf];
+    if ([self.delegate respondsToSelector:@selector(drawer:previewStyle:apply:)]) [self.delegate drawer:self previewStyle:style apply:self.previewMode];
+}
+
+- (void)modeTapped:(ApolloPixelButton *)sender {
+    self.previewMode = (APStyleApply)sender.tag;
+    [self refreshHeader];
+    if (self.pendingStyle && [self.delegate respondsToSelector:@selector(drawer:previewStyle:apply:)])
+        [self.delegate drawer:self previewStyle:self.pendingStyle apply:self.previewMode];
+}
+
+- (void)useTapped {
+    if (!self.isPreviewing) return;
+    APStyleSpec *style = self.pendingStyle;
+    BOOL fresh = self.previewingFresh;
+    self.pendingStyle = nil;
+    self.previewingFresh = NO;
+    if (fresh) [self.delegate drawerStartFresh:self];
+    else [self.delegate drawer:self didPickStyle:style apply:self.previewMode];
+    [self refreshHeader];
     [self rebuildShelf];
 }
-
-- (void)applyStyleTapped:(ApolloPixelButton *)sender {
-    APStyleSpec *style = self.pendingStyle;
-    if (!style) return;
-    [self leaveStyleChoice];
-    [self.delegate drawer:self didPickStyle:style apply:(APStyleApply)sender.tag];
-}
-
-- (void)cancelStyleChoice { [self leaveStyleChoice]; }
 
 - (void)leaveStyleChoice {
+    if (self.isPreviewing) [self endStylePreview];
     self.pendingStyle = nil;
+    self.previewingFresh = NO;
     [self refreshHeader];
     [self rebuildShelf];
-    // Back where you were in the list of styles.
-    CGFloat maxX = MAX(0, self.shelf.contentSize.width - self.shelf.bounds.size.width);
-    self.shelf.contentOffset = CGPointMake(MIN(self.styleListOffset, maxX), 0);
 }
 
 - (void)undo { [self.delegate drawerUndo:self]; }

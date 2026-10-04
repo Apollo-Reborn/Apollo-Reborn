@@ -76,6 +76,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)cycleLighting;
 // Replace the whole room (style templates, undo). Saves via the delegate.
 - (void)replaceRoom:(NSDictionary *)room;
+// Show a room without saving it (a style preview); nil puts the saved room
+// back. Committing anything ends the preview.
+- (void)previewRoom:(nullable NSDictionary *)room;
+// The saved room, even while a preview is showing.
+@property (nonatomic, copy, readonly, nullable) NSDictionary *committedRoomDocument;
 @end
 
 NS_ASSUME_NONNULL_END
