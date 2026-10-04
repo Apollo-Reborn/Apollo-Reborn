@@ -19,6 +19,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)palHomeScene:(ApolloPalHomeScene *)scene wantsCare:(NSString *)action;
 // A species moment wants a sting (APJingle): the goose's honk, the ghost's boo.
 - (void)palHomeScene:(ApolloPalHomeScene *)scene wantsJingle:(NSInteger)jingle;
+// A toy game ended ("ball" / "wand"), with how many bonks or pounces.
+- (void)palHomeScene:(ApolloPalHomeScene *)scene gameEnded:(NSString *)toy score:(NSInteger)score;
 @end
 
 // The room, drawn at true art resolution: one scene unit = one art pixel. The
@@ -45,6 +47,13 @@ NS_ASSUME_NONNULL_BEGIN
 // Interactions.
 - (void)petResident;
 - (void)playWithResident;
+// Toys: Beacon Ball (tap the room to throw; the Pal chases and bonks it back)
+// and the Wand (drag to wave it; the Pal chases it and pounces). They run
+// until -stopGame or a while without you.
+- (void)startBallGame;
+- (void)startWandGame;
+- (void)stopGame;
+@property (nonatomic, copy, readonly, nullable) NSString *toy;
 // The Pal goes to eat: at `feedingSpot` if set (cleared afterwards), else the
 // Food & Water bowls, else a candy bowl, else a dish appears. Returns YES when
 // it's a treat from the candy bowl (trick or treat!).

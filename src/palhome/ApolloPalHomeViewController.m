@@ -39,6 +39,7 @@
 @property (nonatomic, strong) ApolloPalHomeScene *homeScene;
 @property (nonatomic, strong) SKView *roomView;
 @property (nonatomic, strong) ApolloPixelButton *backButton, *cameraButton, *soundButton;
+@property (nonatomic, strong, nullable) ApolloPixelButton *toyDoneButton;
 @property (nonatomic, strong) ApolloPalHomeAmbience *ambience;
 @property (nonatomic, strong) UIView *toolbar;
 @property (nonatomic, strong) ApolloPixelImageView *toolbarPanel;
@@ -133,7 +134,7 @@ static NSString *sPendingVisit;
     ApolloPixelButton *pet = [self toolButton:@"heart" label:@"Pet" hint:@"Give your Pal some love." action:@selector(pet)];
     self.feedButton = [self toolButton:@"food" label:@"Feed" hint:@"Feed your Pal from the pantry. Food turns up while you scroll, upvote, comment and post." action:@selector(feed)];
     self.feedButton.accessibilityIdentifier = @"pal-home.feed";
-    ApolloPixelButton *play = [self toolButton:@"ball" label:@"Play" hint:@"Roll a ball of yarn. Playing earns hearts, once every few hours." action:@selector(play)];
+    ApolloPixelButton *play = [self toolButton:@"ball" label:@"Play" hint:@"The toy box: yarn, Beacon Ball and the wand. Playing earns hearts, once every few hours." action:@selector(play)];
     ApolloPixelButton *nap = [self toolButton:@"moon" label:@"Nap" hint:@"Your Pal heads to bed." action:@selector(rest)];
     self.decorateButton = [self toolButton:@"brush" label:@"Decorate" hint:@"Rearrange furniture, wallpaper and flooring." action:@selector(decorate)];
     ApolloPixelButton *pals = [self toolButton:@"paw" label:@"Your Pal" hint:@"Your Pal\u2019s card: personality, name, household and the shelter." action:@selector(openWardrobe)];
@@ -439,7 +440,137 @@ static NSString *sPendingVisit;
     [nav popViewControllerAnimated:YES];
 }
 - (void)pet { [self.homeScene petResident]; }
+// Play: the toy box. Yarn (the Pal chases it round the room), Beacon Ball
+// (tap to throw; the Pal bonks it back) and the Wand (drag; the Pal chases).
 - (void)play {
+    if (self.homeScene.toy) { [self.homeScene stopGame]; return; }
+    NSString *who = [self homeResident].name ?: @"your Pal";
+    __weak typeof(self) weakSelf = self;
+    [self menuWithTitle:@"Toys" options:@[
+        @[@"ball", @"Yarn", [NSString stringWithFormat:@"%@ chases it round the room", who], ^{ [weakSelf playYarn]; }],
+        @[@"beaconball", @"Beacon Ball", @"Tap to throw, keep the rally going", ^{ [weakSelf startToy:@"ball"]; }],
+        @[@"wand", @"Wand", @"Drag it about and they'll chase it", ^{ [weakSelf startToy:@"wand"]; }],
+    ]];
+}
+
+- (void)startToy:(NSString *)toy {
+    BOOL ball = [toy isEqualToString:@"ball"];
+    if (ball) [self.homeScene startBallGame]; else [self.homeScene startWandGame];
+    if (!self.homeScene.toy) return;
+    APHapticPlay(APHapticSuccess);
+    [self showToyDoneButton:YES];
+    [self toast:ball ? @[@"Beacon Ball", @"Tap anywhere to throw the ball."] : @[@"The wand", @"Drag around the room. They'll chase it."]];
+}
+
+// While a toy is out: a Done button above the toolbar.
+- (void)showToyDoneButton:(BOOL)show {
+    [self.toyDoneButton removeFromSuperview];
+    self.toyDoneButton = nil;
+    if (!show) return;
+    CGFloat p = self.pixelScale;
+    APCanvas *check = APIconCanvas(@"check");
+    int tw = APTextWidth(@"DONE PLAYING", APFontSmall), h = MAX(check->h, 6);
+    APCanvas *content = APCanvasCreate(check->w + 3 + tw, h);
+    APDraw(content, check, 0, (h - check->h) / 2, NO);
+    APTextShadow(content, @"DONE PLAYING", check->w + 3, (h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    APCanvasFree(check);
+    ApolloPixelButton *done = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:@"Done playing"];
+    done.iconName = nil;
+    done.content = [APCanvasBox boxWithCanvas:content];
+    done.tileWidth = content->w + 10;
+    done.tileHeight = 16;
+    done.pixelScale = p;
+    CGRect bar = self.toolbar.frame;
+    done.frame = CGRectMake(round((self.view.bounds.size.width - done.tileWidth * p) / 2 / p) * p, CGRectGetMinY(bar) - 20 * p,
+                            done.tileWidth * p, 16 * p);
+    [done addTarget:self.homeScene action:@selector(stopGame) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:done];
+    self.toyDoneButton = done;
+}
+
+- (void)palHomeScene:(ApolloPalHomeScene *)scene gameEnded:(NSString *)toy score:(NSInteger)score {
+    [self showToyDoneButton:NO];
+    if (score <= 0) return;
+    // A good game counts as play (Apollo's rule: a heart, once every few hours).
+    ApolloPalHomeResident *pal = [self homeResident];
+    APCareResult result = pal ? [self.store playWithResident:pal.identifier] : APCareUnavailable;
+    BOOL ball = [toy isEqualToString:@"ball"];
+    NSString *what = [NSString stringWithFormat:ball ? @"%ld bonk%@!" : @"%ld pounce%@!", (long)score, score == 1 ? @"" : @"s"];
+    if (result == APCareDone) {
+        [self.ambience playJingle:APJingleHeart];
+        APHapticPlay(APHapticHeart);
+        [self.homeScene refreshResidents:[self homeResidents]];
+        [self toast:@[@"+1/4 heart!", [NSString stringWithFormat:@"%@ %@ had a great time.", what, pal.name]]];
+    } else {
+        [self toast:@[what, [NSString stringWithFormat:@"%@ had fun.", pal.name ?: @"Your Pal"]]];
+    }
+}
+
+// A small pixel menu: title, then one row per option @[icon, title, detail, handler].
+- (void)menuWithTitle:(NSString *)title options:(NSArray<NSArray *> *)options {
+    CGFloat p = self.pixelScale;
+    int W = 136, rowH = 22, gap = 3;
+    UIControl *scrim = [[UIControl alloc] initWithFrame:self.view.bounds];
+    scrim.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    UIView *menu = [UIView new];
+    int H = 6 + 9 + (int)options.count * (rowH + gap) + 4;
+    APCanvas *panelCanvas = APPanelCanvas(W, H);
+    ApolloPixelImageView *panel = [ApolloPixelImageView new];
+    panel.pixelScale = p;
+    [panel setCanvas:panelCanvas];
+    APCanvasFree(panelCanvas);
+    [menu addSubview:panel];
+    ApolloPixelLabel *head = [ApolloPixelLabel new];
+    head.pixelScale = p; head.font = APFontSmall; head.themeRole = 2; head.text = title;
+    CGSize hs = head.intrinsicContentSize;
+    head.frame = CGRectMake((W * p - hs.width) / 2, 6 * p, hs.width, hs.height);
+    [menu addSubview:head];
+    __weak UIControl *weakScrim = scrim;
+    void (^dismiss)(void) = ^{
+        UIControl *s = weakScrim;
+        [UIView animateWithDuration:0.15 animations:^{ s.alpha = 0; } completion:^(BOOL finished) { [s removeFromSuperview]; }];
+    };
+    int y = 15;
+    for (NSArray *option in options) {
+        APCanvas *icn = APIconCanvas(option[0]);
+        NSString *label = [option[1] uppercaseString];
+        int tw = APTextWidth(label, APFontSmall);
+        APCanvas *content = APCanvasCreate(W - 22, rowH - 6);
+        APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
+        APTextShadow(content, label, icn->w + 4, 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+        APCanvasFree(icn);
+        (void)tw;
+        ApolloPixelButton *row = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:option[1]];
+        row.iconName = nil;
+        row.content = [APCanvasBox boxWithCanvas:content];
+        row.tileWidth = W - 12;
+        row.tileHeight = rowH;
+        row.pixelScale = p;
+        row.accessibilityHint = option[2];
+        row.frame = CGRectMake(6 * p, y * p, row.tileWidth * p, rowH * p);
+        ApolloPixelLabel *detail = [ApolloPixelLabel new];
+        detail.pixelScale = p; detail.font = APFontSmall; detail.themeRole = 1; detail.smooth = YES;
+        detail.smoothAlignment = NSTextAlignmentLeft; detail.maxWidth = W - 30; detail.text = option[2];
+        detail.userInteractionEnabled = NO;
+        CGSize ds = detail.intrinsicContentSize;
+        detail.frame = CGRectMake(row.frame.origin.x + 18 * p, row.frame.origin.y + 11 * p, ds.width, ds.height);
+        void (^handler)(void) = option[3];
+        [row addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { dismiss(); handler(); }] forControlEvents:UIControlEventTouchUpInside];
+        [menu addSubview:row];
+        [menu addSubview:detail];
+        y += rowH + gap;
+    }
+    [scrim addAction:[UIAction actionWithHandler:^(__kindof UIAction *a) { dismiss(); }] forControlEvents:UIControlEventTouchUpInside];
+    menu.frame = CGRectMake(round((self.view.bounds.size.width - W * p) / 2 / p) * p, round((self.view.bounds.size.height - H * p) / 2 / p) * p, W * p, H * p);
+    menu.accessibilityViewIsModal = YES;
+    [scrim addSubview:menu];
+    [self.view addSubview:scrim];
+    scrim.alpha = 0;
+    [UIView animateWithDuration:0.15 animations:^{ scrim.alpha = 1; }];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, head);
+}
+
+- (void)playYarn {
     // Always fun; earns a heart (Apollo's rule) once every 5 hours.
     NSString *home = [self homeResident].identifier;
     APCareResult result = home ? [self.store playWithResident:home] : APCareUnavailable;
@@ -1022,7 +1153,7 @@ static NSString *APCareWeightText(double lbs) {
 
 - (void)palHomeScene:(ApolloPalHomeScene *)scene wantsCare:(NSString *)action {
     if ([action isEqualToString:@"feed"]) [self feed];
-    else if ([action isEqualToString:@"play"]) [self play];
+    else if ([action isEqualToString:@"play"]) [self playYarn]; // the yarn basket: yarn
 }
 
 // Coming home: moving-in day for a Pal who hasn't moved in yet (their own

@@ -552,6 +552,7 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
 
 %end
 
+
 #pragma mark - Pal Home
 
 // With Pal Home on, it replaces Pixel Pals: Settings → Pixel Pals opens it

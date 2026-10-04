@@ -70,6 +70,11 @@ typedef NS_ENUM(NSInteger, APPalMode) { APPalIdle, APPalWalking, APPalSleeping, 
 @property (nonatomic, strong, nullable) SKNode *movingInSign;
 @property (nonatomic, copy, nullable) NSString *palBedUID;
 @property (nonatomic, copy, nullable) NSString *heistUID; // the goose is carrying this item
+@property (nonatomic, copy, readwrite, nullable) NSString *toy;  // "ball" / "wand" while a game is on
+@property (nonatomic) NSInteger toyScore;
+@property (nonatomic) BOOL ballFlying;
+@property (nonatomic) CGPoint wandTile;
+@property (nonatomic) CFTimeInterval lastPounce;
 @property (nonatomic, copy, nullable) void (^playStep)(void);
 
 // Editing.
@@ -944,7 +949,7 @@ static int APCurrentMinute(void) {
 - (APPersonality)personality { return (APPersonality)self.resident.personality; }
 
 - (void)think {
-    if (self.palMode != APPalIdle || self.editing) { [self scheduleBrain]; return; }
+    if (self.palMode != APPalIdle || self.editing || self.toy) { [self scheduleBrain]; return; }
     int hour = self.renderedMinute / 60;
     BOOL sleepy = hour >= 21 || hour < 7;
     APPersonality p = self.personality;
@@ -1444,6 +1449,7 @@ static int APCurrentMinute(void) {
 }
 
 - (void)playWithResident {
+    [self stopGame];
     SKSpriteNode *pal = self.pal;
     if (!pal || self.editing) return;
     if (self.palMode == APPalSleeping) [self wakeUp];
@@ -1780,7 +1786,7 @@ static CGPoint APShellPoint(CGFloat x, CGFloat y) { return CGPointMake(x, APShel
 }
 
 - (void)reactToSpook {
-    if (!self.pal || self.editing || self.palMode == APPalSleeping || self.palMode == APPalPlaying) return;
+    if (!self.pal || self.toy || self.editing || self.palMode == APPalSleeping || self.palMode == APPalPlaying) return;
     if (self.isGhost) { [self shoutWord:@"BOO!"]; [self floatIcon:@"smallheart" count:1 color:0]; return; }
     if (self.isGoose) { [self honk]; return; }
     if (self.palMode != APPalIdle) return;
@@ -1948,6 +1954,218 @@ static SKTexture *APEyesTexture(int look) {
     }], [SKAction removeFromParent]]]];
 }
 
+#pragma mark - Toys: Beacon Ball and the Wand
+
+// Shell (top-left, y down) ↔ room node coordinates, and the floor tile under a point.
+- (CGPoint)nodePointForShell:(CGPoint)p { return CGPointMake(p.x, APShellHeight - p.y); }
+- (CGPoint)floorTileForShell:(CGPoint)p {
+    int tx = MAX(0, MIN(APCols - 1, (int)floor((p.x - APSideWall) / APTile)));
+    int ty = MAX(0, MIN(APRows - 1, (int)floor((p.y - APFloorTop) / APTile)));
+    return CGPointMake(tx, ty);
+}
+// The floor area, in shell coordinates (things land inside it).
+- (CGPoint)clampToFloor:(CGPoint)p {
+    return CGPointMake(MAX(APSideWall + 4, MIN(APShellWidth - APSideWall - 4, p.x)),
+                       MAX(APFloorTop + 6, MIN(APFloorTop + APRows * APTile - 4, p.y)));
+}
+
+- (void)beginToy:(NSString *)toy {
+    [self stopGame];
+    SKSpriteNode *pal = self.pal;
+    if (!pal || self.editing) return;
+    if (self.palMode == APPalSleeping) [self wakeUp];
+    [pal removeAllActions];
+    [self removeActionForKey:@"brain"];
+    [[self.roomNode childNodeWithName:@"yarn"] removeFromParent];
+    self.palMode = APPalIdle;
+    self.toy = toy;
+    self.toyScore = 0;
+    [self pokeToyIdle];
+}
+
+// A game ends on its own after a while without you.
+- (void)pokeToyIdle {
+    __weak typeof(self) weakSelf = self;
+    [self removeActionForKey:@"toyIdle"];
+    [self runAction:[SKAction sequence:@[[SKAction waitForDuration:25], [SKAction runBlock:^{ [weakSelf stopGame]; }]]] withKey:@"toyIdle"];
+}
+
+- (void)stopGame {
+    NSString *toy = self.toy;
+    if (!toy) return;
+    self.toy = nil;
+    self.ballFlying = NO;
+    [self removeActionForKey:@"toyIdle"];
+    for (NSString *name in @[@"beaconball", @"wand"]) {
+        SKNode *node = [self.roomNode childNodeWithName:name];
+        [node removeAllActions];
+        [node runAction:[SKAction sequence:@[[SKAction fadeOutWithDuration:0.3], [SKAction removeFromParent]]]];
+    }
+    if (self.toyScore > 0) [self floatIcon:@"smallheart" count:2 color:0];
+    [self settlePal];
+    id<ApolloPalHomeSceneDelegate> delegate = self.homeDelegate;
+    if ([delegate respondsToSelector:@selector(palHomeScene:gameEnded:score:)]) [delegate palHomeScene:self gameEnded:toy score:self.toyScore];
+}
+
+#pragma mark Beacon Ball
+
+- (void)startBallGame {
+    [self beginToy:@"ball"];
+    if (!self.toy) return;
+    APCanvas *c = APCanvasCreate(6, 6);
+    APEllipse(c, 0, 0, 6, 6, 0xE84A4A);
+    APEllipse(c, 1, 1, 3, 2, 0xF88A7A);
+    APPx(c, 1, 1, 0xFFF0E8);
+    APOutlineInside(c, 0x5A1414);
+    SKSpriteNode *ball = APSprite(c);
+    APCanvasFree(c);
+    ball.name = @"beaconball";
+    ball.anchorPoint = CGPointMake(0.5, 0);
+    ball.position = CGPointMake(self.pal.position.x + 14, self.pal.position.y);
+    ball.zPosition = self.pal.zPosition + 0.2;
+    [self.roomNode addChild:ball];
+    [self announce:@"Beacon Ball! Tap anywhere in the room to throw it."];
+    [self chaseBall];
+}
+
+// The ball arcs to a point (shell coordinates), bounces once, then the Pal goes after it.
+- (void)throwBallTo:(CGPoint)shellPoint fromPlayer:(BOOL)fromPlayer {
+    SKSpriteNode *ball = (SKSpriteNode *)[self.roomNode childNodeWithName:@"beaconball"];
+    if (!ball || ![self.toy isEqualToString:@"ball"]) return;
+    if (fromPlayer) [self pokeToyIdle];
+    [ball removeAllActions];
+    self.ballFlying = YES;
+    CGPoint from = ball.position, to = [self nodePointForShell:[self clampToFloor:shellPoint]];
+    double distance = hypot(to.x - from.x, to.y - from.y), d = MAX(0.35, MIN(0.9, distance / 110)), h = 10 + distance * 0.18;
+    SKAction *arc = [SKAction customActionWithDuration:d actionBlock:^(SKNode *node, CGFloat t) {
+        CGFloat f = t / d;
+        node.position = CGPointMake(round(from.x + (to.x - from.x) * f), round(from.y + (to.y - from.y) * f + sin(f * M_PI) * h));
+    }];
+    SKAction *bounce = [SKAction sequence:@[[SKAction moveByX:0 y:4 duration:0.08], [SKAction moveByX:0 y:-4 duration:0.08]]];
+    __weak typeof(self) weakSelf = self;
+    ball.zPosition = 960; // in the air, over everything
+    [ball runAction:[SKAction sequence:@[arc, [SKAction runBlock:^{
+        ball.zPosition = [weakSelf zForFeet:to] + 0.2;
+        APHapticPlay(APHapticTap);
+    }], bounce, [SKAction runBlock:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        strongSelf.ballFlying = NO;
+        [strongSelf chaseBall];
+    }]]]];
+}
+
+- (void)chaseBall {
+    SKSpriteNode *ball = (SKSpriteNode *)[self.roomNode childNodeWithName:@"beaconball"];
+    if (!ball || !self.pal || ![self.toy isEqualToString:@"ball"] || self.ballFlying) return;
+    CGPoint tile = [self floorTileForShell:CGPointMake(ball.position.x, APShellHeight - ball.position.y)];
+    int tx = (int)tile.x, ty = (int)tile.y;
+    if (![self.layout isWalkableTileX:tx y:ty]) [self nearestWalkableFromX:tx y:ty outX:&tx outY:&ty];
+    __weak typeof(self) weakSelf = self;
+    [self walkToX:tx y:ty run:YES completion:^{ [weakSelf bonkBall]; }];
+}
+
+// Bonk! The Pal bats it away to somewhere new, and chases it again.
+- (void)bonkBall {
+    SKSpriteNode *ball = (SKSpriteNode *)[self.roomNode childNodeWithName:@"beaconball"];
+    SKSpriteNode *pal = self.pal;
+    if (!ball || !pal || ![self.toy isEqualToString:@"ball"] || self.ballFlying) return;
+    self.toyScore++;
+    APHapticPlay(APHapticPop);
+    pal.xScale = ball.position.x < pal.position.x ? -1 : 1;
+    CGPoint p = pal.position;
+    [pal runAction:[SKAction sequence:@[[SKAction moveTo:CGPointMake(p.x, p.y + 4) duration:0.08], [SKAction moveTo:p duration:0.1]]]];
+    if (self.toyScore % 3 == 0) [self floatIcon:@"smallheart" count:1 color:0];
+    NSMutableArray *spots = [NSMutableArray array];
+    for (int y = 0; y < APRows; y++) for (int x = 0; x < APCols; x++) {
+        int d = abs(x - self.palX) + abs(y - self.palY);
+        if (d >= 2 && d <= 5 && [self.layout isWalkableTileX:x y:y]) [spots addObject:@[@(x), @(y)]];
+    }
+    if (!spots.count) return;
+    NSArray *spot = spots[arc4random_uniform((uint32_t)spots.count)];
+    CGPoint feet = [self feetForTileX:[spot[0] intValue] y:[spot[1] intValue]];
+    [self throwBallTo:CGPointMake(feet.x + 4, APShellHeight - feet.y) fromPlayer:NO];
+}
+
+#pragma mark The Wand
+
+- (void)startWandGame {
+    [self beginToy:@"wand"];
+    if (!self.toy) return;
+    APCanvas *c = APIconCanvas(@"wand");
+    SKSpriteNode *wand = APSprite(c);
+    APCanvasFree(c);
+    wand.name = @"wand";
+    wand.anchorPoint = CGPointMake(0.85, 0.85); // the star tip sits at your finger
+    wand.zPosition = 970;
+    CGPoint start = [self feetForTileX:MIN(APCols - 1, self.palX + 2) y:self.palY];
+    wand.position = CGPointMake(start.x, start.y + 18);
+    [self.roomNode addChild:wand];
+    // A slow sparkle off the tip.
+    __weak typeof(self) weakSelf = self;
+    [wand runAction:[SKAction repeatActionForever:[SKAction sequence:@[[SKAction waitForDuration:0.18], [SKAction runBlock:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        SKNode *w = [strongSelf.roomNode childNodeWithName:@"wand"];
+        if (!w) return;
+        SKSpriteNode *spark = [SKSpriteNode spriteNodeWithColor:[UIColor colorWithRed:1 green:0.93 blue:0.55 alpha:1] size:CGSizeMake(1, 1)];
+        spark.position = CGPointMake(round(w.position.x + arc4random_uniform(5) - 2.0), round(w.position.y - 1 - arc4random_uniform(3)));
+        spark.zPosition = 969;
+        [strongSelf.roomNode addChild:spark];
+        [spark runAction:[SKAction sequence:@[[SKAction group:@[[SKAction moveByX:0 y:-6 duration:0.6], [SKAction fadeOutWithDuration:0.6]]],
+                                              [SKAction removeFromParent]]]];
+    }]]]]];
+    self.wandTile = CGPointMake(-1, -1);
+    [self announce:@"The wand! Drag around the room and your Pal will chase it."];
+    [self chaseWand];
+}
+
+- (void)moveWandToShell:(CGPoint)shellPoint {
+    SKNode *wand = [self.roomNode childNodeWithName:@"wand"];
+    if (!wand) return;
+    CGPoint clamped = CGPointMake(MAX(APSideWall + 2, MIN(APShellWidth - APSideWall - 2, shellPoint.x)),
+                                  MAX(APCeiling + 4, MIN(APFloorTop + APRows * APTile - 2, shellPoint.y)));
+    wand.position = [self nodePointForShell:clamped];
+    [self pokeToyIdle];
+    [self chaseWand];
+}
+
+// Head for the floor under the wand (or the front of the wall, if it's up high).
+- (void)chaseWand {
+    SKNode *wand = [self.roomNode childNodeWithName:@"wand"];
+    if (!wand || !self.pal || ![self.toy isEqualToString:@"wand"]) return;
+    CGPoint shell = CGPointMake(wand.position.x, APShellHeight - wand.position.y + 10);
+    CGPoint tile = [self floorTileForShell:shell];
+    int tx = (int)tile.x, ty = (int)tile.y;
+    if (![self.layout isWalkableTileX:tx y:ty]) [self nearestWalkableFromX:tx y:ty outX:&tx outY:&ty];
+    if (CGPointEqualToPoint(self.wandTile, CGPointMake(tx, ty)) && self.palMode == APPalWalking) return; // already on the way
+    self.wandTile = CGPointMake(tx, ty);
+    if (tx == self.palX && ty == self.palY) { [self pounceAtWand]; return; }
+    __weak typeof(self) weakSelf = self;
+    [self walkToX:tx y:ty run:YES completion:^{ [weakSelf pounceAtWand]; }];
+}
+
+// Caught up: a leap at the sparkly end (not too often).
+- (void)pounceAtWand {
+    SKNode *wand = [self.roomNode childNodeWithName:@"wand"];
+    SKSpriteNode *pal = self.pal;
+    if (!wand || !pal || ![self.toy isEqualToString:@"wand"]) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - self.lastPounce < 0.9) return;
+    self.lastPounce = now;
+    self.toyScore++;
+    APHapticPlay(APHapticHop);
+    pal.xScale = wand.position.x < pal.position.x ? -1 : 1;
+    CGPoint p = pal.position;
+    CGFloat leap = MIN(14, MAX(5, (wand.position.y - p.y) * 0.4));
+    SKTexture *alert = [self framesForResident:self.resident action:@"alert"].firstObject;
+    SKTexture *sit = [self framesForResident:self.resident action:@"sit"].firstObject;
+    NSMutableArray *steps = [NSMutableArray array];
+    if (alert) [steps addObject:[SKAction setTexture:alert]];
+    [steps addObjectsFromArray:@[[SKAction moveTo:CGPointMake(p.x, p.y + leap) duration:0.14], [SKAction moveTo:p duration:0.16]]];
+    if (sit) [steps addObject:[SKAction setTexture:sit]];
+    [pal runAction:[SKAction sequence:steps] withKey:@"pounce"];
+    if (self.toyScore % 3 == 0) [self floatIcon:@"smallheart" count:1 color:0];
+}
+
 #pragma mark - Feeding
 
 // Supper: the Pal trots to the Food & Water bowls if there are some (or a
@@ -1955,6 +2173,7 @@ static SKTexture *APEyesTexture(int look) {
 // snack is the species' own (fish, bone, yuzu…). Stats are the store's job;
 // this is just the show.
 - (BOOL)feedResident {
+    [self stopGame];
     SKSpriteNode *pal = self.pal;
     APPlacedItem *preferred = self.feedingSpot;
     self.feedingSpot = nil;
@@ -2035,6 +2254,7 @@ static SKTexture *APEyesTexture(int look) {
 }
 
 - (void)restResident {
+    [self stopGame];
     if (!self.pal || self.editing) return;
     [self napAnnounce:YES];
 }
@@ -2135,6 +2355,7 @@ static SKTexture *APEyesTexture(int look) {
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if ([self.toy isEqualToString:@"wand"]) { [self moveWandToShell:[self shellPointForTouch:touches.anyObject]]; return; }
     if (!self.editing) return;
     CGPoint p = [self shellPointForTouch:touches.anyObject];
     APPlacedItem *hit = [self itemAtShellPoint:p];
@@ -2161,6 +2382,7 @@ static SKTexture *APEyesTexture(int look) {
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    if ([self.toy isEqualToString:@"wand"]) { [self moveWandToShell:[self shellPointForTouch:touches.anyObject]]; return; }
     if (!self.editing || !self.dragging || !self.selectedItem) return;
     APPlacedItem *item = self.selectedItem;
     CGPoint tile = [self gridPointForShellPoint:[self shellPointForTouch:touches.anyObject] spec:item.spec];
@@ -2188,6 +2410,11 @@ static SKTexture *APEyesTexture(int look) {
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (self.movingInDone) { [self finishMovingInDay]; return; }
+    if ([self.toy isEqualToString:@"wand"]) return;
+    if ([self.toy isEqualToString:@"ball"]) {
+        if (!self.ballFlying) { APHapticPlay(APHapticSelect); [self throwBallTo:[self shellPointForTouch:touches.anyObject] fromPlayer:YES]; }
+        return;
+    }
     if (self.editing) {
         APPlacedItem *item = self.selectedItem;
         if (self.dragging && self.dragMoved && item) {
@@ -2461,6 +2688,7 @@ static SKTexture *APEyesTexture(int look) {
     _editing = editing;
     [self.grid runAction:[SKAction fadeAlphaTo:editing ? 1 : 0 duration:0.2]];
     if (editing) {
+        [self stopGame];
         [self removeActionForKey:@"brain"];
         [self removeActionForKey:@"zzz"];
         [self abandonHeist];
