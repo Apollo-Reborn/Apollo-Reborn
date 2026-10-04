@@ -7,11 +7,13 @@
 #import "ApolloCommon.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDeviceDisplay.h"
+#import "ApolloAutoHideTabBar.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
 
 static char kApolloDuoRailModeKey;
+static char kApolloDuoAdaptiveBarsKey;
 static char kApolloDuoRailSavedIndicatorInsetsKey;
 
 static BOOL ApolloDuoRailDualDisplays(void) {
@@ -59,6 +61,26 @@ static int ApolloDuoRailCurrentMode(void) {
 
 int ApolloDuoCurrentMode(void) {
     return ApolloDuoRailCurrentMode();
+}
+
+BOOL ApolloDuoUsesAdaptiveBars(void) {
+    if (!IsLiquidGlass() || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]) return NO;
+    NSNumber *known = objc_getAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey);
+    if (!known) {
+        // Cache device capability rather than a visible-bar test. A hidden or
+        // temporarily detached rail must never enable bottom-bar animations.
+        BOOL duo = ApolloDuoRailCurrentMode() != ApolloDuoModePhone || ApolloDuoRailDualDisplays();
+        known = @(duo);
+        objc_setAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey, known, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return known.boolValue;
+}
+
+BOOL ApolloDuoAllowsTabBarScrollHiding(void) {
+    return !ApolloDuoUsesAdaptiveBars() ||
+        (!ApolloDuoSplitIsResizing() && ApolloDuoSplitIsUnfoldedPortrait());
 }
 
 BOOL ApolloDuoRailHasVisibleSideBar(void) {
@@ -324,4 +346,9 @@ void ApolloDuoRailSync(void) {
     if (!previous || previous.intValue != mode) {
         objc_setAssociatedObject(tabs, &kApolloDuoRailModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    if (mode != ApolloDuoModePhone &&
+        ![objc_getAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey) boolValue]) {
+        objc_setAssociatedObject(tabs, &kApolloDuoAdaptiveBarsKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    ApolloScheduleDuoBarPolicyUpdate(tabs);
 }

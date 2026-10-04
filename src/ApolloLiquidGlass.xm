@@ -738,6 +738,23 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
 %end
 
+%hook _TtC6Apollo22ApolloTabBarController
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)recognizer {
+    // Returning from tabBarPanned: is too late: a recognized Apollo pan
+    // still prevents Liquid Lens through its failure dependency. Fail only
+    // this pan while Duo uses its rail (or is changing pose), so native rail
+    // dragging can proceed. Leave enabled untouched and defer to Apollo's
+    // original policy as soon as the bottom tab bar is available again.
+    if (!ApolloDuoAllowsTabBarScrollHiding() &&
+        recognizer == ApolloObjectIvar(self, "tabBarPanGestureRecognizer")) {
+        return NO;
+    }
+    return %orig(recognizer);
+}
+
+%end
+
 %hook _UITabButton
 
 - (void)layoutSubviews {

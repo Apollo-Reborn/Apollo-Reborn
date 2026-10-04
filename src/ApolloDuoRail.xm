@@ -144,7 +144,9 @@ static BOOL sApolloDuoClampingJumpButton;
         ApolloDuoRailSync();
     } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         (void)context;
-        ApolloDuoRailSync();
+        // Let the split host finish its resize before deciding whether the
+        // resulting bottom bar can minimize again.
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloDuoRailSync(); });
     }];
 }
 

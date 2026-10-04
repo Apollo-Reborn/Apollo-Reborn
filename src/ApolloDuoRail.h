@@ -8,6 +8,14 @@ BOOL ApolloDuoRailHasVisibleSideBar(void);
 /// Live Duo mode for the app window: Phone / Closed / Open.
 int ApolloDuoCurrentMode(void);
 
+/// Stable Duo capability, independent of whether its rail is currently hidden
+/// or detached during a fold. Legacy (non-glass) app scenes return NO.
+BOOL ApolloDuoUsesAdaptiveBars(void);
+
+/// Scroll hiding/swipe navigation applies only to Duo's bottom tab bar in
+/// unfolded portrait. Other devices keep their existing policy.
+BOOL ApolloDuoAllowsTabBarScrollHiding(void);
+
 /// Refresh the cached window mode without changing UIKit's tab bar.
 void ApolloDuoRailSync(void);
 

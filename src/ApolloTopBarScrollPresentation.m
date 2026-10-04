@@ -1,13 +1,17 @@
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <math.h>
 #import <string.h>
 
 static char kApolloTopBarScrollStateKey;
+static char kApolloTopBarScrollToTopActiveKey;
+static char kApolloTopBarNativePolicyKey;
 static NSString *const ApolloTopBarScrollAnimationKey = @"apollo.topBar.scrollTranslation";
 static NSString *const ApolloTopBarScrollGenerationKey = @"apollo.topBar.generation";
 
@@ -68,7 +72,7 @@ static ApolloTopBarScrollState *ApolloTopBarState(UINavigationController *contro
 }
 
 static BOOL ApolloTopBarScrollEnabled(void) {
-    return sHideTopBarOnScroll && ApolloSupportsNativeTabBarScrollBehavior() &&
+    return !ApolloDuoUsesAdaptiveBars() && sHideTopBarOnScroll && ApolloSupportsNativeTabBarScrollBehavior() &&
         [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll];
 }
 
@@ -76,6 +80,91 @@ BOOL ApolloSubredditListIsEditing(UINavigationController *controller) {
     UIViewController *top = controller.topViewController;
     Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
     return listClass && [top isKindOfClass:listClass] && top.isEditing;
+}
+
+@interface ApolloTopBarNativePolicy : NSObject
+@property (nonatomic, strong) id originalConfiguration;
+@property (nonatomic, strong) id appliedConfiguration;
+@end
+@implementation ApolloTopBarNativePolicy
+@end
+
+static BOOL ApolloTopBarIsMainNavigation(UINavigationController *navigation) {
+    Class tabsClass = objc_getClass("_TtC6Apollo22ApolloTabBarController");
+    if (!tabsClass) return NO;
+    // Includes navigation controllers inside Duo's split columns, but not a
+    // presented composer, media viewer, or system sheet. Their native policy
+    // remains theirs even when a main tab is the presenting controller.
+    for (UIViewController *parent = navigation; parent; parent = parent.parentViewController) {
+        if ([parent isKindOfClass:tabsClass]) return YES;
+    }
+    return NO;
+}
+
+void ApolloTopBarApplyNativeScrollPolicy(UIViewController *controller,
+    UINavigationController *navigationController) {
+    if (!controller || [controller isKindOfClass:UINavigationController.class] ||
+        [controller isKindOfClass:UITabBarController.class] ||
+        [controller isKindOfClass:UISplitViewController.class]) return;
+    ApolloTopBarNativePolicy *state = objc_getAssociatedObject(controller, &kApolloTopBarNativePolicyKey);
+    BOOL duo = ApolloDuoUsesAdaptiveBars();
+    if (!duo && !state) return; // Ordinary iPhones retain their existing path.
+    UINavigationController *navigation = navigationController ?: controller.navigationController;
+    BOOL ownsPolicy = duo && ApolloTopBarIsMainNavigation(navigation) &&
+        (!controller.parentViewController || controller.parentViewController == navigation) &&
+        ![controller isKindOfClass:UIAlertController.class] &&
+        !ApolloIsSystemShareComposeController(controller);
+    if (!ownsPolicy && !state) return;
+
+    // Public iOS 27 API, resolved dynamically because device builds use the
+    // pinned iOS 26 SDK. UIBarMinimizationBehavior: Automatic=0, Never=1,
+    // OnScrollDown=2. UINavigationItem copies the configuration on assignment.
+    static SEL getConfiguration, setConfiguration, getBehavior, setBehavior;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        getConfiguration = NSSelectorFromString(@"navigationBarMinimization");
+        setConfiguration = NSSelectorFromString(@"setNavigationBarMinimization:");
+        getBehavior = NSSelectorFromString(@"minimizationBehavior");
+        setBehavior = NSSelectorFromString(@"setMinimizationBehavior:");
+    });
+    UINavigationItem *item = controller.navigationItem;
+    if (![item respondsToSelector:getConfiguration] || ![item respondsToSelector:setConfiguration]) return;
+    id configuration = ((id (*)(id, SEL))objc_msgSend)(item, getConfiguration);
+    if (!ownsPolicy) {
+        // If a configured page later moves into a modal, release only our
+        // last configuration. Do not overwrite a subsequent native change.
+        if ([configuration isEqual:state.appliedConfiguration]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(item, setConfiguration, state.originalConfiguration);
+        }
+        objc_setAssociatedObject(controller, &kApolloTopBarNativePolicyKey, nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    if (![configuration respondsToSelector:getBehavior] || ![configuration respondsToSelector:setBehavior]) return;
+    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
+    BOOL editing = listClass && [controller isKindOfClass:listClass] && controller.isEditing;
+    BOOL topJump = navigation.topViewController == controller &&
+        [objc_getAssociatedObject(navigation, &kApolloTopBarScrollToTopActiveKey) boolValue];
+    NSInteger behavior = sHideTopBarOnScroll && !editing && !topJump ? 2 : 1;
+    // This can also run after navigation layout. Reading the current public
+    // configuration makes repeats idempotent without allocating or writing
+    // UIKit state as the user scrolls. Bottom-bar progress never calls here.
+    if (((NSInteger (*)(id, SEL))objc_msgSend)(configuration, getBehavior) == behavior) return;
+    if (!state) {
+        state = [ApolloTopBarNativePolicy new];
+        state.originalConfiguration = [configuration copy];
+        objc_setAssociatedObject(controller, &kApolloTopBarNativePolicyKey, state,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    id updated = [configuration copy];
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(updated, setBehavior, behavior);
+    ((void (*)(id, SEL, id))objc_msgSend)(item, setConfiguration, updated);
+    state.appliedConfiguration = [((id (*)(id, SEL))objc_msgSend)(item, getConfiguration) copy];
+    // Keep safe-area/restoration policy and hidesSearchBarWhenScrolling as
+    // configured by UIKit and the search owner. Search-palette collapse is
+    // distinct from minimizing the navigation title and controls.
+    ApolloLog(@"[AutoHideTopBar] Duo native behavior=%ld editing=%d topJump=%d controller=%@",
+        (long)behavior, editing, topJump, NSStringFromClass(controller.class));
 }
 
 static void ApolloTopBarRestoreHeaderPart(ApolloTopBarHeaderPart *part) {
@@ -305,11 +394,15 @@ void ApolloTopBarRestoreNavigationController(UINavigationController *controller)
         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static char kApolloTopBarScrollToTopActiveKey;
-
 static void ApolloTopBarSetNavigationHidden(UINavigationController *controller, BOOL hidden,
     BOOL animated, NSString *reason) {
     if (!controller) return;
+    if (ApolloDuoUsesAdaptiveBars()) {
+        // UIKit minimizes the Duo header independently. Ignore the bottom
+        // bar's hidden progress; it must never translate the navigation bar.
+        ApolloTopBarRestoreNavigationController(controller);
+        return;
+    }
     // Done must remain visible and interactive throughout editing, including
     // reorder/index jumps that never produce a reverse scroll gesture.
     if (ApolloSubredditListIsEditing(controller)) {
@@ -375,6 +468,10 @@ void ApolloTopBarSetScrollToTopActive(UINavigationController *controller, BOOL a
     if (!controller) return;
     objc_setAssociatedObject(controller, &kApolloTopBarScrollToTopActiveKey,
         active ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (ApolloDuoUsesAdaptiveBars()) {
+        ApolloTopBarApplyNativeScrollPolicy(controller.topViewController, controller);
+        return;
+    }
     if (active) ApolloTopBarSetNavigationHidden(controller, NO, YES, @"status-bar scroll to top");
 }
 
@@ -396,6 +493,11 @@ void ApolloTopBarSetScrollHidden(UITabBarController *controller, BOOL hidden,
 }
 
 void ApolloTopBarRevalidateNavigationController(UINavigationController *controller) {
+    ApolloTopBarApplyNativeScrollPolicy(controller.topViewController, controller);
+    if (ApolloDuoUsesAdaptiveBars()) {
+        ApolloTopBarRestoreNavigationController(controller);
+        return;
+    }
     ApolloTopBarScrollState *state = ApolloTopBarState(controller);
     if (!state) return;
     UINavigationBar *bar = controller.navigationBar;
