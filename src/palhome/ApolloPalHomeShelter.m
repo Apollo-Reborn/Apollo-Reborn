@@ -44,6 +44,8 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
         @"butterfly": @[@"Flutters", @"Pixie", @"Confetti", @"Marmalade", @"Twinkle", @"Petal"],
         @"trex": @[@"Rexy", @"Tiny Arms", @"Chomp", @"Dino Mite", @"Pebbles", @"Sir Roars"],
         @"capybara": @[@"Capy Barry", @"Chill Bill", @"Sir Soaks", @"Yuzu", @"Hot Tub Tim", @"Potato", @"Okay I Pull Up", @"Mellow"],
+        @"ghost": @[@"Boo Radley", @"Sheet Happens", @"Casper Jr.", @"Wisp", @"Ghostface Chillah", @"Booberry", @"Mr. Boo", @"Spooky Steve"],
+        @"goose": @[@"Honkers", @"Untitled", @"Goosifer", @"Sir Honksalot", @"Loose Goose", @"Mother Goose", @"Gary", @"Peace Was Never An Option"],
     };
     return names[species] ?: @[@"Buddy"];
 }
@@ -83,6 +85,16 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
         [quirks addObject:@"Has never once been in a hurry."];
         [quirks addObject:@"Unbothered. Moisturised. Thriving."];
     }
+    if ([species isEqualToString:@"ghost"]) {
+        [quirks addObject:@"Walks through walls. Literally."];
+        [quirks addObject:@"Says boo. Means hello."];
+        [quirks addObject:@"A little scared of the living."];
+    }
+    if ([species isEqualToString:@"goose"]) {
+        [quirks addObject:@"Has stolen your keys. Twice."];
+        [quirks addObject:@"Honks at the toaster."];
+        [quirks addObject:@"Rearranges the furniture. Without asking."];
+    }
     return quirks;
 }
 
@@ -121,6 +133,11 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
         static const APPersonality calm[] = {APPersonalityGentleSoul, APPersonalityNapper, APPersonalityCouchPotato,
                                              APPersonalityGentleSoul, APPersonalityFireGazer, APPersonalityVelcro};
         a.personality = calm[a.personality % 6];
+    } else if ([species isEqualToString:@"goose"]) {
+        // Mostly menace.
+        static const APPersonality menace[] = {APPersonalityChaosGremlin, APPersonalitySnackBandit, APPersonalityDramaQueen,
+                                               APPersonalityChaosGremlin, APPersonalityZoomies, APPersonalityVelcro};
+        a.personality = menace[a.personality % 6];
     }
     NSArray *quirks = [self quirksForSpecies:species];
     a.quirk = quirks[APSRInt(r, (int)quirks.count)];
@@ -134,7 +151,11 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
     NSInteger day = (NSInteger)floor(NSDate.date.timeIntervalSinceReferenceDate / 86400.0);
     APShelterRand r = {APShelterHash([NSString stringWithFormat:@"shelter-%ld", (long)day])};
     NSMutableArray *pool = [NSMutableArray array];
-    for (NSString *species in [self allSpecies]) if (![owned containsObject:species]) [pool addObject:species];
+    // Seasonal species (the October ghost) only turn up in their month.
+    NSInteger month = [NSCalendar.currentCalendar component:NSCalendarUnitMonth fromDate:NSDate.date];
+    for (NSString *species in [self allSpecies]) {
+        if (![owned containsObject:species] && [[APSpecies speciesWithID:species] isInSeasonForMonth:month]) [pool addObject:species];
+    }
     for (NSUInteger i = pool.count; i > 1; i--) [pool exchangeObjectAtIndex:i - 1 withObjectAtIndex:(NSUInteger)APSRInt(&r, (int)i)];
     // Reborn species are always in (and at the front): they're why you came.
     NSMutableArray *featured = [NSMutableArray array];
@@ -142,7 +163,7 @@ static int APSRInt(APShelterRand *r, int n) { return n > 0 ? (int)(APSRNext(r) %
     [pool removeObjectsInArray:featured];
     [pool insertObjects:featured atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, featured.count)]];
     NSMutableArray *animals = [NSMutableArray array];
-    for (NSString *species in [pool subarrayWithRange:NSMakeRange(0, MIN(pool.count, 8))]) {
+    for (NSString *species in [pool subarrayWithRange:NSMakeRange(0, MIN(pool.count, 16))]) {
         [animals addObject:[self animalForSpecies:species rand:&r]];
     }
     return animals;

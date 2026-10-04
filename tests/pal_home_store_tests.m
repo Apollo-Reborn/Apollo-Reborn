@@ -119,7 +119,9 @@ int main(void) {
             store = [[ApolloPalHomeStore alloc] initWithDefaults:owned nativeDefaults:native];
             Check(store.household.count == 1 && !store.shelterSeen, @"household before adoption");
             NSArray *roster = [APShelter animalsExcludingSpecies:[NSSet setWithObject:@"dog"]];
-            Check(roster.count == 8 && ![[roster valueForKey:@"species"] containsObject:@"dog"], @"roster skips owned species");
+            Check(roster.count == 16 && ![[roster valueForKey:@"species"] containsObject:@"dog"], @"roster skips owned species");
+            Check([[roster.firstObject species] isEqual:@"capybara"] || [[roster.firstObject species] isEqual:@"goose"] ||
+                  [[roster.firstObject species] isEqual:@"ghost"], @"Reborn species lead the roster");
             Check([[[APShelter animalsExcludingSpecies:[NSSet set]] valueForKey:@"name"] isEqual:[[APShelter animalsExcludingSpecies:[NSSet set]] valueForKey:@"name"]], @"roster stable within a day");
             APShelterAnimal *otter = [APShelterAnimal new];
             otter.species = @"otter"; otter.coat = @"sea"; otter.name = @"Pebble"; otter.gender = @"girl";

@@ -51,6 +51,20 @@ static const APTune kTunes[] = {
         "k.h.s.h.k.s.",
         60, 36, 0.11,
     },
+    [APJingleHonk] = {
+        // A low, nasal pulse with a little upward scoop: HONK… HONK.
+        "ab-..ab--",
+        ".........",
+        "s....s...",
+        57, 33, 0.07,
+    },
+    [APJingleBoo] = {
+        // Minor and wobbly, sliding down: a friendly haunting.
+        "hjh-fd--a---",
+        "a---....a---",
+        "............",
+        64, 40, 0.12,
+    },
 };
 
 float *APJingleRender(APJingle jingle, double rate, NSUInteger *frames) {

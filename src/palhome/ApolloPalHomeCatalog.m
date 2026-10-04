@@ -127,6 +127,7 @@ APRamp APRampNamed(NSString *name) {
         APRegisterFurniture(all);
         APRegisterWallItems(all);
         APRegisterThemedItems(all);
+        APRegisterHalloweenItems(all);
         items = all;
     });
     return items;
@@ -162,6 +163,7 @@ APRamp APRampNamed(NSString *name) {
         NSMutableArray *w = [NSMutableArray array], *f = [NSMutableArray array];
         APRegisterSurfaces(w, f);
         APRegisterThemedSurfaces(w, f);
+        APRegisterHalloweenSurfaces(w, f);
         walls = w;
         floors = f;
     });
@@ -196,9 +198,17 @@ APRamp APRampNamed(NSString *name) {
     dispatch_once(&once, ^{
         NSMutableArray *all = [NSMutableArray array];
         APRegisterStyles(all);
+        [all addObject:APHalloweenManorStyle()];
         styles = all;
     });
     return styles;
+}
+
++ (NSArray<APStyleSpec *> *)stylesForDisplay {
+    NSInteger month = [NSCalendar.currentCalendar component:NSCalendarUnitMonth fromDate:NSDate.date];
+    NSMutableArray *seasonal = [NSMutableArray array], *regular = [NSMutableArray array];
+    for (APStyleSpec *style in [self styles]) [(style.season == month ? seasonal : regular) addObject:style];
+    return [seasonal arrayByAddingObjectsFromArray:regular];
 }
 
 + (APStyleSpec *)styleWithID:(NSString *)identifier {

@@ -30,6 +30,8 @@ static const APSpeciesRoles kRoles[] = {
     {"trex", "439700,449705,439601,419701,449600,419605|c6d50a,c6d508"},
     // Reborn species (ApolloRebornPalSprites draws these colours).
     {"capybara", "a47449,7a5233|c8a073|4b3121"},
+    {"ghost", "f2f2fa,c4c4dc|e8a0b4|4a3a5a"},
+    {"goose", "f4f4f0,c8c8c4|f09030,c86a1a"},
 };
 
 // Coats: species, id, title, new base per group ('-' keeps the original).
@@ -125,6 +127,17 @@ static const APCoatDef kCoats[] = {
     {"capybara", "ash", "Ash", "8a8078|bcb0a4|3a3430"},
     {"capybara", "sakura", "Sakura", "d49a96|f4d0cc|8a5058"},
     {"capybara", "yuzu", "Yuzu", "d8a438|f2d890|7a5418"},
+
+    {"ghost", "pumpkin", "Pumpkin Spice", "f2b070|-|-"},
+    {"ghost", "slime", "Slime", "a8f0a8|-|-"},
+    {"ghost", "spectral", "Spectral", "b0dcff|-|-"},
+    {"ghost", "lavender", "Lavender", "d4c0f4|-|-"},
+    {"ghost", "shadow", "Shadow", "6a6080|f04a7a|-"},
+
+    {"goose", "greylag", "Greylag", "aaa69e|-"},
+    {"goose", "toulouse", "Toulouse", "7a7670|e88a3a"},
+    {"goose", "golden", "Golden Egg", "f2d27a|-"},
+    {"goose", "midnight", "Midnight", "4a4858|f2c040"},
 };
 
 static const char *kOriginalTitles[][2] = {
@@ -133,6 +146,7 @@ static const char *kOriginalTitles[][2] = {
     {"panda", "Giant"}, {"superAI", "Sapphire"}, {"raccoon", "Grey"}, {"borzoi", "White"}, {"butterfly", "Red Admiral"},
     {"trex", "Jungle"},
     {"capybara", "Wild"},
+    {"ghost", "Bedsheet"}, {"goose", "Farmyard"},
 };
 
 @interface APCoat ()

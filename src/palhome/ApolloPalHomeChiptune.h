@@ -13,6 +13,8 @@ typedef NS_ENUM(NSInteger, APJingle) {
     APJingleYum,           // two happy blips
     APJingleHeart,         // a sparkly arpeggio
     APJingleAdopt,         // a short welcome tune
+    APJingleHonk,          // a goose: two nasal honks
+    APJingleBoo,           // a ghost: a wobbly, falling "oooOOooo"
 };
 
 // Mono samples at `sampleRate`, `*frames` long. Caller frees.

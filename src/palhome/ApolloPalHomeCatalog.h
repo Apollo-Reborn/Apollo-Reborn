@@ -58,7 +58,7 @@ typedef NS_ENUM(NSInteger, APAnimKind) {
     APAnimNotes,     // point: music notes float up
     APAnimGlow,      // point: soft additive light bloom; `size` = radius, `color`; variant 1 = slow pulse
     APAnimBlink,     // point: indicator light blinking on/off, `color`
-    APAnimBubbles,   // point: bubbles rising
+    APAnimBubbles,   // point: bubbles rising; `color` tints them (0 = water)
     APAnimFireflies, // rect: fireflies drifting inside
 };
 
@@ -130,13 +130,14 @@ typedef void (^APDrawBlock)(APDrawContext *ctx);
 
 // A whole-home theme: shell trim, the world outside, ambient tint and a
 // furnished starter layout. Applying a style replaces the room (undoable).
-typedef NS_ENUM(NSInteger, APBackdropAnim) { APBackdropAnimNone = 0, APBackdropAnimStars, APBackdropAnimBubbles, APBackdropAnimFireflies, APBackdropAnimDust };
+typedef NS_ENUM(NSInteger, APBackdropAnim) { APBackdropAnimNone = 0, APBackdropAnimStars, APBackdropAnimBubbles, APBackdropAnimFireflies, APBackdropAnimDust, APBackdropAnimBats };
 
 @interface APStyleSpec : NSObject
 @property (nonatomic, copy) NSString *identifier;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) float tintR, tintG, tintB;  // multiplies ambient light
 @property (nonatomic) APBackdropAnim backdropAnim;
+@property (nonatomic) int season; // 1-12: leads the styles list that month (0 = always where it is)
 @property (nonatomic, copy, nullable) void (^paintShell)(APCanvas *c);              // repaints trim over the base shell
 @property (nonatomic, copy, nullable) void (^paintBackdrop)(APCanvas *c, int w, int h);
 @property (nonatomic, copy) NSDictionary *(^room)(void);                           // template room document
@@ -144,6 +145,8 @@ typedef NS_ENUM(NSInteger, APBackdropAnim) { APBackdropAnimNone = 0, APBackdropA
 
 @interface APCatalog : NSObject
 + (NSArray<APStyleSpec *> *)styles;
+// For the drawer: this month's seasonal styles first, then the rest in order.
++ (NSArray<APStyleSpec *> *)stylesForDisplay;
 + (APStyleSpec *)styleWithID:(nullable NSString *)identifier; // falls back to cottage
 + (NSArray<APItemSpec *> *)items;
 + (nullable APItemSpec *)itemWithID:(NSString *)identifier;
@@ -172,6 +175,10 @@ void APRegisterSurfaces(NSMutableArray<APSurfaceSpec *> *walls, NSMutableArray<A
 void APRegisterThemedItems(NSMutableArray<APItemSpec *> *items);
 void APRegisterThemedSurfaces(NSMutableArray<APSurfaceSpec *> *walls, NSMutableArray<APSurfaceSpec *> *floors);
 void APRegisterStyles(NSMutableArray<APStyleSpec *> *styles);
+// Halloween (ApolloPalHomeHalloween.m): the Haunted Manor and its pieces.
+void APRegisterHalloweenItems(NSMutableArray<APItemSpec *> *items);
+void APRegisterHalloweenSurfaces(NSMutableArray<APSurfaceSpec *> *walls, NSMutableArray<APSurfaceSpec *> *floors);
+APStyleSpec *APHalloweenManorStyle(void);
 // Shared pieces used by themed items.
 void APPaintingShadowRect(APCanvas *c, int x, int y, int w, int h);
 NSDictionary *APRoomItem(NSString *identifier, int x, int y, int variant);

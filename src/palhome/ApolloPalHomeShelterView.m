@@ -66,6 +66,7 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
 @interface ApolloPalHomeShelterView () <UITextFieldDelegate>
 @property (nonatomic) APShelterMode mode;
 @property (nonatomic, copy) NSArray<APShelterAnimal *> *animals;
+@property (nonatomic) NSUInteger page; // the roster shows 8 at a time
 @property (nonatomic, copy, nullable) NSString *keepName;
 @property (nonatomic, strong, nullable) APShelterAnimal *chosen;
 @property (nonatomic, copy, nullable) NSString *renameSpecies; // the resident id being renamed
@@ -106,6 +107,7 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
 
 - (void)showRoster:(NSArray<APShelterAnimal *> *)animals keepName:(NSString *)keepName {
     self.animals = animals;
+    self.page = 0;
     self.keepName = keepName;
     self.renameSpecies = nil;
     self.mode = APShelterModeRoster;
@@ -164,8 +166,10 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     APCanvas *icn = APIconCanvas(icon);
     int tw = APTextWidth(word.uppercaseString, APFontSmall);
     APCanvas *content = APCanvasCreate(icn->w + 3 + tw, MAX(icn->h, 6));
-    APDraw(content, icn, 0, (content->h - icn->h) / 2, NO);
-    APTextShadow(content, word.uppercaseString, icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
+    // Forward arrows trail the word ("MORE ▸"); everything else leads.
+    BOOL trailing = [icon isEqualToString:@"next"];
+    APDraw(content, icn, trailing ? tw + 3 : 0, (content->h - icn->h) / 2, NO);
+    APTextShadow(content, word.uppercaseString, trailing ? 0 : icn->w + 3, (content->h - 6) / 2, APFontSmall, APChromeCurrent().text, APChromeCurrent().shadow);
     ApolloPixelButton *button = [[ApolloPixelButton alloc] initWithIcon:@"" accessibilityLabel:word];
     button.iconName = nil;
     button.content = [APCanvasBox boxWithCanvas:content];
@@ -228,9 +232,23 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     [self positionPanel];
 }
 
+static const NSUInteger kRosterPageSize = 8;
+
+- (NSUInteger)pageCount { return MAX(1, (self.animals.count + kRosterPageSize - 1) / kRosterPageSize); }
+
+- (void)nextPage {
+    self.page = (self.page + 1) % self.pageCount;
+    [self rebuild];
+    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, self.panel);
+}
+
 - (void)buildRoster {
     int W = self.panelWidth, cardW = (W - 12 - 3) / 2, cardH = 36, gap = 3;
-    int rows = MAX(1, ((int)self.animals.count + 1) / 2);
+    // Two pages of eight: Reborn species lead the first. Both pages are laid
+    // out at full height so the panel doesn't jump when paging.
+    self.page = MIN(self.page, self.pageCount - 1);
+    NSUInteger first = self.page * kRosterPageSize, shown = MIN(kRosterPageSize, self.animals.count - MIN(first, self.animals.count));
+    int rows = MAX(1, (int)(self.pageCount > 1 ? kRosterPageSize : shown + 1) / 2);
     // Pals you said goodbye to get their own row up top, so it's always there.
     BOOL oldFriends = self.rehomed.count > 0;
     int gridY = 24 + (oldFriends ? 19 : 0), H = gridY + rows * cardH + (rows - 1) * gap + 26;
@@ -250,7 +268,8 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
     if (!self.animals.count) {
         [self centerLabel:[self label:@"Everyone found a home!" font:APFontSmall role:2 max:W - 8] y:gridY + 14 width:W];
     }
-    for (NSUInteger i = 0; i < self.animals.count; i++) {
+    for (NSUInteger slot = 0; slot < shown; slot++) {
+        NSUInteger i = first + slot;
         APShelterAnimal *a = self.animals[i];
         APCanvas *content = APCanvasCreate(cardW - 4, cardH - 5);
         APCanvas *sprite = APPalSpriteCanvas(a.species, a.coat, @"sit", 0);
@@ -287,12 +306,20 @@ typedef NS_ENUM(NSInteger, APShelterMode) { APShelterModeRoster, APShelterModeMe
         if (isNew) card.accessibilityValue = [@"New species. " stringByAppendingString:card.accessibilityValue];
         card.accessibilityHint = @"Meet them.";
         [card addTarget:self action:@selector(meet:) forControlEvents:UIControlEventTouchUpInside];
-        [self place:card x:6 + (int)(i % 2) * (cardW + gap) y:gridY + (int)(i / 2) * (cardH + gap)];
+        [self place:card x:6 + (int)(slot % 2) * (cardW + gap) y:gridY + (int)(slot / 2) * (cardH + gap)];
     }
     int footY = H - 21;
     ApolloPixelButton *close = self.keepName ? [self wordButton:@"back" word:[NSString stringWithFormat:@"Keep %@", self.keepName] action:@selector(close)]
                                              : [self wordButton:@"back" word:@"Maybe later" action:@selector(close)];
-    if (close.tileWidth > W - 12) close = [self wordButton:@"back" word:@"Not now" action:@selector(close)];
+    ApolloPixelButton *more = nil;
+    if (self.pageCount > 1) {
+        more = self.page + 1 < self.pageCount ? [self wordButton:@"next" word:@"More" action:@selector(nextPage)]
+                                              : [self wordButton:@"back" word:@"First page" action:@selector(nextPage)];
+        more.accessibilityValue = [NSString stringWithFormat:@"Page %lu of %lu", (unsigned long)self.page + 1, (unsigned long)self.pageCount];
+        [self place:more x:W - 6 - more.tileWidth y:footY];
+    }
+    int room = W - 12 - (more ? more.tileWidth + 3 : 0);
+    if (close.tileWidth > room) close = [self wordButton:@"back" word:@"Not now" action:@selector(close)];
     [self place:close x:6 y:footY];
 }
 

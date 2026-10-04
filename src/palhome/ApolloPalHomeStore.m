@@ -911,6 +911,9 @@ static void ApolloPalHomeNotifyApollo(void) {
 }
 
 + (NSDictionary<NSString *, NSString *> *)islandChannel {
+    // Reborn species are a Pal Home thing: in Classic, Apollo's island never
+    // draws a guest, even if a channel was somehow left behind.
+    if (!self.isPalHomeEnabled) return nil;
     @synchronized (APIslandChannelLock()) {
         if (sIslandChannelLoaded) return sIslandChannel;
         sIslandChannelLoaded = YES;

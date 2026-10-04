@@ -22,13 +22,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, getter=isReborn) BOOL reborn;
 @property (nonatomic, readonly) double weightInLbs;
 @property (nonatomic, readonly) BOOL genderless;
-// Thought-bubble snack: "t.bone", "t.fish", "t.yuzu".
+// Thought-bubble snack: "t.bone", "t.fish", "t.yuzu", "t.candy", "t.greens".
 @property (nonatomic, copy, readonly) NSString *snackThought;
 // Apollo's per-species weight gain per meal multiplier (Hopper: table at
 // 0x100ac0da8, used by the feed handler sub_10004fd34).
 @property (nonatomic, readonly) double feedWeightFactor;
 // "Kitten", "Puppy"… for the very young; nil to use months.
 @property (nonatomic, copy, readonly, nullable) NSString *babyWord;
+// 1-12: only offered at the shelter in that month (the October ghost); 0 =
+// always. Pals already adopted stay all year.
+@property (nonatomic, readonly) int season;
+- (BOOL)isInSeasonForMonth:(NSInteger)month;
 
 + (NSArray<APSpecies *> *)all;
 + (nullable APSpecies *)speciesWithID:(nullable NSString *)identifier;

@@ -17,6 +17,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Furniture asked for care (the bowls: "feed", the yarn basket: "play"), so
 // it goes through the same rules as the toolbar buttons.
 - (void)palHomeScene:(ApolloPalHomeScene *)scene wantsCare:(NSString *)action;
+// A species moment wants a sting (APJingle): the goose's honk, the ghost's boo.
+- (void)palHomeScene:(ApolloPalHomeScene *)scene wantsJingle:(NSInteger)jingle;
 @end
 
 // The room, drawn at true art resolution: one scene unit = one art pixel. The
@@ -43,7 +45,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Interactions.
 - (void)petResident;
 - (void)playWithResident;
-- (void)feedResident;
+// The Pal goes to eat: at `feedingSpot` if set (cleared afterwards), else the
+// Food & Water bowls, else a candy bowl, else a dish appears. Returns YES when
+// it's a treat from the candy bowl (trick or treat!).
+- (BOOL)feedResident;
+@property (nonatomic, weak, nullable) APPlacedItem *feedingSpot;
 - (void)restResident;
 // A new (or newly chosen) Pal trots in from the door with hearts.
 - (void)welcomeHome;

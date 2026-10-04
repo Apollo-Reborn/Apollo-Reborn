@@ -53,7 +53,7 @@ int main(int argc, const char *argv[]) {
         // Every home style's template, at evening light, side by side.
         NSArray<APStyleSpec *> *styles = [APCatalog styles];
         int fw = APShellWidth + 12, fh = APShellHeight + 44;
-        APCanvas *gallery = APCanvasCreate(fw * 4, fh * 2);
+        APCanvas *gallery = APCanvasCreate(fw * 5, fh * 2);
         for (NSUInteger i = 0; i < styles.count; i++) {
             NSDictionary *room = styles[i].room();
             APRoomLayout *layout = [APRoomLayout layoutWithRoom:room];
@@ -63,7 +63,7 @@ int main(int argc, const char *argv[]) {
             APDraw(gallery, c, (int)(i % 4) * fw, (int)(i / 4) * fh, NO);
             APCanvasFree(c);
             APCanvas *thumb = APStyleThumbnail(styles[i]);
-            APDraw(gallery, thumb, 3 * fw + (int)(i % 3) * 40 + 4, fh + 10 + (int)(i / 3) * 52, NO);
+            APDraw(gallery, thumb, 4 * fw + (int)(i % 3) * 40 + 4, 10 + (int)(i / 3) * 52, NO);
             APCanvasFree(thumb);
         }
         WritePNG(gallery, 3, [out stringByAppendingPathComponent:@"styles.png"]);

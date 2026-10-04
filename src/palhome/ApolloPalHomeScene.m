@@ -7,6 +7,7 @@
 #import "ApolloPalHomeShelterView.h"
 #import "ApolloPalSpecies.h"
 #import "ApolloRebornPalSprites.h"
+#import "ApolloPalHomeChiptune.h"
 #if __has_include("ApolloCommon.h")
 #import "ApolloCommon.h"
 #define APDebugLog(...) ApolloLog(__VA_ARGS__)
@@ -67,6 +68,7 @@ typedef NS_ENUM(NSInteger, APPalMode) { APPalIdle, APPalWalking, APPalSleeping, 
 @property (nonatomic, copy, nullable) void (^movingInDone)(void);
 @property (nonatomic, strong, nullable) SKNode *movingInSign;
 @property (nonatomic, copy, nullable) NSString *palBedUID;
+@property (nonatomic, copy, nullable) NSString *heistUID; // the goose is carrying this item
 @property (nonatomic, copy, nullable) void (^playStep)(void);
 
 // Editing.
@@ -243,6 +245,46 @@ static int APCurrentMinute(void) {
         [backdrop runAction:[SKAction repeatActionForever:[SKAction sequence:@[spawn, [SKAction waitForDuration:bubbles ? 0.35 : 0.6]]]]];
     } else if (kind == APBackdropAnimFireflies) {
         for (int i = 0; i < 14; i++) [self addFireflyTo:backdrop inRect:CGRectMake(0, 0, size.width, size.height) color:0xE8F06A];
+    } else if (kind == APBackdropAnimBats) {
+        // A few faint stars, and every so often a bat flaps past the moon.
+        for (int i = 0; i < 10; i++) {
+            SKSpriteNode *star = [SKSpriteNode spriteNodeWithColor:APUIColor(0xD8C8F0) size:CGSizeMake(1, 1)];
+            star.anchorPoint = CGPointZero;
+            star.position = CGPointMake(arc4random_uniform((uint32_t)size.width), size.height / 2 + arc4random_uniform((uint32_t)(size.height / 2)));
+            star.alpha = 0.2;
+            [backdrop addChild:star];
+            NSTimeInterval period = 3 + arc4random_uniform(300) / 100.0;
+            [star runAction:[SKAction repeatActionForever:[SKAction sequence:@[[SKAction fadeAlphaTo:0.8 duration:period / 2], [SKAction fadeAlphaTo:0.2 duration:period / 2]]]]];
+        }
+        NSMutableArray<SKTexture *> *wings = [NSMutableArray array];
+        for (int frame = 0; frame < 2; frame++) {
+            APCanvas *bat = APCanvasCreate(7, 4);
+            uint32_t ink = 0x0C0612;
+            APRect(bat, 3, 1, 1, 2, ink); APPx(bat, 2, 1, ink); APPx(bat, 4, 1, ink);
+            if (frame == 0) { APPx(bat, 1, 0, ink); APPx(bat, 0, 0, ink); APPx(bat, 5, 0, ink); APPx(bat, 6, 0, ink); }
+            else { APPx(bat, 1, 2, ink); APPx(bat, 0, 3, ink); APPx(bat, 5, 2, ink); APPx(bat, 6, 3, ink); }
+            SKSpriteNode *sprite = APSprite(bat);
+            APCanvasFree(bat);
+            [wings addObject:sprite.texture];
+        }
+        SKAction *flap = [SKAction runBlock:^{
+            SKSpriteNode *parent = weakBackdrop;
+            if (!parent) return;
+            SKSpriteNode *bat = [SKSpriteNode spriteNodeWithTexture:wings[0]];
+            bat.anchorPoint = CGPointZero;
+            BOOL leftward = arc4random_uniform(2);
+            CGFloat y0 = size.height * (0.55 + arc4random_uniform(35) / 100.0), x0 = leftward ? size.width + 8 : -8, x1 = leftward ? -8 : size.width + 8;
+            NSTimeInterval d = 4 + arc4random_uniform(300) / 100.0;
+            bat.position = CGPointMake(x0, y0);
+            [parent addChild:bat];
+            [bat runAction:[SKAction repeatActionForever:[SKAction animateWithTextures:wings timePerFrame:0.12]]];
+            SKAction *fly = [SKAction customActionWithDuration:d actionBlock:^(SKNode *node, CGFloat t) {
+                CGFloat f = t / d;
+                node.position = CGPointMake(round(x0 + (x1 - x0) * f), round(y0 + sin(t * 5) * 2 + sin(t * 1.3) * 4));
+            }];
+            [bat runAction:[SKAction sequence:@[fly, [SKAction removeFromParent]]]];
+        }];
+        [backdrop runAction:[SKAction repeatActionForever:[SKAction sequence:@[[SKAction waitForDuration:6 withRange:8], flap]]]];
     }
 }
 
@@ -630,11 +672,12 @@ static int APCurrentMinute(void) {
         case APAnimBubbles: {
             if (still) break;
             CGPoint origin = [self localPointForItem:item x:anim.x y:anim.y w:1 h:1];
+            uint32_t tint = anim.color ?: 0xC8F0F8;
             __weak SKNode *weakContainer = container;
             SKAction *spawn = [SKAction runBlock:^{
                 SKNode *parent = weakContainer;
                 if (!parent) return;
-                SKSpriteNode *bubble = [SKSpriteNode spriteNodeWithColor:APUIColor(0xC8F0F8) size:CGSizeMake(1, 1)];
+                SKSpriteNode *bubble = [SKSpriteNode spriteNodeWithColor:APUIColor(tint) size:CGSizeMake(1, 1)];
                 bubble.anchorPoint = CGPointZero;
                 bubble.alpha = 0.8;
                 bubble.position = origin;
@@ -811,6 +854,13 @@ static int APCurrentMinute(void) {
     [self.layout lightAtX:(int)feet.x y:(int)(APShellHeight - feet.y - 6) r:&r g:&g b:&b];
     self.pal.color = [UIColor colorWithRed:MIN(1, r) green:MIN(1, g) blue:MIN(1, b) alpha:1];
     self.pal.colorBlendFactor = 1;
+    if (self.isGhost) {
+        // Ghosts make their own light: barely shaded at night, with a halo.
+        BOOL night = [self isNight];
+        self.pal.colorBlendFactor = night ? 0.15 : 0.6;
+        [self.pal childNodeWithName:@"halo"].alpha = night ? 0.55 : 0;
+        if (!self.editing && ![self.pal actionForKey:@"fade"]) self.pal.alpha = [self palOpacity];
+    }
 }
 
 - (void)buildPalKeepingPosition:(BOOL)keep {
@@ -830,7 +880,8 @@ static int APCurrentMinute(void) {
         [self nearestWalkableFromX:x y:y outX:&x outY:&y];
         self.palX = x; self.palY = y;
     }
-    self.pal.alpha = self.editing ? 0 : 1;
+    self.pal.alpha = self.editing ? 0 : [self palOpacity];
+    [self dressSpeciesPal];
     if (keep && self.palMode == APPalSleeping && [self.layout itemWithUID:self.palBedUID ?: @""]) {
         [self sleepInBed:[self.layout itemWithUID:self.palBedUID] announce:NO];
     } else {
@@ -856,6 +907,7 @@ static int APCurrentMinute(void) {
     self.palMode = APPalIdle;
     self.palBedUID = nil;
     self.playStep = nil;
+    [self abandonHeist];
     pal.position = [self feetForTileX:self.palX y:self.palY];
     pal.zPosition = [self zForFeet:pal.position];
     pal.texture = [self framesForResident:self.resident action:@"sit"].firstObject;
@@ -889,12 +941,14 @@ static int APCurrentMinute(void) {
     float amble = 25 * (p == APPersonalityChaosGremlin ? 2.5f : p == APPersonalityZoomies ? 2 : p == APPersonalityGentleSoul ? 0.6f : p == APPersonalityCouchPotato ? 0.5f : 1);
     float zoom = p == APPersonalityZoomies || p == APPersonalityChaosGremlin ? 6 : 0;
     float rest = 15 * (p == APPersonalityGentleSoul ? 2 : p == APPersonalityChaosGremlin ? 0.2f : 1);
-    float weights[] = {nap, fire, perch, window, thought, amble, zoom, rest};
+    float heist = self.isGoose && !self.readOnly ? 7 * (p == APPersonalityChaosGremlin ? 2 : 1) : 0;
+    float weights[] = {nap, fire, perch, window, thought, amble, zoom, rest, heist};
+    int count = (int)(sizeof(weights) / sizeof(weights[0]));
     float total = 0;
-    for (int i = 0; i < 8; i++) total += weights[i];
+    for (int i = 0; i < count; i++) total += weights[i];
     float pick = arc4random_uniform(10000) / 10000.0f * total;
     int choice = 0;
-    for (; choice < 7; choice++) { if (pick < weights[choice]) break; pick -= weights[choice]; }
+    for (; choice < count - 1; choice++) { if (pick < weights[choice]) break; pick -= weights[choice]; }
     switch (choice) {
         case 0: if (self.layout.petBeds.count) { [self napAnnounce:NO]; return; } break;
         case 1: if ([self warmByFire]) return; break;
@@ -903,6 +957,7 @@ static int APCurrentMinute(void) {
         case 4: [self showThought:[self thoughtForRoom]]; [self scheduleBrain]; return;
         case 5: if ([self ambleRunning:p == APPersonalityChaosGremlin]) return; break;
         case 6: if ([self ambleRunning:YES]) return; break;
+        case 8: if ([self gooseHeist]) return; break;
         default: break;
     }
     [self scheduleBrain];
@@ -996,6 +1051,7 @@ static int APCurrentMinute(void) {
 // Breadth-first path over walkable tiles.
 - (NSArray<NSValue *> *)pathFromX:(int)sx y:(int)sy toX:(int)tx y:(int)ty {
     if (![self.layout isWalkableTileX:tx y:ty]) return nil;
+    BOOL ghost = self.isGhost;
     int prev[APCols * APRows];
     for (int i = 0; i < APCols * APRows; i++) prev[i] = -2;
     int queue[APCols * APRows], head = 0, tail = 0;
@@ -1009,7 +1065,9 @@ static int APCurrentMinute(void) {
         int dirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         for (int d = 0; d < 4; d++) {
             int nx = cx + dirs[d][0], ny = cy + dirs[d][1];
-            if (![self.layout isWalkableTileX:nx y:ny]) continue;
+            if (nx < 0 || ny < 0 || nx >= APCols || ny >= APRows) continue;
+            // Ghosts drift straight through furniture (they still stop on a free tile).
+            if (!ghost && ![self.layout isWalkableTileX:nx y:ny]) continue;
             int n = ny * APCols + nx;
             if (prev[n] != -2) continue;
             prev[n] = cur;
@@ -1232,6 +1290,8 @@ static int APCurrentMinute(void) {
         [self announce:[NSString stringWithFormat:@"%@ wakes up with a stretch.", self.resident.name]];
         return;
     }
+    if (self.isGhost && self.palMode == APPalIdle) { [self boo]; return; }
+    if (self.isGoose && self.palMode == APPalIdle) { [self honk]; return; }
     APHapticPlay(APHapticPurr);
     if ([self stackYuzu]) return;
     [pal removeActionForKey:@"hop"];
@@ -1422,38 +1482,246 @@ static int APCurrentMinute(void) {
     self.playStep();
 }
 
+#pragma mark - Ghost and goose
+
+- (BOOL)isGhost { return [self.resident.species isEqualToString:@"ghost"]; }
+- (BOOL)isGoose { return [self.resident.species isEqualToString:@"goose"]; }
+- (BOOL)isNight { int hour = self.renderedMinute / 60; return hour >= 19 || hour < 6; }
+
+// Ghosts are see-through by day and glow at night; everyone else is solid.
+- (CGFloat)palOpacity { return self.isGhost ? ([self isNight] ? 0.95 : 0.72) : 1; }
+
+// Species extras on a freshly built Pal: the ghost's halo and float.
+- (void)dressSpeciesPal {
+    [self removeActionForKey:@"ghostbob"];
+    SKSpriteNode *pal = self.pal;
+    if (!pal || !self.isGhost) return;
+    APCanvas *halo = APCanvasCreate(24, 18);
+    for (int y = 0; y < 18; y++) for (int x = 0; x < 24; x++) {
+        float dx = (x - 11.5f) / 12, dy = (y - 8.5f) / 9, d = dx * dx + dy * dy;
+        if (d < 1 && APBayer(x, y) < (1 - d) * 0.7f) APPx(halo, x, y, 0xD8F0FF);
+    }
+    SKSpriteNode *glow = APSprite(halo);
+    APCanvasFree(halo);
+    glow.name = @"halo";
+    glow.anchorPoint = CGPointMake(0.5, 0);
+    glow.position = CGPointMake(-1, -2);
+    glow.zPosition = -0.01;
+    glow.blendMode = SKBlendModeAdd;
+    glow.alpha = 0;
+    [pal addChild:glow];
+    if (self.reducedMotion) return;
+    // A gentle float a pixel or two off the floor, whatever else it's doing
+    // (on the scene, so the Pal's own actions never cancel it).
+    __weak typeof(self) weakSelf = self;
+    [self runAction:[SKAction repeatActionForever:[SKAction customActionWithDuration:2.6 actionBlock:^(SKNode *node, CGFloat t) {
+        SKSpriteNode *ghost = weakSelf.pal;
+        CGFloat lift = round(1 + sin(t / 2.6 * 2 * M_PI));
+        ghost.anchorPoint = CGPointMake(0.5, -lift / 14.0);
+    }]] withKey:@"ghostbob"];
+}
+
+// A pixel word bubble ("BOO!", "HONK!") above the Pal.
+- (void)shoutWord:(NSString *)word {
+    SKSpriteNode *pal = self.pal;
+    if (!pal) return;
+    [[self.roomNode childNodeWithName:@"thought"] removeFromParent];
+    int tw = APTextWidth(word, APFontSmall), w = tw + 6, h = 9;
+    APCanvas *bubble = APCanvasCreate(w, h + 3);
+    APRoundRect(bubble, 0, 0, w, h, 0xFAF6EE);
+    APOutlineInside(bubble, 0x3A2A22);
+    APPx(bubble, 3, h, 0xFAF6EE); APPx(bubble, 2, h, 0x3A2A22); APPx(bubble, 4, h, 0x3A2A22); APPx(bubble, 3, h + 1, 0x3A2A22);
+    APText(bubble, word, 3, 2, APFontSmall, 0x3A2A22);
+    SKSpriteNode *node = APSprite(bubble);
+    APCanvasFree(bubble);
+    node.name = @"thought";
+    node.position = CGPointMake(round(pal.position.x + 2), pal.position.y + 13);
+    node.zPosition = 960;
+    [self.roomNode addChild:node];
+    SKAction *pop = self.reducedMotion ? [SKAction waitForDuration:0] :
+        [SKAction sequence:@[[SKAction moveByX:0 y:2 duration:0], [SKAction waitForDuration:0.08], [SKAction moveByX:0 y:-2 duration:0]]];
+    [node runAction:[SKAction sequence:@[pop, [SKAction waitForDuration:1.6], [SKAction fadeOutWithDuration:0.3], [SKAction removeFromParent]]]];
+}
+
+// The alert frame for a moment, then back to sitting.
+- (void)startle:(NSTimeInterval)duration {
+    SKSpriteNode *pal = self.pal;
+    SKTexture *alert = [self framesForResident:self.resident action:@"alert"].firstObject;
+    SKTexture *sit = [self framesForResident:self.resident action:@"sit"].firstObject;
+    if (!pal || !alert || !sit) return;
+    pal.texture = alert;
+    [pal runAction:[SKAction sequence:@[[SKAction waitForDuration:duration], [SKAction setTexture:sit]]] withKey:@"startle"];
+}
+
+- (void)playJingle:(APJingle)jingle {
+    id<ApolloPalHomeSceneDelegate> delegate = self.homeDelegate;
+    if ([delegate respondsToSelector:@selector(palHomeScene:wantsJingle:)]) [delegate palHomeScene:self wantsJingle:jingle];
+}
+
+// Pet a ghost: "BOO!" (affectionately), and the lights flicker.
+- (void)boo {
+    [self startle:0.8];
+    [self shoutWord:@"BOO!"];
+    [self playJingle:APJingleBoo];
+    APHapticPlay(APHapticThump);
+    [self floatIcon:@"smallheart" count:2 color:0];
+    if (!self.reducedMotion) {
+        SKSpriteNode *dark = [SKSpriteNode spriteNodeWithColor:APUIColor(0x0A0614) size:CGSizeMake(APShellWidth, APShellHeight)];
+        dark.anchorPoint = CGPointZero;
+        dark.zPosition = 940;
+        dark.alpha = 0;
+        [self.roomNode addChild:dark];
+        SKAction *(^flick)(CGFloat, NSTimeInterval) = ^SKAction *(CGFloat a, NSTimeInterval wait) {
+            return [SKAction sequence:@[[SKAction fadeAlphaTo:a duration:0], [SKAction waitForDuration:wait]]];
+        };
+        [dark runAction:[SKAction sequence:@[[SKAction waitForDuration:0.15], flick(0.55, 0.07), flick(0.1, 0.06), flick(0.6, 0.12),
+                                             flick(0.2, 0.05), [SKAction fadeAlphaTo:0 duration:0.25], [SKAction removeFromParent]]]];
+    }
+    [self announce:[NSString stringWithFormat:@"%@ says boo! The lights flicker.", self.resident.name]];
+}
+
+// Pet a goose: HONK.
+- (void)honk {
+    [self startle:0.6];
+    [self shoutWord:@"HONK!"];
+    [self playJingle:APJingleHonk];
+    APHapticPlay(APHapticPop);
+    [self announce:[NSString stringWithFormat:@"%@ honks. Affectionately, probably.", self.resident.name]];
+}
+
+// Geese take things. Waddle to a small piece of furniture, pick it up, carry
+// it somewhere else entirely, put it down, honk about it. The move is saved
+// (it's their house too).
+- (BOOL)gooseHeist {
+    if (self.readOnly || self.editing || self.reducedMotion || !self.pal) return NO;
+    NSMutableArray<APPlacedItem *> *loot = [NSMutableArray array];
+    for (APPlacedItem *item in self.layout.items) {
+        APItemSpec *spec = item.spec;
+        if (spec.layer != APLayerFloor || spec.w != 1 || spec.d != 1 || spec.backWall || spec.petBed) continue;
+        if ([spec.identifier isEqualToString:@"boxes"]) continue;
+        [loot addObject:item];
+    }
+    if (!loot.count) return NO;
+    APPlacedItem *item = loot[arc4random_uniform((uint32_t)loot.count)];
+    // Stand on it (walkable things) or next to it.
+    int sx = -1, sy = -1;
+    int around[5][2] = {{0, 0}, {-1, 0}, {1, 0}, {0, 1}, {0, -1}};
+    for (int i = 0; i < 5 && sx < 0; i++) {
+        int x = item.x + around[i][0], y = item.y + around[i][1];
+        if ([self.layout isWalkableTileX:x y:y] && ((x == self.palX && y == self.palY) || [self pathFromX:self.palX y:self.palY toX:x y:y])) { sx = x; sy = y; }
+    }
+    if (sx < 0) return NO;
+    // Somewhere else to leave it: a free tile it could stand on, not too near.
+    NSMutableArray *spots = [NSMutableArray array];
+    for (int y = 1; y < APRows; y++) for (int x = 0; x < APCols; x++) {
+        if (abs(x - item.x) + abs(y - item.y) < 3) continue;
+        if (![self.layout canPlace:item.spec x:x y:y ignoringUID:item.uid] || ![self.layout isWalkableTileX:x y:y]) continue;
+        if (![self pathFromX:sx y:sy toX:x y:y]) continue;
+        [spots addObject:@[@(x), @(y)]];
+    }
+    if (!spots.count) return NO;
+    NSArray *spot = spots[arc4random_uniform((uint32_t)spots.count)];
+    int dx = [spot[0] intValue], dy = [spot[1] intValue];
+    NSString *uid = item.uid, *title = item.spec.title;
+    __weak typeof(self) weakSelf = self;
+    APDebugLog(@"[PalHome] goose heist: %@ (%d,%d) -> (%d,%d)", item.spec.identifier, item.x, item.y, dx, dy);
+    [self walkToX:sx y:sy run:NO completion:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        APPlacedItem *target = [strongSelf.layout itemWithUID:uid];
+        SKNode *node = strongSelf.itemNodes[uid];
+        if (!strongSelf || !target || !node || strongSelf.editing) { [strongSelf scheduleBrain]; return; }
+        // Snatch: the piece vanishes from its spot and appears in the beak.
+        strongSelf.heistUID = uid;
+        node.hidden = YES;
+        SKSpriteNode *carried = APSprite(target.lit.canvas);
+        carried.name = @"loot";
+        carried.anchorPoint = CGPointMake(0.5, 0);
+        carried.position = CGPointMake(11, 3);
+        carried.zPosition = 0.02;
+        [strongSelf.pal addChild:carried];
+        strongSelf.pal.xScale = dx < strongSelf.palX ? -1 : dx > strongSelf.palX ? 1 : strongSelf.pal.xScale;
+        [strongSelf startle:0.4];
+        APHapticPlay(APHapticSelect);
+        [strongSelf runAction:[SKAction sequence:@[[SKAction waitForDuration:0.5], [SKAction runBlock:^{
+            __strong typeof(weakSelf) innerSelf = weakSelf;
+            if (![innerSelf.heistUID isEqualToString:uid]) return;
+            [innerSelf walkToX:dx y:dy run:YES completion:^{
+                __strong typeof(weakSelf) finalSelf = weakSelf;
+                if (![finalSelf.heistUID isEqualToString:uid]) return;
+                [[finalSelf.pal childNodeWithName:@"loot"] removeFromParent];
+                finalSelf.heistUID = nil;
+                // Step beside the spot first unless it's something to stand on,
+                // so the rebuild below keeps the goose here.
+                APItemSpec *spec = [APCatalog itemWithID:[finalSelf.layout itemWithUID:uid].spec.identifier ?: @""];
+                if (!spec.walkable) {
+                    int sides[4][2] = {{-1, 0}, {1, 0}, {0, 1}, {0, -1}};
+                    for (int i = 0; i < 4; i++) {
+                        int nx = dx + sides[i][0], ny = dy + sides[i][1];
+                        if ([finalSelf.layout isWalkableTileX:nx y:ny]) { finalSelf.palX = nx; finalSelf.palY = ny; break; }
+                    }
+                }
+                // Put it down here, for good (commitRoom rebuilds and saves).
+                [finalSelf updateRecord:uid change:^(NSMutableDictionary *record) { record[@"x"] = @(dx); record[@"y"] = @(dy); }];
+                APHapticPlay(APHapticPlace);
+                [finalSelf honk];
+                [finalSelf announce:[NSString stringWithFormat:@"%@ moved the %@. No reason given.", finalSelf.resident.name, title]];
+            }];
+        }]]] withKey:@"heist"];
+    }];
+    return YES;
+}
+
+// Interrupted mid-heist (petted, fed, decorating): drop it back where it was.
+- (void)abandonHeist {
+    if (!self.heistUID) return;
+    self.itemNodes[self.heistUID].hidden = NO;
+    [[self.pal childNodeWithName:@"loot"] removeFromParent];
+    [self removeActionForKey:@"heist"];
+    self.heistUID = nil;
+}
+
 #pragma mark - Feeding
 
 // Supper: the Pal trots to the Food & Water bowls if there are some (or a
 // dish appears beside them), crouches over it and eats, crumbs and all. The
 // snack is the species' own (fish, bone, yuzu…). Stats are the store's job;
 // this is just the show.
-- (void)feedResident {
+- (BOOL)feedResident {
     SKSpriteNode *pal = self.pal;
-    if (!pal || self.editing) return;
+    APPlacedItem *preferred = self.feedingSpot;
+    self.feedingSpot = nil;
+    if (!pal || self.editing) return NO;
     if (self.palMode == APPalSleeping) [self wakeUp];
     [pal removeAllActions];
     [self removeActionForKey:@"brain"];
     [[self.roomNode childNodeWithName:@"dish"] removeFromParent];
     APPlacedItem *bowl = nil;
-    for (APPlacedItem *item in self.layout.items) {
-        if ([item.spec.identifier isEqualToString:@"bowls"] && [self.layout isWalkableTileX:item.x y:item.y] &&
-            [self pathFromX:self.palX y:self.palY toX:item.x y:item.y]) { bowl = item; break; }
+    BOOL (^reachable)(APPlacedItem *) = ^BOOL(APPlacedItem *item) {
+        return [self.layout isWalkableTileX:item.x y:item.y] && [self pathFromX:self.palX y:self.palY toX:item.x y:item.y] != nil;
+    };
+    if (preferred && [self.layout.items containsObject:preferred] && reachable(preferred)) bowl = preferred;
+    for (NSString *kind in @[@"bowls", @"candybowl"]) {
+        for (APPlacedItem *item in self.layout.items) {
+            if (bowl) break;
+            if ([item.spec.identifier isEqualToString:kind] && reachable(item)) bowl = item;
+        }
     }
+    BOOL candy = [bowl.spec.identifier isEqualToString:@"candybowl"];
     __weak typeof(self) weakSelf = self;
     void (^eat)(void) = ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf.pal) return;
-        [strongSelf eatAtBowl:bowl != nil];
+        [strongSelf eatAtBowl:bowl != nil candy:candy];
     };
     if (bowl && !self.reducedMotion && (bowl.x != self.palX || bowl.y != self.palY)) {
         [self walkToX:bowl.x y:bowl.y run:NO completion:eat];
     } else {
         eat();
     }
+    return candy;
 }
 
-- (void)eatAtBowl:(BOOL)atBowl {
+- (void)eatAtBowl:(BOOL)atBowl candy:(BOOL)candy {
     SKSpriteNode *pal = self.pal;
     NSString *snack = [APSpecies speciesWithID:self.resident.species].snackThought ?: @"t.fish";
     BOOL facingLeft = pal.xScale < 0;
@@ -1463,8 +1731,16 @@ static int APCurrentMinute(void) {
         APRect(dish, 0, 4, 9, 2, 0xE8E4DC);
         APHLine(dish, 1, 5, 7, 0xB8B0A4);
     }
-    APCanvas *food = APIconCanvas(snack);
-    if (food) { APDraw(dish, food, (9 - food->w) / 2, MAX(0, 4 - food->h + 1), NO); APCanvasFree(food); }
+    if (candy) {
+        // A wrapped sweet: twisted ends either side.
+        uint32_t wrapper = (uint32_t[]){0xE84A5A, 0x5AB0E8, 0xF2C040, 0x9A5AE0}[arc4random_uniform(4)];
+        APRect(dish, 3, 3, 3, 3, wrapper); APPx(dish, 3, 3, APShade(wrapper, 1.3f));
+        APPx(dish, 2, 3, wrapper); APPx(dish, 1, 2, wrapper); APPx(dish, 1, 4, wrapper);
+        APPx(dish, 6, 4, wrapper); APPx(dish, 7, 3, wrapper); APPx(dish, 7, 5, wrapper);
+    } else {
+        APCanvas *food = APIconCanvas(snack);
+        if (food) { APDraw(dish, food, (9 - food->w) / 2, MAX(0, 4 - food->h + 1), NO); APCanvasFree(food); }
+    }
     SKSpriteNode *plate = APSprite(dish);
     APCanvasFree(dish);
     plate.name = @"dish";
@@ -1682,8 +1958,11 @@ static int APCurrentMinute(void) {
     id<ApolloPalHomeSceneDelegate> delegate = self.homeDelegate;
     NSString *identifier = item.spec.identifier;
     BOOL palFree = self.pal && self.palMode != APPalPlaying;
-    if ([identifier isEqualToString:@"bowls"] && self.pal && [delegate respondsToSelector:@selector(palHomeScene:wantsCare:)]) {
+    if (([identifier isEqualToString:@"bowls"] || [identifier isEqualToString:@"candybowl"]) && self.pal &&
+        [delegate respondsToSelector:@selector(palHomeScene:wantsCare:)]) {
+        self.feedingSpot = item;
         [delegate palHomeScene:self wantsCare:@"feed"];
+        self.feedingSpot = nil;
         return YES;
     }
     if ([identifier isEqualToString:@"yarn"] && self.pal && [delegate respondsToSelector:@selector(palHomeScene:wantsCare:)]) {
@@ -1900,16 +2179,16 @@ static int APCurrentMinute(void) {
     if (editing) {
         [self removeActionForKey:@"brain"];
         [self removeActionForKey:@"zzz"];
+        [self abandonHeist];
         [self.pal removeAllActions];
         [[self.roomNode childNodeWithName:@"yarn"] removeFromParent];
         // The Pal steps out while you rearrange (Animal Crossing style).
         [self.pal runAction:[SKAction fadeAlphaTo:0 duration:0.2]];
     } else {
-        [self.pal runAction:[SKAction fadeAlphaTo:1 duration:0.2]];
         [self deselect];
         // Furniture may now stand where the Pal was.
         [self settlePalAfterEdit];
-        [self.pal runAction:[SKAction fadeAlphaTo:1 duration:0.2]];
+        [self.pal runAction:[SKAction fadeAlphaTo:[self palOpacity] duration:0.2]];
     }
 }
 

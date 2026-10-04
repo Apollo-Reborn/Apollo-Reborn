@@ -598,6 +598,8 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
 // through APPalCreateSheetForUI (not hooked) so they always get exactly the
 // resident they ask for.
 static UIImage *ApolloPixelPalCoatImage(NSString *name) {
+    // Classic Pixel Pals is Apollo's own: no coats, no Reborn guests.
+    if (!ApolloPalHomeStore.isPalHomeEnabled) return nil;
     NSString *species = [APPixelPalCoats speciesForAssetName:name];
     if (!species) return nil;
     NSString *action = [name substringFromIndex:species.length + 1];

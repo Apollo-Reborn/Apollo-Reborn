@@ -11,6 +11,7 @@
 #import "ApolloIPadTabBarBottom.h"
 #import <LinkPresentation/LinkPresentation.h>
 #import "settings/ApolloSettingsShortcutsViewController.h"
+#import "settings/ApolloPalHomeSettingsViewController.h"
 
 // Gives the share sheet a real preview and title for the postcard.
 @interface ApolloPalHomePostcardItem : NSObject <UIActivityItemSource>
@@ -189,6 +190,13 @@
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    // Switched off from the Pal card's Settings: Classic it is, so step out.
+    if (!ApolloPalHomeStore.isPalHomeEnabled && self.navigationController.topViewController == self &&
+        self.navigationController.viewControllers.firstObject != self) {
+        ApolloLog(@"[PalHome] Pal Home was turned off; leaving");
+        [self.navigationController popViewControllerAnimated:YES];
+        return;
+    }
     self.visible = YES;
     // With the bar hidden UIKit stops offering the edge swipe back; keep it.
     UIGestureRecognizer *pop = self.navigationController.interactivePopGestureRecognizer;
@@ -391,13 +399,15 @@
     APCareResult result = pal ? [self.store feedResident:pal.identifier gain:&gain] : APCareUnavailable;
     switch (result) {
         case APCareDone: {
-            [self.homeScene feedResident];
+            BOOL treat = [self.homeScene feedResident];
             [self.homeScene refreshResidents:[self homeResidents]];
             [self updateFoodBadge];
             [self.ambience playJingle:APJingleYum];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ APHapticPlay(APHapticHeart); });
             NSInteger left = self.store.foodTokens;
-            [self toast:@[@"Yum! +1/4 heart", [NSString stringWithFormat:@"%@ gained %@.", pal.name, APCareWeightText(gain)],
+            [self toast:@[treat ? @"Trick or treat! +1/4 heart" : @"Yum! +1/4 heart",
+                          treat ? [NSString stringWithFormat:@"%@ picked a sweet and gained %@.", pal.name, APCareWeightText(gain)]
+                                : [NSString stringWithFormat:@"%@ gained %@.", pal.name, APCareWeightText(gain)],
                           left ? [NSString stringWithFormat:@"%ld food left", (long)left] : @"That was the last of the food."]];
             break;
         }
@@ -761,6 +771,12 @@ static NSString *APCareWeightText(double lbs) {
            : @"Your Pal is staying home.");
 }
 
+- (void)wardrobeWantsSettings:(ApolloPalHomeWardrobe *)wardrobe {
+    [self closeWardrobe];
+    UIViewController *settings = [[ApolloPalHomeSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    [self.navigationController pushViewController:settings animated:YES];
+}
+
 - (void)wardrobeWantsWidgetCode:(ApolloPalHomeWardrobe *)wardrobe {
     NSString *code = [self.store widgetCodeForResident:[self homeResident].identifier room:self.homeScene.roomDocument];
     if (!code) return;
@@ -938,6 +954,10 @@ static NSString *APCareWeightText(double lbs) {
     APChromeSetStyle(self.homeScene.layout.style.identifier);
     [self updateFoodBadge];
     [self.view setNeedsLayout];
+}
+
+- (void)palHomeScene:(ApolloPalHomeScene *)scene wantsJingle:(NSInteger)jingle {
+    [self.ambience playJingle:(APJingle)jingle];
 }
 
 - (void)palHomeScene:(ApolloPalHomeScene *)scene wantsCare:(NSString *)action {

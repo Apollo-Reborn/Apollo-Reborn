@@ -31,6 +31,13 @@
                 ApolloPalHomeStore.palHomeEnabled = YES;
                 [strongSelf reloadRowWithID:@"enabled"];
             }
+            // Opened from inside Pal Home (the Pal card's Settings): just go back.
+            NSArray *stack = strongSelf.navigationController.viewControllers;
+            NSUInteger index = [stack indexOfObject:strongSelf];
+            if (index != NSNotFound && index > 0 && [stack[index - 1] isKindOfClass:ApolloPalHomeViewController.class]) {
+                [strongSelf.navigationController popViewControllerAnimated:YES];
+                return;
+            }
             [strongSelf.navigationController pushViewController:[ApolloPalHomeViewController new] animated:YES];
         }];
     open.configure = ^(UITableViewCell *cell) {

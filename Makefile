@@ -314,6 +314,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/palhome/ApolloPalHomeFurniture.m \
     $(SRC_DIR)/palhome/ApolloPalHomeWallItems.m \
     $(SRC_DIR)/palhome/ApolloPalHomeThemedItems.m \
+    $(SRC_DIR)/palhome/ApolloPalHomeHalloween.m \
     $(SRC_DIR)/palhome/ApolloPalHomeStyles.m \
     $(SRC_DIR)/palhome/ApolloPalHomeChrome.m \
     $(SRC_DIR)/palhome/ApolloPixelPalCoats.m \

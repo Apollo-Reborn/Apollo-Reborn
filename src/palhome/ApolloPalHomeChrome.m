@@ -20,6 +20,14 @@ APChromeTheme APChromeThemeForStyle(NSString *styleID) {
         t.toggled = APRampNamed(@"gold");
         t.slot = 0x2E2A28; t.slotEdge = 0x141210; t.accent = 0xE8BE48;
         t.text = 0xF2EAD8; t.subtext = 0xC8BCA8; t.shadow = 0x141210;
+    } else if ([styleID isEqualToString:@"manor"]) {
+        // Dark carved wood, plum velvet buttons, candle-gold text.
+        t.panel = R(0x0E080C, 0x24161E, 0x34202C, 0x48303E, 0x604256);
+        t.button = R(0x160A1C, 0x3A1E4A, 0x522C66, 0x6E4084, 0x9060A8);
+        t.toggled = R(0x0E2A10, 0x1E5A22, 0x2E8A34, 0x52C05A, 0xA8F0A0); // cauldron green
+        t.slot = 0x1A0E16; t.slotEdge = 0x0A0408; t.accent = 0xF2C060;
+        t.text = 0xF4E8F0; t.subtext = 0xC8A8D8; t.shadow = 0x0A0408;
+        t.trim = 0x8A5AA8;
     } else if ([styleID isEqualToString:@"library"]) {
         t.panel = R(0x140A06, 0x2E1A10, 0x42261A, 0x5A3624, 0x784A30);
         t.button = R(0x22090A, 0x521C1A, 0x722824, 0x923A32, 0xB45848); // oxblood leather

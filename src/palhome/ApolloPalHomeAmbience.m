@@ -13,7 +13,7 @@ static NSString *const kSoundKey = @"ApolloRebornPalHomeSound";
 // Target levels for each layer (0 = off). Written on the main thread, read
 // by the render thread; plain floats are fine (a torn read is inaudible).
 typedef struct {
-    float fire, rain, wind, clock, music, hum, crickets, bubbles, room;
+    float fire, rain, wind, clock, music, hum, crickets, bubbles, owl, room;
 } APAmbienceLevels;
 
 typedef struct {
@@ -35,6 +35,8 @@ typedef struct {
     double chirpTimer; int chirpPulses; float chirpEnv, chirpPhase, chirpGate;
     // Bubbles.
     float bubbleEnv, bubblePhase, bubbleFreq, bubbleSweep;
+    // Owl.
+    double owlTimer; int owlHoots; float owlEnv, owlGate, owlPhase, owlFreq, owlBreathLP;
     // Room tone.
     float roomLP;
 } APAmbienceState;
@@ -148,6 +150,25 @@ static float APAmbienceSample(APAmbienceState *s) {
         s->bubblePhase += s->bubbleFreq * s->bubbleSweep * dt;
         out += L.bubbles * sinf(s->bubblePhase * 2 * M_PI) * s->bubbleEnv * 0.12f;
     }
+    // Owl: now and then a soft, breathy "hoo… hoo-hoo", falling slightly.
+    if (L.owl > 0.001f) {
+        s->owlTimer -= dt;
+        if (s->owlTimer <= 0) {
+            if (s->owlHoots > 0) {
+                s->owlHoots--; s->owlGate = 1; s->owlFreq = 400 - s->owlHoots * 18;
+                s->owlTimer = s->owlHoots == 2 ? 0.7 : 0.36; // a long first hoo, then a quick pair
+            } else {
+                s->owlHoots = 3; s->owlGate = 0; s->owlTimer = 12 + APUnit(s) * 18;
+            }
+        }
+        if (s->owlTimer < 0.12) s->owlGate = 0;
+        s->owlEnv += ((s->owlGate > 0 ? 1.0f : 0.0f) - s->owlEnv) * (s->owlGate > 0 ? 0.0009f : 0.0004f);
+        s->owlFreq *= 1.0f - 0.08f * dt; // a little droop through each hoo
+        s->owlPhase += s->owlFreq * dt;
+        s->owlBreathLP += (w - s->owlBreathLP) * 0.05f;
+        float tone = sinf(s->owlPhase * 2 * M_PI) + 0.15f * sinf(s->owlPhase * 4 * M_PI);
+        out += L.owl * s->owlEnv * (tone * 0.06f + s->owlBreathLP * 0.05f);
+    }
     // Room tone: a breath of warm noise under everything.
     if (L.room > 0.001f) {
         s->roomLP += (w - s->roomLP) * 0.01f;
@@ -248,6 +269,7 @@ static float APAmbienceSample(APAmbienceState *s) {
     if ([style isEqual:@"space"]) levels.hum = 1;
     if ([style isEqual:@"underwater"]) { levels.bubbles = MAX(levels.bubbles, 0.8f); levels.room = 0.9f; }
     if ([style isEqual:@"castle"]) levels.wind = MAX(levels.wind, 0.45f);
+    if ([style isEqual:@"manor"]) { levels.wind = MAX(levels.wind, 0.4f); levels.owl = night ? 1.0f : 0.5f; }
     if (([style isEqual:@"treehouse"] || [style isEqual:@"saloon"]) && night) levels.crickets = 1;
     if ([style isEqual:@"treehouse"] && !night) levels.wind = MAX(levels.wind, 0.25f);
     if (levels.room == 0) levels.room = 0.35f;
@@ -304,8 +326,8 @@ static float APAmbienceSample(APAmbienceState *s) {
     }
     self.running = YES;
     APAmbienceLevels t = self.state->target;
-    ApolloLog(@"[PalHome] ambience started %.0fHz fire=%.2f rain=%.2f wind=%.2f clock=%.2f music=%.2f hum=%.2f crickets=%.2f bubbles=%.2f",
-              self.state->sampleRate, t.fire, t.rain, t.wind, t.clock, t.music, t.hum, t.crickets, t.bubbles);
+    ApolloLog(@"[PalHome] ambience started %.0fHz fire=%.2f rain=%.2f wind=%.2f clock=%.2f music=%.2f hum=%.2f crickets=%.2f bubbles=%.2f owl=%.2f",
+              self.state->sampleRate, t.fire, t.rain, t.wind, t.clock, t.music, t.hum, t.crickets, t.bubbles, t.owl);
 }
 
 - (void)playJingle:(APJingle)jingle {

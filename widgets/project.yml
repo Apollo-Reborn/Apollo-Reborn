@@ -30,6 +30,7 @@ targets:
       - path: ../src/palhome/ApolloPalHomeFurniture.m
       - path: ../src/palhome/ApolloPalHomeWallItems.m
       - path: ../src/palhome/ApolloPalHomeThemedItems.m
+      - path: ../src/palhome/ApolloPalHomeHalloween.m
       - path: ../src/palhome/ApolloPalHomeStyles.m
       - path: ../src/palhome/ApolloPalHomeRenderer.m
       - path: ../src/palhome/ApolloPalHomeChrome.m

@@ -5,6 +5,10 @@ Animal Crossing-style pixel-art home for every Pal, with Apollo's care
 (feeding, playing, hearts, stats) on the same data.
 
 **Opt-in** (Apollo Reborn → Features → Pal Home → Use Pal Home, default off).
+The Pal card's **Settings** button opens the same switch from inside Pal Home
+(switching off there steps you back out). Reborn species, coats and the island
+channel are Pal Home only: in Classic the sprite hook and `+islandChannel` stand
+down, so Apollo's own Pixel Pals are exactly as they were.
 Off ("Classic"), Apollo's own care sheet and chooser are untouched apart from
 an occasional "Try Pal Home" card (`ApolloPalHomePrompt`; at most daily, never
 after ×). On, tapping the Pal on the Dynamic Island and Settings → Pixel Pals
@@ -58,7 +62,9 @@ on a Mac.
   are palette swaps. Everything in the catalogue is available from the start.
 
 **Styles**: Cosy Cottage, Castle Keep, Grand Library, Space Station, Wild West
-Saloon, Treehouse, Under the Sea. A style repaints the shell, the world outside
+Saloon, Treehouse, Under the Sea, and the Haunted Manor (`ApolloPalHomeHalloween`:
+purple damask, creaky boards, moonlit graveyard with bats, owl hoots and wind;
+seasonal styles lead the list in their month). A style repaints the shell, the world outside
 and the UI material. Picking one (Decorate → Styles) asks how: **Furnished**
 (its template room), **Bare room** (its walls and floor only) or **Keep my
 things** (its walls and floor around your furniture); all with Undo. **Fresh**
@@ -105,7 +111,7 @@ no bounds check), so it is never extended. Instead:
 - **Household limit**: adopting (or welcoming a Pal back) stops at
   `APHouseholdLimit` (8). It never removes anyone, so older or Classic
   households with more keep them all; the shelter says when the home is full.
-- **The shelter** (`ApolloPalHomeShelter`): a daily roster of 8 (Reborn species
+- **The shelter** (`ApolloPalHomeShelter`): a daily roster of up to 16 on two pages (Reborn species
   always featured) with a coat (fixed for life), a silly name, gender, age,
   personality and quirk. Personalities steer the idle brain.
 - **Visiting**: the household strip visits a Pal's home without changing the
@@ -118,6 +124,14 @@ no bounds check), so it is never extended. Instead:
   welcomes them back with their room and stats.
 - **Capybaras**: petting drops a yuzu on its head (up to three, "perfectly
   balanced"); they tumble off when it moves.
+- **Ghosts** (at the shelter in October only; `APSpecies.season`): float a pixel
+  or two off the floor, drift straight through furniture, are see-through by day
+  and glow at night. Petting: "BOO!" and the lights flicker.
+- **Geese**: petting honks. Left alone they steal small floor pieces (pumpkins,
+  plants, the candy bowl…) and put them down somewhere else; the move is saved.
+- **Halloween items** (October first in the catalogue): cauldron, candelabra,
+  tombstone, cobwebs (flip for the other corner), bat garland, and a candy bowl
+  that feeds like the bowls ("Trick or treat!").
 
 ## Care: Apollo's rules on Apollo's data
 

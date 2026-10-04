@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)wardrobeDidFinish:(ApolloPalHomeWardrobe *)wardrobe;
 - (void)wardrobeWantsShelter:(ApolloPalHomeWardrobe *)wardrobe;
 - (void)wardrobeWantsWidgetCode:(ApolloPalHomeWardrobe *)wardrobe;
+// Pal Home's settings screen (the on/off switch).
+- (void)wardrobeWantsSettings:(ApolloPalHomeWardrobe *)wardrobe;
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe wantsRename:(ApolloPalHomeResident *)resident;
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe switchTo:(ApolloPalHomeResident *)resident;
 - (void)wardrobeToggledIsland:(ApolloPalHomeWardrobe *)wardrobe;

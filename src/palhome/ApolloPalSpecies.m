@@ -9,6 +9,7 @@
 @property (nonatomic, copy, readwrite) NSString *snackThought;
 @property (nonatomic, copy, readwrite) NSString *babyWord;
 @property (nonatomic, readwrite) double feedWeightFactor;
+@property (nonatomic, readwrite) int season;
 @end
 
 typedef struct {
@@ -19,34 +20,40 @@ typedef struct {
     const char *snack; // thought icon: "bone", "fish", "yuzu"
     const char *baby;
     double feedWeightFactor; // Apollo's, or our own for Reborn species
+    int season;        // 1-12: only at the shelter that month (0 = always)
 } APSpeciesDef;
 
 // Apollo's 16 first, in Apollo.PixelPal's declaration order (Hopper: field
 // descriptor 0x100b46b6c), then Reborn's own.
 static const APSpeciesDef kSpecies[] = {
-    {"cat", "Cat", YES, 9, NO, "fish", "Kitten", 0.75},
-    {"dog", "Dog", YES, 25, NO, "bone", "Puppy", 1.0},
-    {"hedgehog", "Hedgehog", YES, 1, NO, "fish", "Hoglet", 0.1},
-    {"fox", "Fox", YES, 12, NO, "bone", "Kit", 0.25},
-    {"axolotl", "Axolotl", YES, 0.3, NO, "fish", NULL, 0.04},
-    {"otter", "Otter", YES, 20, NO, "fish", "Pup", 0.28},
-    {"bat", "Bat", YES, 0.1, NO, "fish", "Pup", 0.01},
-    {"parrot", "Parrot", YES, 2, NO, "fish", "Chick", 0.03},
-    {"tiger", "Tiger", YES, 300, NO, "fish", "Cub", 2.5},
-    {"platypus", "Platypus", YES, 3, NO, "fish", "Puggle", 0.16},
-    {"panda", "Panda", YES, 200, NO, "fish", "Cub", 0.25},
-    {"superAI", "Superintelligence", YES, 0, YES, "fish", NULL, 15.0},
-    {"raccoon", "Raccoon", YES, 15, NO, "fish", "Kit", 0.16},
-    {"borzoi", "Borzoi", YES, 70, NO, "bone", "Puppy", 0.95},
-    {"butterfly", "Butterfly", YES, 0.01, YES, "fish", NULL, 0.001},
-    {"trex", "T. rex", YES, 14000, NO, "bone", "Hatchling", 39.6},
+    {"cat", "Cat", YES, 9, NO, "fish", "Kitten", 0.75, 0},
+    {"dog", "Dog", YES, 25, NO, "bone", "Puppy", 1.0, 0},
+    {"hedgehog", "Hedgehog", YES, 1, NO, "fish", "Hoglet", 0.1, 0},
+    {"fox", "Fox", YES, 12, NO, "bone", "Kit", 0.25, 0},
+    {"axolotl", "Axolotl", YES, 0.3, NO, "fish", NULL, 0.04, 0},
+    {"otter", "Otter", YES, 20, NO, "fish", "Pup", 0.28, 0},
+    {"bat", "Bat", YES, 0.1, NO, "fish", "Pup", 0.01, 0},
+    {"parrot", "Parrot", YES, 2, NO, "fish", "Chick", 0.03, 0},
+    {"tiger", "Tiger", YES, 300, NO, "fish", "Cub", 2.5, 0},
+    {"platypus", "Platypus", YES, 3, NO, "fish", "Puggle", 0.16, 0},
+    {"panda", "Panda", YES, 200, NO, "fish", "Cub", 0.25, 0},
+    {"superAI", "Superintelligence", YES, 0, YES, "fish", NULL, 15.0, 0},
+    {"raccoon", "Raccoon", YES, 15, NO, "fish", "Kit", 0.16, 0},
+    {"borzoi", "Borzoi", YES, 70, NO, "bone", "Puppy", 0.95, 0},
+    {"butterfly", "Butterfly", YES, 0.01, YES, "fish", NULL, 0.001, 0},
+    {"trex", "T. rex", YES, 14000, NO, "bone", "Hatchling", 39.6, 0},
     // Reborn'd.
-    {"capybara", "Capybara", NO, 110, NO, "yuzu", "Pup", 1.2},
+    {"capybara", "Capybara", NO, 110, NO, "yuzu", "Pup", 1.2, 0},
+    // A ghost weighs 21 grams, famously.
+    {"ghost", "Ghost", NO, 0.05, YES, "candy", NULL, 0.002, 10},
+    {"goose", "Goose", NO, 10, NO, "greens", "Gosling", 0.2, 0},
 };
 
 @implementation APSpecies
 
 - (BOOL)isReborn { return self.apolloCase == nil; }
+
+- (BOOL)isInSeasonForMonth:(NSInteger)month { return self.season == 0 || self.season == month; }
 
 + (NSArray<APSpecies *> *)all {
     static NSArray *all;
@@ -63,6 +70,7 @@ static const APSpeciesDef kSpecies[] = {
             s.snackThought = [@"t." stringByAppendingString:@(kSpecies[i].snack)];
             s.babyWord = kSpecies[i].baby ? @(kSpecies[i].baby) : nil;
             s.feedWeightFactor = kSpecies[i].feedWeightFactor;
+            s.season = kSpecies[i].season;
             [list addObject:s];
         }
         all = list;

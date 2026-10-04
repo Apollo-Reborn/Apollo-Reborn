@@ -309,7 +309,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
         // Each style is a little painting of its furnished room.
         static NSMutableDictionary<NSString *, APCanvasBox *> *thumbs;
         if (!thumbs) thumbs = [NSMutableDictionary dictionary];
-        NSArray<APStyleSpec *> *styles = [APCatalog styles];
+        NSArray<APStyleSpec *> *styles = [APCatalog stylesForDisplay];
         // First: Start Fresh, the empty moving-in room.
         APCanvasBox *fresh = thumbs[@"__fresh"];
         if (!fresh) thumbs[@"__fresh"] = fresh = [APCanvasBox boxWithCanvas:APRoomThumbnail([APCatalog starterRoom])];
@@ -420,7 +420,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 }
 
 - (void)styleTapped:(ApolloPixelButton *)sender {
-    NSArray<APStyleSpec *> *styles = [APCatalog styles];
+    NSArray<APStyleSpec *> *styles = [APCatalog stylesForDisplay];
     if (sender.tag == -1) {
         for (ApolloPixelButton *cell in self.shelf.subviews) if ([cell isKindOfClass:ApolloPixelButton.class]) cell.toggled = cell == sender;
         [self.delegate drawerStartFresh:self];

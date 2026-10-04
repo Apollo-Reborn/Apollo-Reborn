@@ -121,7 +121,7 @@ static const int kWidth = 140, kPad = 6;
     int perRow = MAX(1, (kWidth - kPad * 2 + 2) / 26);
     int householdRows = household ? ((int)self.household.count - 1 + perRow - 1) / perRow : 0;
     if (household) y += 8 + householdRows * 19 - 1;
-    self.height = y + 52; // three rows of action buttons
+    self.height = y + 69; // four rows of action buttons
 
     ApolloPixelImageView *panel = [ApolloPixelImageView new];
     panel.pixelScale = p;
@@ -207,8 +207,8 @@ static const int kWidth = 140, kPad = 6;
             [self add:cell x:x y:rowY];
         }
     }
-    // Actions as words, not riddles: a 2 × 3 grid of text buttons.
-    int fy = self.height - 51, colW = (kWidth - kPad * 2 - 3) / 2;
+    // Actions as words, not riddles: a 2 × 3 grid of text buttons, then Done.
+    int fy = self.height - 68, colW = (kWidth - kPad * 2 - 3) / 2;
     ApolloPixelButton *rename = [self textButton:@"Rename" width:colW action:@selector(rename)];
     rename.accessibilityLabel = [NSString stringWithFormat:@"Rename %@", pal.name];
     ApolloPixelButton *shelter = [self textButton:@"Adopt a Pal" width:colW action:@selector(shelter)];
@@ -223,12 +223,17 @@ static const int kWidth = 140, kPad = 6;
     goodbye.accessibilityLabel = [NSString stringWithFormat:@"Say goodbye to %@", pal.name];
     goodbye.accessibilityHint = household ? @"Rehome them with a loving new family. You can bring them back from the shelter." : @"They're your only Pal.";
     goodbye.alpha = household ? 1 : 0.45;
-    ApolloPixelButton *done = [self textButton:@"Done" width:colW action:@selector(done)];
+    // The way back to Classic Pixel Pals (and the switch) lives in settings.
+    ApolloPixelButton *settings = [self textButton:@"Settings" width:colW action:@selector(settings)];
+    settings.accessibilityLabel = @"Pal Home settings";
+    settings.accessibilityHint = @"Turn Pal Home on or off. Off goes back to Apollo's Classic Pixel Pals.";
+    ApolloPixelButton *done = [self textButton:@"Done" width:colW * 2 + 3 action:@selector(done)];
     done.toggled = YES;
-    NSArray *grid = @[rename, shelter, widget, island, goodbye, done];
+    NSArray *grid = @[rename, shelter, widget, island, goodbye, settings];
     for (NSUInteger i = 0; i < grid.count; i++) {
         [self add:grid[i] x:kPad + (int)(i % 2) * (colW + 3) y:fy + (int)(i / 2) * 17];
     }
+    [self add:done x:kPad y:fy + 3 * 17];
     self.bounds = CGRectMake(0, 0, kWidth * p, self.height * p);
 }
 
@@ -256,6 +261,10 @@ static NSString *APWardrobeDistance(double km) {
 - (void)widget { [self.delegate wardrobeWantsWidgetCode:self]; }
 - (void)done { [self.delegate wardrobeDidFinish:self]; }
 - (void)island { [self.delegate wardrobeToggledIsland:self]; }
+- (void)settings {
+    [self.delegate wardrobeWantsSettings:self];
+}
+
 - (ApolloPixelButton *)textButton:(NSString *)word width:(int)width action:(SEL)action {
     NSString *text = word.uppercaseString;
     APCanvas *content = APCanvasCreate(MIN(APTextWidth(text, APFontSmall), width - 6), 6);

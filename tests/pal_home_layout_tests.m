@@ -3,6 +3,9 @@
 #import <Foundation/Foundation.h>
 #import "palhome/ApolloPalHomeRenderer.h"
 #import "palhome/ApolloPalHomeWidgetRenderer.h"
+#import "palhome/ApolloRebornPalSprites.h"
+#import "palhome/ApolloPalSpecies.h"
+#import "palhome/ApolloPixelPalCoats.h"
 
 static int failures = 0;
 static void Check(BOOL condition, NSString *message) {
@@ -115,6 +118,24 @@ int main(void) {
                 CGImageRelease(image);
             }
         }
+        // Every Reborn species has every sheet Apollo's island asks for, in
+        // its frame counts and 32×14 frames, in every coat.
+        NSDictionary *frameCounts = @{@"sit": @1, @"alert": @1, @"walk": @8, @"run": @4, @"crouch": @8, @"sleep": @2, @"lie": @24, @"lie-single": @1};
+        for (APSpecies *species in [APSpecies all]) {
+            if (!species.reborn) continue;
+            Check(APRebornHasSprites(species.identifier), [NSString stringWithFormat:@"%@ has sprites", species.identifier]);
+            NSMutableArray *coats = [@[@"original"] mutableCopy];
+            for (APCoat *coat in [APPixelPalCoats coatsForSpecies:species.identifier]) [coats addObject:coat.identifier];
+            for (NSString *action in frameCounts) for (NSString *coat in coats) {
+                CGImageRef sheet = APPalCreateSheet(species.identifier, coat, action, nil);
+                Check(sheet && CGImageGetHeight(sheet) == 14 && CGImageGetWidth(sheet) == 32 * [frameCounts[action] unsignedIntegerValue],
+                      [NSString stringWithFormat:@"%@-%@ (%@) sheet", species.identifier, action, coat]);
+                if (sheet) CGImageRelease(sheet);
+            }
+        }
+        // The ghost only haunts the shelter in October.
+        Check([[APSpecies speciesWithID:@"ghost"] isInSeasonForMonth:10] && ![[APSpecies speciesWithID:@"ghost"] isInSeasonForMonth:3] &&
+              [[APSpecies speciesWithID:@"goose"] isInSeasonForMonth:3], @"seasonal species");
         if (failures) { printf("pal_home_layout_tests: %d failure(s)\n", failures); return 1; }
         printf("pal_home_layout_tests: all scenarios passed (%d item renders)\n", rendered);
     }
