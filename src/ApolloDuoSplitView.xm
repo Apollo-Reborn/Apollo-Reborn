@@ -4,6 +4,7 @@
 // at an unfold/fold boundary. UIKit owns all column frames and transitions.
 #import "ApolloDuoSplitView.h"
 #import "ApolloMediaHinge.h"
+#import "ApolloDuoSearchRecents.h"
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoSubsChrome.h"
 #import "ApolloThemeRuntime.h"
@@ -2849,7 +2850,15 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     return result;
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
-    if (ApolloDuoSplitRoutePush(self, controller, animated)) return;
+    // Record the completed navigation request using its synchronous PostsType
+    // slug. Split replacement may lay out before window attachment and omit
+    // appearance callbacks; titles/about models can also arrive later.
+    NSString *visited = ApolloDuoSplitIsUnfolded() && ((UINavigationController *)self).viewIfLoaded.window
+        ? ApolloDuoNamedSubredditForPostsController(controller) : nil;
+    if (ApolloDuoSplitRoutePush(self, controller, animated)) {
+        if (visited.length) ApolloDuoSearchRecordVisit(visited);
+        return;
+    }
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
     if (state.split && (self == state.primary || self == state.secondary || self == state.feed)) {
         controller.extendedLayoutIncludesOpaqueBars = YES;
@@ -2858,6 +2867,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         [state.secondary setNavigationBarHidden:NO animated:NO];
     }
     %orig(controller, state.changing ? NO : animated);
+    if (visited.length) ApolloDuoSearchRecordVisit(visited);
     [state.host.viewIfLoaded setNeedsLayout];
     ApolloDuoSplitRememberSettings(self);
 }

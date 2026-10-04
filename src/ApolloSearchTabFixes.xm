@@ -61,6 +61,7 @@
 #import "ApolloCommon.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloDuoSearchLandingViewController.h"
+#import "ApolloDuoSearchRecents.h"
 #import "ApolloGoogleSearchTab.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
@@ -69,6 +70,7 @@
 
 @interface _TtC6Apollo20SearchViewController : UIViewController
 - (void)apollo_refreshTrendingSubreddits:(UIRefreshControl *)refreshControl;
+- (void)apollo_duoSearchRecentsChanged:(NSNotification *)notification;
 @end
 
 @interface ApolloSearchRefreshControl : UIRefreshControl
@@ -416,7 +418,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
 // The native table keeps owning search state, trending data and navigation.
 // Only its empty-query presentation is replaced; narrowing a split pane is
 // handled by the child controller's ordinary Auto Layout stack.
-static char kDuoSearchLanding, kDuoSearchUpdatePending, kDuoSearchPriorTopEdge, kDuoSearchTableWasHidden;
+static char kDuoSearchLanding, kDuoSearchUpdatePending, kDuoSearchPriorTopEdge, kDuoSearchTableWasHidden, kDuoSearchReplayCount;
 
 static ApolloDuoSearchLandingViewController *ApolloSearchTabDuoLanding(UIViewController *vc) {
     return objc_getAssociatedObject(vc, &kDuoSearchLanding);
@@ -467,6 +469,28 @@ static void ApolloSearchTabOpenDuoSubreddit(UIViewController *vc, NSString *name
         [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:2]];
         return;
     }
+
+    // Search's section-2 delegate synchronously reads a Swift string, creates
+    // PostsType.subreddit, then pushes on its own navigation controller (Apollo
+    // 1.15.11: 0x1002b6238–0x1002b638c). It has no ObjC name-based initializer.
+    // Replay that native route for a recent item. Keep the native row count
+    // stable during synchronous navigation/layout reentry, and invalidate any
+    // cells materialized during the replay after restoring the exact model.
+    // The global URL router would take the user out of the Search tab.
+    void *storage = ApolloSearchTabTrendingStorage(vc);
+    if (!storage) return;
+    NSMutableArray<NSString *> *selectionModel = trending ? [trending mutableCopy] : [NSMutableArray array];
+    if (selectionModel.count) selectionModel[0] = name;
+    else [selectionModel addObject:name];
+    objc_setAssociatedObject(vc, &kDuoSearchReplayCount, @(trending.count), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try {
+        ApolloSwiftAssignOptionalStringArray(storage, (__bridge const void *)selectionModel);
+        [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:2]];
+    } @finally {
+        ApolloSwiftAssignOptionalStringArray(storage, (__bridge const void *)trending);
+        objc_setAssociatedObject(vc, &kDuoSearchReplayCount, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [table reloadData];
+    }
 }
 
 static void ApolloSearchTabUpdateDuoLanding(UIViewController *vc) {
@@ -503,10 +527,12 @@ static void ApolloSearchTabUpdateDuoLanding(UIViewController *vc) {
         [vc.view addSubview:landing.view];
         [landing didMoveToParentViewController:vc];
         objc_setAssociatedObject(vc, &kDuoSearchLanding, landing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [NSNotificationCenter.defaultCenter addObserver:vc selector:@selector(apollo_duoSearchRecentsChanged:)
+            name:ApolloDuoSearchRecentsDidChangeNotification object:nil];
     }
     if (show && landing) {
         [landing updateTrending:ApolloSearchTabCopyTrending(vc) ?: @[]
-                         recent:@[]
+                         recent:ApolloDuoSearchRecentSubreddits()
                      randomNSFW:ApolloSearchTabRandomNSFWActive(vc) && !ApolloSearchTabRandomNSFWSuppressed(vc)];
     }
     ApolloSearchTabSetDuoVisible(vc, show);
@@ -568,6 +594,11 @@ static void ApolloSearchTabScheduleDuoUpdate(UIViewController *vc) {
     ApolloDuoSearchLandingViewController *landing = ApolloSearchTabDuoLanding(self);
     BOOL shouldShow = ApolloDuoSplitIsUnfolded() && ApolloSearchTabIsDefaultState(self);
     if (shouldShow != (landing && !landing.view.hidden)) ApolloSearchTabScheduleDuoUpdate(self);
+}
+
+%new
+- (void)apollo_duoSearchRecentsChanged:(NSNotification *)notification {
+    ApolloSearchTabScheduleDuoUpdate(self);
 }
 
 %new
@@ -663,6 +694,8 @@ static void ApolloSearchTabScheduleDuoUpdate(UIViewController *vc) {
 - (NSInteger)tableView:(UITableView *)tableView
  numberOfRowsInSection:(NSInteger)section {
     NSInteger count = %orig;
+    NSNumber *replayCount = objc_getAssociatedObject(self, &kDuoSearchReplayCount);
+    if (section == 2 && replayCount) return replayCount.integerValue;
     // Native trending arrives asynchronously and reloads section 2. Coalesce
     // its datasource callback so the landing follows the same model.
     if (section == 2 && ApolloDuoSplitIsUnfolded()) ApolloSearchTabScheduleDuoUpdate(self);
