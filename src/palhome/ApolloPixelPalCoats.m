@@ -221,6 +221,12 @@ static BOOL APNear(uint32_t a, uint32_t b) {
 
 @implementation APPixelPalCoats
 
++ (uint32_t)glowColourForSpecies:(NSString *)species coat:(NSString *)coat {
+    // Luminous coats light up whatever's around them after dark.
+    if ([species isEqualToString:@"axolotl"] && [coat isEqualToString:@"glow"]) return 0x8CF0A0;
+    return 0;
+}
+
 + (NSArray<NSArray<NSNumber *> *> *)groupsForSpecies:(NSString *)species {
     for (size_t i = 0; i < sizeof(kRoles) / sizeof(kRoles[0]); i++) {
         if (![species isEqualToString:@(kRoles[i].species)]) continue;

@@ -203,6 +203,38 @@ void APRegisterHalloweenItems(NSMutableArray<APItemSpec *> *items) {
         webs;
     })];
 
+    // A round spider web for the wall, its spider waiting in the middle
+    // (in the Haunted Manor it now and then drops down on a thread).
+    [items addObject:({
+        APItemSpec *web = APSpec(@"spiderweb", @"Spider Web", APLayerWall, APCategoryWall, 1, 1, 0, @[@"Silver", @"Glowing"], ^(APDrawContext *ctx) {
+            APCanvas *target = ctx.variant ? ctx.emissive : ctx.base;
+            uint32_t silk = ctx.variant ? 0xB8F0D8 : 0xD8D4DC;
+            int cx = 8, cy = 7;
+            // Spokes…
+            for (int k = 0; k < 8; k++) {
+                float a = k * (float)M_PI / 4 + 0.2f;
+                APLine(target, cx, cy, cx + (int)lroundf(cosf(a) * 7), cy + (int)lroundf(sinf(a) * 7), silk);
+            }
+            // …and the spiral, drawn as rings between them.
+            for (int ring = 2; ring <= 6; ring += 2) {
+                for (int s = 0; s < 32; s++) {
+                    float a = s / 32.0f * 2 * (float)M_PI;
+                    APPx(target, cx + (int)lroundf(cosf(a) * ring), cy + (int)lroundf(sinf(a) * ring * 0.9f), silk);
+                }
+            }
+            // Anchor threads to the corners of the slot.
+            APLine(target, 0, 0, cx - 5, cy - 5, silk); APLine(target, 15, 0, cx + 5, cy - 5, silk);
+            APLine(target, 2, 15, cx - 4, cy + 5, silk);
+            // The spider.
+            APRect(ctx.base, cx - 1, cy - 1, 3, 3, 0x1A161E);
+            APPx(ctx.base, cx - 2, cy - 2, 0x1A161E); APPx(ctx.base, cx + 2, cy - 2, 0x1A161E);
+            APPx(ctx.base, cx - 2, cy + 2, 0x1A161E); APPx(ctx.base, cx + 2, cy + 2, 0x1A161E);
+            APPx(ctx.emissive, cx, cy, 0xE84A4A);
+        });
+        web.season = 10;
+        web;
+    })];
+
     // Paper bats on a string.
     [items addObject:({
         APItemSpec *bats = APSpec(@"batgarland", @"Bat Garland", APLayerTrim, APCategoryWall, 4, 1, 0, @[@"Midnight", @"Pumpkin"], ^(APDrawContext *ctx) {
@@ -311,7 +343,7 @@ APStyleSpec *APHalloweenManorStyle(void) {
             I(@"fireplace", 0, 0, 0), I(@"candelabra", 3, 0, 1), I(@"bookshelf", 5, 0, 0), I(@"grandfather", 7, 0, 0),
             I(@"rug.woven", 2, 2, 0), I(@"armchair", 5, 2, 0), I(@"cauldron", 1, 3, 0), I(@"petbed.cushion", 6, 4, 0),
             I(@"pumpkin", 0, 6, 0), I(@"candybowl", 7, 6, 0), I(@"tombstone", 3, 6, 1),
-            I(@"window", 3, 0, 1), I(@"sconce", 1, 0, 0), I(@"sconce", 6, 0, 0),
+            I(@"window", 3, 0, 1), I(@"sconce", 1, 0, 0), I(@"sconce", 6, 0, 0), I(@"spiderweb", 7, 1, 0), I(@"art.portrait", 0, 1, 0),
             I(@"cobwebs", 0, 0, 0), I(@"batgarland", 2, 0, 0), APFlipped(I(@"cobwebs", 6, 0, 0))]};
     };
     return manor;

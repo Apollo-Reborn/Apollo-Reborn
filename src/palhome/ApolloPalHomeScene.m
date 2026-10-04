@@ -379,6 +379,7 @@ static int APCurrentMinute(void) {
         [SKAction runBlock:^{ [weakSelf minuteTick]; }]]]] withKey:@"clock"];
     self.selectedItem = selectedUID ? [self.layout itemWithUID:selectedUID] : nil;
     [self showSelection];
+    [self scheduleSpooks];
     APDebugLog(@"[PalHome] room rebuilt in %.1fms (%lu items)", (CFAbsoluteTimeGetCurrent() - started) * 1000, (unsigned long)self.layout.items.count);
 }
 
@@ -860,7 +861,21 @@ static int APCurrentMinute(void) {
         self.pal.colorBlendFactor = night ? 0.15 : 0.6;
         [self.pal childNodeWithName:@"halo"].alpha = night ? 0.55 : 0;
         if (!self.editing && ![self.pal actionForKey:@"fade"]) self.pal.alpha = [self palOpacity];
+    } else if ([self luminousColour]) {
+        // Glow-in-the-dark coats: the darker it is where they stand, the less
+        // the room shades them and the brighter the pool of light around them.
+        float darkness = 1 - MIN(1, MAX(r, MAX(g, b)));
+        float glow = MAX(0, MIN(1, (darkness - 0.15f) / 0.55f));
+        self.pal.colorBlendFactor = 1 - glow * 0.9f;
+        [self.pal childNodeWithName:@"halo"].alpha = glow * 0.75f;
+        [self.pal childNodeWithName:@"pool"].alpha = glow * 0.6f;
     }
+}
+
+// The colour of light this Pal gives off (ghosts, Glow coats), else 0.
+- (uint32_t)luminousColour {
+    if (self.isGhost) return 0xD8F0FF;
+    return [APPixelPalCoats glowColourForSpecies:self.resident.species coat:self.resident.coat];
 }
 
 - (void)buildPalKeepingPosition:(BOOL)keep {
@@ -1492,24 +1507,44 @@ static int APCurrentMinute(void) {
 - (CGFloat)palOpacity { return self.isGhost ? ([self isNight] ? 0.95 : 0.72) : 1; }
 
 // Species extras on a freshly built Pal: the ghost's halo and float.
-- (void)dressSpeciesPal {
-    [self removeActionForKey:@"ghostbob"];
-    SKSpriteNode *pal = self.pal;
-    if (!pal || !self.isGhost) return;
-    APCanvas *halo = APCanvasCreate(24, 18);
-    for (int y = 0; y < 18; y++) for (int x = 0; x < 24; x++) {
-        float dx = (x - 11.5f) / 12, dy = (y - 8.5f) / 9, d = dx * dx + dy * dy;
-        if (d < 1 && APBayer(x, y) < (1 - d) * 0.7f) APPx(halo, x, y, 0xD8F0FF);
+// A soft, ordered-dither glow (additive), w × h art pixels.
+static SKSpriteNode *APGlowSprite(int w, int h, uint32_t colour, float strength) {
+    APCanvas *halo = APCanvasCreate(w, h);
+    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+        float dx = (x - (w - 1) / 2.0f) / (w / 2.0f), dy = (y - (h - 1) / 2.0f) / (h / 2.0f), d = dx * dx + dy * dy;
+        if (d < 1 && APBayer(x, y) < (1 - d) * strength) APPx(halo, x, y, colour);
     }
     SKSpriteNode *glow = APSprite(halo);
     APCanvasFree(halo);
+    glow.blendMode = SKBlendModeAdd;
+    glow.alpha = 0;
+    return glow;
+}
+
+- (void)dressSpeciesPal {
+    [self removeActionForKey:@"ghostbob"];
+    SKSpriteNode *pal = self.pal;
+    uint32_t light = [self luminousColour];
+    if (!pal || !light) return;
+    // A halo round the body…
+    SKSpriteNode *glow = APGlowSprite(self.isGhost ? 24 : 28, self.isGhost ? 18 : 16, light, 0.7f);
     glow.name = @"halo";
     glow.anchorPoint = CGPointMake(0.5, 0);
     glow.position = CGPointMake(-1, -2);
     glow.zPosition = -0.01;
-    glow.blendMode = SKBlendModeAdd;
-    glow.alpha = 0;
     [pal addChild:glow];
+    // …and, for glow-in-the-dark coats, a pool of light on the floor around
+    // them, so they really do light up the room as they wander about.
+    if (!self.isGhost) {
+        SKSpriteNode *pool = APGlowSprite(64, 26, light, 0.55f);
+        pool.name = @"pool";
+        pool.anchorPoint = CGPointMake(0.5, 0.5);
+        pool.position = CGPointMake(0, 2);
+        pool.zPosition = -0.02;
+        [pal addChild:pool];
+        [self tintPal];
+        return;
+    }
     if (self.reducedMotion) return;
     // A gentle float a pixel or two off the floor, whatever else it's doing
     // (on the scene, so the Pal's own actions never cancel it).
@@ -1565,19 +1600,23 @@ static int APCurrentMinute(void) {
     [self playJingle:APJingleBoo];
     APHapticPlay(APHapticThump);
     [self floatIcon:@"smallheart" count:2 color:0];
-    if (!self.reducedMotion) {
-        SKSpriteNode *dark = [SKSpriteNode spriteNodeWithColor:APUIColor(0x0A0614) size:CGSizeMake(APShellWidth, APShellHeight)];
-        dark.anchorPoint = CGPointZero;
-        dark.zPosition = 940;
-        dark.alpha = 0;
-        [self.roomNode addChild:dark];
-        SKAction *(^flick)(CGFloat, NSTimeInterval) = ^SKAction *(CGFloat a, NSTimeInterval wait) {
-            return [SKAction sequence:@[[SKAction fadeAlphaTo:a duration:0], [SKAction waitForDuration:wait]]];
-        };
-        [dark runAction:[SKAction sequence:@[[SKAction waitForDuration:0.15], flick(0.55, 0.07), flick(0.1, 0.06), flick(0.6, 0.12),
-                                             flick(0.2, 0.05), [SKAction fadeAlphaTo:0 duration:0.25], [SKAction removeFromParent]]]];
-    }
+    [self flickerLights];
     [self announce:[NSString stringWithFormat:@"%@ says boo! The lights flicker.", self.resident.name]];
+}
+
+// The room's lights stutter (a dark veil flicked on and off).
+- (void)flickerLights {
+    if (self.reducedMotion) return;
+    SKSpriteNode *dark = [SKSpriteNode spriteNodeWithColor:APUIColor(0x0A0614) size:CGSizeMake(APShellWidth, APShellHeight)];
+    dark.anchorPoint = CGPointZero;
+    dark.zPosition = 940;
+    dark.alpha = 0;
+    [self.roomNode addChild:dark];
+    SKAction *(^flick)(CGFloat, NSTimeInterval) = ^SKAction *(CGFloat a, NSTimeInterval wait) {
+        return [SKAction sequence:@[[SKAction fadeAlphaTo:a duration:0], [SKAction waitForDuration:wait]]];
+    };
+    [dark runAction:[SKAction sequence:@[[SKAction waitForDuration:0.15], flick(0.55, 0.07), flick(0.1, 0.06), flick(0.6, 0.12),
+                                         flick(0.2, 0.05), [SKAction fadeAlphaTo:0 duration:0.25], [SKAction removeFromParent]]]];
 }
 
 // Pet a goose: HONK.
@@ -1678,6 +1717,234 @@ static int APCurrentMinute(void) {
     [[self.pal childNodeWithName:@"loot"] removeFromParent];
     [self removeActionForKey:@"heist"];
     self.heistUID = nil;
+}
+
+#pragma mark - Haunted Manor: things that go bump
+
+// In a Haunted Manor room, every so often something spooky happens, Scooby-Doo
+// style, picked from what's actually in the room: eyes peeking out of the
+// dark beside the furniture, a book sliding off the shelf, the portrait
+// tilting by itself, a sheet ghost popping up behind the armchair, the spider
+// dropping from its web, a bat swooping through, the lights stuttering. The
+// Pal reacts (a goose honks at it; a ghost Pal just says BOO back).
+
+- (BOOL)isHaunted { return [self.layout.style.identifier isEqualToString:@"manor"]; }
+
+- (void)scheduleSpooks {
+    [self removeActionForKey:@"spooks"];
+    if (!self.isHaunted || self.reducedMotion) return;
+    NSTimeInterval wait = 27, range = 25; // 15-40s
+#if APOLLO_SIM_BUILD
+    // Sim testing: APOLLO_SIM_SPOOK_INTERVAL=4 makes the manor busy.
+    double debug = [NSProcessInfo.processInfo.environment[@"APOLLO_SIM_SPOOK_INTERVAL"] doubleValue];
+    if (debug > 0) { wait = debug; range = 0; }
+#endif
+    __weak typeof(self) weakSelf = self;
+    [self runAction:[SKAction repeatActionForever:[SKAction sequence:@[[SKAction waitForDuration:wait withRange:range],
+        [SKAction runBlock:^{ [weakSelf spook]; }]]]] withKey:@"spooks"];
+}
+
+- (nullable APPlacedItem *)randomItemWhere:(BOOL (^)(APPlacedItem *item))test {
+    NSMutableArray *found = [NSMutableArray array];
+    for (APPlacedItem *item in self.layout.items) if (test(item)) [found addObject:item];
+    return found.count ? found[arc4random_uniform((uint32_t)found.count)] : nil;
+}
+
+// Shell coordinates (top-left origin, y down) → room node coordinates.
+static CGPoint APShellPoint(CGFloat x, CGFloat y) { return CGPointMake(x, APShellHeight - y); }
+
+- (void)spook {
+    if (self.editing || !self.isHaunted || !self.pal) return;
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<void (^)(void)> *events = [NSMutableArray array];
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    void (^add)(NSString *, void (^)(void)) = ^(NSString *name, void (^event)(void)) { [names addObject:name]; [events addObject:event]; };
+    APPlacedItem *furniture = [self randomItemWhere:^BOOL(APPlacedItem *i) { return i.spec.layer == APLayerFloor && i.spec.pixelHeight >= 20; }];
+    if (furniture) add(@"eyes", ^{ [weakSelf eyesInTheDarkBeside:furniture]; });
+    if (furniture) add(@"sheet", ^{ [weakSelf sheetPeekBehind:furniture]; });
+    APPlacedItem *books = [self randomItemWhere:^BOOL(APPlacedItem *i) {
+        return [i.spec.identifier isEqualToString:@"bookshelf"] || [i.spec.identifier isEqualToString:@"shelf.books"] || [i.spec.identifier isEqualToString:@"bookstack"];
+    }];
+    if (books) add(@"book", ^{ [weakSelf bookFallsFrom:books]; });
+    APPlacedItem *art = [self randomItemWhere:^BOOL(APPlacedItem *i) { return i.spec.layer == APLayerWall && ([i.spec.identifier hasPrefix:@"art."] || [i.spec.identifier hasPrefix:@"clock"]); }];
+    if (art) add(@"tilt", ^{ [weakSelf tiltItem:art]; });
+    APPlacedItem *web = [self randomItemWhere:^BOOL(APPlacedItem *i) { return [i.spec.identifier isEqualToString:@"spiderweb"]; }];
+    if (web) add(@"spider", ^{ [weakSelf spiderDropsFrom:web]; });
+    add(@"bat", ^{ [weakSelf batSwoop]; });
+    add(@"lights", ^{ [weakSelf flickerLights]; APHapticPlay(APHapticToggle); });
+    uint32_t pick = arc4random_uniform((uint32_t)events.count);
+    APDebugLog(@"[PalHome] spook: %@ (of %lu)", names[pick], (unsigned long)events.count);
+    events[pick]();
+    [self runAction:[SKAction sequence:@[[SKAction waitForDuration:0.6], [SKAction runBlock:^{ [weakSelf reactToSpook]; }]]]];
+}
+
+- (void)reactToSpook {
+    if (!self.pal || self.editing || self.palMode == APPalSleeping || self.palMode == APPalPlaying) return;
+    if (self.isGhost) { [self shoutWord:@"BOO!"]; [self floatIcon:@"smallheart" count:1 color:0]; return; }
+    if (self.isGoose) { [self honk]; return; }
+    if (self.palMode != APPalIdle) return;
+    [self startle:0.7];
+    [self shoutWord:@"!"];
+    APHapticPlay(APHapticHop);
+    if (arc4random_uniform(2)) {
+        __weak typeof(self) weakSelf = self;
+        [self runAction:[SKAction sequence:@[[SKAction waitForDuration:0.7], [SKAction runBlock:^{ [weakSelf ambleRunning:YES]; }]]]];
+    }
+}
+
+static SKTexture *APEyesTexture(int look) {
+    // look: -1 left, 1 right, 0 blink.
+    APCanvas *c = APCanvasCreate(7, 2);
+    for (int e = 0; e < 2; e++) {
+        int x = e * 4;
+        if (look == 0) { APHLine(c, x, 1, 3, 0xF8E890); continue; }
+        APRect(c, x, 0, 3, 2, 0xFAF2A8);
+        APRect(c, x + (look < 0 ? 0 : 2), 0, 1, 2, 0x140A04);
+    }
+    SKTexture *t = APTexture(c);
+    APCanvasFree(c);
+    return t;
+}
+
+// A pair of eyes in the dark beside a piece of furniture: blink, look, gone.
+- (void)eyesInTheDarkBeside:(APPlacedItem *)item {
+    BOOL left = arc4random_uniform(2);
+    int x = left ? item.px - 8 : item.px + item.spec.pixelWidth + 1;
+    if (x < APSideWall + 1) x = item.px + item.spec.pixelWidth + 1;
+    if (x > APShellWidth - APSideWall - 8) x = item.px - 8;
+    int y = item.py + item.spec.pixelHeight - 12;
+    SKTexture *l = APEyesTexture(-1), *r = APEyesTexture(1), *shut = APEyesTexture(0);
+    SKSpriteNode *eyes = [SKSpriteNode spriteNodeWithTexture:left ? r : l];
+    eyes.anchorPoint = CGPointZero;
+    eyes.position = APShellPoint(x, y);
+    eyes.zPosition = item.z - 0.01;
+    eyes.alpha = 0;
+    [self.roomNode addChild:eyes];
+    SKAction *blink = [SKAction sequence:@[[SKAction setTexture:shut], [SKAction waitForDuration:0.12], [SKAction setTexture:left ? r : l]]];
+    [eyes runAction:[SKAction sequence:@[[SKAction fadeInWithDuration:0.5], [SKAction waitForDuration:0.7], blink, [SKAction waitForDuration:0.5],
+        [SKAction setTexture:left ? l : r], [SKAction waitForDuration:0.6], [SKAction setTexture:left ? r : l], [SKAction waitForDuration:0.3], blink,
+        [SKAction waitForDuration:0.4], [SKAction fadeOutWithDuration:0.25], [SKAction removeFromParent]]]];
+}
+
+// A little sheet ghost pops up from behind the furniture, looks, ducks.
+- (void)sheetPeekBehind:(APPlacedItem *)item {
+    APCanvas *c = APCanvasCreate(11, 11);
+    APEllipse(c, 0, 0, 11, 9, 0xF2F2FA);
+    APRect(c, 0, 5, 11, 6, 0xF2F2FA);
+    for (int x = 0; x < 11; x += 3) APPx(c, x, 10, 0);
+    APPx(c, 3, 4, 0x1A161E); APPx(c, 3, 5, 0x1A161E); APPx(c, 7, 4, 0x1A161E); APPx(c, 7, 5, 0x1A161E);
+    APOutlineInside(c, 0x2A2834);
+    SKSpriteNode *sheet = APSprite(c);
+    APCanvasFree(c);
+    int x = item.px + item.spec.pixelWidth / 2 - 5;
+    CGPoint hidden = APShellPoint(x, item.py + 12), up = APShellPoint(x, item.py - 7);
+    sheet.position = hidden;
+    sheet.zPosition = item.z - 0.02;
+    [self.roomNode addChild:sheet];
+    [sheet runAction:[SKAction sequence:@[APPixelMove(hidden, up, 0.25), [SKAction waitForDuration:0.25],
+        [SKAction moveByX:-1 y:0 duration:0], [SKAction waitForDuration:0.3], [SKAction moveByX:2 y:0 duration:0], [SKAction waitForDuration:0.3],
+        [SKAction moveByX:-1 y:0 duration:0], [SKAction waitForDuration:0.3], APPixelMove(up, hidden, 0.12), [SKAction removeFromParent]]]];
+}
+
+// A book slides off the shelf and lands on the floor in front.
+- (void)bookFallsFrom:(APPlacedItem *)item {
+    uint32_t colours[] = {0x8A2A2A, 0x2A4A8A, 0x3A6A3A, 0x6A4A8A};
+    uint32_t colour = colours[arc4random_uniform(4)];
+    APCanvas *up = APCanvasCreate(2, 5), *flat = APCanvasCreate(5, 2);
+    APRect(up, 0, 0, 2, 5, colour); APPx(up, 1, 1, 0xE8D8B0);
+    APRect(flat, 0, 0, 5, 2, colour); APPx(flat, 1, 0, 0xE8D8B0);
+    SKTexture *flatTexture = APTexture(flat);
+    SKSpriteNode *book = APSprite(up);
+    APCanvasFree(up); APCanvasFree(flat);
+    int x = item.px + 3 + (int)arc4random_uniform((uint32_t)MAX(1, item.spec.pixelWidth - 8));
+    int y = item.py + 8 + (int)arc4random_uniform((uint32_t)MAX(1, item.spec.pixelHeight - 24));
+    int floorY = MIN(APFloorTop + APRows * APTile - 4, item.py + item.spec.pixelHeight + 2);
+    CGPoint from = APShellPoint(x, y), to = APShellPoint(x + 3, floorY);
+    book.position = from;
+    book.zPosition = item.z + 0.5;
+    [self.roomNode addChild:book];
+    SKAction *fall = [SKAction customActionWithDuration:0.4 actionBlock:^(SKNode *node, CGFloat elapsed) {
+        CGFloat p = elapsed / 0.4;
+        node.position = CGPointMake(round(from.x + (to.x - from.x) * p), round(from.y + (to.y - from.y) * p * p));
+    }];
+    [book runAction:[SKAction sequence:@[[SKAction moveByX:1 y:0 duration:0], [SKAction waitForDuration:0.3], fall,
+        [SKAction setTexture:flatTexture resize:YES], [SKAction runBlock:^{ APHapticPlay(APHapticThump); }],
+        [SKAction moveByX:0 y:2 duration:0.06], [SKAction moveByX:0 y:-2 duration:0.06],
+        [SKAction waitForDuration:2.5], [SKAction fadeOutWithDuration:0.4], [SKAction removeFromParent]]]];
+}
+
+// A painting (or clock) tilts by itself, hangs crooked, then rights itself.
+- (void)tiltItem:(APPlacedItem *)item {
+    SKNode *node = self.itemNodes[item.uid];
+    if (!node) return;
+    CGFloat angle = arc4random_uniform(2) ? 0.14 : -0.14;
+    [node runAction:[SKAction sequence:@[[SKAction rotateToAngle:angle * 0.4 duration:0.08], [SKAction rotateToAngle:angle duration:0.5],
+        [SKAction waitForDuration:1.4], [SKAction rotateToAngle:-angle * 0.15 duration:0.12], [SKAction rotateToAngle:0 duration:0.1]]]];
+}
+
+// The spider drops down on a thread, dangles, climbs back.
+- (void)spiderDropsFrom:(APPlacedItem *)item {
+    CGPoint top = APShellPoint(item.px + 8, item.py + 9);
+    int drop = 26 + (int)arc4random_uniform(14);
+    SKSpriteNode *thread = [SKSpriteNode spriteNodeWithColor:APUIColor(0xC8C4CC) size:CGSizeMake(1, 1)];
+    thread.anchorPoint = CGPointMake(0, 1);
+    thread.position = top;
+    thread.zPosition = 930;
+    APCanvas *c = APCanvasCreate(5, 4);
+    APRect(c, 1, 1, 3, 2, 0x1A161E);
+    APPx(c, 0, 0, 0x1A161E); APPx(c, 4, 0, 0x1A161E); APPx(c, 0, 3, 0x1A161E); APPx(c, 4, 3, 0x1A161E);
+    APPx(c, 2, 1, 0xE84A4A);
+    SKSpriteNode *spider = APSprite(c);
+    APCanvasFree(c);
+    spider.anchorPoint = CGPointMake(0.5, 1);
+    spider.zPosition = 931;
+    [self.roomNode addChild:thread];
+    [self.roomNode addChild:spider];
+    SKAction *(^lengthTo)(CGFloat, CGFloat, NSTimeInterval) = ^SKAction *(CGFloat from, CGFloat to, NSTimeInterval d) {
+        return [SKAction customActionWithDuration:d actionBlock:^(SKNode *node, CGFloat elapsed) {
+            CGFloat len = round(from + (to - from) * (elapsed / d));
+            thread.size = CGSizeMake(1, MAX(1, len));
+            spider.position = CGPointMake(top.x + 0.5, top.y - len);
+        }];
+    };
+    SKAction *dangle = [SKAction customActionWithDuration:1.2 actionBlock:^(SKNode *node, CGFloat elapsed) {
+        CGFloat len = drop + round(sin(elapsed * 9) * 1.5);
+        thread.size = CGSizeMake(1, len);
+        spider.position = CGPointMake(top.x + 0.5, top.y - len);
+    }];
+    [self runAction:[SKAction sequence:@[lengthTo(1, drop, 0.9), dangle, lengthTo(drop, 1, 1.1), [SKAction runBlock:^{
+        [thread removeFromParent];
+        [spider removeFromParent];
+    }]]]];
+}
+
+// A bat swoops through the room.
+- (void)batSwoop {
+    NSMutableArray<SKTexture *> *wings = [NSMutableArray array];
+    for (int frame = 0; frame < 2; frame++) {
+        APCanvas *bat = APCanvasCreate(7, 4);
+        uint32_t ink = 0x1A1020;
+        APRect(bat, 3, 1, 1, 2, ink); APPx(bat, 2, 1, ink); APPx(bat, 4, 1, ink);
+        if (frame == 0) { APPx(bat, 1, 0, ink); APPx(bat, 0, 0, ink); APPx(bat, 5, 0, ink); APPx(bat, 6, 0, ink); }
+        else { APPx(bat, 1, 2, ink); APPx(bat, 0, 3, ink); APPx(bat, 5, 2, ink); APPx(bat, 6, 3, ink); }
+        APPx(bat, 2, 1, 0xF0D040); APPx(bat, 4, 1, 0xF0D040);
+        [wings addObject:APTexture(bat)];
+        APCanvasFree(bat);
+    }
+    SKSpriteNode *bat = [SKSpriteNode spriteNodeWithTexture:wings[0]];
+    bat.anchorPoint = CGPointZero;
+    bat.zPosition = 945;
+    BOOL leftward = arc4random_uniform(2);
+    CGFloat x0 = leftward ? APShellWidth - APSideWall - 2 : APSideWall - 5, x1 = leftward ? APSideWall - 8 : APShellWidth - APSideWall + 2;
+    CGFloat y0 = APShellHeight - (APCeiling + 12 + arc4random_uniform(20));
+    NSTimeInterval d = 2.0;
+    bat.position = CGPointMake(x0, y0);
+    [self.roomNode addChild:bat];
+    [bat runAction:[SKAction repeatActionForever:[SKAction animateWithTextures:wings timePerFrame:0.08]]];
+    [bat runAction:[SKAction sequence:@[[SKAction customActionWithDuration:d actionBlock:^(SKNode *node, CGFloat elapsed) {
+        CGFloat p = elapsed / d;
+        node.position = CGPointMake(round(x0 + (x1 - x0) * p), round(y0 - sin(p * M_PI) * 40 + sin(elapsed * 9) * 3));
+    }], [SKAction removeFromParent]]]];
 }
 
 #pragma mark - Feeding

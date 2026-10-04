@@ -207,7 +207,12 @@ APRamp APRampNamed(NSString *name) {
 + (NSArray<APStyleSpec *> *)stylesForDisplay {
     NSInteger month = [NSCalendar.currentCalendar component:NSCalendarUnitMonth fromDate:NSDate.date];
     NSMutableArray *seasonal = [NSMutableArray array], *regular = [NSMutableArray array];
-    for (APStyleSpec *style in [self styles]) [(style.season == month ? seasonal : regular) addObject:style];
+    for (APStyleSpec *style in [self styles]) {
+        // Seasonal styles are offered only in their month (a room already
+        // using one keeps it all year).
+        if (style.season == 0) [regular addObject:style];
+        else if (style.season == month) [seasonal addObject:style];
+    }
     return [seasonal arrayByAddingObjectsFromArray:regular];
 }
 

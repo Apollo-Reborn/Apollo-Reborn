@@ -137,7 +137,7 @@ typedef NS_ENUM(NSInteger, APBackdropAnim) { APBackdropAnimNone = 0, APBackdropA
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) float tintR, tintG, tintB;  // multiplies ambient light
 @property (nonatomic) APBackdropAnim backdropAnim;
-@property (nonatomic) int season; // 1-12: leads the styles list that month (0 = always where it is)
+@property (nonatomic) int season; // 1-12: only offered that month, first in the list (0 = always)
 @property (nonatomic, copy, nullable) void (^paintShell)(APCanvas *c);              // repaints trim over the base shell
 @property (nonatomic, copy, nullable) void (^paintBackdrop)(APCanvas *c, int w, int h);
 @property (nonatomic, copy) NSDictionary *(^room)(void);                           // template room document
@@ -145,7 +145,8 @@ typedef NS_ENUM(NSInteger, APBackdropAnim) { APBackdropAnimNone = 0, APBackdropA
 
 @interface APCatalog : NSObject
 + (NSArray<APStyleSpec *> *)styles;
-// For the drawer: this month's seasonal styles first, then the rest in order.
+// For the drawer: this month's seasonal styles first, then the year-round
+// ones (other months' seasonal styles aren't offered).
 + (NSArray<APStyleSpec *> *)stylesForDisplay;
 + (APStyleSpec *)styleWithID:(nullable NSString *)identifier; // falls back to cottage
 + (NSArray<APItemSpec *> *)items;

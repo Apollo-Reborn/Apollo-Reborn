@@ -30,6 +30,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable CGImageRef)createRecoloredImage:(CGImageRef)image species:(NSString *)species coat:(NSString *)coat CF_RETURNS_RETAINED;
 // Parses "<species>-<action>" asset names; nil for anything else.
 + (nullable NSString *)speciesForAssetName:(NSString *)name;
+// Coats that glow in the dark (the Glow axolotl): the light's colour, else 0.
++ (uint32_t)glowColourForSpecies:(NSString *)species coat:(nullable NSString *)coat;
 
 // Persistence (standard defaults, so settings backups carry it).
 + (NSString *)selectedCoatForSpecies:(NSString *)species;

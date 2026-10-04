@@ -64,7 +64,14 @@ on a Mac.
 **Styles**: Cosy Cottage, Castle Keep, Grand Library, Space Station, Wild West
 Saloon, Treehouse, Under the Sea, and the Haunted Manor (`ApolloPalHomeHalloween`:
 purple damask, creaky boards, moonlit graveyard with bats, owl hoots and wind;
-seasonal styles lead the list in their month). A style repaints the shell, the world outside
+seasonal styles are offered only in their month, first in the list; a room
+already using one keeps it). The Manor is haunted: every 15-40 seconds
+something happens, picked from what's in the room (eyes peeking from the dark
+beside furniture, a book falling off the shelf, a portrait tilting by itself,
+a sheet ghost popping up behind the armchair, the spider dropping from its web,
+a bat swooping through, the lights stuttering), and the Pal reacts (a goose
+honks at it, a ghost Pal says BOO back). `APOLLO_SIM_SPOOK_INTERVAL=4` in the
+sim makes it busy for testing. A style repaints the shell, the world outside
 and the UI material. Picking one (Decorate → Styles) asks how: **Furnished**
 (its template room), **Bare room** (its walls and floor only) or **Keep my
 things** (its walls and floor around your furniture); all with Undo. **Fresh**
@@ -127,10 +134,14 @@ no bounds check), so it is never extended. Instead:
 - **Ghosts** (at the shelter in October only; `APSpecies.season`): float a pixel
   or two off the floor, drift straight through furniture, are see-through by day
   and glow at night. Petting: "BOO!" and the lights flicker.
+- **Glow-in-the-dark coats** (the Glow axolotl,
+  `+[APPixelPalCoats glowColourForSpecies:coat:]`): the darker it is where they
+  stand, the less the room shades them and the brighter the pool of light they
+  cast on the floor around them.
 - **Geese**: petting honks. Left alone they steal small floor pieces (pumpkins,
   plants, the candy bowl…) and put them down somewhere else; the move is saved.
 - **Halloween items** (October first in the catalogue): cauldron, candelabra,
-  tombstone, cobwebs (flip for the other corner), bat garland, and a candy bowl
+  tombstone, cobwebs (flip for the other corner), a spider web, bat garland, and a candy bowl
   that feeds like the bowls ("Trick or treat!").
 
 ## Care: Apollo's rules on Apollo's data
