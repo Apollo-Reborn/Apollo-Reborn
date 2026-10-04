@@ -881,6 +881,8 @@ static void ApolloPalHomeNotifyApollo(void) {
     [NSUserDefaults.standardUserDefaults setBool:enabled forKey:UDKeyPalHomeEnabled];
     ApolloLog(@"[PalHome] Pal Home %@", enabled ? @"on" : @"off (Classic Pixel Pals)");
     if (!enabled) [[ApolloPalHomeStore new] returnToClassic];
+    // The Subreddits list's Pal Home shortcut comes and goes with it.
+    [NSNotificationCenter.defaultCenter postNotificationName:ApolloFeedShortcutsChangedNotification object:nil];
 }
 
 - (void)returnToClassic {

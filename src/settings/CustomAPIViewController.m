@@ -1,3 +1,4 @@
+#import "palhome/ApolloPalHomeStore.h"
 #import "palhome/ApolloPalHomeWidgetRenderer.h"
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
@@ -169,17 +170,14 @@ static ApolloFeedShortcutsPreviewState *ApolloFeedShortcutsCurrentPreviewState(
     UITraitCollection *traitCollection,
     CGFloat availableWidth) {
     ApolloFeedShortcutsPreviewState *state = [ApolloFeedShortcutsPreviewState new];
-    state.visibleIndexes = ApolloFeedShortcutVisibleIndexes();
+    state.visibleIndexes = ApolloFeedShortcutDisplayIndexes();
     state.iconStyle = (ApolloSubredditFeedIconStyle)sSubredditFeedIconStyle;
     state.traitCollection = traitCollection;
     state.layout = ApolloFeedShortcutEffectiveLayout(sSubredditFeedLayout,
                                                        state.visibleIndexes.count,
                                                        traitCollection);
-    BOOL supportsCompactFourUp = state.layout == ApolloSubredditFeedLayoutSideBySide ||
-        state.layout == ApolloSubredditFeedLayoutGrid;
-    state.usesCompactFourUp = supportsCompactFourUp &&
-        state.visibleIndexes.count == 4 &&
-        availableWidth <= 336.0;
+    state.usesCompactFourUp = ApolloFeedShortcutUsesCompactLayout(state.layout, state.visibleIndexes.count,
+                                                                  availableWidth, 336.0);
     state.hideDescriptions = sHideSubredditListDescriptions;
     if (state.layout == ApolloSubredditFeedLayoutRows) {
         NSUInteger count = state.visibleIndexes.count;
@@ -187,7 +185,8 @@ static ApolloFeedShortcutsPreviewState *ApolloFeedShortcutsCurrentPreviewState(
         CGFloat spacingHeight = count > 1 ? (CGFloat)(count - 1) * 8.0 : 0.0;
         state.previewHeight = rowsHeight + spacingHeight + 16.0;
     } else {
-        state.previewHeight = ApolloFeedShortcutLayoutHeight(state.layout, traitCollection);
+        state.previewHeight = ApolloFeedShortcutLayoutHeightForCount(state.layout, traitCollection,
+                                                                     state.visibleIndexes.count);
     }
     return state;
 }
@@ -197,7 +196,7 @@ static UIFont *ApolloFeedShortcutsPreviewTitleFont(ApolloFeedShortcutsPreviewSta
         return [UIFont preferredFontForTextStyle:UIFontTextStyleBody
                           compatibleWithTraitCollection:state.traitCollection];
     }
-    CGFloat pointSize = state.layout == ApolloSubredditFeedLayoutGrid ? 15.0 : 16.0;
+    CGFloat pointSize = ApolloFeedShortcutCompactTitlePointSize(state.layout, state.visibleIndexes.count);
     UIFont *baseFont = [UIFont systemFontOfSize:pointSize];
     return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
         scaledFontForFont:baseFont
@@ -207,6 +206,7 @@ static UIFont *ApolloFeedShortcutsPreviewTitleFont(ApolloFeedShortcutsPreviewSta
 static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortcutsPreviewState *state) {
     NSUInteger itemCount = state.visibleIndexes.count;
     if (state.layout != ApolloSubredditFeedLayoutSideBySide || itemCount < 3) return 0.0;
+    if (ApolloFeedShortcutSplitsOntoTwoLines(state.layout, itemCount)) return 0.0; // each line centres itself
 
     NSInteger firstIndex = state.visibleIndexes.firstObject.integerValue;
     NSInteger lastIndex = state.visibleIndexes.lastObject.integerValue;
@@ -2684,9 +2684,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   onToggle:^(UISwitch *sender) {
             [weakSelf setFeedShortcutVisible:sender.isOn defaultsKey:UDKeyHideModeratorRedditList];
         }];
+    ApolloSettingsRow *showPalHome =
+        [ApolloSettingsRow switchRowWithID:@"sub.showPalHomeShortcut"
+                                     title:@"Show Pal Home"
+                                      isOn:^BOOL {
+            return ![NSUserDefaults.standardUserDefaults boolForKey:UDKeyHidePalHomeShortcut];
+        }
+                                  onToggle:^(UISwitch *sender) {
+            [weakSelf setFeedShortcutVisible:sender.isOn defaultsKey:UDKeyHidePalHomeShortcut];
+        }];
+    // Only offered while Pal Home is on (it's where the shortcut goes).
+    showPalHome.visible = ^BOOL { return ApolloPalHomeStore.isPalHomeEnabled; };
     return [ApolloSettingsSection sectionWithTitle:@"Visible Shortcuts"
                                             footer:@"Home is always shown. Choose which other shortcuts appear."
-                                              rows:@[ showPopular, showAll, showModerator ]];
+                                              rows:@[ showPopular, showAll, showModerator, showPalHome ]];
 }
 
 - (ApolloSettingsSection *)buildFeedShortcutsControlsSection {

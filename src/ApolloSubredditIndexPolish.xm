@@ -11,6 +11,7 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
+#import "palhome/ApolloPalHomeViewController.h"
 
 static char kApolloSubredditIndexTableKey;
 static char kApolloSubredditIndexNotSubredditsTableKey;
@@ -98,14 +99,45 @@ static BOOL ApolloMetaFeedLayoutUsesShortcuts(ApolloSubredditFeedLayout layout) 
 static BOOL ApolloMetaFeedUsesCompactFourUp(ApolloSubredditFeedLayout layout,
                                              NSUInteger itemCount,
                                              CGFloat availableWidth) {
-    BOOL supportsCompactFourUp = layout == ApolloSubredditFeedLayoutGrid ||
-        layout == ApolloSubredditFeedLayoutSideBySide;
-    return supportsCompactFourUp && itemCount == 4 && availableWidth <= 376.0;
+    return ApolloFeedShortcutUsesCompactLayout(layout, itemCount, availableWidth, 376.0);
+}
+
+// The shortcuts actually drawn: Apollo's native feed rows (which keep their
+// one-to-one row mapping) plus the Reborn-only Pal Home shortcut at the end.
+static NSArray<NSNumber *> *ApolloMetaFeedDisplayIndexes(NSArray<NSNumber *> *nativeIndexes) {
+#if APOLLO_SIM_BUILD
+    // Sim-only layout testing: APOLLO_SIM_FAKE_MODERATOR=1 draws a stand-in
+    // Moderator tile (display only, no native row) when signed out.
+    if ([NSProcessInfo.processInfo.environment[@"APOLLO_SIM_FAKE_MODERATOR"] isEqualToString:@"1"] &&
+        ![nativeIndexes containsObject:@3]) {
+        nativeIndexes = [nativeIndexes arrayByAddingObject:@3];
+    }
+#endif
+    return ApolloFeedShortcutShowsPalHome()
+        ? [nativeIndexes arrayByAddingObject:@(ApolloFeedShortcutPalHomeIndex)]
+        : nativeIndexes;
+}
+
+// Pal Home has no native row: push it on whichever navigation stack owns the list.
+static void ApolloMetaFeedOpenPalHome(UIView *fromView) {
+    UIResponder *responder = fromView;
+    while (responder && ![responder isKindOfClass:UIViewController.class]) responder = responder.nextResponder;
+    UINavigationController *navigation = ((UIViewController *)responder).navigationController;
+    ApolloLog(@"[SubredditIndex] Pal Home shortcut tapped nav=%d", navigation != nil);
+    if (!navigation) return;
+    [navigation pushViewController:[ApolloPalHomeViewController new] animated:YES];
+}
+
+static void ApolloMetaFeedHidePalHomeShortcut(void) {
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:UDKeyHidePalHomeShortcut];
+    ApolloLog(@"[SubredditIndex] Pal Home shortcut hidden from Edit mode");
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloFeedShortcutsChangedNotification object:nil];
 }
 
 static UIFont *ApolloMetaFeedCompactFourUpTitleFont(ApolloSubredditFeedLayout layout,
+                                                     NSUInteger itemCount,
                                                      UITraitCollection *traitCollection) {
-    CGFloat pointSize = layout == ApolloSubredditFeedLayoutGrid ? 15.0 : 16.0;
+    CGFloat pointSize = ApolloFeedShortcutCompactTitlePointSize(layout, itemCount);
     UIFont *baseFont = [UIFont systemFontOfSize:pointSize];
     return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
         scaledFontForFont:baseFont
@@ -252,7 +284,8 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     _feedIconStyle = sSubredditFeedIconStyle;
     self.isAccessibilityElement = YES;
     self.accessibilityTraits = UIAccessibilityTraitButton;
-    self.accessibilityLabel = title;
+    // The tile says "Pals"; VoiceOver says where it goes.
+    self.accessibilityLabel = feedIndex == ApolloFeedShortcutPalHomeIndex ? ApolloFeedShortcutRowTitle(feedIndex) : title;
     self.layer.cornerRadius = sideBySide ? 12.0 : 16.0;
     self.layer.cornerCurve = kCACornerCurveContinuous;
     [self addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
@@ -288,7 +321,7 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
         _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _titleLabel.text = title;
         _titleLabel.font = usesCompactFourUp
-            ? ApolloMetaFeedCompactFourUpTitleFont(layout, traitCollection)
+            ? ApolloMetaFeedCompactFourUpTitleFont(layout, itemCount, traitCollection)
             : [UIFont preferredFontForTextStyle:UIFontTextStyleBody
                           compatibleWithTraitCollection:traitCollection];
         _titleLabel.adjustsFontForContentSizeCategory = YES;
@@ -411,6 +444,7 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
 - (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction
                          configurationForMenuAtLocation:(CGPoint)location {
     (void)interaction;
+    if (self.tag < 0) return nil; // Pal Home: no native row to preview
     UITableView *tableView = self.tableView;
     id<UITableViewDelegate> delegate = tableView.delegate;
     SEL selector = @selector(tableView:contextMenuConfigurationForRowAtIndexPath:point:);
@@ -432,6 +466,9 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     if (!self) return nil;
 
     self.translatesAutoresizingMaskIntoConstraints = NO;
+    // Native rows first (tag = their row in section 0), then Pal Home (tag -1).
+    NSUInteger nativeCount = visibleFeedIndexes.count;
+    visibleFeedIndexes = ApolloMetaFeedDisplayIndexes(visibleFeedIndexes);
     ApolloSubredditFeedLayout layout = ApolloMetaFeedEffectiveLayout(tableView, visibleFeedIndexes);
     CGFloat availableWidth = CGRectGetWidth(tableView.bounds);
     if (availableWidth <= 0.0) availableWidth = CGRectGetWidth(UIScreen.mainScreen.bounds);
@@ -448,9 +485,12 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
                                                                                                  itemCount:visibleFeedIndexes.count
                                                                                          usesCompactFourUp:usesCompactFourUp
                                                                                            traitCollection:tableView.traitCollection];
-        shortcut.tag = (NSInteger)nativeRow;
+        // -1: Pal Home; -2: a sim-only stand-in with no native row.
+        NSInteger row = nativeRow < nativeCount ? (NSInteger)nativeRow
+            : feedIndex == ApolloFeedShortcutPalHomeIndex ? -1 : -2;
+        shortcut.tag = row;
         [shortcut addTarget:self action:@selector(apollo_shortcutTapped:) forControlEvents:UIControlEventTouchUpInside];
-        shortcut.editDeleteButton.tag = (NSInteger)nativeRow;
+        shortcut.editDeleteButton.tag = row;
         shortcut.editDeleteButton.accessibilityLabel = [NSString stringWithFormat:@"Hide %@", ApolloFeedShortcutShortTitle(feedIndex)];
         [shortcut.editDeleteButton addTarget:self
                                       action:@selector(apollo_hideShortcutTapped:)
@@ -546,7 +586,7 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     }
 
     UIFont *font = self.usesCompactFourUp
-        ? ApolloMetaFeedCompactFourUpTitleFont(self.layout, self.traitCollection)
+        ? ApolloMetaFeedCompactFourUpTitleFont(self.layout, self.shortcuts.count, self.traitCollection)
         : referenceLabel.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody
                                  compatibleWithTraitCollection:self.traitCollection];
     UIColor *textColor = referenceLabel.textColor
@@ -567,6 +607,11 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
 - (void)apollo_shortcutTapped:(ApolloMetaFeedShortcutControl *)sender {
     UITableView *tableView = self.tableView;
     if (tableView.isEditing) return;
+    if (sender.feedIndex == ApolloFeedShortcutPalHomeIndex) {
+        ApolloMetaFeedOpenPalHome(self);
+        return;
+    }
+    if (sender.tag < 0) return; // no native row behind it
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:sender.tag inSection:0];
     id<UITableViewDelegate> delegate = tableView.delegate;
     if (!tableView || ![delegate respondsToSelector:@selector(tableView:didSelectRowAtIndexPath:)]) return;
@@ -575,6 +620,10 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
 }
 
 - (void)apollo_hideShortcutTapped:(UIButton *)sender {
+    if (sender.tag < 0) {
+        if (sender.tag == -1) ApolloMetaFeedHidePalHomeShortcut();
+        return;
+    }
     UITableView *tableView = self.tableView;
     id<UITableViewDataSource> dataSource = tableView.dataSource;
     SEL selector = @selector(tableView:commitEditingStyle:forRowAtIndexPath:);
@@ -2561,7 +2610,8 @@ static CGFloat ApolloSubredditIndexHeightForRowHook(id self, SEL _cmd, UITableVi
             if (ApolloMetaFeedLayoutUsesShortcuts(layout) &&
                 ApolloSubredditIndexMetaFeedRowsValidated(tableView, visibleIndexes)) {
                 return indexPath.row == 0
-                    ? ApolloFeedShortcutLayoutHeight(layout, tableView.traitCollection)
+                    ? ApolloFeedShortcutLayoutHeightForCount(layout, tableView.traitCollection,
+                                                             ApolloMetaFeedDisplayIndexes(visibleIndexes).count)
                     : 0.01;
             }
         }
@@ -2636,6 +2686,137 @@ static void ApolloSubredditIndexInstallRowHeightHook(void) {
         method_setImplementation(inheritedOrOwnMethod, (IMP)ApolloSubredditIndexHeightForRowHook);
     }
     ApolloLog(@"[SubredditIndex] meta-feed shortcut row-height hook installed added=%d", added);
+}
+
+// --- Pal Home shortcut in Rows layout --------------------------------------
+// Rows layout is Apollo's own feed rows, re-iconed, so there is no strip to
+// add a tile to and adding a row would shift every native index the list's
+// routing depends on. Instead, section 0's footer (which Apollo doesn't use)
+// is drawn as one more row in the same style, copying the native Home row's
+// fonts, colours and insets so it matches whatever theme is active.
+
+@interface ApolloPalHomeShortcutRowView : UIControl
+@property (nonatomic, weak) UITableView *tableView;
+@property (nonatomic, strong) UIImageView *iconView;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
+@end
+
+@implementation ApolloPalHomeShortcutRowView
+
+- (instancetype)initWithTableView:(UITableView *)tableView itemCount:(NSUInteger)itemCount {
+    if ((self = [super initWithFrame:CGRectZero])) {
+        _tableView = tableView;
+        _iconView = [[UIImageView alloc] initWithImage:ApolloFeedShortcutIconImage(ApolloFeedShortcutPalHomeIndex,
+            (ApolloSubredditFeedIconStyle)sSubredditFeedIconStyle, ApolloSubredditFeedLayoutRows, itemCount)];
+        _iconView.contentMode = UIViewContentModeScaleAspectFit;
+        _titleLabel = [UILabel new];
+        _titleLabel.text = ApolloFeedShortcutRowTitle(ApolloFeedShortcutPalHomeIndex);
+        _detailLabel = [UILabel new];
+        _detailLabel.text = ApolloFeedShortcutDetail(ApolloFeedShortcutPalHomeIndex);
+        _detailLabel.hidden = sHideSubredditListDescriptions;
+        for (UIView *view in @[_iconView, _titleLabel, _detailLabel]) {
+            view.userInteractionEnabled = NO;
+            [self addSubview:view];
+        }
+        self.isAccessibilityElement = YES;
+        self.accessibilityTraits = UIAccessibilityTraitButton;
+        self.accessibilityLabel = _titleLabel.text;
+        self.accessibilityHint = _detailLabel.text;
+        [self addTarget:self action:@selector(apollo_open) forControlEvents:UIControlEventTouchUpInside];
+    }
+    return self;
+}
+
+// The native Home row, to match (nil before it's on screen; defaults then).
+- (UITableViewCell *)apollo_referenceCell {
+    return [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    UITableViewCell *reference = [self apollo_referenceCell];
+    UIFont *titleFont = reference.textLabel.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    UIFont *detailFont = reference.detailTextLabel.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    self.titleLabel.font = titleFont;
+    self.titleLabel.textColor = reference.textLabel.textColor ?: ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
+    self.detailLabel.font = detailFont;
+    self.detailLabel.textColor = reference.detailTextLabel.textColor ?: UIColor.secondaryLabelColor;
+    self.backgroundColor = self.highlighted ? (ApolloThemeRowHighlightColor() ?: UIColor.systemFillColor) : UIColor.clearColor;
+
+    // Same columns as the native rows (icon and text x), else sensible insets.
+    CGRect bounds = self.bounds;
+    CGFloat iconSize = ApolloFeedShortcutDisplayIconSize((ApolloSubredditFeedIconStyle)sSubredditFeedIconStyle,
+                                                         ApolloSubredditFeedLayoutRows, 1);
+    CGFloat iconX = reference ? [reference.imageView convertPoint:CGPointZero toView:self].x : 16.0;
+    CGFloat textX = reference ? [reference.textLabel convertPoint:CGPointZero toView:self].x : iconX + iconSize + 15.0;
+    if (iconX <= 0) iconX = 16.0;
+    if (textX <= iconX) textX = iconX + iconSize + 15.0;
+    self.iconView.frame = CGRectMake(iconX, round((bounds.size.height - iconSize) / 2.0), iconSize, iconSize);
+    CGFloat textWidth = MAX(0.0, bounds.size.width - textX - 16.0);
+    CGFloat titleHeight = ceil(titleFont.lineHeight), detailHeight = self.detailLabel.hidden ? 0.0 : ceil(detailFont.lineHeight);
+    CGFloat textTop = round((bounds.size.height - titleHeight - detailHeight - (detailHeight > 0 ? 1.0 : 0.0)) / 2.0);
+    self.titleLabel.frame = CGRectMake(textX, textTop, textWidth, titleHeight);
+    self.detailLabel.frame = CGRectMake(textX, textTop + titleHeight + 1.0, textWidth, detailHeight);
+}
+
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted];
+    [self setNeedsLayout];
+}
+
+- (void)apollo_open {
+    if (self.tableView.isEditing) return;
+    ApolloMetaFeedOpenPalHome(self);
+}
+
+@end
+
+static UIView *(*orig_ApolloRedditListViewForFooter)(id, SEL, UITableView *, NSInteger) = NULL;
+static CGFloat (*orig_ApolloRedditListHeightForFooter)(id, SEL, UITableView *, NSInteger) = NULL;
+
+// Only in Rows layout, on the real Subreddits table once its feed rows have
+// been validated, and only while the shortcut shows.
+static BOOL ApolloSubredditIndexShowsPalHomeFooter(UITableView *tableView, NSInteger section) {
+    if (section != 0 || !ApolloFeedShortcutShowsPalHome() || !ApolloSubredditIndexEnsureSelectionTable(tableView)) return NO;
+    NSArray<NSNumber *> *visibleIndexes = ApolloSubredditIndexVisibleMetaFeedIndexes(tableView);
+    if (ApolloMetaFeedEffectiveLayout(tableView, visibleIndexes) != ApolloSubredditFeedLayoutRows) return NO;
+    return ApolloSubredditIndexMetaFeedRowsValidated(tableView, visibleIndexes);
+}
+
+static UIView *ApolloSubredditIndexViewForFooterHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    if (ApolloSubredditIndexShowsPalHomeFooter(tableView, section)) {
+        NSUInteger count = ApolloMetaFeedDisplayIndexes(ApolloSubredditIndexVisibleMetaFeedIndexes(tableView)).count;
+        return [[ApolloPalHomeShortcutRowView alloc] initWithTableView:tableView itemCount:count];
+    }
+    return orig_ApolloRedditListViewForFooter ? orig_ApolloRedditListViewForFooter(self, _cmd, tableView, section) : nil;
+}
+
+static CGFloat ApolloSubredditIndexHeightForFooterHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    if (ApolloSubredditIndexShowsPalHomeFooter(tableView, section)) return ApolloFeedShortcutRowHeight(tableView.traitCollection);
+    // Not implemented natively: the table's own default, exactly as before.
+    return orig_ApolloRedditListHeightForFooter ? orig_ApolloRedditListHeightForFooter(self, _cmd, tableView, section)
+                                                : tableView.sectionFooterHeight;
+}
+
+static void ApolloSubredditIndexInstallPalHomeFooterHooks(void) {
+    Class cls = ApolloSubredditIndexRedditListViewControllerClass();
+    if (!cls) {
+        ApolloLog(@"[SubredditIndex] Pal Home footer hooks skipped: RedditListViewController missing");
+        return;
+    }
+    struct { SEL selector; IMP hook; void **orig; const char *types; } hooks[] = {
+        {@selector(tableView:viewForFooterInSection:), (IMP)ApolloSubredditIndexViewForFooterHook, (void **)&orig_ApolloRedditListViewForFooter, "@@:@q"},
+        {@selector(tableView:heightForFooterInSection:), (IMP)ApolloSubredditIndexHeightForFooterHook, (void **)&orig_ApolloRedditListHeightForFooter, "d@:@q"},
+    };
+    for (size_t i = 0; i < sizeof(hooks) / sizeof(hooks[0]); i++) {
+        Method method = class_getInstanceMethod(cls, hooks[i].selector);
+        if (method) *hooks[i].orig = (void *)method_getImplementation(method);
+        BOOL added = class_addMethod(cls, hooks[i].selector, hooks[i].hook, method ? method_getTypeEncoding(method) : hooks[i].types);
+        if (!added && method) method_setImplementation(method, hooks[i].hook);
+        ApolloLog(@"[SubredditIndex] Pal Home footer hook %@ added=%d existing=%d",
+                  NSStringFromSelector(hooks[i].selector), added, method != NULL);
+    }
 }
 
 static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
@@ -3165,11 +3346,12 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
 
     NSArray<NSNumber *> *visibleIndexes = ApolloSubredditIndexVisibleMetaFeedIndexes(ownedTable);
     ApolloSubredditFeedLayout layout = ApolloMetaFeedEffectiveLayout(ownedTable, visibleIndexes);
+    NSUInteger shownCount = ApolloMetaFeedDisplayIndexes(visibleIndexes).count;
     BOOL wasCompact = ApolloMetaFeedUsesCompactFourUp(layout,
-                                                       visibleIndexes.count,
+                                                       shownCount,
                                                        CGRectGetWidth(ownedTable.bounds));
     BOOL willBeCompact = ApolloMetaFeedUsesCompactFourUp(layout,
-                                                          visibleIndexes.count,
+                                                          shownCount,
                                                           size.width);
     if (wasCompact == willBeCompact) return;
 
@@ -3491,6 +3673,7 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
     ApolloSubredditIndexInstallHeaderHook();
     ApolloSubredditIndexInstallCellDisplayHook();
     ApolloSubredditIndexInstallRowHeightHook();
+    ApolloSubredditIndexInstallPalHomeFooterHooks();
     ApolloSubredditIndexInstallHeaderLayoutHook();
     ApolloSubredditIndexInstallHeaderSetFrameHook();
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloModernSubredditDividersChangedNotification

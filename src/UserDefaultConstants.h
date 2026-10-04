@@ -86,6 +86,11 @@ static NSString *const UDKeyHideRPopularRedditList = @"HideRPopularRedditList";
 static NSString *const UDKeyHideRAllRedditList = @"HideRAllRedditList";
 static NSString *const UDKeyHideModeratorRedditList = @"HideModeratorRedditList";
 static NSString *const ApolloFeedShortcutsChangedNotification = @"ApolloFeedShortcutsChangedNotification";
+// A Pal Home shortcut beside Home / Popular / All / Moderator (feed index 4).
+// Shown only while Pal Home is on; default shown. Reborn-only (no native row):
+// Rows layout draws it as a footer row under Apollo's feed rows, the strip
+// layouts as one more tile. See ApolloFeedShortcutDisplayIndexes().
+static NSString *const UDKeyHidePalHomeShortcut = @"HidePalHomeShortcut";
 // Keep an independent FavoriteSubreddits list for each Reddit account. Opt-in:
 // default NO via registerDefaults. ApolloPerAccountFavorites projects the active
 // account's bucket back through Apollo's native FavoriteSubreddits key so every

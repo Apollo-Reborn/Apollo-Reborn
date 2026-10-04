@@ -157,7 +157,11 @@ Home never disagree:
    `dogBarked…`) push Pal Home on the current tab; pushing
    `PixelPalChooserViewController` pushes Pal Home instead. Always: the
    `pal-home-settings` screen and the `pal-home` route (deep link
-   `apollo://reborn/settings/pal-home`, used by the widget). In Classic the
+   `apollo://reborn/settings/pal-home`, used by the widget), and a **Pals**
+   Feed Shortcut on the Subreddits list (feed index 4 in
+   `ApolloFeedShortcutsAppearance`; a tile in Grid / Side-by-side / Icon dock,
+   a section-0 footer row in Rows so Apollo's row indexes never shift; hidden
+   by Edit mode or Feed Shortcuts → Show Pal Home). In Classic the
    chooser and care sheet show the "Try Pal Home" card.
 3. **Reconciling**: `PixelPalSettingChanged` / app activation settle the island
    channel; Pal Home posts `PixelPalSettingChanged` after native writes so the

@@ -5,19 +5,25 @@
 
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
+#import "palhome/ApolloPalHomeStore.h"
 
+// Index 4 is Pal Home (Reborn's own; no native row).
+static const NSInteger kApolloFeedShortcutCount = 5;
 static NSString * const kApolloFeedShortcutShortTitles[] = {
-    @"Home", @"Popular", @"All", @"Moderator"
+    @"Home", @"Popular", @"All", @"Moderator", @"Pals" // one word, like its neighbours
 };
 static NSString * const kApolloFeedShortcutRowTitles[] = {
-    @"Home", @"Popular Posts", @"All Posts", @"Moderator Posts"
+    @"Home", @"Popular Posts", @"All Posts", @"Moderator Posts", @"Pal Home"
 };
 static NSString * const kApolloFeedShortcutDetails[] = {
     @"Posts from subscriptions",
     @"Most popular across Reddit",
     @"Posts across all subreddits",
-    @"Posts from moderated subreddits"
+    @"Posts from moderated subreddits",
+    @"Your Pals' cosy home"
 };
+
+static BOOL ApolloFeedShortcutIsFiveUpGrid(ApolloSubredditFeedLayout layout, NSUInteger itemCount);
 
 NSArray<UIView *> *ApolloFeedShortcutInstallLayout(UIView *hostView,
                                                     NSArray<UIView *> *items,
@@ -26,6 +32,32 @@ NSArray<UIView *> *ApolloFeedShortcutInstallLayout(UIView *hostView,
                                                     ApolloSubredditFeedLayout layout,
                                                     UIColor *separatorColor,
                                                     CGFloat stackHorizontalOffset) {
+    // Five side by side won't fit a phone: two lines (3 + 2), each laid out
+    // like its own strip in half the height.
+    if (ApolloFeedShortcutSplitsOntoTwoLines(layout, items.count)) {
+        NSUInteger topCount = (items.count + 1) / 2;
+        UIView *top = [UIView new], *bottom = [UIView new];
+        NSMutableArray<UIView *> *separators = [NSMutableArray array];
+        for (UIView *line in @[top, bottom]) {
+            line.translatesAutoresizingMaskIntoConstraints = NO;
+            [hostView addSubview:line];
+            [NSLayoutConstraint activateConstraints:@[
+                [line.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
+                [line.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
+                [line.heightAnchor constraintEqualToAnchor:hostView.heightAnchor multiplier:0.5]
+            ]];
+        }
+        [top.topAnchor constraintEqualToAnchor:hostView.topAnchor].active = YES;
+        [bottom.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor].active = YES;
+        NSRange ranges[2] = {NSMakeRange(0, topCount), NSMakeRange(topCount, items.count - topCount)};
+        UIView *lines[2] = {top, bottom};
+        for (int i = 0; i < 2; i++) {
+            [separators addObjectsFromArray:ApolloFeedShortcutInstallLayout(lines[i],
+                [items subarrayWithRange:ranges[i]], [contentViews subarrayWithRange:ranges[i]],
+                [contentCenterXConstraints subarrayWithRange:ranges[i]], layout, separatorColor, stackHorizontalOffset)];
+        }
+        return separators;
+    }
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:items];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisHorizontal;
@@ -33,7 +65,8 @@ NSArray<UIView *> *ApolloFeedShortcutInstallLayout(UIView *hostView,
     stack.distribution = UIStackViewDistributionFillEqually;
     stack.spacing = 0.0;
     [hostView addSubview:stack];
-    CGFloat horizontalInset = layout == ApolloSubredditFeedLayoutIconDock ? 28.0 : 14.0;
+    BOOL fiveUpGrid = ApolloFeedShortcutIsFiveUpGrid(layout, items.count);
+    CGFloat horizontalInset = layout == ApolloSubredditFeedLayoutIconDock ? 28.0 : fiveUpGrid ? 4.0 : 14.0;
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor
                                              constant:horizontalInset + stackHorizontalOffset],
@@ -43,7 +76,7 @@ NSArray<UIView *> *ApolloFeedShortcutInstallLayout(UIView *hostView,
         [stack.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor constant:-8.0]
     ]];
 
-    if (layout == ApolloSubredditFeedLayoutIconDock) {
+    if (layout == ApolloSubredditFeedLayoutIconDock || fiveUpGrid) {
         return @[];
     }
 
@@ -101,16 +134,53 @@ NSArray<NSNumber *> *ApolloFeedShortcutVisibleIndexes(void) {
     return indexes;
 }
 
+BOOL ApolloFeedShortcutShowsPalHome(void) {
+    return ApolloPalHomeStore.isPalHomeEnabled &&
+           ![NSUserDefaults.standardUserDefaults boolForKey:UDKeyHidePalHomeShortcut];
+}
+
+NSArray<NSNumber *> *ApolloFeedShortcutDisplayIndexes(void) {
+    NSArray<NSNumber *> *native = ApolloFeedShortcutVisibleIndexes();
+    return ApolloFeedShortcutShowsPalHome() ? [native arrayByAddingObject:@(ApolloFeedShortcutPalHomeIndex)] : native;
+}
+
+CGFloat ApolloFeedShortcutCompactTitlePointSize(ApolloSubredditFeedLayout layout, NSUInteger itemCount) {
+    if (layout == ApolloSubredditFeedLayoutGrid) return itemCount >= 5 ? 14.0 : 15.0;
+    return 16.0;
+}
+
+// Five across in Grid: no dividers and tighter insets, so every label
+// (even "Moderator") fits at its real size instead of auto-shrinking.
+static BOOL ApolloFeedShortcutIsFiveUpGrid(ApolloSubredditFeedLayout layout, NSUInteger itemCount) {
+    return layout == ApolloSubredditFeedLayoutGrid && itemCount >= 5;
+}
+
+BOOL ApolloFeedShortcutSplitsOntoTwoLines(ApolloSubredditFeedLayout layout, NSUInteger itemCount) {
+    return layout == ApolloSubredditFeedLayoutSideBySide && itemCount > 4;
+}
+
+BOOL ApolloFeedShortcutUsesCompactLayout(ApolloSubredditFeedLayout layout, NSUInteger itemCount,
+                                         CGFloat availableWidth, CGFloat widthLimit) {
+    if (layout == ApolloSubredditFeedLayoutGrid) {
+        // Five across is always tight; four only on narrow phones.
+        return itemCount >= 5 || (itemCount == 4 && availableWidth <= widthLimit);
+    }
+    if (layout == ApolloSubredditFeedLayoutSideBySide) {
+        return itemCount == 4 && availableWidth <= widthLimit; // five splits onto two lines instead
+    }
+    return NO;
+}
+
 NSString *ApolloFeedShortcutShortTitle(NSInteger index) {
-    return index >= 0 && index < 4 ? kApolloFeedShortcutShortTitles[index] : @"";
+    return index >= 0 && index < kApolloFeedShortcutCount ? kApolloFeedShortcutShortTitles[index] : @"";
 }
 
 NSString *ApolloFeedShortcutRowTitle(NSInteger index) {
-    return index >= 0 && index < 4 ? kApolloFeedShortcutRowTitles[index] : @"";
+    return index >= 0 && index < kApolloFeedShortcutCount ? kApolloFeedShortcutRowTitles[index] : @"";
 }
 
 NSString *ApolloFeedShortcutDetail(NSInteger index) {
-    return index >= 0 && index < 4 ? kApolloFeedShortcutDetails[index] : @"";
+    return index >= 0 && index < kApolloFeedShortcutCount ? kApolloFeedShortcutDetails[index] : @"";
 }
 
 UIColor *ApolloFeedShortcutColor(NSInteger index) {
@@ -118,6 +188,7 @@ UIColor *ApolloFeedShortcutColor(NSInteger index) {
         case 0: return [UIColor colorWithRed:254.0 / 255.0 green:0.0 blue:98.0 / 255.0 alpha:1.0];
         case 1: return [UIColor colorWithRed:0.0 green:143.0 / 255.0 blue:253.0 / 255.0 alpha:1.0];
         case 2: return [UIColor colorWithRed:1.0 / 255.0 green:214.0 / 255.0 blue:51.0 / 255.0 alpha:1.0];
+        case 4: return [UIColor colorWithRed:247.0 / 255.0 green:150.0 / 255.0 blue:46.0 / 255.0 alpha:1.0]; // Pal Home: warm orange
         default: return [UIColor colorWithWhite:0.46 alpha:1.0];
     }
 }
@@ -151,9 +222,12 @@ static UIImage *ApolloFeedShortcutGlyph(NSInteger index) {
 
     UIImageSymbolConfiguration *configuration =
         [UIImageSymbolConfiguration configurationWithPointSize:17.5 weight:UIImageSymbolWeightSemibold];
-    NSString *symbolName = index == 2 ? @"square.stack.3d.up" : @"checkmark.shield.fill";
-    return [[UIImage systemImageNamed:symbolName withConfiguration:configuration]
-        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    NSString *symbolName = index == 2 ? @"square.stack.3d.up"
+        : index == ApolloFeedShortcutPalHomeIndex ? @"pawprint.fill" : @"checkmark.shield.fill";
+    // pawprint arrived in SF Symbols 3 (iOS 15); iOS 14 gets a house.
+    UIImage *symbol = [UIImage systemImageNamed:symbolName withConfiguration:configuration]
+        ?: [UIImage systemImageNamed:@"house.fill" withConfiguration:configuration];
+    return [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
 static CGFloat ApolloFeedShortcutOpaqueMaxDimension(UIImage *image) {
@@ -240,7 +314,7 @@ static NSNumber *ApolloFeedShortcutIconCacheKey(NSInteger index,
                                                 CGFloat canvasSize,
                                                 CGFloat glyphMetric) {
     static const NSInteger kBucketStride = 128;
-    static const NSInteger kFeedCount = 4;
+    static const NSInteger kFeedCount = kApolloFeedShortcutCount;
     NSInteger canvasBucket = (NSInteger)lround(canvasSize * 2.0);
     NSInteger glyphBucket = (NSInteger)lround(glyphMetric * 2.0);
     NSInteger key = ((((NSInteger)style * kBucketStride + canvasBucket) * kBucketStride + glyphBucket) *
@@ -252,6 +326,10 @@ UIImage *ApolloFeedShortcutIconImage(NSInteger index,
                                      ApolloSubredditFeedIconStyle style,
                                      ApolloSubredditFeedLayout layout,
                                      NSUInteger itemCount) {
+    // Apollo has no classic orb for Pal Home; it wears the circle style instead.
+    if (style == ApolloSubredditFeedIconStyleClassic && index == ApolloFeedShortcutPalHomeIndex) {
+        style = ApolloSubredditFeedIconStyleCircle;
+    }
     if (style == ApolloSubredditFeedIconStyleClassic) {
         return [ApolloSubredditClassicMetaFeedIcon(index) imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
     }
@@ -349,6 +427,14 @@ CGFloat ApolloFeedShortcutLayoutHeight(ApolloSubredditFeedLayout layout,
     return 0.0;
 }
 
+CGFloat ApolloFeedShortcutLayoutHeightForCount(ApolloSubredditFeedLayout layout,
+                                               UITraitCollection *traitCollection,
+                                               NSUInteger itemCount) {
+    CGFloat height = ApolloFeedShortcutLayoutHeight(layout, traitCollection);
+    // Two lines: each a little tighter than a lone strip.
+    return ApolloFeedShortcutSplitsOntoTwoLines(layout, itemCount) ? ceil(height * 1.75) : height;
+}
+
 CGFloat ApolloFeedShortcutRowHeight(UITraitCollection *traitCollection) {
     UIFont *titleFont = [UIFont preferredFontForTextStyle:UIFontTextStyleBody
                                 compatibleWithTraitCollection:traitCollection];
@@ -368,6 +454,7 @@ CGFloat ApolloFeedShortcutDisplayIconSize(ApolloSubredditFeedIconStyle style,
         return style == ApolloSubredditFeedIconStyleTinted ? 30.0 : 34.0;
     }
     if (layout == ApolloSubredditFeedLayoutGrid) {
+        if (itemCount >= 5) return style == ApolloSubredditFeedIconStyleTinted ? 38.0 : 42.0;
         return style == ApolloSubredditFeedIconStyleTinted ? 40.0 : 46.0;
     }
     if (layout == ApolloSubredditFeedLayoutIconDock) return 34.0;
