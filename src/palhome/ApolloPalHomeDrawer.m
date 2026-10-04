@@ -13,7 +13,7 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
 @property (nonatomic) BOOL shelfBuilt;
 @property (nonatomic, strong, nullable) APStyleSpec *pendingStyle; // the style being previewed
 @property (nonatomic) BOOL previewingFresh;                          // previewing Start Fresh
-@property (nonatomic) APStyleApply previewMode;                      // Furnished / Bare / My things
+@property (nonatomic) APStyleApply previewMode;                      // Full / Bare / Mine, for the card on show
 @property (nonatomic, copy, nullable) NSString *committedStyleID;    // the room's real style while previewing
 @property (nonatomic) BOOL committedFresh;
 @property (nonatomic, strong) NSArray<ApolloPixelButton *> *modeButtons;
@@ -498,6 +498,9 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     APStyleSpec *style = fresh ? nil : styles[sender.tag];
     BOOL backToOwn = fresh ? self.committedFresh : (!self.committedFresh && [style.identifier isEqual:self.committedStyleID]);
     if (backToOwn && self.isPreviewing) { [self leaveStyleChoice]; return; }
+    // A new card always shows furnished, so you get a feel for each style as
+    // you flick; Bare / Mine are for the one you're looking at.
+    if (fresh != self.previewingFresh || ![style.identifier isEqual:self.pendingStyle.identifier]) self.previewMode = APStyleFurnished;
     self.previewingFresh = fresh;
     self.pendingStyle = style;
     [self refreshHeader];
