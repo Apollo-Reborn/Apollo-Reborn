@@ -343,7 +343,7 @@ APStyleSpec *APHalloweenManorStyle(void) {
             I(@"fireplace", 0, 0, 0), I(@"candelabra", 3, 0, 1), I(@"bookshelf", 5, 0, 0), I(@"grandfather", 7, 0, 0),
             I(@"rug.woven", 2, 2, 0), I(@"armchair", 5, 2, 0), I(@"cauldron", 1, 3, 0), I(@"petbed.cushion", 6, 4, 0),
             I(@"pumpkin", 0, 6, 0), I(@"candybowl", 7, 6, 0), I(@"tombstone", 3, 6, 1),
-            I(@"window", 3, 0, 1), I(@"sconce", 1, 0, 0), I(@"sconce", 6, 0, 0), I(@"spiderweb", 7, 1, 0), I(@"art.portrait", 0, 1, 0),
+            I(@"window", 3, 0, 1), I(@"sconce", 1, 0, 0), I(@"sconce", 6, 0, 0), I(@"spiderweb", 7, 1, 0), I(@"art.portrait", 0, 0, 1),
             I(@"cobwebs", 0, 0, 0), I(@"batgarland", 2, 0, 0), APFlipped(I(@"cobwebs", 6, 0, 0))]};
     };
     return manor;
