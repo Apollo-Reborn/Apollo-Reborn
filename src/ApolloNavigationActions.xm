@@ -34,6 +34,7 @@ static char kActionsStandardMoreKey;
 static char kActionsScrollOwnerKey;
 static char kActionsChromeKey;
 static char kActionsBlueDoneKey;
+static char kActionsNativeEditAccentKey;
 static char kActionsAccentSubmitKey;
 static char kActionsApprovedLayoutKey;
 static char kActionsDuoOriginalItemsKey;
@@ -87,6 +88,9 @@ static UIColor *ApolloActionsAccentSubmitColor(void) {
 // Keep right-item chrome neutral before it appears, including lone actions on
 // profile feeds. Mark only the actual item content, never the whole nav bar.
 static UIColor *ApolloActionsChromeColor(id object) {
+    if ([objc_getAssociatedObject(object, &kActionsNativeEditAccentKey) boolValue]) {
+        return ApolloActionsAccentSubmitColor();
+    }
     if (@available(iOS 26.0, *)) {
         if ([object isKindOfClass:UIBarButtonItem.class]
             && [((UIBarButtonItem *)object).identifier isEqualToString:@"ApolloReborn.subreddits.edit"]
@@ -108,6 +112,19 @@ static void ApolloActionsPinChrome(id object) {
         [object setTintColor:chrome];
         objc_setAssociatedObject(object, &kActionsChromeKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+}
+
+void ApolloNavigationActionsSetNativeEditingAccent(UIBarButtonItem *item, BOOL enabled) {
+    if (!item) return;
+    BOOL wasEnabled = [objc_getAssociatedObject(item, &kActionsNativeEditAccentKey) boolValue];
+    if (!enabled && !wasEnabled) return;
+    if (wasEnabled != enabled) {
+        objc_setAssociatedObject(item, &kActionsNativeEditAccentKey,
+                                 enabled ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Use the shared tint owner so later Apollo theme/chrome writes cannot
+    // turn the native prominent Done circle back into a label-colored fill.
+    ApolloActionsPinChrome(item);
 }
 
 static UIImage *ApolloActionsTemplateImage(UIImage *image) {
