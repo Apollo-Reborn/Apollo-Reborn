@@ -8,10 +8,13 @@ NS_ASSUME_NONNULL_BEGIN
 // Procedural ambient sound for Pal Home: nothing is bundled, every layer is
 // synthesised live (crackling fire, rain, wind, ticking clocks, a music-box
 // lullaby, station hum, crickets, bubbles) and mixed from what's in the room.
-// Uses the ambient audio category: mixes with other audio and respects the
-// silent switch.
+// Mixes with other audio. On: the ambient category, quiet in Silent Mode.
+// Always: the playback category, so it plays in Silent Mode too.
+typedef NS_ENUM(NSInteger, APSoundMode) { APSoundOff = 0, APSoundOn, APSoundAlways };
+
 @interface ApolloPalHomeAmbience : NSObject
-@property (class, nonatomic, getter=isEnabled) BOOL enabled; // persisted, default on
+@property (class, nonatomic) APSoundMode mode; // persisted, default On
+@property (class, nonatomic, readonly, getter=isEnabled) BOOL enabled; // mode != Off
 - (void)updateForLayout:(APRoomLayout *)layout minuteOfDay:(int)minute;
 - (void)start;
 - (void)stop;

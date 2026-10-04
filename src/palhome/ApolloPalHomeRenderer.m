@@ -613,6 +613,8 @@ APCanvas *APIconCanvas(NSString *name) {
                        @{@"o": @0x2A1C10, @"a": @0xF4EEE0, @"b": @0xC83A3A, @"d": @0xC8BCA8}],
             @"speaker": @[@[@"...o.....", @"..oo..o..", @"oooo.o.o.", @"oaao...o.", @"oaao...o.", @"oooo.o.o.", @"..oo..o..", @"...o....."],
                           @{@"o": @0x3A2414, @"a": @0xF4E8D0}],
+            @"speaker.loud": @[@[@"...o.......", @"..oo..o..o.", @"oooo.o.o..o", @"oaao...o..o", @"oaao...o..o", @"oooo.o.o..o", @"..oo..o..o.", @"...o......."],
+                               @{@"o": @0x3A2414, @"a": @0xF4E8D0}],
             @"mute": @[@[@"...o.....", @"..oo.....", @"oooo.o.o.", @"oaao..o..", @"oaao..o..", @"oooo.o.o.", @"..oo.....", @"...o....."],
                        @{@"o": @0x3A2414, @"a": @0xF4E8D0}],
             @"girl": @[@[@".ooo.", @"o...o", @".ooo.", @"..o..", @".ooo.", @"..o.."], @{@"o": @0xF07AA0}],

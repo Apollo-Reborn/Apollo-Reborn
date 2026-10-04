@@ -9,6 +9,7 @@
 #endif
 
 static NSString *const kSoundKey = @"ApolloRebornPalHomeSound";
+static NSString *const kSoundAlwaysKey = @"ApolloRebornPalHomeSoundAlways";
 
 // Target levels for each layer (0 = off). Written on the main thread, read
 // by the render thread; plain floats are fine (a torn read is inaudible).
@@ -196,12 +197,19 @@ static float APAmbienceSample(APAmbienceState *s) {
 
 @implementation ApolloPalHomeAmbience
 
-+ (BOOL)isEnabled {
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kSoundKey];
-    return value ? [value boolValue] : YES;
++ (APSoundMode)mode {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id value = [defaults objectForKey:kSoundKey];
+    if (value && ![value boolValue]) return APSoundOff;
+    return [defaults boolForKey:kSoundAlwaysKey] ? APSoundAlways : APSoundOn;
 }
 
-+ (void)setEnabled:(BOOL)enabled { [NSUserDefaults.standardUserDefaults setBool:enabled forKey:kSoundKey]; }
++ (void)setMode:(APSoundMode)mode {
+    [NSUserDefaults.standardUserDefaults setBool:mode != APSoundOff forKey:kSoundKey];
+    [NSUserDefaults.standardUserDefaults setBool:mode == APSoundAlways forKey:kSoundAlwaysKey];
+}
+
++ (BOOL)isEnabled { return self.mode != APSoundOff; }
 
 - (instancetype)init {
     if ((self = [super init])) {
@@ -290,7 +298,9 @@ static float APAmbienceSample(APAmbienceState *s) {
     }
     self.previousCategory = session.category;
     self.previousOptions = session.categoryOptions;
-    [session setCategory:AVAudioSessionCategoryAmbient withOptions:AVAudioSessionCategoryOptionMixWithOthers error:&error];
+    // Always: playback (heard in Silent Mode); On: ambient (follows it). Both mix.
+    AVAudioSessionCategory category = ApolloPalHomeAmbience.mode == APSoundAlways ? AVAudioSessionCategoryPlayback : AVAudioSessionCategoryAmbient;
+    [session setCategory:category withOptions:AVAudioSessionCategoryOptionMixWithOthers error:&error];
     [session setActive:YES error:nil];
 #endif
     if (!self.engine) {

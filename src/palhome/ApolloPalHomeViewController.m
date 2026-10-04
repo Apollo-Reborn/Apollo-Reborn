@@ -121,7 +121,7 @@ static NSString *sPendingVisit;
     self.cameraButton.tileHeight = 16;
     [self.view addSubview:self.cameraButton];
     self.ambience = [ApolloPalHomeAmbience new];
-    self.soundButton = [self toolButton:@"speaker" label:@"Sound" hint:@"Cosy room sounds. They follow the silent switch." action:@selector(toggleSound)];
+    self.soundButton = [self toolButton:@"speaker" label:@"Sound" hint:@"Cosy room sounds. Off, on (quiet in Silent Mode), or always." action:@selector(toggleSound)];
     self.soundButton.tileWidth = 18;
     self.soundButton.tileHeight = 16;
     [self.view addSubview:self.soundButton];
@@ -304,17 +304,25 @@ static NSString *sPendingVisit;
     return (int)(parts.hour * 60 + parts.minute);
 }
 
+// Off → On (follows the silent switch) → Always (plays in Silent Mode too).
 - (void)toggleSound {
-    ApolloPalHomeAmbience.enabled = !ApolloPalHomeAmbience.isEnabled;
+    APSoundMode next = (APSoundMode)((ApolloPalHomeAmbience.mode + 1) % 3);
+    ApolloPalHomeAmbience.mode = next;
+    // The audio category changes between On and Always: restart to apply it.
+    [self.ambience stop];
     [self updateSoundButton];
     [self updateActivity];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, ApolloPalHomeAmbience.isEnabled ? @"Sound on" : @"Sound off");
+    APHapticPlay(APHapticToggle);
+    NSArray *lines = next == APSoundOff ? @[@"Sound off", @"Quiet as a mouse."]
+                   : next == APSoundOn ? @[@"Sound on", @"Quiet when your phone is on silent."]
+                                       : @[@"Sound always on", @"Plays even when your phone is on silent."];
+    [self toast:lines];
 }
 
 - (void)updateSoundButton {
-    BOOL on = ApolloPalHomeAmbience.isEnabled;
-    self.soundButton.iconName = on ? @"speaker" : @"mute";
-    self.soundButton.accessibilityValue = on ? @"On" : @"Off";
+    APSoundMode mode = ApolloPalHomeAmbience.mode;
+    self.soundButton.iconName = mode == APSoundOff ? @"mute" : mode == APSoundOn ? @"speaker" : @"speaker.loud";
+    self.soundButton.accessibilityValue = mode == APSoundOff ? @"Off" : mode == APSoundOn ? @"On, follows the silent switch" : @"Always on, even in Silent Mode";
 }
 
 - (void)refreshHome {
