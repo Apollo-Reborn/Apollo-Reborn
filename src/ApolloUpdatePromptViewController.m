@@ -200,6 +200,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     UIStackView *_chooserHeader;
     UIStackView *_chooserRows;
     UIButton *_updateButton;
+    UILabel *_versionsLabel;
 
     // Pinned bottom bar (Update / Later / Skip) shared by the summary and the notes.
     UIView *_actionsBar;
@@ -469,9 +470,9 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     UILabel *subtitle = [self apollo_labelWithText:@"See what's new and get the latest version of Apollo Reborn."
                                               font:[UIFont preferredFontForTextStyle:UIFontTextStyleBody]
                                              color:[UIColor secondaryLabelColor]];
-    UILabel *versions = [self apollo_labelWithText:[NSString stringWithFormat:@"%@ \u2192 %@", _installedVersion, _info.version]
-                                              font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]
-                                             color:[UIColor tertiaryLabelColor]];
+    _versionsLabel = [self apollo_labelWithText:@"" font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]
+                                          color:[UIColor tertiaryLabelColor]];
+    UILabel *versions = _versionsLabel;   // text is set by -apollo_updateAccentColors
 
     NSMutableArray<UIView *> *header = [NSMutableArray arrayWithObjects:iconView, pill, title, subtitle, versions, nil];
     if (canUpdate && (_info.notesSourceURL || _info.releaseURL)) {
@@ -843,12 +844,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     _promptHeader.transform = CGAffineTransformMakeScale(0.82, 0.82);
     _promptActions.alpha = 0.0;
     _promptActions.transform = CGAffineTransformMakeTranslation(0, 10);
-    [self apollo_updateButtonTitleColor];
+    [self apollo_updateAccentColors];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    [self apollo_updateButtonTitleColor];   // in the hierarchy now, so real traits
+    [self apollo_updateAccentColors];   // in the hierarchy now, so real traits
     if (_hasAnimatedIn) return;
     _hasAnimatedIn = YES;
     [self apollo_animateEntrance];
@@ -879,18 +880,32 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     } completion:nil];
 }
 
-// Black-vs-white title on the accent fill; static, so re-run on appearance changes
-// (stock monochromatic/chumbus accents are near-white).
-- (void)apollo_updateButtonTitleColor {
+// Everything that depends on the resolved accent. Static, so re-run on appearance changes
+// (stock monochromatic/chumbus accents are near-white): black-vs-white title on the accent
+// fill, and the new version in the accent unless that would vanish on a white sheet.
+- (void)apollo_updateAccentColors {
     UIColor *accent = _accent ?: [UIColor systemBlueColor];
     BOOL lightAccent = ApolloColorIsLight([accent resolvedColorWithTraitCollection:self.traitCollection]);
     [_updateButton setTitleColor:lightAccent ? [UIColor blackColor] : [UIColor whiteColor] forState:UIControlStateNormal];
+
+    UIFont *small = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    BOOL darkSheet = self.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark;
+    UIColor *newColor = (lightAccent && !darkSheet) ? [UIColor labelColor] : accent;
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
+        initWithString:[NSString stringWithFormat:@"%@ \u2192 ", _installedVersion]
+            attributes:@{NSFontAttributeName: small, NSForegroundColorAttributeName: [UIColor tertiaryLabelColor]}];
+    [text appendAttributedString:[[NSAttributedString alloc]
+        initWithString:_info.version
+            attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:small.pointSize weight:UIFontWeightSemibold],
+                         NSForegroundColorAttributeName: newColor}]];
+    _versionsLabel.attributedText = text;
+    _versionsLabel.accessibilityLabel = [NSString stringWithFormat:@"Version %@ to %@", _installedVersion, _info.version];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     [super traitCollectionDidChange:previous];
     if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previous]) {
-        [self apollo_updateButtonTitleColor];
+        [self apollo_updateAccentColors];
     }
 }
 
