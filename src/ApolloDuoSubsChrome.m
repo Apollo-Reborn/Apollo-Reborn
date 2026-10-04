@@ -8,6 +8,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoRailLayout.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloNavigationActions.h"
 
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -38,6 +39,9 @@ static char kApolloDuoEditOnlyAppliedKey;
 static char kApolloDuoEditOnlySavedLeftItemsKey;
 static char kApolloDuoEditOnlySavedRightItemsKey;
 static char kApolloDuoEditOnlySavedSupplementKey;
+static char kApolloDuoSubsPopupBarKey;
+static char kApolloDuoSubsPopupLeftItemsKey;
+static char kApolloDuoSubsPopupRightItemsKey;
 
 static void ApolloDuoSubsChromeToggleEditing(UIViewController *controller);
 
@@ -79,6 +83,57 @@ static UIBarButtonItem *ApolloDuoSubsChromeAddBarButtonItem(UIViewController *co
     if (!ivar) ivar = class_getInstanceVariable(controller.class, "_addBarButtonItem");
     id value = ivar ? object_getIvar(controller, ivar) : nil;
     return [value isKindOfClass:[UIBarButtonItem class]] ? value : nil;
+}
+
+static void ApolloDuoSubsChromeApplyPopupItems(UIViewController *controller, UINavigationBar *bar) {
+    UIBarButtonItem *add = ApolloDuoSubsChromeAddBarButtonItem(controller);
+    UIBarButtonItem *edit = controller.editButtonItem;
+    ApolloNavigationActionsSetNativeEditingAccent(edit, IsLiquidGlass() && controller.isEditing);
+    if (@available(iOS 27.1, *)) {
+        if (add.axisBehavior != UIBarButtonItemAxisBehaviorHorizontalOnly) {
+            add.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+        }
+        if (edit.axisBehavior != UIBarButtonItemAxisBehaviorHorizontalOnly) {
+            edit.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
+        }
+    }
+    // A bar item must have only one rendering owner. In particular, leaving
+    // Add on the hidden managed bar lets Duo's screen rail claim its view.
+    UINavigationItem *nativeItem = controller.navigationItem;
+    if (nativeItem.leftBarButtonItems.count) nativeItem.leftBarButtonItems = nil;
+    if (nativeItem.rightBarButtonItems.count) nativeItem.rightBarButtonItems = nil;
+    UINavigationItem *popupItem = bar.topItem;
+    NSArray *left = add ? @[add] : @[];
+    NSArray *right = edit ? @[edit] : @[];
+    if (![popupItem.leftBarButtonItems ?: @[] isEqualToArray:left]) popupItem.leftBarButtonItems = left;
+    if (![popupItem.rightBarButtonItems ?: @[] isEqualToArray:right]) popupItem.rightBarButtonItems = right;
+}
+
+void ApolloDuoSubsChromeSetPopupNavigationBar(UIViewController *controller, UINavigationBar *bar) {
+    UINavigationBar *previous = objc_getAssociatedObject(controller, &kApolloDuoSubsPopupBarKey);
+    if (bar == previous) return;
+    if (previous) {
+        ApolloNavigationActionsSetNativeEditingAccent(controller.editButtonItem, NO);
+        // Release the standalone item's ownership before native navigation
+        // rebuilds the cover bar with these same actions.
+        previous.topItem.leftBarButtonItems = nil;
+        previous.topItem.rightBarButtonItems = nil;
+        [previous setItems:@[] animated:NO];
+        controller.navigationItem.leftBarButtonItems = objc_getAssociatedObject(controller, &kApolloDuoSubsPopupLeftItemsKey);
+        controller.navigationItem.rightBarButtonItems = objc_getAssociatedObject(controller, &kApolloDuoSubsPopupRightItemsKey);
+        objc_setAssociatedObject(controller, &kApolloDuoSubsPopupLeftItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(controller, &kApolloDuoSubsPopupRightItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    objc_setAssociatedObject(controller, &kApolloDuoSubsPopupBarKey, bar, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!bar) return;
+    objc_setAssociatedObject(controller, &kApolloDuoSubsPopupLeftItemsKey,
+                             controller.navigationItem.leftBarButtonItems ?: @[], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(controller, &kApolloDuoSubsPopupRightItemsKey,
+                             controller.navigationItem.rightBarButtonItems ?: @[], OBJC_ASSOCIATION_COPY_NONATOMIC);
+    UINavigationItem *item = [[UINavigationItem alloc] initWithTitle:@""];
+    item.hidesBackButton = YES;
+    [bar setItems:@[item] animated:NO];
+    ApolloDuoSubsChromeApplyPopupItems(controller, bar);
 }
 
 static BOOL ApolloDuoSubsChromeItemLooksLikeEdit(UIBarButtonItem *item, UIBarButtonItem *editItem) {
@@ -1014,16 +1069,14 @@ void ApolloDuoSubsChromeApply(UIViewController *controller) {
     }
 
     if (ApolloDuoSplitIsSidebarController(controller)) {
-        // In the expanded sidebar the native text Edit item fits naturally;
-        // the compact vertical rail keeps its pencil/checkmark presentation.
         ApolloDuoSubsChromeRemoveSideEdit(controller);
         ApolloDuoSubsChromeRestoreFABLayout(controller);
-        if (controller.navigationItem.title.length) controller.navigationItem.title = @"";
-        if (controller.navigationItem.titleView) controller.navigationItem.titleView = nil;
-        UIBarButtonItem *edit = controller.editButtonItem;
-        if (![controller.navigationItem.rightBarButtonItems isEqualToArray:@[edit]]) {
-            controller.navigationItem.rightBarButtonItems = @[edit];
+        UINavigationBar *popupBar = objc_getAssociatedObject(controller, &kApolloDuoSubsPopupBarKey);
+        if (popupBar) {
+            ApolloDuoSubsChromeApplyPopupItems(controller, popupBar);
         }
+        // Before binding and during teardown, preserve the managed item's
+        // native state. The standalone bar is the sole popup item owner.
         return;
     }
 

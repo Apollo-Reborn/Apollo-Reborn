@@ -59,6 +59,8 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoSearchLandingViewController.h"
 #import "ApolloGoogleSearchTab.h"
 #import "ApolloState.h"
 #import "ApolloToast.h"
@@ -94,6 +96,7 @@
 extern "C" {
 #endif
 extern void ApolloSwiftAssignOptionalStringArray(void *storage, const void *arrayObject);
+extern void *ApolloSwiftCopyOptionalStringArray(const void *storage);
 #ifdef __cplusplus
 }
 #endif
@@ -181,21 +184,21 @@ static void ApolloSearchTabUpdateRefreshAvailability(UIViewController *vc) {
     }
 }
 
-static BOOL ApolloSearchTabAssignTrendingSubreddits(
-    UIViewController *vc,
-    NSArray<NSString *> *subreddits
-) {
-    if (!vc || !subreddits) return NO;
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "trendingSubreddits");
-        if (!ivar) continue;
-        uint8_t *base = (uint8_t *)(__bridge void *)vc;
-        void *storage = base + ivar_getOffset(ivar);
-        ApolloSwiftAssignOptionalStringArray(
-            storage, (__bridge const void *)subreddits);
-        return YES;
-    }
-    return NO;
+static void *ApolloSearchTabTrendingStorage(UIViewController *vc) {
+    if (!vc) return NULL;
+    Ivar ivar = class_getInstanceVariable(vc.class, "trendingSubreddits");
+    return ivar ? (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar) : NULL;
+}
+
+static NSArray<NSString *> *ApolloSearchTabCopyTrending(UIViewController *vc) {
+    return (__bridge_transfer NSArray *)ApolloSwiftCopyOptionalStringArray(ApolloSearchTabTrendingStorage(vc));
+}
+
+static BOOL ApolloSearchTabAssignTrendingSubreddits(UIViewController *vc, NSArray<NSString *> *subreddits) {
+    void *storage = ApolloSearchTabTrendingStorage(vc);
+    if (!storage || !subreddits) return NO;
+    ApolloSwiftAssignOptionalStringArray(storage, (__bridge const void *)subreddits);
+    return YES;
 }
 
 static BOOL ApolloSearchTabRandomNSFWEnabled(void) {
@@ -409,6 +412,118 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     return thick;
 }
 
+// MARK: - Open Duo Search landing
+// The native table keeps owning search state, trending data and navigation.
+// Only its empty-query presentation is replaced; narrowing a split pane is
+// handled by the child controller's ordinary Auto Layout stack.
+static char kDuoSearchLanding, kDuoSearchUpdatePending, kDuoSearchPriorTopEdge, kDuoSearchTableWasHidden;
+
+static ApolloDuoSearchLandingViewController *ApolloSearchTabDuoLanding(UIViewController *vc) {
+    return objc_getAssociatedObject(vc, &kDuoSearchLanding);
+}
+
+static void ApolloSearchTabSetDuoVisible(UIViewController *vc, BOOL show) {
+    ApolloDuoSearchLandingViewController *landing = ApolloSearchTabDuoLanding(vc);
+    if (!landing || show == !landing.view.hidden) return;
+    UITableView *table = ApolloSearchTabTableView(vc);
+    if (show) {
+        objc_setAssociatedObject(vc, &kDuoSearchTableWasHidden, @(table.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        table.hidden = YES;
+        [vc.view bringSubviewToFront:landing.view];
+    } else {
+        NSNumber *wasHidden = objc_getAssociatedObject(vc, &kDuoSearchTableWasHidden);
+        if (wasHidden) table.hidden = wasHidden.boolValue;
+        objc_setAssociatedObject(vc, &kDuoSearchTableWasHidden, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [landing.refreshControl endRefreshing];
+    }
+    landing.view.hidden = !show;
+    landing.scrollView.scrollsToTop = show;
+    if (@available(iOS 15.0, *)) {
+        if (show) {
+            id previous = [vc contentScrollViewForEdge:NSDirectionalRectEdgeTop];
+            objc_setAssociatedObject(vc, &kDuoSearchPriorTopEdge, previous ?: NSNull.null, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [vc setContentScrollView:landing.scrollView forEdge:NSDirectionalRectEdgeTop];
+        } else {
+            id previous = objc_getAssociatedObject(vc, &kDuoSearchPriorTopEdge);
+            if (previous && [vc contentScrollViewForEdge:NSDirectionalRectEdgeTop] == landing.scrollView)
+                [vc setContentScrollView:previous == NSNull.null ? nil : previous forEdge:NSDirectionalRectEdgeTop];
+            objc_setAssociatedObject(vc, &kDuoSearchPriorTopEdge, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+}
+
+static void ApolloSearchTabOpenDuoSubreddit(UIViewController *vc, NSString *name) {
+    UITableView *table = ApolloSearchTabTableView(vc);
+    if (!ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsResizing() ||
+        !vc.viewIfLoaded.window || !name.length || !ApolloSearchTabIsDefaultState(vc) ||
+        vc.navigationController.transitionCoordinator || vc.presentedViewController) return;
+    [ApolloSearchTabSearchBar(vc) resignFirstResponder];
+    NSArray<NSString *> *trending = ApolloSearchTabCopyTrending(vc);
+    NSUInteger row = [trending indexOfObjectPassingTest:^BOOL(NSString *value, NSUInteger index, BOOL *stop) {
+        return [value caseInsensitiveCompare:name] == NSOrderedSame;
+    }];
+    if (!trending) row = NSNotFound;
+    if (row != NSNotFound) {
+        [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:2]];
+        return;
+    }
+}
+
+static void ApolloSearchTabUpdateDuoLanding(UIViewController *vc) {
+    BOOL show = ApolloDuoSplitIsUnfolded() && ApolloSearchTabIsDefaultState(vc);
+    ApolloDuoSearchLandingViewController *landing = ApolloSearchTabDuoLanding(vc);
+    if (!landing && show && ApolloSearchTabTableView(vc)) {
+        // Use Apollo's original artwork, including the same #647 weight fix
+        // applied to its native Random Subreddit row below.
+        UIImage *trendingIcon = [[UIImage imageNamed:@"option-trending"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        UIImage *randomSource = [UIImage imageNamed:@"random-subreddit"];
+        UIImage *randomIcon = ApolloThickenedTemplateIcon(randomSource) ?: [randomSource imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        landing = [[ApolloDuoSearchLandingViewController alloc] initWithTrendingIcon:trendingIcon randomIcon:randomIcon];
+        __weak UIViewController *weakVC = vc;
+        landing.selectSubreddit = ^(NSString *name) {
+            UIViewController *controller = weakVC;
+            if (controller) ApolloSearchTabOpenDuoSubreddit(controller, name);
+        };
+        landing.selectRandom = ^(BOOL nsfw) {
+            UIViewController *controller = weakVC;
+            UITableView *table = ApolloSearchTabTableView(controller);
+            if (!ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsResizing() ||
+                !controller.viewIfLoaded.window || !ApolloSearchTabIsDefaultState(controller) ||
+                controller.navigationController.transitionCoordinator) return;
+            [ApolloSearchTabSearchBar(controller) resignFirstResponder];
+            [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:nsfw ? 1 : 0 inSection:3]];
+        };
+        landing.refreshRequested = ^(UIRefreshControl *refresh) {
+            [(_TtC6Apollo20SearchViewController *)weakVC apollo_refreshTrendingSubreddits:refresh];
+        };
+        [vc addChildViewController:landing];
+        landing.view.frame = vc.view.bounds;
+        landing.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        landing.view.hidden = YES;
+        [vc.view addSubview:landing.view];
+        [landing didMoveToParentViewController:vc];
+        objc_setAssociatedObject(vc, &kDuoSearchLanding, landing, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (show && landing) {
+        [landing updateTrending:ApolloSearchTabCopyTrending(vc) ?: @[]
+                         recent:@[]
+                     randomNSFW:ApolloSearchTabRandomNSFWActive(vc) && !ApolloSearchTabRandomNSFWSuppressed(vc)];
+    }
+    ApolloSearchTabSetDuoVisible(vc, show);
+}
+
+static void ApolloSearchTabScheduleDuoUpdate(UIViewController *vc) {
+    if (objc_getAssociatedObject(vc, &kDuoSearchUpdatePending)) return;
+    objc_setAssociatedObject(vc, &kDuoSearchUpdatePending, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakVC = vc;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *controller = weakVC;
+        if (!controller) return;
+        objc_setAssociatedObject(controller, &kDuoSearchUpdatePending, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSearchTabUpdateDuoLanding(controller);
+    });
+}
+
 %hook _TtC6Apollo20SearchViewController
 
 // MARK: Trending refresh
@@ -436,6 +551,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloSearchTabUpdateRefreshAvailability(self);
     ApolloGoogleSearchTabViewDidLoad(self);
+    ApolloSearchTabScheduleDuoUpdate(self);
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -443,6 +559,15 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabSyncRandomNSFWSection(self);
     ApolloSearchTabUpdateRefreshAvailability(self);
     ApolloGoogleSearchTabViewDidAppear(self);
+    ApolloSearchTabUpdateDuoLanding(self);
+    [ApolloSearchTabDuoLanding(self) refreshTheme];
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloDuoSearchLandingViewController *landing = ApolloSearchTabDuoLanding(self);
+    BOOL shouldShow = ApolloDuoSplitIsUnfolded() && ApolloSearchTabIsDefaultState(self);
+    if (shouldShow != (landing && !landing.view.hidden)) ApolloSearchTabScheduleDuoUpdate(self);
 }
 
 %new
@@ -452,6 +577,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
         return;
     }
     if ([objc_getAssociatedObject(self, kApolloSearchRefreshInFlightKey) boolValue]) {
+        [refreshControl endRefreshing];
         return;
     }
     objc_setAssociatedObject(self, kApolloSearchRefreshInFlightKey, @YES,
@@ -494,6 +620,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
                 [tableView reloadSections:[NSIndexSet indexSetWithIndex:2]
                          withRowAnimation:UITableViewRowAnimationAutomatic];
             }
+            ApolloSearchTabScheduleDuoUpdate(controller);
             ApolloLog(@"[SearchTabFixes] refreshed %lu trending subreddit(s)",
                       (unsigned long)subreddits.count);
         });
@@ -503,6 +630,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
 
 - (void)searchBar:(UISearchBar *)bar textDidChange:(NSString *)text {
     BOOL nextDefaultState = text.length == 0;
+    if (!nextDefaultState) ApolloSearchTabSetDuoVisible(self, NO);
     ApolloSearchTabPrepareForModeTransition(self, nextDefaultState);
     %orig;
     ApolloSearchTabFinishModeTransition(self, nextDefaultState);
@@ -511,6 +639,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     // Google mode: Apollo's own suggestions above still update (hidden under
     // the Google list), so switching back to Reddit shows current ones.
     ApolloGoogleSearchTabTextDidChange(self, text);
+    ApolloSearchTabUpdateDuoLanding(self);
 }
 
 // Google mode runs its own search; Reddit mode is Apollo's, untouched.
@@ -526,6 +655,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     ApolloSearchTabApplyTopInset(self, bar);
     ApolloSearchTabUpdateRefreshAvailability(self);
     ApolloGoogleSearchTabDidCancel(self);
+    ApolloSearchTabUpdateDuoLanding(self);
 }
 
 // MARK: Random action group
@@ -533,6 +663,9 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
 - (NSInteger)tableView:(UITableView *)tableView
  numberOfRowsInSection:(NSInteger)section {
     NSInteger count = %orig;
+    // Native trending arrives asynchronously and reloads section 2. Coalesce
+    // its datasource callback so the landing follows the same model.
+    if (section == 2 && ApolloDuoSplitIsUnfolded()) ApolloSearchTabScheduleDuoUpdate(self);
     if (section == 3 &&
         count == 1 &&
         ApolloSearchTabRandomNSFWActive(self) &&
@@ -640,6 +773,15 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
         !root.viewIfLoaded.window) return NO;
     // Google mode's result list sits over Apollo's table; it gets the reselect.
     if (ApolloGoogleSearchTabHandleReselect(root)) return NO;
+    ApolloDuoSearchLandingViewController *landing = ApolloSearchTabDuoLanding(root);
+    if (landing && !landing.view.hidden) {
+        UIScrollView *scroll = landing.scrollView;
+        if (scroll.dragging || scroll.decelerating) return NO;
+        if (scroll.contentOffset.y > -scroll.adjustedContentInset.top + 1)
+            [landing scrollToTopAnimated:!UIAccessibilityIsReduceMotionEnabled()];
+        else [ApolloSearchTabSearchBar(root) becomeFirstResponder];
+        return NO;
+    }
 
     UITableView *table = ApolloSearchTabTableView(root);
     UISearchBar *bar = ApolloSearchTabSearchBar(root);

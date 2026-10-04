@@ -283,7 +283,11 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     %orig;
     if (list) {
         for (NSIndexPath *path in self.indexPathsForSelectedRows.copy) [self deselectRowAtIndexPath:path animated:NO];
-        for (UITableViewCell *cell in self.visibleCells) [cell setHighlighted:NO animated:NO];
+        // Most rows are already unhighlighted. Re-sending NO still enters the
+        // subreddit selection-chrome hooks for every row on each Edit/Done tap.
+        for (UITableViewCell *cell in self.visibleCells) {
+            if (cell.highlighted) [cell setHighlighted:NO animated:NO];
+        }
         if (!editing) {
             NSNumber *previous = objc_getAssociatedObject(self, &kEditingSelection);
             if (previous) self.allowsSelectionDuringEditing = previous.boolValue;

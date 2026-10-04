@@ -6,6 +6,7 @@
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloNavigationActions.h"
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
 #import "ApolloUserProfileCache.h"
@@ -392,7 +393,7 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
 @property (nonatomic) BOOL accountReorderFinishPending;
 @property (nonatomic) BOOL accountReorderFinishCancelled;
 @property (nonatomic, strong, nullable) UISelectionFeedbackGenerator *accountReorderFeedback;
-@property (nonatomic, strong, nullable) UIBarButtonItem *duoEditItem;
+@property (nonatomic) BOOL duoEditAccentEnabled;
 @property (nonatomic) BOOL duoEditUpdateScheduled;
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
 - (void)updateDuoEditButton;
@@ -770,58 +771,19 @@ static BOOL ApolloAccountReorderSchedulePersist(
     }
 }
 
-- (void)duoEditButtonTapped:(id)sender {
-    [self setEditing:!self.isEditing animated:YES];
-}
-
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     [super setEditing:editing animated:animated];
     [self updateDuoEditButton];
 }
 
 - (void)updateDuoEditButton {
-    BOOL duo = ApolloDuoCurrentMode() != ApolloDuoModePhone;
-    if (!duo) {
-        if (@available(iOS 16.0, *)) {
-            NSArray *items = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
-            if (items.count != 1 || items.firstObject != self.editButtonItem) {
-                self.navigationItem.trailingItemGroups = @[[self.editButtonItem creatingFixedGroup]];
-            }
-        } else if (self.navigationItem.rightBarButtonItem != self.editButtonItem) {
-            self.navigationItem.rightBarButtonItem = self.editButtonItem;
-        }
-        return;
-    }
-
-    UIBarButtonItem *item = self.duoEditItem;
-    if (!item) {
-        item = [[UIBarButtonItem alloc] initWithTitle:@"Edit" style:UIBarButtonItemStylePlain
-                                              target:self action:@selector(duoEditButtonTapped:)];
-        UIFont *font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleHeadline]
-            scaledFontForFont:[UIFont boldSystemFontOfSize:17.0]];
-        [item setTitleTextAttributes:@{NSFontAttributeName:font} forState:UIControlStateNormal];
-        if (@available(iOS 27.1, *)) item.axisBehavior = UIBarButtonItemAxisBehaviorHorizontalOnly;
-        self.duoEditItem = item;
-    }
-    // Native bar items own their glass and sizing. A configured custom button
-    // is compressed to its text height by the adaptive sheet navigation bar.
-    if (self.isEditing && !item.image) {
-        item.title = nil;
-        item.image = [UIImage systemImageNamed:@"checkmark"
-            withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:19.0
-                                                                                 weight:UIImageSymbolWeightSemibold]];
-        item.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
-        if (@available(iOS 26.0, *)) item.style = UIBarButtonItemStyleProminent;
-        item.accessibilityLabel = @"Done";
-    } else if (!self.isEditing && ![item.title isEqualToString:@"Edit"]) {
-        item.image = nil;
-        item.title = @"Edit";
-        item.style = UIBarButtonItemStylePlain;
-        item.accessibilityLabel = @"Edit";
-    }
-    if (!self.isEditing && ![item.tintColor isEqual:UIColor.labelColor]) {
-        item.tintColor = UIColor.labelColor;
-    }
+    // Keep UITableViewController's actual edit item on every device. UIKit
+    // owns Edit -> Done, including its checkmark and prominent glass circle;
+    // Duo only supplies the theme accent for that native fill.
+    UIBarButtonItem *item = self.editButtonItem;
+    self.duoEditAccentEnabled = IsLiquidGlass() && self.isEditing
+        && ApolloDuoCurrentMode() != ApolloDuoModePhone;
+    ApolloNavigationActionsSetNativeEditingAccent(item, self.duoEditAccentEnabled);
     if (@available(iOS 16.0, *)) {
         NSArray *items = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
         if (items.count != 1 || items.firstObject != item) {
@@ -918,14 +880,11 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [super viewDidLayoutSubviews];
     if (self.navigationController.topViewController != self) return;
 
-    // A fold can move this sheet between native and Duo controls. Defer that
-    // membership change rather than mutating the navigation bar during layout.
-    NSArray<UIBarButtonItem *> *trailingItems = self.navigationItem.rightBarButtonItems;
-    if (@available(iOS 16.0, *)) {
-        trailingItems = self.navigationItem.trailingItemGroups.firstObject.barButtonItems;
-    }
-    BOOL usesDuoItem = self.duoEditItem && [trailingItems containsObject:self.duoEditItem];
-    if (usesDuoItem != (ApolloDuoCurrentMode() != ApolloDuoModePhone) &&
+    // Folding can change this sheet's accent policy while editing. Keep the
+    // same native item and defer only the tint refresh outside layout.
+    BOOL wantsAccent = IsLiquidGlass() && self.isEditing
+        && ApolloDuoCurrentMode() != ApolloDuoModePhone;
+    if (self.duoEditAccentEnabled != wantsAccent &&
         !self.duoEditUpdateScheduled) {
         self.duoEditUpdateScheduled = YES;
         __weak typeof(self) weakSelf = self;

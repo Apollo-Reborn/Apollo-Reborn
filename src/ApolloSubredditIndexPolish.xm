@@ -879,9 +879,10 @@ static void ApolloSubredditIndexApplySeparatorInsets(UITableView *tableView) {
 
 static void ApolloSubredditIndexHideNativeIndex(UITableView *tableView) {
     ApolloSubredditIndexCaptureTableNativeState(tableView);
-    tableView.sectionIndexColor = [UIColor clearColor];
-    tableView.sectionIndexBackgroundColor = [UIColor clearColor];
-    tableView.sectionIndexTrackingBackgroundColor = [UIColor clearColor];
+    UIColor *clear = UIColor.clearColor;
+    if (![tableView.sectionIndexColor isEqual:clear]) tableView.sectionIndexColor = clear;
+    if (![tableView.sectionIndexBackgroundColor isEqual:clear]) tableView.sectionIndexBackgroundColor = clear;
+    if (![tableView.sectionIndexTrackingBackgroundColor isEqual:clear]) tableView.sectionIndexTrackingBackgroundColor = clear;
 }
 
 static UIColor *ApolloSubredditIndexResolvedColor(UIColor *color, UITraitCollection *traitCollection) {
@@ -3009,6 +3010,38 @@ static void ApolloSubredditIndexRaiseNativeIndexAboveHeaders(UITableView *tableV
 }
 
 static char kApolloSubredditIndexLayoutPendingKey;
+static char kApolloSubredditIndexEditingLayoutPendingKey;
+
+static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, BOOL settleEditingLayout) {
+    if (!tableView.window) return;
+    // An Edit/Done request can join a refresh already queued by table layout.
+    // Preserve its need to settle native reorder geometry in that same pass.
+    if (settleEditingLayout) {
+        objc_setAssociatedObject(tableView, &kApolloSubredditIndexEditingLayoutPendingKey,
+                                 @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (objc_getAssociatedObject(tableView, &kApolloSubredditIndexLayoutPendingKey)) return;
+    objc_setAssociatedObject(tableView, &kApolloSubredditIndexLayoutPendingKey,
+                             @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UITableView *weakTable = tableView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UITableView *table = weakTable;
+        if (!table) return;
+        if (table.window) {
+            // Keep the pending flag through layout and refresh. Otherwise the
+            // forced editing layout queues a duplicate index/row refresh.
+            if ([objc_getAssociatedObject(table, &kApolloSubredditIndexEditingLayoutPendingKey) boolValue]) {
+                [table layoutIfNeeded];
+            }
+            ApolloSubredditIndexInstallOrUpdate(table);
+            ApolloSubredditIndexRefreshVisibleRowGeometry(table);
+        }
+        objc_setAssociatedObject(table, &kApolloSubredditIndexEditingLayoutPendingKey,
+                                 nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(table, &kApolloSubredditIndexLayoutPendingKey,
+                                 nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
+}
 
 %hook UITableView
 
@@ -3020,13 +3053,7 @@ static char kApolloSubredditIndexLayoutPendingKey;
     [shortcutsView apollo_updateEditingStateAnimated:animated];
     // Editing does not always re-vend visible cells. Recompute the margin using
     // UIKit's final content/reorder geometry, rather than waiting for scrolling.
-    __weak UITableView *weakTable = (UITableView *)self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UITableView *table = weakTable;
-        if (!table.window) return;
-        [table layoutIfNeeded];
-        ApolloSubredditIndexRefreshVisibleRowGeometry(table);
-    });
+    ApolloSubredditIndexScheduleGeometryRefresh((UITableView *)self, YES);
 }
 
 - (void)layoutSubviews {
@@ -3035,18 +3062,8 @@ static char kApolloSubredditIndexLayoutPendingKey;
     // the sibling overlay; the table's own callback can precede that resize.
     // This hook runs for every table, so reject unrelated/offscreen tables
     // before allocating a block for the main queue.
-    if (self.window &&
-        ApolloSubredditIndexShouldInspectTable((UITableView *)self) &&
-        !objc_getAssociatedObject(self, &kApolloSubredditIndexLayoutPendingKey)) {
-        objc_setAssociatedObject(self, &kApolloSubredditIndexLayoutPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        __weak UITableView *weakTable = (UITableView *)self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UITableView *table = weakTable;
-            if (!table) return;
-            objc_setAssociatedObject(table, &kApolloSubredditIndexLayoutPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            ApolloSubredditIndexInstallOrUpdate(table);
-            ApolloSubredditIndexRefreshVisibleRowGeometry(table);
-        });
+    if (self.window && ApolloSubredditIndexShouldInspectTable((UITableView *)self)) {
+        ApolloSubredditIndexScheduleGeometryRefresh((UITableView *)self, NO);
     }
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
     ApolloSubredditIndexRaiseNativeIndexAboveHeaders((UITableView *)self);

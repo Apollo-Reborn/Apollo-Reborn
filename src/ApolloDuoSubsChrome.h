@@ -14,6 +14,10 @@ __BEGIN_DECLS
 void ApolloDuoSubsChromeApply(UIViewController *controller);
 void ApolloDuoSubsChromeRemoveFloatingEdit(UIViewController *controller);
 
+/// Move Apollo's real Add/Edit items into the popup's standalone native bar.
+/// Pass nil before returning the list to its normal navigation controller.
+void ApolloDuoSubsChromeSetPopupNavigationBar(UIViewController *controller, UINavigationBar *bar);
+
 /// Put a controller's native editing action in the Duo navigation rail using
 /// the same glass pencil / blue Done treatment as the subreddit list.
 void ApolloDuoChromeApplyEditButton(UIViewController *controller);

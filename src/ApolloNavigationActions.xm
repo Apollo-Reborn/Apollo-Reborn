@@ -8,9 +8,12 @@
 #import "ApolloDuoRail.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloSearchNativeBar.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
+
+extern NSArray<UIBarButtonItem *> *ApolloDuoCommentsLayoutItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items);
 
 // Use the pill's spring for glyphs without changing button frames,
 // which translation measures when inserting its globe.
@@ -646,6 +649,21 @@ static BOOL ApolloActionsArraysIdentical(NSArray *a, NSArray *b) {
     return YES;
 }
 
+static BOOL ApolloActionsIsDuoFeedControl(UINavigationItem *item, UIBarButtonItem *candidate) {
+    if ([candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoFeedControl"] ||
+        [candidate.accessibilityIdentifier isEqualToString:@"ApolloDuoCommentsLayoutControl"]) return YES;
+    if (@available(iOS 27.0, *)) return candidate == item.searchBarPlacementBarButtonItem;
+    return NO;
+}
+
+static NSArray<UIBarButtonItem *> *ApolloActionsWithoutDuoFeedControls(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
+    NSMutableArray *actions = [NSMutableArray array];
+    for (UIBarButtonItem *candidate in items) {
+        if (!ApolloActionsIsDuoFeedControl(item, candidate)) [actions addObject:candidate];
+    }
+    return actions;
+}
+
 static BOOL ApolloActionsHasTrailingTabRail(void) {
     if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
@@ -1008,6 +1026,8 @@ static UIBarButtonItem *ApolloActionsNativeItemForDuoButton(UIButton *button, NS
 
 static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem *item,
                                                                NSArray<UIBarButtonItem *> *items) {
+    items = ApolloNativeFeedSearchDuoTrailingItems(item, items);
+    items = ApolloDuoCommentsLayoutItems(item, items);
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     // Inbox owns its reversible compact/native mapping below.
     if ([NSStringFromClass(box.controller.class) isEqualToString:@"Apollo.InboxViewController"]) return items;
@@ -1026,10 +1046,29 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
         // the remaining actions in the owner. It is still our native model:
         // restore its compact composite before discarding the mapping, or
         // portrait keeps a VerticalPreferred rail item and loses the strip.
-        BOOL collapsedGenerated = items.count == 1 && owner.standardItems.count > 0
-            && items.firstObject == owner.moreItem && [generated containsObject:owner.moreItem];
+        NSArray *actions = ApolloActionsWithoutDuoFeedControls(item, items);
+        NSArray *generatedActions = ApolloActionsWithoutDuoFeedControls(item, generated);
+        BOOL collapsedGenerated = actions.count == 1 && owner.standardItems.count > 0
+            && actions.firstObject == owner.moreItem && [generated containsObject:owner.moreItem];
         if (generated && original &&
-            (ApolloActionsArraysIdentical(items, generated) || collapsedGenerated)) items = original;
+            (ApolloActionsArraysIdentical(actions, generatedActions) || collapsedGenerated)) {
+            // Layout disappears in portrait. Changes to the host
+            // controls must not prevent restoring the composite,
+            // or its separate rail items keep UIKit's wider horizontal slots.
+            // Keep the live controls instead of resurrecting the cached ones.
+            NSArray *originalActions = ApolloActionsWithoutDuoFeedControls(item, original);
+            NSMutableArray *restored = [NSMutableArray array];
+            BOOL insertedActions = NO;
+            for (UIBarButtonItem *candidate in items) {
+                if (ApolloActionsIsDuoFeedControl(item, candidate)) {
+                    [restored addObject:candidate];
+                } else if (!insertedActions) {
+                    [restored addObjectsFromArray:originalActions];
+                    insertedActions = YES;
+                }
+            }
+            items = restored;
+        }
         objc_setAssociatedObject(item, &kActionsDuoNativeItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(item, &kActionsDuoOriginalItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return items;
@@ -1258,6 +1297,9 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 }
 - (void)prepareItems:(NSArray<UIBarButtonItem *> *)items {
     if (self.preparing) return;
+    // Search and the host's List/Split/Layout buttons are independent native
+    // controls, never members of Apollo's expandable More action group.
+    items = ApolloActionsWithoutDuoFeedControls(self.item, items);
     BOOL collapse = [self collapseEnabled];
     // Freeze all geometry and icon cleanup while UIKit owns the surface,
     // including late action insertion and overlapping menu sessions.
@@ -1523,7 +1565,11 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
 }
 - (NSArray<UIBarButtonItem *> *)duoStandardItemsForExpanded:(BOOL)expanded {
     if (!self.moreItem) return @[];
-    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray arrayWithObject:self.moreItem];
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    for (UIBarButtonItem *candidate in self.item.rightBarButtonItems) {
+        if (ApolloActionsIsDuoFeedControl(self.item, candidate)) [items addObject:candidate];
+    }
+    [items addObject:self.moreItem];
     if (expanded) {
         for (ApolloNavigationActionsStandardItem *state in self.standardItems) {
             if (!state.hidden) [items addObject:state.item];
@@ -1746,7 +1792,19 @@ static void ApolloActionsResetBeforeNavigation(UIViewController *controller) {
 
 static NSArray<UIBarButtonItem *> *ApolloActionsPresentedItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
     ApolloNavigationActionsControllerBox *feedBox = objc_getAssociatedObject(item, &kActionsControllerKey);
-    if (ApolloDuoSplitSuppressesFeedActions(feedBox.controller)) return @[];
+    if (ApolloDuoSplitSuppressesFeedActions(feedBox.controller)) {
+        // Duo hides Apollo's feed actions while comments share the display,
+        // while keeping the host's independent feed controls available.
+        NSMutableArray<UIBarButtonItem *> *searchItems = [NSMutableArray array];
+        if (@available(iOS 27.0, *)) {
+            UIBarButtonItem *search = item.searchBarPlacementBarButtonItem;
+            for (UIBarButtonItem *candidate in items) {
+                if (candidate == search || ApolloActionsIsDuoFeedControl(item, candidate))
+                    [searchItems addObject:candidate];
+            }
+        }
+        return searchItems;
+    }
     ApolloNavigationActionsOwner *owner = ApolloActionsOwner(item, NO);
     if (owner.moreItem == owner.inboxDisclosure && owner.standardItems.count &&
         [items containsObject:owner.moreItem] && ApolloActionsHasTrailingTabRail()) {

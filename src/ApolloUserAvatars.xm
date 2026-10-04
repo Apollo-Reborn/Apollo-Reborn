@@ -3630,6 +3630,52 @@ static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *u
 }
 
 static char kApolloDuoHostedProfileHeader, kApolloDuoRestoreProfileTop;
+static char kApolloDuoProfileHasAppeared;
+
+static void ApolloProfilePrepareInitialDuoTop(UIViewController *profile) {
+    if (objc_getAssociatedObject(profile, &kApolloDuoProfileHasAppeared)) return;
+    objc_setAssociatedObject(profile, &kApolloDuoProfileHasAppeared, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UINavigationController *navigation = profile.navigationController;
+    UITabBarController *tabs = profile.tabBarController;
+    // Only the first presentation of the closed Account tab needs this.
+    // A visited profile or a later tab return retains its native scroll state.
+    // The legacy Duo mode also calls unfolded portrait "Closed".
+    if (ApolloDuoSplitIsUnfolded()
+        || (ApolloDuoCurrentMode() != ApolloDuoModeClosed && !ApolloDuoRailHasVisibleSideBar())
+        || navigation.viewControllers.firstObject != profile
+        || ![tabs.viewControllers containsObject:navigation]) return;
+    objc_setAssociatedObject(profile, &kApolloDuoRestoreProfileTop, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloProfileRestorePendingDuoTop(UIViewController *profile) {
+    if (!objc_getAssociatedObject(profile, &kApolloDuoRestoreProfileTop)
+        || ApolloDuoAccountProfileIsHosted(profile)) return;
+    UITableView *table = ApolloFindTableView(profile);
+    if (!profile.viewIfLoaded.window || !table.window
+        || profile.navigationController.topViewController != profile) return;
+    if (table.dragging || table.tracking || table.decelerating) {
+        objc_setAssociatedObject(profile, &kApolloDuoRestoreProfileTop, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    // A fold can restore this controller while it is offscreen. Wait for the
+    // rich header, when enabled, and the visible navigation/table layout;
+    // Apollo computes its manual top inset during that native layout.
+    UIView *wrapper = objc_getAssociatedObject(profile, kApolloProfileWrappedHeaderKey);
+    if (sShowDetailedProfiles && (!wrapper || table.tableHeaderView != wrapper)) return;
+    [profile.navigationController.view layoutIfNeeded];
+    [table layoutIfNeeded];
+    objc_setAssociatedObject(profile, &kApolloDuoRestoreProfileTop, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CGFloat top = -table.adjustedContentInset.top;
+    CGFloat previous = table.contentOffset.y;
+    if (fabs(previous - top) > 0.5) {
+        [table setContentOffset:CGPointMake(table.contentOffset.x, top) animated:NO];
+        ApolloLog(@"[DuoAccount] restored initial profile top %.1f -> %.1f", previous, top);
+    }
+}
 
 CGFloat ApolloDuoAccountHeaderHeight(UIView *header, CGFloat width) {
     return [(ApolloProfileHeaderView *)header duoHeaderHeightForWidth:width];
@@ -4170,11 +4216,6 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     // (Independent of sShowUserAvatars, which only governs the inline username avatars.)
     if (!sShowDetailedProfiles) {
         ApolloProfileRemoveHeader(viewControllerObject, tableView);
-        // Native mode has no rich table header to reinstall after leaving the
-        // Duo dashboard. Do not carry that one-shot scroll reset into a later
-        // Compact/Immersive selection while this profile is retained.
-        objc_setAssociatedObject(viewController, &kApolloDuoRestoreProfileTop, nil,
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
 
@@ -4341,11 +4382,6 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     } else {
         ApolloProfileRemoveAmbient(viewController, tableView);
     }
-    if (objc_getAssociatedObject(viewController, &kApolloDuoRestoreProfileTop)) {
-        objc_setAssociatedObject(viewController, &kApolloDuoRestoreProfileTop, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [tableView layoutIfNeeded];
-        [tableView setContentOffset:CGPointMake(0, -tableView.adjustedContentInset.top) animated:NO];
-    }
     // Appear/layout paths rebuild nav title views at alpha 1; re-derive the
     // cross-fade from the current offset so the title doesn't pop back in at rest.
     ApolloProfileSyncNavTitleFade(viewController);
@@ -4364,6 +4400,9 @@ static void ApolloProfileScheduleInstallOrUpdateHeader(id viewControllerObject) 
         objc_setAssociatedObject(strongController, kApolloProfileInstallScheduledKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloProfileInstallOrUpdateHeader(strongController);
+        // Also runs when the header signature is unchanged or native profile
+        // layout is selected. The one-shot must outlive an offscreen install.
+        ApolloProfileRestorePendingDuoTop(strongController);
     });
 }
 
@@ -5348,6 +5387,14 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
     ApolloProfileUpdateAmbientScroll(self, scrollView);
 }
 
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    objc_setAssociatedObject(self, &kApolloDuoRestoreProfileTop, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, &kApolloDuoProfileHasAppeared, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig(scrollView);
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     ApolloProfileInstallNavTitleView((UIViewController *)self);
@@ -5358,6 +5405,7 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
+    ApolloProfilePrepareInitialDuoTop((UIViewController *)self);
     ApolloProfileInstallNavTitleView((UIViewController *)self);
     ApolloProfileScheduleInstallOrUpdateHeader(self);
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidAppear");
@@ -5371,7 +5419,7 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
     ApolloProfileInstallUsernameCopyInteraction((UIViewController *)self, @"viewDidLayoutSubviews");
 }
 
-- (void)safeAreaInsetsDidChange {
+- (void)viewSafeAreaInsetsDidChange {
     %orig;
     ApolloProfileScheduleInstallOrUpdateHeader(self);
 }
