@@ -730,8 +730,7 @@ UIViewController *ApolloSettingsNativeShortcutScreen(NSString *title) {
     UITableView *table = nil;
     NSIndexPath *path = nil;
     UITableViewCell *cell = ApolloNativeSettingsRow(title, &root, &table, &path);
-    // Calling the delegate directly must honor the native row's availability,
-    // including Pixel Pals being disabled on Duo.
+    // Calling the delegate directly must honor the native row's availability.
     if (!cell.userInteractionEnabled || !root.navigationController) return nil;
     sShortcutCaptureNavigation = root.navigationController;
     sShortcutCapturedScreen = nil;

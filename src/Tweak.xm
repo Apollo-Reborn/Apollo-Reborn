@@ -1551,7 +1551,7 @@ static OSStatus SecItemDelete_replacement(CFDictionaryRef query) {
 // Apollo's model mapper only recognizes devices through iPhone 14 Pro Max.
 // Map newer models through ApolloDeviceIdentity.h (14 Pro = island, 14 = notch),
 // preserving media chrome and Pixel Pals on regular phones. ApolloPixelPals.xm
-// follows the real island's size and position and suppresses pals on Duo.
+// follows the real island's size and position.
 static void *uname_orig;
 static int uname_replacement(struct utsname *buf) {
     int ret = ((int (*)(struct utsname *))uname_orig)(buf);
