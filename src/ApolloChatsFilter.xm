@@ -1977,6 +1977,7 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
     // stale coordinates from the previous account cannot route the wrong row —
     // paired with a reload, never on its own (#865).
     ApolloBoxesResetRowStateAndReload(self, @"account switch");
+    // Safe unretained capture: these blocks only compare self's address with the __weak static, never message it.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (sLatestBoxesController == self) ApolloRefreshBoxesForModeratorState(@"account switch +0.75s");
     });
@@ -2189,11 +2190,31 @@ static BOOL sChatFilterActive = NO;
                                                      name:ApolloModernChatStatusDidChangeNotification
                                                    object:nil];
         objc_setAssociatedObject(self, &kInboxAllStatusObserverKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        dispatch_async(dispatch_get_main_queue(), ^{ ApolloInstallInboxModeSwitcher(self); });
+        // Logos hands hooked methods an __unsafe_unretained self, so a block
+        // that names self does not keep this controller alive: popping All
+        // right after opening it can free it before these blocks run (the
+        // crash class behind #893/#943). Capture it weakly and skip once it
+        // is gone; a popped Inbox needs neither the switcher nor a WebKit
+        // Chat hub. Reload into a concretely typed local: __typeof__(self)
+        // would carry the __unsafe_unretained along and own nothing.
+        __weak UIViewController *weakInbox = (UIViewController *)self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController *inbox = weakInbox;
+            if (!inbox) {
+                ChatsFilterLog(@"Inbox (All) freed before its switcher install ran; skipped");
+                return;
+            }
+            ApolloInstallInboxModeSwitcher(inbox);
+        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen()) {
-                ApolloEnsureInboxChatHub((UIViewController *)self);
+            UIViewController *inbox = weakInbox;
+            if (!inbox) {
+                ChatsFilterLog(@"Inbox (All) freed before its Chat hub preload ran; skipped");
+                return;
+            }
+            if (ApolloInboxControllerIsAll(inbox) && ApolloModernChatShouldOpen()) {
+                ApolloEnsureInboxChatHub(inbox);
             }
         });
     }
@@ -2209,9 +2230,17 @@ static BOOL sChatFilterActive = NO;
     ApolloChatRoomDirectoryPrefetch();
     if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen() &&
         !objc_getAssociatedObject(self, &kInboxAllChatHubKey)) {
+        // Weak for the same reason as in viewDidLoad (#893/#943): a quick pop
+        // can free this controller inside the 0.35 s delay.
+        __weak UIViewController *weakInbox = (UIViewController *)self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            ApolloEnsureInboxChatHub((UIViewController *)self);
+            UIViewController *inbox = weakInbox;
+            if (!inbox) {
+                ChatsFilterLog(@"Inbox (All) freed before its appearance Chat hub preload ran; skipped");
+                return;
+            }
+            ApolloEnsureInboxChatHub(inbox);
         });
     }
 }
@@ -2243,10 +2272,18 @@ static BOOL sChatFilterActive = NO;
     %orig;
     if (!ApolloInboxControllerIsAll(self)) return;
     ApolloDismantleInboxChatHub((UIViewController *)self, @"account changed");
+    // Weak for the same reason as in viewDidLoad (#893/#943): the Inbox can
+    // be popped and freed before the main queue reaches this block.
+    __weak UIViewController *weakInbox = (UIViewController *)self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        ApolloInstallInboxModeSwitcher(self);
+        UIViewController *inbox = weakInbox;
+        if (!inbox) {
+            ChatsFilterLog(@"Inbox (All) freed before its account-change reinstall ran; skipped");
+            return;
+        }
+        ApolloInstallInboxModeSwitcher(inbox);
         if (ApolloModernChatShouldOpen()) {
-            ApolloEnsureInboxChatHub((UIViewController *)self);
+            ApolloEnsureInboxChatHub(inbox);
         }
     });
 }

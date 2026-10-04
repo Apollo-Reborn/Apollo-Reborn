@@ -194,6 +194,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
     $(SRC_DIR)/ApolloModmailLayout.xm \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
+    $(SRC_DIR)/ApolloCrosspostTitle.xm \
     $(SRC_DIR)/ApolloMessagesKeyboardInset.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
@@ -233,6 +234,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloRedgifsQueuedFetchesLock.m \
     $(SRC_DIR)/ApolloSwiftSingletonCapture.m \
     $(SRC_DIR)/ApolloShareAsImageGallery.xm \
+    $(SRC_DIR)/ApolloShareAsImageLinkMode.m \
     $(SRC_DIR)/ApolloShareAsImageLink.xm \
     $(SRC_DIR)/ApolloShareAsVideo.xm \
     $(SRC_DIR)/ApolloShareAsImagePreviewFix.xm \

@@ -167,6 +167,20 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
                                         NSString *menuTitle,
                                         id actionController);
 
+// Touch-and-hold menus, on both rendering paths. Touching and holding a post
+// in a feed, the post at the top of its comments, or a comment opens a
+// UIContextMenu whose actions are that object's ••• menu (post, post-detail,
+// comment — ApolloActionMenuLayout.h's context ids), so it follows the same
+// saved layout: hidden rows dropped, the rows the context catalogues re-sorted
+// among their own slots (a row it doesn't catalogue — Moderator in the
+// comments header, Remind Me In… — keeps its place). Returns `menu` itself
+// when neither this context nor the moderator menu its Moderator row opens is
+// customised, and for the image/video/link menus the same long press shows
+// over media or a link; otherwise a copy. Called by the UIContextMenu
+// configuration hook in ApolloNativeActionMenus.xm from the menu's action
+// provider, before the glass renderer styles it.
+UIMenu *_Nullable ApolloActionMenuApplyLayoutToContextMenu(UIMenu *_Nullable menu, NSString *context);
+
 // A donor cell's rendered label text (first non-empty UILabel found by walking
 // the cell's content tree). Apollo's action-sheet rows are custom-drawn, not
 // built on UITableViewCell.textLabel, so a spec deriving its legacy-path title

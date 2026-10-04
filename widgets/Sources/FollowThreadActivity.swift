@@ -30,8 +30,10 @@ import Foundation
 /// names). These names must match BOTH Apollo's struct AND the apollo-backend
 /// `DynamicIslandNotification` JSON tags
 /// (`internal/worker/live_activities.go`) — `postTotalComments`, `postScore`,
-/// `commentId`, `commentAuthor`, `commentBody`, `commentAge`, `commentScore`.
-/// A mismatch makes ActivityKit silently drop every update.
+/// `commentId`, `commentAuthor`, `commentBody`, `commentAge`, `commentScore`,
+/// `commentAuthorAvatar`. A mismatch makes ActivityKit silently drop every
+/// update. New keys must be optional: Apollo's own struct (which encodes the
+/// initial state) and older backends don't send them.
 struct FollowThreadActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         /// Total comments on the post (always sent).
@@ -47,6 +49,12 @@ struct FollowThreadActivityAttributes: ActivityAttributes {
         var commentAge: Double?
         var commentBody: String?
         var commentId: String?
+        /// The comment author's profile picture: a base64-encoded 48x48 JPEG
+        /// (~1.5 KB) the backend embeds when the activity was registered with
+        /// Show User Profile Pictures on. It rides in the push because a Live
+        /// Activity has no network access to load an image URL. Absent
+        /// otherwise.
+        var commentAuthorAvatar: String?
     }
 
     /// Static, set once when the activity starts; never changes via push.

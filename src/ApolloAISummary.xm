@@ -3432,7 +3432,8 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     // queue drains (#630 round-5 crash mechanism).
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        // __strong is load-bearing: in a hook, __typeof__(self) is __unsafe_unretained (owns nothing).
+        __strong __typeof__(self) cellNode = weakSelf;
         if (!cellNode) return;
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);
@@ -3448,7 +3449,7 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     if (!sEnableAISummaries) return;
     __weak __typeof__(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        __typeof__(self) cellNode = weakSelf;
+        __strong __typeof__(self) cellNode = weakSelf;
         if (!cellNode) return;
         UIViewController *vc = sVisibleCommentsController;
         id comment = ApolloAICommentFromCellNode((id)cellNode);

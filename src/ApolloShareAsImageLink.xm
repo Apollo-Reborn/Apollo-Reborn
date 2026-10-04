@@ -1,25 +1,24 @@
 // ApolloShareAsImageLink.xm
 //
-// "Include Link" option for Share as Image (issue #481).
+// Link selection for Share as Image (issues #481 and #519).
 //
 // Apollo's ShareAsImageViewController (_TtC6Apollo26ShareAsImageViewController)
 // renders a post or comment into a shareable image and presents the system
 // share sheet (UIActivityViewController) when the user taps "Share". This module
-// adds one extra options row — "Include Link" — beneath the native Watermark
-// row. When the toggle is ON, the Reddit URL of the shared post/comment is
-// appended to the share sheet's items, so apps like Messages and Mail attach the
-// image AND a tappable link to the original thread. The preference persists in
-// NSUserDefaults and defaults OFF (opt-in, preserves stock behaviour).
+// adds one extra options row — "Link" — beneath the native Watermark row. Post
+// shares can attach no link or the post link. Comment shares can additionally
+// attach the selected comment's permalink. The preference persists in
+// NSUserDefaults and defaults to No Link (opt-in, preserves stock behaviour).
 //
 // Two halves:
-//   1. UI — a UILabel + UISwitch (+ hairline separator) created in viewDidLoad,
+//   1. UI — a UILabel + menu button (+ hairline separator) created in viewDidLoad,
 //      styled from the native Watermark row, positioned one row below Watermark in
 //      viewDidLayoutSubviews. The hosting bottom-sheet is made one row taller by a
 //      hook on SourdoughPresentationController.frameOfPresentedViewInContainerView
 //      by adjusting the presentation controller's frame directly, avoiding
 //      layout feedback loops, so the Share button is never clipped.
 //   2. Share interception — shareButtonTappedWithSender: records the active VC
-//      and the toggle state, then the UIActivityViewController designated
+//      and the selected mode, then the UIActivityViewController designated
 //      initializer hook appends the link (via a UIActivityItemSource that keeps
 //      photo-only activities image-only) while that flag is set.
 //
@@ -44,25 +43,24 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloShareAsImageLinkMode.h"
+#import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
 
-// Persisted preference: whether "Include Link" is on. Default NO.
-static NSString *const kApolloShareIncludeLinkKey = @"ApolloShareAsImageIncludeLink";
-
 // Display text for the new options row.
-static NSString *const kApolloShareIncludeLinkTitle = @"Include Link";
+static NSString *const kApolloShareLinkTitle = @"Link";
 
 // Associated-object keys for the views we add to the VC. Repo idiom: bare
 // `static char` whose address is the key (avoids -fmerge-all-constants aliasing).
 static char kApolloShareLinkLabelKey;     // strong UILabel
-static char kApolloShareLinkSwitchKey;    // strong UISwitch
+static char kApolloShareLinkButtonKey;    // strong UIButton
 static char kApolloShareLinkSeparatorKey; // strong UIView
 
 // Active-share handshake between the button tap and the share-sheet construction.
 // Set on the main thread in shareButtonTappedWithSender:, read in the
 // UIActivityViewController init hook, both on the main thread.
 static __weak id sActiveShareVC = nil;
-static BOOL sActiveShareIncludeLink = NO;
+static ApolloShareLinkMode sActiveShareLinkMode = ApolloShareLinkModeNone;
 
 #pragma mark - Runtime ivar helpers
 
@@ -87,26 +85,10 @@ static double ApolloShareLinkIvarDouble(id obj, const char *name) {
 
 #pragma mark - Link resolution
 
-// RDKLink.permalink returns a *relative* NSURL (just the path, e.g.
-// "/r/sub/comments/id/title/"), which is useless once handed to
-// Messages/Mail. Resolve any scheme-less URL against the reddit web host so the
-// recipient gets a tappable absolute link. Already-absolute URLs pass through.
-static NSURL *ApolloShareLinkAbsoluteURL(NSURL *url) {
-    if (![url isKindOfClass:[NSURL class]]) return nil;
-    if (url.scheme.length > 0 && url.host.length > 0) return url;
-    NSString *path = url.absoluteString ?: @"";
-    if (path.length == 0) return nil;
-    if (![path hasPrefix:@"/"]) path = [@"/" stringByAppendingString:path];
-    NSURL *abs = [NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:path]];
-    return abs ?: url;
-}
-
-// Resolves the Reddit URL to attach for the share-as-image VC. Always the whole
-// post thread — even when sharing a comment, we link to the post, not the
-// specific comment. The `link` ivar holds the post in both post- and comment-
-// share modes, so this is uniform. Prefer the canonical reddit permalink,
-// falling back to the link's content URL. Returns nil if nothing usable is found.
-static NSURL *ApolloShareLinkURLForVC(id vc) {
+// Resolves the post URL for the share-as-image VC. The `link` ivar holds the
+// parent post in both post- and comment-share modes. Prefer the canonical Reddit
+// permalink, falling back to the link's content URL.
+static NSURL *ApolloShareLinkPostURLForVC(id vc) {
     if (!vc) return nil;
 
     id link = ApolloShareLinkIvarObject(vc, "link");
@@ -126,6 +108,18 @@ static NSURL *ApolloShareLinkURLForVC(id vc) {
     }
 
     return nil;
+}
+
+static BOOL ApolloShareLinkHasComment(id vc) {
+    return ApolloShareLinkIvarObject(vc, "comment") != nil;
+}
+
+// A comment's urlWithContext: is Apollo's own permalink builder and keeps its
+// exact link/subreddit/slug identity. The Foundation helper catches missing or
+// throwing runtime methods and falls back to the parent post URL.
+static NSURL *ApolloShareLinkURLForVC(id vc, ApolloShareLinkMode mode) {
+    NSURL *postURL = ApolloShareLinkPostURLForVC(vc);
+    return ApolloShareLinkURLForMode(mode, ApolloShareLinkIvarObject(vc, "comment"), postURL);
 }
 
 #pragma mark - Share host rewriting
@@ -308,12 +302,48 @@ static NSArray *ApolloShareLinkRewriteActivityItemsForCurrentHost(NSArray *items
 
 #pragma mark - Options row UI
 
-// Builds (once) the Include Link label + switch + separator and adds them to the
+static NSString *ApolloShareLinkModeTitle(ApolloShareLinkMode mode) {
+    switch (mode) {
+        case ApolloShareLinkModePost: return @"Post Link";
+        case ApolloShareLinkModeComment: return @"Comment Link";
+        default: return @"No Link";
+    }
+}
+
+static void ApolloShareLinkConfigureMenu(id vc) {
+    UIButton *button = (UIButton *)objc_getAssociatedObject(vc, &kApolloShareLinkButtonKey);
+    if (![button isKindOfClass:UIButton.class]) return;
+
+    BOOL hasComment = ApolloShareLinkHasComment(vc);
+    ApolloShareLinkMode selected = ApolloShareLinkModeRead(NSUserDefaults.standardUserDefaults, hasComment);
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    NSArray<NSNumber *> *modes = hasComment
+        ? @[@(ApolloShareLinkModeNone), @(ApolloShareLinkModePost), @(ApolloShareLinkModeComment)]
+        : @[@(ApolloShareLinkModeNone), @(ApolloShareLinkModePost)];
+    __weak id weakVC = vc;
+    for (NSNumber *modeNumber in modes) {
+        ApolloShareLinkMode mode = (ApolloShareLinkMode)modeNumber.integerValue;
+        UIAction *action = [UIAction actionWithTitle:ApolloShareLinkModeTitle(mode)
+                                               image:nil
+                                          identifier:nil
+                                             handler:^(__unused UIAction *chosen) {
+            ApolloShareLinkModeWrite(NSUserDefaults.standardUserDefaults, mode);
+            ApolloLog(@"[ShareLink] mode -> %@", ApolloShareLinkModeTitle(mode));
+            ApolloShareLinkConfigureMenu(weakVC);
+        }];
+        action.state = mode == selected ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }
+    [button setTitle:ApolloShareLinkModeTitle(selected) forState:UIControlStateNormal];
+    button.menu = [UIMenu menuWithTitle:@"" children:actions];
+}
+
+// Builds (once) the Link label + selection menu + separator and adds them to the
 // same container as the native Watermark row. Styling is copied from the
 // Watermark row so the new row matches the current theme.
 static void ApolloShareLinkInstallRow(id vc) {
     if (!vc) return;
-    if (objc_getAssociatedObject(vc, &kApolloShareLinkSwitchKey)) return; // already built
+    if (objc_getAssociatedObject(vc, &kApolloShareLinkButtonKey)) return; // already built
 
     UILabel *watermarkLabel = (UILabel *)ApolloShareLinkIvarObject(vc, "watermarkRowTitleLabel");
     UISwitch *watermarkSwitch = (UISwitch *)ApolloShareLinkIvarObject(vc, "watermarkRowSwitch");
@@ -331,20 +361,21 @@ static void ApolloShareLinkInstallRow(id vc) {
 
     // Label — mirror the native row's font/colour/alignment.
     UILabel *label = [[UILabel alloc] init];
-    label.text = kApolloShareIncludeLinkTitle;
+    label.text = kApolloShareLinkTitle;
     label.font = watermarkLabel.font;
     label.textColor = watermarkLabel.textColor;
     label.textAlignment = watermarkLabel.textAlignment;
     label.numberOfLines = watermarkLabel.numberOfLines;
     [container addSubview:label];
 
-    // Switch — mirror the native switch tint, seed from the saved preference.
-    UISwitch *toggle = [[UISwitch alloc] init];
-    toggle.onTintColor = watermarkSwitch.onTintColor;
-    toggle.on = [[NSUserDefaults standardUserDefaults] boolForKey:kApolloShareIncludeLinkKey];
-    [toggle addTarget:vc action:@selector(apollo_shareIncludeLinkToggled:)
-     forControlEvents:UIControlEventValueChanged];
-    [container addSubview:toggle];
+    // A menu keeps all choices mutually exclusive and fits the existing one-row
+    // sheet affordance. A comment share gets the third Comment Link choice.
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.titleLabel.font = watermarkLabel.font;
+    button.tintColor = ApolloThemeAccentColor() ?: [(UIViewController *)vc view].tintColor;
+    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    button.showsMenuAsPrimaryAction = YES;
+    [container addSubview:button];
 
     // Hairline separator matching the existing ones.
     UIView *separator = [[UIView alloc] init];
@@ -356,17 +387,18 @@ static void ApolloShareLinkInstallRow(id vc) {
     [container addSubview:separator];
 
     objc_setAssociatedObject(vc, &kApolloShareLinkLabelKey, label, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(vc, &kApolloShareLinkSwitchKey, toggle, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(vc, &kApolloShareLinkButtonKey, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(vc, &kApolloShareLinkSeparatorKey, separator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloShareLinkConfigureMenu(vc);
 
-    ApolloLog(@"[ShareLink] options row installed (on=%d)", (int)toggle.on);
+    ApolloLog(@"[ShareLink] options row installed (mode=%@)", button.currentTitle ?: @"unknown");
 }
 
 // Native gap between the last options row and the Share button (matches Apollo's
 // own row→button spacing). Used to place our relocated button consistently.
 static const CGFloat kApolloShareLinkButtonGap = 20.0;
 
-// Positions our "Include Link" row directly below the Watermark row and nudges the
+// Positions our Link row directly below the Watermark row and nudges the
 // Share button down to sit beneath it. This ONLY moves subviews — it never touches
 // the presented view's own frame. The sheet is made one row taller by the
 // SourdoughPresentationController hook below, so there's room for the relocated
@@ -376,9 +408,9 @@ static const CGFloat kApolloShareLinkButtonGap = 20.0;
 // it stays correct across content toggles, theme changes, and rotation.
 static void ApolloShareLinkLayoutRow(id vc) {
     UILabel *label = (UILabel *)objc_getAssociatedObject(vc, &kApolloShareLinkLabelKey);
-    UISwitch *toggle = (UISwitch *)objc_getAssociatedObject(vc, &kApolloShareLinkSwitchKey);
+    UIButton *button = (UIButton *)objc_getAssociatedObject(vc, &kApolloShareLinkButtonKey);
     UIView *separator = (UIView *)objc_getAssociatedObject(vc, &kApolloShareLinkSeparatorKey);
-    if (!label || !toggle) return;
+    if (!label || !button) return;
 
     UILabel *watermarkLabel = (UILabel *)ApolloShareLinkIvarObject(vc, "watermarkRowTitleLabel");
     UISwitch *watermarkSwitch = (UISwitch *)ApolloShareLinkIvarObject(vc, "watermarkRowSwitch");
@@ -392,10 +424,11 @@ static void ApolloShareLinkLayoutRow(id vc) {
     double pitch = ApolloShareLinkIvarDouble(vc, "rowHeight");
     if (pitch <= 1.0) pitch = wl.size.height > 0 ? wl.size.height : 44.0;
 
-    toggle.frame = CGRectOffset(ws, 0, pitch);
-    // "Include Link" is wider than "Watermark"; widen the label to fill the space
-    // up to the switch so it isn't truncated (the native frame fits its own text).
-    CGFloat labelW = MAX(wl.size.width, CGRectGetMinX(toggle.frame) - 8.0 - wl.origin.x);
+    CGFloat maxX = CGRectGetMaxX(ws);
+    CGFloat buttonX = MAX(CGRectGetMidX(wl), wl.origin.x + 56.0);
+    button.frame = CGRectMake(buttonX, wl.origin.y + pitch,
+                              MAX(100.0, maxX - buttonX), wl.size.height);
+    CGFloat labelW = MAX(1.0, CGRectGetMinX(button.frame) - 8.0 - wl.origin.x);
     label.frame = CGRectMake(wl.origin.x, wl.origin.y + pitch, labelW, wl.size.height);
 
     // Separator: clone the bottom-most native separator's geometry, shifted down.
@@ -434,22 +467,19 @@ static void ApolloShareLinkLayoutRow(id vc) {
     ApolloShareLinkLayoutRow(self);
 }
 
-%new
-- (void)apollo_shareIncludeLinkToggled:(UISwitch *)sender {
-    BOOL on = [sender isKindOfClass:[UISwitch class]] ? sender.isOn : NO;
-    [[NSUserDefaults standardUserDefaults] setBool:on forKey:kApolloShareIncludeLinkKey];
-    ApolloLog(@"[ShareLink] toggle -> %d", (int)on);
-}
-
 - (void)shareButtonTappedWithSender:(id)sender {
     sActiveShareVC = self;
-    sActiveShareIncludeLink = [[NSUserDefaults standardUserDefaults] boolForKey:kApolloShareIncludeLinkKey];
+    sActiveShareLinkMode = ApolloShareLinkModeRead(NSUserDefaults.standardUserDefaults,
+                                                    ApolloShareLinkHasComment(self));
     %orig;
     // Safety net: clear the handshake shortly after, in case no activity sheet is
     // built (the init hook also clears it immediately on a successful append). Reset
     // both fields so neither is left latched into a later, unrelated share.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ sActiveShareVC = nil; sActiveShareIncludeLink = NO; });
+                   dispatch_get_main_queue(), ^{
+        sActiveShareVC = nil;
+        sActiveShareLinkMode = ApolloShareLinkModeNone;
+    });
 }
 
 %end
@@ -458,7 +488,7 @@ static void ApolloShareLinkLayoutRow(id vc) {
 // module (ApolloShareLinkItemSource) and ApolloShareAsVideo (ApolloSVLinkItemSource)
 // attach one when their feature is on, and ApolloShareAsVideo presents its OWN
 // activity sheet — whose initWithActivityItems: flows through THIS very hook. When
-// the video path took over the share (both toggles on) it already added the link, so
+// the video path took over the share (both features enabled) it already added the link, so
 // re-appending here would produce a double link. Gating on this makes the append
 // idempotent regardless of Makefile hook order or how long the handshake timer below
 // stays open — directly addressing the latent double-link path. We match the two
@@ -484,11 +514,12 @@ static BOOL ApolloShareLinkAlreadyHasLinkSource(NSArray *items) {
     // non-default share host, while the share-as-image handshake appends its link.
     id vc = sActiveShareVC;
     NSArray *rewrittenActivityItems = ApolloShareLinkRewriteActivityItemsForCurrentHost(activityItems, YES);
-    if (vc && sActiveShareIncludeLink && !ApolloShareLinkAlreadyHasLinkSource(rewrittenActivityItems)) {
-        NSURL *url = ApolloShareLinkURLForVC(vc);
+    if (vc && sActiveShareLinkMode != ApolloShareLinkModeNone &&
+        !ApolloShareLinkAlreadyHasLinkSource(rewrittenActivityItems)) {
+        NSURL *url = ApolloShareLinkURLForVC(vc, sActiveShareLinkMode);
         if ([url isKindOfClass:[NSURL class]]) {
-            sActiveShareVC = nil;          // consume the handshake so we only append once
-            sActiveShareIncludeLink = NO;  // reset too, so the flag is never left latched
+            sActiveShareVC = nil; // consume the handshake so we only append once
+            sActiveShareLinkMode = ApolloShareLinkModeNone;
             ApolloShareLinkItemSource *source = [[ApolloShareLinkItemSource alloc] init];
             source.url = ApolloShareLinkRewriteURLForCurrentHost(url);
             NSMutableArray *items = [rewrittenActivityItems isKindOfClass:[NSArray class]]
@@ -582,7 +613,7 @@ extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
 
 // The Share-as-Image preview is hosted in a custom bottom-sheet presentation
 // controller that sizes the sheet to Apollo's native content. We add an extra
-// "Include Link" row, so ask the controller for one row more height (extending the
+// Link row, so ask the controller for one row more height (extending the
 // sheet upward, bottom edge anchored). Doing it here — in the controller's own
 // frame method — is the loop-free way to grow the sheet: UIKit applies the
 // returned frame, there's nothing to fight, and it's recomputed automatically on

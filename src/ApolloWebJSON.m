@@ -336,6 +336,88 @@ static NSString *ApolloWebJSONModeratorsPathSubreddit(NSString *path) {
     return [path substringWithRange:[m rangeAtIndex:1]];
 }
 
+// Moderator endpoints Reddit serves to OAuth bearers only: a subreddit's
+// removal-reason list and its add/edit/delete (/api/v1/<sub>/removal_reasons
+// [/<id>]), and every /api/v1/modactions/* action (logging a reason on a
+// removed post/comment, the removal_link_message / removal_comment_message
+// notice, bulk comment removal). www.reddit.com answers all of them with its
+// 403 HTML page for ANY cookie-authed request, healthy session or not, and no
+// cookie-compatible mirror exists (verified live 2026-09-29 with invalid
+// payloads: www refuses them before validating, while oauth.reddit.com with
+// the account's web bearer gets as far as a 400). So instead of the cookie,
+// ApolloWebJSONRewriteRequest sends these to oauth.reddit.com with the
+// account's own web-session bearer. Before this, a keyless moderator's
+// Removal Reasons screen stayed blank and removing a post never offered
+// "Add Removal Reason" (#1292). Takes a URL path or RedditKit's relative
+// "api/v1/..." path, with or without a query.
+BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) {
+    if (path.length == 0) return NO;
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:@"^/?api/v1/(modactions/[^/?]+|[^/?]+/removal_reasons(/[^/?]+)?)/?(\\?|$)"
+                                                         options:NSRegularExpressionCaseInsensitive error:NULL];
+    });
+    return [re firstMatchInString:path options:0 range:NSMakeRange(0, path.length)] != nil;
+}
+
+// Which web-session account a Reddit request carrying `bearer` belongs to, or
+// nil when it's an OAuth account's request. Resolved per request rather than
+// from whichever account is globally active: Apollo runs background polls
+// (inbox, /api/v1/me) for EVERY signed-in account concurrently, and keying the
+// transport purely off the active account hijacked those — an OAuth account's
+// identity refresh went out with the web-session account's cookie, came back
+// as the WRONG user, got installed as that account's currentUser, and
+// persistInformationToDisk wrote the poison to disk (user-visible as "switched
+// back to my API-key account but it's still running keyless"). The bearer
+// tells us whose request this really is:
+//   • synthetic bearer            -> a web-session client; the embedded
+//     username (per-account mint) picks the session, bare legacy sentinel
+//     falls back to the active account;
+//   • real bearer, registered to a web-session user -> that user (the
+//     restored "Reddit killed our keys" account, whose stale-but-real
+//     token never rotates because its refresh is short-circuited);
+//   • any other real bearer       -> nil: an OAuth account's request, which
+//     stays on the oauth path untouched;
+//   • no bearer                   -> not account-scoped; use the active
+//     account, matching the old behavior.
+// Shared by ApolloWebJSONRewriteRequest and the RedditKit request hook
+// (ApolloWebJSONIdentity.xm), which has to attribute a request before it's built.
+NSString *ApolloWebJSONWebSessionUsernameForBearer(NSString *bearer) {
+    if (bearer.length == 0) return ApolloActiveWebSessionUsername();
+    if (ApolloWebJSONBearerIsSynthetic(bearer)) {
+        return ApolloWebJSONUsernameFromSyntheticBearer(bearer) ?: ApolloActiveWebSessionUsername();
+    }
+    NSString *owner = ApolloWebJSONUsernameForRegisteredBearer(bearer);
+    return (owner.length > 0 && ApolloWebSessionFor(owner) != nil) ? owner : nil;
+}
+
+// `request` re-pointed at oauth.reddit.com and authenticated with `webBearer`
+// (the account's web-session bearer) instead of the cookie. Path, query, body
+// and method are kept.
+static NSURLRequest *ApolloWebJSONWebBearerRequest(NSURLRequest *request, NSString *username, NSString *webBearer) {
+    NSURLComponents *components = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO];
+    if (!components) return nil;
+    components.host = @"oauth.reddit.com";
+    NSURL *oauthURL = components.URL;
+    if (!oauthURL) return nil;
+    NSMutableURLRequest *mutable = [request mutableCopy];
+    // Account marker first, bearer second. The marker keeps the bearer-capture
+    // hook on -[NSMutableURLRequest setValue:forHTTPHeaderField:]
+    // (ApolloImageUploadHost.xm) from taking the web-session account's bearer
+    // for Apollo's own OAuth token (see ApolloWebJSONRequestIsInternal), and
+    // lets ApolloWebJSONNoteResponse pin a 401 on this account.
+    mutable.URL = ApolloWebJSONURLWithFragment(oauthURL, [kApolloWebJSONAccountMarkerPrefix stringByAppendingString:
+        [username stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLFragmentAllowedCharacterSet]] ?: @""]);
+    [mutable setValue:[@"Bearer " stringByAppendingString:webBearer] forHTTPHeaderField:@"Authorization"];
+    [mutable setValue:nil forHTTPHeaderField:@"Cookie"];
+    mutable.HTTPShouldHandleCookies = NO;
+    // The bearer belongs to Reddit's own web client, so it goes out with the
+    // same browser identity as the cookie requests and the mint that made it.
+    [mutable setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
+    return mutable;
+}
+
 #pragma mark - Request rewrite
 
 NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
@@ -349,25 +431,8 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     NSString *host = url.host.lowercaseString;
     if (![host isEqualToString:@"oauth.reddit.com"] && ![host isEqualToString:@"www.reddit.com"]) return nil;
 
-    // Resolve the owning account PER REQUEST from the Authorization bearer, not
-    // just from whichever account is globally active. Apollo runs background
-    // polls (inbox, /api/v1/me) for EVERY signed-in account concurrently;
-    // keying the transport purely off the active account hijacked those — an
-    // OAuth account's identity refresh went out with the web-session account's
-    // cookie, came back as the WRONG user, got installed as that account's
-    // currentUser, and persistInformationToDisk wrote the poison to disk
-    // (user-visible as "switched back to my API-key account but it's still
-    // running keyless"). The bearer tells us whose request this really is:
-    //   • synthetic bearer            -> a web-session client; the embedded
-    //     username (per-account mint) picks the session, bare legacy sentinel
-    //     falls back to the active account;
-    //   • real bearer, registered to a web-session user -> that user (the
-    //     restored "Reddit killed our keys" account, whose stale-but-real
-    //     token never rotates because its refresh is short-circuited);
-    //   • any other real bearer       -> an OAuth account's request; leave it
-    //     on the oauth path untouched;
-    //   • no bearer                   -> not account-scoped; use the active
-    //     account, matching the old behavior.
+    // Resolve the owning account PER REQUEST from the Authorization bearer (see
+    // ApolloWebJSONWebSessionUsernameForBearer for why and how).
     NSString *authorization = [request valueForHTTPHeaderField:@"Authorization"];
     NSString *bearer = nil;
     if ([authorization isKindOfClass:[NSString class]]) {
@@ -377,27 +442,18 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
                       stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
     }
-    NSString *sessionUsername = nil;
-    if (bearer.length == 0) {
-        sessionUsername = ApolloActiveWebSessionUsername();
-    } else if (ApolloWebJSONBearerIsSynthetic(bearer)) {
-        sessionUsername = ApolloWebJSONUsernameFromSyntheticBearer(bearer) ?: ApolloActiveWebSessionUsername();
-    } else {
-        NSString *owner = ApolloWebJSONUsernameForRegisteredBearer(bearer);
-        if (owner.length > 0 && ApolloWebSessionFor(owner) != nil) {
-            sessionUsername = owner;
-        } else {
-            // A real OAuth bearer that doesn't belong to a web-session account:
-            // this request must stay on the oauth path with its own credential.
-            // Only log when the cookie transport would previously have hijacked
-            // it (an active web session exists) — otherwise this is just the
-            // normal OAuth path and logging would fire for every request.
-            if (ApolloActiveWebSession() != nil) {
-                ApolloLogDebug(@"[WebJSON] Foreign real bearer (u/%@) on %@ %@ — leaving on oauth path",
-                               owner ?: @"unknown", request.HTTPMethod ?: @"GET", url.path);
-            }
-            return nil;
+    NSString *sessionUsername = ApolloWebJSONWebSessionUsernameForBearer(bearer);
+    if (sessionUsername.length == 0 && bearer.length > 0 && !ApolloWebJSONBearerIsSynthetic(bearer)) {
+        // A real OAuth bearer that doesn't belong to a web-session account:
+        // this request must stay on the oauth path with its own credential.
+        // Only log when the cookie transport would previously have hijacked
+        // it (an active web session exists) — otherwise this is just the
+        // normal OAuth path and logging would fire for every request.
+        if (ApolloActiveWebSession() != nil) {
+            ApolloLogDebug(@"[WebJSON] Foreign real bearer (u/%@) on %@ %@ — leaving on oauth path",
+                           ApolloWebJSONUsernameForRegisteredBearer(bearer) ?: @"unknown", request.HTTPMethod ?: @"GET", url.path);
         }
+        return nil;
     }
     ApolloWebSessionEntry *session = sessionUsername.length > 0 ? ApolloWebSessionFor(sessionUsername) : nil;
     if (session.cookieHeader.length == 0) return nil;
@@ -405,6 +461,27 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
     NSString *method = request.HTTPMethod.uppercaseString ?: @"GET";
     NSString *path = url.path ?: @"/";
     BOOL isWrite = !([method isEqualToString:@"GET"] || [method isEqualToString:@"HEAD"]);
+
+    // OAuth-only moderator endpoints (ApolloWebJSONPathNeedsWebBearer): the
+    // cookie can never authenticate them, so they go to oauth.reddit.com with
+    // this account's own web-session bearer. This runs on NSURLSession's work
+    // queue and must not block on a mint, so it only uses a bearer that's
+    // already on hand — the RedditKit request hook (ApolloWebJSONIdentity.xm)
+    // mints one before sending. With none (mint failed, or held off after a
+    // 401) the request falls through to the cookie path below, which Reddit
+    // refuses exactly as it always has.
+    if (ApolloWebJSONPathNeedsWebBearer(path)) {
+        NSString *webBearer = ApolloWebJSONReadyWebBearer(sessionUsername);
+        NSURLRequest *oauthRequest = webBearer.length > 0
+            ? ApolloWebJSONWebBearerRequest(request, sessionUsername, webBearer) : nil;
+        if (oauthRequest) {
+            ApolloLog(@"[WebJSON] Sent %@ %@ to oauth.reddit.com with u/%@'s web bearer (endpoint refuses the cookie)",
+                      method, path, sessionUsername);
+            return oauthRequest;
+        }
+        ApolloLog(@"[WebJSON] No web bearer ready for %@ %@ (u/%@) — sending it with the cookie, which Reddit refuses",
+                  method, path, sessionUsername);
+    }
 
     // Special-case the moderators endpoint BEFORE the generic /api/* "already
     // JSON, just swap host" handling below — it needs a full path substitution
@@ -918,6 +995,8 @@ NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username) {
     return MAX(0.0, until - [[NSDate date] timeIntervalSince1970]);
 }
 
+static void ApolloWebJSONNoteWebBearerResponse(NSURLRequest *request, NSHTTPURLResponse *http);
+
 void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     if (!sWebJSONEnabled) return;
     if (![response isKindOfClass:[NSHTTPURLResponse class]]) return;
@@ -925,6 +1004,13 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // Our verification probe and external-TU requests (upload lease) must not
     // feed their own results back into the counter.
     if (ApolloWebJSONURLIsProbe(url)) return;
+
+    // Moderator requests sent to oauth.reddit.com with a web-session bearer
+    // (ApolloWebJSONWebBearerRequest) have their own failure handling.
+    if ([url.host.lowercaseString isEqualToString:@"oauth.reddit.com"]) {
+        ApolloWebJSONNoteWebBearerResponse(request, (NSHTTPURLResponse *)response);
+        return;
+    }
 
     if (![url.host.lowercaseString isEqualToString:@"www.reddit.com"]) return;
     // Only react to requests we authenticated with the cookie — those carry the
@@ -960,6 +1046,10 @@ void ApolloWebJSONNoteResponse(NSURLRequest *request, NSURLResponse *response) {
     // counting them would poison the expiry streak with permanent false
     // evidence. They say nothing about the session either way — ignore them.
     if ([url.path hasPrefix:@"/api/mod/"]) return;
+    // Same for the removal-reason / modactions endpoints. They normally go out
+    // with a web bearer instead; one only reaches www with the cookie when no
+    // bearer could be minted, and then its 403 is guaranteed.
+    if (ApolloWebJSONPathNeedsWebBearer(url.path)) return;
 
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     // Reddit's anonymous block page is HTTP 403 with a ~190 KB text/html body.
@@ -1556,22 +1646,30 @@ BOOL ApolloWebJSONShouldStubFlairList(NSURLResponse *response) {
 // instead of the empty stub.
 
 BOOL ApolloWebJSONRequestIsInternal(NSURL *url) {
-    return ApolloWebJSONURLIsProbe(url);
+    // Account-marked requests too: a cookie request carries no bearer at all,
+    // and a moderator request re-pointed at oauth.reddit.com carries the
+    // web-session account's bearer (ApolloWebJSONWebBearerRequest).
+    return ApolloWebJSONURLIsProbe(url) || ApolloWebJSONAccountFromURL(url).length > 0;
 }
 
-// Unix expiry of a JWT's `exp` claim, or 0 when unparseable (treated as
-// expired). token_v2 is a standard three-segment JWT.
-static NSTimeInterval ApolloWebJSONJWTExpiry(NSString *jwt) {
+// The claims of a JWT (token_v2 and minted bearers are standard three-segment
+// JWTs), or nil when unparseable.
+static NSDictionary *ApolloWebJSONJWTClaims(NSString *jwt) {
     NSArray<NSString *> *parts = [jwt componentsSeparatedByString:@"."];
-    if (parts.count < 2) return 0;
+    if (parts.count < 2) return nil;
     NSString *payload = [[parts[1] stringByReplacingOccurrencesOfString:@"-" withString:@"+"]
                          stringByReplacingOccurrencesOfString:@"_" withString:@"/"];
     while (payload.length % 4 != 0) payload = [payload stringByAppendingString:@"="];
     NSData *data = [[NSData alloc] initWithBase64EncodedString:payload options:0];
-    if (!data) return 0;
+    if (!data) return nil;
     NSDictionary *claims = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if (![claims isKindOfClass:[NSDictionary class]]) return 0;
-    id exp = claims[@"exp"];
+    return [claims isKindOfClass:[NSDictionary class]] ? claims : nil;
+}
+
+// Unix expiry of a JWT's `exp` claim, or 0 when unparseable (treated as
+// expired).
+static NSTimeInterval ApolloWebJSONJWTExpiry(NSString *jwt) {
+    id exp = ApolloWebJSONJWTClaims(jwt)[@"exp"];
     return [exp respondsToSelector:@selector(doubleValue)] ? [exp doubleValue] : 0;
 }
 
@@ -1672,9 +1770,9 @@ static void ApolloWebJSONDropMintedBearerForUser(NSString *username) {
 // public mweb client id ("ohXpoqrZYub1kg" — Basic auth, empty secret; it is
 // in every logged-out browser request, not a secret). A live session gets a
 // ~24h logged-in bearer in the JSON body (verified against
-// /r/…/api/link_flair_v2); a dead session draws a 401/anonymous token, which
-// the caller's fetch-outcome gate turns into a recorded failure — see
-// ApolloWebJSONRescueFlairList.
+// /r/…/api/link_flair_v2); a dead session draws a 401 or an anonymous token.
+// The anonymous one is refused below; anything else a fetch proves dead is
+// dropped by the caller's fetch-outcome gate — see ApolloWebJSONRescueFlairList.
 //
 // Serialized behind a lock; losers of a concurrent race reuse the winner's
 // cached bearer. Synchronous (bounded by the request timeout) — background
@@ -1738,6 +1836,17 @@ static NSString *ApolloWebJSONMintWebBearerForAccount(NSString *username) {
             ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ produced no usable token", username);
             return nil;
         }
+        // A signed-out cookie still gets HTTP 200 here, carrying an anonymous
+        // token (subject "loid…", no account id; checked live 2026-09-29). It
+        // can't act as the account, and on the moderator endpoints it's
+        // refused with a 403 that reads like a permissions error rather than a
+        // dead session, so it must never be cached as this account's bearer.
+        NSString *subject = ApolloWebJSONJWTClaims(token)[@"sub"];
+        if ([subject isKindOfClass:[NSString class]] && [subject hasPrefix:@"loid"]) {
+            ApolloWebJSONRecordMintFailureForUser(username);
+            ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ returned a signed-out token — not using it", username);
+            return nil;
+        }
         ApolloWebJSONStoreMintedBearerForUser(username, token);
         ApolloLog(@"[WebJSON] Web-bearer mint for u/%@ succeeded (validated by the fetch that follows)", username);
         return token;
@@ -1771,6 +1880,62 @@ void ApolloWebJSONInvalidateOAuthBearerForAccount(NSString *username, NSString *
     ApolloWebJSONDropMintedBearerForUser(user);
     ApolloWebJSONRecordMintFailureForUser(user);
     ApolloLog(@"[WebJSON] Dropped rejected web bearer for u/%@ (fetch outcome 401/403)", user);
+}
+
+#pragma mark - Web bearer for OAuth-only moderator endpoints
+
+// Once oauth.reddit.com refuses an account's web bearer with a 401, its
+// OAuth-only moderator requests go back to the cookie (a plain 403) for a
+// minute instead of reusing that bearer. RedditKit answers a 401 by
+// refreshing the credential (instant, and a no-op, for a keyless client) and
+// retrying, so without the hold one dead bearer would become a tight retry
+// loop. Lowercased username → unix time the hold ends; mint state lock.
+static NSMutableDictionary<NSString *, NSNumber *> *sWebBearerHeldUntilByUser;
+static const NSTimeInterval kWebBearerHoldAfterRejection = 60.0;
+
+static BOOL ApolloWebJSONWebBearerHeldForUser(NSString *key) {
+    @synchronized (ApolloWebJSONMintStateLock()) {
+        return [sWebBearerHeldUntilByUser[key] doubleValue] > [[NSDate date] timeIntervalSince1970];
+    }
+}
+
+NSString *ApolloWebJSONReadyWebBearer(NSString *username) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0 || ApolloWebJSONWebBearerHeldForUser(key)) return nil;
+    ApolloWebSessionEntry *session = ApolloWebSessionFor(key);
+    if (session.cookieHeader.length == 0) return nil;
+    return ApolloWebJSONUsableTokenV2ForSession(session) ?: ApolloWebJSONCachedMintedBearerForUser(key);
+}
+
+BOOL ApolloWebJSONWebBearerNeedsMint(NSString *username) {
+    NSString *key = username.lowercaseString;
+    if (key.length == 0 || ApolloWebSessionFor(key) == nil) return NO;
+    if (ApolloWebJSONWebBearerHeldForUser(key) || ApolloWebJSONMintFailedRecentlyForUser(key)) return NO;
+    return ApolloWebJSONReadyWebBearer(key).length == 0;
+}
+
+static void ApolloWebJSONNoteWebBearerResponse(NSURLRequest *request, NSHTTPURLResponse *http) {
+    // Only requests ApolloWebJSONWebBearerRequest re-pointed carry an account
+    // marker on this host; an API-key account's own requests never do.
+    NSString *key = ApolloWebJSONAccountFromURL(request.URL).lowercaseString;
+    if (key.length == 0) return;
+    // RedditKit hands these callers no error for a refused request, so the
+    // status is only visible here.
+    ApolloLog(@"[WebJSON] oauth.reddit.com answered %@ %@ with HTTP %ld (u/%@'s web bearer)",
+              request.HTTPMethod ?: @"GET", request.URL.path, (long)http.statusCode, key);
+    if (http.statusCode != 401) return;
+    NSString *authorization = [request valueForHTTPHeaderField:@"Authorization"];
+    NSRange bearerRange = [authorization rangeOfString:@"Bearer " options:NSCaseInsensitiveSearch | NSAnchoredSearch];
+    NSString *bearer = bearerRange.location != NSNotFound ? [authorization substringFromIndex:NSMaxRange(bearerRange)] : nil;
+    // Drops (and backs off) a minted bearer; token_v2 can't be dropped, which
+    // is what the hold is for.
+    ApolloWebJSONInvalidateOAuthBearerForAccount(key, bearer);
+    @synchronized (ApolloWebJSONMintStateLock()) {
+        if (!sWebBearerHeldUntilByUser) sWebBearerHeldUntilByUser = [NSMutableDictionary dictionary];
+        sWebBearerHeldUntilByUser[key] = @([[NSDate date] timeIntervalSince1970] + kWebBearerHoldAfterRejection);
+    }
+    ApolloLog(@"[WebJSON] oauth.reddit.com refused u/%@'s web bearer (HTTP 401) on %@ — using the cookie for %.0fs",
+              key, request.URL.path, kWebBearerHoldAfterRejection);
 }
 
 NSArray *ApolloWebJSONRescueFlairList(NSHTTPURLResponse *response) {

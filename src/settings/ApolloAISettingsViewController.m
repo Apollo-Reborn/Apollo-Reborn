@@ -935,8 +935,28 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     // Availability can change while the screen is off-stack (e.g. the model
-    // finishes downloading) — re-read every row's state on each appearance.
-    [self.tableView reloadData];
+    // finishes downloading), so re-read it on each appearance. In place, not
+    // with a reload: a cancelled interactive swipe-back calls this again as the
+    // gesture ends, and after a reloadData UIKit puts the scroll position back
+    // against the wrong row whenever the top edge of the screen sits inside a
+    // section footer (it saves it against that section's last row and restores
+    // it against the next section's first row). With this screen's long
+    // footers the list jumped ~100pt. Nothing else here changes off-stack:
+    // only this screen writes these settings, and a model picked on the pushed
+    // picker reloads its own rows in onPick.
+    [self refreshAvailabilityInPlace];
+}
+
+// Re-reads the Availability row into its live cell (-cellForRowID: returns the
+// visible cell or one UIKit prefetched), so nothing is reloaded and nothing
+// moves. A row without a cell reads the current value when it is displayed.
+- (void)refreshAvailabilityInPlace {
+    UITableViewCell *cell = [self cellForRowID:@"availability"];
+    NSString *text = [self availabilityText];
+    if (!cell || [cell.detailTextLabel.text isEqualToString:text]) return;
+    ApolloLog(@"[ApolloAISettings] availability changed while off screen: %@ → %@", cell.detailTextLabel.text, text);
+    cell.detailTextLabel.text = text;
+    [cell setNeedsLayout];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -1121,7 +1141,7 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
                                     title:(ApolloAIIsCloudProvider() ? ApolloAIProviderDisplayName(sAISummaryProvider)
                                                                      : @"On-Device Model")
                                    detail:^NSString * {
-            return ApolloAIIsCloudProvider() ? [weakSelf cloudAvailabilityText] : [weakSelf modelAvailabilityText];
+            return [weakSelf availabilityText];
         }
                                  onSelect:nil];
 
@@ -1216,6 +1236,11 @@ static void ApolloAISaveProviderField(ApolloAIFieldTag tag, NSString *value) {
         if (ApolloAICloudEffectiveModel().length == 0) return @"Model Required";
     }
     return @"Ready";
+}
+
+// The Availability row's detail for the selected provider.
+- (NSString *)availabilityText {
+    return ApolloAIIsCloudProvider() ? [self cloudAvailabilityText] : [self modelAvailabilityText];
 }
 
 #pragma mark - Provider fields
