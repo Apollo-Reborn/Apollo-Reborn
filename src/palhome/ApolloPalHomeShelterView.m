@@ -398,12 +398,17 @@ static const NSUInteger kRosterPageSize = 8;
     ApolloPixelLabel *blurb = body([APShelter blurbForPersonality:a.personality], 0);
     ApolloPixelLabel *quirk = body(a.quirk, 0);
     ApolloPixelLabel *coat = body([NSString stringWithFormat:@"%@ coat", coatTitle], 1);
+    // Seasonal Pals (the October ghost) say so: this is the month to adopt.
+    int season = [APSpecies speciesWithID:a.species].season;
+    NSString *month = season >= 1 && season <= 12 ? [NSDateFormatter new].standaloneMonthSymbols[season - 1] : nil;
+    ApolloPixelLabel *seasonal = month ? body([NSString stringWithFormat:@"Only at the shelter in %@", month], 2) : nil;
     int y = 60;
     int titleY = y; y += 8;
     int blurbY = y; y += blurb.pixelHeight + 3;
     int quirkTitleY = y; y += 8;
     int quirkY = y; y += quirk.pixelHeight + 2;
     int coatY = y; y += coat.pixelHeight;
+    int seasonalY = y + 2; if (seasonal) y += seasonal.pixelHeight + 2;
     int H = y + 28;
     [self setPanelBackgroundWidth:W height:H];
     [self centerLabel:[self label:a.name font:APFontLarge role:0 max:W - 8] y:5 width:W];
@@ -436,6 +441,7 @@ static const NSUInteger kRosterPageSize = 8;
     [self centerLabel:[self label:@"Quirk" font:APFontSmall role:2 max:W - 8] y:quirkTitleY width:W];
     [self centerLabel:quirk y:quirkY width:W];
     [self centerLabel:coat y:coatY width:W];
+    if (seasonal) [self centerLabel:seasonal y:seasonalY width:W];
     ApolloPixelButton *back = [self button:@"back" label:@"Back to the shelter" action:@selector(backToRoster)];
     ApolloPixelButton *adopt = [self wordButton:@"heart" word:@"Adopt" action:self.full ? @selector(homeIsFull) : @selector(startNaming)];
     adopt.accessibilityHint = self.full ? @"Your home is full. Say goodbye to a Pal to make room."

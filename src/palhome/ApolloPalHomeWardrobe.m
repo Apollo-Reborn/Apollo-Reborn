@@ -1,4 +1,5 @@
 #import "ApolloPalHomeWardrobe.h"
+#import "ApolloPalSpecies.h"
 #import "ApolloPalHomePixelUI.h"
 #import "ApolloPalHomeRenderer.h"
 #import "ApolloPalHomeShelter.h"
@@ -113,6 +114,11 @@ static const int kWidth = 140, kPad = 6;
     int titleY = ty; ty += 8;
     int blurbY = ty; ty += text(4).pixelHeight + 1;
     int quirkY = ty; ty += text(5).pixelHeight;
+    // Seasonal species (the ghost): a rare find, only adoptable in its month.
+    int season = [APSpecies speciesWithID:pal.species].season;
+    ApolloPixelLabel *seasonal = season >= 1 && season <= 12
+        ? [self body:[NSString stringWithFormat:@"Only adoptable in %@", [NSDateFormatter new].standaloneMonthSymbols[season - 1]] role:2] : nil;
+    int seasonalY = ty + 1; if (seasonal) ty += seasonal.pixelHeight + 1;
 
     BOOL household = self.household.count > 1;
     int y = ty + 8;
@@ -168,6 +174,7 @@ static const int kWidth = 140, kPad = 6;
     [self centre:text(3) y:titleY];
     [self centre:text(4) y:blurbY];
     [self centre:text(5) y:quirkY];
+    if (seasonal) [self centre:seasonal y:seasonalY];
 
     if (household) {
         // The rest of the household: tap to swap who's home.

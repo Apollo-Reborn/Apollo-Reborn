@@ -451,6 +451,31 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
     return YES;
 }
 
+// Pal Home from the island, whatever state the app is in: pushed onto the
+// current tab when it can be (so back returns you to where you were), else
+// presented full screen (its back button dismisses). Never Apollo's old sheet.
+static void ApolloPalHomeShowFromWindow(UIWindow *window) {
+    if (ApolloPalHomeOpenFromIsland(window)) return;
+    UIViewController *top = window.rootViewController;
+    while (top.presentedViewController && !top.presentedViewController.isBeingDismissed) top = top.presentedViewController;
+    if (!top || top.isBeingPresented || top.isBeingDismissed) {
+        // Mid-transition: try again once it settles.
+        __weak UIWindow *weakWindow = window;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIWindow *strongWindow = weakWindow;
+            if (strongWindow && ApolloPalHomeStore.isPalHomeEnabled) ApolloPalHomeShowFromWindow(strongWindow);
+        });
+        ApolloLog(@"[PixelPals] Pal Home deferred: mid-transition");
+        return;
+    }
+    if ([top isKindOfClass:UINavigationController.class] &&
+        [((UINavigationController *)top).topViewController isKindOfClass:ApolloPalHomeViewController.class]) return; // already open
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ApolloPalHomeViewController new]];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [top presentViewController:nav animated:YES completion:nil];
+    ApolloLog(@"[PixelPals] Island tap → Pal Home (presented over %@)", NSStringFromClass(top.class));
+}
+
 %hook _TtC6Apollo15ThemeableWindow
 
 // Views Apollo adds to the window positioned from the stock pill: the tap flash
@@ -508,8 +533,10 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
         ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
-    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
-    %orig; // Classic (or no navigation stack to push onto): Apollo's own sheet
+    // With Pal Home on, the old sheet never opens (see the presentation hook
+    // below, which catches every other route to it too).
+    if (ApolloPalHomeStore.isPalHomeEnabled) { ApolloPalHomeShowFromWindow((UIWindow *)self); return; }
+    %orig; // Classic: Apollo's own sheet
 }
 
 // Tapping the Pal sprite itself (the scene posts "dog barked") opens the
@@ -519,7 +546,7 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
         ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
         return;
     }
-    if (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeOpenFromIsland((UIWindow *)self)) return;
+    if (ApolloPalHomeStore.isPalHomeEnabled) { ApolloPalHomeShowFromWindow((UIWindow *)self); return; }
     %orig;
 }
 
@@ -559,6 +586,26 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
 %end
 
 // Apollo's care sheet (Classic): the same card, floating at the bottom.
+// The definitive gate: with Pal Home on, anything that tries to present
+// Apollo's old care sheet gets Pal Home instead (the island taps above, and
+// any route we haven't found, e.g. a long press or a notification).
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)viewController animated:(BOOL)animated completion:(void (^)(void))completion {
+    static Class overlay;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ overlay = objc_getClass("_TtC6Apollo29PixelPalOverlayViewController"); });
+    if (overlay && [viewController isKindOfClass:overlay] && ApolloPalHomeStore.isPalHomeEnabled) {
+        UIViewController *presenter = self;
+        UIWindow *window = presenter.view.window ?: presenter.viewIfLoaded.window;
+        ApolloLog(@"[PixelPals] Old care sheet blocked (Pal Home is on) → Pal Home");
+        if (window) ApolloPalHomeShowFromWindow(window);
+        if (completion) completion();
+        return;
+    }
+    %orig;
+}
+%end
+
 %hook _TtC6Apollo29PixelPalOverlayViewController
 - (void)viewDidAppear:(BOOL)animated {
     %orig;

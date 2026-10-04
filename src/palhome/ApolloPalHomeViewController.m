@@ -63,10 +63,20 @@
 
 @implementation ApolloPalHomeViewController
 
+static NSString *sPendingVisit;
+
+// The link route always opens a fresh Pal Home, which takes this on init.
++ (void)visitResidentOnOpen:(NSString *)residentID {
+    sPendingVisit = residentID.length ? [residentID copy] : nil;
+    ApolloLog(@"[PalHome] visit requested: %@", residentID ?: @"(island Pal)");
+}
+
 - (instancetype)initWithNibName:(NSString *)nibName bundle:(NSBundle *)bundle {
     if ((self = [super initWithNibName:nibName bundle:bundle])) {
         self.hidesBottomBarWhenPushed = YES;
         self.title = @"Pal Home";
+        self.homeID = sPendingVisit; // refreshHome drops it if they're the island Pal or gone
+        sPendingVisit = nil;
     }
     return self;
 }
@@ -378,7 +388,15 @@
 
 #pragma mark - Actions
 
-- (void)goBack { [self.navigationController popViewControllerAnimated:YES]; }
+- (void)goBack {
+    // Presented on its own (no stack to pop back through): dismiss instead.
+    UINavigationController *nav = self.navigationController;
+    if ((!nav || nav.viewControllers.firstObject == self) && (nav.presentingViewController || self.presentingViewController)) {
+        [(nav.presentingViewController ? nav : self) dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
+    [nav popViewControllerAnimated:YES];
+}
 - (void)pet { [self.homeScene petResident]; }
 - (void)play {
     // Always fun; earns a heart (Apollo's rule) once every 5 hours.

@@ -898,7 +898,7 @@ static int APCurrentMinute(void) {
     self.pal.alpha = self.editing ? 0 : [self palOpacity];
     [self dressSpeciesPal];
     if (keep && self.palMode == APPalSleeping && [self.layout itemWithUID:self.palBedUID ?: @""]) {
-        [self sleepInBed:[self.layout itemWithUID:self.palBedUID] announce:NO];
+        [self sleepInBed:[self.layout itemWithUID:self.palBedUID] announce:NO hop:NO];
     } else {
         [self settlePal];
     }
@@ -2055,7 +2055,7 @@ static SKTexture *APEyesTexture(int look) {
     int tx = best.x + best.spec.w / 2, ty = best.y + best.spec.d - 1;
     __weak typeof(self) weakSelf = self;
     if (announce) [self announce:[NSString stringWithFormat:@"%@ trots off for a nap.", self.resident.name]];
-    [self walkToX:tx y:ty run:NO completion:^{ [weakSelf sleepInBed:best announce:NO]; }];
+    [self walkToX:tx y:ty run:NO completion:^{ [weakSelf sleepInBed:best announce:NO hop:YES]; }];
 }
 
 - (void)sleepHereAnnounce:(BOOL)announce {
@@ -2065,18 +2065,34 @@ static SKTexture *APEyesTexture(int look) {
     if (announce) [self announce:[NSString stringWithFormat:@"%@ curls up for a nap. Pet them to wake up.", self.resident.name]];
 }
 
-- (void)sleepInBed:(APPlacedItem *)bed announce:(BOOL)announce {
+// `hop`: hop in (with the same landing haptic as a sofa); NO when restoring a
+// sleeping Pal after a rebuild.
+- (void)sleepInBed:(APPlacedItem *)bed announce:(BOOL)announce hop:(BOOL)hop {
     SKSpriteNode *pal = self.pal;
     if (!pal || !bed) return;
     [pal removeAllActions];
     self.palMode = APPalSleeping;
     self.palBedUID = bed.uid;
     int sx = [bed shellXForLocalX:bed.spec.sleepX], sy = [bed shellYForLocalY:bed.spec.sleepY];
-    pal.position = CGPointMake(sx, APShellHeight - sy);
+    CGPoint to = CGPointMake(sx, APShellHeight - sy), from = pal.position;
     pal.zPosition = bed.z + 0.1;
     pal.xScale = bed.flip ? -1 : 1;
-    [self tintPal];
-    [self startSleepAnimation];
+    if (hop && !self.reducedMotion && hypot(to.x - from.x, to.y - from.y) > 1) {
+        __weak typeof(self) weakSelf = self;
+        pal.texture = [self framesForResident:self.resident action:@"sit"].firstObject;
+        [pal runAction:[SKAction sequence:@[[self hopFrom:from to:to], [SKAction runBlock:^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf.palMode != APPalSleeping) return;
+            APHapticPlay(APHapticHop);
+            [strongSelf tintPal];
+            [strongSelf startSleepAnimation];
+        }]]]];
+    } else {
+        pal.position = to;
+        if (hop) APHapticPlay(APHapticHop);
+        [self tintPal];
+        [self startSleepAnimation];
+    }
     if (announce) [self announce:[NSString stringWithFormat:@"%@ is having a cosy nap.", self.resident.name]];
 }
 
@@ -2244,7 +2260,7 @@ static SKTexture *APEyesTexture(int look) {
         __weak typeof(self) weakSelf = self;
         [self.pal removeAllActions];
         [self removeActionForKey:@"brain"];
-        void (^bed)(void) = ^{ [weakSelf sleepInBed:item announce:YES]; };
+        void (^bed)(void) = ^{ [weakSelf sleepInBed:item announce:YES hop:YES]; };
         if (!self.reducedMotion && [self.layout isWalkableTileX:fx y:fy] && [self pathFromX:self.palX y:self.palY toX:fx y:fy]) {
             [self walkToX:fx y:fy run:NO completion:bed];
         } else {

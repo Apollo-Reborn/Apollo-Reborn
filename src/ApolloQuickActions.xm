@@ -1,3 +1,4 @@
+#import "palhome/ApolloPalHomeViewController.h"
 #import "ApolloCommon.h"
 #import "settings/ApolloBackupDocument.h"
 #import "ApolloDirectChatWeb.h"
@@ -261,6 +262,14 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url) {
 
     NSString *action = ApolloQuickActionNameFromURL(url);
     if (!action) return NO;
+    // The Pal Home widget says whose home to open (?pal=<resident id>).
+    if ([action isEqualToString:@"settings/pal-home"]) {
+        NSString *pal = nil;
+        for (NSURLQueryItem *item in [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems) {
+            if ([item.name isEqualToString:@"pal"]) pal = item.value;
+        }
+        [ApolloPalHomeViewController visitResidentOnOpen:pal];
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^{
         ApolloQuickActionsPerformWithRetry(action, 0);

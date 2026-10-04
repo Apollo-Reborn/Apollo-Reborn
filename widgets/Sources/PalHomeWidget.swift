@@ -31,57 +31,74 @@ enum PalStash {
         defaults.set(code, forKey: key)
     }
 
-    /// Resolve a widget's code: its own field (if valid), else the stash.
-    static func resolve(_ field: String?) -> [AnyHashable: Any]? {
-        offer(field)
-        // Full setup codes (base64 JSON) carry a Pal code too: look at both the
-        // shared setup and this widget's own field, and let each Pal code's
-        // `issued` time decide which wins (offer keeps the newest).
-        for raw in [field, SharedSetup.load()].compactMap({ $0 }) {
-            if let data = Data(base64Encoded: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let pal = json["palHome"] as? String {
-                offer(pal)
-            }
+    /// The Pal code inside a field: a Pal code itself, or a full setup code
+    /// (base64 JSON) that carries one.
+    static func palCode(in raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if APPalWidget.decode(raw) != nil { return raw }
+        if let data = Data(base64Encoded: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let pal = json["palHome"] as? String, APPalWidget.decode(pal) != nil {
+            return pal
         }
+        return nil
+    }
+
+    /// Resolve a widget's Pal. Its own code wins, so each widget can show a
+    /// different Pal (paste each one's code). A widget with no code shows the
+    /// newest code copied anywhere (a setup code, or another widget's).
+    static func resolve(_ field: String?) -> [AnyHashable: Any]? {
+        if let own = palCode(in: field), let payload = APPalWidget.decode(own) {
+            offer(own)
+            return payload
+        }
+        offer(palCode(in: SharedSetup.load()))
         guard let code = load() else { return nil }
         return APPalWidget.decode(code)
     }
 }
 
-/// The widget's own little world: what the Pal is doing right now.
-enum PalState {
-    private static let defaults = UserDefaults.standard
+/// Each Pal's own little world: what they're doing right now. Keyed by the
+/// Pal, so two widgets for two Pals don't share a nap or the lights.
+struct PalState {
     static let kind = "PalHomeWidget"
+    private let defaults = UserDefaults.standard
+    private let prefix: String
 
-    static var pose: String {
+    init(pal: String?) { prefix = "rw.pal." + ((pal?.isEmpty == false) ? pal! + "." : "") }
+
+    var pose: String {
         get {
             // A pet lasts a few minutes, then back to normal.
-            let until = defaults.double(forKey: "rw.pal.poseUntil")
+            let until = defaults.double(forKey: prefix + "poseUntil")
             if until > 0, Date().timeIntervalSince1970 > until { return "idle" }
-            return defaults.string(forKey: "rw.pal.pose") ?? "idle"
+            return defaults.string(forKey: prefix + "pose") ?? "idle"
         }
-        set {
-            defaults.set(newValue, forKey: "rw.pal.pose")
+        nonmutating set {
+            defaults.set(newValue, forKey: prefix + "pose")
             // Pets and play last a few minutes; a nap lasts until you wake them.
-            defaults.set(newValue == "pet" || newValue == "play" ? Date().timeIntervalSince1970 + 180 : 0, forKey: "rw.pal.poseUntil")
+            defaults.set(newValue == "pet" || newValue == "play" ? Date().timeIntervalSince1970 + 180 : 0, forKey: prefix + "poseUntil")
         }
     }
-    static var lightsOff: Bool {
-        get { defaults.bool(forKey: "rw.pal.lightsOff") }
-        set { defaults.set(newValue, forKey: "rw.pal.lightsOff") }
+    var lightsOff: Bool {
+        get { defaults.bool(forKey: prefix + "lightsOff") }
+        nonmutating set { defaults.set(newValue, forKey: prefix + "lightsOff") }
     }
-    static var pets: Int {
-        get { defaults.integer(forKey: "rw.pal.pets") }
-        set { defaults.set(newValue, forKey: "rw.pal.pets") }
+    var pets: Int {
+        get { defaults.integer(forKey: prefix + "pets") }
+        nonmutating set { defaults.set(newValue, forKey: prefix + "pets") }
     }
 }
 
 struct PalPetIntent: AppIntent {
     static var title: LocalizedStringResource = "Pet Your Pal"
+    @Parameter(title: "Pal") var pal: String?
+    init() {}
+    init(pal: String?) { self.pal = pal }
     func perform() async throws -> some IntentResult {
-        PalState.pose = "pet"
-        PalState.pets += 1
+        let state = PalState(pal: pal)
+        state.pose = "pet"
+        state.pets += 1
         WidgetCenter.shared.reloadTimelines(ofKind: PalState.kind)
         return .result()
     }
@@ -89,8 +106,11 @@ struct PalPetIntent: AppIntent {
 
 struct PalPlayIntent: AppIntent {
     static var title: LocalizedStringResource = "Play"
+    @Parameter(title: "Pal") var pal: String?
+    init() {}
+    init(pal: String?) { self.pal = pal }
     func perform() async throws -> some IntentResult {
-        PalState.pose = "play"
+        PalState(pal: pal).pose = "play"
         WidgetCenter.shared.reloadTimelines(ofKind: PalState.kind)
         return .result()
     }
@@ -98,8 +118,12 @@ struct PalPlayIntent: AppIntent {
 
 struct PalNapIntent: AppIntent {
     static var title: LocalizedStringResource = "Nap Time"
+    @Parameter(title: "Pal") var pal: String?
+    init() {}
+    init(pal: String?) { self.pal = pal }
     func perform() async throws -> some IntentResult {
-        PalState.pose = PalState.pose == "sleep" ? "idle" : "sleep"
+        let state = PalState(pal: pal)
+        state.pose = state.pose == "sleep" ? "idle" : "sleep"
         WidgetCenter.shared.reloadTimelines(ofKind: PalState.kind)
         return .result()
     }
@@ -107,8 +131,12 @@ struct PalNapIntent: AppIntent {
 
 struct PalLightsIntent: AppIntent {
     static var title: LocalizedStringResource = "Lights"
+    @Parameter(title: "Pal") var pal: String?
+    init() {}
+    init(pal: String?) { self.pal = pal }
     func perform() async throws -> some IntentResult {
-        PalState.lightsOff.toggle()
+        let state = PalState(pal: pal)
+        state.lightsOff.toggle()
         WidgetCenter.shared.reloadTimelines(ofKind: PalState.kind)
         return .result()
     }
@@ -125,6 +153,8 @@ struct PalHomeEntry: TimelineEntry {
     let lightsOff: Bool
     /// The Pal's name, for VoiceOver ("Biscuit is napping").
     var palName: String = "Your Pal"
+    /// The Pal's resident id: their own state, and the link to their home.
+    var palID: String? = nil
 }
 
 /// Pal sprites live in Apollo's own asset catalog, in the app bundle that
@@ -199,15 +229,17 @@ struct PalHomeProvider: IntentTimelineProvider {
             let setup = APPalWidget.setupImage(for: apFamily(family))
             return PalHomeEntry(date: date, images: [family: setup], style: nil, needsCode: true, pose: "idle", lightsOff: false)
         }
-        let current = PalState.pose
+        let palID = (payload["pal"] as? [String: Any])?["id"] as? String
+        let palState = PalState(pal: palID)
+        let current = palState.pose
         let pose = date > Date().addingTimeInterval(170) && (current == "pet" || current == "play") ? "idle" : current
-        let state: [AnyHashable: Any] = ["pose": pose, "lightsOff": PalState.lightsOff, "seed": seed]
+        let state: [AnyHashable: Any] = ["pose": pose, "lightsOff": palState.lightsOff, "seed": seed]
         let image = APPalWidget.renderPayload(payload, family: apFamily(family), minute: minuteOfDay(date), state: state,
                                               sprites: { spriteSheet($0) })
         let style = (payload["room"] as? [String: Any])?["style"] as? String
         let name = ((payload["pal"] as? [String: Any])?["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Your Pal"
         return PalHomeEntry(date: date, images: [family: image], style: style,
-                            needsCode: false, pose: pose, lightsOff: PalState.lightsOff, palName: name)
+                            needsCode: false, pose: pose, lightsOff: palState.lightsOff, palName: name, palID: palID)
     }
 }
 
@@ -248,7 +280,14 @@ struct PalHomeWidgetView: View {
             }
         }
         .containerBackground(for: .widget) { color(APPalWidget.backgroundColor(forStyle: entry.style)) }
-        .widgetURL(URL(string: "apollo://reborn/settings/pal-home"))
+        .widgetURL(homeURL)
+    }
+
+    /// Opens Pal Home at this widget's Pal's home.
+    private var homeURL: URL? {
+        var parts = URLComponents(string: "apollo://reborn/settings/pal-home")
+        if let id = entry.palID, !id.isEmpty { parts?.queryItems = [URLQueryItem(name: "pal", value: id)] }
+        return parts?.url
     }
 
     /// What VoiceOver hears for the room: who, and what they're up to.
@@ -267,13 +306,13 @@ struct PalHomeWidgetView: View {
         // Top corner, clear of the caption strip along the bottom.
         HStack(spacing: family == .systemSmall ? 3 : 4) {
             if family != .systemSmall {
-                tile(PalLightsIntent(), icon: "bulb", toggled: !entry.lightsOff, style: style,
+                tile(PalLightsIntent(pal: entry.palID), icon: "bulb", toggled: !entry.lightsOff, style: style,
                      label: "Lights", value: entry.lightsOff ? "Off" : "On")
-                tile(PalNapIntent(), icon: "moon", toggled: entry.pose == "sleep", style: style,
+                tile(PalNapIntent(pal: entry.palID), icon: "moon", toggled: entry.pose == "sleep", style: style,
                      label: entry.pose == "sleep" ? "Wake \(entry.palName)" : "Nap time", value: entry.pose == "sleep" ? "Napping" : nil)
-                tile(PalPlayIntent(), icon: "ball", toggled: entry.pose == "play", style: style, label: "Play", value: nil)
+                tile(PalPlayIntent(pal: entry.palID), icon: "ball", toggled: entry.pose == "play", style: style, label: "Play", value: nil)
             }
-            tile(PalPetIntent(), icon: "heart", toggled: entry.pose == "pet", style: style, label: "Pet \(entry.palName)", value: nil)
+            tile(PalPetIntent(pal: entry.palID), icon: "heart", toggled: entry.pose == "pet", style: style, label: "Pet \(entry.palName)", value: nil)
         }
     }
 

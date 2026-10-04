@@ -1584,6 +1584,8 @@ static int uname_replacement(struct utsname *buf) {
             @"iPhone18,5": notch, // iPhone 17e
             @"iPhone19,2": di,    // iPhone 18 Pro
             @"iPhone19,3": di,    // iPhone 18 Pro Max
+            @"iPhone19,4": di,    // iPhone Duo (both displays support Dynamic Island)
+            @"iPhone19,7": di,    // iPhone 18 Pro Max (regional hardware variant)
         };
     });
 

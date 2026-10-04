@@ -166,8 +166,11 @@ void APRegisterSurfaces(NSMutableArray<APSurfaceSpec *> *walls, NSMutableArray<A
             for (int px = start; px < w; ) {
                 int len = APRandInt(&r, 26, 44);
                 uint32_t col = tones[APRandInt(&r, 0, 3)];
-                APRect(c, x + MAX(px, 0), y + row * 6, MIN(len, w - MAX(px, 0)) + MIN(px, 0), 5, col);
-                APHLine(c, x + MAX(px, 0), y + row * 6, MIN(len, w - MAX(px, 0)) + MIN(px, 0), APShade(col, 1.08f));
+                // The visible part of the plank, clipped at both ends (a plank can be
+                // wider than a small swatch).
+                int x0 = MAX(px, 0), span = MIN(px + len, w) - x0;
+                APRect(c, x + x0, y + row * 6, span, 5, col);
+                APHLine(c, x + x0, y + row * 6, span, APShade(col, 1.08f));
                 for (int g = 0; g < len / 9; g++) {
                     int gx = px + APRandInt(&r, 1, len - 3);
                     if (gx >= 0 && gx < w - 2) APHLine(c, x + gx, y + row * 6 + APRandInt(&r, 2, 3), 2, APShade(col, 0.9f));

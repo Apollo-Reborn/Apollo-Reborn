@@ -42,7 +42,7 @@ static NSString *const kPrefix = @"PAL1:";
     BOOL (^number)(id) = ^BOOL(id value) { return [value isKindOfClass:NSNumber.class] && isfinite([value doubleValue]); };
     if (!text(pal[@"species"], 64) || ![pal[@"species"] length]) return nil;
     NSMutableDictionary *cleanPal = [NSMutableDictionary dictionary];
-    for (NSString *key in @[@"species", @"coat", @"gender"]) if (text(pal[key], 64)) cleanPal[key] = pal[key];
+    for (NSString *key in @[@"species", @"coat", @"gender", @"id"]) if (text(pal[key], 64)) cleanPal[key] = pal[key];
     for (NSString *key in @[@"name", @"summary", @"personalityTitle", @"personalityBlurb", @"quirk"]) if (text(pal[key], 200)) cleanPal[key] = pal[key];
     for (NSString *key in @[@"hearts", @"personality", @"ageMonths"]) if (number(pal[key])) cleanPal[key] = pal[key];
     NSMutableDictionary *cleanRoom = [NSMutableDictionary dictionary];
@@ -555,6 +555,7 @@ static void APPalCard(APCanvas *c, APChromeTheme t, NSDictionary *pal, int x, in
                                    @"personalityTitle": [APShelter titleForPersonality:pal.personality],
                                    @"personalityBlurb": [APShelter blurbForPersonality:pal.personality]} mutableCopy];
     if (pal.hearts) info[@"hearts"] = pal.hearts;
+    info[@"id"] = pal.identifier ?: @""; // so tapping the widget opens this Pal's home
     return [APPalWidget encodePal:info room:room ?: [APCatalog starterRoom]];
 }
 
