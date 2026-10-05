@@ -104,6 +104,9 @@ static NSString *const ApolloFavoriteSubredditsUpdatedNotification = @"com.chris
 // (Reddit offers no way to leave or delete some dead subreddits). Array of
 // display names, compared case-insensitively.
 static NSString *const UDKeyHiddenModeratorSubreddits = @"HiddenModeratorSubreddits";
+// Apollo-native subreddit-list icon preference, relocated from Appearance.
+static NSString *const UDKeyShowSubredditIconsInSubredditList = @"ShowSubredditIconsInSubredditList";
+static NSString *const ApolloSubredditListIconsChangedNotification = @"com.christianselig.SubredditListShowSubredditIconsChanged";
 static NSString *const UDKeyModernSubredditDividers = @"ModernSubredditDividers";
 static NSString *const ApolloModernSubredditDividersChangedNotification = @"ApolloModernSubredditDividersChangedNotification";
 // Hides the description subtitles under the subreddit list's built-in feed rows
@@ -131,7 +134,7 @@ static NSString *const UDKeySubredditSectionOrder = @"SubredditSectionOrder";
 // append in their natural alphabetical order.
 static NSString *const UDKeyFollowedUsersOrder = @"FollowedUsersOrder";
 static NSString *const ApolloSubredditSectionsChangedNotification = @"ApolloSubredditSectionsChangedNotification";
-// Whether the Subreddit Sections screen keeps its live preview pinned above
+// Whether the Subreddit List screen keeps its live preview pinned above
 // the options (YES, default) or lets it scroll away with them. Absent == YES.
 static NSString *const UDKeySubredditSectionsPreviewPinned = @"SubredditSectionsPreviewPinned";
 // Color post (link) and user/author flairs with Reddit's assigned colors. Default NO.

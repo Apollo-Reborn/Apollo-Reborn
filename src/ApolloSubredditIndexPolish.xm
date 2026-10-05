@@ -3315,11 +3315,15 @@ static void ApolloSubredditIndexRestoreCellNativeState(UITableViewCell *cell) {
         cell.separatorInset = [state[@"separatorInset"] UIEdgeInsetsValue];
         cell.layoutMargins = [state[@"layoutMargins"] UIEdgeInsetsValue];
         cell.contentView.layoutMargins = [state[@"contentMargins"] UIEdgeInsetsValue];
-        id cellBackground = state[@"cellBackgroundColor"];
-        cell.backgroundColor = [cellBackground isKindOfClass:[UIColor class]] ? cellBackground : nil;
-        id contentBackground = state[@"contentBackgroundColor"];
-        cell.contentView.backgroundColor = [contentBackground isKindOfClass:[UIColor class]] ? contentBackground : nil;
-        cell.opaque = [state[@"cellOpaque"] boolValue];
+        // Ordinary rows only had geometry changed. Replaying their saved
+        // colors here overwrites Apollo's freshly themed cells with a previous
+        // light/dark appearance. Only multireddit children had their fill cleared.
+        if ([objc_getAssociatedObject(cell, &kApolloSubredditMultiredditChildStyledKey) boolValue]) {
+            UIColor *background = ApolloThemeSubredditListBackgroundColor();
+            cell.backgroundColor = background;
+            cell.contentView.backgroundColor = background;
+            cell.opaque = [state[@"cellOpaque"] boolValue];
+        }
 
         NSNumber *stackSpacing = state[@"stackSpacing"];
         if (stackSpacing) {
@@ -3335,6 +3339,8 @@ static void ApolloSubredditIndexRestoreCellNativeState(UITableViewCell *cell) {
         }
     }
 
+    // Restoration is one-shot; a later enable must capture fresh native state.
+    objc_setAssociatedObject(cell, &kApolloSubredditCellNativeStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &kApolloSubredditCellMarginsAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &kApolloSubredditRowPolishAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &kApolloSubredditMultiredditChildStyledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
