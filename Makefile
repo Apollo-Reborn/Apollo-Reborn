@@ -62,6 +62,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsForm.m \
     $(SRC_DIR)/settings/ApolloSettingsShortcutsViewController.m \
     $(SRC_DIR)/settings/ApolloSettingsPinnedPreview.m \
+    $(SRC_DIR)/settings/ApolloProfilePicturesPreview.m \
     $(SRC_DIR)/settings/ApolloContributors.m \
     $(SRC_DIR)/settings/ApolloBackupRestore.m \
     $(SRC_DIR)/settings/ApolloBackupDocument.m \

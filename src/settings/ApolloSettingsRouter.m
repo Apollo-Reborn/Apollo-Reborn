@@ -76,7 +76,8 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"subreddit-sections", @"Subreddit Sections", @"Apollo Reborn → Features → Subreddits", ^UIViewController *{
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         });
-        add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
+        add(@"user-profiles", @"User Profiles", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloUserProfilesSettingsViewController class]));
+        add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features → User Profiles", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"settings-shortcuts", @"Settings Shortcuts", @"Apollo Reborn → Interface → Tab Bar", ApolloSettingsInsetGrouped([ApolloSettingsShortcutsViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
         add(@"action-menus", @"Action Menus", @"Apollo Reborn → Features → Interface", ApolloSettingsInsetGrouped([ApolloActionMenuSettingsViewController class]));
@@ -108,7 +109,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloThemeManagerViewController alloc] init]; // default init = hub/list mode
         });
 
-        sRouteAliases = @{ @"pip": @"picture-in-picture", @"ai": @"apollo-ai", @"profiles": @"profile-layout" };
+        sRouteAliases = @{ @"pip": @"picture-in-picture", @"ai": @"apollo-ai", @"profiles": @"user-profiles" };
         [sRouteAliases enumerateKeysAndObjectsUsingBlock:^(NSString *alias, NSString *canonical, BOOL *stop) {
             builders[alias] = builders[canonical];
             titles[alias] = titles[canonical];
