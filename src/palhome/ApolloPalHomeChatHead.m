@@ -4,7 +4,11 @@
 #import "ApolloPalHomeHaptics.h"
 #import "ApolloPalHomeShelterView.h"
 #import "ApolloPixelCanvas.h"
+#import "ApolloPalHomeRenderer.h"
 #import "ApolloCommon.h"
+#if APOLLO_SIM_BUILD
+#import <notify.h>
+#endif
 
 NSString *const ApolloPalChatHeadEnabledKey = @"ApolloRebornPalHomeChatHead";
 static NSString *const kSideKey = @"ApolloRebornPalHomeChatHeadSide";   // 0 left, 1 right
@@ -65,7 +69,13 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 @property (nonatomic) CFTimeInterval lastScrollTime;
 @property (nonatomic, strong) NSTimer *settleTimer;
 @property (nonatomic) CGPoint dragOffset;
-@property (nonatomic) CGFloat centreShift; // art pixels: the sprite's own centre vs the frame's
+@property (nonatomic) CGFloat centreShift;
+@property (nonatomic) BOOL transitioning; // the iris wipe owns the window
+@property (nonatomic, strong) CAShapeLayer *irisMask;
+@property (nonatomic, strong) UIView *iris;
+@property (nonatomic, strong) CADisplayLink *irisLink;
+@property (nonatomic, copy) void (^irisStep)(CFTimeInterval elapsed);
+@property (nonatomic) CFTimeInterval irisStart; // art pixels: the sprite's own centre vs the frame's
 @end
 
 @implementation APChatHead
@@ -73,7 +83,17 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 + (instancetype)shared {
     static APChatHead *head;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ head = [APChatHead new]; });
+    dispatch_once(&once, ^{
+        head = [APChatHead new];
+#if APOLLO_SIM_BUILD
+        // Sim testing (the debug tap can't reach this window):
+        //   xcrun simctl spawn <DEV> notifyutil -p apollofix.palhome.chathead.tap
+        int token;
+        notify_register_dispatch("apollofix.palhome.chathead.tap", &token, dispatch_get_main_queue(), ^(int t) {
+            if (head.isShowing) [head tapped];
+        });
+#endif
+    });
     return head;
 }
 
@@ -86,10 +106,13 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 - (void)refresh {
     BOOL show = self.wanted && !self.suppressed && UIApplication.sharedApplication.applicationState != UIApplicationStateBackground;
     if (!show) {
-        self.window.hidden = YES;
         [self.settleTimer invalidate];
+        // Mid iris wipe the window stays (the wipe is in it); just the bubble goes.
+        if (self.transitioning) { self.bubble.hidden = YES; return; }
+        self.window.hidden = YES;
         return;
     }
+    self.bubble.hidden = NO;
     [self ensureWindow];
     if (![self loadResident]) { self.window.hidden = YES; return; }
     self.window.hidden = NO;
@@ -240,14 +263,161 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 
 #pragma mark Touch
 
+// Tap: the Pal startles and hops, hearts burst out, then an iris wipe closes
+// on the bubble and opens again on Pal Home (where the Pal hops in through
+// the door). Reduce Motion: a haptic and a quick cross-fade instead.
 - (void)tapped {
-    APHapticPlay(APHapticTap);
-    [UIView animateWithDuration:0.08 animations:^{ self.bubble.transform = CGAffineTransformMakeScale(0.9, 0.9); } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.2 delay:0 usingSpringWithDamping:0.5 initialSpringVelocity:0.5 options:0 animations:^{
-            self.bubble.transform = CGAffineTransformIdentity;
-        } completion:nil];
-    }];
-    ApolloPalHomeOpenFromAnywhere();
+    if (self.transitioning) return;
+    APHapticPlay(APHapticSuccess);
+    if (UIAccessibilityIsReduceMotionEnabled()) {
+        UIView *root = self.window.rootViewController.view;
+        UIView *fade = [[UIView alloc] initWithFrame:root.bounds];
+        fade.backgroundColor = [UIColor colorWithRed:0.05 green:0.04 blue:0.07 alpha:1];
+        fade.alpha = 0;
+        fade.userInteractionEnabled = NO;
+        [root addSubview:fade];
+        self.transitioning = YES;
+        [UIView animateWithDuration:0.18 animations:^{ fade.alpha = 1; } completion:^(BOOL finished) {
+            ApolloPalHomeOpenFromAnywhere(NO);
+            [UIView animateWithDuration:0.25 delay:0.05 options:0 animations:^{ fade.alpha = 0; } completion:^(BOOL done) {
+                [fade removeFromSuperview];
+                self.transitioning = NO;
+                [self refresh];
+            }];
+        }];
+        return;
+    }
+    self.transitioning = YES;
+    [self.settleTimer invalidate];
+    // 1. Startle and hop, with a squash, and a burst of hearts.
+    [self applyMood:APChatMoodSit force:YES];
+    UIImage *alert = APPalSpriteFrames(self.species, self.coat, @"alert", 1).firstObject;
+    if (alert) { [self.pal stopAnimating]; self.pal.image = alert; }
+    [UIView animateKeyframesWithDuration:0.42 delay:0 options:0 animations:^{
+        [UIView addKeyframeWithRelativeStartTime:0 relativeDuration:0.25 animations:^{
+            self.bubble.transform = CGAffineTransformMakeScale(1.15, 0.85);
+        }];
+        [UIView addKeyframeWithRelativeStartTime:0.25 relativeDuration:0.35 animations:^{
+            self.bubble.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.9, 1.12), CGAffineTransformMakeTranslation(0, -14));
+        }];
+        [UIView addKeyframeWithRelativeStartTime:0.6 relativeDuration:0.4 animations:^{ self.bubble.transform = CGAffineTransformIdentity; }];
+    } completion:nil];
+    [self burstHearts];
+    // 2. The iris closes on the bubble…
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self_ = weakSelf;
+        UIView *root = self_.window.rootViewController.view;
+        CGPoint centre = self_.bubble.center;
+        CGFloat far = hypot(MAX(centre.x, root.bounds.size.width - centre.x), MAX(centre.y, root.bounds.size.height - centre.y)) + 20;
+        CGFloat ring = self_.bubble.bounds.size.width / 2 + 6;
+        [self_ irisFrom:far to:ring around:centre duration:0.45 completion:^{
+            APHapticPlay(APHapticThump);
+            // 3. …a beat on the Pal, into the dark, and open on Pal Home.
+            [UIView animateWithDuration:0.12 animations:^{ self_.bubble.transform = CGAffineTransformMakeScale(0.2, 0.2); self_.bubble.alpha = 0; }
+                             completion:^(BOOL finished) {
+                [self_ irisFrom:ring to:0 around:centre duration:0.08 completion:^{
+                    ApolloPalHomeOpenFromAnywhere(NO);
+                    self_.bubble.transform = CGAffineTransformIdentity;
+                    self_.bubble.alpha = 1;
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        CGPoint mid = CGPointMake(root.bounds.size.width / 2, root.bounds.size.height * 0.48);
+                        CGFloat all = hypot(root.bounds.size.width, root.bounds.size.height) / 2 + 30;
+                        [self_ irisFrom:0 to:all around:mid duration:0.55 completion:^{
+                            [self_.iris removeFromSuperview];
+                            self_.iris = nil;
+                            self_.transitioning = NO;
+                            [self_ refresh];
+                        }];
+                    });
+                }];
+            }];
+        }];
+    });
+}
+
+// Little pixel hearts popping out of the bubble.
+- (void)burstHearts {
+    APCanvas *c = APIconCanvas(@"smallheart");
+    CGImageRef cg = APCanvasCreateCGImage(c);
+    CGSize size = CGSizeMake(c->w * kPt, c->h * kPt);
+    APCanvasFree(c);
+    UIImage *heart = [UIImage imageWithCGImage:cg];
+    CGImageRelease(cg);
+    UIView *root = self.window.rootViewController.view;
+    CGPoint origin = CGPointMake(self.bubble.center.x, self.bubble.center.y - 10);
+    BOOL right = self.bubble.center.x > root.bounds.size.width / 2;
+    for (int i = 0; i < 6; i++) {
+        UIImageView *h = [[UIImageView alloc] initWithImage:heart];
+        h.layer.magnificationFilter = kCAFilterNearest;
+        h.frame = CGRectMake(0, 0, size.width, size.height);
+        h.center = origin;
+        h.userInteractionEnabled = NO;
+        [root insertSubview:h belowSubview:self.bubble];
+        // Fan out away from the screen edge, up and over.
+        CGFloat angle = (right ? M_PI * 0.55 : M_PI * 0.05) + i * (M_PI * 0.4 / 5);
+        CGFloat dist = 46 + (i % 3) * 12;
+        CGPoint to = CGPointMake(origin.x + cos(angle) * dist * (right ? 1 : 1), origin.y - sin(angle) * dist - 10);
+        if (right) to.x = origin.x - fabs(cos(angle)) * dist;
+        h.transform = CGAffineTransformMakeScale(0.3, 0.3);
+        [UIView animateWithDuration:0.55 delay:i * 0.025 usingSpringWithDamping:0.55 initialSpringVelocity:0.8 options:0 animations:^{
+            h.center = to;
+            h.transform = CGAffineTransformIdentity;
+        } completion:^(BOOL finished) {
+            [UIView animateWithDuration:0.25 animations:^{ h.alpha = 0; h.center = CGPointMake(to.x, to.y - 10); }
+                             completion:^(BOOL done) { [h removeFromSuperview]; }];
+        }];
+    }
+}
+
+// A dark screen with a round hole, radius stepping (chunky, retro) from
+// `from` to `to` around `centre`.
+- (void)irisFrom:(CGFloat)from to:(CGFloat)to around:(CGPoint)centre duration:(NSTimeInterval)duration completion:(void (^)(void))completion {
+    UIView *root = self.window.rootViewController.view;
+    if (!self.iris) {
+        UIView *iris = [[UIView alloc] initWithFrame:root.bounds];
+        iris.backgroundColor = [UIColor colorWithRed:0.05 green:0.035 blue:0.07 alpha:1];
+        iris.userInteractionEnabled = NO;
+        CAShapeLayer *mask = [CAShapeLayer layer];
+        mask.fillRule = kCAFillRuleEvenOdd;
+        iris.layer.mask = mask;
+        [root insertSubview:iris belowSubview:self.bubble];
+        self.iris = iris;
+        self.irisMask = mask;
+    }
+    CGRect bounds = root.bounds;
+    CAShapeLayer *mask = self.irisMask;
+    void (^draw)(CGFloat) = ^(CGFloat r) {
+        UIBezierPath *path = [UIBezierPath bezierPathWithRect:bounds];
+        if (r > 0.5) [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(centre.x - r, centre.y - r, r * 2, r * 2)]];
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        mask.path = path.CGPath;
+        [CATransaction commit];
+    };
+    draw(from);
+    [self.irisLink invalidate];
+    self.irisStart = CACurrentMediaTime();
+    __weak typeof(self) weakSelf = self;
+    self.irisStep = ^(CFTimeInterval elapsed) {
+        __strong typeof(weakSelf) self_ = weakSelf;
+        CGFloat t = MIN(1, elapsed / MAX(0.001, duration));
+        CGFloat eased = from > to ? t * t : 1 - (1 - t) * (1 - t); // in when closing, out when opening
+        CGFloat r = from + (to - from) * eased;
+        draw(round(r / 6) * 6); // 6pt steps: a chunky pixel iris
+        if (t >= 1) {
+            [self_.irisLink invalidate];
+            self_.irisLink = nil;
+            draw(to);
+            if (completion) completion();
+        }
+    };
+    self.irisLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(irisTick:)];
+    [self.irisLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+- (void)irisTick:(CADisplayLink *)link {
+    if (self.irisStep) self.irisStep(CACurrentMediaTime() - self.irisStart);
 }
 
 - (void)panned:(UIPanGestureRecognizer *)pan {

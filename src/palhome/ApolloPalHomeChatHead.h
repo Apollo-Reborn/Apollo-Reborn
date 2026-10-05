@@ -24,6 +24,6 @@ FOUNDATION_EXTERN void ApolloPalChatHeadNoteScroll(UIScrollView *scrollView, CGF
 FOUNDATION_EXTERN BOOL ApolloPalChatHeadIsShowing(void);
 
 // Opens Pal Home from anywhere in the app (ApolloPixelPals.xm).
-FOUNDATION_EXTERN void ApolloPalHomeOpenFromAnywhere(void);
+FOUNDATION_EXTERN void ApolloPalHomeOpenFromAnywhere(BOOL animated);
 
 NS_ASSUME_NONNULL_END

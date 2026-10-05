@@ -434,6 +434,9 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
     return NO;
 }
 
+// NO while the floating Pal's iris wipe covers the screen (it does the show).
+static BOOL sApolloPalHomeOpenAnimated = YES;
+
 static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
     UIViewController *root = window.rootViewController;
     UITabBarController *tabs = [root isKindOfClass:UITabBarController.class] ? (UITabBarController *)root : nil;
@@ -443,11 +446,11 @@ static BOOL ApolloPalHomeOpenFromIsland(UIWindow *window) {
     if ([nav.topViewController isKindOfClass:ApolloPalHomeViewController.class]) return YES; // already home
     for (UIViewController *screen in nav.viewControllers) {
         if ([screen isKindOfClass:ApolloPalHomeViewController.class]) {
-            [nav popToViewController:screen animated:YES];
+            [nav popToViewController:screen animated:sApolloPalHomeOpenAnimated];
             return YES;
         }
     }
-    [nav pushViewController:[ApolloPalHomeViewController new] animated:YES];
+    [nav pushViewController:[ApolloPalHomeViewController new] animated:sApolloPalHomeOpenAnimated];
     ApolloLog(@"[PixelPals] Island tap → Pal Home");
     return YES;
 }
@@ -473,7 +476,7 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
         [((UINavigationController *)top).topViewController isKindOfClass:ApolloPalHomeViewController.class]) return; // already open
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[ApolloPalHomeViewController new]];
     nav.modalPresentationStyle = UIModalPresentationFullScreen;
-    [top presentViewController:nav animated:YES completion:nil];
+    [top presentViewController:nav animated:sApolloPalHomeOpenAnimated completion:nil];
     ApolloLog(@"[PixelPals] Island tap → Pal Home (presented over %@)", NSStringFromClass(top.class));
 }
 
@@ -730,10 +733,13 @@ static void ApolloPalHomeReconcileIsland(void) {
 %end
 
 // From anywhere (the floating Pal): Pal Home on the main window.
-void ApolloPalHomeOpenFromAnywhere(void) {
+void ApolloPalHomeOpenFromAnywhere(BOOL animated) {
     UIViewController *tabs = ApolloMainTabBarController();
     UIWindow *window = tabs.viewIfLoaded.window;
-    if (window) ApolloPalHomeShowFromWindow(window);
+    if (!window) return;
+    sApolloPalHomeOpenAnimated = animated;
+    ApolloPalHomeShowFromWindow(window);
+    sApolloPalHomeOpenAnimated = YES;
 }
 
 %ctor {
