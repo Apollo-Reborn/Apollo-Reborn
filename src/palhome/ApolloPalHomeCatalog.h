@@ -115,6 +115,7 @@ typedef void (^APDrawBlock)(APDrawContext *ctx);
 @property (nonatomic) int seatX, seatY;  // item-local feet position when sitting
 @property (nonatomic) int season;        // 1-12: only in the catalogue that month (0 = always)
 @property (nonatomic, copy) NSArray<NSString *> *variants;
+@property (nonatomic, copy, nullable) NSString *variantNoun; // the drawer's cycle button ("Song"); nil = "Colour"
 @property (nonatomic, copy) APDrawBlock draw;
 // Bitmap size for this item in art pixels.
 @property (nonatomic, readonly) int pixelWidth, pixelHeight;

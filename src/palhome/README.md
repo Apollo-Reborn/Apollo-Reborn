@@ -217,9 +217,18 @@ record in place, keeping the database's shape, order and unknown fields.
 ## Sound, haptics, accessibility
 
 - `ApolloPalHomeAmbience` synthesises the room (fire, rain, wind, clocks,
-  music box, hum, crickets, bubbles) and plays chiptune stings (moving day,
-  unpack, yum, heart, adopt). Ambient category: mixes with other audio, follows
-  the silent switch; the speaker button turns it off.
+  hum, crickets, bubbles, owl) from what's in it, and plays chiptune stings
+  (moving day, unpack, yum, heart, adopt). Rooms are quiet unless something in
+  them makes a sound: no background room tone, and the noise layers are kept
+  dark and soft (bright noise reads as static on a phone speaker).
+- The record player's variants are songs (Lullaby, Lo-fi, Waltz, Jazz,
+  Chiptune, Spooky; the drawer's button reads "Song" via `variantNoun`). Its
+  notes anim carries the variant, and the room plays that song: a looping
+  melody + bass line of (MIDI note, beats) in `kSongs`, each voice with its own
+  timbre. Add a song by appending to `kSongs` and the record player's list in
+  the same order.
+- Sound is Off / On (ambient: follows the silent switch) / Always (playback,
+  mixes with other audio); the speaker button cycles it.
 - `ApolloPalHomeHaptics`: taps, toggles, placing, thumps, a Core Haptics purr
   when petting, bites when eating, a heart "ding"; follows system settings.
 - Controls are labelled; the room has a spoken description and Pet/Play/Nap

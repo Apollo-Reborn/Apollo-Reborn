@@ -437,10 +437,18 @@ static void APRegisterTables(NSMutableArray *items) {
     side.toggleable = YES;
     [items addObject:side];
 
+    // Each "colour" is a record: the room plays that song (ApolloPalHomeAmbience).
+    // Case wood, record label and lid colour per song.
+    NSArray *songs = @[@[@"Lullaby", @"walnut", @0xE8BE48], @[@"Lo-fi", @"teal", @0xE87A9A], @[@"Waltz", @"rose", @0xF4F0E4],
+                       @[@"Jazz", @"oak", @0x3A6AC8], @[@"Chiptune", @"mustard", @0x6AD07A], @[@"Spooky", @"lavender", @0xF08A2A]];
+    NSMutableArray *songNames = [NSMutableArray array];
+    for (NSArray *song in songs) [songNames addObject:song[0]];
     APItemSpec *record = APSpec(@"record", @"Record Player", APLayerFloor, APCategoryFurniture, 1, 1, 14,
-                                @[@"Walnut", @"Teal"], ^(APDrawContext *ctx) {
+                                songNames, ^(APDrawContext *ctx) {
         APCanvas *c = ctx.base;
-        APRamp w = APRampNamed(ctx.variant ? @"teal" : @"walnut");
+        NSArray *song = songs[ctx.variant % songs.count];
+        APRamp w = APRampNamed(song[1]);
+        uint32_t label = [song[2] unsignedIntValue];
         int H = ctx.height; // 30
         APRect(c, 1, 14, 14, 12, w.m);
         APRect(c, 1, 11, 14, 4, w.l);
@@ -449,17 +457,24 @@ static void APRegisterTables(NSMutableArray *items) {
         APVLine(c, 8, 17, 7, w.m);
         APPx(c, 6, 20, w.h); APPx(c, 10, 20, w.h);
         APRect(c, 2, 26, 2, 2, 0x24160E); APRect(c, 12, 26, 2, 2, 0x24160E);
-        // Turntable.
+        // Turntable, with this song's record on it.
         APEllipse(c, 2, 6, 10, 6, 0x1A1A1E);
-        APEllipse(c, 5, 7, 4, 3, ctx.variant ? 0xE8BE48 : 0xC44A44);
+        APHLine(c, 4, 7, 6, 0x2E2E36); APHLine(c, 4, 10, 6, 0x2E2E36); // grooves
+        APEllipse(c, 5, 7, 4, 3, label);
+        APPx(c, 6, 8, 0x1A1A1E);
         APHLine(c, 3, 7, 3, 0x3E3E48);
         APLine(c, 13, 5, 10, 9, 0xBEB4A6);
         APRect(c, 12, 4, 2, 2, 0x9E9488);
         APOutlineInside(c, w.o);
-        if (ctx.on) [ctx addAnim:[APAnim kind:APAnimNotes x:9 y:4 w:1 h:1]];
+        if (ctx.on) {
+            APAnim *notes = [APAnim kind:APAnimNotes x:9 y:4 w:1 h:1];
+            notes.variant = ctx.variant; // which song
+            [ctx addAnim:notes];
+        }
         APShadow(c, 0, H - 4, 16, 5);
     });
     record.toggleable = YES;
+    record.variantNoun = @"Song";
     [items addObject:record];
 }
 

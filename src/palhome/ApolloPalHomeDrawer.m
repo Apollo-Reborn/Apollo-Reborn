@@ -244,7 +244,12 @@ static const int kHeaderY = 5, kTabsY = 24, kShelfY = 43, kShelfH = 60;
     NSMutableArray *actions = [NSMutableArray array];
     if (item) {
         [actions addObject:self.flipButton];
-        if (item.spec.variants.count > 1) [actions addObject:self.variantButton];
+        if (item.spec.variants.count > 1) {
+            NSString *noun = item.spec.variantNoun ?: @"Colour";
+            [self setWord:noun onButton:self.variantButton];
+            self.variantButton.accessibilityLabel = [@"Change " stringByAppendingString:noun.lowercaseString];
+            [actions addObject:self.variantButton];
+        }
         if (item.spec.toggleable) [actions addObject:self.toggleButton];
         [actions addObject:self.awayButton];
     }
