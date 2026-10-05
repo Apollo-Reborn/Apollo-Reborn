@@ -212,9 +212,11 @@ static NSString *sPendingVisit;
             BOOL inIsland = NO;
             for (UIView *up = view.superview; up && !inIsland; up = up.superview) inIsland = cutOut && [up isKindOfClass:cutOut];
             // alpha, not hidden: Apollo re-sets `hidden` as it updates the Pal.
-            if (!inIsland && (view.alpha < 0.5) != hidden) {
-                view.alpha = hidden ? 0 : 1;
-                ApolloLog(@"[PalHome] tab-bar Pal %@ (%@)", hidden ? @"hidden" : @"shown", NSStringFromCGRect(view.frame));
+            // Bubble mode keeps Apollo's Pal hidden outside Pal Home too.
+            BOOL hide = hidden || (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble);
+            if (!inIsland && (view.alpha < 0.5) != hide) {
+                view.alpha = hide ? 0 : 1;
+                ApolloLog(@"[PalHome] tab-bar Pal %@ (%@)", hide ? @"hidden" : @"shown", NSStringFromCGRect(view.frame));
             }
             continue;
         }
@@ -225,6 +227,7 @@ static NSString *sPendingVisit;
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     ApolloPalChatHeadSetSuppressed(YES); // no floating Pal over its own home
+    ApolloPixelPalsSetPalHomeCovering(YES);
     self.hadNavigationBarHidden = self.navigationController.navigationBarHidden;
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     // iPad's top tabs ignore hidesBottomBarWhenPushed.
@@ -266,7 +269,9 @@ static NSString *sPendingVisit;
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    ApolloPalChatHeadSetNapping(self.homeScene.palIsSleeping && [self homeResident].active); // asleep here, asleep in the bubble
     ApolloPalChatHeadSetSuppressed(NO);
+    ApolloPixelPalsSetPalHomeCovering(NO);
     [self setTabBarPalHidden:NO];
     self.visible = NO;
     if (self.editing) [self setEditingMode:NO];
@@ -844,13 +849,19 @@ static NSString *APCareWeightText(double lbs) {
     [self.shelter showRenameForResident:resident.identifier species:resident.species coat:resident.coat currentName:resident.name];
 }
 
-// Visiting: their home, their care; the island keeps its Pal.
+// Choosing a Pal from the household makes them your Pal: on the island /
+// tab bar / bubble, and the home Pal Home opens to from now on.
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe switchTo:(ApolloPalHomeResident *)resident {
-    self.homeID = resident.active ? nil : resident.identifier;
+    if (!resident.active && ![self.store makeActiveResident:resident.identifier]) {
+        APHapticPlay(APHapticNope);
+        return;
+    }
+    APHapticPlay(APHapticSuccess);
+    self.homeID = nil;
     [self closeWardrobe];
     [self refreshHome];
     [self arriveHome];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"Visiting %@.", resident.name]);
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithFormat:@"%@ is your Pal now.", resident.name]);
 }
 
 - (void)wardrobe:(ApolloPalHomeWardrobe *)wardrobe putOnIsland:(ApolloPalHomeResident *)resident {
@@ -953,16 +964,38 @@ static NSString *APCareWeightText(double lbs) {
     UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, head);
 }
 
+// "Shown on": where your Pal lives while you browse (or nowhere).
 - (void)wardrobeToggledIsland:(ApolloPalHomeWardrobe *)wardrobe {
-    BOOL on = !self.store.islandEnabled;
+    __weak typeof(self) weakSelf = self;
+    __weak ApolloPalHomeWardrobe *weakCard = wardrobe;
+    NSMutableArray *options = [NSMutableArray array];
+    void (^pick)(BOOL, APPalDisplay) = ^(BOOL on, APPalDisplay display) { [weakSelf setPalShown:on display:display card:weakCard]; };
+    if (ApolloPalHomeStore.deviceHasDynamicIsland) {
+        [options addObject:@[@"island", @"Dynamic Island", @"Walks along the island", ^{ pick(YES, APPalDisplayIsland); }]];
+    }
+    [options addObject:@[@"tabbar", @"Tab bar", @"Walks along the top of the tab bar", ^{ pick(YES, APPalDisplayTabBar); }]];
+    [options addObject:@[@"bubble", @"Bubble", @"Floats over everything, drag it anywhere", ^{ pick(YES, APPalDisplayBubble); }]];
+    [options addObject:@[@"island.off", @"Nowhere", @"Stays home in Pal Home", ^{ pick(NO, ApolloPalHomeStore.palDisplay); }]];
+    [self menuWithTitle:@"Show your Pal on" options:options];
+}
+
+- (void)setPalShown:(BOOL)on display:(APPalDisplay)display card:(ApolloPalHomeWardrobe *)card {
     APHapticPlay(APHapticToggle);
+    ApolloPalHomeStore.palDisplay = display;
     self.store.islandEnabled = on;
-    wardrobe.islandEnabled = on;
-    [wardrobe configureWithHousehold:[self homeHousehold]];
+    card.islandEnabled = on;
+    [card configureWithHousehold:[self homeHousehold]];
     [self layoutWardrobe];
-    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-        on ? [NSString stringWithFormat:@"%@ is back on the Dynamic Island.", self.store.residents.firstObject.name]
-           : @"Your Pal is staying home.");
+    NSString *name = self.store.residents.firstObject.name ?: @"Your Pal";
+    if (on && ApolloPalHomeStore.palDisplayNeedsRelaunch) {
+        [self toast:@[display == APPalDisplayTabBar ? @"Tab bar, coming up" : @"Back to the island",
+                      @"This one takes effect next time you open Apollo."]];
+        return;
+    }
+    NSString *where = !on ? @"Your Pal is staying home." : display == APPalDisplayBubble ? [NSString stringWithFormat:@"%@ is floating in a bubble.", name]
+                    : display == APPalDisplayTabBar ? [NSString stringWithFormat:@"%@ is on the tab bar.", name]
+                                                    : [NSString stringWithFormat:@"%@ is on the Dynamic Island.", name];
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, where);
 }
 
 - (void)wardrobeWantsSettings:(ApolloPalHomeWardrobe *)wardrobe {

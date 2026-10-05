@@ -330,6 +330,38 @@ static void ApolloPalRetitleNameTag(UIView *view) {
 
 %end
 
+// Tab-bar strip on Liquid Glass. Apollo walks its non-island Pal along the very
+// bottom of the screen, which on the classic full-width tab bar is right (the
+// strip sits inside the bar, under its icons) but on iOS 26's floating glass
+// tab bar lands under the pill, on the home indicator. There the Pal walks
+// along the top edge of the glass pill instead, its full width: sitting on the
+// tab bar the way the island Pal sits on the island. Falls back to Apollo's
+// frame when the bar is hidden (auto-hide) or can't be measured.
+static CGPoint sApolloTabStripShift; // Apollo's frame → ours, for the hearts/food it drops
+
+static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill) {
+    if (!IsLiquidGlass() || !window) return NO;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    if (!bar || bar.hidden || bar.alpha < 0.05 || bar.window != window) return NO;
+    // The pill: the tab buttons' bounds, measured in the window.
+    Class button = NSClassFromString(@"_UITabButton");
+    CGRect pill = CGRectNull;
+    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:bar];
+    while (stack.count) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if (button && [view isKindOfClass:button] && !view.hidden && view.bounds.size.height > 20) {
+            pill = CGRectUnion(pill, [view convertRect:view.bounds toView:window]);
+            continue;
+        }
+        [stack addObjectsFromArray:view.subviews];
+    }
+    if (CGRectIsNull(pill) || CGRectGetMinY(pill) > CGRectGetHeight(window.bounds) - 10) return NO;
+    *outPill = pill;
+    return YES;
+}
+
 %hook _TtC6Apollo12PixelPalView
 
 // The strip the pals walk along. Apollo sizes it to the pill width and centres
@@ -357,6 +389,24 @@ static void ApolloPalRetitleNameTag(UIView *view) {
         %orig(fixed);
         return;
     }
+    CGRect glassPill;
+    UIWindow *window = ApolloPixelPalWindowForView(view.superview);
+    if (fabs(CGRectGetHeight(frame) - kApolloPalStripHeight) < 0.5 && !ApolloPixelPalGeometry(window, &apollo, &pill) &&
+        ApolloGlassTabBarPill(window, &glassPill)) {
+        // Feet on the pill's top edge, inset from its rounded ends.
+        CGFloat inset = 22;
+        CGRect fixed = CGRectMake(round(CGRectGetMinX(glassPill) + inset), round(CGRectGetMinY(glassPill) - kApolloPalStripHeight + 1),
+                                  round(CGRectGetWidth(glassPill) - inset * 2), kApolloPalStripHeight);
+        sApolloTabStripShift = CGPointMake(CGRectGetMinX(fixed) - CGRectGetMinX(frame), CGRectGetMinY(fixed) - CGRectGetMinY(frame));
+        static CGRect sLastGlass;
+        if (!CGRectEqualToRect(fixed, sLastGlass)) {
+            sLastGlass = fixed;
+            ApolloLog(@"[PixelPals] tab-bar strip on the glass pill %@ → %@", ApolloRectString(frame), ApolloRectString(fixed));
+        }
+        %orig(fixed);
+        return;
+    }
+    sApolloTabStripShift = CGPointZero;
     %orig;
 }
 
@@ -480,7 +530,46 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
     ApolloLog(@"[PixelPals] Island tap → Pal Home (presented over %@)", NSStringFromClass(top.class));
 }
 
+// Pal Home → "Show your Pal: Bubble": Apollo's own Pal (island pill or tab-bar
+// strip, plus the hearts and food it drops) keeps running but out of sight, so
+// food and distance still count; the floating bubble is the Pal you see.
+static BOOL sApolloPalHomeCovering; // Pal Home is on screen: its own Pal, not Apollo's
+
+static BOOL ApolloPixelPalsHiddenForBubble(void) {
+    return ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble;
+}
+
+// Hearts, food and emotes Apollo drops by its own Pal: not over Pal Home, and
+// not while that Pal is hidden for the bubble.
+static BOOL ApolloPixelPalsHideDroppedElements(void) {
+    return sApolloPalHomeCovering || ApolloPixelPalsHiddenForBubble();
+}
+
+void ApolloPixelPalsSetPalHomeCovering(BOOL covering) { sApolloPalHomeCovering = covering; }
+
+void ApolloPixelPalsApplyDisplay(void) {
+    BOOL hide = ApolloPixelPalsHiddenForBubble();
+    Class themeable = objc_getClass("_TtC6Apollo15ThemeableWindow");
+    if (!themeable) return;
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (![window isKindOfClass:themeable]) continue;
+        for (const char *name : {"pixelPalView", "fauxCutOutView"}) {
+            Ivar ivar = class_getInstanceVariable(themeable, name);
+            UIView *view = ivar ? object_getIvar(window, ivar) : nil;
+            if ([view isKindOfClass:UIView.class] && (view.alpha < 0.5) != hide) {
+                view.alpha = hide ? 0 : 1;
+                ApolloLog(@"[PixelPals] %s %@ (bubble mode)", name, hide ? @"hidden" : @"shown");
+            }
+        }
+    }
+}
+
 %hook _TtC6Apollo15ThemeableWindow
+
+- (void)layoutSubviews {
+    %orig;
+    if (ApolloPixelPalsHiddenForBubble()) ApolloPixelPalsApplyDisplay();
+}
 
 // Views Apollo adds to the window positioned from the stock pill: the tap flash
 // (sub_10030d6c4) and the hearts / food / emotes placed next to the pal
@@ -488,6 +577,17 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
 - (void)addSubview:(UIView *)view {
     UIWindow *window = (UIWindow *)self;
     CGRect apollo, pill;
+    static Class droppedCls;
+    static dispatch_once_t droppedOnce;
+    dispatch_once(&droppedOnce, ^{ droppedCls = objc_getClass("_TtC6Apollo34PixelPalAddedSceneElementImageView"); });
+    if (view && droppedCls && [view isKindOfClass:droppedCls] && ApolloPixelPalsHideDroppedElements()) view.alpha = 0;
+    if (view && droppedCls && [view isKindOfClass:droppedCls] && view.superview != window &&
+        !CGPointEqualToPoint(sApolloTabStripShift, CGPointZero) && !ApolloPixelPalGeometry(window, &apollo, &pill)) {
+        // Hearts and food follow the Pal up onto the glass tab bar.
+        CGRect f = view.frame;
+        view.frame = CGRectOffset(f, sApolloTabStripShift.x, sApolloTabStripShift.y);
+        if (ApolloPixelPalsHideDroppedElements()) view.alpha = 0;
+    }
     if (view && ApolloPixelPalGeometry(window, &apollo, &pill)) {
         CGFloat dx = CGRectGetMinX(pill) - CGRectGetMinX(apollo);
         CGFloat dy = CGRectGetMinY(pill) - CGRectGetMinY(apollo);
@@ -522,6 +622,7 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
             f.origin.x += dx;
             f.origin.y += dy;
             view.frame = f;
+            if (ApolloPixelPalsHideDroppedElements()) view.alpha = 0;
         }
     }
     %orig;
@@ -744,14 +845,28 @@ void ApolloPalHomeOpenFromAnywhere(BOOL animated) {
 
 %ctor {
     %init; // this file's hooks (an explicit %ctor replaces Logos' implicit one)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CGRect island;
+        ApolloPalHomeStore.deviceHasDynamicIsland = ApolloDynamicIslandRect(&island);
+        ApolloLog(@"[PixelPals] Dynamic Island: %@", ApolloPalHomeStore.deviceHasDynamicIsland ? @"yes" : @"no");
+        ApolloPixelPalsApplyDisplay();
+        ApolloPalChatHeadRefresh();
+    });
     [NSNotificationCenter.defaultCenter addObserverForName:@"PixelPalSettingChanged" object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(__unused NSNotification *note) {
         ApolloPalHomeReconcileIsland();
+        ApolloPixelPalsApplyDisplay();
         ApolloPalChatHeadRefresh(); // the island Pal may have changed
     }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
                                                 usingBlock:^(__unused NSNotification *note) {
         ApolloPalHomeReconcileIsland();
+        ApolloPalChatHeadRefresh();
+        ApolloPalChatHeadWelcomeBack();
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:APPalDisplayDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) {
+        ApolloPixelPalsApplyDisplay();
         ApolloPalChatHeadRefresh();
     }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue

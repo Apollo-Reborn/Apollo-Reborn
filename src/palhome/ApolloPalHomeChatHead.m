@@ -10,7 +10,6 @@
 #import <notify.h>
 #endif
 
-NSString *const ApolloPalChatHeadEnabledKey = @"ApolloRebornPalHomeChatHead";
 static NSString *const kSideKey = @"ApolloRebornPalHomeChatHeadSide";   // 0 left, 1 right
 static NSString *const kYKey = @"ApolloRebornPalHomeChatHeadY";         // centre y as a fraction of the height
 
@@ -58,8 +57,9 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 @property (nonatomic, strong) APChatHeadWindow *window;
 @property (nonatomic, strong) UIView *bubble;
 @property (nonatomic, strong) UIImageView *disc, *pal;
-@property (nonatomic, strong) UIView *closeTarget;
-@property (nonatomic) BOOL suppressed, dragging, overClose;
+@property (nonatomic) BOOL suppressed, dragging;
+@property (nonatomic) BOOL napping;           // asleep (a nap from its routine, or carried over from Pal Home)
+@property (nonatomic, strong) NSTimer *brainTimer;
 @property (nonatomic, copy) NSString *residentKey; // species|coat|style: redraw when it changes
 @property (nonatomic, copy) NSString *species, *coat;
 @property (nonatomic) APChatMood mood;
@@ -97,8 +97,9 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     return head;
 }
 
+// Pal Home on, the Pal shown (Apollo's PixelPalsEnabled), and shown as the bubble.
 - (BOOL)wanted {
-    return ApolloPalHomeStore.isPalHomeEnabled && [NSUserDefaults.standardUserDefaults boolForKey:ApolloPalChatHeadEnabledKey];
+    return ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble && [ApolloPalHomeStore new].islandEnabled;
 }
 
 - (BOOL)isShowing { return self.window && !self.window.hidden && !self.bubble.hidden; }
@@ -114,43 +115,41 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     }
     self.bubble.hidden = NO;
     [self ensureWindow];
+    if (!self.window) return; // no scene yet; refresh retries
     if (![self loadResident]) { self.window.hidden = YES; return; }
+    BOOL appearing = self.window.hidden;
     self.window.hidden = NO;
-    [self applyMood:self.mood force:YES];
+    [self applyMood:self.napping ? APChatMoodSleep : (self.mood == APChatMoodSleep ? APChatMoodSit : self.mood) force:YES];
+    if (appearing) [self scheduleBrain];
 }
 
 #pragma mark Building
 
 - (void)ensureWindow {
-    if (self.window) return;
+    // A window needs a scene to be seen; at launch the scene may still be
+    // connecting, so take any (active first) and otherwise try again later.
     UIWindowScene *scene = nil;
     for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
-        if ([candidate isKindOfClass:UIWindowScene.class] && candidate.activationState == UISceneActivationStateForegroundActive) {
-            scene = (UIWindowScene *)candidate;
-            break;
-        }
+        if (![candidate isKindOfClass:UIWindowScene.class] || candidate.activationState == UISceneActivationStateUnattached) continue;
+        if (!scene || candidate.activationState == UISceneActivationStateForegroundActive) scene = (UIWindowScene *)candidate;
     }
-    APChatHeadWindow *window = scene ? [[APChatHeadWindow alloc] initWithWindowScene:scene] : [[APChatHeadWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    if (self.window) {
+        if (!self.window.windowScene && scene) self.window.windowScene = scene;
+        return;
+    }
+    if (!scene) {
+        ApolloLog(@"[PalHome] floating Pal waiting for a scene");
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
+        return;
+    }
+    APChatHeadWindow *window = [[APChatHeadWindow alloc] initWithWindowScene:scene];
     window.windowLevel = UIWindowLevelNormal + 49; // just under Floating Post Tabs
     window.backgroundColor = UIColor.clearColor;
     APChatHeadRoot *root = [APChatHeadRoot new];
     __weak typeof(self) weakSelf = self;
     root.onResize = ^{ [weakSelf placeAnimated:NO]; };
     window.rootViewController = root;
-
-    UIView *close = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
-    close.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.75];
-    close.layer.cornerRadius = 28;
-    close.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.6].CGColor;
-    close.layer.borderWidth = 2;
-    UIImageView *x = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"xmark"
-        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightBold]]];
-    x.tintColor = UIColor.whiteColor;
-    x.center = CGPointMake(28, 28);
-    [close addSubview:x];
-    close.alpha = 0;
-    close.userInteractionEnabled = NO;
-    [root.view addSubview:close];
 
     UIView *bubble = [[UIView alloc] initWithFrame:CGRectMake(0, 0, kDisc * kPt, kDisc * kPt)];
     bubble.layer.shadowColor = UIColor.blackColor.CGColor;
@@ -171,7 +170,7 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     [bubble addSubview:clip];
     bubble.isAccessibilityElement = YES;
     bubble.accessibilityTraits = UIAccessibilityTraitButton;
-    bubble.accessibilityHint = @"Opens Pal Home. Drag to move it; drop it on the cross to put it away.";
+    bubble.accessibilityHint = @"Opens Pal Home. Drag to move it.";
     [bubble addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)]];
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panned:)];
     [bubble addGestureRecognizer:pan];
@@ -182,7 +181,6 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     self.bubble = bubble;
     self.disc = disc;
     self.pal = pal;
-    self.closeTarget = close;
     window.hidden = NO;
     [self placeAnimated:NO];
     ApolloLog(@"[PalHome] floating Pal created");
@@ -256,8 +254,6 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     void (^move)(void) = ^{ self.bubble.center = centre; };
     if (animated) [UIView animateWithDuration:0.45 delay:0 usingSpringWithDamping:0.7 initialSpringVelocity:0.4 options:0 animations:move completion:nil];
     else move();
-    UIView *root = self.window.rootViewController.view;
-    self.closeTarget.center = CGPointMake(root.bounds.size.width / 2, root.bounds.size.height - root.safeAreaInsets.bottom - 70);
     [self applyMood:self.mood force:YES];
 }
 
@@ -268,6 +264,8 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 // the door). Reduce Motion: a haptic and a quick cross-fade instead.
 - (void)tapped {
     if (self.transitioning) return;
+    self.napping = NO; // tapping wakes it: it's awake at home too
+    [self.brainTimer invalidate];
     APHapticPlay(APHapticSuccess);
     if (UIAccessibilityIsReduceMotionEnabled()) {
         UIView *root = self.window.rootViewController.view;
@@ -426,52 +424,26 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
     switch (pan.state) {
         case UIGestureRecognizerStateBegan: {
             self.dragging = YES;
+            self.napping = NO; // picked up: wide awake
+            [self.brainTimer invalidate];
             self.dragOffset = CGPointMake(self.bubble.center.x - p.x, self.bubble.center.y - p.y);
-            [UIView animateWithDuration:0.15 animations:^{
-                self.bubble.transform = CGAffineTransformMakeScale(1.08, 1.08);
-                self.closeTarget.alpha = 1;
-            }];
+            [UIView animateWithDuration:0.15 animations:^{ self.bubble.transform = CGAffineTransformMakeScale(1.08, 1.08); }];
             [self applyMood:APChatMoodWalk force:NO];
             APHapticPlay(APHapticSelect);
             break;
         }
         case UIGestureRecognizerStateChanged: {
-            CGPoint centre = CGPointMake(p.x + self.dragOffset.x, p.y + self.dragOffset.y);
-            BOOL over = hypot(centre.x - self.closeTarget.center.x, centre.y - self.closeTarget.center.y) < 70;
-            if (over != self.overClose) {
-                self.overClose = over;
-                APHapticPlay(APHapticSelect);
-                [UIView animateWithDuration:0.15 animations:^{
-                    self.closeTarget.transform = over ? CGAffineTransformMakeScale(1.25, 1.25) : CGAffineTransformIdentity;
-                }];
-            }
-            // Snap onto the ✕ when it's close (it's a magnet).
-            self.bubble.center = over ? self.closeTarget.center : centre;
-            self.facingLeft = [pan velocityInView:root].x < 0 ? YES : [pan velocityInView:root].x > 0 ? NO : self.facingLeft;
-            [self applyMood:fabs([pan velocityInView:root].x) + fabs([pan velocityInView:root].y) > 900 ? APChatMoodRun : APChatMoodWalk force:NO];
+            self.bubble.center = CGPointMake(p.x + self.dragOffset.x, p.y + self.dragOffset.y);
+            CGPoint v = [pan velocityInView:root];
+            if (v.x != 0) self.facingLeft = v.x < 0;
+            [self applyMood:fabs(v.x) + fabs(v.y) > 900 ? APChatMoodRun : APChatMoodWalk force:NO];
             break;
         }
         case UIGestureRecognizerStateEnded:
         case UIGestureRecognizerStateCancelled:
         case UIGestureRecognizerStateFailed: {
             self.dragging = NO;
-            BOOL drop = self.overClose && pan.state == UIGestureRecognizerStateEnded;
-            self.overClose = NO;
-            [UIView animateWithDuration:0.2 animations:^{
-                self.closeTarget.alpha = 0;
-                self.closeTarget.transform = CGAffineTransformIdentity;
-                self.bubble.transform = drop ? CGAffineTransformMakeScale(0.2, 0.2) : CGAffineTransformIdentity;
-                if (drop) self.bubble.alpha = 0;
-            } completion:^(BOOL finished) {
-                if (!drop) return;
-                self.bubble.transform = CGAffineTransformIdentity;
-                self.bubble.alpha = 1;
-                [NSUserDefaults.standardUserDefaults setBool:NO forKey:ApolloPalChatHeadEnabledKey];
-                [self refresh];
-                UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, @"Floating Pal put away.");
-                ApolloLog(@"[PalHome] floating Pal put away (dropped on the cross)");
-            }];
-            if (drop) { APHapticPlay(APHapticRemove); return; }
+            [UIView animateWithDuration:0.2 animations:^{ self.bubble.transform = CGAffineTransformIdentity; }];
             // Fling-aware: carry on a little in the throw's direction, then stick to a side.
             CGPoint v = [pan velocityInView:root];
             CGPoint landing = CGPointMake(self.bubble.center.x + v.x * 0.15, self.bubble.center.y + v.y * 0.15);
@@ -480,6 +452,7 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
             APHapticPlay(APHapticPlace);
             [self placeAnimated:YES];
             [self applyMood:APChatMoodSit force:NO];
+            [self scheduleBrain];
             break;
         }
         default: break;
@@ -488,14 +461,13 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 
 #pragma mark Moods
 
-- (BOOL)isNight {
+- (BOOL)isLate {
     NSInteger hour = [NSCalendar.currentCalendar component:NSCalendarUnitHour fromDate:NSDate.date];
-    return hour >= 23 || hour < 6;
+    return hour >= 22 || hour < 7;
 }
 
 - (void)applyMood:(APChatMood)mood force:(BOOL)force {
     if (!self.species || !self.pal) return;
-    if (mood == APChatMoodSit && [self isNight] && !self.dragging) mood = APChatMoodSleep;
     if (mood == self.mood && !force) return;
     self.mood = mood;
     NSString *action = @[@"sit", @"walk", @"run", @"lie", @"sleep"][mood];
@@ -524,7 +496,9 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 // Scrolling: trot along, faster with the feed; a hop on a big fling. When it
 // stops: a look round, then sit; a while later, a lie-down.
 - (void)noteScroll:(CGFloat)dy {
-    if (!self.isShowing || self.dragging) return;
+    if (!self.isShowing || self.dragging || self.transitioning) return;
+    self.napping = NO;
+    [self.brainTimer invalidate];
     CFTimeInterval now = CACurrentMediaTime();
     CFTimeInterval dt = MAX(1.0 / 120, now - self.lastScrollTime);
     self.lastScrollTime = now;
@@ -553,12 +527,78 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 - (void)settle {
     self.scrollSpeed = 0;
     [self applyMood:APChatMoodSit force:NO];
+    [self scheduleBrain];
+}
+
+// Its own little routine between your scrolls, like the Pal at home: sit and
+// look about, trot on the spot, lounge, and now and then a nap (likelier late
+// at night; naps end on their own, or when you scroll or pick it up).
+- (void)scheduleBrain {
+    [self.brainTimer invalidate];
+    if (!self.isShowing) return;
     __weak typeof(self) weakSelf = self;
-    // Still for a while: lie down.
-    self.settleTimer = [NSTimer scheduledTimerWithTimeInterval:12 repeats:NO block:^(NSTimer *timer) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (strongSelf.mood == APChatMoodSit) [strongSelf applyMood:APChatMoodLie force:NO];
-    }];
+    NSTimeInterval wait = self.napping ? 25 + arc4random_uniform(40) : 5 + arc4random_uniform(9);
+    self.brainTimer = [NSTimer scheduledTimerWithTimeInterval:wait repeats:NO block:^(NSTimer *timer) { [weakSelf think]; }];
+}
+
+- (void)think {
+    if (!self.isShowing || self.dragging || self.transitioning) { [self scheduleBrain]; return; }
+    if (self.napping) {
+        // Waking up: a stretch (alert), then sit.
+        self.napping = NO;
+        [self perk];
+        [self scheduleBrain];
+        return;
+    }
+    uint32_t roll = arc4random_uniform(100);
+    int napChance = [self isLate] ? 30 : 8;
+    if (roll < napChance) {
+        self.napping = YES;
+        [self applyMood:APChatMoodSleep force:NO];
+    } else if (roll < napChance + 22) {
+        [self applyMood:APChatMoodLie force:NO];       // lounging
+    } else if (roll < napChance + 44) {
+        // A little trot on the spot, then sit.
+        self.facingLeft = arc4random_uniform(2);
+        [self applyMood:APChatMoodWalk force:NO];
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (weakSelf.mood == APChatMoodWalk && !weakSelf.dragging) [weakSelf applyMood:APChatMoodSit force:NO];
+        });
+    } else {
+        // Sit and look about.
+        self.facingLeft = !self.facingLeft;
+        [self applyMood:APChatMoodSit force:YES];
+    }
+    [self scheduleBrain];
+}
+
+// Ears up: the alert pose for a moment, then sit.
+- (void)perk {
+    UIImage *alert = APPalSpriteFrames(self.species, self.coat, @"alert", 1).firstObject;
+    [self applyMood:APChatMoodSit force:YES];
+    if (!alert) return;
+    [self.pal stopAnimating];
+    self.pal.image = alert;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.9 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (weakSelf.mood == APChatMoodSit && !weakSelf.napping) [weakSelf applyMood:APChatMoodSit force:YES];
+    });
+}
+
+// Back in the app: a nap carries on, otherwise ears up — you're back!
+- (void)welcomeBack {
+    if (!self.isShowing || self.napping) { [self scheduleBrain]; return; }
+    [self perk];
+    if (!UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView animateKeyframesWithDuration:0.4 delay:0.1 options:0 animations:^{
+            [UIView addKeyframeWithRelativeStartTime:0 relativeDuration:0.45 animations:^{
+                self.bubble.transform = CGAffineTransformMakeTranslation(0, -8);
+            }];
+            [UIView addKeyframeWithRelativeStartTime:0.45 relativeDuration:0.55 animations:^{ self.bubble.transform = CGAffineTransformIdentity; }];
+        } completion:nil];
+    }
+    [self scheduleBrain];
 }
 
 @end
@@ -578,6 +618,17 @@ void ApolloPalChatHeadSetSuppressed(BOOL suppressed) {
 }
 
 BOOL ApolloPalChatHeadIsShowing(void) { return [APChatHead shared].isShowing; }
+
+void ApolloPalChatHeadSetNapping(BOOL napping) {
+    APChatHead *head = [APChatHead shared];
+    head.napping = napping;
+    if (head.isShowing) {
+        [head applyMood:napping ? APChatMoodSleep : APChatMoodSit force:YES];
+        [head scheduleBrain];
+    }
+}
+
+void ApolloPalChatHeadWelcomeBack(void) { [[APChatHead shared] welcomeBack]; }
 
 void ApolloPalChatHeadNoteScroll(UIScrollView *scrollView, CGFloat dy) {
     APChatHead *head = [APChatHead shared];

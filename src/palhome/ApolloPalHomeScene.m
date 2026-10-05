@@ -2253,6 +2253,8 @@ static SKTexture *APEyesTexture(int look) {
     }]]] withKey:@"meal"];
 }
 
+- (BOOL)palIsSleeping { return self.pal && self.palMode == APPalSleeping; }
+
 - (void)restResident {
     [self stopGame];
     if (!self.pal || self.editing) return;

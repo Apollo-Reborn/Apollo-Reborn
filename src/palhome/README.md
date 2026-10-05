@@ -181,16 +181,31 @@ Home never disagree:
 The island geometry hooks (#826/#1244) and the freeze guard (#305) in the same
 file are independent of Pal Home.
 
-## The floating Pal (`ApolloPalHomeChatHead`)
+## Where your Pal lives (`APPalDisplay`)
 
-Opt-in (Pal Home settings → Floating Pal, only while Pal Home is on): the
-island Pal in a pixel bubble, in their home style's colours, floating over
-Apollo in its own pass-through window (like Floating Post Tabs; never key,
-only the bubble takes touches). Drag it anywhere and it sticks to the nearest
-side; drop it on the ✕ to put it away; tap it for Pal Home (hidden while Pal
-Home is on screen). A `UIScrollView setContentOffset:` hook (one cheap check
-unless it's showing) makes it trot, run and hop with your scrolling; it
-lies down when you're still and sleeps at night.
+The Pal card's "Shown:" menu (and Pal Home settings → Show Your Pal) picks one
+place at a time: **Dynamic Island** (island phones), **Tab bar** or **Bubble**,
+or **Nowhere** (Apollo's PixelPalsEnabled off).
+
+- **Tab bar** is Apollo's own strip for phones without an island. On an island
+  phone the `uname` hook (Tweak.xm) tells Apollo it's a notch phone, decided
+  once per launch, so switching to or from it takes effect next launch (the
+  UI says so). On Liquid Glass Apollo's strip would sit under the floating
+  pill, on the home indicator, so it's moved to walk along the top of the
+  glass pill instead (the `_UITabButton` bounds); without Liquid Glass it's
+  Apollo's own placement.
+- **Bubble** (`ApolloPalHomeChatHead`): Apollo's Pal keeps running hidden (food
+  and distance still count, and the hearts/food it drops are hidden too) and
+  the island Pal floats over Apollo in a pixel bubble coloured like their
+  home, in its own pass-through window. Drag it anywhere (it sticks to a
+  side); tap it for an iris wipe into Pal Home. It reacts to scrolling (a
+  `UIScrollView setContentOffset:` hook, one cheap check unless it's
+  showing) and keeps its own routine between scrolls: looking about,
+  trotting, lounging, naps (likelier late at night). A Pal asleep in Pal Home
+  stays asleep in the bubble; tapping it wakes it.
+
+Choosing a Pal from the household makes them your Pal everywhere (the
+island, tab bar or bubble, and the home Pal Home opens to).
 
 ## Persistence
 

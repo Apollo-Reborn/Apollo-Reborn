@@ -45,18 +45,41 @@
     open.configure = ^(UITableViewCell *cell) {
         cell.textLabel.text = ApolloPalHomeStore.isPalHomeEnabled ? @"Open Pal Home" : @"Try Pal Home";
     };
+    // Where your Pal lives while you browse: one place at a time.
+    NSArray<NSString *> *(^places)(void) = ^NSArray<NSString *> * {
+        return ApolloPalHomeStore.deviceHasDynamicIsland ? @[@"Dynamic Island", @"Tab Bar", @"Floating Bubble", @"Nowhere"]
+                                                         : @[@"Tab Bar", @"Floating Bubble", @"Nowhere"];
+    };
+    NSInteger (^currentPlace)(void) = ^NSInteger {
+        ApolloPalHomeStore *store = [ApolloPalHomeStore new];
+        NSInteger offset = ApolloPalHomeStore.deviceHasDynamicIsland ? 0 : -1;
+        return !store.islandEnabled ? (NSInteger)places().count - 1 : ApolloPalHomeStore.palDisplay + offset;
+    };
     ApolloSettingsRow *floating =
-        [ApolloSettingsRow switchRowWithID:@"floating"
-                                     title:@"Floating Pal"
-                                      isOn:^BOOL { return [NSUserDefaults.standardUserDefaults boolForKey:ApolloPalChatHeadEnabledKey]; }
-                                  onToggle:^(UISwitch *sender) {
-            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:ApolloPalChatHeadEnabledKey];
-            ApolloPalChatHeadRefresh();
+        [ApolloSettingsRow valueRowWithID:@"floating"
+                                    title:@"Show Your Pal"
+                                   detail:^NSString * { return places()[MAX(0, currentPlace())]; }
+                                 onSelect:^{
+            __strong __typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            ApolloSettingsPresentPicker(strongSelf, [strongSelf cellForRowID:@"floating"], @"Show Your Pal", places(), currentPlace(), ^(NSInteger picked) {
+                ApolloPalHomeStore *store = [ApolloPalHomeStore new];
+                BOOL nowhere = picked == (NSInteger)places().count - 1;
+                if (!nowhere) ApolloPalHomeStore.palDisplay = (APPalDisplay)(picked + (ApolloPalHomeStore.deviceHasDynamicIsland ? 0 : 1));
+                store.islandEnabled = !nowhere;
+                [weakSelf reloadRowWithID:@"floating"];
+                if (!nowhere && ApolloPalHomeStore.palDisplayNeedsRelaunch) {
+                    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Next Time You Open Apollo"
+                        message:@"Moving your Pal between the Dynamic Island and the tab bar takes effect the next time Apollo starts."
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                    [weakSelf presentViewController:alert animated:YES completion:nil];
+                }
+            });
         }];
-    floating.visible = ^BOOL { return ApolloPalHomeStore.isPalHomeEnabled; };
     ApolloSettingsSection *floatingSection = [ApolloSettingsSection sectionWithTitle:nil
-        footer:@"Your island Pal floats over Apollo in a little bubble, chat-head style, and trots along as you scroll. "
-                "Tap it for Pal Home. Drag it anywhere, or drop it on the cross to put it away."
+        footer:@"Where your Pal lives while you browse. The floating bubble drifts over everything: drag it anywhere, "
+                "tap it for Pal Home. It trots along as you scroll."
         rows:@[floating]];
     floatingSection.visible = ^BOOL { return ApolloPalHomeStore.isPalHomeEnabled; };
     return @[

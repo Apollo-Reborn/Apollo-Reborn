@@ -1,5 +1,4 @@
 #import "ApolloPalHomeStore.h"
-#import "ApolloPalHomeChatHead.h"
 #import "UserDefaultConstants.h"
 #import "ApolloPalHomeShelter.h"
 #import "ApolloPixelPalCoats.h"
@@ -876,6 +875,44 @@ static void ApolloPalHomeNotifyApollo(void) {
     if (NSThread.isMainThread) post(); else dispatch_async(dispatch_get_main_queue(), post);
 }
 
+NSString *const APPalDisplayKey = @"ApolloRebornPalHomeDisplay";
+NSString *const APPalDisplayDidChangeNotification = @"ApolloRebornPalHomeDisplayDidChange";
+static BOOL sDeviceHasIsland = YES;
+static NSInteger sLaunchDisplay = -1; // what Apollo was set up with this launch
+
++ (BOOL)deviceHasDynamicIsland { return sDeviceHasIsland; }
++ (void)setDeviceHasDynamicIsland:(BOOL)has { sDeviceHasIsland = has; }
+
++ (APPalDisplay)palDisplay {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id value = [defaults objectForKey:APPalDisplayKey];
+    APPalDisplay display;
+    if ([value isKindOfClass:NSNumber.class]) display = (APPalDisplay)MAX(0, MIN(2, [value integerValue]));
+    // Earlier builds: a separate "Floating Pal" switch.
+    else if ([defaults boolForKey:@"ApolloRebornPalHomeChatHead"]) display = APPalDisplayBubble;
+    else display = sDeviceHasIsland ? APPalDisplayIsland : APPalDisplayTabBar;
+    if (!sDeviceHasIsland && display == APPalDisplayIsland) display = APPalDisplayTabBar;
+    if (sLaunchDisplay < 0) sLaunchDisplay = display;
+    return display;
+}
+
++ (void)setPalDisplay:(APPalDisplay)display {
+    (void)self.palDisplay; // pin the launch value first
+    [NSUserDefaults.standardUserDefaults setInteger:display forKey:APPalDisplayKey];
+    ApolloLog(@"[PalHome] Pal shown on: %@", @[@"Dynamic Island", @"tab bar", @"bubble"][display]);
+    ApolloPalHomeNotifyApollo();
+    [NSNotificationCenter.defaultCenter postNotificationName:APPalDisplayDidChangeNotification object:nil];
+}
+
+// Island ↔ tab bar on an island phone is decided when Apollo starts.
++ (BOOL)palDisplayNeedsRelaunch {
+    APPalDisplay now = self.palDisplay;
+    if (!sDeviceHasIsland || sLaunchDisplay < 0) return NO;
+    // The bubble hides whichever Apollo set up, so it never waits.
+    if (now == APPalDisplayBubble) return NO;
+    return (now == APPalDisplayTabBar) != (sLaunchDisplay == APPalDisplayTabBar);
+}
+
 + (BOOL)isPalHomeEnabled { return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyPalHomeEnabled]; }
 
 + (void)setPalHomeEnabled:(BOOL)enabled {
@@ -884,7 +921,7 @@ static void ApolloPalHomeNotifyApollo(void) {
     if (!enabled) [[ApolloPalHomeStore new] returnToClassic];
     // The Subreddits list's Pal Home shortcut comes and goes with it.
     [NSNotificationCenter.defaultCenter postNotificationName:ApolloFeedShortcutsChangedNotification object:nil];
-    ApolloPalChatHeadRefresh(); // the floating Pal only lives while Pal Home is on
+    [NSNotificationCenter.defaultCenter postNotificationName:APPalDisplayDidChangeNotification object:nil]; // the floating Pal only lives while Pal Home is on
 }
 
 - (void)returnToClassic {

@@ -60,6 +60,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)feedResident;
 @property (nonatomic, weak, nullable) APPlacedItem *feedingSpot;
 - (void)restResident;
+// The Pal is napping right now (the floating Pal carries it on).
+@property (nonatomic, readonly) BOOL palIsSleeping;
 // A new (or newly chosen) Pal trots in from the door with hearts.
 - (void)welcomeHome;
 // Goodbye: the Pal waves (a heart) and trots out through the front.
