@@ -1600,21 +1600,6 @@ static int uname_replacement(struct utsname *buf) {
     }
 #endif
     NSString *remap = modelRemap[machine];
-    // Pal Home → "Show your Pal: Tab bar" on an island phone: Apollo is told
-    // it's a notch phone, so the Pal walks the tab bar instead of the island.
-    // Decided once per launch (Apollo must never see the device change).
-    static BOOL palOnTabBar;
-    static dispatch_once_t palOnce;
-    dispatch_once(&palOnce, ^{
-        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-        id display = [defaults objectForKey:@"ApolloRebornPalHomeDisplay"];
-        palOnTabBar = [defaults boolForKey:@"ApolloRebornPalHomeEnabled"] &&
-                      [display isKindOfClass:NSNumber.class] && [display integerValue] == 1;
-        if (palOnTabBar) NSLog(@"[ApolloFix] Pal Home: Pal on the tab bar, presenting as a notch phone");
-    });
-    BOOL islandModel = [remap isEqualToString:@"iPhone15,2"] ||
-                       [machine hasPrefix:@"iPhone15,2"] || [machine hasPrefix:@"iPhone15,3"];
-    if (palOnTabBar && islandModel) remap = @"iPhone14,7"; // iPhone 14 (notch)
     if (remap) {
         strlcpy(buf->machine, remap.UTF8String, sizeof(buf->machine));
     }

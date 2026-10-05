@@ -213,7 +213,11 @@ static NSString *sPendingVisit;
             for (UIView *up = view.superview; up && !inIsland; up = up.superview) inIsland = cutOut && [up isKindOfClass:cutOut];
             // alpha, not hidden: Apollo re-sets `hidden` as it updates the Pal.
             // Bubble mode keeps Apollo's Pal hidden outside Pal Home too.
-            BOOL hide = hidden || (ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble);
+            // (The overlay modes keep Apollo's Pal hidden outside Pal Home too.)
+            APPalDisplay display = ApolloPalHomeStore.palDisplay;
+            BOOL overlay = ApolloPalHomeStore.isPalHomeEnabled &&
+                           (display == APPalDisplayBubble || (display == APPalDisplayTabBar && ApolloPalHomeStore.deviceHasDynamicIsland));
+            BOOL hide = hidden || overlay;
             if (!inIsland && (view.alpha < 0.5) != hide) {
                 view.alpha = hide ? 0 : 1;
                 ApolloLog(@"[PalHome] tab-bar Pal %@ (%@)", hide ? @"hidden" : @"shown", NSStringFromCGRect(view.frame));
@@ -987,11 +991,6 @@ static NSString *APCareWeightText(double lbs) {
     [card configureWithHousehold:[self homeHousehold]];
     [self layoutWardrobe];
     NSString *name = self.store.residents.firstObject.name ?: @"Your Pal";
-    if (on && ApolloPalHomeStore.palDisplayNeedsRelaunch) {
-        [self toast:@[display == APPalDisplayTabBar ? @"Tab bar, coming up" : @"Back to the island",
-                      @"This one takes effect next time you open Apollo."]];
-        return;
-    }
     NSString *where = !on ? @"Your Pal is staying home." : display == APPalDisplayBubble ? [NSString stringWithFormat:@"%@ is floating in a bubble.", name]
                     : display == APPalDisplayTabBar ? [NSString stringWithFormat:@"%@ is on the tab bar.", name]
                                                     : [NSString stringWithFormat:@"%@ is on the Dynamic Island.", name];

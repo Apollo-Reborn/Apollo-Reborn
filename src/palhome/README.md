@@ -187,13 +187,14 @@ The Pal card's "Shown:" menu (and Pal Home settings → Show Your Pal) picks one
 place at a time: **Dynamic Island** (island phones), **Tab bar** or **Bubble**,
 or **Nowhere** (Apollo's PixelPalsEnabled off).
 
-- **Tab bar** is Apollo's own strip for phones without an island. On an island
-  phone the `uname` hook (Tweak.xm) tells Apollo it's a notch phone, decided
-  once per launch, so switching to or from it takes effect next launch (the
-  UI says so). On Liquid Glass Apollo's strip would sit under the floating
-  pill, on the home indicator, so it's moved to walk along the top of the
-  glass pill instead (the `_UITabButton` bounds); without Liquid Glass it's
-  Apollo's own placement.
+- **Tab bar**: on phones without an island it's Apollo's own strip (moved on
+  top of the floating pill on Liquid Glass, where Apollo's spot is under it,
+  on the home indicator). On island phones Apollo only builds the island, so
+  Reborn's overlay (`APTabWalker` in `ApolloPalHomeChatHead`) walks the Pal
+  along the top of the tab bar (`ApolloTabBarWalkLine`: the glass pill or
+  the classic bar), with Apollo's island Pal running hidden. Instant, no
+  relaunch; hidden with the tab bar, under anything presented. It wanders,
+  sits, lounges, naps, scampers as you scroll; tap it for Pal Home.
 - **Bubble** (`ApolloPalHomeChatHead`): Apollo's Pal keeps running hidden (food
   and distance still count, and the hearts/food it drops are hidden too) and
   the island Pal floats over Apollo in a pixel bubble coloured like their

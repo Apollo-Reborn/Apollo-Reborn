@@ -68,13 +68,6 @@
                 if (!nowhere) ApolloPalHomeStore.palDisplay = (APPalDisplay)(picked + (ApolloPalHomeStore.deviceHasDynamicIsland ? 0 : 1));
                 store.islandEnabled = !nowhere;
                 [weakSelf reloadRowWithID:@"floating"];
-                if (!nowhere && ApolloPalHomeStore.palDisplayNeedsRelaunch) {
-                    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Next Time You Open Apollo"
-                        message:@"Moving your Pal between the Dynamic Island and the tab bar takes effect the next time Apollo starts."
-                        preferredStyle:UIAlertControllerStyleAlert];
-                    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                    [weakSelf presentViewController:alert animated:YES completion:nil];
-                }
             });
         }];
     ApolloSettingsSection *floatingSection = [ApolloSettingsSection sectionWithTitle:nil

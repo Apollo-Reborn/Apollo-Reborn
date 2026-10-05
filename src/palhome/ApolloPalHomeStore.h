@@ -132,10 +132,10 @@ FOUNDATION_EXTERN const NSUInteger APHouseholdLimit; // 8
 - (void)reconcileIsland;
 
 // Where your Pal is shown while Pal Home is on (one place at a time):
-// Apollo's Dynamic Island pill, Apollo's tab-bar strip (what phones without
-// an island get; on an island phone Apollo is told it has a notch, which only
-// takes effect at the next launch), or the floating bubble (Apollo's Pal keeps
-// running hidden, so food and distance still count). `islandEnabled` (Apollo's
+// Apollo's Dynamic Island pill, the tab bar (Apollo's own strip on phones
+// without an island; on island phones Reborn's overlay walks it along the
+// tab bar), or the floating bubble. In the overlay modes Apollo's Pal keeps
+// running hidden, so food and distance still count. `islandEnabled` (Apollo's
 // PixelPalsEnabled) still turns the Pal off everywhere.
 typedef NS_ENUM(NSInteger, APPalDisplay) { APPalDisplayIsland = 0, APPalDisplayTabBar, APPalDisplayBubble };
 FOUNDATION_EXTERN NSString *const APPalDisplayKey;
@@ -144,8 +144,6 @@ FOUNDATION_EXTERN NSString *const APPalDisplayDidChangeNotification;
 @property (class, nonatomic) APPalDisplay palDisplay;
 // Set at launch by ApolloPixelPals.xm (UIKit knows): this phone has an island.
 @property (class, nonatomic) BOOL deviceHasDynamicIsland;
-// The tab-bar strip on an island phone needs a relaunch to switch to or from.
-@property (class, nonatomic, readonly) BOOL palDisplayNeedsRelaunch;
 
 // Pal Home replaces Apollo's Pixel Pals screens only when this is on
 // (default off: Classic Pixel Pals). Turning it off returns any borrowed

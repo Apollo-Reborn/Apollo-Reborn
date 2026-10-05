@@ -338,6 +338,33 @@ static void ApolloPalRetitleNameTag(UIView *view) {
 // tab bar the way the island Pal sits on the island. Falls back to Apollo's
 // frame when the bar is hidden (auto-hide) or can't be measured.
 static CGPoint sApolloTabStripShift; // Apollo's frame → ours, for the hearts/food it drops
+static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill);
+
+// Where a Pal walks along the tab bar, in window coordinates: the top edge of
+// the floating glass pill (Liquid Glass) or of the classic full-width bar.
+// NO when the bar is hidden (auto-hide), off screen, or can't be measured.
+extern "C" BOOL ApolloTabBarWalkLine(UIWindow *window, CGRect *outLine) {
+    if (!window) return NO;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    if (!bar || bar.hidden || bar.alpha < 0.05 || !bar.window) return NO;
+    CGRect frame = [bar convertRect:bar.bounds toView:nil];
+    if (CGRectGetMinY(frame) > CGRectGetHeight(bar.window.bounds) - 10 || CGRectGetWidth(frame) < 100) return NO;
+    // Anything presented (full screen or a sheet) covers the bar, and pushed
+    // screens that hide it take it away: nothing to walk on.
+    UIViewController *presented = tabs.presentedViewController;
+    if (presented && !presented.isBeingDismissed) return NO;
+    UINavigationController *nav = [tabs.selectedViewController isKindOfClass:UINavigationController.class] ? (UINavigationController *)tabs.selectedViewController : nil;
+    if (nav.topViewController.hidesBottomBarWhenPushed) return NO;
+    if (IsLiquidGlass()) {
+        CGRect pill;
+        if (!ApolloGlassTabBarPill(bar.window, &pill)) return NO;
+        *outLine = CGRectMake(CGRectGetMinX(pill) + 22, CGRectGetMinY(pill), CGRectGetWidth(pill) - 44, 1);
+    } else {
+        *outLine = CGRectMake(CGRectGetMinX(frame) + 24, CGRectGetMinY(frame), CGRectGetWidth(frame) - 48, 1);
+    }
+    return YES;
+}
 
 static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill) {
     if (!IsLiquidGlass() || !window) return NO;
@@ -535,8 +562,12 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
 // food and distance still count; the floating bubble is the Pal you see.
 static BOOL sApolloPalHomeCovering; // Pal Home is on screen: its own Pal, not Apollo's
 
+// Bubble, and Tab bar on an island phone, are drawn by Reborn's overlay
+// (ApolloPalHomeChatHead): Apollo's own Pal keeps running out of sight.
 static BOOL ApolloPixelPalsHiddenForBubble(void) {
-    return ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble;
+    if (!ApolloPalHomeStore.isPalHomeEnabled) return NO;
+    APPalDisplay display = ApolloPalHomeStore.palDisplay;
+    return display == APPalDisplayBubble || (display == APPalDisplayTabBar && ApolloPalHomeStore.deviceHasDynamicIsland);
 }
 
 // Hearts, food and emotes Apollo drops by its own Pal: not over Pal Home, and

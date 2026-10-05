@@ -878,7 +878,6 @@ static void ApolloPalHomeNotifyApollo(void) {
 NSString *const APPalDisplayKey = @"ApolloRebornPalHomeDisplay";
 NSString *const APPalDisplayDidChangeNotification = @"ApolloRebornPalHomeDisplayDidChange";
 static BOOL sDeviceHasIsland = YES;
-static NSInteger sLaunchDisplay = -1; // what Apollo was set up with this launch
 
 + (BOOL)deviceHasDynamicIsland { return sDeviceHasIsland; }
 + (void)setDeviceHasDynamicIsland:(BOOL)has { sDeviceHasIsland = has; }
@@ -892,25 +891,14 @@ static NSInteger sLaunchDisplay = -1; // what Apollo was set up with this launch
     else if ([defaults boolForKey:@"ApolloRebornPalHomeChatHead"]) display = APPalDisplayBubble;
     else display = sDeviceHasIsland ? APPalDisplayIsland : APPalDisplayTabBar;
     if (!sDeviceHasIsland && display == APPalDisplayIsland) display = APPalDisplayTabBar;
-    if (sLaunchDisplay < 0) sLaunchDisplay = display;
     return display;
 }
 
 + (void)setPalDisplay:(APPalDisplay)display {
-    (void)self.palDisplay; // pin the launch value first
     [NSUserDefaults.standardUserDefaults setInteger:display forKey:APPalDisplayKey];
     ApolloLog(@"[PalHome] Pal shown on: %@", @[@"Dynamic Island", @"tab bar", @"bubble"][display]);
     ApolloPalHomeNotifyApollo();
     [NSNotificationCenter.defaultCenter postNotificationName:APPalDisplayDidChangeNotification object:nil];
-}
-
-// Island ↔ tab bar on an island phone is decided when Apollo starts.
-+ (BOOL)palDisplayNeedsRelaunch {
-    APPalDisplay now = self.palDisplay;
-    if (!sDeviceHasIsland || sLaunchDisplay < 0) return NO;
-    // The bubble hides whichever Apollo set up, so it never waits.
-    if (now == APPalDisplayBubble) return NO;
-    return (now == APPalDisplayTabBar) != (sLaunchDisplay == APPalDisplayTabBar);
 }
 
 + (BOOL)isPalHomeEnabled { return [NSUserDefaults.standardUserDefaults boolForKey:UDKeyPalHomeEnabled]; }
