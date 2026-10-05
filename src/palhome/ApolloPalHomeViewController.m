@@ -8,6 +8,7 @@
 #import "ApolloPalHomeHaptics.h"
 #import "ApolloPalHomeWidgetRenderer.h"
 #import "ApolloCommon.h"
+#import "ApolloPalHomeChatHead.h"
 #import "ApolloIPadTabBarBottom.h"
 #import <LinkPresentation/LinkPresentation.h>
 #import "settings/ApolloSettingsShortcutsViewController.h"
@@ -223,6 +224,7 @@ static NSString *sPendingVisit;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    ApolloPalChatHeadSetSuppressed(YES); // no floating Pal over its own home
     self.hadNavigationBarHidden = self.navigationController.navigationBarHidden;
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     // iPad's top tabs ignore hidesBottomBarWhenPushed.
@@ -264,6 +266,7 @@ static NSString *sPendingVisit;
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    ApolloPalChatHeadSetSuppressed(NO);
     [self setTabBarPalHidden:NO];
     self.visible = NO;
     if (self.editing) [self setEditingMode:NO];

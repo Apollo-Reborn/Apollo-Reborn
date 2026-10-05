@@ -81,6 +81,7 @@
 
 #import "ApolloCommon.h"
 #import "palhome/ApolloPalHomeViewController.h"
+#import "palhome/ApolloPalHomeChatHead.h"
 #import "palhome/ApolloPixelPalCoats.h"
 #import "palhome/ApolloPalHomeStore.h"
 #import "palhome/ApolloPalSpecies.h"
@@ -718,10 +719,35 @@ static void ApolloPalHomeReconcileIsland(void) {
 }
 %end
 
+// The floating Pal (ApolloPalHomeChatHead) trots along as you scroll. This is
+// on every scroll view's hot path, so it's one cheap check unless it's showing.
+%hook UIScrollView
+- (void)setContentOffset:(CGPoint)offset {
+    CGFloat before = ((UIScrollView *)self).contentOffset.y;
+    %orig;
+    if (ApolloPalChatHeadIsShowing()) ApolloPalChatHeadNoteScroll((UIScrollView *)self, offset.y - before);
+}
+%end
+
+// From anywhere (the floating Pal): Pal Home on the main window.
+void ApolloPalHomeOpenFromAnywhere(void) {
+    UIViewController *tabs = ApolloMainTabBarController();
+    UIWindow *window = tabs.viewIfLoaded.window;
+    if (window) ApolloPalHomeShowFromWindow(window);
+}
+
 %ctor {
     %init; // this file's hooks (an explicit %ctor replaces Logos' implicit one)
     [NSNotificationCenter.defaultCenter addObserverForName:@"PixelPalSettingChanged" object:nil queue:NSOperationQueue.mainQueue
-                                                usingBlock:^(__unused NSNotification *note) { ApolloPalHomeReconcileIsland(); }];
+                                                usingBlock:^(__unused NSNotification *note) {
+        ApolloPalHomeReconcileIsland();
+        ApolloPalChatHeadRefresh(); // the island Pal may have changed
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue
-                                                usingBlock:^(__unused NSNotification *note) { ApolloPalHomeReconcileIsland(); }];
+                                                usingBlock:^(__unused NSNotification *note) {
+        ApolloPalHomeReconcileIsland();
+        ApolloPalChatHeadRefresh();
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(__unused NSNotification *note) { ApolloPalChatHeadRefresh(); }];
 }

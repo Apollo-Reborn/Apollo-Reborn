@@ -1,4 +1,5 @@
 #import "ApolloPalHomeStore.h"
+#import "ApolloPalHomeChatHead.h"
 #import "UserDefaultConstants.h"
 #import "ApolloPalHomeShelter.h"
 #import "ApolloPixelPalCoats.h"
@@ -883,6 +884,7 @@ static void ApolloPalHomeNotifyApollo(void) {
     if (!enabled) [[ApolloPalHomeStore new] returnToClassic];
     // The Subreddits list's Pal Home shortcut comes and goes with it.
     [NSNotificationCenter.defaultCenter postNotificationName:ApolloFeedShortcutsChangedNotification object:nil];
+    ApolloPalChatHeadRefresh(); // the floating Pal only lives while Pal Home is on
 }
 
 - (void)returnToClassic {

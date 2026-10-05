@@ -154,7 +154,7 @@ Home never disagree:
 |---|---|---|
 | Food | earned while browsing, ≤ 1/hour by chance (`sub_10074bb24`) into `foodTokens` | Apollo keeps awarding; the Feed button shows the pantry |
 | Feed | −1 food, +¼ heart, weight + uniform(0.4, 2.2) × species factor, `lastTimeFed`; 5 h cooldown (`sub_10004fd34`, `sub_1007e9088`) | Feed button / bowls; the Pal eats its own snack |
-| Play | +¼ heart, `lastTimePlayedWith`; 5 h cooldown (`sub_100052e4c`, `sub_1007e8f08`) | the yarn (always fun, earns hearts per the rule) |
+| Play | +¼ heart, `lastTimePlayedWith`; 5 h cooldown (`sub_100052e4c`, `sub_1007e8f08`) | the toy box: yarn, Beacon Ball (tap to throw, the Pal bonks it back) and the wand (drag; the Pal chases); a game counts as play |
 | Stats | hearts 0–6 (½ steps shown), age, weight, distance scrolled | sign and Pal card |
 | Enable Pixel Pals | `PixelPalsEnabled` | island button on the Pal card |
 
@@ -180,6 +180,17 @@ Home never disagree:
 
 The island geometry hooks (#826/#1244) and the freeze guard (#305) in the same
 file are independent of Pal Home.
+
+## The floating Pal (`ApolloPalHomeChatHead`)
+
+Opt-in (Pal Home settings → Floating Pal, only while Pal Home is on): the
+island Pal in a pixel bubble, in their home style's colours, floating over
+Apollo in its own pass-through window (like Floating Post Tabs; never key,
+only the bubble takes touches). Drag it anywhere and it sticks to the nearest
+side; drop it on the ✕ to put it away; tap it for Pal Home (hidden while Pal
+Home is on screen). A `UIScrollView setContentOffset:` hook (one cheap check
+unless it's showing) makes it trot, run and hop with your scrolling; it
+lies down when you're still and sleeps at night.
 
 ## Persistence
 
