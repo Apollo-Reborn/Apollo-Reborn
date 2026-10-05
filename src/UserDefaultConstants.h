@@ -318,7 +318,8 @@ static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
 static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
-// bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
+// bar out, 3 = slide/fade down, 4 = minimize into a centered pill naming the
+// current tab. The styles plus Off are
 // surfaced on Reborn's Interface > Tab Bar row (Off = the native toggle off).
 // See ApolloTabBarHideStyle.xm and ApolloAutoHideTabBar.xm.
 static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";

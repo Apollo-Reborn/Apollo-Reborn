@@ -6,7 +6,7 @@
 #import "ApolloTabBarHideStyle.h"
 #import "UserDefaultConstants.h"
 
-// MARK: - Tab Bar Hide Style (Left / Right / Fade / Down)
+// MARK: - Tab Bar Hide Style (Left / Right / Fade / Down / Minimize)
 //
 // On iOS 26 (Liquid Glass), Apollo's native "Hide Bars on Scroll" toggle is
 // rerouted by ApolloAutoHideTabBar.xm into UITabBarController's native
@@ -37,7 +37,7 @@ BOOL ApolloTabBarHideBarsEnabled(void) {
 }
 
 NSInteger ApolloTabBarHideStyleCurrentOptionIndex(void) {
-    return MIN(ApolloTabBarHideStyleDown,
+    return MIN(ApolloTabBarHideStyleMinimize,
                MAX(ApolloTabBarHideStyleLeft, sTabBarHideStyle));
 }
 
@@ -45,7 +45,7 @@ NSArray<NSString *> *ApolloTabBarHideStyleOptionTitles(void) {
     static NSArray<NSString *> *titles;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        titles = @[@"Left", @"Right", @"Fade", @"Down"];
+        titles = @[@"Left", @"Right", @"Fade", @"Down", @"Minimize"];
     });
     return titles;
 }
@@ -150,7 +150,7 @@ static void TabBarHideStyleRelayoutVisibleTabBars(void) {
 // MARK: Shared setting application (Interface > Tab Bar)
 
 static void TabBarHideStyleSet(ApolloTabBarHideStyle style) {
-    style = (ApolloTabBarHideStyle)MIN(ApolloTabBarHideStyleDown,
+    style = (ApolloTabBarHideStyle)MIN(ApolloTabBarHideStyleMinimize,
                                       MAX(ApolloTabBarHideStyleLeft, style));
     if (sTabBarHideStyle != style) {
         sTabBarHideStyle = style;
@@ -182,7 +182,7 @@ void ApolloTabBarHideBarsSetEnabled(BOOL enabled) {
 }
 
 void ApolloTabBarHideStyleApplyOptionIndex(NSInteger optionIndex) {
-    NSInteger mode = MIN(ApolloTabBarHideStyleDown,
+    NSInteger mode = MIN(ApolloTabBarHideStyleMinimize,
                          MAX(ApolloTabBarHideStyleLeft, optionIndex));
     TabBarHideStyleSet((ApolloTabBarHideStyle)mode);
     TabBarHideStyleReconcileRuntime();
