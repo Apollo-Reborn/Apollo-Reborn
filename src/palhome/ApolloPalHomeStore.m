@@ -878,6 +878,10 @@ static void ApolloPalHomeNotifyApollo(void) {
 NSString *const APPalDisplayKey = @"ApolloRebornPalHomeDisplay";
 NSString *const APPalDisplayDidChangeNotification = @"ApolloRebornPalHomeDisplayDidChange";
 static BOOL sDeviceHasIsland = YES;
+static BOOL sTabBarSupported = NO;
+
++ (BOOL)tabBarSupported { return sTabBarSupported; }
++ (void)setTabBarSupported:(BOOL)supported { sTabBarSupported = supported; }
 
 + (BOOL)deviceHasDynamicIsland { return sDeviceHasIsland; }
 + (void)setDeviceHasDynamicIsland:(BOOL)has { sDeviceHasIsland = has; }
@@ -889,8 +893,10 @@ static BOOL sDeviceHasIsland = YES;
     if ([value isKindOfClass:NSNumber.class]) display = (APPalDisplay)MAX(0, MIN(2, [value integerValue]));
     // Earlier builds: a separate "Floating Pal" switch.
     else if ([defaults boolForKey:@"ApolloRebornPalHomeChatHead"]) display = APPalDisplayBubble;
-    else display = sDeviceHasIsland ? APPalDisplayIsland : APPalDisplayTabBar;
-    if (!sDeviceHasIsland && display == APPalDisplayIsland) display = APPalDisplayTabBar;
+    else display = sDeviceHasIsland ? APPalDisplayIsland : sTabBarSupported ? APPalDisplayTabBar : APPalDisplayBubble;
+    // Only what this phone and build offer.
+    if (display == APPalDisplayIsland && !sDeviceHasIsland) display = sTabBarSupported ? APPalDisplayTabBar : APPalDisplayBubble;
+    if (display == APPalDisplayTabBar && !sTabBarSupported) display = sDeviceHasIsland ? APPalDisplayIsland : APPalDisplayBubble;
     return display;
 }
 

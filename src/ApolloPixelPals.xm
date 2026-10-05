@@ -330,65 +330,6 @@ static void ApolloPalRetitleNameTag(UIView *view) {
 
 %end
 
-// Tab-bar strip on Liquid Glass. Apollo walks its non-island Pal along the very
-// bottom of the screen, which on the classic full-width tab bar is right (the
-// strip sits inside the bar, under its icons) but on iOS 26's floating glass
-// tab bar lands under the pill, on the home indicator. There the Pal walks
-// along the top edge of the glass pill instead, its full width: sitting on the
-// tab bar the way the island Pal sits on the island. Falls back to Apollo's
-// frame when the bar is hidden (auto-hide) or can't be measured.
-static CGPoint sApolloTabStripShift; // Apollo's frame → ours, for the hearts/food it drops
-static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill);
-
-// Where a Pal walks along the tab bar, in window coordinates: the top edge of
-// the floating glass pill (Liquid Glass) or of the classic full-width bar.
-// NO when the bar is hidden (auto-hide), off screen, or can't be measured.
-extern "C" BOOL ApolloTabBarWalkLine(UIWindow *window, CGRect *outLine) {
-    if (!window) return NO;
-    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
-    if (!bar || bar.hidden || bar.alpha < 0.05 || !bar.window) return NO;
-    CGRect frame = [bar convertRect:bar.bounds toView:nil];
-    if (CGRectGetMinY(frame) > CGRectGetHeight(bar.window.bounds) - 10 || CGRectGetWidth(frame) < 100) return NO;
-    // Anything presented (full screen or a sheet) covers the bar, and pushed
-    // screens that hide it take it away: nothing to walk on.
-    UIViewController *presented = tabs.presentedViewController;
-    if (presented && !presented.isBeingDismissed) return NO;
-    UINavigationController *nav = [tabs.selectedViewController isKindOfClass:UINavigationController.class] ? (UINavigationController *)tabs.selectedViewController : nil;
-    if (nav.topViewController.hidesBottomBarWhenPushed) return NO;
-    if (IsLiquidGlass()) {
-        CGRect pill;
-        if (!ApolloGlassTabBarPill(bar.window, &pill)) return NO;
-        *outLine = CGRectMake(CGRectGetMinX(pill) + 22, CGRectGetMinY(pill), CGRectGetWidth(pill) - 44, 1);
-    } else {
-        *outLine = CGRectMake(CGRectGetMinX(frame) + 24, CGRectGetMinY(frame), CGRectGetWidth(frame) - 48, 1);
-    }
-    return YES;
-}
-
-static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill) {
-    if (!IsLiquidGlass() || !window) return NO;
-    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-    UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
-    if (!bar || bar.hidden || bar.alpha < 0.05 || bar.window != window) return NO;
-    // The pill: the tab buttons' bounds, measured in the window.
-    Class button = NSClassFromString(@"_UITabButton");
-    CGRect pill = CGRectNull;
-    NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:bar];
-    while (stack.count) {
-        UIView *view = stack.lastObject;
-        [stack removeLastObject];
-        if (button && [view isKindOfClass:button] && !view.hidden && view.bounds.size.height > 20) {
-            pill = CGRectUnion(pill, [view convertRect:view.bounds toView:window]);
-            continue;
-        }
-        [stack addObjectsFromArray:view.subviews];
-    }
-    if (CGRectIsNull(pill) || CGRectGetMinY(pill) > CGRectGetHeight(window.bounds) - 10) return NO;
-    *outPill = pill;
-    return YES;
-}
-
 %hook _TtC6Apollo12PixelPalView
 
 // The strip the pals walk along. Apollo sizes it to the pill width and centres
@@ -416,24 +357,6 @@ static BOOL ApolloGlassTabBarPill(UIWindow *window, CGRect *outPill) {
         %orig(fixed);
         return;
     }
-    CGRect glassPill;
-    UIWindow *window = ApolloPixelPalWindowForView(view.superview);
-    if (fabs(CGRectGetHeight(frame) - kApolloPalStripHeight) < 0.5 && !ApolloPixelPalGeometry(window, &apollo, &pill) &&
-        ApolloGlassTabBarPill(window, &glassPill)) {
-        // Feet on the pill's top edge, inset from its rounded ends.
-        CGFloat inset = 22;
-        CGRect fixed = CGRectMake(round(CGRectGetMinX(glassPill) + inset), round(CGRectGetMinY(glassPill) - kApolloPalStripHeight + 1),
-                                  round(CGRectGetWidth(glassPill) - inset * 2), kApolloPalStripHeight);
-        sApolloTabStripShift = CGPointMake(CGRectGetMinX(fixed) - CGRectGetMinX(frame), CGRectGetMinY(fixed) - CGRectGetMinY(frame));
-        static CGRect sLastGlass;
-        if (!CGRectEqualToRect(fixed, sLastGlass)) {
-            sLastGlass = fixed;
-            ApolloLog(@"[PixelPals] tab-bar strip on the glass pill %@ → %@", ApolloRectString(frame), ApolloRectString(fixed));
-        }
-        %orig(fixed);
-        return;
-    }
-    sApolloTabStripShift = CGPointZero;
     %orig;
 }
 
@@ -562,12 +485,8 @@ static void ApolloPalHomeShowFromWindow(UIWindow *window) {
 // food and distance still count; the floating bubble is the Pal you see.
 static BOOL sApolloPalHomeCovering; // Pal Home is on screen: its own Pal, not Apollo's
 
-// Bubble, and Tab bar on an island phone, are drawn by Reborn's overlay
-// (ApolloPalHomeChatHead): Apollo's own Pal keeps running out of sight.
 static BOOL ApolloPixelPalsHiddenForBubble(void) {
-    if (!ApolloPalHomeStore.isPalHomeEnabled) return NO;
-    APPalDisplay display = ApolloPalHomeStore.palDisplay;
-    return display == APPalDisplayBubble || (display == APPalDisplayTabBar && ApolloPalHomeStore.deviceHasDynamicIsland);
+    return ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble;
 }
 
 // Hearts, food and emotes Apollo drops by its own Pal: not over Pal Home, and
@@ -612,13 +531,6 @@ void ApolloPixelPalsApplyDisplay(void) {
     static dispatch_once_t droppedOnce;
     dispatch_once(&droppedOnce, ^{ droppedCls = objc_getClass("_TtC6Apollo34PixelPalAddedSceneElementImageView"); });
     if (view && droppedCls && [view isKindOfClass:droppedCls] && ApolloPixelPalsHideDroppedElements()) view.alpha = 0;
-    if (view && droppedCls && [view isKindOfClass:droppedCls] && view.superview != window &&
-        !CGPointEqualToPoint(sApolloTabStripShift, CGPointZero) && !ApolloPixelPalGeometry(window, &apollo, &pill)) {
-        // Hearts and food follow the Pal up onto the glass tab bar.
-        CGRect f = view.frame;
-        view.frame = CGRectOffset(f, sApolloTabStripShift.x, sApolloTabStripShift.y);
-        if (ApolloPixelPalsHideDroppedElements()) view.alpha = 0;
-    }
     if (view && ApolloPixelPalGeometry(window, &apollo, &pill)) {
         CGFloat dx = CGRectGetMinX(pill) - CGRectGetMinX(apollo);
         CGFloat dy = CGRectGetMinY(pill) - CGRectGetMinY(apollo);
@@ -879,6 +791,10 @@ void ApolloPalHomeOpenFromAnywhere(BOOL animated) {
     dispatch_async(dispatch_get_main_queue(), ^{
         CGRect island;
         ApolloPalHomeStore.deviceHasDynamicIsland = ApolloDynamicIslandRect(&island);
+        // Apollo's own tab-bar strip (phones without an island) is only offered
+        // on the classic tab bar: under Liquid Glass's floating, collapsing bar
+        // it has nowhere good to live, so there it's the island or the bubble.
+        ApolloPalHomeStore.tabBarSupported = !ApolloPalHomeStore.deviceHasDynamicIsland && !IsLiquidGlass();
         ApolloLog(@"[PixelPals] Dynamic Island: %@", ApolloPalHomeStore.deviceHasDynamicIsland ? @"yes" : @"no");
         ApolloPixelPalsApplyDisplay();
         ApolloPalChatHeadRefresh();

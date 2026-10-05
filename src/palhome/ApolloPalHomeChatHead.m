@@ -603,238 +603,21 @@ typedef NS_ENUM(NSInteger, APChatMood) { APChatMoodSit, APChatMoodWalk, APChatMo
 
 @end
 
-#pragma mark - Tab bar walker
-
-// "Show your Pal: Tab bar" on an island phone: the Pal walks along the top of
-// the tab bar (the floating glass pill, or the classic bar), drawn here
-// because Apollo only builds its own tab-bar strip on phones without an
-// island. Wanders, sits, lounges, naps (likelier late), runs along as you
-// scroll; tap it for Pal Home. Hidden with the tab bar.
-FOUNDATION_EXTERN BOOL ApolloTabBarWalkLine(UIWindow *window, CGRect *outLine);
-
-typedef NS_ENUM(NSInteger, APWalkerMood) { APWalkerSit, APWalkerWalk, APWalkerRun, APWalkerLie, APWalkerSleep };
-
-@interface APTabWalker : NSObject
-@property (nonatomic, strong) APChatHeadWindow *window;
-@property (nonatomic, strong) UIView *body;          // tap target
-@property (nonatomic, strong) UIImageView *pal;
-@property (nonatomic, copy) NSString *species, *coat, *residentKey;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<UIImage *> *> *frames;
-@property (nonatomic) APWalkerMood mood;
-@property (nonatomic) CGFloat x, targetX, speed;
-@property (nonatomic) BOOL facingLeft, suppressed, haveLine;
-@property (nonatomic) CGRect line;
-@property (nonatomic, strong) CADisplayLink *link;
-@property (nonatomic) NSUInteger tick;
-@property (nonatomic) CFTimeInterval moodUntil, runUntil, lastTick;
-@end
-
-@implementation APTabWalker
-
-+ (instancetype)shared {
-    static APTabWalker *walker;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ walker = [APTabWalker new]; });
-    return walker;
-}
-
-- (BOOL)wanted {
-    return ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.deviceHasDynamicIsland &&
-           ApolloPalHomeStore.palDisplay == APPalDisplayTabBar && [ApolloPalHomeStore new].islandEnabled;
-}
-
-- (BOOL)isShowing { return self.window && !self.window.hidden && !self.body.hidden; }
-
-- (void)refresh {
-    BOOL show = self.wanted && !self.suppressed && UIApplication.sharedApplication.applicationState != UIApplicationStateBackground;
-    if (!show) {
-        self.window.hidden = YES;
-        [self.link invalidate];
-        self.link = nil;
-        return;
-    }
-    UIWindowScene *scene = nil;
-    for (UIScene *candidate in UIApplication.sharedApplication.connectedScenes) {
-        if (![candidate isKindOfClass:UIWindowScene.class] || candidate.activationState == UISceneActivationStateUnattached) continue;
-        if (!scene || candidate.activationState == UISceneActivationStateForegroundActive) scene = (UIWindowScene *)candidate;
-    }
-    if (!scene) {
-        __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf refresh]; });
-        return;
-    }
-    if (!self.window) {
-        APChatHeadWindow *window = [[APChatHeadWindow alloc] initWithWindowScene:scene];
-        window.windowLevel = UIWindowLevelNormal + 48;
-        window.backgroundColor = UIColor.clearColor;
-        window.rootViewController = [APChatHeadRoot new];
-        UIView *body = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 44, 30)];
-        UIImageView *pal = [[UIImageView alloc] initWithFrame:CGRectMake(6, 16, 32, 14)];
-        pal.layer.magnificationFilter = kCAFilterNearest;
-        [body addSubview:pal];
-        body.isAccessibilityElement = YES;
-        body.accessibilityTraits = UIAccessibilityTraitButton;
-        body.accessibilityHint = @"Opens Pal Home.";
-        [body addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapped)]];
-        [window.rootViewController.view addSubview:body];
-        window.bubble = body;
-        self.window = window;
-        self.body = body;
-        self.pal = pal;
-        self.frames = [NSMutableDictionary dictionary];
-        ApolloLog(@"[PalHome] tab-bar Pal created");
-    } else if (!self.window.windowScene) {
-        self.window.windowScene = scene;
-    }
-    [self loadResident];
-    self.window.hidden = NO;
-    if (!self.link) {
-        self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(step:)];
-        self.link.preferredFramesPerSecond = 15; // pixel art: plenty
-        [self.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
-        self.lastTick = CACurrentMediaTime();
-    }
-}
-
-- (void)loadResident {
-    ApolloPalHomeStore *store = [ApolloPalHomeStore new];
-    ApolloPalHomeResident *resident = store.residents.firstObject;
-    if (!resident.species) return;
-    NSString *key = [NSString stringWithFormat:@"%@|%@", resident.species, resident.coat];
-    self.body.accessibilityLabel = resident.name ?: @"Your Pal";
-    if ([key isEqualToString:self.residentKey]) return;
-    self.residentKey = key;
-    self.species = resident.species;
-    self.coat = resident.coat ?: @"original";
-    [self.frames removeAllObjects];
-    [self setMood:APWalkerSit until:CACurrentMediaTime() + 2];
-}
-
-- (NSArray<UIImage *> *)framesFor:(APWalkerMood)mood {
-    NSArray *cached = self.frames[@(mood)];
-    if (cached) return cached;
-    NSString *action = @[@"sit", @"walk", @"run", @"lie", @"sleep"][mood];
-    NSArray *frames = APPalSpriteFrames(self.species, self.coat, action, 1);
-    if (!frames.count) frames = APPalSpriteFrames(self.species, self.coat, @"sit", 1);
-    self.frames[@(mood)] = frames ?: @[];
-    return self.frames[@(mood)];
-}
-
-- (BOOL)isLate {
-    NSInteger hour = [NSCalendar.currentCalendar component:NSCalendarUnitHour fromDate:NSDate.date];
-    return hour >= 22 || hour < 7;
-}
-
-- (void)setMood:(APWalkerMood)mood until:(CFTimeInterval)until {
-    self.mood = mood;
-    self.moodUntil = until;
-}
-
-// What next, once the current thing is done.
-- (void)decide {
-    CFTimeInterval now = CACurrentMediaTime();
-    if (self.mood == APWalkerWalk || self.mood == APWalkerRun) {
-        [self setMood:APWalkerSit until:now + 2 + arc4random_uniform(5)];
-        return;
-    }
-    uint32_t roll = arc4random_uniform(100);
-    int nap = [self isLate] ? 25 : 6;
-    if (roll < nap) [self setMood:APWalkerSleep until:now + 20 + arc4random_uniform(40)];
-    else if (roll < nap + 15) [self setMood:APWalkerLie until:now + 6 + arc4random_uniform(10)];
-    else {
-        // Off for a wander somewhere along the bar.
-        CGFloat span = MAX(0, CGRectGetWidth(self.line) - 32);
-        self.targetX = CGRectGetMinX(self.line) + arc4random_uniform((uint32_t)MAX(1, span));
-        self.speed = 16;
-        [self setMood:APWalkerWalk until:now + 30];
-    }
-}
-
-- (void)step:(CADisplayLink *)link {
-    CFTimeInterval now = CACurrentMediaTime(), dt = MIN(0.2, now - self.lastTick);
-    self.lastTick = now;
-    self.tick++;
-    UIWindow *appWindow = ApolloMainTabBarController().viewIfLoaded.window;
-    if (self.tick % 5 == 1 || !self.haveLine) {
-        CGRect line;
-        BOOL have = ApolloTabBarWalkLine(appWindow, &line);
-        if (have && !self.haveLine) self.x = CGRectGetMinX(line) + CGRectGetWidth(line) * 0.6;
-        if (have != self.haveLine) ApolloLog(@"[PalHome] tab-bar Pal %@ %@", have ? @"on the bar" : @"off (no bar)", have ? NSStringFromCGRect(line) : @"");
-        self.haveLine = have;
-        if (have) self.line = line;
-    }
-    self.body.hidden = !self.haveLine;
-    if (!self.haveLine || !self.species) return;
-    BOOL still = UIAccessibilityIsReduceMotionEnabled();
-    // Move.
-    if (now < self.runUntil && !still) {
-        self.mood = APWalkerRun;
-        self.x += (self.facingLeft ? -1 : 1) * 70 * dt;
-        CGFloat lo = CGRectGetMinX(self.line), hi = CGRectGetMaxX(self.line) - 32;
-        if (self.x < lo || self.x > hi) { self.x = MAX(lo, MIN(hi, self.x)); self.facingLeft = !self.facingLeft; }
-    } else if (self.mood == APWalkerRun) {
-        [self setMood:APWalkerSit until:now + 1.5];
-    } else if (self.mood == APWalkerWalk && !still) {
-        CGFloat d = self.targetX - self.x;
-        self.facingLeft = d < 0;
-        CGFloat stepX = self.speed * dt;
-        if (fabs(d) <= stepX) { self.x = self.targetX; [self decide]; }
-        else self.x += d > 0 ? stepX : -stepX;
-    } else if (now >= self.moodUntil) {
-        [self decide];
-    }
-    self.x = MAX(CGRectGetMinX(self.line), MIN(CGRectGetMaxX(self.line) - 32, self.x));
-    // Draw.
-    NSArray<UIImage *> *frames = [self framesFor:self.mood];
-    if (frames.count) {
-        double fps = self.mood == APWalkerRun ? 14 : self.mood == APWalkerWalk ? 9 : self.mood == APWalkerSleep ? 1.6 : 3;
-        self.pal.image = still ? frames.firstObject : frames[(NSUInteger)(now * fps) % frames.count];
-    }
-    self.pal.transform = self.facingLeft ? CGAffineTransformMakeScale(-1, 1) : CGAffineTransformIdentity;
-    // Feet on the bar's top edge (a pixel into it, like the island Pal).
-    self.body.frame = CGRectMake(round(self.x) - 6, CGRectGetMinY(self.line) - 30 + 2, 44, 30);
-}
-
-- (void)noteScroll:(CGFloat)dy {
-    if (!self.isShowing || UIAccessibilityIsReduceMotionEnabled()) return;
-    if (fabs(dy) < 2) return;
-    // Scampers along while you scroll (reading on → forwards).
-    if (CACurrentMediaTime() >= self.runUntil) self.facingLeft = dy < 0;
-    self.runUntil = CACurrentMediaTime() + 0.6;
-}
-
-- (void)tapped {
-    APHapticPlay(APHapticSuccess);
-    UIImage *alert = APPalSpriteFrames(self.species, self.coat, @"alert", 1).firstObject;
-    if (alert) self.pal.image = alert;
-    if (!UIAccessibilityIsReduceMotionEnabled()) {
-        [UIView animateKeyframesWithDuration:0.3 delay:0 options:0 animations:^{
-            [UIView addKeyframeWithRelativeStartTime:0 relativeDuration:0.5 animations:^{ self.pal.transform = CGAffineTransformTranslate(self.pal.transform, 0, -8); }];
-            [UIView addKeyframeWithRelativeStartTime:0.5 relativeDuration:0.5 animations:^{ self.pal.transform = CGAffineTransformTranslate(self.pal.transform, 0, 8); }];
-        } completion:nil];
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ ApolloPalHomeOpenFromAnywhere(YES); });
-}
-
-@end
-
 #pragma mark - API
 
 void ApolloPalChatHeadRefresh(void) {
-    dispatch_block_t work = ^{ [[APChatHead shared] refresh]; [[APTabWalker shared] refresh]; };
+    dispatch_block_t work = ^{ [[APChatHead shared] refresh]; };
     if (NSThread.isMainThread) work(); else dispatch_async(dispatch_get_main_queue(), work);
 }
 
 void ApolloPalChatHeadSetSuppressed(BOOL suppressed) {
-    APTabWalker *walker = [APTabWalker shared];
-    if (walker.suppressed != suppressed) { walker.suppressed = suppressed; [walker refresh]; }
     APChatHead *head = [APChatHead shared];
     if (head.suppressed == suppressed) return;
     head.suppressed = suppressed;
     [head refresh];
 }
 
-BOOL ApolloPalChatHeadIsShowing(void) { return [APChatHead shared].isShowing || [APTabWalker shared].isShowing; }
+BOOL ApolloPalChatHeadIsShowing(void) { return [APChatHead shared].isShowing; }
 
 void ApolloPalChatHeadSetNapping(BOOL napping) {
     APChatHead *head = [APChatHead shared];
@@ -848,7 +631,6 @@ void ApolloPalChatHeadSetNapping(BOOL napping) {
 void ApolloPalChatHeadWelcomeBack(void) { [[APChatHead shared] welcomeBack]; }
 
 void ApolloPalChatHeadNoteScroll(UIScrollView *scrollView, CGFloat dy) {
-    if ((scrollView.isDragging || scrollView.isDecelerating) && [APTabWalker shared].isShowing) [[APTabWalker shared] noteScroll:dy];
     APChatHead *head = [APChatHead shared];
     if (!head.isShowing || scrollView.window == head.window) return;
     // Only the person scrolling counts (not programmatic jumps).

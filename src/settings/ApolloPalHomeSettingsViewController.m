@@ -45,28 +45,40 @@
     open.configure = ^(UITableViewCell *cell) {
         cell.textLabel.text = ApolloPalHomeStore.isPalHomeEnabled ? @"Open Pal Home" : @"Try Pal Home";
     };
-    // Where your Pal lives while you browse: one place at a time.
+    // Where your Pal lives while you browse: one place at a time, from what
+    // this phone and build offer.
+    NSArray<NSNumber *> *(^modes)(void) = ^NSArray<NSNumber *> * {
+        NSMutableArray *list = [NSMutableArray array];
+        if (ApolloPalHomeStore.deviceHasDynamicIsland) [list addObject:@(APPalDisplayIsland)];
+        if (ApolloPalHomeStore.tabBarSupported) [list addObject:@(APPalDisplayTabBar)];
+        [list addObject:@(APPalDisplayBubble)];
+        [list addObject:@(-1)]; // nowhere
+        return list;
+    };
     NSArray<NSString *> *(^places)(void) = ^NSArray<NSString *> * {
-        return ApolloPalHomeStore.deviceHasDynamicIsland ? @[@"Dynamic Island", @"Tab Bar", @"Floating Bubble", @"Nowhere"]
-                                                         : @[@"Tab Bar", @"Floating Bubble", @"Nowhere"];
+        NSMutableArray *titles = [NSMutableArray array];
+        for (NSNumber *mode in modes()) {
+            NSInteger m = mode.integerValue;
+            [titles addObject:m < 0 ? @"Nowhere" : @[@"Dynamic Island", @"Tab Bar", @"Floating Bubble"][m]];
+        }
+        return titles;
     };
     NSInteger (^currentPlace)(void) = ^NSInteger {
-        ApolloPalHomeStore *store = [ApolloPalHomeStore new];
-        NSInteger offset = ApolloPalHomeStore.deviceHasDynamicIsland ? 0 : -1;
-        return !store.islandEnabled ? (NSInteger)places().count - 1 : ApolloPalHomeStore.palDisplay + offset;
+        NSInteger m = [ApolloPalHomeStore new].islandEnabled ? ApolloPalHomeStore.palDisplay : -1;
+        NSUInteger index = [modes() indexOfObject:@(m)];
+        return index == NSNotFound ? 0 : (NSInteger)index;
     };
     ApolloSettingsRow *floating =
         [ApolloSettingsRow valueRowWithID:@"floating"
                                     title:@"Show Your Pal"
-                                   detail:^NSString * { return places()[MAX(0, currentPlace())]; }
+                                   detail:^NSString * { return places()[currentPlace()]; }
                                  onSelect:^{
             __strong __typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
             ApolloSettingsPresentPicker(strongSelf, [strongSelf cellForRowID:@"floating"], @"Show Your Pal", places(), currentPlace(), ^(NSInteger picked) {
-                ApolloPalHomeStore *store = [ApolloPalHomeStore new];
-                BOOL nowhere = picked == (NSInteger)places().count - 1;
-                if (!nowhere) ApolloPalHomeStore.palDisplay = (APPalDisplay)(picked + (ApolloPalHomeStore.deviceHasDynamicIsland ? 0 : 1));
-                store.islandEnabled = !nowhere;
+                NSInteger m = modes()[picked].integerValue;
+                if (m >= 0) ApolloPalHomeStore.palDisplay = (APPalDisplay)m;
+                [ApolloPalHomeStore new].islandEnabled = m >= 0;
                 [weakSelf reloadRowWithID:@"floating"];
             });
         }];

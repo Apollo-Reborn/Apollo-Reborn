@@ -214,9 +214,7 @@ static NSString *sPendingVisit;
             // alpha, not hidden: Apollo re-sets `hidden` as it updates the Pal.
             // Bubble mode keeps Apollo's Pal hidden outside Pal Home too.
             // (The overlay modes keep Apollo's Pal hidden outside Pal Home too.)
-            APPalDisplay display = ApolloPalHomeStore.palDisplay;
-            BOOL overlay = ApolloPalHomeStore.isPalHomeEnabled &&
-                           (display == APPalDisplayBubble || (display == APPalDisplayTabBar && ApolloPalHomeStore.deviceHasDynamicIsland));
+            BOOL overlay = ApolloPalHomeStore.isPalHomeEnabled && ApolloPalHomeStore.palDisplay == APPalDisplayBubble;
             BOOL hide = hidden || overlay;
             if (!inIsland && (view.alpha < 0.5) != hide) {
                 view.alpha = hide ? 0 : 1;
@@ -977,7 +975,9 @@ static NSString *APCareWeightText(double lbs) {
     if (ApolloPalHomeStore.deviceHasDynamicIsland) {
         [options addObject:@[@"island", @"Dynamic Island", @"Walks along the island", ^{ pick(YES, APPalDisplayIsland); }]];
     }
-    [options addObject:@[@"tabbar", @"Tab bar", @"Walks along the top of the tab bar", ^{ pick(YES, APPalDisplayTabBar); }]];
+    if (ApolloPalHomeStore.tabBarSupported) {
+        [options addObject:@[@"tabbar", @"Tab bar", @"Walks along the bottom of the screen", ^{ pick(YES, APPalDisplayTabBar); }]];
+    }
     [options addObject:@[@"bubble", @"Bubble", @"Floats over everything, drag it anywhere", ^{ pick(YES, APPalDisplayBubble); }]];
     [options addObject:@[@"island.off", @"Nowhere", @"Stays home in Pal Home", ^{ pick(NO, ApolloPalHomeStore.palDisplay); }]];
     [self menuWithTitle:@"Show your Pal on" options:options];
