@@ -231,6 +231,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloFloatingTabsCrests.m \
     $(SRC_DIR)/ApolloMediaPreviewErrorFix.xm \
     $(SRC_DIR)/ApolloRedgifsMissingDuration.m \
+    $(SRC_DIR)/ApolloRedgifsFailureReason.m \
+    $(SRC_DIR)/ApolloRedgifsErrorCards.xm \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloSubredditListEditing.xm \
