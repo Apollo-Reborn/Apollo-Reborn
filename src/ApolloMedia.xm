@@ -173,6 +173,135 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
 
 %end
 
+// #1346: when a swipe between pages of the fullscreen viewer settles,
+// UIPageViewController looks up the controller of the page it ended on and
+// asserts "No view controller managing visible view" when there is none
+// (-queuingScrollView:didEndManualScroll:..., UIPageViewController.m:2072 on
+// iOS 27.0). It finds that controller one of two ways:
+//   - a finished swipe (or a programmatic page change): the controller whose
+//     root view is revealView (+[UIViewController viewControllerForView:]);
+//   - a swipe that bounced back: the outgoing controller recorded when the
+//     finger lifted, in _incomingAndOutgoingViewControllersForManualTransition.
+// Apollo's pager is exposed to both. Its data source builds a new page
+// controller on every before/after call, and its async media loads
+// (loadViewControllers(), 0x100264814) change the page with an animated
+// setViewControllers:, whose commit replaces that record with an empty one.
+// When the lookup would come back empty, finish the swipe on the page that is
+// showing so UIKit's appearance and delegate bookkeeping still run.
+static NSString *const kApolloMediaPagerOutgoingKey = @"UIPageCurlControllerOutgoingLeftViewControllerKey";
+
+// The same lookup UIKit makes (the view's __viewDelegate). nextResponder is
+// the fallback: for a controller's root view it returns that controller.
+static UIViewController *ApolloMediaPagerOwner(UIView *view) {
+    if (!view) return nil;
+    static SEL lookup;
+    static BOOL hasLookup;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lookup = NSSelectorFromString(@"viewControllerForView:");
+        hasLookup = [UIViewController respondsToSelector:lookup];
+    });
+    id owner = hasLookup ? ((id (*)(id, SEL, id))objc_msgSend)(UIViewController.class, lookup, view)
+                         : view.nextResponder;
+    return [owner isKindOfClass:UIViewController.class] ? owner : nil;
+}
+
+static UIView *ApolloMediaPagerVisibleView(id queuingScrollView) {
+    static SEL visibleView;
+    if (!visibleView) visibleView = NSSelectorFromString(@"visibleView");
+    if (![queuingScrollView respondsToSelector:visibleView]) return nil;
+    id view = ((id (*)(id, SEL))objc_msgSend)(queuingScrollView, visibleView);
+    return [view isKindOfClass:UIView.class] ? view : nil;
+}
+
+// The page on screen, else the pager's current page.
+static UIViewController *ApolloMediaPagerShowingPage(UIPageViewController *pager, id queuingScrollView) {
+    UIViewController *page = ApolloMediaPagerOwner(ApolloMediaPagerVisibleView(queuingScrollView));
+    if (page.parentViewController == pager) return page;
+    page = pager.viewControllers.firstObject;
+    return (page.parentViewController == pager && page.isViewLoaded) ? page : nil;
+}
+
+static Ivar ApolloMediaPagerTransitionIvar(void) {
+    static Ivar ivar;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ivar = class_getInstanceVariable(UIPageViewController.class,
+                                         "_incomingAndOutgoingViewControllersForManualTransition");
+    });
+    return ivar;
+}
+
+// UIKit owns this ivar strongly (objc_storeStrong); store it the same way.
+static void ApolloMediaPagerStoreTransition(UIPageViewController *pager, Ivar ivar, NSDictionary *transition) {
+    void **slot = (void **)((uint8_t *)(__bridge void *)pager + ivar_getOffset(ivar));
+    void *previous = *slot;
+    *slot = (void *)CFBridgingRetain(transition);
+    if (previous) CFRelease(previous);
+}
+
+// A page left on screen without a controller can't page any further (the
+// data source has nothing to step from), so put the pager's current page
+// back once the scroll has stopped.
+static void ApolloMediaPagerRestoreLivePage(UIPageViewController *pager, UIScrollView *queuingScrollView) {
+    __weak UIPageViewController *weakPager = pager;
+    __weak UIScrollView *weakScrollView = queuingScrollView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIPageViewController *strongPager = weakPager;
+        UIScrollView *scrollView = weakScrollView;
+        if (!strongPager.viewIfLoaded.window || !scrollView) return;
+        if (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) return;
+        UIView *visible = ApolloMediaPagerVisibleView(scrollView);
+        if (!visible || ApolloMediaPagerOwner(visible)) return;
+        UIViewController *page = strongPager.viewControllers.firstObject;
+        if (page.parentViewController != strongPager) return;
+        ApolloLog(@"[MediaPagerGuard] page on screen has no controller; showing the pager's current page again");
+        [strongPager setViewControllers:@[page]
+                              direction:UIPageViewControllerNavigationDirectionForward
+                               animated:NO
+                             completion:nil];
+    });
+}
+
+%hook _TtC6Apollo23MediaPageViewController
+
+- (void)queuingScrollView:(UIScrollView *)queuingScrollView didEndManualScroll:(BOOL)manual
+             toRevealView:(UIView *)revealView direction:(NSInteger)direction animated:(BOOL)animated
+                didFinish:(BOOL)finished didComplete:(BOOL)completed {
+    UIPageViewController *pager = (UIPageViewController *)self;
+    if (!manual || completed) {
+        if (ApolloMediaPagerOwner(revealView)) {
+            %orig;
+            return;
+        }
+        UIViewController *showing = ApolloMediaPagerShowingPage(pager, queuingScrollView);
+        ApolloLog(@"[MediaPagerGuard] swipe settled on a page with no controller (manual=%d); %@", manual,
+                  showing ? @"finishing it on the page that is showing" : @"no live page, skipping UIKit's update");
+        if (showing) %orig(queuingScrollView, manual, showing.view, direction, animated, finished, completed);
+        ApolloMediaPagerRestoreLivePage(pager, queuingScrollView);
+        return;
+    }
+
+    Ivar ivar = ApolloMediaPagerTransitionIvar();
+    id transition = ivar ? object_getIvar(self, ivar) : nil;
+    if (!ivar || ([transition isKindOfClass:NSDictionary.class] &&
+                  ((NSDictionary *)transition)[kApolloMediaPagerOutgoingKey])) {
+        %orig;
+        return;
+    }
+    UIViewController *showing = ApolloMediaPagerShowingPage(pager, queuingScrollView);
+    ApolloLog(@"[MediaPagerGuard] bounced-back swipe lost the page it started from; %@",
+              showing ? @"finishing it on the page that is showing" : @"no live page, skipping UIKit's update");
+    if (!showing) return;
+    NSMutableDictionary *repaired = [transition isKindOfClass:NSDictionary.class]
+        ? [(NSDictionary *)transition mutableCopy] : [NSMutableDictionary dictionary];
+    repaired[kApolloMediaPagerOutgoingKey] = showing;
+    ApolloMediaPagerStoreTransition(pager, ivar, repaired);
+    %orig;
+}
+
+%end
+
 static BOOL ApolloMediaStringContains(NSString *haystack, NSString *needle) {
     return [haystack isKindOfClass:[NSString class]] && needle.length > 0 &&
         [haystack rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;
@@ -1062,4 +1191,5 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 %ctor {
     %init;
     ApolloLog(@"[ShareMediaTmp] download cleanup hook installed");
+    ApolloLog(@"[MediaPagerGuard] swipe-end hook installed");
 }
