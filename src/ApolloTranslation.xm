@@ -8905,6 +8905,255 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     return YES;
 }
 
+#pragma mark - Load more: rows inserted already translated
+
+// "N more replies" (ApolloLoadMoreComments.xm) inserts its comments through
+// Apollo's ListAdapter like any other update. Each fresh CommentCellNode used
+// to be measured with its ORIGINAL body; the translation landed a turn (or a
+// provider round trip) later and every row below reflowed — the "comments
+// bounce around, then settle" report. Instead the load-more module holds the
+// insert while the new bodies are translated (prefetch below), then arms a
+// short-lived registry around Apollo's insert: the node blocks Apollo's
+// ListAdapter hands Texture for those rows are wrapped, and a CommentCellNode
+// built for an armed comment gets its translation written into its body text
+// node right after construction — on Texture's allocation thread, BEFORE the
+// row is measured — so the row is inserted at its translated height. Later
+// passes of the normal apply path find the translation already showing and
+// no-op (exact gate in ApolloApplyTranslationToCellNode).
+
+@interface ApolloInsertTranslationArm : NSObject
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *translations; // fullName -> translation
+@end
+
+@implementation ApolloInsertTranslationArm
+@end
+
+// Armed tokens, in arm order. Two loads can be in flight; each disarms only its
+// own token. Guarded by ApolloInsertTranslationLock().
+static NSMutableArray<ApolloInsertTranslationArm *> *sApolloInsertTranslationArms = nil;
+// Fast first-line check for the ListAdapter hook: number of armed tokens.
+static NSUInteger sApolloInsertTranslationArmCount = 0;
+// How many of a load's comments the prefetch waits for: the first ones land right below the
+// tapped row, on screen. The rest are requested too but not awaited — they land below the
+// fold, where a later reflow can't move anything the user is looking at.
+static const NSUInteger kApolloInsertTranslationAwaitedComments = 8;
+
+// Text nodes whose attributedText Apollo set while THIS thread runs a wrapped
+// node block (nil everywhere else). The wrapper owns the array; this is only a
+// borrowed pointer, so it never outlives the block call.
+static __thread __unsafe_unretained NSMutableArray *tApolloInsertCapturedTextNodes = nil;
+
+static NSObject *ApolloInsertTranslationLock(void) {
+    static NSObject *lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ lock = [NSObject new]; });
+    return lock;
+}
+
+static NSDictionary<NSString *, NSString *> *ApolloInsertTranslationsSnapshot(void) {
+    @synchronized (ApolloInsertTranslationLock()) {
+        if (sApolloInsertTranslationArms.count == 0) return nil;
+        if (sApolloInsertTranslationArms.count == 1) return sApolloInsertTranslationArms.firstObject.translations;
+        NSMutableDictionary *merged = [NSMutableDictionary dictionary];
+        for (ApolloInsertTranslationArm *arm in sApolloInsertTranslationArms) [merged addEntriesFromDictionary:arm.translations];
+        return merged;
+    }
+}
+
+// Same gates as the per-cell paths (ApolloMaybeTranslateCommentCellNode +
+// ApolloApplyTranslationToCellNode) for a comment that has no cell yet.
+static BOOL ApolloInsertCommentIsTranslatable(RDKComment *comment, NSString *fullName) {
+    if (fullName.length == 0) return NO;
+    if ([comment.body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length == 0) return NO;
+    if (ApolloCommentContainsCodeOrPreformatted(comment)) return NO;
+    if (sUserPinnedOriginalFullNames && [sUserPinnedOriginalFullNames containsObject:fullName]) return NO;
+    return YES;
+}
+
+// The thread is showing translations (auto-translate or its globe), but not in
+// tap-to-translate mode: that holds every swap until the user taps, so there is
+// nothing to apply before the insert.
+static BOOL ApolloInsertTranslationModeActive(UIViewController *commentsController) {
+    return sEnableBulkTranslation && !sTapToTranslate && commentsController &&
+           ApolloControllerIsInTranslatedMode(commentsController) &&
+           ApolloResolvedTargetLanguageCode().length > 0;
+}
+
+static NSArray<RDKComment *> *ApolloInsertCommentsFromThings(NSArray *things) {
+    Class commentClass = NSClassFromString(@"RDKComment");
+    if (!commentClass || ![things isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray<RDKComment *> *comments = [NSMutableArray array];
+    for (id thing in things) {
+        if ([thing isMemberOfClass:commentClass]) [comments addObject:thing];
+    }
+    return comments;
+}
+
+BOOL ApolloTranslationPrefetchCommentsForInsertion(id commentsController, NSArray *things, void (^completion)(void)) {
+    if (!NSThread.isMainThread || !completion) return NO;
+    UIViewController *controller = [commentsController isKindOfClass:[UIViewController class]] ? commentsController : nil;
+    if (!ApolloInsertTranslationModeActive(controller)) return NO;
+    NSString *targetLanguage = ApolloResolvedTargetLanguageCode();
+
+    NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
+    for (RDKComment *comment in ApolloInsertCommentsFromThings(things)) {
+        NSString *fullName = ApolloCommentFullName(comment);
+        if (!ApolloInsertCommentIsTranslatable(comment, fullName)) continue;
+        if (ApolloCachedCommentTranslationForFullName(fullName).length > 0) continue; // already cached
+        NSString *sourceText = [comment.body stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        [candidates addObject:@{@"fullName": fullName, @"source": sourceText, @"body": comment.body ?: @""}];
+    }
+    if (candidates.count == 0) return NO;
+
+    // Language detection runs NLLanguageRecognizer per body: off the main thread,
+    // on the detection queue that also warms the cache the marker and the
+    // per-cell paths read later.
+    void (^finish)(void) = [completion copy];
+    dispatch_async(ApolloTranslationDetectionQueue(), ^{
+        NSMutableArray<NSDictionary *> *needed = [NSMutableArray array];
+        for (NSDictionary *candidate in candidates) {
+            NSString *sourceText = candidate[@"source"];
+            NSString *detected = ApolloDetectDominantLanguage(ApolloProtectTranslationLinks(sourceText, NULL));
+            // The marker detects on the raw body; warm that verdict too.
+            (void)ApolloDetectDominantLanguage(candidate[@"body"]);
+            if ([detected isEqualToString:targetLanguage]) continue;
+            [needed addObject:candidate];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (needed.count == 0) {
+                finish();
+                return;
+            }
+            NSUInteger awaited = MIN(needed.count, kApolloInsertTranslationAwaitedComments);
+            __block NSUInteger remaining = awaited;
+            ApolloLog(@"[Translation] load more: translating %lu comment(s), waiting for the first %lu before they are inserted",
+                      (unsigned long)needed.count, (unsigned long)awaited);
+            // Display order, so a sequential provider (Apple) answers the awaited ones first.
+            [needed enumerateObjectsUsingBlock:^(NSDictionary *candidate, NSUInteger index, __unused BOOL *stop) {
+                BOOL isAwaited = index < awaited;
+                NSString *fullName = candidate[@"fullName"];
+                NSString *sourceText = candidate[@"source"];
+                NSString *cacheKey = ApolloTranslationCacheKey(sourceText, targetLanguage);
+                ApolloRequestTranslation(cacheKey, sourceText, targetLanguage, ^(NSString *translated, NSError *error) {
+                    void (^deliver)(void) = ^{
+                        if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
+                            // Same stash as the per-cell completion: the fresh cell and every
+                            // later re-display read it by fullName.
+                            [sCommentTranslationByFullName setObject:translated forKey:fullName];
+                            ApolloMirrorSetComment(fullName, translated);
+                        }
+                        if (isAwaited && remaining > 0 && --remaining == 0) finish();
+                    };
+                    if (NSThread.isMainThread) deliver(); else dispatch_async(dispatch_get_main_queue(), deliver);
+                });
+            }];
+        });
+    });
+    return YES;
+}
+
+id ApolloTranslationArmInsertedComments(id commentsController, NSArray *things) {
+    if (!NSThread.isMainThread) return nil;
+    UIViewController *controller = [commentsController isKindOfClass:[UIViewController class]] ? commentsController : nil;
+    if (!ApolloInsertTranslationModeActive(controller)) return nil;
+    NSMutableDictionary<NSString *, NSString *> *translations = [NSMutableDictionary dictionary];
+    for (RDKComment *comment in ApolloInsertCommentsFromThings(things)) {
+        NSString *fullName = ApolloCommentFullName(comment);
+        if (!ApolloInsertCommentIsTranslatable(comment, fullName)) continue;
+        NSString *translated = ApolloStripInlineMediaTokens(ApolloCachedCommentTranslationForFullName(fullName));
+        if (translated.length == 0 || !ApolloTranslatedTextDiffersFromSource(comment.body, translated)) continue;
+        translations[fullName] = translated;
+    }
+    if (translations.count == 0) return nil;
+    ApolloInsertTranslationArm *arm = [ApolloInsertTranslationArm new];
+    arm.translations = translations;
+    @synchronized (ApolloInsertTranslationLock()) {
+        if (!sApolloInsertTranslationArms) sApolloInsertTranslationArms = [NSMutableArray array];
+        [sApolloInsertTranslationArms addObject:arm];
+        __atomic_store_n(&sApolloInsertTranslationArmCount, sApolloInsertTranslationArms.count, __ATOMIC_RELEASE);
+    }
+    return arm;
+}
+
+void ApolloTranslationDisarmInsertedComments(id token) {
+    if (!token) return;
+    @synchronized (ApolloInsertTranslationLock()) {
+        [sApolloInsertTranslationArms removeObjectIdenticalTo:token];
+        __atomic_store_n(&sApolloInsertTranslationArmCount, sApolloInsertTranslationArms.count, __ATOMIC_RELEASE);
+    }
+}
+
+// Runs on Texture's allocation thread, right after Apollo's node block built
+// `cellNode` and before Texture measures it. `capturedTextNodes` are the text
+// nodes whose text Apollo set while building it. Mirrors the write in
+// ApolloApplyTranslationToCellNode, minus the relayout/heal (nothing has been
+// measured or drawn yet) and the main-thread-only bookkeeping (deferred).
+static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTextNodes,
+                                                NSDictionary<NSString *, NSString *> *translations) {
+    Class commentCellClass = objc_getClass("_TtC6Apollo15CommentCellNode");
+    if (!cellNode || !commentCellClass || ![cellNode isKindOfClass:commentCellClass]) return;
+    RDKComment *comment = ApolloCommentFromCellNode(cellNode);
+    NSString *fullName = comment ? ApolloCommentFullName(comment) : nil;
+    NSString *translated = fullName.length > 0 ? translations[fullName] : nil;
+    if (translated.length == 0) return;
+
+    // Pick the body node exactly like ApolloBestCommentTextNode does (score,
+    // MarkdownTextNode wins ties), but among the nodes Apollo just filled: the
+    // cell's subnodes aren't attached until its first layout.
+    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    id textNode = nil;
+    NSAttributedString *current = nil;
+    NSInteger bestScore = NSIntegerMin;
+    BOOL bestIsBody = NO;
+    for (id candidate in capturedTextNodes) {
+        NSAttributedString *attr = nil;
+        @try { attr = ((id (*)(id, SEL))objc_msgSend)(candidate, @selector(attributedText)); }
+        @catch (__unused NSException *e) { continue; }
+        NSInteger score = ApolloCandidateScore(attr, comment.body);
+        BOOL isBody = markdownTextNode && [candidate isKindOfClass:markdownTextNode];
+        if (score > bestScore || (score == bestScore && score != NSIntegerMin && isBody && !bestIsBody)) {
+            bestScore = score;
+            textNode = candidate;
+            current = attr;
+            bestIsBody = isBody;
+        }
+    }
+    if (!textNode || ![current isKindOfClass:[NSAttributedString class]] ||
+        !ApolloTextQualifiesAsBodyCandidate(current.string, comment.body)) {
+        ApolloLogDebug(@"[Translation] load more: no body node for %@ — it translates after insert", fullName);
+        return;
+    }
+
+    NSAttributedString *translatedAttr = ApolloTranslatedMarkdownBodyAttributedString(current, translated);
+    NSAttributedString *displayAttr = ApolloAttributedStringByAppendingTranslationMarker(translatedAttr, comment.body);
+    if (displayAttr.length == 0) return;
+
+    objc_setAssociatedObject(textNode, kApolloOriginalAttributedTextKey, [current copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeOriginalBodyKey, comment.body, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeTranslatedTextKey, translated, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(textNode, kApolloCommentOwnedTextNodeKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloRegisterOwnedTextNode(textNode);
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), displayAttr);
+    } @catch (__unused NSException *e) {
+    }
+    objc_setAssociatedObject(textNode, kApolloOwnedNodeReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL hasMarker = displayAttr != translatedAttr;
+    if (hasMarker) ApolloEnsureMarkerTappableOnNode(textNode);
+    objc_setAssociatedObject(cellNode, kApolloTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cellNode, kApolloAppliedTranslationFullNameKey, fullName, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    ApolloIndexTranslatedCommentBody(comment.body, fullName);
+    ApolloIndexTranslatedCommentBody(current.string, fullName);
+
+    NSString *body = [comment.body copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloMarkVisibleTranslationApplied(body, translated);
+        if (hasMarker) ApolloEnsureCommentsTableBreathingRoom();
+    });
+    ApolloLogDebug(@"[Translation] load more: %@ built translated", fullName);
+}
+
 // Global setAttributedText: hook on ASTextNode. Strict no-op for any node we
 // haven't tagged with kApolloTranslationOwnedTextNodeKey. For tagged nodes:
 // if Apollo is overwriting back to the original `comment.body`, swap to our
@@ -8914,6 +9163,9 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    // Load more: note the text nodes Apollo fills while it builds a row (see
+    // ApolloTranslateFreshCommentCellNode). Thread-local; nil outside a wrapped node block.
+    if (tApolloInsertCapturedTextNodes) [tApolloInsertCapturedTextNodes addObject:self];
     if (![objc_getAssociatedObject(self, kApolloTranslationOwnedTextNodeKey) boolValue]) {
         // Vote-flash preempt: brand-new (rebuilt) header body text node.
         NSAttributedString *preemptSwap = nil;
@@ -8998,6 +9250,7 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
 %hook ASTextNode2
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
+    if (tApolloInsertCapturedTextNodes) [tApolloInsertCapturedTextNodes addObject:self];
     if (![objc_getAssociatedObject(self, kApolloTranslationOwnedTextNodeKey) boolValue]) {
         // Vote-flash preempt (mirror of ASTextNode hook above).
         NSAttributedString *preemptSwap = nil;
@@ -9064,6 +9317,36 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     }
 
     %orig;
+}
+
+%end
+
+// Load more: wrap the node blocks Apollo hands Texture while a load-more insert
+// is armed (ApolloTranslationArmInsertedComments). Every list in the app builds
+// its rows through here, so bail in the first line when nothing is armed. The
+// armed set is read once here, on the main thread inside Apollo's batch; the
+// block itself runs later on Texture's allocation thread.
+%hook _TtC6Apollo11ListAdapter
+
+- (id)tableNode:(id)tableNode nodeBlockForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (__atomic_load_n(&sApolloInsertTranslationArmCount, __ATOMIC_ACQUIRE) == 0) return %orig;
+    id original = %orig;
+    NSDictionary<NSString *, NSString *> *translations = ApolloInsertTranslationsSnapshot();
+    if (!original || translations.count == 0) return original;
+    id (^nodeBlock)(void) = original;
+    return [^id {
+        NSMutableArray *captured = [NSMutableArray array];
+        NSMutableArray *outer = tApolloInsertCapturedTextNodes;
+        tApolloInsertCapturedTextNodes = captured;
+        id node = nil;
+        @try {
+            node = nodeBlock();
+        } @finally {
+            tApolloInsertCapturedTextNodes = outer;
+        }
+        ApolloTranslateFreshCommentCellNode(node, captured, translations);
+        return node;
+    } copy];
 }
 
 %end
