@@ -1,6 +1,6 @@
 #import <UIKit/UIKit.h>
 
-// Dedicated "Subreddit Sections" screen: a container that pins a live preview
+// Dedicated "Subreddit List Sections" screen: a container that pins a live preview
 // of the Subreddits list's section layout above a declarative form-table
 // child — the same shape as the Feed Shortcuts screen
 // (ApolloFeedShortcutsSettingsViewController). The preview stays on screen

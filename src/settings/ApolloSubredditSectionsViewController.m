@@ -1157,7 +1157,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Subreddit Sections";
+    self.title = @"Subreddit List Sections";
     BOOL liquidGlass = IsLiquidGlass();
 
     ApolloSubredditSectionsPreviewHostView *previewHost = [ApolloSubredditSectionsPreviewHostView new];
