@@ -17,6 +17,27 @@ static char kPaneGalleryHost;
 @end
 
 @implementation ApolloPaneGalleryHost
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (@available(iOS 26.0, *)) {
+        UILayoutGuide *guide = self.pane.tabBarController.contentLayoutGuide;
+        if (!guide.owningView || !self.view.window) return;
+        CGRect available = [guide.owningView convertRect:guide.layoutFrame toView:self.view];
+        // A full-height child navigation controller otherwise only reserves
+        // the status bar, placing its title underneath the floating tabs.
+        // Reserve the native tab area for controls, not for the grid canvas.
+        // Subtract our own inset to keep this stable across layout passes;
+        // the guide also updates during sidebar animations and rotation.
+        CGFloat inheritedTop = self.view.safeAreaInsets.top - self.additionalSafeAreaInsets.top;
+        CGFloat reservedTop = MAX(0.0, CGRectGetMinY(available) - inheritedTop);
+        if (fabs(self.additionalSafeAreaInsets.top - reservedTop) > 0.5) {
+            UIEdgeInsets insets = self.additionalSafeAreaInsets;
+            insets.top = reservedTop;
+            self.additionalSafeAreaInsets = insets;
+        }
+    }
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
@@ -100,7 +121,13 @@ BOOL ApolloPanePresentGallery(UIViewController *controller, UINavigationControll
     [NSLayoutConstraint activateConstraints:@[
         [host.view.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor],
         [host.view.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor],
-        [host.view.topAnchor constraintEqualToAnchor:guide.topAnchor],
+        // The guide reserves the floating tabs, but only the controls need
+        // that reservation. Fill the pane vertically so the grid can supply
+        // pixels behind the native tab pill and its status area. The host
+        // reserves the tab area for the navigation controller's controls;
+        // constraining the entire canvas to the guide left an opaque band
+        // above it and exposed a separate strip before the Gallery bar.
+        [host.view.topAnchor constraintEqualToAnchor:pane.view.topAnchor],
         // Extend the opaque gallery through the home-indicator area. UIKit
         // still supplies its safe inset to the grid; the old feed must not
         // peek out below the content guide's safe bottom.
