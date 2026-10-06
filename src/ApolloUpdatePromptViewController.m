@@ -202,6 +202,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     UIButton *_updateButton;
     UILabel *_versionsLabel;
 
+    // Haptics: a warning as the sheet lands, a soft impact for taps that go somewhere, a
+    // selection tick for the ones that dismiss.
+    UINotificationFeedbackGenerator *_notificationFeedback;
+    UIImpactFeedbackGenerator *_softImpact;
+    UISelectionFeedbackGenerator *_selectionFeedback;
+
     // Pinned bottom bar (Update / Later / Skip) shared by the summary and the notes.
     UIView *_actionsBar;
     UIView *_actionsHairline;
@@ -836,6 +842,10 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     self.view.backgroundColor = [UIColor systemBackgroundColor];
     _accent = ApolloThemeAccentColor() ?: self.view.tintColor ?: [UIColor systemBlueColor];
 
+    _notificationFeedback = [[UINotificationFeedbackGenerator alloc] init];
+    _softImpact = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleSoft];
+    _selectionFeedback = [[UISelectionFeedbackGenerator alloc] init];
+
     [self apollo_buildPromptPage];
     [self apollo_buildNotesView];
 
@@ -847,11 +857,20 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     [self apollo_updateAccentColors];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // Wake the Taptic Engine while the sheet rises so the warning lands without lag.
+    [_notificationFeedback prepare];
+    [_softImpact prepare];
+    [_selectionFeedback prepare];
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self apollo_updateAccentColors];   // in the hierarchy now, so real traits
     if (_hasAnimatedIn) return;
     _hasAnimatedIn = YES;
+    [_notificationFeedback notificationOccurred:UINotificationFeedbackTypeWarning];
     [self apollo_animateEntrance];
     // Fetch the notes now, while the summary is being read, so Release Notes opens with them
     // ready. Only when the sheet is actually shown (not on every daily check); a failed
@@ -981,6 +1000,16 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 
 #pragma mark Actions
 
+- (void)apollo_softTap {
+    [_softImpact impactOccurred];
+    [_softImpact prepare];
+}
+
+- (void)apollo_selectionTick {
+    [_selectionFeedback selectionChanged];
+    [_selectionFeedback prepare];
+}
+
 - (void)apollo_chooserBackTapped {
     ApolloLog(@"[update] sheet: back from the chooser");
     [self apollo_hideChooser];
@@ -988,20 +1017,25 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 
 - (void)apollo_updateTapped {
     ApolloLog(@"[update] sheet: update tapped");
+    if (!_showingChooser && !_transitioning) [self apollo_softTap];
     [self apollo_showChooser];
 }
 
+// Later and the chooser's Cancel.
 - (void)apollo_dismissTapped {
+    [self apollo_selectionTick];
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)apollo_skipTapped {
+    [self apollo_selectionTick];
     if (self.onSkip) self.onSkip();
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 // Fallback when the notes can't be shown in the sheet (no source, failed fetch, dev builds).
 - (void)apollo_githubNotesTapped {
+    [self apollo_softTap];
     if (_info.releaseURL) ApolloPresentWebURLFromViewController(self, _info.releaseURL);
 }
 
@@ -1021,6 +1055,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 - (void)apollo_showNotes {
     if (_showingNotes || _showingChooser || _transitioning) return;
     _showingNotes = YES;
+    [self apollo_softTap];
     ApolloLog(@"[update] sheet: release notes opened");
     [self apollo_setSheetLarge:YES];
     _notesContainer.hidden = NO;
@@ -1067,6 +1102,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 - (void)apollo_sideloaderRowTapped:(UIControl *)row {
+    [self apollo_softTap];
     ApolloUpdateSideloader sideloader = (ApolloUpdateSideloader)row.tag;
     NSURL *url = ApolloUpdateSideloaderHandoffURL(sideloader, _info);
     NSString *name = sideloader == ApolloUpdateSideloaderAltStore ? @"AltStore"
@@ -1076,10 +1112,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 - (void)apollo_downloadTapped {
+    [self apollo_softTap];
     [self apollo_openURL:_info.downloadURL appName:nil];
 }
 
 - (void)apollo_releasePageTapped {
+    [self apollo_softTap];
     [self apollo_openURL:_info.releaseURL appName:nil];
 }
 
