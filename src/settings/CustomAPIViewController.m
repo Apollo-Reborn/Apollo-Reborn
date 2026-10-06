@@ -2783,7 +2783,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             [weakSelf setFeedShortcutVisible:sender.isOn defaultsKey:UDKeyHideModeratorRedditList];
         }];
     return [ApolloSettingsSection sectionWithTitle:@"Visible Shortcuts"
-                                            footer:@"Home is always shown. Choose which other shortcuts appear."
+                                            footer:nil
                                               rows:@[ showPopular, showAll, showModerator ]];
 }
 
