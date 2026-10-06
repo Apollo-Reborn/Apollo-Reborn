@@ -476,6 +476,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     [self setNeedsLayout];
 }
 
+- (void)setArtworkInsets:(UIEdgeInsets)artworkInsets {
+    if (UIEdgeInsetsEqualToEdgeInsets(_artworkInsets, artworkInsets)) return;
+    _artworkInsets = artworkInsets;
+    [self setNeedsLayout];
+}
+
 - (CGFloat)sharpArtworkHeight {
     CGFloat regionHeight = MIN(self.regionHeight, MAX(1.0, self.bounds.size.height));
     return self.usesProfileHero
@@ -485,7 +491,8 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat width = self.bounds.size.width;
+    CGFloat fullWidth = self.bounds.size.width;
+    CGFloat width = MAX(1.0, fullWidth - self.artworkInsets.left - self.artworkInsets.right);
     CGFloat totalHeight = MAX(1.0, self.bounds.size.height);
     CGFloat regionHeight = MIN(self.regionHeight, totalHeight);
     CGFloat extendedHeight = MIN(self.extendedHeight, totalHeight);
@@ -496,12 +503,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     BOOL hideCover = boundary <= 0.0;
     if (self.paneChromeCover.hidden != hideCover) self.paneChromeCover.hidden = hideCover;
     if (![self.paneChromeCover.backgroundColor isEqual:pageColor]) self.paneChromeCover.backgroundColor = pageColor;
-    CGRect coverFrame = CGRectMake(0, 0, width, MIN(totalHeight, boundary));
+    CGRect coverFrame = CGRectMake(0, 0, fullWidth, MIN(totalHeight, boundary));
     if (!CGRectEqualToRect(self.paneChromeCover.frame, coverFrame)) self.paneChromeCover.frame = coverFrame;
 
     CGAffineTransform transform = self.contentContainer.transform;
     self.contentContainer.transform = CGAffineTransformIdentity;
-    self.contentContainer.frame = self.bounds;
+    self.contentContainer.frame = CGRectMake(self.artworkInsets.left, 0, width, totalHeight);
     self.contentContainer.transform = transform;
 
     // Keep ambient artwork when Banner is off: regionHeight == topInset hides

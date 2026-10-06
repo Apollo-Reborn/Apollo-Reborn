@@ -2197,15 +2197,43 @@ static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSStrin
     }
 }
 
+// UIKit keeps the feed's table wide underneath its native sidebar. Cells
+// respect that occlusion, but a custom tableHeaderView must do so explicitly.
+// Keep the table-owned wrapper full width and fit its content to the same
+// visible column, using UIKit's guide rather than a fixed sidebar width.
+static CGRect ApolloSubredditHeaderContentRect(UITableView *tableView, UIViewController *controller, CGFloat width) {
+    CGRect content = CGRectMake(0, 0, width, 0);
+    if (!ApolloPaneLayoutEnabled() || !ApolloPaneSplitControllerFor(controller)) return content;
+    if (@available(iOS 26.0, *)) {
+        UILayoutGuide *guide = controller.tabBarController.contentLayoutGuide;
+        if (tableView.window && guide.owningView.window == tableView.window) {
+            CGRect available = [guide.owningView convertRect:guide.layoutFrame toView:tableView];
+            CGFloat left = MAX(CGRectGetMinX(tableView.bounds), CGRectGetMinX(available));
+            CGFloat right = MIN(CGRectGetMaxX(tableView.bounds), CGRectGetMaxX(available));
+            // A portrait sidebar is a modal overlay, sometimes leaving only
+            // a sliver of the dimmed feed visible. Preserve the underlying
+            // column there instead of squeezing the header into that sliver.
+            // A tiled primary column has at least the pane's 340pt minimum.
+            if (right - left >= MIN(width, 340.0)) {
+                content.origin.x = left - CGRectGetMinX(tableView.bounds);
+                content.size.width = right - left;
+            }
+        }
+    }
+    return content;
+}
+
 static void ApolloSubredditLayoutWrappedHeader(UIView *wrappedHeader,
                                                ApolloSubredditHeaderView *header,
                                                UIView *originalHeader,
                                                CGFloat width) {
+    CGRect content = ApolloSubredditHeaderContentRect(ApolloSubredditFindTableView(header.hostViewController),
+                                                     header.hostViewController, width);
     CGFloat originalHeight = originalHeader ? originalHeader.frame.size.height : 0.0;
-    CGFloat headerHeight = [header preferredHeightForWidth:width];
+    CGFloat headerHeight = [header preferredHeightForWidth:content.size.width];
     wrappedHeader.frame = CGRectMake(0.0, 0.0, width, headerHeight + originalHeight);
-    header.frame = CGRectMake(0.0, 0.0, width, headerHeight);
-    if (originalHeader) originalHeader.frame = CGRectMake(0.0, headerHeight, width, originalHeight);
+    header.frame = CGRectMake(content.origin.x, 0.0, content.size.width, headerHeight);
+    if (originalHeader) originalHeader.frame = CGRectMake(content.origin.x, headerHeight, content.size.width, originalHeight);
 }
 
 static UIView *ApolloSubredditBuildWrapper(ApolloSubredditHeaderView *header,
@@ -2310,13 +2338,16 @@ static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header) {
     CGFloat chromeHeight = tableView.adjustedContentInset.top;
     if (chromeHeight <= 0.0) chromeHeight = viewController.view.safeAreaInsets.top;
     CGFloat width = ApolloSubredditLocalWidth(tableView);
+    CGRect content = ApolloSubredditHeaderContentRect(tableView, viewController, width);
+    ambient.artworkInsets = UIEdgeInsetsMake(0, content.origin.x, 0,
+                                             MAX(0, width - CGRectGetMaxX(content)));
     // Must match apollo_identityForWidth:'s actual banner height (subreddit's
     // own compact constant, respecting the Show Banner toggle) — the shared
     // ApolloIdentityHeaderBannerHeight() default (150pt) is the profile
     // header's full banner and no longer matches this header's real banner
     // frame, which would misalign the melt's sharp/blur region boundary.
     CGFloat regionHeight = chromeHeight + (sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
-    CGFloat extendedHeight = chromeHeight + [header preferredHeightForWidth:width];
+    CGFloat extendedHeight = chromeHeight + [header preferredHeightForWidth:content.size.width];
     static BOOL sLoggedRegionDiagnostics = NO;
     if (!sLoggedRegionDiagnostics) {
         sLoggedRegionDiagnostics = YES;
@@ -2666,8 +2697,18 @@ static BOOL ApolloSubredditNeedsInstall(UIViewController *viewController) {
 
     CGFloat width = tableView.bounds.size.width;
     if (width > 0 && fabs(CGRectGetWidth(wrappedHeader.frame) - width) > 0.5) return YES;
+    CGRect content = ApolloSubredditHeaderContentRect(tableView, viewController, width);
+    if (fabs(header.frame.origin.x - content.origin.x) > 0.5 ||
+        fabs(header.frame.size.width - content.size.width) > 0.5) return YES;
 
-    BOOL hasAmbient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey) != nil;
+    ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
+    BOOL hasAmbient = ambient != nil;
+    // The wrapper can already have refitted its children during its own
+    // layout, while UITableView's separate background still has the previous
+    // sidebar inset. Include that independent artwork geometry in the repair
+    // predicate so closing the sidebar cannot leave a narrow banner strip.
+    if (ambient && (fabs(ambient.artworkInsets.left - content.origin.x) > 0.5 ||
+                    fabs(ambient.artworkInsets.right - MAX(0, width - CGRectGetMaxX(content))) > 0.5)) return YES;
     return hasAmbient != sSubredditHeaderImmersive;
 }
 
