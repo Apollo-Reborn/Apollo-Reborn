@@ -17,6 +17,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)apollo_sceneBecameActive;
 - (void)apollo_resetPreferredPrimaryWidth;
 
+// Sidebar directory shortcut. The existing native root stays in its own pane;
+// its current feed is retained until Posts resumes it or a new feed is chosen.
+- (void)apollo_showSidebarSubreddits;
+- (BOOL)apollo_restoreSidebarPostsIfNeeded;
+
 // `rootNavigationController` is the tab's ORIGINAL ApolloNavigationController,
 // moved verbatim into the primary column. Nothing about it is rebuilt: it keeps
 // its stack, its delegate, its gesture recognizers and its identity, which is

@@ -27,6 +27,7 @@
 #import <objc/runtime.h>
 #import "ApolloPaneLayout.h"
 #import "ApolloPaneSidebar.h"
+#import "ApolloPaneChrome.h"
 #import "ApolloPaneSplitViewController.h"
 #import "../ApolloCommon.h"   // ApolloLog, ApolloMainTabBarController
 #import "../ApolloState.h"    // sIPadPaneLayout
@@ -375,63 +376,24 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     objc_setAssociatedObject(tabBarController, &kApolloPaneInstallStateKey,
                              kApolloPaneInstallStateInstalled, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    // THE FIXED SIDEBAR.
-    //
-    // This one line is what makes the layout read as an iPad app rather than a
-    // stretched iPhone one. `mode = .tabSidebar` replaces the floating tab bar
-    // with UIKit's own sidebar: a single persistent list of destinations that is
-    // identical on every tab, with a system-drawn toggle back to the tab bar and
-    // the platform's own selection, hover, drag and keyboard behavior for free.
-    //
-    // It also removes a whole tier of competing chrome. Before this, the app
-    // showed a floating tab bar AND a per-tab sidebar column AND our own sidebar
-    // toggle button, three navigation surfaces stacked on one screen.
-    //
-    // VERIFIED, and worth recording because the documentation does not say so:
-    // this works with tabs that came from the LEGACY `viewControllers` array.
-    // Apollo never adopted the iOS 18 `tabs`/`UITab` API — it assigns five
-    // navigation controllers the old way — and UIKit still synthesizes the tab
-    // model and renders a full sidebar from them (confirmed on an iPad Pro 13"
-    // simulator: mode resolved to 2, a live UITabBarControllerSidebar, hidden=0,
-    // all five destinations listed with their titles, icons and inbox badge).
-    // Had this required `tabs`, the alternative would have been rebuilding
-    // Apollo's tab model by hand, which is a far larger and more fragile change.
-    //
-    // ApolloPaneLayoutSupported() gates production installation to iPadOS 18+
-    // so the experiment always gets this navigation model. Keep the fallback
-    // for defensive safety if this function is ever invoked directly.
+    // Keep Apollo's tab identities and selection callbacks. Adapt only their
+    // presentation: native sidebar when it fits, native iPad top tabs otherwise.
+    // Only genuinely compact windows use UIKit's compact tab placement.
     if (@available(iOS 18.0, *)) {
-        UITabBarControllerMode originalMode = tabBarController.mode;
         @try {
 #if APOLLO_SIM_BUILD
             ApolloPaneInstallSimCheckpoint(@"sidebar-before", -1);
 #endif
-            tabBarController.mode = UITabBarControllerModeTabSidebar;
+            ApolloPaneUpdateNavigationPresentation(tabBarController);
 #if APOLLO_SIM_BUILD
             ApolloPaneInstallSimCheckpoint(@"sidebar-after", -1);
 #endif
-            ApolloLog(@"[PaneInstall] tab sidebar on: mode=%ld sidebar=%@ hidden=%d",
-                      (long)tabBarController.mode,
-                      tabBarController.sidebar,
-                      tabBarController.sidebar ? tabBarController.sidebar.isHidden : -1);
         } @catch (NSException *exception) {
-            // Sidebar mode is enhancement, not a structural prerequisite. A
-            // failure falls back to the coherent iOS-17-style tab bar while the
-            // already validated panes remain installed and active.
-            @try { tabBarController.mode = originalMode; } @catch (__unused NSException *ignored) {}
-            ApolloLog(@"[PaneInstall] tab sidebar setup failed safely: %@; keeping panes with mode=%ld",
-                      exception, (long)tabBarController.mode);
+            // The pane installation has already committed. A presentation-only
+            // failure must not unwind scene creation or discard its stacks.
+            ApolloLog(@"[PaneInstall] initial navigation presentation deferred: %@", exception.name);
+            ApolloPaneScheduleNavigationPresentation(tabBarController);
         }
-
-        // NOT ATTEMPTED AGAIN: `sidebar.preferredLayout`.
-        // -[UITabBarControllerSidebar _resolvedLayout] maps preferredLayout 0
-        // (automatic) to 1 on iPad, and 1 is the FLOATING glass card. Layout 2
-        // is what non-Solarium macOS and visionOS resolve to, so it looked like
-        // the attached-sidebar switch. Setting it is a no-op here: the sidebar
-        // stayed at (10,32,270,990) with its _UIDuoShadowView. The floating
-        // treatment on iPadOS 26 is not reachable through this property.
-    } else {
-        ApolloLog(@"[PaneInstall] iOS < 18: no tab sidebar; keeping the tab bar beside the panes");
     }
 
     ApolloLog(@"[PaneInstall] installed panes on %lu/%lu tabs (selected=%lu)",
@@ -441,6 +403,17 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
 }
 
 %group ApolloPaneInstallGroup
+
+%hook UITabBarController
+- (void)viewWillAppear:(BOOL)animated {
+    %orig(animated);
+    ApolloPaneScheduleNavigationPresentation(self);
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloPaneScheduleNavigationPresentation(self);
+}
+%end
 
 %hook SceneDelegate
 
@@ -527,6 +500,7 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     }
 
     %init(ApolloPaneInstallGroup, SceneDelegate = sceneDelegateClass);
+    ApolloPaneRegisterViewOptions();
     // Observe UIKit's public scene events instead of assuming Apollo implements
     // every optional delegate method. Enumerate the scene registry so hidden,
     // detached tabs receive cancellation too, without loading their views.

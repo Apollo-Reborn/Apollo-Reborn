@@ -121,6 +121,7 @@ typedef NS_ENUM(NSInteger, ApolloActionMenuPlacement) {
 @end
 
 // Register a spec. Call from a feature's %ctor, after %init.
+__BEGIN_DECLS
 void ApolloActionMenuRegister(ApolloActionMenuSpec *spec);
 
 // Customised ••• menus (Settings → Interface → Action Menus; the model lives in
@@ -184,4 +185,5 @@ NSString *_Nullable ApolloActionMenuDonorLabelText(UITableViewCell *_Nullable do
 // dismiss when the native handler dismisses it, not have that swallowed.
 void ApolloActionMenuInvokeNativeRow(id actionController, NSInteger row);
 
+__END_DECLS
 NS_ASSUME_NONNULL_END

@@ -19,6 +19,7 @@
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
 #import "ApolloThemeRuntime.h"
+#import "ipad/ApolloPaneLayout.h"
 
 // Mirrors the profile-banner pattern in ApolloUserAvatars.xm exactly:
 // - Only hooks `_TtC6Apollo19PostsViewController`.
@@ -72,6 +73,8 @@ static const void *kApolloSubredditSearchAppliedForegroundKey = &kApolloSubreddi
 static const void *kApolloSubredditSearchAppliedPlaceholderKey = &kApolloSubredditSearchAppliedPlaceholderKey;
 static const void *kApolloSubredditSearchFieldKey = &kApolloSubredditSearchFieldKey;
 static const void *kApolloSubredditNavigationOwnerKey = &kApolloSubredditNavigationOwnerKey;
+
+static const void *kApolloSubredditCompactChromeKey = &kApolloSubredditCompactChromeKey;
 
 static Class sPostsViewControllerClass = Nil;
 static BOOL sApolloSubredditRefreshVisibleScheduled = NO;
@@ -179,6 +182,160 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 @property(nonatomic, strong) ApolloSubredditHeaderView *apolloHeaderView;
 @property(nonatomic, strong) UIView *apolloOriginalHeaderView;
 @end
+
+static UIColor *ApolloSubredditPageSurface(UIViewController *viewController, UIColor *fallback);
+
+// The large identity header hands off to this small title, keeping Apollo's
+// real Jump Bar (including its search and community navigation) in the title.
+@interface ApolloSubredditCompactAvatarView : UIImageView
+@end
+@implementation ApolloSubredditCompactAvatarView
+- (CGSize)intrinsicContentSize { return CGSizeMake(30, 30); }
+@end
+
+@interface ApolloSubredditCompactChrome : UIView
+@property(nonatomic, strong) UIControl *jumpBar;
+@property(nonatomic, strong) ApolloSubredditCompactAvatarView *avatar;
+@property(nonatomic, strong) UIView *backdrop;
+@property(nonatomic, strong) UIImageView *artwork;
+@property(nonatomic, strong) UIView *scrim;
+@property(nonatomic, weak) UIViewController *controller;
+@property(nonatomic) BOOL originalAutoresizing;
+@property(nonatomic) BOOL searching;
+@end
+
+@implementation ApolloSubredditCompactChrome
+- (instancetype)initWithJumpBar:(UIControl *)jumpBar {
+    if ((self = [super initWithFrame:CGRectMake(0, 0, 130, 44)])) {
+        _jumpBar = jumpBar;
+        _originalAutoresizing = jumpBar.translatesAutoresizingMaskIntoConstraints;
+        jumpBar.translatesAutoresizingMaskIntoConstraints = YES;
+        [self addSubview:jumpBar];
+        _avatar = [ApolloSubredditCompactAvatarView new];
+        _avatar.contentMode = UIViewContentModeScaleAspectFit;
+        _avatar.clipsToBounds = YES;
+        _avatar.layer.cornerRadius = 15;
+        _avatar.isAccessibilityElement = NO;
+        [self addSubview:_avatar];
+        _backdrop = [UIView new];
+        _backdrop.userInteractionEnabled = NO;
+        _backdrop.clipsToBounds = YES;
+        _artwork = [UIImageView new];
+        _artwork.contentMode = UIViewContentModeScaleAspectFill;
+        [_backdrop addSubview:_artwork];
+        _scrim = [UIView new];
+        [_backdrop addSubview:_scrim];
+        self.accessibilityIdentifier = @"ApolloSubredditCompactHeader";
+    }
+    return self;
+}
+- (CGSize)intrinsicContentSize {
+    if (self.searching) return CGSizeMake(300, 44);
+    CGFloat textWidth = 0;
+    for (UIView *view in self.jumpBar.subviews) {
+        if ([view isKindOfClass:UILabel.class] && !view.hidden) {
+            textWidth = MAX(textWidth, view.intrinsicContentSize.width);
+        }
+    }
+    return CGSizeMake(MAX(44, textWidth + 18) + (self.avatar.hidden ? 0 : 36), 44);
+}
+- (CGSize)sizeThatFits:(CGSize)size { return self.intrinsicContentSize; }
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat leading = self.avatar.hidden ? 0 : MIN(36, self.bounds.size.width * 0.4);
+    self.avatar.frame = CGRectMake(0, (self.bounds.size.height - 30) / 2, 30, 30);
+    self.jumpBar.frame = CGRectMake(leading, 0, MAX(0, self.bounds.size.width - leading), self.bounds.size.height);
+}
+@end
+
+static void ApolloSubredditUpdateCompactChrome(UIViewController *controller, UIScrollView *scrollView) {
+    ApolloSubredditHeaderView *header = objc_getAssociatedObject(controller, kApolloSubredditHeaderViewKey);
+    ApolloSubredditCompactChrome *chrome = objc_getAssociatedObject(controller, kApolloSubredditCompactChromeKey);
+    UINavigationController *navigation = controller.navigationController;
+    UINavigationBar *bar = navigation.navigationBar;
+    BOOL eligible = ApolloPaneLayoutEnabled() && ApolloPaneSplitControllerFor(controller) &&
+        sSubredditHeaderImmersive && header && IsLiquidGlass();
+    if (!eligible || navigation.topViewController != controller || !bar.window) {
+        chrome.backdrop.hidden = YES;
+        return;
+    }
+    UIView *title = controller.navigationItem.titleView;
+    if (!chrome && [NSStringFromClass(title.class) isEqualToString:@"Apollo.JumpBar"]) {
+        chrome = [[ApolloSubredditCompactChrome alloc] initWithJumpBar:(id)title];
+        chrome.controller = controller;
+        objc_setAssociatedObject(controller, kApolloSubredditCompactChromeKey, chrome, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        controller.navigationItem.titleView = chrome;
+        ApolloLog(@"[SubredditHeaders] installed compact iPad identity chrome");
+    }
+    if (!chrome || controller.navigationItem.titleView != chrome) return;
+    // UIKit retires the outgoing custom title after installing its replacement,
+    // removing the old Jump Bar even though we retained it in our wrapper.
+    // Reattach after that handoff; keep Apollo's real control and delegate.
+    if (chrome.jumpBar.superview != chrome) {
+        [chrome insertSubview:chrome.jumpBar atIndex:0];
+        [chrome invalidateIntrinsicContentSize];
+        [chrome setNeedsLayout];
+        ApolloLog(@"[SubredditHeaders] reattached native Jump Bar after compact-title handoff");
+    }
+    // A real opaque surface fills the entire chrome above the feed, including
+    // the status/floating-tab reservation. Posts never show through that gap.
+    UIView *host = bar.superview;
+    if (chrome.backdrop.superview != host) [host insertSubview:chrome.backdrop belowSubview:bar];
+    CGRect row = [bar convertRect:bar.bounds toView:host];
+    CGFloat leading = row.origin.x + bar.safeAreaInsets.left;
+    CGFloat width = MAX(0, row.size.width - bar.safeAreaInsets.left - bar.safeAreaInsets.right);
+    CGRect frame = CGRectMake(leading, 0, width, CGRectGetMaxY(row));
+    if (!CGRectEqualToRect(chrome.backdrop.frame, frame)) {
+        chrome.backdrop.frame = frame;
+        chrome.artwork.frame = chrome.backdrop.bounds;
+        chrome.scrim.frame = chrome.backdrop.bounds;
+    }
+    chrome.backdrop.hidden = NO;
+    UIColor *page = ApolloSubredditPageSurface(controller, nil);
+    chrome.backdrop.backgroundColor = page;
+    chrome.scrim.backgroundColor = page;
+    chrome.scrim.alpha = 0.72;
+    chrome.artwork.image = sSubredditShowBanner ? header.bannerImageView.image : nil;
+    chrome.avatar.image = header.iconImageView.image;
+    BOOL searching = controller.navigationItem.searchController.active;
+    for (UIView *child in chrome.jumpBar.subviews) {
+        if ([child isKindOfClass:UITextField.class] && !child.hidden && child.alpha > 0.01) searching = YES;
+    }
+    if (chrome.searching != searching) {
+        chrome.searching = searching;
+        [chrome invalidateIntrinsicContentSize];
+        [chrome setNeedsLayout];
+    }
+    NSString *name = header.displayNameLabel.text.length ? header.displayNameLabel.text : header.subredditName;
+    if (![chrome.jumpBar.accessibilityLabel isEqualToString:name]) chrome.jumpBar.accessibilityLabel = name;
+    BOOL hideAvatar = header.iconImageView.hidden || searching;
+    if (chrome.avatar.hidden != hideAvatar) {
+        chrome.avatar.hidden = hideAvatar;
+        [chrome invalidateIntrinsicContentSize];
+        [chrome setNeedsLayout];
+    }
+    // Collapse as the large identity name reaches the bottom of the toolbar,
+    // not at a fixed offset: this also follows large text and custom layouts.
+    CGRect identity = [header.displayNameLabel convertRect:header.displayNameLabel.bounds toView:host];
+    CGFloat progress = MIN(1, MAX(0, (CGRectGetMaxY(row) + 44 - CGRectGetMaxY(identity)) / 44));
+    if (searching) progress = 1;
+    chrome.alpha = MAX(ApolloSubredditFadedBannerAlpha, progress);
+    chrome.userInteractionEnabled = progress > 0.1;
+    chrome.accessibilityElementsHidden = progress < 0.5;
+    chrome.artwork.alpha = progress;
+}
+
+static void ApolloSubredditRemoveCompactChrome(UIViewController *controller) {
+    ApolloSubredditCompactChrome *chrome = objc_getAssociatedObject(controller, kApolloSubredditCompactChromeKey);
+    if (!chrome) return;
+    [chrome.backdrop removeFromSuperview];
+    if (controller.navigationItem.titleView == chrome) {
+        [chrome.jumpBar removeFromSuperview];
+        chrome.jumpBar.translatesAutoresizingMaskIntoConstraints = chrome.originalAutoresizing;
+        controller.navigationItem.titleView = chrome.jumpBar;
+    }
+    objc_setAssociatedObject(controller, kApolloSubredditCompactChromeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 static void ApolloSubredditLoadImages(ApolloSubredditHeaderView *header, NSString *subredditName, BOOL forceRefresh);
 static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *header, NSString *subredditName,
@@ -2192,6 +2349,7 @@ static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header) {
     // Banner art may arrive after the search chrome was first styled; restyle
     // so the field's text contrast can react to the banner's brightness.
     ApolloSubredditStyleSearchBar(viewController);
+    ApolloSubredditUpdateCompactChrome(viewController, tableView);
 }
 
 static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITableView *tableView,
@@ -2231,6 +2389,7 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
 
 static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView) {
     if (!viewController || !tableView) return nil;
+    ApolloSubredditRemoveCompactChrome(viewController);
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
     UIView *originalBackgroundView = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundViewKey);
     UIColor *savedTableBackground = objc_getAssociatedObject(viewController, kApolloSubredditOriginalTableBackgroundKey);
@@ -2260,6 +2419,7 @@ static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, U
 static void ApolloSubredditUpdateAmbientScroll(UIViewController *viewController, UIScrollView *scrollView) {
     if (![scrollView isKindOfClass:[UIScrollView class]]) return;
     ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(viewController, kApolloSubredditAmbientViewKey);
+    ApolloSubredditUpdateCompactChrome(viewController, scrollView);
     if (!ambient) return;
     CGFloat restingOffset = -scrollView.adjustedContentInset.top;
     ambient.contentTranslation = MAX(0.0, scrollView.contentOffset.y - restingOffset);
@@ -2416,6 +2576,7 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
     ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
     UIView *wrappedHeader = objc_getAssociatedObject(viewController, kApolloSubredditWrappedHeaderKey);
     UIView *originalHeader = objc_getAssociatedObject(viewController, kApolloSubredditOriginalHeaderKey);
+    ApolloSubredditRemoveCompactChrome(viewController);
     UIColor *restoredPageColor = ApolloSubredditRemoveAmbient(viewController, tableView);
     ApolloSubredditRestoreSearchBar(viewController);
     UINavigationItem *navigationItem = viewController.navigationItem;
@@ -3129,6 +3290,12 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
     }
     %orig(animated);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    ApolloSubredditCompactChrome *chrome = objc_getAssociatedObject(self, kApolloSubredditCompactChromeKey);
+    chrome.backdrop.hidden = YES;
+    %orig(animated);
 }
 
 - (void)viewDidAppear:(BOOL)animated {

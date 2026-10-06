@@ -53,7 +53,7 @@ static NSArray<UIViewController *> *ApolloPaneActualTabChildren(UITabBarControll
     sApolloPaneNativeEntryDepth = 0;
     NSArray<UIViewController *> *children = nil;
     @try {
-        children = tabBarController.viewControllers;
+        children = ApolloPaneSidebarRootControllers(tabBarController) ?: tabBarController.viewControllers;
     } @finally {
         sApolloPaneNativeEntryDepth = savedDepth;
     }
@@ -92,6 +92,7 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 - (NSArray<UIViewController *> *)viewControllers {
     NSArray<UIViewController *> *actual = %orig;
     if (!ApolloPaneNativeEntryCompatibilityActive(self)) return actual;
+    actual = ApolloPaneSidebarRootControllers(self) ?: actual;
 
     NSMutableArray<UIViewController *> *compatible =
         [NSMutableArray arrayWithCapacity:actual.count];
@@ -108,12 +109,18 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
     return compatible;
 }
 
+- (NSUInteger)selectedIndex {
+    if (!ApolloPaneNativeEntryCompatibilityActive(self)) return %orig;
+    NSUInteger index = ApolloPaneSidebarSelectedIndex(self);
+    return index != NSNotFound ? index : %orig;
+}
+
 - (void)setSelectedIndex:(NSUInteger)selectedIndex {
     if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
     @try {
-        %orig(selectedIndex);
+        if (!ApolloPaneSidebarSelectIndex(self, selectedIndex)) %orig(selectedIndex);
     } @finally {
         sApolloPaneNativeEntryDepth = savedDepth;
     }
@@ -122,10 +129,12 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 - (void)setSelectedViewController:(UIViewController *)selectedViewController {
     if (!ApolloPaneNativeEntryCompatibilityActive(self)) { %orig; return; }
     UIViewController *actual = ApolloPaneActualChildForSyntheticChild(self, selectedViewController);
+    NSArray *roots = ApolloPaneSidebarRootControllers(self);
+    NSUInteger rootIndex = [roots indexOfObjectIdenticalTo:actual];
     NSUInteger savedDepth = sApolloPaneNativeEntryDepth;
     sApolloPaneNativeEntryDepth = 0;
     @try {
-        %orig(actual);
+        if (!roots || rootIndex == NSNotFound || !ApolloPaneSidebarSelectIndex(self, rootIndex)) %orig(actual);
     } @finally {
         sApolloPaneNativeEntryDepth = savedDepth;
     }
@@ -164,6 +173,13 @@ static UIViewController *ApolloPaneActualChildForSyntheticChild(UITabBarControll
 
 - (BOOL)tabBarController:(UITabBarController *)tabBarController
  shouldSelectViewController:(UIViewController *)viewController {
+    if (ApolloPaneLayoutActive() &&
+        [viewController isKindOfClass:ApolloPaneSplitViewController.class] &&
+        [(ApolloPaneSplitViewController *)viewController apollo_restoreSidebarPostsIfNeeded]) {
+        // This tap means resume the feed we suspended for Subreddits. Do not
+        // also run Apollo's same-tab scroll-to-top / pop-to-root action.
+        return YES;
+    }
     // Apollo dynamically casts this candidate to ApolloNavigationController to
     // implement native same-tab behavior (scroll to top, then Back when already
     // at top). Pane children are split controllers, so without this scoped

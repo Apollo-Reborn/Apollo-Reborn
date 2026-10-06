@@ -420,6 +420,7 @@ static char kApolloPaneScenePreferredWidthKey;
 
 @interface ApolloPaneSplitViewController () <UISplitViewControllerDelegate, UIGestureRecognizerDelegate> {
     BOOL _apollo_loggedResolvedLayout;
+    NSArray<UIViewController *> *_apollo_sidebarPostsStack;
     ApolloPaneDividerControl *_apollo_grabber;
     ApolloPaneGeometryScheduler *_apollo_geometryScheduler;
     BOOL _apollo_hasGrabberGeometry;
@@ -739,6 +740,7 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     if (!self.viewIfLoaded.window) [self apollo_sceneBecameInactive];
 }
 - (void)apollo_sceneDidDisconnect {
+    _apollo_sidebarPostsStack = nil;
     ApolloPaneRestoreFocusPolicy(self);
     ApolloPaneTraceCancel(self);
     [_apollo_geometryScheduler cancel];
@@ -1054,8 +1056,68 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     }
 }
 
+// Hopper: sub_100087244 creates RedditListViewController as tab zero's
+// root and appends the restored feed. Its Swift-only initializer is not an
+// ObjC factory; reuse the fully initialized native directory rather than
+// constructing another instance through an inherited UIKit initializer.
+- (void)apollo_showSidebarSubreddits {
+    if (self.apollo_tabIndex != 0) return;
+    __weak ApolloPaneSplitViewController *weakSelf = self;
+    if ([self apollo_deferCrossColumnNavigationIfNeeded:^{
+            [weakSelf apollo_showSidebarSubreddits];
+        } sourceViewController:self.apollo_primaryContextViewController
+                            reason:@"sidebar subreddits"]) return;
+    NSArray<UIViewController *> *stack = self.apollo_logicalPrimaryControllers;
+    Class directoryClass = objc_getClass("_TtC6Apollo24RedditListViewController");
+    ApolloLog(@"[PaneSidebar] directory request index=%lu depth=%lu root=%@", (unsigned long)self.apollo_tabIndex, (unsigned long)stack.count, NSStringFromClass(stack.firstObject.class));
+    if (!directoryClass || ![stack.firstObject isKindOfClass:directoryClass]) return;
+    if (stack.count <= 1) return;
+    [self apollo_performCrossColumnNavigationTransaction:^{
+        // Preserve the feed instances (including their scroll positions), not
+        // detail controllers or cross-account restoration state. Choosing a
+        // different feed replaces this suspended branch through the ordinary
+        // navigation hooks below.
+        NSArray<UIViewController *> *posts = [stack copy];
+        [self apollo_clearDetailColumn];
+        [self apollo_setPrimaryViewControllers:@[stack.firstObject]];
+        if (self.apollo_primaryNav.viewControllers.count == 1 &&
+            self.apollo_primaryNav.topViewController == stack.firstObject) {
+            self->_apollo_sidebarPostsStack = posts;
+            ApolloLog(@"[PaneSidebar] suspended Posts stack depth=%lu", (unsigned long)posts.count);
+        }
+        if (!self.isCollapsed) [self showColumn:UISplitViewControllerColumnPrimary];
+    }];
+}
+
+- (BOOL)apollo_restoreSidebarPostsIfNeeded {
+    if (!_apollo_sidebarPostsStack) return NO;
+    NSArray<UIViewController *> *live = self.apollo_logicalPrimaryControllers;
+    if (live.count != 1 || live.firstObject != _apollo_sidebarPostsStack.firstObject) {
+        _apollo_sidebarPostsStack = nil;
+        return NO;
+    }
+    __weak ApolloPaneSplitViewController *weakSelf = self;
+    if ([self apollo_deferCrossColumnNavigationIfNeeded:^{
+            [weakSelf apollo_restoreSidebarPostsIfNeeded];
+        } sourceViewController:live.firstObject reason:@"sidebar resume Posts"]) return YES;
+    [self apollo_performCrossColumnNavigationTransaction:^{
+        NSArray<UIViewController *> *posts = self->_apollo_sidebarPostsStack;
+        self->_apollo_sidebarPostsStack = nil;
+        [self apollo_setPrimaryViewControllers:posts];
+        if (!self.isCollapsed) [self showColumn:UISplitViewControllerColumnPrimary];
+        ApolloLog(@"[PaneSidebar] resumed Posts stack depth=%lu", (unsigned long)posts.count);
+    }];
+    return YES;
+}
+
 - (void)apollo_primaryNavigationStackDidMutateExternally {
     if (_apollo_internalPrimaryStackMutationDepth > 0) return;
+    // A real selection/deep link owns the new browsing branch. UIKit's
+    // authorized topology-only normalizations return before reaching here.
+    if (self.apollo_logicalPrimaryControllers.count > 1) {
+        _apollo_sidebarPostsStack = nil;
+        ApolloPaneSidebarSelectPosts(self.tabBarController);
+    }
     ++_apollo_primaryNavigationMutationGeneration;
     if (!_apollo_compactPrimaryRestoreInProgress) return;
 
@@ -1117,6 +1179,10 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
 - (void)apollo_primaryNavigationStackWasReplacedExternally:
         (NSArray<UIViewController *> *)viewControllers {
     if (_apollo_internalPrimaryStackMutationDepth > 0) return;
+    if (self.apollo_logicalPrimaryControllers.count > 1) {
+        _apollo_sidebarPostsStack = nil;
+        ApolloPaneSidebarSelectPosts(self.tabBarController);
+    }
     BOOL hasUIKitTransitionProvenance = _apollo_pendingPrimaryPopToken != 0 ||
         _apollo_performingCompactShowColumn || _apollo_topologyMutationInProgress ||
         self.transitionCoordinator ||
@@ -1633,7 +1699,10 @@ static void ApolloPanePersistPrimaryWidth(CGFloat width, UIWindowScene *scene) {
     // had already taken off screen. Setting it here matches what every other
     // controller in the app already does. Confirmed against the stock hierarchy:
     // with the pane layout off, Apollo's tab child is the full 1032pt tall.
-    self.edgesForExtendedLayout = UIRectEdgeAll;
+    // Extend through the bottom to avoid the legacy dead strip, but reserve
+    // UIKit's top tab band. Extending through Top lets navigation bars overlap
+    // the floating tab strip after sidebar/portrait transitions.
+    self.edgesForExtendedLayout = UIRectEdgeLeft | UIRectEdgeRight | UIRectEdgeBottom;
     self.extendedLayoutIncludesOpaqueBars = YES;
 
     // The list column carries the bounds that matter: Apollo's post cells are
@@ -2295,6 +2364,8 @@ apply:
     // the pane itself; Apollo continues to repaint the hosted app controllers.
     [self apollo_applyGroundTheme];
     [self apollo_applyGrabberTheme];
+    ApolloPaneInstallChromeForController(self.apollo_primaryNav.topViewController);
+    ApolloPaneInstallChromeForController(self.apollo_detailNav.topViewController);
     for (UIViewController *controller in self.apollo_detailNav.viewControllers) {
         if ([controller isKindOfClass:[ApolloPaneDetailPlaceholderViewController class]]) {
             [(ApolloPaneDetailPlaceholderViewController *)controller apollo_applyTheme];
@@ -3166,6 +3237,7 @@ static NSString *ApolloPaneSimColorDescription(UIColor *color, UITraitCollection
 }
 
 - (void)apollo_accountContextDidChange {
+    _apollo_sidebarPostsStack = nil;
     if (!_apollo_contextTrackingReady || _apollo_clearingContext) return;
     // Home, Inbox and Profile content is tied to the active Reddit account.
     // Settings is not, and Search can remain a valid public query.

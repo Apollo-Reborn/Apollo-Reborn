@@ -5,6 +5,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "../ApolloThemeRuntime.h"
+#import "../ApolloActionMenu.h"
+#import "../ApolloNativeActionMenus.h"
 
 static char kComfortableFeed;
 static NSString *const kPaneDensityPreference = @"ApolloPaneComfortableFeed";
@@ -50,11 +52,11 @@ void ApolloPaneSetComfortableFeed(UIViewController *controller, BOOL comfortable
     }
 }
 
-static char kPaneLayoutButton;
-static char kPaneMenuConfiguration;
 static char kPaneDensityPrepared;
-static char kPaneFindButton;
 static char kPaneOriginalExtendedEdges;
+static char kPaneHeaderColor;
+static char kPaneMenuOwner;
+static __weak UIViewController *sPaneMenuOwner;
 
 void ApolloPaneApplySearchPlacement(UIViewController *controller) {
     if (!controller.navigationItem.searchController) return;
@@ -85,6 +87,24 @@ void ApolloPaneInstallChromeForController(UIViewController *controller) {
     ApolloPaneSplitViewController *pane = (id)ApolloPaneSplitControllerFor(controller);
     if (!pane || !controller.isViewLoaded) return;
     ApolloPaneApplySearchPlacement(controller);
+    // The two columns share a quiet, theme-colored header plane. Let content
+    // scroll beneath that plane, not visibly behind one half of the controls.
+    // Item appearances preserve Apollo's title/button styling and do not mutate
+    // a navigation bar from inside its layout pass.
+    UIColor *color = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
+    UIColor *resolved = [color resolvedColorWithTraitCollection:controller.traitCollection];
+    if (![objc_getAssociatedObject(controller, &kPaneHeaderColor) isEqual:resolved]) {
+        UINavigationBarAppearance *appearance = [controller.navigationController.navigationBar.standardAppearance copy];
+        appearance.backgroundEffect = nil;
+        appearance.backgroundImage = nil;
+        appearance.backgroundColor = color;
+        appearance.shadowColor = UIColor.separatorColor;
+        controller.navigationItem.standardAppearance = appearance;
+        controller.navigationItem.scrollEdgeAppearance = appearance;
+        controller.navigationItem.compactAppearance = appearance;
+        if (@available(iOS 15.0, *)) controller.navigationItem.compactScrollEdgeAppearance = appearance;
+        objc_setAssociatedObject(controller, &kPaneHeaderColor, resolved, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     UINavigationController *primary = [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary];
     if (controller.navigationController != primary) {
         Class comments = objc_getClass("_TtC6Apollo22CommentsViewController");
@@ -102,15 +122,11 @@ void ApolloPaneInstallChromeForController(UIViewController *controller) {
                 objc_setAssociatedObject(controller, &kPaneOriginalExtendedEdges, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
         }
-        if (comments && [controller isKindOfClass:comments] &&
-            ApolloPanePrepareCommentsFind(controller) && !objc_getAssociatedObject(controller, &kPaneFindButton)) {
-            __weak UIViewController *weakController = controller;
-            UIAction *find = [UIAction actionWithTitle:@"Find in comments" image:[UIImage systemImageNamed:@"magnifyingglass"]
-                identifier:nil handler:^(__unused UIAction *action) { ApolloPanePresentCommentsFind(weakController); }];
-            UIBarButtonItem *button = [[UIBarButtonItem alloc] initWithPrimaryAction:find];
-            button.accessibilityIdentifier = @"ApolloPaneFindComments";
-            objc_setAssociatedObject(controller, &kPaneFindButton, button, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            controller.navigationItem.rightBarButtonItems = [(controller.navigationItem.rightBarButtonItems ?: @[]) arrayByAddingObject:button];
+        // Native search owns the one visible Find affordance. The pane's
+        // keyboard command still enters through ApolloPanePresentCommentsFind.
+        if (comments && [controller isKindOfClass:comments]) {
+            ApolloPanePrepareCommentsFind(controller);
+            ApolloPaneApplySearchPlacement(controller);
         }
         return;
     }
@@ -120,59 +136,150 @@ void ApolloPaneInstallChromeForController(UIViewController *controller) {
         objc_setAssociatedObject(controller, &kPaneDensityPrepared, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloPaneReloadNativeFeed(controller);
     }
-    UIBarButtonItem *item = objc_getAssociatedObject(controller, &kPaneLayoutButton);
-    if (!item) {
-        item = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"rectangle.split.2x1"]
-            style:UIBarButtonItemStylePlain target:nil action:nil];
-        item.accessibilityLabel = @"Pane layout";
-        item.accessibilityIdentifier = @"ApolloPaneLayoutMenu";
-        objc_setAssociatedObject(controller, &kPaneLayoutButton, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    // Menus contain stable actions, not per-frame state. Rebuild only when
-    // their role/density/window action changes; still restore our item if a
-    // native navigation update replaced the bar's array.
-    BOOL canOpenWindow = ApolloPaneCanOpenDetailInNewWindow(pane);
-    NSUInteger flags = (feed ? 1 : 0) | (ApolloPanePrefersCompactFeed(controller) ? 2 : 0) | (canOpenWindow ? 4 : 0);
-    NSNumber *previous = objc_getAssociatedObject(controller, &kPaneMenuConfiguration);
-    if (previous && previous.unsignedIntegerValue == flags) {
-        NSArray *items = controller.navigationItem.rightBarButtonItems ?: @[];
-        if (![items containsObject:item]) controller.navigationItem.rightBarButtonItems = [items arrayByAddingObject:item];
-        return;
-    }
-    objc_setAssociatedObject(controller, &kPaneMenuConfiguration, @(flags), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+UIViewController *ApolloPaneSetMenuOwner(UIViewController *controller) {
+    UIViewController *previous = sPaneMenuOwner;
+    sPaneMenuOwner = ApolloPaneSplitControllerFor(controller) ? controller : nil;
+    return previous;
+}
+
+void ApolloPaneCaptureMenuOwner(id actionController) {
+    if (!sPaneMenuOwner || ![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
+    if (objc_getAssociatedObject(actionController, &kPaneMenuOwner)) return;
+    NSHashTable *owner = [NSHashTable weakObjectsHashTable];
+    [owner addObject:sPaneMenuOwner];
+    objc_setAssociatedObject(actionController, &kPaneMenuOwner, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static UIViewController *ApolloPaneMenuOwner(id actionController) {
+    return [objc_getAssociatedObject(actionController, &kPaneMenuOwner) anyObject];
+}
+
+@interface ApolloPaneViewOption : NSObject
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *symbol;
+@property (nonatomic) BOOL selected;
+@property (nonatomic, copy) dispatch_block_t perform;
+@end
+@implementation ApolloPaneViewOption
+@end
+
+static ApolloPaneViewOption *ApolloPaneOption(NSString *title, NSString *symbol, BOOL selected,
+                                               dispatch_block_t perform) {
+    ApolloPaneViewOption *option = [ApolloPaneViewOption new];
+    option.title = title;
+    option.symbol = symbol;
+    option.selected = selected;
+    option.perform = perform;
+    return option;
+}
+
+// One action model drives both glass submenus and classic action sheets.
+static NSArray<ApolloPaneViewOption *> *ApolloPaneViewOptions(UIViewController *controller) {
+    ApolloPaneSplitViewController *pane = (id)ApolloPaneSplitControllerFor(controller);
+    if (!pane) return nil;
     __weak UIViewController *weakController = controller;
     __weak ApolloPaneSplitViewController *weakPane = pane;
-    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
-    if (feed) {
+    NSMutableArray<ApolloPaneViewOption *> *actions = [NSMutableArray array];
+    if ([controller isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")]) {
         BOOL compact = ApolloPanePrefersCompactFeed(controller);
-        UIAction *compactAction = [UIAction actionWithTitle:@"Compact list" image:[UIImage systemImageNamed:@"list.bullet"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                UIViewController *owner = weakController;
-                if (!owner) return;
-                ApolloPaneSetComfortableFeed(owner, NO);
-                ApolloPaneReloadNativeFeed(owner);
-                ApolloPaneInstallChromeForController(owner);
-            }];
-        compactAction.state = compact ? UIMenuElementStateOn : UIMenuElementStateOff;
-        UIAction *comfortableAction = [UIAction actionWithTitle:@"Comfortable list" image:[UIImage systemImageNamed:@"rectangle.grid.1x2"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                UIViewController *owner = weakController;
-                if (!owner) return;
-                ApolloPaneSetComfortableFeed(owner, YES);
-                ApolloPaneReloadNativeFeed(owner);
-                ApolloPaneInstallChromeForController(owner);
-            }];
-        comfortableAction.state = compact ? UIMenuElementStateOff : UIMenuElementStateOn;
-        [actions addObjectsFromArray:@[compactAction, comfortableAction]];
+        for (NSNumber *comfortable in @[@NO, @YES]) {
+            [actions addObject:ApolloPaneOption(comfortable.boolValue ? @"Comfortable list" : @"Compact list",
+                comfortable.boolValue ? @"rectangle.grid.1x2" : @"list.bullet", comfortable.boolValue != compact, ^{
+                    UIViewController *owner = weakController;
+                    if (!owner.viewIfLoaded.window) return;
+                    ApolloPaneSetComfortableFeed(owner, comfortable.boolValue);
+                    ApolloPaneReloadNativeFeed(owner);
+                    ApolloPaneInstallChromeForController(owner);
+                })];
+        }
     }
-    [actions addObject:[UIAction actionWithTitle:@"Reset column width" image:[UIImage systemImageNamed:@"arrow.counterclockwise"]
-        identifier:nil handler:^(__unused UIAction *action) { [weakPane apollo_resetPreferredPrimaryWidth]; }]];
-    if (canOpenWindow) {
-        [actions addObject:[UIAction actionWithTitle:@"Open detail in new window"
-            image:[UIImage systemImageNamed:@"plus.rectangle.on.rectangle"] identifier:nil
-            handler:^(__unused UIAction *action) { ApolloPaneOpenDetailInNewWindow(weakPane); }]];
+    if (!pane.isCollapsed) {
+        [actions addObject:ApolloPaneOption(@"Reset column width", @"arrow.counterclockwise", NO,
+            ^{ [weakPane apollo_resetPreferredPrimaryWidth]; })];
     }
-    item.menu = [UIMenu menuWithTitle:@"Pane layout" children:actions];
-    NSArray *existing = controller.navigationItem.rightBarButtonItems ?: @[];
-    if (![existing containsObject:item]) controller.navigationItem.rightBarButtonItems = [existing arrayByAddingObject:item];
+    if (ApolloPaneCanShowNavigationSidebar(controller.tabBarController)) {
+        __weak UITabBarController *weakTabs = controller.tabBarController;
+        [actions addObject:ApolloPaneOption(@"Show navigation sidebar", @"sidebar.leading", NO,
+            ^{ ApolloPaneShowNavigationSidebar(weakTabs); })];
+    }
+    return actions;
+}
+
+void ApolloPaneRegisterViewOptions(void) {
+    ApolloActionMenuSpec *spec = [ApolloActionMenuSpec new];
+    spec.identifier = @"IPadViewOptions";
+    spec.matches = ^BOOL(id sheet, __unused NSString *title) {
+        UIViewController *owner = ApolloPaneMenuOwner(sheet);
+        if ([owner isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]) {
+            return ApolloPaneCanOpenDetailInNewWindow(ApolloPaneSplitControllerFor(owner));
+        }
+        return [owner isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")];
+    };
+    spec.title = ^NSString *(id sheet, __unused UITableViewCell *donor) {
+        UIViewController *owner = ApolloPaneMenuOwner(sheet);
+        return [owner isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]
+            ? @"Open in new window" : @"View options";
+    };
+    spec.image = ^UIImage *(id sheet, __unused UITableViewCell *donor) {
+        BOOL detail = [ApolloPaneMenuOwner(sheet) isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")];
+        return ApolloActionMenuSymbolIcon(detail ? @"plus.rectangle.on.rectangle" : @"slider.horizontal.3");
+    };
+    spec.perform = ^(id sheet) {
+        UIViewController *owner = ApolloPaneMenuOwner(sheet);
+        ApolloPaneSplitViewController *pane = (id)ApolloPaneSplitControllerFor(owner);
+        if (!owner.viewIfLoaded.window || !pane) return;
+        if ([owner isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]) {
+            if (ApolloPaneCanOpenDetailInNewWindow(pane)) ApolloPaneOpenDetailInNewWindow(pane);
+            return;
+        }
+        // Classic Apollo sheets get the same actions in an anchored action
+        // sheet after their dismissal; glass menus use the submenu below.
+        NSArray<ApolloPaneViewOption *> *options = ApolloPaneViewOptions(owner);
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"View options" message:nil
+            preferredStyle:UIAlertControllerStyleActionSheet];
+        for (ApolloPaneViewOption *option in options) {
+            NSString *title = option.selected ? [option.title stringByAppendingString:@" (Current)"] : option.title;
+            [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *selected) {
+                    option.perform();
+                }]];
+        }
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        alert.popoverPresentationController.sourceView = owner.navigationController.navigationBar;
+        alert.popoverPresentationController.sourceRect = owner.navigationController.navigationBar.bounds;
+        [owner presentViewController:alert animated:YES completion:nil];
+    };
+    spec.buildElement = ^(id sheet, NSMutableArray<UIMenuElement *> *children) {
+        UIViewController *owner = ApolloPaneMenuOwner(sheet);
+        if ([owner isKindOfClass:objc_getClass("_TtC6Apollo22CommentsViewController")]) {
+            UISplitViewController *pane = ApolloPaneSplitControllerFor(owner);
+            if (!ApolloPaneCanOpenDetailInNewWindow(pane)) return;
+            __weak UISplitViewController *weakPane = pane;
+            __weak id weakSheet = sheet;
+            [children addObject:[UIAction actionWithTitle:@"Open in new window"
+                image:ApolloActionMenuSymbolIcon(@"plus.rectangle.on.rectangle") identifier:nil
+                handler:^(__unused UIAction *action) {
+                    dispatch_block_t open = ^{ ApolloPaneOpenDetailInNewWindow(weakPane); };
+                    if (!ApolloNativeActionMenuPerformAfterDismissal(weakSheet, open)) open();
+                }]];
+        } else {
+            NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
+            __weak id weakSheet = sheet;
+            for (ApolloPaneViewOption *option in ApolloPaneViewOptions(owner)) {
+                UIAction *action = [UIAction actionWithTitle:option.title image:ApolloActionMenuSymbolIcon(option.symbol)
+                    identifier:nil handler:^(__unused UIAction *selected) {
+                        // Changing density/geometry must wait for the menu to
+                        // release its source navigation surface.
+                        if (!ApolloNativeActionMenuPerformAfterDismissal(weakSheet, option.perform)) option.perform();
+                    }];
+                action.state = option.selected ? UIMenuElementStateOn : UIMenuElementStateOff;
+                [actions addObject:action];
+            }
+            if (actions.count) [children addObject:[UIMenu menuWithTitle:@"View options"
+                image:ApolloActionMenuSymbolIcon(@"slider.horizontal.3") identifier:nil options:0 children:actions]];
+        }
+    };
+    ApolloActionMenuRegister(spec);
 }

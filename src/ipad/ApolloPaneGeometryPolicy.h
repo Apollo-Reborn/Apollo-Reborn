@@ -2,6 +2,17 @@
 #include <math.h>
 #include <stdbool.h>
 
+// Navigation uses the assigned window, not device model or orientation.
+// Below 760pt, a 340pt list and 420pt reader cannot coexist. A destinations
+// sidebar needs additional room without taking that minimum from the reader.
+static inline bool ApolloPaneHasRoomForColumns(double width) {
+    return isfinite(width) && width >= 760.0;
+}
+
+static inline bool ApolloPaneHasRoomForSidebar(double width) {
+    return isfinite(width) && width >= 1180.0;
+}
+
 // Pure policy: preferences survive constrained windows; resolved requests do
 // not consume the reader's minimum useful width. UIKit owns final geometry.
 static inline double ApolloPanePreferredWidth(double width) {

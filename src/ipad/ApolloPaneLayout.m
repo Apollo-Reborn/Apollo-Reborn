@@ -155,7 +155,7 @@ void ApolloPaneRegisterScene(UIWindowScene *scene, UITabBarController *tabs) {
     [sPaneSceneTabs setObject:tabs forKey:scene];
     ApolloPaneLayoutSetActive(YES);
     // UIKit may reconnect an existing tab hierarchy after scene disconnection.
-    for (UIViewController *child in tabs.viewControllers) {
+    for (UIViewController *child in ApolloPaneSidebarRootControllers(tabs) ?: tabs.viewControllers) {
         if (![child isKindOfClass:ApolloPaneSplitViewController.class]) continue;
         ApolloPaneSplitViewController *pane = (id)child;
         ApolloPaneRegisterNavigationController([pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary], pane);
@@ -166,14 +166,15 @@ void ApolloPaneRegisterScene(UIWindowScene *scene, UITabBarController *tabs) {
 
 NSArray<UISplitViewController *> *ApolloPaneSplitsForScene(UIWindowScene *scene) {
     NSMutableArray *panes = [NSMutableArray array];
-    for (UIViewController *child in [sPaneSceneTabs objectForKey:scene].viewControllers)
+    UITabBarController *tabs = [sPaneSceneTabs objectForKey:scene];
+    for (UIViewController *child in ApolloPaneSidebarRootControllers(tabs) ?: tabs.viewControllers)
         if ([child isKindOfClass:ApolloPaneSplitViewController.class]) [panes addObject:child];
     return panes;
 }
 
 void ApolloPaneDisconnectScene(UIWindowScene *scene) {
     UITabBarController *tabs = [sPaneSceneTabs objectForKey:scene];
-    for (UIViewController *child in tabs.viewControllers) {
+    for (UIViewController *child in ApolloPaneSidebarRootControllers(tabs) ?: tabs.viewControllers) {
         if (![child isKindOfClass:ApolloPaneSplitViewController.class]) continue;
         ApolloPaneSplitViewController *pane = (id)child;
         [pane apollo_sceneDidDisconnect];
