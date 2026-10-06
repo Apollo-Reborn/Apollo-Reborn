@@ -1,6 +1,7 @@
 #import "ApolloPaneSidebar.h"
 #import "ApolloPaneLayout.h"
 #import "ApolloPaneSplitViewController.h"
+#import "ApolloPaneGallery.h"
 #import "ApolloPaneGeometryPolicy.h"
 #import <objc/message.h>
 #import "../ApolloCommon.h"
@@ -216,6 +217,7 @@ static void ApolloPaneOpenCommunity(UITabBarController *tabs, NSString *name, BO
         // Community shortcuts always belong to Posts. Apollo otherwise opens
         // a URL in whichever tab is current (including Settings or Inbox).
         if (!ApolloPaneSidebarSelectIndex(tabs, 0)) tabs.selectedIndex = 0;
+        ApolloPaneDismissGalleryForController(tabs.selectedViewController);
         ApolloRouteURLThroughAppInScene(ApolloURLByConvertingResolvedURLToApolloScheme(url),
                                        scene);
     }
@@ -458,6 +460,7 @@ API_AVAILABLE(ios(18.0))
 - (BOOL)tabBarController:(UITabBarController *)tabs shouldSelectTab:(UITab *)tab {
     ApolloLog(@"[PaneSidebar] selecting destination %@", tab.identifier);
     if (tab == self.subreddits) {
+        ApolloPaneDismissGalleryForController(self.postsPane);
         [self.postsPane apollo_showSidebarSubreddits];
         return YES;
     }

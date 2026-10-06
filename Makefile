@@ -186,6 +186,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ipad/ApolloPaneInstall.xm \
     $(SRC_DIR)/ipad/ApolloPaneEntryPoints.xm \
     $(SRC_DIR)/ipad/ApolloPaneRouter.xm \
+    $(SRC_DIR)/ipad/ApolloPaneGallery.m \
     $(SRC_DIR)/ApolloScrollEdgeEffect.xm \
     $(SRC_DIR)/ApolloProgressiveBlur.xm \
     $(SRC_DIR)/settings/ApolloSettings.xm \

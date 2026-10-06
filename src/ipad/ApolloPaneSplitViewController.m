@@ -8,6 +8,7 @@
 #import "ApolloPaneChrome.h"
 #import "ApolloPaneFocus.h"
 #import "ApolloPaneSidebar.h"
+#import "ApolloPaneGallery.h"
 #import "ApolloPaneTransitionObserver.h"
 #import "ApolloPaneGeometryPolicy.h"
 #import "ApolloPaneColumnHostViewController.h"
@@ -2121,6 +2122,7 @@ static NSArray<UIBarButtonItem *> *ApolloPaneBarItemsByRemovingIdentity(
     UIView *detailView = self.apollo_detailNav.viewIfLoaded;
     BOOL hidden = !_apollo_grabber || !list.isViewLoaded || !list.view.superview ||
         !detailView.superview ||
+        ApolloPaneGalleryIsPresented(self) ||
         !ApolloPaneSplitShowsTiledPrimary(self);
     CGRect resolvedFrame = CGRectZero;
     if (hidden) goto apply;

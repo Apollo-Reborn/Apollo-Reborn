@@ -30,6 +30,7 @@
 #import "ApolloPaneDiagnostics.h"
 #import "ApolloPaneGeometry.h"
 #import "ApolloPaneRouting.h"
+#import "ApolloPaneGallery.h"
 #import "ApolloPaneSplitViewController.h"
 #import "../ApolloCommon.h"
 #import "../ApolloDirectChatWeb.h"
@@ -577,6 +578,8 @@ static char kApolloPaneConfiguredPostSection;
         return;
     }
 
+    if (ApolloPanePresentGallery(viewController, navigationController)) return;
+
     // During collapse UIKit appends the secondary column (sometimes wrapped in
     // its own navigation controller) to the surviving primary stack. Recognize
     // our exact host identity through that public containment, not a UIKit class
@@ -587,6 +590,10 @@ static char kApolloPaneConfiguredPostSection;
         %orig;
         return;
     }
+
+    // A sidebar favourite or a new route should leave the standalone gallery
+    // and reveal the real feed/reader stacks before normal routing proceeds.
+    ApolloPaneDismissGalleryForController(pane);
 
     // Native Modmail has an independent superclass hook that substitutes the
     // authenticated modern mailbox. A cross-column re-home intentionally does
