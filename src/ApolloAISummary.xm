@@ -42,6 +42,7 @@
 + (instancetype)shared;
 - (NSInteger)availabilityStatus;
 - (BOOL)isModelAvailable;
+- (NSArray<NSString *> *)supportedLanguageCodes;
 - (void)prepareSession:(NSString *)identifier instructions:(NSString *)instructions;
 - (void)discardPreparedSession:(NSString *)identifier;
 - (void)cancelRequest:(NSString *)identifier;
@@ -100,15 +101,99 @@ static NSUInteger ApolloAIMaxPostCharsForDetail(ApolloAISummaryDetail detail) {
     }
 }
 
+#pragma mark - Summary language
+
+// The model writes in the language of its input unless the instructions name
+// one (Apple's FoundationModels locale guide: "By default, the model responds
+// in the language or languages of its inputs"). So a Portuguese article came
+// back as a Portuguese "Link summary" under an English UI, right below a link
+// card the translation feature had already put into English. Every summary
+// prompt now names the reader's language.
+
+// Base language codes the on-device model writes. Read once and kept: the set
+// only changes with an OS model update. An empty answer is not kept, so a model
+// that couldn't say yet is asked again next time. Main thread only, like every
+// caller (generation passes and header restores).
+static NSSet<NSString *> *ApolloAIOnDeviceLanguageCodes(void) {
+    static NSSet<NSString *> *sCodes;
+    if (sCodes.count > 0) return sCodes;
+    Class cls = NSClassFromString(@"ApolloFoundationModels");
+    ApolloFoundationModels *model = cls ? [cls shared] : nil;
+    if (![model respondsToSelector:@selector(supportedLanguageCodes)]) return nil;
+    NSArray<NSString *> *codes = [model supportedLanguageCodes];
+    if (codes.count == 0) return nil;
+    sCodes = [NSSet setWithArray:codes];
+    ApolloLog(@"[AISummary] on-device model writes: %@", [codes componentsJoinedByString:@","]);
+    return sCodes;
+}
+
+// The language summaries are written in: Translation's Target Language when one
+// is picked, else the device's preferred languages in order. That is the choice
+// ApolloResolvedTargetLanguageCode() (ApolloTranslation.xm) makes for
+// translated text, except that a language the on-device model can't write is
+// skipped for the next one: asking for it throws unsupportedLanguageOrLocale.
+// Cloud models write any language. Returns language + script only ("en", "pt",
+// "zh-Hant"): the script separates Simplified from Traditional Chinese, and a
+// region adds nothing a summary needs. nil when no candidate fits; the prompts
+// then name no language and the model answers in the text's language, as before.
+// Main thread only, like ApolloAIOnDeviceLanguageCodes.
+static NSString *ApolloAISummaryLanguage(void) {
+    BOOL cloud = sAISummaryProvider.length > 0 && ![sAISummaryProvider isEqualToString:@"apple"];
+    NSSet<NSString *> *writable = cloud ? nil : ApolloAIOnDeviceLanguageCodes();
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    // If the on-device model didn't say what it writes, skip a picked Target
+    // Language (it could be one the model can't write) and use the device
+    // language: Apple Intelligence only runs when the device and Siri language
+    // are the same supported language.
+    if (sTranslationTargetLanguage.length > 0 && (cloud || writable)) {
+        [candidates addObject:sTranslationTargetLanguage];
+    }
+    [candidates addObjectsFromArray:[NSLocale preferredLanguages] ?: @[]];
+    NSString *summaryLanguage = nil;
+    for (NSString *candidate in candidates) {
+        NSDictionary<NSString *, NSString *> *parts = [NSLocale componentsFromLocaleIdentifier:candidate];
+        NSString *language = [parts[NSLocaleLanguageCode] lowercaseString];
+        // Translation's Norwegian is "no"; the model lists Bokmål as "nb".
+        if ([language isEqualToString:@"no"]) language = @"nb";
+        if (language.length == 0 || (writable && ![writable containsObject:language])) continue;
+        NSString *script = parts[NSLocaleScriptCode];
+        summaryLanguage = script.length > 0 ? [NSString stringWithFormat:@"%@-%@", language, script] : language;
+        break;
+    }
+    // Logged when it changes (first use, a Target Language or provider switch),
+    // not per call: header restores ask again on every scroll-in.
+    static NSString *sLoggedLanguage;
+    NSString *logged = summaryLanguage ?: @"(none: the text's own language)";
+    if (![logged isEqualToString:sLoggedLanguage]) {
+        sLoggedLanguage = logged;
+        ApolloLog(@"[AISummary] summary language: %@", logged);
+    }
+    return summaryLanguage;
+}
+
+// `instructions` led by the summary language, worded as Apple's guide words it
+// ("You MUST respond in Italian"). It has to come FIRST: appended after the
+// summary rules, the on-device model still answered the Record (Portuguese)
+// article in Portuguese; leading, it answers in the reader's language for every
+// prompt and detail level here. Unchanged when there is no summary language.
+static NSString *ApolloAIInSummaryLanguage(NSString *instructions) {
+    NSString *language = ApolloAISummaryLanguage();
+    NSString *name = language.length > 0
+        ? [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:language]
+        : nil;
+    if (name.length == 0) return instructions;
+    return [NSString stringWithFormat:@"You MUST respond in %@. %@", name, instructions];
+}
+
 static NSString *ApolloAIPostInstructionsForDetail(ApolloAISummaryDetail detail) {
     switch (ApolloAISanitizedDetail(detail)) {
         case ApolloAISummaryDetailBrief:
-            return @"Summarize this Reddit post in 1-2 concise plain sentences. Give only the essential point and what the poster asks, claims, or shares. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this Reddit post in 1-2 concise plain sentences. Give only the essential point and what the poster asks, claims, or shares. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailInDepth:
-            return @"Summarize this Reddit post in 3-5 focused plain sentences. Explain the main point, the poster’s reasoning or context, and what they ask, claim, or share. Include useful supporting details, but stay clearly shorter than the post. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this Reddit post in 3-5 focused plain sentences. Explain the main point, the poster’s reasoning or context, and what they ask, claim, or share. Include useful supporting details, but stay clearly shorter than the post. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailBalanced:
         default:
-            return @"Summarize this Reddit post in 2 short plain sentences. State the main point and what the poster asks, claims, or shares. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this Reddit post in 2 short plain sentences. State the main point and what the poster asks, claims, or shares. No heading, Markdown, or added facts.");
     }
 }
 
@@ -124,12 +209,12 @@ static NSInteger ApolloAIPostResponseTokensForDetail(ApolloAISummaryDetail detai
 static NSString *ApolloAICommentInstructionsForDetail(ApolloAISummaryDetail detail) {
     switch (ApolloAISanitizedDetail(detail)) {
         case ApolloAISummaryDetailBrief:
-            return @"Summarize these Reddit comments in 1-2 concise plain sentences. Give the overall reaction and the most important takeaway. Summarize commenters, not the post. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize these Reddit comments in 1-2 concise plain sentences. Give the overall reaction and the most important takeaway. Summarize commenters, not the post. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailInDepth:
-            return @"Summarize these Reddit comments in 4-5 focused plain sentences. Explain the consensus, useful supporting details, notable alternatives, and an important disagreement when present. Summarize commenters, not the post, and stay clearly shorter than the discussion. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize these Reddit comments in 4-5 focused plain sentences. Explain the consensus, useful supporting details, notable alternatives, and an important disagreement when present. Summarize commenters, not the post, and stay clearly shorter than the discussion. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailBalanced:
         default:
-            return @"Summarize these Reddit comments in 2-3 short plain sentences. Cover the consensus, useful details, and one notable disagreement if present. Summarize commenters, not the post. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize these Reddit comments in 2-3 short plain sentences. Cover the consensus, useful details, and one notable disagreement if present. Summarize commenters, not the post. No heading, Markdown, or added facts.");
     }
 }
 
@@ -145,12 +230,12 @@ static NSInteger ApolloAICommentResponseTokensForDetail(ApolloAISummaryDetail de
 static NSString *ApolloAIArticleInstructionsForDetail(ApolloAISummaryDetail detail) {
     switch (ApolloAISanitizedDetail(detail)) {
         case ApolloAISummaryDetailBrief:
-            return @"Summarize this linked article in 1-2 concise plain sentences. Give the main topic and most important reported fact or conclusion. Summarize the article itself, not website navigation or ads. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this linked article in 1-2 concise plain sentences. Give the main topic and most important reported fact or conclusion. Summarize the article itself, not website navigation or ads. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailInDepth:
-            return @"Summarize this linked article in 4-5 focused plain sentences. Explain the main topic, key facts, supporting context, and important conclusions or implications stated by the source. Stay clearly shorter than the article. Ignore website navigation and ads. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this linked article in 4-5 focused plain sentences. Explain the main topic, key facts, supporting context, and important conclusions or implications stated by the source. Stay clearly shorter than the article. Ignore website navigation and ads. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailBalanced:
         default:
-            return @"Summarize this linked news article in 2-3 short plain sentences. State the main topic and the key facts or points it reports. Summarize the article itself, not website navigation or ads. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"Summarize this linked news article in 2-3 short plain sentences. State the main topic and the key facts or points it reports. Summarize the article itself, not website navigation or ads. No heading, Markdown, or added facts.");
     }
 }
 
@@ -166,12 +251,12 @@ static NSInteger ApolloAIArticleResponseTokensForDetail(ApolloAISummaryDetail de
 static NSString *ApolloAIBothInstructionsForDetail(ApolloAISummaryDetail detail) {
     switch (ApolloAISanitizedDetail(detail)) {
         case ApolloAISummaryDetailBrief:
-            return @"You are given a Reddit post and the article it links to. Summarize both together in 2 concise plain sentences: the post’s point and the article’s essential fact or conclusion. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"You are given a Reddit post and the article it links to. Summarize both together in 2 concise plain sentences: the post’s point and the article’s essential fact or conclusion. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailInDepth:
-            return @"You are given a Reddit post and the article it links to. Summarize both together in 4-6 focused plain sentences. Explain the post’s point, the article’s key facts and context, and how they relate, while staying clearly shorter than the sources. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"You are given a Reddit post and the article it links to. Summarize both together in 4-6 focused plain sentences. Explain the post’s point, the article’s key facts and context, and how they relate, while staying clearly shorter than the sources. No heading, Markdown, or added facts.");
         case ApolloAISummaryDetailBalanced:
         default:
-            return @"You are given a Reddit post and the article it links to. Summarize both together in 3-4 short plain sentences: the post’s point and the article’s key facts. No heading, Markdown, or added facts.";
+            return ApolloAIInSummaryLanguage(@"You are given a Reddit post and the article it links to. Summarize both together in 3-4 short plain sentences: the post’s point and the article’s key facts. No heading, Markdown, or added facts.");
     }
 }
 
@@ -214,24 +299,30 @@ static NSMutableDictionary<NSString *, NSString *> *sCommentSummaryCache;
 // fullName -> ApolloAISummaryDetail used to generate the cached text.
 static NSMutableDictionary<NSString *, NSNumber *> *sPostSummaryDetails;
 static NSMutableDictionary<NSString *, NSNumber *> *sCommentSummaryDetails;
-// fullName -> stable provider/model identity used to generate the cached text.
-// The raw defaults keys intentionally keep this PR compatible before and after
-// the separate cloud-provider PR lands; absent keys resolve to Apple on-device.
+// fullName -> stable provider/model/language identity used to generate the
+// cached text. The raw defaults keys intentionally keep this PR compatible
+// before and after the separate cloud-provider PR lands; absent keys resolve to
+// Apple on-device.
 static NSMutableDictionary<NSString *, NSString *> *sPostSummaryProfiles;
 static NSMutableDictionary<NSString *, NSString *> *sCommentSummaryProfiles;
 
 static NSString *ApolloAICurrentGenerationProfile(void) {
     NSString *provider = sAISummaryProvider;
+    // The summary language is part of what produced the text, so a summary in
+    // another language regenerates instead of being reused. That includes every
+    // summary cached before the prompts named a language ("apple" never equals
+    // "apple|en").
+    NSString *language = ApolloAISummaryLanguage() ?: @"";
     if (![provider isEqualToString:@"openrouter"] &&
         ![provider isEqualToString:@"gemini"] &&
         ![provider isEqualToString:@"custom"]) {
-        return @"apple";
+        return [@"apple|" stringByAppendingString:language];
     }
     // Same effective model the cloud bridge would actually send (stored value or
     // the provider default), so switching models invalidates cached summaries.
     NSString *model = ApolloAICloudEffectiveModel() ?: @"";
     NSString *endpoint = [provider isEqualToString:@"custom"] ? (sCustomAIBaseURL ?: @"") : @"";
-    return [NSString stringWithFormat:@"%@|%@|%@", provider, model, endpoint];
+    return [NSString stringWithFormat:@"%@|%@|%@|%@", provider, model, endpoint, language];
 }
 
 static BOOL ApolloAIPostCacheMatchesCurrentDetail(NSString *fullName) {
@@ -1738,7 +1829,7 @@ static UIColor *ApolloAISummaryThemeAccent(id headerNode) {
 }
 
 // The profile is captured when generation starts and persisted with the cached
-// summary (e.g. "gemini|gemini-3.6-flash|"). Derive attribution from that
+// summary (e.g. "gemini|gemini-3.6-flash||en"). Derive attribution from that
 // stored profile rather than today's global setting, so a completed/cached card
 // can never claim it came from a provider that did not generate it.
 static NSString *ApolloAISummaryProviderAttribution(NSString *generationProfile) {
