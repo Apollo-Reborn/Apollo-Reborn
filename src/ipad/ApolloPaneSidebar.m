@@ -15,8 +15,33 @@
 
 static char kNavigationPresentation;
 static char kSidebarDestinations;
+static char kApplyingSidebarBadge;
+// UIKit's UITab models are a presentation of Apollo's original tab items.
+// Weak keys and values avoid retaining a disconnected scene through its tabs.
+static NSMapTable<UITabBarItem *, UITab *> *sSidebarBadgeTabs;
 static char kPendingSceneLink;
 static NSString *const kPaneLinkActivity = @"app.apolloreborn.pane.open-link";
+
+void ApolloPaneSidebarTabBadgeDidChange(UITabBarItem *item) {
+    if (!ApolloPaneLayoutActive()) return;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloPaneSidebarTabBadgeDidChange(item); });
+        return;
+    }
+    if (@available(iOS 18.0, *)) {
+        UITab *tab = [sSidebarBadgeTabs objectForKey:item];
+        if (!tab || [objc_getAssociatedObject(item, &kApplyingSidebarBadge) boolValue]) return;
+        // Read AFTER Apollo/Chat's existing setter hooks finish. That preserves
+        // their combined unread count, threshold labels and clear-on-read logic.
+        // A zero means no unread messages, so it shouldn't leave a badge pill.
+        NSString *value = item.badgeValue;
+        if (value.length == 0 || [value isEqualToString:@"0"]) value = nil;
+        if (tab.badgeValue == value || [tab.badgeValue isEqualToString:value]) return;
+        objc_setAssociatedObject(item, &kApplyingSidebarBadge, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        tab.badgeValue = value;
+        objc_setAssociatedObject(item, &kApplyingSidebarBadge, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
 
 // Keep native iPad tab placement: hiding the sidebar must not turn a regular
 // iPad window into a compact window. UIKit places regular-width tabs at the
@@ -528,9 +553,11 @@ static void ApolloPaneInstallSidebarDestinations(UITabBarController *tabs) {
         if (!pane || controllers.count != 5) return;
         UIViewController *selected = tabs.selectedViewController;
         NSMutableArray<UITab *> *roots = [NSMutableArray array];
+        NSMutableArray<UITabBarItem *> *items = [NSMutableArray array];
         for (NSUInteger i = 0; i < controllers.count; i++) {
             UIViewController *controller = controllers[i];
             UITabBarItem *item = controller.tabBarItem;
+            [items addObject:item];
             UITab *tab = [[UITab alloc] initWithTitle:item.title ?: @"" image:item.image
                 identifier:[NSString stringWithFormat:@"ApolloPane.root.%lu", (unsigned long)i]
                 viewControllerProvider:^UIViewController *(UITab *sender) { return controller; }];
@@ -543,7 +570,16 @@ static void ApolloPaneInstallSidebarDestinations(UITabBarController *tabs) {
         state.originalDelegate = tabs.delegate;
         state.posts = [[UITab alloc] initWithTitle:@"Posts" image:pane.tabBarItem.image
             identifier:@"ApolloPane.posts" viewControllerProvider:nil];
-        state.subreddits = [[UITab alloc] initWithTitle:@"Subreddits" image:[UIImage systemImageNamed:@"list.bullet"]
+        UIImage *communityIcon = [UIImage systemImageNamed:@"square.grid.2x2"
+            withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightMedium]];
+        // Apollo's other destinations use fixed-size template assets. UIKit
+        // gives live symbols a larger image slot, shifting this row's title.
+        // Keep the grid's medium stroke but match those existing asset metrics.
+        communityIcon = [[[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(26, 26)]
+            imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+                [communityIcon drawInRect:CGRectMake(1, 1, 24, 24)];
+            }] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        state.subreddits = [[UITab alloc] initWithTitle:@"Subreddits" image:communityIcon
             identifier:@"ApolloPane.subreddits" viewControllerProvider:nil];
         state.subreddits.preferredPlacement = UITabPlacementSidebarOnly;
         state.postsGroup = [[UITabGroup alloc] initWithTitle:@"Posts" image:pane.tabBarItem.image
@@ -554,6 +590,11 @@ static void ApolloPaneInstallSidebarDestinations(UITabBarController *tabs) {
         roots[0] = state.postsGroup;
         state.rootControllers = controllers;
         state.rootTabs = roots;
+        if (!sSidebarBadgeTabs) sSidebarBadgeTabs = [NSMapTable weakToWeakObjectsMapTable];
+        for (NSUInteger i = 0; i < items.count; i++) {
+            [sSidebarBadgeTabs setObject:roots[i] forKey:items[i]];
+            ApolloPaneSidebarTabBadgeDidChange(items[i]);
+        }
         objc_setAssociatedObject(tabs, &kSidebarDestinations, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tabs.delegate = state;
         [tabs setTabs:roots animated:NO];

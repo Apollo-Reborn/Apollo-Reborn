@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 __BEGIN_DECLS
 void ApolloPaneInstallSidebar(UITabBarController *tabs);
+void ApolloPaneSidebarTabBadgeDidChange(UITabBarItem *item);
 NSArray<UIViewController *> *ApolloPaneSidebarRootControllers(UITabBarController *tabs);
 NSUInteger ApolloPaneSidebarSelectedIndex(UITabBarController *tabs);
 BOOL ApolloPaneSidebarSelectIndex(UITabBarController *tabs, NSUInteger index);

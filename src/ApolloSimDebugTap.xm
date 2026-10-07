@@ -2635,6 +2635,27 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugNavChurn(mode);
             return;
         }
+        // Exercise the real native badge setter without creating messages or
+        // changing account state. Restore the original presentation afterwards.
+        if ([contents hasPrefix:@"panebadge "]) {
+            static __weak UITabBarItem *originalItem;
+            static NSString *originalBadge;
+            static BOOL captured;
+            UITabBarController *tabs = (id)ApolloMainTabBarController();
+            NSArray *roots = ApolloPaneSidebarRootControllers(tabs);
+            if (roots.count <= 1 || ![roots[1] isKindOfClass:ApolloPaneSplitViewController.class]) return;
+            ApolloPaneSplitViewController *pane = roots[1];
+            UITabBarItem *item = [pane apollo_navigationControllerForColumn:ApolloPaneColumnPrimary].tabBarItem;
+            NSString *value = [[contents substringFromIndex:10] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if ([value isEqualToString:@"restore"]) {
+                if (captured) originalItem.badgeValue = originalBadge;
+                captured = NO; originalItem = nil; originalBadge = nil;
+            } else {
+                if (!captured) { originalItem = item; originalBadge = item.badgeValue; captured = YES; }
+                item.badgeValue = [value isEqualToString:@"none"] ? nil : value;
+            }
+            return;
+        }
         // Reset just the invitation marker for cold-launch QA. The tester
         // controls the real layout switch separately; no preferences/account
         // reset or fake launch-time layout state is involved.

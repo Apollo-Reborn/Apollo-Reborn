@@ -405,6 +405,13 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
 
 %group ApolloPaneInstallGroup
 
+%hook UITabBarItem
+- (void)setBadgeValue:(NSString *)value {
+    %orig(value);
+    ApolloPaneSidebarTabBadgeDidChange(self);
+}
+%end
+
 %hook UITabBarController
 - (void)viewWillAppear:(BOOL)animated {
     %orig(animated);
