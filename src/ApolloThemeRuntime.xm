@@ -1076,6 +1076,13 @@ static void ApplyThemeToNavigationTitleControl(UIView *titleControl) {
 // corrective setAttributedText: is not re-themed by the ASTextNode sink.
 static __thread NSInteger sTextSinkBypass;
 
+void ApolloThemeRuntimePerformTextSinkBypass(void (^block)(void)) {
+    if (!block) return;
+    sTextSinkBypass++;
+    block();
+    sTextSinkBypass--;
+}
+
 static BOOL TextSinkMayUseTheme(id object, uintptr_t caller) {
     if (!ApolloThemeCurrentSnapshot()->enabled) return NO;
     if (sTextSinkBypass > 0) return NO;
