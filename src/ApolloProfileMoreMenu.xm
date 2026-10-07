@@ -12,7 +12,10 @@
 //
 //   • Gallery View                — the same grid the subreddit/profile
 //                                   menus open, pointed at your own posts
-//   • Edit Profile                — what the header's Edit pill used to do
+//   • Edit Profile                — Reddit's profile editor, opened inside
+//                                   Apollo and signed in as this account
+//                                   (ApolloProfileEditorWebViewController.m);
+//                                   what the header's Edit pill used to do
 //                                   (the pill itself is deleted from
 //                                   ApolloUserAvatars.xm)
 //   • Recently Read               — what the standalone clock button used to
@@ -53,10 +56,10 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommon.h"
 #import "ApolloGalleryViewController.h"
+#import "ApolloProfileEditorWebViewController.h"
 
 // Defined in ApolloUserAvatars.xm.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
-extern void ApolloProfileOpenRedditProfileEditor(void);
 // Defined in ApolloRecentlyRead.xm.
 extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
 
@@ -161,7 +164,8 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
                                          image:[UIImage systemImageNamed:@"pencil"]
                                     identifier:nil
                                        handler:^(__unused __kindof UIAction *action) {
-        ApolloProfileOpenRedditProfileEditor();
+        UIViewController *vc = weakVC;
+        if (vc) ApolloProfileEditorOpenFromViewController(vc);
     }];
 
     UIAction *recentlyRead = [UIAction actionWithTitle:@"Recently Read"

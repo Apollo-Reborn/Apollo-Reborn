@@ -182,6 +182,10 @@ UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role) {
     return ApolloDirectChatPaletteColor(ApolloDirectChatThemePalette(traits), role);
 }
 
+NSDictionary<NSString *, NSString *> *ApolloModernWebThemePalette(UITraitCollection *traits) {
+    return ApolloDirectChatThemePalette(traits);
+}
+
 NSDictionary<NSString *, id> *ApolloModernChatCachedStatus(void) {
     NSDictionary<NSString *, id> *status = nil;
     @synchronized (ApolloModernChatStatusLock()) {

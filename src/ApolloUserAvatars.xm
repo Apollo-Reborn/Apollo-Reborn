@@ -216,7 +216,6 @@ static void ApolloProfileConfigureUsernameCopyTarget(UIView *target, NSString *u
 static BOOL ApolloProfileUsernameIsLoggedInAccount(NSString *username);
 static UIImage *ApolloProfilePlaceholderAvatar(void);
 
-void ApolloProfileOpenRedditProfileEditor(void);
 static void ApolloProfileSetSnoovatarMode(ApolloProfileHeaderView *header, BOOL showSnoovatar);
 static void ApolloProfileLoadImages(ApolloProfileHeaderView *header, NSString *username, BOOL forceRefresh);
 static void ApolloProfileRemoveHeader(id viewControllerObject, UITableView *tableView);
@@ -4400,19 +4399,6 @@ static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason) {
 static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {
     if (!sUseProfileAvatarTabIcon) return;
     ApolloProfileScheduleTabAvatarRefresh(reason ?: @"account change");
-}
-
-static void ApolloProfileOpenURL(NSURL *url) {
-    if (!url) return;
-    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-}
-
-// Non-static: also the "Edit Profile" action in the profile tab's "..." menu
-// (ApolloProfileMoreMenu.xm), which replaced the header's Edit pill.
-void ApolloProfileOpenRedditProfileEditor(void) {
-    // reddit.com/settings/profile opens the official Reddit app via Universal Links
-    // when installed, and otherwise falls back to Reddit's web profile editor.
-    ApolloProfileOpenURL([NSURL URLWithString:@"https://www.reddit.com/settings/profile"]);
 }
 
 // Message a user: hand reddit's compose URL to the system via the apollo:// scheme so
