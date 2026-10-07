@@ -179,6 +179,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ipad/ApolloPaneChrome.m \
     $(SRC_DIR)/ipad/ApolloPaneSidebar.m \
     $(SRC_DIR)/ipad/ApolloPaneFocus.m \
+    $(SRC_DIR)/ipad/ApolloPaneMenus.xm \
     $(SRC_DIR)/ipad/ApolloPaneContent.xm \
     $(SRC_DIR)/ipad/ApolloPaneColumnHostViewController.m \
     $(SRC_DIR)/ipad/ApolloPaneRouting.m \

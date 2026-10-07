@@ -14,6 +14,11 @@
 // the UISearchController it attaches for comments screens.
 id ApolloFindInCommentsGlassBridgeForController(UIViewController *vc);
 
+// Share the native highlight bookkeeping with the iPad UIFindInteraction
+// adapter. These only track/restore text rendering; they install no navigator.
+void ApolloFindInCommentsTrackSelection(UIViewController *vc, dispatch_block_t selection);
+void ApolloFindInCommentsRestoreHighlights(UIViewController *vc);
+
 // Placeholder for the comments search field ("Find in Comments").
 NSString *ApolloFindInCommentsGlassPlaceholder(void);
 

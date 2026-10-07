@@ -343,6 +343,14 @@ static ApolloFindInCommentsGlassBridge *FGBridgeOwningNavItem(UINavigationItem *
     return box.object;
 }
 
+void ApolloFindInCommentsTrackSelection(UIViewController *vc, dispatch_block_t selection) {
+    [FGBridge(vc, YES) runApolloSelection:selection];
+}
+
+void ApolloFindInCommentsRestoreHighlights(UIViewController *vc) {
+    [FGBridge(vc, NO) restoreHighlights];
+}
+
 id ApolloFindInCommentsGlassBridgeForController(UIViewController *vc) {
     return FGBridge(vc, YES);
 }

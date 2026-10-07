@@ -54,6 +54,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "ApolloFindInCommentsGlass.h"
 
 #import "ApolloCommon.h"
 #import "ipad/ApolloPaneLayout.h"
@@ -458,15 +459,19 @@ API_AVAILABLE(ios(16.0))
     UITextField *field = self.nativeField;
     if (!field || !self.controller) return;
     field.text = query;
-    ((void (*)(id, SEL, id))objc_msgSend)(self.controller,
-        NSSelectorFromString(@"textFieldEditingChangedWithSender:"), field);
+    ApolloFindInCommentsTrackSelection(self.controller, ^{
+        ((void (*)(id, SEL, id))objc_msgSend)(self.controller,
+            NSSelectorFromString(@"textFieldEditingChangedWithSender:"), field);
+    });
     [self.interaction updateResultCount];
 }
 - (void)highlightNextResultInDirection:(UITextStorageDirection)direction {
     SEL selector = NSSelectorFromString(direction == UITextStorageDirectionForward
         ? @"nextResultButtonTappedWithSender:" : @"previousResultButtonTappedWithSender:");
     if ([self.controller respondsToSelector:selector]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(self.controller, selector, self.nativeField);
+        ApolloFindInCommentsTrackSelection(self.controller, ^{
+            ((void (*)(id, SEL, id))objc_msgSend)(self.controller, selector, self.nativeField);
+        });
         [self.interaction updateResultCount];
     }
 }
@@ -487,6 +492,9 @@ API_AVAILABLE(ios(16.0))
 - (void)findInteraction:(UIFindInteraction *)interaction didEndFindSession:(UIFindSession *)session {
     [self performSearchWithQuery:@"" options:nil];
     FICCancel(self.controller);
+    // Apollo clears its match list, but leaves rendering blocks on text nodes.
+    // Restore the original Markdown rendering rather than clearing the blocks.
+    ApolloFindInCommentsRestoreHighlights(self.controller);
     ptrdiff_t offset = FICIvarOffset(self.controller, "isSearching");
     if (offset >= 0) *((uint8_t *)(__bridge void *)self.controller + offset) = self.previousSearching;
     UIView *toolbar = FICObjectIvar(self.controller, "upperToolbar");

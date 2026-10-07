@@ -39,6 +39,8 @@
 #import "ipad/ApolloPaneLayout.h"
 #import "ipad/ApolloIPadLayoutWelcome.h"
 #import "ipad/ApolloPaneSidebar.h"
+#import "ipad/ApolloPaneMenus.h"
+#import "ipad/ApolloPaneFocus.h"
 #import <mach-o/dyld.h>
 
 void ApolloSubredditIndexDebugDescribeTables(void); // ApolloSubredditIndexPolish.xm (sim-only)
@@ -2633,6 +2635,30 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             NSString *mode = [[contents substringFromIndex:8] stringByTrimmingCharactersInSet:
                 NSCharacterSet.whitespaceAndNewlineCharacterSet];
             ApolloSimDebugNavChurn(mode);
+            return;
+        }
+        // Validate and dispatch the real pane actions through the responder
+        // chain. This fixture does not synthesize hardware keyboard events.
+        if ([contents hasPrefix:@"panemenu "]) {
+            ApolloPaneSplitViewController *pane = ApolloSimDebugSelectedPane();
+            NSString *name = [[contents substringFromIndex:9] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if ([name isEqualToString:@"check"]) {
+                NSMutableArray *states = [NSMutableArray array];
+                for (UIKeyCommand *command in ApolloPaneMenuKeyCommands()) {
+                    [states addObject:[NSString stringWithFormat:@"%@=%d", NSStringFromSelector(command.action),
+                        ApolloPaneMenuCanPerform(pane, command.action)]];
+                }
+                ApolloLog(@"[PaneMenuTest] tab=%ld focused=%@ %@", (long)pane.apollo_tabIndex,
+                    NSStringFromClass(ApolloPaneFocusedController(pane).class), [states componentsJoinedByString:@","]);
+            } else {
+                SEL action = NSSelectorFromString([NSString stringWithFormat:@"apollo_menu%@:", name]);
+                BOOL allowed = ApolloPaneMenuOwnsAction(action) && ApolloPaneMenuCanPerform(pane, action);
+                if (allowed) {
+                    [pane becomeFirstResponder];
+                    [UIApplication.sharedApplication sendAction:action to:nil from:nil forEvent:nil];
+                }
+                ApolloLog(@"[PaneMenuTest] %@ allowed=%d", name, allowed);
+            }
             return;
         }
         // Exercise the real native badge setter without creating messages or

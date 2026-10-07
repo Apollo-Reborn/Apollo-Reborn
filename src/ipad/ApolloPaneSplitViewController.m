@@ -7,6 +7,7 @@
 #import "ApolloPaneDiagnostics.h"
 #import "ApolloPaneChrome.h"
 #import "ApolloPaneFocus.h"
+#import "ApolloPaneMenus.h"
 #import "ApolloPaneSidebar.h"
 #import "ApolloPaneGallery.h"
 #import "ApolloPaneTransitionObserver.h"
@@ -2297,29 +2298,17 @@ apply:
 }
 
 - (NSArray<UIKeyCommand *> *)keyCommands {
-    NSMutableArray<UIKeyCommand *> *commands = [[super keyCommands] mutableCopy] ?: [NSMutableArray array];
-    UIKeyCommand *narrow = [UIKeyCommand keyCommandWithInput:UIKeyInputLeftArrow
-                                              modifierFlags:UIKeyModifierControl | UIKeyModifierAlternate
-                                                     action:@selector(apollo_narrowPrimaryColumn:)];
-    narrow.discoverabilityTitle = @"Narrow List Column";
-    UIKeyCommand *widen = [UIKeyCommand keyCommandWithInput:UIKeyInputRightArrow
-                                             modifierFlags:UIKeyModifierControl | UIKeyModifierAlternate
-                                                    action:@selector(apollo_widenPrimaryColumn:)];
-    widen.discoverabilityTitle = @"Widen List Column";
-    [commands addObjectsFromArray:@[ narrow, widen ]];
-    UIKeyCommand *list = [UIKeyCommand keyCommandWithInput:@"1" modifierFlags:UIKeyModifierCommand | UIKeyModifierAlternate action:@selector(apollo_focusList:)];
-    list.discoverabilityTitle = @"Focus list";
-    UIKeyCommand *detail = [UIKeyCommand keyCommandWithInput:@"2" modifierFlags:UIKeyModifierCommand | UIKeyModifierAlternate action:@selector(apollo_focusDetail:)];
-    detail.discoverabilityTitle = @"Focus detail";
-    [commands addObjectsFromArray:@[list, detail]];
-    UIViewController *focused = ApolloPaneFocusedController(self);
-    if (focused.navigationItem.searchController ||
-        [NSStringFromClass(focused.class) hasSuffix:@"CommentsViewController"]) {
-        UIKeyCommand *find = [UIKeyCommand keyCommandWithInput:@"f" modifierFlags:UIKeyModifierCommand action:@selector(apollo_findInFocusedPane:)];
-        find.discoverabilityTitle = @"Find in focused pane";
-        [commands addObject:find];
-    }
-    return commands;
+    return [([super keyCommands] ?: @[]) arrayByAddingObjectsFromArray:ApolloPaneMenuKeyCommands()];
+}
+
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
+    if (ApolloPaneMenuOwnsAction(action)) return ApolloPaneMenuCanPerform(self, action);
+    return [super canPerformAction:action withSender:sender];
+}
+
+- (void)validateCommand:(UICommand *)command {
+    [super validateCommand:command];
+    if (ApolloPaneMenuOwnsAction(command.action)) ApolloPaneMenuValidate(self, command);
 }
 
 - (BOOL)canBecomeFirstResponder { return YES; }

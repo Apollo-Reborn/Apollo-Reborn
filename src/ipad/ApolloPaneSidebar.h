@@ -5,6 +5,7 @@ void ApolloPaneSidebarTabBadgeDidChange(UITabBarItem *item);
 NSArray<UIViewController *> *ApolloPaneSidebarRootControllers(UITabBarController *tabs);
 NSUInteger ApolloPaneSidebarSelectedIndex(UITabBarController *tabs);
 BOOL ApolloPaneSidebarSelectIndex(UITabBarController *tabs, NSUInteger index);
+BOOL ApolloPaneSidebarSelectSubreddits(UITabBarController *tabs);
 void ApolloPaneSidebarSelectPosts(UITabBarController *tabs);
 void ApolloPaneSidebarFirstAppearance(UITabBarController *tabs);
 void ApolloPaneUpdateNavigationPresentation(UITabBarController *tabs);

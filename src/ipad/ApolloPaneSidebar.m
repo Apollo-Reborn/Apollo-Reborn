@@ -536,6 +536,20 @@ BOOL ApolloPaneSidebarSelectIndex(UITabBarController *tabs, NSUInteger index) {
     return NO;
 }
 
+BOOL ApolloPaneSidebarSelectSubreddits(UITabBarController *tabs) {
+    if (@available(iOS 18.0, *)) {
+        ApolloPaneSidebarDestinations *state = objc_getAssociatedObject(tabs, &kSidebarDestinations);
+        if (!ApolloPaneLayoutActive() || !state) return NO;
+        // Programmatic tab selection does not call shouldSelectTab. Use the
+        // same directory transaction while keeping its native row selected.
+        tabs.selectedTab = state.subreddits;
+        ApolloPaneDismissGalleryForController(state.postsPane);
+        [state.postsPane apollo_showSidebarSubreddits];
+        return YES;
+    }
+    return NO;
+}
+
 void ApolloPaneSidebarSelectPosts(UITabBarController *tabs) {
     if (@available(iOS 18.0, *)) {
         ApolloPaneSidebarDestinations *state = objc_getAssociatedObject(tabs, &kSidebarDestinations);
