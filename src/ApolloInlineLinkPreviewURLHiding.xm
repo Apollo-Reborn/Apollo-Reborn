@@ -65,8 +65,7 @@ static BOOL ApolloLPURLHidingShouldProcessTextNode(id textNode) {
     NSNumber *cached = objc_getAssociatedObject(cls, &kApolloLPURLHidingClassVerdictKey);
     if (cached) return cached.boolValue;
     NSString *className = NSStringFromClass(cls);
-    BOOL verdict = [className containsString:@"Markdown"] ||
-                   ([className hasPrefix:@"_TtC6Apollo"] && [className containsString:@"TextNode"]);
+    BOOL verdict = [className containsString:@"Markdown"];
     objc_setAssociatedObject(cls, &kApolloLPURLHidingClassVerdictKey, @(verdict), OBJC_ASSOCIATION_RETAIN);
     return verdict;
 }

@@ -41,6 +41,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloClasses.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -140,21 +141,18 @@ static BOOL ApolloHLIsLikelyObjectPointer(id value) {
 
 static id ApolloHLTypedIvar(id object, NSString *name, Class expectedClass) {
     if (!object || name.length == 0 || !expectedClass) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        void *raw = NULL;
-        memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
-        id value = (__bridge id)raw;
-        if (!ApolloHLIsLikelyObjectPointer(value)) return nil;
-        @try {
-            return [value isKindOfClass:expectedClass] ? value : nil;
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
+    if (!ivar) return nil;
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    void *raw = NULL;
+    memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
+    id value = (__bridge id)raw;
+    if (!ApolloHLIsLikelyObjectPointer(value)) return nil;
+    @try {
+        return [value isKindOfClass:expectedClass] ? value : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
     }
-    return nil;
 }
 
 // PostsType case tag lives at offset 0x20 of the `currentPostsType` Swift-enum
@@ -229,7 +227,7 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     // subreddit. It is only read for a feed with no title yet.
     NSString *rawName = nil;
     if (rawTitle.length == 0) {
-        id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
+        id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", ApolloClassRDKSubreddit);
         if ([subreddit respondsToSelector:@selector(name)]) {
             id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
             if ([nameValue isKindOfClass:[NSString class]]) rawName = nameValue;
@@ -289,7 +287,7 @@ static UITableView *ApolloHLFindTableView(UIViewController *viewController) {
 // Reload the feed's ASTableNode (used only on the rare path where we need to
 // restore inline stickied cells we optimistically collapsed).
 static void ApolloHLReloadFeed(UIViewController *vc) {
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
     if ([tableNode respondsToSelector:@selector(reloadData)]) {
         ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
     }
@@ -310,7 +308,7 @@ static BOOL ApolloHLFeedRowsBelongTo(UIViewController *vc, NSString *subreddit) 
     if (sub.length == 0 || ![tableView respondsToSelector:@selector(nodeForRowAtIndexPath:)] ||
         tableView.numberOfSections == 0) return YES;
     NSInteger rows = [tableView numberOfRowsInSection:0];
-    Class linkClass = objc_getClass("RDKLink");
+    Class linkClass = ApolloClassRDKLink;
     NSInteger posts = 0;
     for (NSInteger row = 0; row < rows && row < 12 && posts < 3; row++) {
         id node = ((id (*)(id, SEL, NSIndexPath *))objc_msgSend)(tableView, @selector(nodeForRowAtIndexPath:),
@@ -1140,8 +1138,8 @@ static NSString *ApolloHLRequestBearerToken(void) {
     }
     id client = ApolloActiveAccountClient();
     if (client) {
-        SEL credentialSelector = NSSelectorFromString(@"authorizationCredential");
-        SEL tokenSelector = NSSelectorFromString(@"accessToken");
+        SEL credentialSelector = @selector(authorizationCredential);
+        SEL tokenSelector = @selector(accessToken);
         id credential = [client respondsToSelector:credentialSelector]
             ? ((id (*)(id, SEL))objc_msgSend)(client, credentialSelector) : nil;
         id accessToken = [credential respondsToSelector:tokenSelector]
@@ -2260,7 +2258,7 @@ static void ApolloHLTeardown(UIViewController *vc, BOOL restoreNativeHeader) {
     // Clear the per-table de-duped-sticky rows so the next sub's separators can't
     // self-collapse against stale rows. EMPTY it (don't free the set) under the same
     // owningTable lock — an off-main layout pass may be reading it concurrently.
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
     if (tableNode) @synchronized(tableNode) {
         [(NSMutableSet *)objc_getAssociatedObject(tableNode, &kApolloHLHiddenRowsKey) removeAllObjects];
     }
@@ -2519,7 +2517,7 @@ static NSArray<UIViewController *> *ApolloHLRootViewControllers(void) {
 
 // Walk the live VC hierarchy and invoke `block` for every PostsViewController.
 static void ApolloHLForEachPostsVC(void (^block)(UIViewController *postsVC)) {
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass || !block) return;
     NSMutableArray<UIViewController *> *stack = [ApolloHLRootViewControllers() mutableCopy];
     NSMutableSet *seen = [NSMutableSet set];
@@ -2987,7 +2985,7 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc); // defined w
 // (N already published before cells measure) never re-measure. Returns YES when it
 // reloaded the feed.
 static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit) {
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
     NSString *subKey = subreddit.lowercaseString;
     NSNumber *stickyN = ApolloHLStickyCount()[subKey];
     if (!tableNode || !stickyN) return NO;
@@ -3178,7 +3176,7 @@ static BOOL ApolloHLShouldBlockOffset(UITableView *tableView, CGPoint newOffset)
 static BOOL ApolloHLShouldHideCell(id cellNode) {
     if (!sCommunityHighlights) return NO;
     if (ApolloHLHideSubsIsEmpty()) return NO;
-    RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(cellNode, @"link", objc_getClass("RDKLink"));
+    RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(cellNode, @"link", ApolloClassRDKLink);
     if (![link respondsToSelector:@selector(stickied)] || !link.stickied) return NO;
     // …except a live interactive post while the feed renders those widgets: the
     // feed owns it, so it keeps its row (the widget IS the post) and the carousel
@@ -3193,7 +3191,7 @@ static BOOL ApolloHLShouldHideCell(id cellNode) {
 
 // Zero-size layout spec used to collapse a hidden cell.
 static id ApolloHLEmptySpec(void) {
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (!stackClass) return nil;
     return [stackClass stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:0 children:@[]];
 }
@@ -3207,7 +3205,7 @@ static id ApolloHLEmptySpec(void) {
 static char kApolloHLSepCollapseKey;
 
 static BOOL ApolloHLNodeIsSeparator(id node) {
-    return node && [NSStringFromClass([node class]) isEqualToString:@"Apollo.ThickSeparatorCellNode"];
+    return [node isMemberOfClass:ApolloClassThickSeparatorCellNode];
 }
 
 // Zero a node's fixed style.height so an empty layoutSpec actually collapses it
@@ -3335,7 +3333,7 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
             NSTimeInterval now = CACurrentMediaTime();
             if (now - sLastHLRelayoutUptime > 10.0) {
                 sLastHLRelayoutUptime = now;
-                id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+                id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
                 if ([tableNode respondsToSelector:@selector(relayoutItems)]) ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
                 // relayoutItems re-measures but the shrink doesn't paint until the next
                 // layout pass (otherwise the breaker stays thick until the user scrolls) —
@@ -3572,7 +3570,7 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     if (layout) {
         CGSize s = ((CGSize (*)(id, SEL))objc_msgSend)(layout, @selector(size));
         if (s.height > 0.0) {
-            Class ASLayoutCls = objc_getClass("ASLayout");
+            Class ASLayoutCls = ApolloClassASLayout;
             if (ASLayoutCls) {
                 id zero = ((id (*)(id, SEL, id, CGSize))objc_msgSend)(ASLayoutCls, @selector(layoutWithLayoutElement:size:), self, CGSizeMake(s.width, 0.0));
                 if (zero) return zero;
@@ -3653,7 +3651,7 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     BOOL result = %orig;
     if (!sCommunityHighlights) return result;
     UIViewController *postsVC = ApolloReadSwiftWeakObjectIvar(self, "delegate");
-    if ([postsVC isKindOfClass:objc_getClass("_TtC6Apollo19PostsViewController")]) {
+    if ([postsVC isKindOfClass:ApolloClassPostsViewController]) {
         ApolloHLSyncSwitchedFeed(postsVC);
     }
     return result;

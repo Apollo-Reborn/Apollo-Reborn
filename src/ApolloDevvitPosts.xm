@@ -100,6 +100,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloAccountSubscriptions.h"
 #import "ApolloWebJSON.h"
+#import "ApolloClasses.h"
 
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName);
 static void ApolloDevvitScheduleStaleSweep(void);
@@ -925,7 +926,7 @@ static void ApolloDevvitRunSubscriptionCheck(NSString *subreddit, NSString *key,
     // it), stand down rather than add to the window everything else waits on.
     if (ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0) return;
     if (!ApolloDevvitTakeSubscriptionCheck(key)) return;
-    SEL fetch = NSSelectorFromString(@"subredditWithName:completion:");
+    SEL fetch = @selector(subredditWithName:completion:);
     if (![client respondsToSelector:fetch]) return;
     // RDKClient's completion: ^(RDKSubreddit *subreddit, NSError *error), with
     // `subscriber` (getter isSubscriber) as the account that asked sees it.
@@ -1666,7 +1667,6 @@ static const NSUInteger kApolloDevvitMaxLiveWidgets = 4;
     ApolloDevvitHeightDidChangeForFullName(self.fullName);
 }
 
-
 - (void)teardown {
     self.pollGeneration += 1;  // cancels any queued poll blocks
     self.stashedForReadopt = NO;
@@ -2171,7 +2171,7 @@ static ASDisplayNode *ApolloDevvitEnsureHostNode(id parentNode) {
     @synchronized (parentNode) {
         host = objc_getAssociatedObject(parentNode, kApolloDevvitHostNodeKey);
         if (!host) {
-            Class nodeClass = NSClassFromString(@"ASDisplayNode");
+            Class nodeClass = ApolloClassASDisplayNode;
             if (!nodeClass) return nil;
             host = [nodeClass new];
             host.clipsToBounds = YES;
@@ -2422,7 +2422,7 @@ static void ApolloDevvitRegisterFeedTable(UITableView *table) {
 }
 
 static id ApolloDevvitNodeForRow(UITableView *table, NSIndexPath *indexPath) {
-    SEL sel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL sel = @selector(nodeForRowAtIndexPath:);
     if (!table || !indexPath || ![table respondsToSelector:sel]) return nil;
     @try { return ((id (*)(id, SEL, NSIndexPath *))objc_msgSend)(table, sel, indexPath); }
     @catch (__unused id e) { return nil; }
@@ -2689,7 +2689,7 @@ static void ApolloDevvitInterfaceSizeChanged(void) {
 
 static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
+        Class richMediaClass = ApolloClassRichMediaNode;
         for (id parent in sDevvitHostParents.allObjects) {
             RDKLink *link = ApolloDevvitLinkOfParent(parent);
             if (fullName && link && ![ApolloDevvitFullName(link) isEqualToString:fullName]) continue;
@@ -2735,8 +2735,8 @@ static void ApolloDevvitHeightDidChangeForFullName(NSString *fullName) {
 // way a committed Texture row changes shape — see the row-reload section).
 static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
-        Class cellClass = NSClassFromString(@"_TtC6Apollo17LargePostCellNode");
+        Class richMediaClass = ApolloClassRichMediaNode;
+        Class cellClass = ApolloClassLargePostCellNode;
         // Registered hosts (the surfaces currently showing a widget host):
         // comments headers re-measure in place, feed rows reload.
         for (id parent in sDevvitHostParents.allObjects) {
@@ -2794,7 +2794,7 @@ static void ApolloDevvitRelayoutHosts(BOOL feedOnly) {
 // clone copies the original's own direction/justify values, so no local enum
 // constants are needed).
 static ASStackLayoutSpec *ApolloDevvitRebuildStack(ASStackLayoutSpec *stack, NSArray *children) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     ASStackLayoutSpec *s = [stackClass stackLayoutSpecWithDirection:stack.direction
                                                             spacing:stack.spacing
                                                      justifyContent:stack.justifyContent
@@ -2811,9 +2811,9 @@ static ASStackLayoutSpec *ApolloDevvitRebuildStack(ASStackLayoutSpec *stack, NSA
 // the host after the title instead (index 1). Returns nil when nothing could
 // be placed (caller then returns the original spec untouched).
 static ASStackLayoutSpec *ApolloDevvitSpliceIntoStack(ASStackLayoutSpec *stack, id hostSpec, NSUInteger depth) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (![stack isKindOfClass:stackClass] || depth > 4) return nil;
-    Class markdownClass = NSClassFromString(@"_TtC6Apollo12MarkdownNode");
+    Class markdownClass = ApolloClassMarkdownNode;
     NSArray *children = stack.children ?: @[];
 
     for (NSUInteger i = 0; i < children.count; i++) {
@@ -2853,8 +2853,8 @@ static ASStackLayoutSpec *ApolloDevvitSpliceIntoStack(ASStackLayoutSpec *stack, 
 static BOOL sDevvitPhoneIdiom;
 
 static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (depth > 4 || !rootSpec) return nil;
     if (depth == 0 && sDevvitPhoneIdiom && [rootSpec isKindOfClass:insetClass]) {
         UIEdgeInsets root = ((ASInsetLayoutSpec *)rootSpec).insets;
@@ -2974,7 +2974,7 @@ static id ApolloDevvitPlaceInSpec(id rootSpec, id hostSpec, NSUInteger depth) {
         }
         ApolloDevvitSetNodeHeight(host, ApolloDevvitHeightForFullName(ApolloDevvitFullName(link)));
         ApolloDevvitRegisterHostParent(self);
-        Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
+        Class insetClass = ApolloClassASInsetLayoutSpec;
         if (!insetClass) return %orig;
         return [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsZero child:host];
     } @catch (__unused id e) {}
@@ -3066,7 +3066,7 @@ static RDKLink *ApolloDevvitLinkOfParent(id parent) {
 // feed row's live widget (iPhone), then a fresh load.
 static void ApolloDevvitMountCommentsHeadersInView(UIView *root) {
     if (!root) return;
-    Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
+    Class richMediaClass = ApolloClassRichMediaNode;
     for (id parent in sDevvitHostParents.allObjects) {
         if (richMediaClass && [parent isKindOfClass:richMediaClass]) continue;  // feed rows
         if (![parent isNodeLoaded] || ![[parent view] isDescendantOfView:root]) continue;
@@ -3091,7 +3091,7 @@ static void ApolloDevvitReleaseCommentsWidgetsInView(UIView *root) {
     if (!root) return;
     NSArray<ApolloDevvitWidgetView *> *widgets;
     @synchronized ([ApolloDevvitWidgetView class]) { widgets = sDevvitLiveWidgets.allObjects; }
-    Class richMediaClass = NSClassFromString(@"_TtC6Apollo13RichMediaNode");
+    Class richMediaClass = ApolloClassRichMediaNode;
     for (ApolloDevvitWidgetView *w in widgets) {
         if (w.feedContext || !w.webView || w.parked || w.stashedForReadopt) continue;
         if (![w isDescendantOfView:root]) continue;

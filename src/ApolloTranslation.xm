@@ -21,6 +21,7 @@
 #import "ApolloFindInCommentsGlass.h"
 #import "Tweak.h"
 #import "settings/ApolloSettingsGeneralTable.h"
+#import "ApolloClasses.h"
 
 // Generated umbrella header for the Swift compilation unit (ApolloAppleTranslation.swift),
 // which vends the @objc ApolloAppleTranslator used by the on-device "apple" provider.
@@ -654,7 +655,7 @@ static void ApolloHideAllPostInfoMarkers(void);
 // stable derived key when the runtime doesn't expose `name` / `fullName`.
 static NSString *ApolloCommentFullName(RDKComment *comment) {
     if (!comment) return nil;
-    SEL sels[] = { @selector(name), NSSelectorFromString(@"fullName"), NSSelectorFromString(@"identifier"), NSSelectorFromString(@"id") };
+    SEL sels[] = { @selector(name), @selector(fullName), @selector(identifier), @selector(id) };
     for (size_t i = 0; i < sizeof(sels) / sizeof(sels[0]); i++) {
         if ([(id)comment respondsToSelector:sels[i]]) {
             id v = ((id (*)(id, SEL))objc_msgSend)(comment, sels[i]);
@@ -683,7 +684,7 @@ static UITableView *FindFirstTableViewInView(UIView *view) {
 static UITableView *GetCommentsTableView(UIViewController *viewController) {
     id tableNode = ApolloObjectIvar(viewController, "tableNode");
     if (tableNode) {
-        SEL viewSelector = NSSelectorFromString(@"view");
+        SEL viewSelector = @selector(view);
         if ([tableNode respondsToSelector:viewSelector]) {
             UIView *tableNodeView = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSelector);
             if ([tableNodeView isKindOfClass:[UITableView class]]) {
@@ -1362,7 +1363,9 @@ static NSString *ApolloTranslationLinkToken(NSUInteger index) {
 static NSRange ApolloRangeByTrimmingTrailingURLPunctuation(NSString *text, NSRange range) {
     if (range.location == NSNotFound || NSMaxRange(range) > text.length) return range;
 
-    NSCharacterSet *trailingPunctuation = [NSCharacterSet characterSetWithCharactersInString:@".,!?;:"];
+    static NSCharacterSet *trailingPunctuation;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ trailingPunctuation = [NSCharacterSet characterSetWithCharactersInString:@".,!?;:"]; });
     while (range.length > 0) {
         unichar last = [text characterAtIndex:NSMaxRange(range) - 1];
         if (![trailingPunctuation characterIsMember:last]) break;
@@ -1678,11 +1681,14 @@ static NSString *ApolloDisplayStringByConvertingMarkdownLinks(NSString *text, NS
     if (markdownLinksOut) *markdownLinksOut = [NSMutableArray array];
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return text;
 
-    NSError *regexError = nil;
-    NSRegularExpression *markdownLinkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]\\n]+)\\]\\((https?://[^\\s)]+)(?:\\s+\\\"[^\\\"]*\\\")?\\)"
-                                                                                       options:NSRegularExpressionCaseInsensitive
-                                                                                         error:&regexError];
-    if (regexError || !markdownLinkRegex) return text;
+    static NSRegularExpression *markdownLinkRegex;
+    static dispatch_once_t regexOnce;
+    dispatch_once(&regexOnce, ^{
+        markdownLinkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]\\n]+)\\]\\((https?://[^\\s)]+)(?:\\s+\\\"[^\\\"]*\\\")?\\)"
+                                                                      options:NSRegularExpressionCaseInsensitive
+                                                                        error:NULL];
+    });
+    if (!markdownLinkRegex) return text;
 
     NSArray<NSTextCheckingResult *> *matches = [markdownLinkRegex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
     if (matches.count == 0) return text;
@@ -1761,11 +1767,14 @@ static void ApolloLinkifyBareURLs(NSMutableAttributedString *attributed,
                                   NSDictionary *baseAttributes,
                                   NSDictionary *sourceLinkAttributes,
                                   BOOL markdownSource) {
-    NSError *regexError = nil;
-    NSRegularExpression *bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
-                                                                                options:0
-                                                                                  error:&regexError];
-    if (regexError || !bareURLRegex || attributed.length == 0) return;
+    static NSRegularExpression *bareURLRegex;
+    static dispatch_once_t regexOnce;
+    dispatch_once(&regexOnce, ^{
+        bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
+                                                                 options:0
+                                                                   error:NULL];
+    });
+    if (!bareURLRegex || attributed.length == 0) return;
 
     NSArray<NSTextCheckingResult *> *matches = [bareURLRegex matchesInString:attributed.string options:0 range:NSMakeRange(0, attributed.length)];
     for (NSTextCheckingResult *match in matches) {
@@ -2205,7 +2214,7 @@ static void ApolloCollectAttributedTextNodesBounded(id object,
     if (!object || depth < 0) return;
     if (visited.count >= maxVisited) return;
 
-    Class displayNodeCls = NSClassFromString(@"ASDisplayNode");
+    Class displayNodeCls = ApolloClassASDisplayNode;
     BOOL isDisplayNode = displayNodeCls && [object isKindOfClass:displayNodeCls];
     BOOL isView = [object isKindOfClass:[UIView class]];
     if (!isDisplayNode && !isView) return;
@@ -2230,7 +2239,7 @@ static void ApolloCollectAttributedTextNodesBounded(id object,
     // hop back to the backing node so the normal subnode traversal can find
     // ASTextNode/ASTextNode2 children.
     @try {
-        SEL nodeSelectors[] = { NSSelectorFromString(@"asyncdisplaykit_node"), NSSelectorFromString(@"node") };
+        SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
         for (size_t i = 0; i < sizeof(nodeSelectors) / sizeof(nodeSelectors[0]); i++) {
             SEL selector = nodeSelectors[i];
             if (![object respondsToSelector:selector]) continue;
@@ -2245,7 +2254,7 @@ static void ApolloCollectAttributedTextNodesBounded(id object,
     if (depth == 0) return;
 
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([object respondsToSelector:subnodesSel]) {
             NSArray *subnodes = ((id (*)(id, SEL))objc_msgSend)(object, subnodesSel);
             if ([subnodes isKindOfClass:[NSArray class]]) {
@@ -2261,7 +2270,7 @@ static void ApolloCollectAttributedTextNodesBounded(id object,
     // Only descend into UIView subviews when the node already has its view
     // loaded — querying `-view` would force-load and is wrong off-main anyway.
     @try {
-        SEL isViewLoadedSel = NSSelectorFromString(@"isNodeLoaded");
+        SEL isViewLoadedSel = @selector(isNodeLoaded);
         BOOL viewLoaded = isView;
         if (!viewLoaded && [object respondsToSelector:isViewLoadedSel]) {
             viewLoaded = ((BOOL (*)(id, SEL))objc_msgSend)(object, isViewLoadedSel);
@@ -2376,7 +2385,7 @@ static id ApolloBestCommentTextNode(id commentCellNode, RDKComment *comment) {
     // age) comes before the body. On an exact tie (a short body that reads the
     // same as the flair or the author once markup is folded away) prefer Apollo's
     // body text node, so the translation never lands in the byline.
-    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    Class markdownTextNode = ApolloClassMarkdownTextNode;
     BOOL bestIsBody = NO;
 
     for (id candidateNode in candidates) {
@@ -2460,8 +2469,8 @@ static void ApolloTranslationScheduleHostHeightCommit(id cellNode) {
 }
 
 static void ApolloForceRelayoutForTextNodeAndOwner(id owner, id textNode) {
-    SEL invalidateSel = NSSelectorFromString(@"invalidateCalculatedLayout");
-    SEL supernodeSel = NSSelectorFromString(@"supernode");
+    SEL invalidateSel = @selector(invalidateCalculatedLayout);
+    SEL supernodeSel = @selector(supernode);
 
     void (^nudgeObject)(id) = ^(id object) {
         if (!object) return;
@@ -2553,7 +2562,7 @@ static void ApolloLogUnmatchedCommentBodyOnce(id commentCellNode, RDKComment *co
     NSString *fullName = ApolloCommentFullName(comment);
     if (fullName.length == 0) return;
 
-    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    Class markdownTextNode = ApolloClassMarkdownTextNode;
     NSMutableArray *candidates = [NSMutableArray array];
     NSHashTable *visited = [[NSHashTable alloc] initWithOptions:NSHashTableObjectPointerPersonality capacity:32];
     ApolloCollectAttributedTextNodes(commentCellNode, 5, visited, candidates);
@@ -2860,7 +2869,7 @@ static void ApolloRestoreOriginalForCellNode(id commentCellNode, RDKComment *com
 // ivar name even if it doesn't match our wishlist.
 static RDKLink *ApolloLinkFromHeaderCellNode(id cellNode) {
     if (!cellNode) return nil;
-    Class rdkLink = NSClassFromString(@"RDKLink");
+    Class rdkLink = ApolloClassRDKLink;
     if (!rdkLink) return nil;
 
     // Fast path — common names.
@@ -2902,7 +2911,7 @@ static RDKLink *ApolloLinkFromHeaderCellNode(id cellNode) {
 
 static RDKLink *ApolloLinkFromController(UIViewController *vc) {
     if (!vc) return nil;
-    Class rdkLink = NSClassFromString(@"RDKLink");
+    Class rdkLink = ApolloClassRDKLink;
     if (!rdkLink) return nil;
     static const char *kNames[] = {
         "link", "post", "thing", "currentLink", "currentPost", "_link", "_post", NULL
@@ -2953,10 +2962,10 @@ static NSString *ApolloPostBodyTextFromLink(RDKLink *link) {
     NSMutableArray<NSString *> *candidates = [NSMutableArray array];
     SEL stringSelectors[] = {
         @selector(selfText),
-        NSSelectorFromString(@"selftext"),
-        NSSelectorFromString(@"body"),
-        NSSelectorFromString(@"text"),
-        NSSelectorFromString(@"content"),
+        @selector(selftext),
+        @selector(body),
+        @selector(text),
+        @selector(content),
     };
     for (size_t i = 0; i < sizeof(stringSelectors) / sizeof(stringSelectors[0]); i++) {
         if ([(id)link respondsToSelector:stringSelectors[i]]) {
@@ -3050,7 +3059,7 @@ static NSString *ApolloVisibleTextFromNode(id textNode) {
 static UIView *ApolloViewForTextObject(id object) {
     if ([object isKindOfClass:[UIView class]]) return (UIView *)object;
     @try {
-        SEL isLoadedSel = NSSelectorFromString(@"isNodeLoaded");
+        SEL isLoadedSel = @selector(isNodeLoaded);
         if ([object respondsToSelector:isLoadedSel] && !((BOOL (*)(id, SEL))objc_msgSend)(object, isLoadedSel)) {
             return nil;
         }
@@ -3066,7 +3075,7 @@ static UIView *ApolloViewForTextObject(id object) {
 static CGFloat ApolloFirstVisibleCommentTopY(UIViewController *viewController, UITableView *tableView) {
     CGFloat top = CGFLOAT_MAX;
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSelector = NSSelectorFromString(@"node");
+        SEL nodeSelector = @selector(node);
         if (![cell respondsToSelector:nodeSelector]) continue;
         id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
         if (!ApolloCommentFromCellNode(cellNode)) continue;
@@ -3086,11 +3095,12 @@ static CGFloat ApolloFirstVisibleCommentTopY(UIViewController *viewController, U
 // the real body silently never translates.
 static BOOL ApolloNodeIsInsideLinkPreviewCard(id node) {
     id current = node;
+    SEL supernodeSelector = @selector(supernode);
     for (int hop = 0; hop < 8 && current; hop++) {
         if ([NSStringFromClass([current class]) containsString:@"LinkButtonNode"]) return YES;
-        if (![current respondsToSelector:NSSelectorFromString(@"supernode")]) return NO;
+        if (![current respondsToSelector:supernodeSelector]) return NO;
         @try {
-            current = ((id (*)(id, SEL))objc_msgSend)(current, NSSelectorFromString(@"supernode"));
+            current = ((id (*)(id, SEL))objc_msgSend)(current, supernodeSelector);
         } @catch (__unused NSException *e) {
             return NO;
         }
@@ -3112,14 +3122,15 @@ static BOOL ApolloNodeIsInsideLinkPreviewCard(id node) {
 // hook prepended a new avatar, the longer byline re-qualified on the next pass,
 // and each round pushed the name one space further right.
 static BOOL ApolloNodeIsInsidePostInfoRow(id node) {
-    Class postInfoClass = objc_getClass("_TtC6Apollo12PostInfoNode");
+    Class postInfoClass = ApolloClassPostInfoNode;
     if (!postInfoClass) return NO;
     id current = node;
+    SEL supernodeSelector = @selector(supernode);
     for (int hop = 0; hop < 8 && current; hop++) {
         if ([current isKindOfClass:postInfoClass]) return YES;
-        if (![current respondsToSelector:NSSelectorFromString(@"supernode")]) return NO;
+        if (![current respondsToSelector:supernodeSelector]) return NO;
         @try {
-            current = ((id (*)(id, SEL))objc_msgSend)(current, NSSelectorFromString(@"supernode"));
+            current = ((id (*)(id, SEL))objc_msgSend)(current, supernodeSelector);
         } @catch (__unused NSException *e) {
             return NO;
         }
@@ -3141,7 +3152,7 @@ static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewC
     // first pass after push, lost on later passes, so the stale-key guard
     // then blocked the returning translation from ever applying.
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSelector = NSSelectorFromString(@"node");
+        SEL nodeSelector = @selector(node);
         id cellNode = [cell respondsToSelector:nodeSelector]
             ? ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector) : nil;
         if (!cellNode) cellNode = cell.contentView ?: cell;
@@ -5157,7 +5168,7 @@ static RDKComment *ApolloCommentFromCellNode(id commentCellNode) {
     if (!commentCellNode) return nil;
 
     id comment = ApolloObjectIvar(commentCellNode, "comment");
-    Class rdkCommentClass = NSClassFromString(@"RDKComment");
+    Class rdkCommentClass = ApolloClassRDKComment;
     if (!rdkCommentClass || ![comment isMemberOfClass:rdkCommentClass]) return nil;
     return (RDKComment *)comment;
 }
@@ -6009,7 +6020,7 @@ static void ApolloMaybeTranslatePostHeaderForController(UIViewController *viewCo
     }
 
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSelector = NSSelectorFromString(@"node");
+        SEL nodeSelector = @selector(node);
         id cellNode = nil;
         if ([cell respondsToSelector:nodeSelector]) {
             cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
@@ -6055,7 +6066,7 @@ static void ApolloReapplyCommentCellNodesInTree(id object, NSInteger depth, NSHa
     if ([visited containsObject:object]) return;
     [visited addObject:object];
 
-    Class displayNodeCls = NSClassFromString(@"ASDisplayNode");
+    Class displayNodeCls = ApolloClassASDisplayNode;
     BOOL isDisplayNode = displayNodeCls && [object isKindOfClass:displayNodeCls];
     BOOL isView = [object isKindOfClass:[UIView class]];
     if (!isDisplayNode && !isView) return;
@@ -6076,7 +6087,7 @@ static void ApolloReapplyCommentCellNodesInTree(id object, NSInteger depth, NSHa
     }
 
     @try {
-        SEL nodeSelectors[] = { NSSelectorFromString(@"asyncdisplaykit_node"), NSSelectorFromString(@"node") };
+        SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
         for (size_t i = 0; i < sizeof(nodeSelectors) / sizeof(nodeSelectors[0]); i++) {
             SEL selector = nodeSelectors[i];
             if (![object respondsToSelector:selector]) continue;
@@ -6086,7 +6097,7 @@ static void ApolloReapplyCommentCellNodesInTree(id object, NSInteger depth, NSHa
     } @catch (__unused NSException *e) {}
 
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([object respondsToSelector:subnodesSel]) {
             NSArray *subnodes = ((id (*)(id, SEL))objc_msgSend)(object, subnodesSel);
             if ([subnodes isKindOfClass:[NSArray class]]) {
@@ -6118,7 +6129,7 @@ static void ApolloRestoreCommentCellNodesInTree(id object, NSInteger depth, NSHa
     if ([visited containsObject:object]) return;
     [visited addObject:object];
 
-    Class displayNodeCls = NSClassFromString(@"ASDisplayNode");
+    Class displayNodeCls = ApolloClassASDisplayNode;
     BOOL isDisplayNode = displayNodeCls && [object isKindOfClass:displayNodeCls];
     BOOL isView = [object isKindOfClass:[UIView class]];
     if (!isDisplayNode && !isView) return;
@@ -6137,7 +6148,7 @@ static void ApolloRestoreCommentCellNodesInTree(id object, NSInteger depth, NSHa
     }
 
     @try {
-        SEL nodeSelectors[] = { NSSelectorFromString(@"asyncdisplaykit_node"), NSSelectorFromString(@"node") };
+        SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
         for (size_t i = 0; i < sizeof(nodeSelectors) / sizeof(nodeSelectors[0]); i++) {
             SEL selector = nodeSelectors[i];
             if (![object respondsToSelector:selector]) continue;
@@ -6147,7 +6158,7 @@ static void ApolloRestoreCommentCellNodesInTree(id object, NSInteger depth, NSHa
     } @catch (__unused NSException *e) {}
 
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([object respondsToSelector:subnodesSel]) {
             NSArray *subnodes = ((id (*)(id, SEL))objc_msgSend)(object, subnodesSel);
             if ([subnodes isKindOfClass:[NSArray class]]) {
@@ -6179,7 +6190,7 @@ static void ApolloTranslateVisibleCommentsForController(UIViewController *viewCo
     if (!tableView) return;
 
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSelector = NSSelectorFromString(@"node");
+        SEL nodeSelector = @selector(node);
         if (![cell respondsToSelector:nodeSelector]) continue;
 
         id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
@@ -6249,7 +6260,7 @@ static void ApolloForceVisibleCommentsTableRelayoutForController(UIViewControlle
                 [cell setNeedsLayout];
                 [cell.contentView setNeedsLayout];
                 [cell layoutIfNeeded];
-                SEL nodeSelector = NSSelectorFromString(@"node");
+                SEL nodeSelector = @selector(node);
                 if ([cell respondsToSelector:nodeSelector]) {
                     id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
                     ApolloForceRelayoutForTextNodeAndOwner(cellNode, nil);
@@ -6289,7 +6300,7 @@ static void ApolloRestoreVisibleCommentsForController(UIViewController *viewCont
     ApolloRestoreOriginalForHeaderCellNode(viewController.view, controllerLink);
 
     for (UITableViewCell *cell in [tableView visibleCells]) {
-        SEL nodeSelector = NSSelectorFromString(@"node");
+        SEL nodeSelector = @selector(node);
         id cellNode = nil;
         if ([cell respondsToSelector:nodeSelector]) {
             cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
@@ -6485,7 +6496,7 @@ static void ApolloEnsureMarkerTappableOnNode(id textNode) {
 // Walk up from a text node to its enclosing *CommentCellNode (ASDK).
 static id ApolloCommentCellNodeForTextNode(id textNode) {
     if (!textNode) return nil;
-    SEL supernodeSel = NSSelectorFromString(@"supernode");
+    SEL supernodeSel = @selector(supernode);
     id current = textNode;
     for (int hops = 0; current && hops < 12; hops++) {
         const char *cn = class_getName([current class]);
@@ -6750,7 +6761,7 @@ static void ApolloCollectOwnedTextNodesInNodeSubtree(id node, int depth, NSMutab
         }
     } @catch (__unused NSException *e) {}
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([node respondsToSelector:subnodesSel]) {
             NSArray *subs = ((NSArray *(*)(id, SEL))objc_msgSend)(node, subnodesSel);
             if ([subs isKindOfClass:[NSArray class]]) {
@@ -6766,7 +6777,7 @@ static void ApolloCollectNodesOfClassInSubtree(id node, Class cls, int depth, NS
     [visited addObject:node];
     if ([node isKindOfClass:cls] && ![out containsObject:node]) [out addObject:node];
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([node respondsToSelector:subnodesSel]) {
             NSArray *subs = ((NSArray *(*)(id, SEL))objc_msgSend)(node, subnodesSel);
             if ([subs isKindOfClass:[NSArray class]]) {
@@ -6798,7 +6809,7 @@ static void ApolloToggleTranslationForTitleNode(id textNode) {
     id cellNode = nil;
     {
         id current = textNode;
-        SEL supernodeSel = NSSelectorFromString(@"supernode");
+        SEL supernodeSel = @selector(supernode);
         for (int hops = 0; current && hops < 12; hops++) {
             const char *cn = class_getName([current class]);
             if (cn && strstr(cn, "CellNode")) { cellNode = current; break; }
@@ -6965,7 +6976,7 @@ static NSAttributedString *ApolloTranslationCompactCodeMarkerAttributedString(NS
 // and scan each ancestor (the title node lives beside the postInfoNode in the
 // feed cell; the header cell node holds it directly).
 static id ApolloPostInfoNodeFromContainerNode(id node) {
-    Class piCls = objc_getClass("_TtC6Apollo12PostInfoNode");
+    Class piCls = ApolloClassPostInfoNode;
     if (!node || !piCls) return nil;
     if ([node isMemberOfClass:piCls]) return node;
     for (Class cls = [node class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
@@ -6989,7 +7000,7 @@ static id ApolloFindPostInfoNodeInSubtree(id node, Class piCls, int depth) {
     if (!node || depth < 0) return nil;
     if ([node isMemberOfClass:piCls]) return node;
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([node respondsToSelector:subnodesSel]) {
             NSArray *subs = ((id (*)(id, SEL))objc_msgSend)(node, subnodesSel);
             if ([subs isKindOfClass:[NSArray class]]) {
@@ -7004,9 +7015,9 @@ static id ApolloFindPostInfoNodeInSubtree(id node, Class piCls, int depth) {
 }
 
 static id ApolloPostInfoNodeForAnyNode(id anyNode) {
-    Class piCls = objc_getClass("_TtC6Apollo12PostInfoNode");
+    Class piCls = ApolloClassPostInfoNode;
     if (!anyNode || !piCls) return nil;
-    SEL supernodeSel = NSSelectorFromString(@"supernode");
+    SEL supernodeSel = @selector(supernode);
     id current = anyNode;
     for (int hops = 0; current && hops < 14; hops++) {
         // ivar-based (fast, but skips _Atomic Swift ivars)…
@@ -7047,7 +7058,7 @@ static UIFont *ApolloStatFontFromNode(id node, int depth) {
         }
     } @catch (__unused NSException *e) {}
     @try {
-        SEL sel = NSSelectorFromString(@"attributedTitleForState:");
+        SEL sel = @selector(attributedTitleForState:);
         if ([node respondsToSelector:sel]) {
             id s = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(node, sel, 0);   // UIControlStateNormal
             UIFont *f = ApolloFontFromAttributedString(s);
@@ -7055,7 +7066,7 @@ static UIFont *ApolloStatFontFromNode(id node, int depth) {
         }
     } @catch (__unused NSException *e) {}
     @try {
-        SEL sel = NSSelectorFromString(@"titleNode");
+        SEL sel = @selector(titleNode);
         if ([node respondsToSelector:sel]) {
             id tn = ((id (*)(id, SEL))objc_msgSend)(node, sel);
             if (tn && tn != node) { UIFont *f = ApolloStatFontFromNode(tn, depth - 1); if (f) return f; }
@@ -7468,7 +7479,7 @@ static void ApolloReserveMarkerSlotInCompactRow(UILabel *label, id postInfoNode,
     // Re-run layout so the wrap decision sees the reservation; bubble to the
     // cell node so the row height can grow for the wrapped line.
     @try { if ([postInfoNode respondsToSelector:@selector(setNeedsLayout)]) [postInfoNode setNeedsLayout]; } @catch (__unused NSException *e) {}
-    Class cellCls = NSClassFromString(@"ASCellNode");
+    Class cellCls = ApolloClassASCellNode;
     id node = postInfoNode;
     for (int i = 0; i < 8 && node; i++) {
         @try {
@@ -7492,7 +7503,6 @@ static void ApolloHideAllPostInfoMarkers(void) {
         }
     }
 }
-
 
 static BOOL ApolloTextMatchesTranslatedDisplayText(NSString *visibleText, NSString *translatedText) {
     if (ApolloTextQualifiesAsBodyCandidate(visibleText, translatedText)) return YES;
@@ -7541,7 +7551,7 @@ static BOOL ApolloFindVisibleTranslatedTitleOwnedTextNodeInTree(id object, NSInt
     if (!object || depth < 0) return NO;
     if (visited.count >= 2048) return NO;
 
-    Class displayNodeCls = NSClassFromString(@"ASDisplayNode");
+    Class displayNodeCls = ApolloClassASDisplayNode;
     BOOL isDisplayNode = displayNodeCls && [object isKindOfClass:displayNodeCls];
     BOOL isView = [object isKindOfClass:[UIView class]];
     if (!isDisplayNode && !isView) return NO;
@@ -7567,7 +7577,7 @@ static BOOL ApolloFindVisibleTranslatedTitleOwnedTextNodeInTree(id object, NSInt
     } @catch (__unused NSException *e) {}
 
     @try {
-        SEL nodeSelectors[] = { NSSelectorFromString(@"asyncdisplaykit_node"), NSSelectorFromString(@"node") };
+        SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
         for (size_t i = 0; i < sizeof(nodeSelectors) / sizeof(nodeSelectors[0]); i++) {
             SEL selector = nodeSelectors[i];
             if (![object respondsToSelector:selector]) continue;
@@ -7577,7 +7587,7 @@ static BOOL ApolloFindVisibleTranslatedTitleOwnedTextNodeInTree(id object, NSInt
     } @catch (__unused NSException *e) {}
 
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([object respondsToSelector:subnodesSel]) {
             NSArray *subnodes = ((id (*)(id, SEL))objc_msgSend)(object, subnodesSel);
             if ([subnodes isKindOfClass:[NSArray class]]) {
@@ -8464,8 +8474,8 @@ static void ApolloRestoreAllOwnedTextNodes(void) {
         // Same problem as the apply path: the enclosing ASCellNode caches
         // the (longer) translated layout, so without an explicit transition
         // the original text gets truncated to "Benfica..." until you scroll.
-        SEL invalidateSel = NSSelectorFromString(@"invalidateCalculatedLayout");
-        SEL supernodeSel = NSSelectorFromString(@"supernode");
+        SEL invalidateSel = @selector(invalidateCalculatedLayout);
+        SEL supernodeSel = @selector(supernode);
         @try {
             if ([textNode respondsToSelector:invalidateSel]) {
                 ((void (*)(id, SEL))objc_msgSend)(textNode, invalidateSel);
@@ -8492,7 +8502,7 @@ static void ApolloRestoreAllOwnedTextNodes(void) {
                 hops++;
             }
             if (cellNode) {
-                SEL transitionSel = NSSelectorFromString(@"transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:");
+                SEL transitionSel = @selector(transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:);
                 if ([cellNode respondsToSelector:transitionSel]) {
                     NSMethodSignature *sig = [cellNode methodSignatureForSelector:transitionSel];
                     if (sig) {
@@ -8845,14 +8855,9 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
     }
     // Register this text node on the visible header cell so toggle-off can
     // find it via kApolloHeaderTranslatedTextNodeKey lookup.
-    {
-        UIViewController *currentVC = sVisibleCommentsViewController;
-        if ([currentVC respondsToSelector:@selector(view)]) {
-            UIView *vcView = [(UIViewController *)currentVC view];
-            if (vcView && !objc_getAssociatedObject(vcView, kApolloHeaderTranslatedTextNodeKey)) {
-                objc_setAssociatedObject(vcView, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            }
-        }
+    UIView *vcView = sVisibleCommentsViewController.view;
+    if (vcView && !objc_getAssociatedObject(vcView, kApolloHeaderTranslatedTextNodeKey)) {
+        objc_setAssociatedObject(vcView, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (swapOut) *swapOut = swap;
     ApolloTranslationVerboseLog(@"[Translation/vote] preempt: unowned node=%p matched VC stash → SYNC swap (len=%lu)", textNode, (unsigned long)translated.length);
@@ -9049,8 +9054,8 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode);
 
 static UIViewController *ApolloEnclosingViewControllerForNode(id node) {
     if (!node) return nil;
-    SEL supernodeSel = NSSelectorFromString(@"supernode");
-    SEL isLoadedSel = NSSelectorFromString(@"isNodeLoaded");
+    SEL supernodeSel = @selector(supernode);
+    SEL isLoadedSel = @selector(isNodeLoaded);
     SEL viewSel = @selector(view);
 
     id current = node;
@@ -9113,7 +9118,6 @@ static UIViewController *ApolloOwningCommentsVCForCellNode(id cellNode) {
     return vc; // may be nil; callers handle that
 }
 
-
 // when toggling the feed/thread globe on so that already-visible cells get
 // translated immediately (the didLoad/preload/display hooks only fire on
 // new cells).
@@ -9123,7 +9127,7 @@ static void ApolloRescanTitleNodesInTree(id object, NSInteger depth, NSHashTable
     if ([visited containsObject:object]) return;
     [visited addObject:object];
 
-    Class displayNodeCls = NSClassFromString(@"ASDisplayNode");
+    Class displayNodeCls = ApolloClassASDisplayNode;
     BOOL isDisplayNode = displayNodeCls && [object isKindOfClass:displayNodeCls];
 
     if (isDisplayNode) {
@@ -9139,7 +9143,7 @@ static void ApolloRescanTitleNodesInTree(id object, NSInteger depth, NSHashTable
     }
 
     @try {
-        SEL nodeSelectors[] = { NSSelectorFromString(@"asyncdisplaykit_node"), NSSelectorFromString(@"node") };
+        SEL nodeSelectors[] = { @selector(asyncdisplaykit_node), @selector(node) };
         for (size_t i = 0; i < sizeof(nodeSelectors) / sizeof(nodeSelectors[0]); i++) {
             SEL sel = nodeSelectors[i];
             if (![object respondsToSelector:sel]) continue;
@@ -9149,7 +9153,7 @@ static void ApolloRescanTitleNodesInTree(id object, NSInteger depth, NSHashTable
     } @catch (__unused NSException *e) {}
 
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([object respondsToSelector:subnodesSel]) {
             NSArray *subs = ((id (*)(id, SEL))objc_msgSend)(object, subnodesSel);
             if ([subs isKindOfClass:[NSArray class]]) {
@@ -9236,7 +9240,7 @@ static id ApolloFindPostTitleNodeInSubtree(id node, int depth) {
     const char *cn = class_getName([node class]);
     if (cn && strstr(cn, "PostTitle")) return node;
     @try {
-        SEL subnodesSel = NSSelectorFromString(@"subnodes");
+        SEL subnodesSel = @selector(subnodes);
         if ([node respondsToSelector:subnodesSel]) {
             NSArray *subs = ((id (*)(id, SEL))objc_msgSend)(node, subnodesSel);
             if ([subs isKindOfClass:[NSArray class]]) {
@@ -9493,7 +9497,7 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
     // hooking those to invoke maybe-translate is what caused the v17 stack-
     // overflow crash. Calling them ourselves from this un-hooked function
     // is safe.
-    SEL invalidateSel = NSSelectorFromString(@"invalidateCalculatedLayout");
+    SEL invalidateSel = @selector(invalidateCalculatedLayout);
     @try {
         if ([textNode respondsToSelector:invalidateSel]) {
             ((void (*)(id, SEL))objc_msgSend)(textNode, invalidateSel);
@@ -9510,7 +9514,7 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
         // based on the title's old size. Invalidate the chain of supernodes
         // until we hit the table/collection node.
         id supernode = nil;
-        SEL supernodeSel = NSSelectorFromString(@"supernode");
+        SEL supernodeSel = @selector(supernode);
         if ([titleNode respondsToSelector:supernodeSel]) {
             supernode = ((id (*)(id, SEL))objc_msgSend)(titleNode, supernodeSel);
         }
@@ -9540,7 +9544,7 @@ static void ApolloApplyTranslationToTitleNode(id titleNode, id textNode, NSStrin
         // the cached row height for the original (shorter) title — that's
         // what causes the "Benfica em Roma" -> "Benfica..." truncation.
         if (cellNode) {
-            SEL transitionSel = NSSelectorFromString(@"transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:");
+            SEL transitionSel = @selector(transitionLayoutWithAnimation:shouldMeasureAsync:measurementCompletion:);
             if ([cellNode respondsToSelector:transitionSel]) {
                 NSMethodSignature *sig = [cellNode methodSignatureForSelector:transitionSel];
                 if (sig) {
@@ -9578,7 +9582,7 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
         id sn = titleNode;
         id cellNode = nil;
         int hops = 0;
-        SEL supernodeSel = NSSelectorFromString(@"supernode");
+        SEL supernodeSel = @selector(supernode);
         while (sn && hops < 10) {
             const char *cn = class_getName([sn class]);
             if (cn && strstr(cn, "PostCellNode")) { cellNode = sn; break; }
@@ -10423,7 +10427,7 @@ static void ApolloFeedVCInstallGlobe(UIViewController *vc) {
 }
 
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)animated completion:(void (^)(void))completion {
-    if (sEnableBulkTranslation && [vc isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) {
+    if (sEnableBulkTranslation && [vc isKindOfClass:ApolloClassActionController]) {
         NSUInteger removed = ApolloRemoveNativeTranslateActions(vc);
         if (removed > 0) {
             ApolloLog(@"[Translation] Removed %lu native Translate action(s)", (unsigned long)removed);
@@ -10715,7 +10719,7 @@ static void ApolloRestoreGlobeBeforeSearchDismissal(UINavigationItem *navItem,
 static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *navItem,
                                                             NSArray<UIBarButtonItem *> *items) {
     if (!IsLiquidGlass() || sApplyingGlobeMerge || items.count != 1 ||
-        items.firstObject.action != NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:") ||
+        items.firstObject.action != @selector(cancelBarButtonItemTappedWithSender:) ||
         [objc_getAssociatedObject(navItem, kApolloGlobeRemovalPendingKey) boolValue]) return items;
     UIButton *globe = objc_getAssociatedObject(navItem, kApolloGlobeMergeButtonKey);
     if (!globe || ApolloNativeActionMenuOwnsNavigationSurface(ApolloNavigationActionsMenuSourceView(globe))) return items;
@@ -10757,7 +10761,7 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
     if (ApolloFindInCommentsGlassOwnsRightItems(self)) return; // comments find navigator holds the group
     if (objc_getAssociatedObject(self, kApolloGlobeMergeButtonKey)) {
         ApolloApplyGlobeMergeForNavItem(self);
-    } else if (IsLiquidGlass()) {
+    } else {
         // No globe on this nav item — still make the stock container sit
         // symmetrically in its glass capsule.
         ApolloNormalizeTrailingPillPaddingForNavItem(self);
@@ -10779,7 +10783,7 @@ static NSArray<UIBarButtonItem *> *ApolloSearchItemsWithGlobe(UINavigationItem *
     if (ApolloFindInCommentsGlassOwnsRightItems(self)) return; // comments find navigator holds the group
     if (objc_getAssociatedObject(self, kApolloGlobeMergeButtonKey)) {
         ApolloApplyGlobeMergeForNavItem(self);
-    } else if (IsLiquidGlass()) {
+    } else {
         ApolloNormalizeTrailingPillPaddingForNavItem(self);
     }
 }

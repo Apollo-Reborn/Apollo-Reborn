@@ -29,6 +29,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloWebJSON.h"          // keyless widgets: token_v2 bearer + probe marker
 #import "ApolloWebSessionStore.h"  // ApolloActiveWebSessionUsername
+#import "ApolloClasses.h"
 
 // Section builders / keys here are wired up incrementally; tolerate not-yet-used
 // ones under the project's -Werror without per-symbol annotations.
@@ -218,15 +219,6 @@ static inline ApolloSBDimension ApolloSBAutoDim(void) { return (ApolloSBDimensio
 @end
 
 #pragma mark - Class accessors
-
-static Class ApolloSBNodeClass(void)    { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASDisplayNode"); }); return c; }
-static Class ApolloSBTextClass(void)    { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASTextNode"); }); return c; }
-static Class ApolloSBButtonClass(void)  { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASButtonNode"); }); return c; }
-static Class ApolloSBControlClass(void) { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASControlNode"); }); return c; }
-static Class ApolloSBImageClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASNetworkImageNode"); }); return c; }
-static Class ApolloSBStackClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASStackLayoutSpec"); }); return c; }
-static Class ApolloSBInsetClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASInsetLayoutSpec"); }); return c; }
-static Class ApolloSBRatioClass(void)   { static Class c; static dispatch_once_t o; dispatch_once(&o, ^{ c = objc_getClass("ASRatioLayoutSpec"); }); return c; }
 
 #pragma mark - Small utilities
 
@@ -518,7 +510,7 @@ static const CGFloat kApolloSBSectionTitleSize = 20.0;
 static const CGFloat kApolloSBCommunityIconDiameter = 34.0;
 
 static ASTextNode *ApolloSBMakeTitleNode(NSString *title) {
-    ASTextNode *node = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *node = [[ApolloClassASTextNode alloc] init];
     node.attributedText = [[NSAttributedString alloc] initWithString:(title ?: @"") attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:kApolloSBSectionTitleSize weight:UIFontWeightBold],
         NSForegroundColorAttributeName: UIColor.labelColor,
@@ -531,21 +523,21 @@ static ASTextNode *ApolloSBMakeTitleNode(NSString *title) {
 // One stat column: small grey uppercase label on top, big bold count below
 // (matching the native header it replaces).
 static ASDisplayNode *ApolloSBMakeStatColumn(NSString *label, NSString *value) {
-    ASTextNode *labelNode = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *labelNode = [[ApolloClassASTextNode alloc] init];
     labelNode.attributedText = [[NSAttributedString alloc] initWithString:[label uppercaseString] attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
         NSKernAttributeName: @(0.4),
     }];
-    ASTextNode *countNode = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *countNode = [[ApolloClassASTextNode alloc] init];
     countNode.attributedText = [[NSAttributedString alloc] initWithString:(value ?: @"—") attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold],
         NSForegroundColorAttributeName: UIColor.labelColor,
     }];
-    ASDisplayNode *col = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *col = [[ApolloClassASDisplayNode alloc] init];
     col.automaticallyManagesSubnodes = YES;
     col.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:3.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:3.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignCenter
                                                          children:@[labelNode, countNode]];
     };
@@ -553,10 +545,10 @@ static ASDisplayNode *ApolloSBMakeStatColumn(NSString *label, NSString *value) {
 }
 
 static ASDisplayNode *ApolloSBBuildStatsSection(NSArray<ASDisplayNode *> *columns) {
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:12.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:12.0
                                                    justifyContent:ApolloSBJustifySpaceAround alignItems:ApolloSBAlignCenter
                                                          children:columns];
     };
@@ -576,7 +568,7 @@ static ASDisplayNode *ApolloSBBuildFlairSection(NSString *title, NSArray *order,
         BOOL lightText = [ApolloSBString(tpl[@"textColor"]) isEqualToString:@"light"];
         UIColor *textColor = background ? (lightText ? UIColor.whiteColor : [UIColor colorWithWhite:0.1 alpha:1.0]) : UIColor.labelColor;
 
-        ASButtonNode *chip = [[ApolloSBButtonClass() alloc] init];
+        ASButtonNode *chip = [[ApolloClassASButtonNode alloc] init];
         [chip setTitle:ApolloSBStripEmojiTokens(text) withFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold] withColor:textColor forState:0];
         chip.backgroundColor = background ?: [UIColor colorWithWhite:0.5 alpha:0.25];
         chip.cornerRadius = 13.0;
@@ -592,14 +584,14 @@ static ASDisplayNode *ApolloSBBuildFlairSection(NSString *title, NSArray *order,
     if (chipNodes.count == 0) return nil;
 
     ASTextNode *titleNode = ApolloSBMakeTitleNode(title.length ? title : @"Search by Flair");
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        ASStackLayoutSpec *cloud = [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
+        ASStackLayoutSpec *cloud = [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
                                                                        justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStart children:chipNodes];
         cloud.flexWrap = kApolloSBFlexWrapWrap;
         cloud.lineSpacing = 8.0;
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:12.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:12.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:@[titleNode, cloud]];
     };
     return container;
@@ -613,7 +605,7 @@ static ASControlNode *ApolloSBBuildCommunityRow(NSDictionary *community, UIViewC
     NSString *iconURL = ApolloSBString(community[@"communityIcon"]) ?: ApolloSBString(community[@"iconUrl"]);
     long long subs = ApolloSBLongLong(community[@"subscribers"]);
 
-    ASNetworkImageNode *icon = [[ApolloSBImageClass() alloc] init];
+    ASNetworkImageNode *icon = [[ApolloClassASNetworkImageNode alloc] init];
     if (iconURL.length) icon.URL = [NSURL URLWithString:iconURL];
     icon.contentMode = UIViewContentModeScaleAspectFill;
     icon.clipsToBounds = YES;
@@ -621,12 +613,12 @@ static ASControlNode *ApolloSBBuildCommunityRow(NSDictionary *community, UIViewC
     icon.placeholderColor = [UIColor secondarySystemFillColor];
     icon.style.preferredSize = CGSizeMake(kApolloSBCommunityIconDiameter, kApolloSBCommunityIconDiameter);
 
-    ASTextNode *nameNode = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *nameNode = [[ApolloClassASTextNode alloc] init];
     nameNode.attributedText = [[NSAttributedString alloc] initWithString:[@"r/" stringByAppendingString:name] attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.labelColor,
     }];
-    ASTextNode *subsNode = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *subsNode = [[ApolloClassASTextNode alloc] init];
     subsNode.attributedText = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"%@ members", ApolloSBFormatCount(subs)] attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular],
         NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
@@ -637,13 +629,13 @@ static ASControlNode *ApolloSBBuildCommunityRow(NSDictionary *community, UIViewC
     target.hostVC = hostVC;
     [tapTargets addObject:target];
 
-    ASControlNode *row = [[ApolloSBControlClass() alloc] init];
+    ASControlNode *row = [[ApolloClassASControlNode alloc] init];
     row.automaticallyManagesSubnodes = YES;
     [row addTarget:target action:@selector(linkTapped:) forControlEvents:kApolloSBControlEventTouchUpInside];
     row.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        ASStackLayoutSpec *textCol = [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:1.0
+        ASStackLayoutSpec *textCol = [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:1.0
                                                                          justifyContent:ApolloSBJustifyCenter alignItems:ApolloSBAlignStart children:@[nameNode, subsNode]];
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:10.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:10.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignCenter children:@[icon, textCol]];
     };
     return row;
@@ -659,10 +651,10 @@ static ASDisplayNode *ApolloSBBuildCommunityListSection(NSString *title, NSArray
     if (rows.count == 0) return nil;
 
     // Body only (no title) — the caller wraps this in a collapsible header.
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:12.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:12.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:rows];
     };
     return container;
@@ -672,7 +664,7 @@ static ASDisplayNode *ApolloSBBuildCommunityListSection(NSString *title, NSArray
 
 static ASButtonNode *ApolloSBMakeLinkPill(NSString *text, NSString *urlString, UIColor *fill, UIColor *textColor,
                                           UIViewController *hostVC, NSMutableArray *tapTargets) {
-    ASButtonNode *btn = [[ApolloSBButtonClass() alloc] init];
+    ASButtonNode *btn = [[ApolloClassASButtonNode alloc] init];
     [btn setTitle:(text ?: @"") withFont:[UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold]
         withColor:(textColor ?: UIColor.labelColor) forState:0];
     btn.backgroundColor = fill ?: [UIColor colorWithWhite:0.5 alpha:0.18];
@@ -705,10 +697,10 @@ static ASDisplayNode *ApolloSBBuildLinkGroupSection(NSString *title, NSArray<NSD
     if (title.length) [children addObject:ApolloSBMakeTitleNode(title)];
     [children addObjectsFromArray:pills];
 
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:8.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:8.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:children];
     };
     return container;
@@ -743,7 +735,7 @@ static ASDisplayNode *ApolloSBBuildImageSection(NSDictionary *w, UIViewControlle
     CGFloat ih = [img[@"height"] isKindOfClass:[NSNumber class]] ? [img[@"height"] doubleValue] : 0;
     CGFloat ratio = (iw > 0 && ih > 0) ? (ih / iw) : 0.42; // height:width
 
-    ASNetworkImageNode *imageNode = [[ApolloSBImageClass() alloc] init];
+    ASNetworkImageNode *imageNode = [[ApolloClassASNetworkImageNode alloc] init];
     imageNode.URL = [NSURL URLWithString:url];
     imageNode.contentMode = UIViewContentModeScaleAspectFill;
     imageNode.clipsToBounds = YES;
@@ -753,7 +745,7 @@ static ASDisplayNode *ApolloSBBuildImageSection(NSDictionary *w, UIViewControlle
     NSString *title = ApolloSBString(w[@"shortName"]);
     ASTextNode *titleNode = title.length ? ApolloSBMakeTitleNode(title) : nil;
 
-    ASControlNode *container = [[ApolloSBControlClass() alloc] init];
+    ASControlNode *container = [[ApolloClassASControlNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     if (linkURL.length) {
         ApolloSBLinkTapTarget *t = [[ApolloSBLinkTapTarget alloc] init];
@@ -763,9 +755,9 @@ static ASDisplayNode *ApolloSBBuildImageSection(NSDictionary *w, UIViewControlle
         [container addTarget:t action:@selector(linkTapped:) forControlEvents:kApolloSBControlEventTouchUpInside];
     }
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        ASLayoutSpec *ratioSpec = [ApolloSBRatioClass() ratioLayoutSpecWithRatio:ratio child:imageNode];
+        ASLayoutSpec *ratioSpec = [ApolloClassASRatioLayoutSpec ratioLayoutSpecWithRatio:ratio child:imageNode];
         if (!titleNode) return ratioSpec;
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:10.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:10.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:@[titleNode, ratioSpec]];
     };
     return container;
@@ -816,7 +808,7 @@ static char kApolloSBCollapsedKey;       // NSNumber(BOOL) on the collapsible co
 static ASTextNode *ApolloSBMakePillTitleNode(NSString *title) {
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
     para.alignment = NSTextAlignmentCenter;
-    ASTextNode *node = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *node = [[ApolloClassASTextNode alloc] init];
     node.attributedText = [[NSAttributedString alloc] initWithString:(title ?: @"") attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.labelColor,
@@ -836,10 +828,10 @@ static ASDisplayNode *ApolloSBMakeCollapsibleEx(NSString *title, ASDisplayNode *
                                                 ASDisplayNode *scrollNode, NSMutableArray *tapTargets) {
     if (!body) return nil;
     ASTextNode *titleNode = isSubSection ? ApolloSBMakePillTitleNode(title) : ApolloSBMakeTitleNode(title);
-    ASTextNode *chevron = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *chevron = [[ApolloClassASTextNode alloc] init];
     chevron.attributedText = ApolloSBChevronText(startCollapsed);
 
-    ASControlNode *header = [[ApolloSBControlClass() alloc] init];
+    ASControlNode *header = [[ApolloClassASControlNode alloc] init];
     header.automaticallyManagesSubnodes = YES;
     if (isSubSection) {
         // Pill header: same dark rounded background + padding as a link cell, with
@@ -851,18 +843,18 @@ static ASDisplayNode *ApolloSBMakeCollapsibleEx(NSString *title, ASDisplayNode *
         titleNode.style.flexGrow = 1.0;
         titleNode.style.flexShrink = 1.0;
         header.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-            ASStackLayoutSpec *row = [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
+            ASStackLayoutSpec *row = [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
                                                        justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignCenter children:@[titleNode, chevron]];
-            return [ApolloSBInsetClass() insetLayoutSpecWithInsets:UIEdgeInsetsMake(11, 14, 11, 14) child:row];
+            return [ApolloClassASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(11, 14, 11, 14) child:row];
         };
     } else {
         header.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-            return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
+            return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
                                                        justifyContent:ApolloSBJustifySpaceBetween alignItems:ApolloSBAlignCenter children:@[titleNode, chevron]];
         };
     }
 
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     objc_setAssociatedObject(container, &kApolloSBCollapsedKey, startCollapsed ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
@@ -877,7 +869,7 @@ static ASDisplayNode *ApolloSBMakeCollapsibleEx(NSString *title, ASDisplayNode *
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *node, struct CDStruct_90e057aa cs) {
         BOOL collapsed = [objc_getAssociatedObject(node, &kApolloSBCollapsedKey) boolValue];
         NSArray *children = collapsed ? @[header] : @[header, body];
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:innerSpacing
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:innerSpacing
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:children];
     };
     return container;
@@ -898,7 +890,7 @@ static ASDisplayNode *ApolloSBBuildMenuSection(NSString *title, NSDictionary *me
 
     // The section container is created up front so each group's collapse target can
     // invalidate it on toggle (nested relayout — its block captures children by value).
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
 
     NSMutableArray *children = [NSMutableArray array]; // section children, IN ORDER
@@ -939,7 +931,7 @@ static ASDisplayNode *ApolloSBBuildMenuSection(NSString *title, NSDictionary *me
     if (children.count == 0 || (title.length && children.count == 1)) return nil;
 
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:8.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:8.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:children];
     };
     return container;
@@ -979,13 +971,6 @@ static int32_t sApolloSBLiveSidebarVCs = 0;
 // flight, so the stash cannot grow without bound.
 static const NSUInteger kApolloSBMaxStashedBlocks = 32;
 
-static Class ApolloSBMarkdownNodeClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ cls = objc_getClass("_TtC6Apollo12MarkdownNode"); });
-    return cls;
-}
-
 // Apollo's original spec (collapsed stats header + description/bio markdown) is
 // spliced into the section stack at this order — just under our stats (order 0),
 // above the TOC (30) and all widget sections.
@@ -1021,10 +1006,10 @@ static void ApolloSBInstallSection(ASDisplayNode *scrollNode, ApolloSBSection *s
                     [children addObject:origSpec];
                     origInserted = YES;
                 }
-                [children addObject:[ApolloSBInsetClass() insetLayoutSpecWithInsets:s.insets child:s.node]];
+                [children addObject:[ApolloClassASInsetLayoutSpec insetLayoutSpecWithInsets:s.insets child:s.node]];
             }
             if (origSpec && !origInserted) [children addObject:origSpec];
-            return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:0.0
+            return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:0.0
                                                        justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:children];
         };
     }
@@ -1037,7 +1022,7 @@ static ASDisplayNode *ApolloSBBuildTOC(NSArray<ApolloSBSection *> *sections, ASD
     NSMutableArray *chips = [NSMutableArray array];
     for (ApolloSBSection *s in sections) {
         if (s.tocTitle.length == 0 || !s.node) continue;
-        ASButtonNode *chip = [[ApolloSBButtonClass() alloc] init];
+        ASButtonNode *chip = [[ApolloClassASButtonNode alloc] init];
         [chip setTitle:s.tocTitle withFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold] withColor:UIColor.labelColor forState:0];
         chip.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.18];
         chip.cornerRadius = 14.0;
@@ -1052,20 +1037,20 @@ static ASDisplayNode *ApolloSBBuildTOC(NSArray<ApolloSBSection *> *sections, ASD
     }
     if (chips.count < 2) return nil; // a single tab isn't worth a TOC
 
-    ASTextNode *titleNode = [[ApolloSBTextClass() alloc] init];
+    ASTextNode *titleNode = [[ApolloClassASTextNode alloc] init];
     titleNode.attributedText = [[NSAttributedString alloc] initWithString:@"Jump to a Section" attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: UIColor.labelColor,
     }];
 
-    ASDisplayNode *container = [[ApolloSBNodeClass() alloc] init];
+    ASDisplayNode *container = [[ApolloClassASDisplayNode alloc] init];
     container.automaticallyManagesSubnodes = YES;
     container.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-        ASStackLayoutSpec *row = [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
+        ASStackLayoutSpec *row = [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:8.0
                                                                     justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStart children:chips];
         row.flexWrap = kApolloSBFlexWrapWrap;
         row.lineSpacing = 8.0;
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:10.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:10.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStretch children:@[titleNode, row]];
     };
     return container;
@@ -1165,16 +1150,16 @@ static void ApolloSBBuildSidebarSections(UIViewController *vc, NSDictionary *roo
         markdownNode.clipsToBounds = YES;
         markdownNode.style.maxHeight = ApolloSBPoints(kApolloSBBioCollapsedHeight);
         objc_setAssociatedObject(markdownNode, &kApolloSBBioExpandedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ASButtonNode *moreBtn = [[ApolloSBButtonClass() alloc] init];
+        ASButtonNode *moreBtn = [[ApolloClassASButtonNode alloc] init];
         [moreBtn setTitle:@"Show more" withFont:[UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold] withColor:UIColor.secondaryLabelColor forState:0];
         ApolloSBBioToggleTarget *bt = [[ApolloSBBioToggleTarget alloc] init];
         bt.markdownNode = markdownNode; bt.scrollNode = scrollNode; bt.button = moreBtn;
         [tapTargets addObject:bt];
         [moreBtn addTarget:bt action:@selector(toggle:) forControlEvents:kApolloSBControlEventTouchUpInside];
-        ASDisplayNode *moreContainer = [[ApolloSBNodeClass() alloc] init];
+        ASDisplayNode *moreContainer = [[ApolloClassASDisplayNode alloc] init];
         moreContainer.automaticallyManagesSubnodes = YES;
         moreContainer.layoutSpecBlock = ^ASLayoutSpec *(ASDisplayNode *n, struct CDStruct_90e057aa cs) {
-            return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:0.0
+            return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackHorizontal spacing:0.0
                                                        justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStart children:@[moreBtn]];
         };
         ApolloSBAddSection(vc, scrollNode, moreContainer, kApolloSBOrigSpecOrder + 1, nil, UIEdgeInsetsMake(8, 16, 0, 16));
@@ -1484,7 +1469,7 @@ static NSAttributedString *ApolloSBTrimDuplicateSections(NSAttributedString *att
         %orig;
         return;
     }
-    Class mdc = ApolloSBMarkdownNodeClass();
+    Class mdc = ApolloClassMarkdownNode;
     if (mdc && [(id)self respondsToSelector:@selector(delegate)]) {
         id del = ((id (*)(id, SEL))objc_msgSend)((id)self, @selector(delegate));
         if ([del isKindOfClass:mdc]) {
@@ -1514,7 +1499,7 @@ static NSAttributedString *ApolloSBTrimDuplicateSections(NSAttributedString *att
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
     if ([objc_getAssociatedObject(self, &kApolloSBCollapseHeaderKey) boolValue]) {
-        return [ApolloSBStackClass() stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:0.0
+        return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:ApolloSBStackVertical spacing:0.0
                                                    justifyContent:ApolloSBJustifyStart alignItems:ApolloSBAlignStart children:@[]];
     }
     return %orig;

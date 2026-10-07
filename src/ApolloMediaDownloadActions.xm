@@ -7,10 +7,6 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloSaveAllMedia.h"
 
-static id ApolloMediaActionGet(id object, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
-    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
 
 @interface ApolloInlineVideoActionContext : NSObject
 @property (nonatomic, strong) ApolloSaveAllMediaItem *item;
@@ -25,8 +21,8 @@ static char kApolloInlineVideoActionContext;
 static ApolloInlineVideoActionContext *sApolloInlineVideoBuilding;
 
 static NSURL *ApolloInlineVideoPreviewURL(id link) {
-    id preview = ApolloMediaActionGet(link, @"previewVideo");
-    NSURL *url = ApolloMediaActionGet(preview, @"fallbackURL");
+    id preview = ApolloSendObject(link, @selector(previewVideo));
+    NSURL *url = ApolloSendObject(preview, @selector(fallbackURL));
     // Only replace the external-post route with its actual API-provided
     // downloadable preview. Do not guess host URLs or mutate the shared post.
     if (![url isKindOfClass:NSURL.class] ||

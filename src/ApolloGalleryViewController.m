@@ -13,6 +13,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 // Target tile width. The column count is derived from it so the grid widens
 // sensibly on iPad and in landscape instead of stretching two huge columns.
@@ -162,15 +163,6 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
 // same memory-safe way the viewer plays it — compressed data plus a small
 // frame window, never every frame as a bitmap (issue #1000). Resolved once;
 // nil means GIF tiles without an mp4 transcode simply stay stills.
-static Class ApolloGalleryTileImageViewClass(void) {
-    static Class viewClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        viewClass = NSClassFromString(@"FLAnimatedImageView") ?: UIImageView.class;
-    });
-    return viewClass;
-}
-
 // FLAnimatedImageView keeps animating whatever it was last handed until the
 // animation is cleared explicitly (its -setImage: only clears it for a non-nil
 // image), so every change of what a tile shows goes through here.
@@ -227,7 +219,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         self.contentView.layer.cornerCurve = kCACornerCurveContinuous;
         self.contentView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.14];
 
-        _imageView = [[ApolloGalleryTileImageViewClass() alloc] initWithFrame:self.contentView.bounds];
+        _imageView = [[(ApolloClassFLAnimatedImageView ?: UIImageView.class) alloc] initWithFrame:self.contentView.bounds];
         _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _imageView.contentMode = UIViewContentModeScaleAspectFill;
         _imageView.clipsToBounds = YES;

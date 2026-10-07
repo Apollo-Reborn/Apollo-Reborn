@@ -11,6 +11,7 @@
 #import "ApolloSaveAllMediaItems.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloToast.h"
+#import "ApolloClasses.h"
 
 // This is our own carousel class. Its native-open helper also serves its
 // ordinary tap recognizer, including the correct index for pages beyond 3.
@@ -55,15 +56,10 @@ static char kApolloFeedAlbumShareFile;
 }
 @end
 
-static id ApolloFeedAlbumGet(id object, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
-    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
-
 static UIView *ApolloFeedAlbumNodeView(id node) {
-    SEL loaded = NSSelectorFromString(@"isNodeLoaded");
+    SEL loaded = @selector(isNodeLoaded);
     if (![node respondsToSelector:loaded] || !((BOOL (*)(id, SEL))objc_msgSend)(node, loaded)) return nil;
-    id view = ApolloFeedAlbumGet(node, @"view");
+    id view = ApolloSendObject(node, @selector(view));
     return [view isKindOfClass:UIView.class] ? view : nil;
 }
 
@@ -77,7 +73,7 @@ static BOOL ApolloFeedAlbumContainsPoint(UIView *view, UIView *source, CGPoint p
 }
 
 static ApolloFeedGalleryCarouselView *ApolloFeedAlbumCarouselInView(UIView *view) {
-    if ([view isKindOfClass:NSClassFromString(@"ApolloFeedGalleryCarouselView")]) return (id)view;
+    if ([view isKindOfClass:ApolloClassApolloFeedGalleryCarouselView]) return (id)view;
     for (UIView *child in view.subviews) {
         ApolloFeedGalleryCarouselView *carousel = ApolloFeedAlbumCarouselInView(child);
         if (carousel) return carousel;
@@ -87,18 +83,18 @@ static ApolloFeedGalleryCarouselView *ApolloFeedAlbumCarouselInView(UIView *view
 
 static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteraction *interaction, CGPoint location) {
     UIView *source = interaction.view;
-    id cell = ApolloFeedAlbumGet(source, @"asyncdisplaykit_node") ?: ApolloFeedAlbumGet(source, @"node");
-    BOOL compact = [cell isKindOfClass:NSClassFromString(@"Apollo.CompactPostCellNode")];
-    if (!compact && ![cell isKindOfClass:NSClassFromString(@"Apollo.LargePostCellNode")]) return nil;
+    id cell = ApolloSendObject(source, @selector(asyncdisplaykit_node)) ?: ApolloSendObject(source, @selector(node));
+    BOOL compact = [cell isKindOfClass:ApolloClassCompactPostCellNode];
+    if (!compact && ![cell isKindOfClass:ApolloClassLargePostCellNode]) return nil;
     id link = ApolloObjectIvar(cell, "link");
     if (!ApolloSaveAllMediaLinkHasCollection(link)) return nil;
-    UIViewController *presenter = ApolloFeedAlbumGet(cell, @"closestViewController");
+    UIViewController *presenter = ApolloSendObject(cell, @selector(closestViewController));
     if (![presenter isKindOfClass:UIViewController.class] || !presenter.viewIfLoaded.window) return nil;
 
     ApolloFeedAlbumMenuContext *context = [ApolloFeedAlbumMenuContext new];
     context.cell = cell;
     context.link = link;
-    context.albumURL = ApolloFeedAlbumGet(link, @"URL");
+    context.albumURL = ApolloSendObject(link, @selector(URL));
     context.presenter = presenter;
     context.compact = compact;
     context.albumOverview = compact;
@@ -108,7 +104,7 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
         context.sourceView = ApolloFeedAlbumNodeView(thumbnail);
         if (!ApolloFeedAlbumContainsPoint(context.sourceView, source, location)) return nil;
         context.thumbnail = thumbnail;
-        context.previewImage = ApolloFeedAlbumGet(ApolloObjectIvar(thumbnail, "thumbnailNode"), @"image");
+        context.previewImage = ApolloSendObject(ApolloObjectIvar(thumbnail, "thumbnailNode"), @selector(image));
     } else {
         id rich = ApolloObjectIvar(cell, "richMediaNode");
         id album = ApolloObjectIvar(rich, "albumThumbnailsNode");
@@ -146,7 +142,7 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
                 context.index = index;
                 context.sourceView = view;
                 context.thumbnail = thumbnail;
-                context.previewImage = ApolloFeedAlbumGet(thumbnail, @"image");
+                context.previewImage = ApolloSendObject(thumbnail, @selector(image));
                 break;
             }
             if (!context.sourceView) {
@@ -335,7 +331,7 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         if (context.carousel) [context.carousel apollo_openPageAtIndex:(NSInteger)context.index];
         else {
             id target = context.compact ? context.cell : context.richMedia;
-            SEL selector = NSSelectorFromString(context.compact ? @"thumbnailTappedWithSender:" : @"albumThumbnailButtonTappedWithSender:");
+            SEL selector = context.compact ? @selector(thumbnailTappedWithSender:) : @selector(albumThumbnailButtonTappedWithSender:);
             if ([target respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(target, selector, context.thumbnail);
         }
     }];

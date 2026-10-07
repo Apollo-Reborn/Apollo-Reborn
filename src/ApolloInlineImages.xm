@@ -31,6 +31,7 @@
 #import <math.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 // MARK: - Minimal Texture forward declarations
 // We don't import AsyncDisplayKit headers (the build doesn't have them on the
@@ -198,8 +199,8 @@ static char kApolloImageChestItemsKey;         // NSArray<NSDictionary *> direct
 static ASDisplayNode *ApolloInlineHostForNode(id node) {
     ASDisplayNode *cursor =
         [node respondsToSelector:@selector(supernode)] ? [node supernode] : nil;
-    Class markdownNodeClass = objc_getClass("_TtC6Apollo12MarkdownNode");
-    Class linkButtonNodeClass = objc_getClass("_TtC6Apollo14LinkButtonNode");
+    Class markdownNodeClass = ApolloClassMarkdownNode;
+    Class linkButtonNodeClass = ApolloClassLinkButtonNode;
     for (NSUInteger depth = 0; cursor && depth < 24; depth++, cursor = cursor.supernode) {
         if ((markdownNodeClass && [cursor isKindOfClass:markdownNodeClass]) ||
             (linkButtonNodeClass && [cursor isKindOfClass:linkButtonNodeClass])) {
@@ -239,33 +240,6 @@ static NSDictionary *ApolloMediaMetadataForHostWithState(ASDisplayNode *hostMark
                                                           BOOL *foundHostModelOut);
 static NSDictionary *ApolloMediaMetadataForHost(ASDisplayNode *hostMarkdownNode);
 
-// MARK: - Class lookups (cached)
-
-static Class ApolloASStackLayoutSpecClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = NSClassFromString(@"ASStackLayoutSpec"); });
-    return c;
-}
-static Class ApolloASRatioLayoutSpecClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = NSClassFromString(@"ASRatioLayoutSpec"); });
-    return c;
-}
-static Class ApolloASInsetLayoutSpecClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = NSClassFromString(@"ASInsetLayoutSpec"); });
-    return c;
-}
-static Class ApolloASTextNodeClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = NSClassFromString(@"ASTextNode"); });
-    return c;
-}
-static Class ApolloASNetworkImageNodeClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = NSClassFromString(@"ASNetworkImageNode"); });
-    return c;
-}
 static NSMutableSet<NSString *> *ApolloInlineSuppressionKeys(void) {
     static NSMutableSet<NSString *> *keys;
     static dispatch_once_t once;
@@ -2285,8 +2259,8 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                         // a fresh manager has no wallpaperSavingViewController.
                         // This reports the confirmed Photos result; it performs no save.
                         id manager = owner.profileBannerPresentation
-                            ? [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init] : nil;
-                        SEL saved = NSSelectorFromString(@"image:didFinishSavingWithError:contextInfo:");
+                            ? [[objc_getClass("_TtC6Apollo17ShareMediaManager") alloc] init] : nil;
+                        SEL saved = @selector(image:didFinishSavingWithError:contextInfo:);
                         if ([manager respondsToSelector:saved]) {
                             owner.toastLabel.alpha = 0.0;
                             ((void (*)(id, SEL, id, id, void *))objc_msgSend)(manager, saved, nil, nil, NULL);
@@ -2982,12 +2956,12 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
     // Surface the new size. Prefer the debounced per-host scheduler (one
     // re-measure per burst); fall back to Texture's direct "intrinsic size
     // changed" climb only when the node has no live inline host.
-    if ([imageNode isKindOfClass:[ApolloASNetworkImageNodeClass() class]] &&
+    if ([imageNode isKindOfClass:ApolloClassASNetworkImageNode] &&
         ApolloInlineHostForNode(imageNode)) {
         ApolloScheduleCoalescedHostRelayout((ASNetworkImageNode *)imageNode, nil);
         return;
     }
-    SEL sel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+    SEL sel = @selector(_u_setNeedsLayoutFromAbove);
     if (![imageNode respondsToSelector:sel]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         ((void (*)(id, SEL))objc_msgSend)(imageNode, sel);
@@ -3008,7 +2982,7 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 // and stays governed by Apollo's native autoplay setting.
 static BOOL ApolloNodeDescendsFromMarkdownNode(ASDisplayNode *node) {
     ASDisplayNode *cursor = node.supernode;
-    Class markdownNodeClass = objc_getClass("_TtC6Apollo12MarkdownNode");
+    Class markdownNodeClass = ApolloClassMarkdownNode;
     int depth = 0;
     while (cursor && depth < 12) {
         if (markdownNodeClass && [cursor isKindOfClass:markdownNodeClass]) return YES;
@@ -3433,7 +3407,7 @@ static void ApolloHostRelayoutPerform(ASDisplayNode *host) {
         if ([cls containsString:@"CellNode"]) cellNode = n;
         n = n.supernode;
     }
-    SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+    SEL relayoutSel = @selector(_u_setNeedsLayoutFromAbove);
     id target = cellNode ?: host;
     if ([target respondsToSelector:relayoutSel]) {
         ((void (*)(id, SEL))objc_msgSend)(target, relayoutSel);
@@ -3539,7 +3513,6 @@ static UIImage *ApolloPlayOverlayImage(void) {
     });
     return image;
 }
-
 
 // The small corner badges for tap-to-play GIFs — play triangle while paused,
 // pause bars while playing. Same visual language as the video play circle,
@@ -4389,7 +4362,7 @@ static void ApolloInstallStackedCardForImageNode(ASNetworkImageNode *imageNode) 
 // in layout immediately, then resolves the real poster URL + ratio
 // asynchronously in didLoad (after Texture connects the supernode chain).
 static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL) {
-    Class imageNodeClass = ApolloASNetworkImageNodeClass();
+    Class imageNodeClass = ApolloClassASNetworkImageNode;
     if (!imageNodeClass) return nil;
 
     ASNetworkImageNode *imageNode = [[imageNodeClass alloc] init];
@@ -4511,7 +4484,7 @@ static ASNetworkImageNode *ApolloMakeInlineVideoThumbnailNode(NSURL *videoURL) {
 
 static ASNetworkImageNode *ApolloMakeInlineImageNode(NSURL *normalizedURL,
                                                       ASDisplayNode *hostMarkdownNode) {
-    Class imageNodeClass = ApolloASNetworkImageNodeClass();
+    Class imageNodeClass = ApolloClassASNetworkImageNode;
     if (!imageNodeClass) return nil;
 
     // Imgur/ImageChest album URLs need an API roundtrip or page fetch to resolve to a
@@ -4706,7 +4679,7 @@ static void ApolloRefreshInlineMediaLayout(void) {
     @synchronized (sApolloInlineMediaLayoutNodes) {
         nodes = sApolloInlineMediaLayoutNodes.allObjects;
     }
-    SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+    SEL relayoutSel = @selector(_u_setNeedsLayoutFromAbove);
     NSUInteger relaid = 0;
     for (ASDisplayNode *node in nodes) {
         if (![node respondsToSelector:relayoutSel]) continue;
@@ -4822,7 +4795,7 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         imageNode.borderWidth = 0.0;
     }
 
-    ASRatioLayoutSpec *ratioSpec = [ApolloASRatioLayoutSpecClass() ratioLayoutSpecWithRatio:containerRatio child:imageNode];
+    ASRatioLayoutSpec *ratioSpec = [ApolloClassASRatioLayoutSpec ratioLayoutSpecWithRatio:containerRatio child:imageNode];
     [[ratioSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
 
     // User-selected inline media size (100/75/50% of the row width). Applied
@@ -4848,7 +4821,7 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
         rightInset = slack * 0.5;
     }
     UIEdgeInsets insets = UIEdgeInsetsMake(4, leftInset, 4, rightInset);
-    ASInsetLayoutSpec *insetSpec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:insets child:ratioSpec];
+    ASInsetLayoutSpec *insetSpec = [ApolloClassASInsetLayoutSpec insetLayoutSpecWithInsets:insets child:ratioSpec];
     [[insetSpec style] setValue:@(ApolloASStackLayoutAlignSelfStretch) forKey:@"alignSelf"];
     return insetSpec;
 }
@@ -4872,7 +4845,7 @@ static ASLayoutSpec *ApolloWrapImageNodeForLayout(ASNetworkImageNode *imageNode,
 // loading, but reserving no space — which preserves the old "appears once the
 // ratio is known" behavior via the didLoadImage → relayout-from-above pass.
 static ASLayoutSpec *ApolloHiddenInlineLeafSpec(ASDisplayNode *leaf) {
-    ASInsetLayoutSpec *spec = [ApolloASInsetLayoutSpecClass() insetLayoutSpecWithInsets:UIEdgeInsetsZero child:leaf];
+    ASInsetLayoutSpec *spec = [ApolloClassASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsZero child:leaf];
     [[spec style] setValue:[NSValue valueWithCGSize:CGSizeZero] forKey:@"preferredSize"];
     return spec;
 }
@@ -4924,7 +4897,7 @@ static void ApolloRequestMarkdownRelayout(ASDisplayNode *hostMarkdownNode) {
             [n setNeedsLayout];
             n = n.supernode;
         }
-        SEL relayoutSel = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+        SEL relayoutSel = @selector(_u_setNeedsLayoutFromAbove);
         if ([hostMarkdownNode respondsToSelector:relayoutSel]) {
             ((void (*)(id, SEL))objc_msgSend)(hostMarkdownNode, relayoutSel);
         }
@@ -5407,7 +5380,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
     id origSpec = %orig;
     if (!sEnableInlineImages) return origSpec;
-    if (![origSpec isKindOfClass:ApolloASStackLayoutSpecClass()]) return origSpec;
+    if (![origSpec isKindOfClass:ApolloClassASStackLayoutSpec]) return origSpec;
 
     ASStackLayoutSpec *stack = (ASStackLayoutSpec *)origSpec;
     NSArray *origChildren = stack.children;
@@ -5465,8 +5438,8 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         // node instance twice in one layout, which crashes the layout
         // transition (see ApolloBuildLeavesForTextNode).
         NSMutableSet<NSString *> *seenAbs = [NSMutableSet set];
-        Class textNodeCls = ApolloASTextNodeClass();
-        Class imageNodeCls = ApolloASNetworkImageNodeClass();
+        Class textNodeCls = ApolloClassASTextNode;
+        Class imageNodeCls = ApolloClassASNetworkImageNode;
         for (id child in origChildren) {
             if (![child isKindOfClass:textNodeCls]) continue;
             NSArray *leaves = ApolloBuildLeavesForTextNode((ASTextNode *)child, (ASDisplayNode *)self, seenAbs);
@@ -5498,7 +5471,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
             for (NSString *cachedURL in cachedURLs) {
                 if (![referencedURLs containsObject:cachedURL]) {
                     ASNetworkImageNode *staleNode = imageCache[cachedURL];
-                    if ([staleNode isKindOfClass:[ApolloASNetworkImageNodeClass() class]]) {
+                    if ([staleNode isKindOfClass:ApolloClassASNetworkImageNode]) {
                         ApolloClearInlineGIFNodeState(staleNode);
                     }
                     [imageCache removeObjectForKey:cachedURL];
@@ -5528,7 +5501,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
     // so ASM inserts them into the tree and they start loading; DIDLOAD then
     // triggers a layout-from-above and they get their real size on that pass.
     NSMutableArray *augmented = [NSMutableArray arrayWithCapacity:origChildren.count];
-    Class imageNodeCls = ApolloASNetworkImageNodeClass();
+    Class imageNodeCls = ApolloClassASNetworkImageNode;
     CGFloat rowMaxWidth = constrainedSize.max.width;
     // Invariant: no node instance may appear twice in one layout — a node
     // occupies a single _subnodes slot, so a duplicate desyncs the layout
@@ -5558,7 +5531,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         }
     }
 
-    ASStackLayoutSpec *newSpec = [ApolloASStackLayoutSpecClass() stackLayoutSpecWithDirection:stack.direction
+    ASStackLayoutSpec *newSpec = [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:stack.direction
                                                                                       spacing:stack.spacing
                                                                                // Override Apollo's spaceBetween — it spreads our
                                                                                // multi-child augmented layout when slack is available.
@@ -5601,7 +5574,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         BOOL alreadyInlined = ApolloLinkButtonHasInlineHost((ASDisplayNode *)self)
                            || ApolloInlineSuppressionContainsURL(url);
         if (alreadyInlined) {
-            Class layoutSpecCls = NSClassFromString(@"ASLayoutSpec");
+            Class layoutSpecCls = ApolloClassASLayoutSpec;
             if (layoutSpecCls) {
                 ASLayoutSpec *empty = [[layoutSpecCls alloc] init];
                 [[empty style] setValue:[NSValue valueWithCGSize:CGSizeZero] forKey:@"preferredSize"];
@@ -5630,7 +5603,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
                               || ApolloInlineSuppressionContainsURL(url);
     if (!haveInlineReplacement) return %orig;
 
-    Class layoutSpecCls = NSClassFromString(@"ASLayoutSpec");
+    Class layoutSpecCls = ApolloClassASLayoutSpec;
     if (!layoutSpecCls) return %orig;
 
     ASLayoutSpec *empty = [[layoutSpecCls alloc] init];

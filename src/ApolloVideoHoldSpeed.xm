@@ -105,18 +105,10 @@ static const UIImpactFeedbackStyle kHoldHapticStyle = UIImpactFeedbackStyleMediu
 // speeding up; for slow-motion speeds (<1×) the bare multiplier is clearer and the
 // arrows would actively mislead. Mirrors whatever the user picked in settings.
 static NSAttributedString *HoldOverlayText(float speed) {
-    NSString *num;
-    if (fabsf(speed - 0.25f) < 0.001f)      num = @"0.25";
-    else if (fabsf(speed - 0.5f)  < 0.001f) num = @"0.5";
-    else if (fabsf(speed - 0.75f) < 0.001f) num = @"0.75";
-    else if (fabsf(speed - 1.25f) < 0.001f) num = @"1.25";
-    else if (fabsf(speed - 1.5f)  < 0.001f) num = @"1.5";
-    else if (fabsf(speed - 2.0f)  < 0.001f) num = @"2";
-    else                                    num = [NSString stringWithFormat:@"%g", speed];
     // U+00D7 multiplication sign; chevrons only when boosting.
     NSString *s = (speed > 1.0f)
-        ? [NSString stringWithFormat:@"%@%C ⏵⏵", num, (unichar)0x00D7]
-        : [NSString stringWithFormat:@"%@%C", num, (unichar)0x00D7];
+        ? [NSString stringWithFormat:@"%g%C ⏵⏵", speed, (unichar)0x00D7]
+        : [NSString stringWithFormat:@"%g%C", speed, (unichar)0x00D7];
     return [[NSAttributedString alloc] initWithString:s attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold],
         NSForegroundColorAttributeName: [UIColor whiteColor],
@@ -140,7 +132,7 @@ static AVPlayer *PlayerFromLayer(CALayer *layer) {
 
 static AVPlayer *PlayerFromView(UIView *view) {
     if (!view) return nil;
-    SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
+    SEL playerLayerSel = @selector(playerLayer);
     if ([view respondsToSelector:playerLayerSel]) {
         id pl = ((id (*)(id, SEL))objc_msgSend)(view, playerLayerSel);
         if ([pl isKindOfClass:[AVPlayerLayer class]]) {
@@ -442,10 +434,7 @@ static void CollectContextMenuInteractions(UIView *view,
 
     // A single confirmation tap the moment the speed kicks in — the tactile
     // equivalent of the overlay, like YouTube/Instagram. No-op on devices without a
-    // Taptic Engine. (Created/prepared on touch-down; create defensively in case.)
-    if (!self.hapticGenerator) {
-        self.hapticGenerator = [[UIImpactFeedbackGenerator alloc] initWithStyle:kHoldHapticStyle];
-    }
+    // Taptic Engine. (Created/prepared on touch-down.)
     [self.hapticGenerator impactOccurred];
 
     ApolloLog(@"VideoHoldSpeed: engaged %.2fx (prevRate=%.2f)", holdSpeed, self.preHoldRate);
@@ -478,9 +467,7 @@ static void CollectContextMenuInteractions(UIView *view,
 // torn down by a flick-dismiss before the touch ends, so -touchUp never fires),
 // still reset the player we sped up. engagedPlayer is strong, so it's alive here.
 - (void)dealloc {
-    if (self.active && self.engagedPlayer) {
-        [self.engagedPlayer setRate:self.preHoldRate];
-    }
+    if (self.active) [self.engagedPlayer setRate:self.preHoldRate];
 }
 
 #pragma mark Overlay

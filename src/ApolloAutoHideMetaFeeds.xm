@@ -41,6 +41,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 static NSString *const kApolloDisableInSubredditsKey = @"DisableAutoHideReadPostsInSubreddits";
 
@@ -148,7 +149,7 @@ static BOOL ApolloAHTypeIsMetaFeed(id postsVC) {
 // is not lost behind a secondary comments controller. A presented Settings screen
 // replaces the underlying hierarchy, so its toggle still reads the stored value.
 static BOOL ApolloAHOnMetaFeed(void) {
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass) return NO;
     for (UIViewController *leaf in ApolloAHVisibleLeaves()) {
         if ([leaf isMemberOfClass:postsClass] && ApolloAHTypeIsMetaFeed(leaf)) return YES;

@@ -46,7 +46,7 @@ static const float kSpeedSlow = 0.75f;   // inserted after 0.5×
 static const float kSpeedFast = 1.25f;   // inserted before 1.5×
 
 static NSString *MultiplicationSign(void) {
-    return [NSString stringWithFormat:@"%C", (unichar)0x00D7];
+    return @"\u00D7";
 }
 
 // "0.75×" / "1.25×" / "0.5×" / "1.5×" — built with the real U+00D7 so source
@@ -132,7 +132,7 @@ static AVPlayer *PlayerFromLayer(CALayer *layer) {
 
 static AVPlayer *PlayerFromView(UIView *view) {
     if (!view) return nil;
-    SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
+    SEL playerLayerSel = @selector(playerLayer);
     if ([view respondsToSelector:playerLayerSel]) {
         id pl = ((id (*)(id, SEL))objc_msgSend)(view, playerLayerSel);
         if ([pl isKindOfClass:[AVPlayerLayer class]]) {

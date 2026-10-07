@@ -46,6 +46,7 @@
 
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 #pragma mark - Registry
 
@@ -199,7 +200,7 @@ static BOOL ApolloActionMenuControllerIsModeratorOnly(id controller) {
 static char kApolloActionMenuControllerContextKey;
 
 void ApolloActionMenuCaptureContextForController(id controller) {
-    if (![controller isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
+    if (![controller isKindOfClass:ApolloClassActionController]) return;
     if (objc_getAssociatedObject(controller, &kApolloActionMenuControllerContextKey)) return;
     ApolloActionMenuContext context = ApolloActionMenuTakeArmedContext();
     if (!context) return;
@@ -1111,7 +1112,7 @@ static NSIndexPath *ApolloActionMenuWillSelectRow(id self, SEL _cmd, UITableView
 }
 
 static void ApolloActionMenuInstallWillSelect(void) {
-    Class cls = objc_getClass("_TtC6Apollo16ActionController");
+    Class cls = ApolloClassActionController;
     if (!cls) {
         ApolloLog(@"[ActionMenu] ActionController class missing — willSelect dispatch not installed");
         return;

@@ -84,6 +84,8 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloSearchNativeBar.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Apollo's animator object -> the most recently built UIViewPropertyAnimator.
 static const void *kApolloNavAnimatorKey = &kApolloNavAnimatorKey;
@@ -116,12 +118,6 @@ static const CGFloat kApolloNavParallaxDivisor = 3.0;
 static const NSTimeInterval kApolloNavInteractiveDuration = 0.225;
 static const NSTimeInterval kApolloNavNonInteractiveDuration = 0.5;
 static const CGFloat kApolloNavDimAlpha = 0.15;
-
-static BOOL ApolloNavAnimatorIsPresenting(id animator) {
-    Ivar ivar = class_getInstanceVariable([animator class], "isPresenting");
-    if (!ivar) return YES;
-    return *(BOOL *)((char *)(__bridge void *)animator + ivar_getOffset(ivar));
-}
 
 static UIView *ApolloNavMakeShadowView(CGRect frame, UITraitCollection *traits) {
     UIView *shadow = [[UIView alloc] initWithFrame:frame];
@@ -192,7 +188,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     UIViewController *toVC = [ctx viewControllerForKey:UITransitionContextToViewControllerKey];
     UIView *fromView = [ctx viewForKey:UITransitionContextFromViewKey] ?: fromVC.view;
     UIView *toView = [ctx viewForKey:UITransitionContextToViewKey] ?: toVC.view;
-    BOOL push = ApolloNavAnimatorIsPresenting(animatorObject);
+    BOOL push = ApolloReadBoolIvar(animatorObject, "isPresenting", YES);
     UINavigationItem *fromItem = fromVC.navigationItem;
     UISearchController *fromSearch = fromItem.searchController;
     UINavigationController *navigationController = fromVC.navigationController;
@@ -350,7 +346,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     id<UIViewControllerInteractiveTransitioning> interactionController = %orig;
     // Scope the bridge to the Apollo animator replaced below. Preserve a timing provider
     // supplied by the app, and leave non-percent-driven interaction controllers alone.
-    Class animatorClass = objc_getClass("_TtC6Apollo24ApolloNavigationAnimator");
+    Class animatorClass = ApolloClassApolloNavigationAnimator;
     if ([(id)animationController isKindOfClass:animatorClass] &&
         [(id)interactionController isKindOfClass:UIPercentDrivenInteractiveTransition.class]) {
         UIPercentDrivenInteractiveTransition *driver = (id)interactionController;
@@ -403,7 +399,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 
 %ctor {
     if (!IsLiquidGlass()) return;
-    Class animatorClass = objc_getClass("_TtC6Apollo24ApolloNavigationAnimator");
+    Class animatorClass = ApolloClassApolloNavigationAnimator;
     if (!animatorClass || !class_getInstanceVariable(animatorClass, "isPresenting")) {
         ApolloLog(@"[InterruptibleNav] ApolloNavigationAnimator not found or changed shape; inactive");
         return;

@@ -12,6 +12,7 @@
 
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
     static NSRegularExpression *regex;
@@ -24,7 +25,6 @@ NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
     return regex;
 }
 
-static char kApolloMarkdownGifToolbarLastAttemptKey;
 static char kApolloMarkdownGifLoggedDiscoveryKey;
 static char kApolloMarkdownGifLoggedFailureKey;
 // Weak ref so it auto-nils when the compose controller deallocates. Previously
@@ -79,20 +79,6 @@ static ApolloMarkdownGifInjectOutcome ApolloMarkdownGifTryInjectForComposeContro
 static NSString *ApolloMarkdownGifResolveCommentSubreddit(UIViewController *composeController);
 static void ApolloMarkdownGifApplyMediaGating(UIViewController *composeController);
 static void ApolloMarkdownGifShowGatingToast(UIViewController *host, NSString *message);
-
-static BOOL ApolloMarkdownGifClassLooksLikeCompose(UIViewController *controller) {
-    if (!controller) return NO;
-    NSString *className = NSStringFromClass(controller.class);
-    // Only Apollo's own Swift composers (mangled to _TtC6Apollo…). Apple's
-    // MFMessageComposeViewController / MFMailComposeViewController also end in
-    // "ComposeViewController"; running the GIF-injection machinery against those
-    // out-of-process controllers crashes when sharing a post to Messages/Mail
-    // (issue #366).
-    if (![className hasPrefix:@"_TtC6Apollo"]) return NO;
-    return [className hasSuffix:@"ComposeViewController"] ||
-           [className hasSuffix:@"ComposePostViewController"] ||
-           [className hasSuffix:@"WatcherComposerViewController"];
-}
 
 static BOOL ApolloMarkdownGifTextLooksLikeEditor(UITextView *textView) {
     if (!textView) return NO;
@@ -252,7 +238,7 @@ static UIView *ApolloMarkdownGifFindToolbarRowContainer(UIView *imageView, NSArr
 
     // Keep GIF in the native shortcut container so it hides with the other
     // buttons when suggestions or link actions appear.
-    SEL actionsSelector = NSSelectorFromString(@"mainActionButtonsView");
+    SEL actionsSelector = @selector(mainActionButtonsView);
     for (UIView *ancestor = imageView.superview; ancestor; ancestor = ancestor.superview) {
         if (![ancestor respondsToSelector:actionsSelector]) continue;
         UIView *actions = ((id (*)(id, SEL))objc_msgSend)(ancestor, actionsSelector);
@@ -1048,9 +1034,7 @@ static void ApolloMarkdownGifEnumerateWindows(void (^block)(UIWindow *window)) {
 static BOOL ApolloMarkdownGifWindowLooksLikeKeyboardHost(UIWindow *window) {
     if (!window) return NO;
     NSString *className = NSStringFromClass(window.class);
-    return [className containsString:@"RemoteKeyboard"] ||
-           [className containsString:@"TextEffects"] ||
-           [className containsString:@"Keyboard"];
+    return [className containsString:@"Keyboard"] || [className containsString:@"TextEffects"];
 }
 
 static void ApolloMarkdownGifCollectScanRoots(NSMutableArray<UIView *> *roots, UIViewController *composeController) {
@@ -1512,19 +1496,10 @@ static void ApolloMarkdownGifScheduleInjection(UIViewController *composeControll
     }
 }
 
-static void ApolloMarkdownGifThrottledTryInject(UIViewController *controller, NSString *reason) {
+static void ApolloMarkdownGifTryInjectFromLayout(UIViewController *controller) {
     if (controller && ApolloMarkdownGifComposeSessionHasGif(controller)) return;
-
-    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-    NSNumber *last = objc_getAssociatedObject(controller, &kApolloMarkdownGifToolbarLastAttemptKey);
-    if (last && (now - last.doubleValue) < 0.35) {
-        ApolloMarkdownGifTryInjectForComposeController(controller);
-        return;
-    }
-    objc_setAssociatedObject(controller, &kApolloMarkdownGifToolbarLastAttemptKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sApolloMarkdownGifActiveComposeController = controller;
     ApolloMarkdownGifTryInjectForComposeController(controller);
-    (void)reason;
 }
 
 static void ApolloMarkdownGifKeyboardShown(NSNotification *note) {
@@ -1538,17 +1513,6 @@ static void ApolloMarkdownGifKeyboardHidden(NSNotification *note) {
     sApolloMarkdownGifKeyboardVisible = NO;
     NSValue *frameValue = note.userInfo[UIKeyboardFrameEndUserInfoKey];
     if (frameValue) sApolloMarkdownGifKeyboardFrameEnd = frameValue.CGRectValue;
-}
-
-static UIViewController *ApolloMarkdownGifComposeControllerForTextView(UITextView *textView) {
-    UIResponder *responder = textView;
-    while ((responder = responder.nextResponder)) {
-        if ([responder isKindOfClass:[UIViewController class]] &&
-            ApolloMarkdownGifClassLooksLikeCompose((UIViewController *)responder)) {
-            return (UIViewController *)responder;
-        }
-    }
-    return nil;
 }
 
 void ApolloMarkdownGifInstall(void) {
@@ -1580,7 +1544,7 @@ void ApolloMarkdownGifInstall(void) {
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloMarkdownGifThrottledTryInject((UIViewController *)self, @"compose-layout");
+    ApolloMarkdownGifTryInjectFromLayout((UIViewController *)self);
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -1616,7 +1580,7 @@ void ApolloMarkdownGifInstall(void) {
     // Only adjust the composer toolbar; UIKit positions other input accessories.
     UIResponder *owner = container.nextResponder;
     if (@available(iOS 15.0, *)) {
-        if (!IsLiquidGlass() && [owner isKindOfClass:objc_getClass("_TtC6Apollo21ComposeViewController")] &&
+        if (!IsLiquidGlass() && [owner isKindOfClass:ApolloClassComposeViewController] &&
             ((UIViewController *)owner).viewIfLoaded == container) {
             CGRect keyboard = container.keyboardLayoutGuide.layoutFrame;
             CGFloat restingBottom = CGRectGetMaxY(container.bounds) - container.safeAreaInsets.bottom;
@@ -1687,7 +1651,7 @@ void ApolloMarkdownGifInstall(void) {
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloMarkdownGifThrottledTryInject((UIViewController *)self, @"post-compose-layout");
+    ApolloMarkdownGifTryInjectFromLayout((UIViewController *)self);
 }
 
 %end
@@ -1701,49 +1665,7 @@ void ApolloMarkdownGifInstall(void) {
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloMarkdownGifThrottledTryInject((UIViewController *)self, @"watcher-compose-layout");
-}
-
-%end
-
-%hook UIViewController
-
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    if (ApolloIsSystemShareComposeController((UIViewController *)self)) return;
-    if (ApolloMarkdownGifClassLooksLikeCompose((UIViewController *)self)) {
-        ApolloMarkdownGifScheduleInjection((UIViewController *)self, @"viewController-viewDidAppear");
-    }
-}
-
-- (void)presentViewController:(UIViewController *)viewControllerToPresent animated:(BOOL)flag completion:(void (^)(void))completion {
-    %orig;
-    if (ApolloIsSystemShareComposeController(viewControllerToPresent)) return;
-    if (ApolloMarkdownGifClassLooksLikeCompose(viewControllerToPresent)) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ApolloMarkdownGifScheduleInjection(viewControllerToPresent, @"presentViewController");
-        });
-    }
-}
-
-%end
-
-%hook UITextView
-
-- (void)setInputAccessoryView:(UIView *)inputAccessoryView {
-    %orig;
-    UIViewController *composeController = ApolloMarkdownGifComposeControllerForTextView(self);
-    if (composeController && inputAccessoryView) {
-        ApolloMarkdownGifScheduleInjection(composeController, @"setInputAccessoryView");
-    }
-}
-
-- (void)becomeFirstResponder {
-    %orig;
-    UIViewController *composeController = ApolloMarkdownGifComposeControllerForTextView(self);
-    if (composeController) {
-        ApolloMarkdownGifScheduleInjection(composeController, @"textView-firstResponder");
-    }
+    ApolloMarkdownGifTryInjectFromLayout((UIViewController *)self);
 }
 
 %end

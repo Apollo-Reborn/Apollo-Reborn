@@ -47,6 +47,7 @@
 #import "ApolloShareAsImageLinkMode.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
+#import "ApolloClasses.h"
 
 // Display text for the new options row.
 static NSString *const kApolloShareLinkTitle = @"Link";
@@ -576,12 +577,8 @@ extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
 %hook _TtC6Apollo15CopyURLActivity
 
 - (void)performActivity {
-    if (sShareLinkHost == ShareLinkHostDefault) {
-        %orig;
-        return;
-    }
-
     %orig; // Apollo copies its own URL (and shows its "Copied!" toast).
+    if (sShareLinkHost == ShareLinkHostDefault) return;
 
     UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
     NSURL *copied = pasteboard.URL;
@@ -625,7 +622,7 @@ extern "C" bool ApolloSwiftURLSupportsSafari(const void *storage);
             return frame;
         }
         id presented = [(UIPresentationController *)self presentedViewController];
-        Class shareVCClass = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
+        Class shareVCClass = ApolloClassShareAsImageViewController;
         if (shareVCClass && [presented isMemberOfClass:shareVCClass]) {
             double pitch = ApolloShareLinkIvarDouble(presented, "rowHeight");
             if (pitch <= 1.0 || !isfinite(pitch)) pitch = 50.0;

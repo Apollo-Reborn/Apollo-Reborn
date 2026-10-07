@@ -9,7 +9,9 @@
 #import <objc/runtime.h>
 #import <OSLog/OSLog.h>
 #import <os/lock.h>
+#include <stdatomic.h>
 #import <Security/Security.h>
+#import "ApolloClasses.h"
 
 #pragma mark - Security dictionaries
 
@@ -1202,11 +1204,11 @@ static void ApolloRecordBrowserPresent(NSURL *url) {
 }
 
 static UIViewController *ApolloApolloSafariBrowserForURL(NSURL *url) {
-    Class apolloSafariClass = NSClassFromString(@"_TtC6Apollo26ApolloSafariViewController");
+    Class apolloSafariClass = objc_getClass("_TtC6Apollo26ApolloSafariViewController");
     if (!apolloSafariClass) return nil;
 
     id alloced = [apolloSafariClass alloc];
-    SEL initSel = NSSelectorFromString(@"initWithURL:");
+    SEL initSel = @selector(initWithURL:);
     if (![alloced respondsToSelector:initSel]) return nil;
 
     id (*msgSend)(id, SEL, NSURL *) = (id (*)(id, SEL, NSURL *))objc_msgSend;
@@ -1272,16 +1274,9 @@ BOOL ApolloIsSystemShareComposeController(UIViewController *controller) {
     // Apple's out-of-process compose controllers whose class names collide with
     // Apollo's "...ComposeViewController" suffix matchers. Treating them as
     // Apollo composers crashes the GIF/composer machinery (issue #366).
-    static const char *kSystemComposeClassNames[] = {
-        "MFMessageComposeViewController",
-        "MFMailComposeViewController",
-        "SLComposeViewController",
-    };
-    for (size_t i = 0; i < sizeof(kSystemComposeClassNames) / sizeof(kSystemComposeClassNames[0]); i++) {
-        Class cls = objc_getClass(kSystemComposeClassNames[i]);
-        if (cls && [controller isKindOfClass:cls]) return YES;
-    }
-    return NO;
+    return [controller isKindOfClass:ApolloClassMFMessageComposeViewController] ||
+           [controller isKindOfClass:ApolloClassMFMailComposeViewController] ||
+           [controller isKindOfClass:ApolloClassSLComposeViewController];
 }
 
 NSArray<UIWindow *> *ApolloAllWindows(void) {
@@ -1460,12 +1455,12 @@ BOOL ApolloTextNodeIsTweakUI(id node) {
 
 // Runtime-checked UIKit preview feedback shared by profile menus and their viewer.
 id ApolloPlayPreviewOpenedFeedback(UIView *sourceView) {
-    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
-    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
-    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
-    SEL stateSelector = NSSelectorFromString(@"previewState");
-    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
-    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
+    Class configurationClass = objc_getClass("_UIStatesFeedbackGeneratorPreviewConfiguration");
+    Class generatorClass = objc_getClass("_UIStatesFeedbackGenerator");
+    SEL configurationSelector = @selector(defaultConfiguration);
+    SEL stateSelector = @selector(previewState);
+    SEL initializer = @selector(initWithConfiguration:coordinateSpace:);
+    SEL transition = @selector(transitionToState:ended:);
     if (![configurationClass respondsToSelector:configurationSelector] ||
         ![configurationClass respondsToSelector:stateSelector] ||
         ![generatorClass instancesRespondToSelector:initializer] ||
@@ -1476,4 +1471,17 @@ id ApolloPlayPreviewOpenedFeedback(UIView *sourceView) {
     id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, sourceView);
     ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
     return generator;
+}
+
+// YES only when this process is an iOS app running on visionOS in compatibility
+// mode. Prefers the official API added in visionOS 26.1
+// (-[NSProcessInfo isiOSAppOnVision]); falls back to a visionOS-only class
+// check on earlier releases. Guarded so it can never raise
+// doesNotRecognizeSelector.
+BOOL ApolloIsRunningOnVisionOS(void) {
+    NSProcessInfo *processInfo = NSProcessInfo.processInfo;
+    SEL selector = @selector(isiOSAppOnVision);
+    if ([processInfo respondsToSelector:selector] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(processInfo, selector)) return YES;
+    return objc_getClass("UIWindowSceneGeometryPreferencesVision") != Nil;
 }

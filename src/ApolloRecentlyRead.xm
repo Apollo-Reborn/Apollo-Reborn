@@ -13,6 +13,7 @@
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
 #import "ApolloSwiftSingletonCapture.h"
+#import "ApolloClasses.h"
 
 // MARK: - Recently Read Posts
 //
@@ -421,6 +422,10 @@ static UIColor *RecentlyReadMetaColor(void) {
 }
 
 static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
+    static UIImage *cachedBadge = nil;
+    static CGFloat cachedFontSize = 0.0;
+    if (cachedBadge && cachedFontSize == fontSize) return cachedBadge;
+
     NSString *text = @"NSFW";
     UIFont *badgeFont = [UIFont systemFontOfSize:fontSize * 0.9 weight:UIFontWeightMedium];
     NSDictionary *attrs = @{NSFontAttributeName: badgeFont, NSForegroundColorAttributeName: [UIColor whiteColor]};
@@ -433,7 +438,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     CGSize canvasSize = CGSizeMake(badgeWidth, badgeHeight);
 
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvasSize];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext * _Nonnull context) {
+    cachedBadge = [renderer imageWithActions:^(UIGraphicsImageRendererContext * _Nonnull context) {
         UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, badgeWidth, badgeHeight)
                                                         cornerRadius:cornerRadius];
         // Apollo's native NSFW badge red (#E60000)
@@ -441,6 +446,8 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         [path fill];
         [text drawAtPoint:CGPointMake(hPad, vPad) withAttributes:attrs];
     }];
+    cachedFontSize = fontSize;
+    return cachedBadge;
 }
 
 @implementation RecentlyReadViewController
@@ -451,13 +458,6 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     self.posts = [NSMutableArray array];
     self.filteredPosts = [NSMutableArray array];
     self.allPostFullNames = @[];
-    self.nextFetchIndex = 0;
-    self.hasMorePages = NO;
-    self.isFetchingPage = NO;
-    self.hasLoadedOnce = NO;
-    self.fetchGeneration = 0;
-    self.pendingReplace = NO;
-    self.emptyPageChainCount = 0;
     self.knownMissingFullNames = [NSMutableSet set];
 
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
@@ -655,7 +655,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         return;
     }
 
-    Class RDKClientClass = objc_getClass("RDKClient");
+    Class RDKClientClass = ApolloClassRDKClient;
     id client = [RDKClientClass sharedClient];
     if (!client) {
         [self _applyFullNames:newAll windowLength:windowLen linksByName:linksByName];
@@ -679,7 +679,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
                 return;
             }
             for (id thing in things) {
-                if ([thing isMemberOfClass:objc_getClass("RDKLink")]) {
+                if ([thing isMemberOfClass:ApolloClassRDKLink]) {
                     NSString *fn = [(RDKLink *)thing fullName];
                     if (fn) linksByName[fn] = thing;
                 }
@@ -745,7 +745,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         return;
     }
 
-    Class RDKClientClass = objc_getClass("RDKClient");
+    Class RDKClientClass = ApolloClassRDKClient;
     id client = [RDKClientClass sharedClient];
     if (!client) {
         ApolloLog(@"[RecentlyRead] RDKClient sharedClient is nil");
@@ -791,7 +791,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
 
             NSMutableDictionary *thingsByName = [NSMutableDictionary dictionaryWithCapacity:things.count];
             for (id thing in things) {
-                if ([thing isMemberOfClass:objc_getClass("RDKLink")]) {
+                if ([thing isMemberOfClass:ApolloClassRDKLink]) {
                     NSString *fn = [(RDKLink *)thing fullName];
                     if (fn) thingsByName[fn] = thing;
                 }
@@ -878,7 +878,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
 - (void)_refilterPosts {
     BOOL filterNSFW = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyFilterNSFWRecentlyRead];
     NSString *query = self.searchController.searchBar.text;
-    BOOL searching = [self isSearchActive] && query.length > 0;
+    BOOL searching = [self isSearchActive];
 
     if (!searching && !filterNSFW) {
         self.filteredPosts = [self.posts mutableCopy];
@@ -890,9 +890,9 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     for (RDKLink *link in self.posts) {
         if (filterNSFW && link.isNSFW) continue;
         if (searching &&
-            !(link.title && [link.title.lowercaseString containsString:lower]) &&
-            !(link.subreddit && [link.subreddit.lowercaseString containsString:lower]) &&
-            !(link.author && [link.author.lowercaseString containsString:lower]) &&
+            ![link.title.lowercaseString containsString:lower] &&
+            ![link.subreddit.lowercaseString containsString:lower] &&
+            ![link.author.lowercaseString containsString:lower] &&
             !(link.isNSFW && [@"nsfw" containsString:lower])) {
             continue;
         }
@@ -924,23 +924,36 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
 }
 
 - (NSString *)compactScoreString:(NSInteger)score {
-    if (score >= 100000) return [NSString stringWithFormat:@"%.1fK", score / 1000.0];
     if (score >= 1000) return [NSString stringWithFormat:@"%.1fK", score / 1000.0];
     return [NSString stringWithFormat:@"%ld", (long)score];
 }
 
 - (NSAttributedString *)statsAttributedStringForLink:(RDKLink *)link {
-    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
-    UIColor *metaColor = RecentlyReadMetaColor();
-    UIFont *metaFont = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-    NSDictionary *textAttrs = @{NSFontAttributeName: metaFont, NSForegroundColorAttributeName: metaColor};
+    static NSDictionary *textAttrs = nil;
+    static UIImage *upIcon = nil;
+    static UIImage *commentIcon = nil;
+    static UIImage *clockIcon = nil;
     CGFloat iconSize = 11.0;
     CGFloat baselineOffset = -1.5;
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:iconSize weight:UIImageSymbolWeightMedium];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        UIColor *metaColor = RecentlyReadMetaColor();
+        UIFont *metaFont = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        textAttrs = @{NSFontAttributeName: metaFont, NSForegroundColorAttributeName: metaColor};
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:iconSize weight:UIImageSymbolWeightMedium];
+        upIcon = [[UIImage systemImageNamed:@"arrow.up" withConfiguration:config]
+            imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+        commentIcon = [[UIImage systemImageNamed:@"bubble.right" withConfiguration:config]
+            imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+        UIImage *clockIconBase = [UIImage systemImageNamed:@"clock" withConfiguration:config];
+        UIImage *clockFlipped = [UIImage imageWithCGImage:clockIconBase.CGImage
+            scale:clockIconBase.scale orientation:UIImageOrientationUpMirrored];
+        clockIcon = [clockFlipped imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+    });
+
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
 
     // Upvote arrow
-    UIImage *upIcon = [[UIImage systemImageNamed:@"arrow.up" withConfiguration:config]
-        imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
     NSTextAttachment *upAtt = [[NSTextAttachment alloc] init];
     upAtt.image = upIcon;
     upAtt.bounds = CGRectMake(0, baselineOffset, iconSize, iconSize);
@@ -950,8 +963,6 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         attributes:textAttrs]];
 
     // Comment bubble
-    UIImage *commentIcon = [[UIImage systemImageNamed:@"bubble.right" withConfiguration:config]
-        imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
     NSTextAttachment *commentAtt = [[NSTextAttachment alloc] init];
     commentAtt.image = commentIcon;
     commentAtt.bounds = CGRectMake(0, baselineOffset, iconSize + 1, iconSize);
@@ -963,10 +974,6 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         attributes:textAttrs]];
 
     // Clock (mirrored so hand points to 3:00)
-    UIImage *clockIconBase = [UIImage systemImageNamed:@"clock" withConfiguration:config];
-    UIImage *clockFlipped = [UIImage imageWithCGImage:clockIconBase.CGImage
-        scale:clockIconBase.scale orientation:UIImageOrientationUpMirrored];
-    UIImage *clockIcon = [clockFlipped imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
     NSTextAttachment *clockAtt = [[NSTextAttachment alloc] init];
     clockAtt.image = clockIcon;
     clockAtt.bounds = CGRectMake(0, baselineOffset, iconSize, iconSize);
@@ -991,7 +998,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
 }
 
 - (NSURL *)thumbnailURLForLink:(RDKLink *)link {
-    SEL thumbSel = NSSelectorFromString(@"thumbnailURL");
+    SEL thumbSel = @selector(thumbnailURL);
     if (![(id)link respondsToSelector:thumbSel]) return nil;
     NSURL *url = ((id (*)(id, SEL))objc_msgSend)(link, thumbSel);
     if (!url) return nil;

@@ -12,6 +12,7 @@
 #import "ApolloSaveAllMediaItems.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloToast.h"
+#import "ApolloClasses.h"
 
 extern "C" CFArrayRef ApolloSaveAllMediaCopyURLs(const void *storage);
 
@@ -38,7 +39,7 @@ static ApolloSaveAllMenuContext *sApolloSaveAllInlineShareContext;
 static CFTimeInterval sApolloSaveAllInlineShareAt;
 
 static UIViewController *ApolloSaveAllPageForController(UIViewController *controller) {
-    Class pageClass = objc_getClass("_TtC6Apollo23MediaPageViewController");
+    Class pageClass = ApolloClassMediaPageViewController;
     for (UIViewController *vc = controller; vc; vc = vc.parentViewController) {
         if (pageClass && [vc isKindOfClass:pageClass]) return vc;
     }
@@ -89,7 +90,7 @@ static void ApolloSaveAllArmInlineShare(id node, UIGestureRecognizer *recognizer
     id mediaNode = ApolloObjectIvar(node, "richMediaNode") ?: node;
     id link = ApolloObjectIvar(mediaNode, "link");
     if (!link) return;
-    SEL closestSelector = NSSelectorFromString(@"closestViewController");
+    SEL closestSelector = @selector(closestViewController);
     id owner = [node respondsToSelector:closestSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(node, closestSelector) : nil;
     if (![owner isKindOfClass:UIViewController.class] || !((UIViewController *)owner).viewIfLoaded.window) return;
@@ -222,7 +223,7 @@ static void ApolloFullScreenMediaHoldFeedback(UIGestureRecognizer *recognizer) {
     id<ApolloMediaMenuFeedback> feedback = objc_getAssociatedObject(recognizer, &kApolloFullScreenHoldFeedbackKey);
     if (recognizer.state == UIGestureRecognizerStateBegan) {
         if (feedback || !recognizer.view.window) return;
-        Class generator = NSClassFromString(@"_UIClickPresentationFeedbackGenerator");
+        Class generator = objc_getClass("_UIClickPresentationFeedbackGenerator");
         if ([generator instancesRespondToSelector:@selector(initWithView:)] &&
             [generator instancesRespondToSelector:@selector(userInteractionStarted)] &&
             [generator instancesRespondToSelector:@selector(previewedAtLocation:)] &&
@@ -253,10 +254,6 @@ static void ApolloFullScreenMediaHoldFeedback(UIGestureRecognizer *recognizer) {
 // own background a pan recognizer; never attach it to the viewer or window,
 // where the same swipe could also dismiss the underlying full-screen media.
 static char kApolloMediaMenuDismissalKey;
-static id ApolloMediaMenuObject(id object, NSString *selectorName) {
-    SEL selector = NSSelectorFromString(selectorName);
-    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
 
 @interface ApolloMediaMenuDismissal : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIContextMenuInteraction *interaction;
@@ -270,12 +267,12 @@ static id ApolloMediaMenuObject(id object, NSString *selectorName) {
 @implementation ApolloMediaMenuDismissal
 - (void)install {
     if (self.ended || self.pan) return;
-    id presentations = ApolloMediaMenuObject(self.interaction, @"presentationsByIdentifier");
+    id presentations = ApolloSendObject(self.interaction, @selector(presentationsByIdentifier));
     if (![presentations isKindOfClass:NSDictionary.class] || [presentations count] != 1) return;
-    id controller = ApolloMediaMenuObject([presentations allValues].firstObject, @"uiController");
-    UIView *menu = ApolloMediaMenuObject(controller, @"menuView");
+    id controller = ApolloSendObject([presentations allValues].firstObject, @selector(uiController));
+    UIView *menu = ApolloSendObject(controller, @selector(menuView));
     if (![menu isKindOfClass:UIView.class]) return;
-    Class containerClass = NSClassFromString(@"_UIContextMenuContainerView");
+    Class containerClass = objc_getClass("_UIContextMenuContainerView");
     UIView *background = menu.superview;
     while (background && ![background isKindOfClass:containerClass]) background = background.superview;
     if (!background.window) return;
@@ -327,7 +324,7 @@ static id ApolloMediaMenuObject(id object, NSString *selectorName) {
 static UIViewController *ApolloFullScreenCurrentViewer(UIViewController *page) {
     if (![page isKindOfClass:UIPageViewController.class]) return nil;
     UIViewController *viewer = ((UIPageViewController *)page).viewControllers.firstObject;
-    return [viewer isKindOfClass:NSClassFromString(@"Apollo.MediaViewerController")] ? viewer : nil;
+    return [viewer isKindOfClass:ApolloClassMediaViewerController] ? viewer : nil;
 }
 
 static ApolloFullScreenImageMenu *ApolloFullScreenImageContext(UIViewController *page, UIView *source) {
@@ -335,7 +332,7 @@ static ApolloFullScreenImageMenu *ApolloFullScreenImageContext(UIViewController 
     id imageView = ApolloObjectIvar(viewer, "imageView");
     if (!viewer || ApolloObjectIvar(viewer, "player") ||
         ![imageView isKindOfClass:UIImageView.class] || !((UIImageView *)imageView).image) return nil;
-    SEL animated = NSSelectorFromString(@"animatedImage");
+    SEL animated = @selector(animatedImage);
     if ([imageView respondsToSelector:animated] && ((id (*)(id, SEL))objc_msgSend)(imageView, animated)) return nil;
     ApolloFullScreenImageMenu *context = [ApolloFullScreenImageMenu new];
     context.page = page;

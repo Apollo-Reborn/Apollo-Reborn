@@ -279,6 +279,13 @@ static BOOL ApolloLPShouldDeferToInlineMedia(NSURL *u) {
 }
 static BOOL ApolloLPInvokeRowReloadIfPossible(ASDisplayNode *, ASDisplayNode *, NSString *,
                                               BOOL (^)(UIView *) = nil, void (^)(void) = nil);
+static Class ApolloClassASCellNode, ApolloClassASCollectionView, ApolloClassASTableView, ApolloClassLargePostCellNode;
+__attribute__((constructor)) static void OverflowTestResolveClasses(void) {
+    ApolloClassASCellNode = objc_getClass("ASCellNode");
+    ApolloClassASCollectionView = objc_getClass("ASCollectionView");
+    ApolloClassASTableView = objc_getClass("ASTableView");
+    ApolloClassLargePostCellNode = objc_getClass("_TtC6Apollo17LargePostCellNode");
+}
 #import "Overflow.inc"
 
 static NSUInteger checks;

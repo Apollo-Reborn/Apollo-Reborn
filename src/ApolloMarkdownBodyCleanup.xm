@@ -4,6 +4,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 // Cosmetic cleanup for rendered markdown bodies (comments, post self-text, etc).
 //
@@ -30,15 +31,6 @@
 // Both passes preserve all surrounding glyphs and attributes (links, fonts,
 // colors); only the unwanted characters are removed, so link ranges and
 // interior paragraph breaks ("\n\n") stay intact.
-
-static Class ApolloMarkdownNodeClass(void) {
-    static Class cls = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = objc_getClass("_TtC6Apollo12MarkdownNode");
-    });
-    return cls;
-}
 
 // After a zero-width entity has been deleted at `loc`, drop the paragraph it
 // leaves behind when nothing else is on that line.
@@ -174,7 +166,7 @@ static NSAttributedString *ApolloMarkdownCleanBody(NSAttributedString *attribute
 %hook ASTextNode
 
 - (void)setAttributedText:(NSAttributedString *)attributedText {
-    Class markdownNodeClass = ApolloMarkdownNodeClass();
+    Class markdownNodeClass = ApolloClassMarkdownNode;
     if (markdownNodeClass && [(id)self respondsToSelector:@selector(delegate)]) {
         id delegate = ((id (*)(id, SEL))objc_msgSend)((id)self, @selector(delegate));
         if ([delegate isMemberOfClass:markdownNodeClass]) {

@@ -459,15 +459,13 @@ static UIView *ApolloPFSectionFooterView(NSString *text) {
 // Users toggle uses.
 %new
 - (UITableViewCell *)apollo_tfCellForTable:(UITableView *)tableView row:(NSInteger)row {
-    UITableViewCell *cell;
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
     if (row == ApolloTFRowOverrides) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.textLabel.text = @"Per-Subreddit Overrides";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         cell.textLabel.enabled = sTagFilterEnabled;
     } else {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         UISwitch *sw = [[UISwitch alloc] init];
         switch (row) {

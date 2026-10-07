@@ -3,6 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities, kEditingSelection;
@@ -15,7 +16,7 @@ static UITableView *ApolloEditingTable(UIView *view) {
 }
 
 static BOOL ApolloEditingIsList(UITableView *table) {
-    Class cls = NSClassFromString(@"Apollo.RedditListViewController");
+    Class cls = ApolloClassRedditListViewController;
     return cls && [(id)table.dataSource isKindOfClass:cls];
 }
 
@@ -263,8 +264,8 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
     // The minus sends rotation and confirmation actions; only the latter toggles the panel.
-    if (action == NSSelectorFromString(@"editControlWasClicked:") && ApolloEditingShowConfirmation(self)) return;
-    if (action == NSSelectorFromString(@"_toggleRotate") &&
+    if (action == @selector(editControlWasClicked:) && ApolloEditingShowConfirmation(self)) return;
+    if (action == @selector(_toggleRotate) &&
         [NSStringFromClass(self.class) isEqualToString:@"UITableViewCellEditControl"] &&
         ApolloEditingIsList(ApolloEditingTable(self))) return;
     %orig;
@@ -281,7 +282,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     }
     %orig;
     if (list) {
-        for (NSIndexPath *path in self.indexPathsForSelectedRows.copy) [self deselectRowAtIndexPath:path animated:NO];
+        for (NSIndexPath *path in self.indexPathsForSelectedRows) [self deselectRowAtIndexPath:path animated:NO];
         for (UITableViewCell *cell in self.visibleCells) [cell setHighlighted:NO animated:NO];
         if (!editing) {
             NSNumber *previous = objc_getAssociatedObject(self, &kEditingSelection);
@@ -390,11 +391,11 @@ static void ApolloEditingMatchListBackground(UIViewController *controller) {
 
 %ctor {
     %init;
-    Class listClass = NSClassFromString(@"Apollo.RedditListViewController");
+    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
     if (listClass) {
         %init(ApolloListEditingController, ApolloEditListController = listClass);
     }
-    Class cellClass = NSClassFromString(@"Apollo.RedditListTableViewCell");
+    Class cellClass = objc_getClass("_TtC6Apollo23RedditListTableViewCell");
     if (cellClass) {
         %init(ApolloListEditingCells, ApolloEditListCell = cellClass);
     }

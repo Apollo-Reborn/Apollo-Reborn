@@ -186,9 +186,6 @@ void ApolloFavoriteConfirmRun(UIView *sourceView,
     ApolloLog(@"[FavoriteConfirm] prompt name=%@ favorited=%d",
               name ?: @"(unknown)", isFavorited ? 1 : 0);
 
-    NSString *promptedName = [name copy];
-    NSString *(^providerCopy)(void) = [nameProvider copy];
-    dispatch_block_t performCopy = [perform copy];
     __weak UIViewController *weakHost = host;
 
     UIAlertController *sheet =
@@ -206,7 +203,7 @@ void ApolloFavoriteConfirmRun(UIView *sourceView,
         UIAlertController *strongSheet = weakSheet;
         if (!strongHost || !strongSheet) return;
         ApolloFavoriteConfirmWaitForDismissal(strongSheet, strongHost,
-                                              promptedName, providerCopy, performCopy,
+                                              name, nameProvider, perform,
                                               CFAbsoluteTimeGetCurrent() + 10.0);
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"

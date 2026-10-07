@@ -29,6 +29,7 @@ void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewControll
 // Profile shortcuts are Texture nodes. Append the archive control to the
 // Saved or Comments node while preserving Apollo's section model.
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 typedef struct { CGSize min; CGSize max; } ApolloHiddenSizeRange;
 @interface ASDisplayNode : NSObject
@@ -50,7 +51,7 @@ typedef struct { CGSize min; CGSize max; } ApolloHiddenSizeRange;
 @end
 
 static UIViewController *ApolloHiddenProfileControllerForAdapter(id adapter, ASDisplayNode *tableNode) {
-    Class profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
+    Class profileClass = ApolloClassProfileViewController;
     UIViewController *owner = ApolloReadSwiftWeakObjectIvar(adapter, "viewController");
     if (owner) return [owner isKindOfClass:profileClass] ? owner : nil;
 
@@ -128,7 +129,7 @@ static char ApolloHiddenIconKey;
 - (void)open:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateRecognized) return;
     for (UIResponder *responder = gesture.view; responder; responder = responder.nextResponder) {
-        if ([responder isKindOfClass:NSClassFromString(@"_TtC6Apollo21ProfileViewController")]) {
+        if ([responder isKindOfClass:ApolloClassProfileViewController]) {
             ApolloHiddenContentPresentFromProfile((UIViewController *)responder);
             return;
         }
@@ -158,7 +159,7 @@ static char ApolloHiddenIconKey;
     }
     return [^id {
         ASDisplayNode *original = originalBlock();
-        if (![original isKindOfClass:NSClassFromString(@"_TtC6Apollo22ProfileFeatureCellNode")]) return original;
+        if (![original isKindOfClass:ApolloClassProfileFeatureCellNode]) return original;
         ASTextNode *title = ApolloReadObjectIvar(original, "titleNode");
         NSString *saved = [[NSBundle mainBundle] localizedStringForKey:@"Saved" value:@"Saved" table:nil];
         NSString *comments = [[NSBundle mainBundle] localizedStringForKey:@"Comments" value:@"Comments" table:nil];
@@ -169,7 +170,7 @@ static char ApolloHiddenIconKey;
         ASDisplayNode *shortcut = originalBlock();
         if (shortcut == original || ![shortcut isKindOfClass:[original class]]) return original;
         ASDisplayNode *separator = separatorBlock ? separatorBlock() : nil;
-        if (![separator isKindOfClass:NSClassFromString(@"_TtC6Apollo21ThinSeparatorCellNode")]) {
+        if (![separator isKindOfClass:ApolloClassThinSeparatorCellNode]) {
             ApolloLog(@"[HiddenShortcut] Expected native separator before profile row");
             return original;
         }
@@ -186,11 +187,13 @@ static char ApolloHiddenIconKey;
             tap.cancelsTouchesInView = YES;
             [view addGestureRecognizer:tap];
         }];
-        ASDisplayNode *wrapper = [NSClassFromString(@"ASCellNode") new];
+        Class cellNodeClass = ApolloClassASCellNode;
+        if (!cellNodeClass) return original;
+        ASDisplayNode *wrapper = [cellNodeClass new];
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
         wrapper.layoutSpecBlock = ^id(id node, ApolloHiddenSizeRange range) {
-            return [NSClassFromString(@"ASStackLayoutSpec") stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
+            return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
         };
         ApolloLog(@"[HiddenShortcut] Added profile archive shortcut after %@ (%@ profile)",
                   insertionTitle, ownProfile ? @"own" : @"other");

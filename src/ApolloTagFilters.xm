@@ -33,6 +33,7 @@
 #import "Tweak.h"
 #import "UIWindow+Apollo.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 extern NSString *const ApolloTagFiltersChangedNotification;
 
@@ -64,7 +65,7 @@ static const void *kApolloTagNativeObscuredKey = &kApolloTagNativeObscuredKey; /
 static RDKLink *ApolloTagLinkFromCell(id cell) {
     if (!cell) return nil;
     id v = ApolloObjectIvar(cell, "link");
-    if ([v isMemberOfClass:objc_getClass("RDKLink")]) return (RDKLink *)v;
+    if ([v isMemberOfClass:ApolloClassRDKLink]) return (RDKLink *)v;
     return nil;
 }
 
@@ -521,7 +522,7 @@ static NSArray<NSDictionary *> *ApolloTagBlurEntriesForCell(id cell, RDKLink *li
     UIView *cellView = ApolloTagCellView(cell);
     if (!cellView || cellView.bounds.size.width < 8 || cellView.bounds.size.height < 8) return @[];
 
-    Class compactCls = objc_getClass("_TtC6Apollo19CompactPostCellNode");
+    Class compactCls = ApolloClassCompactPostCellNode;
     BOOL isCompact = compactCls && [cell isKindOfClass:compactCls];
 
     NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
@@ -670,7 +671,7 @@ static void ApolloTagInstallBlurOverlay(id cell, RDKLink *link) {
     }
 
     // Suppress kinds the user has already individually revealed.
-    NSSet<NSString *> *revealedKinds = [ApolloTagRevealedKindsForCell(cell, NO) copy] ?: [NSSet set];
+    NSSet<NSString *> *revealedKinds = ApolloTagRevealedKindsForCell(cell, NO);
     if (revealedKinds.count > 0) {
         NSMutableArray<NSDictionary *> *filtered = [NSMutableArray arrayWithCapacity:entries.count];
         for (NSDictionary *e in entries) {
@@ -754,8 +755,7 @@ static void ApolloTagApplyDecisionToCell(id cell) {
         if (objc_getAssociatedObject(cell, kApolloTagOverlaysKey) ||
             objc_getAssociatedObject(cell, kApolloTagDecisionKey)) {
             objc_setAssociatedObject(cell, kApolloTagDecisionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            UIView *cellView = ApolloTagCellView(cell);
-            if (cellView) cellView.hidden = NO;
+            ApolloTagCellView(cell).hidden = NO;
             ApolloTagRemoveBlurOverlay(cell);
         }
         return;
@@ -777,12 +777,10 @@ static void ApolloTagApplyDecisionToCell(id cell) {
 
     objc_setAssociatedObject(cell, kApolloTagDecisionKey, decision, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    UIView *cellView = ApolloTagCellView(cell);
+    ApolloTagCellView(cell).hidden = NO;
     if ([decision isEqualToString:@"blur"]) {
-        if (cellView) cellView.hidden = NO;
         ApolloTagInstallBlurOverlay(cell, link);
     } else {
-        if (cellView) cellView.hidden = NO;
         ApolloTagRemoveBlurOverlay(cell);
     }
 }
@@ -875,7 +873,7 @@ static void ApolloTagPresentConfirmAlertForOverlay(id cell, UIVisualEffectView *
 // that cannot contain a post cell was never doing anything for this feature.
 static void ApolloTagRefreshAllVisibleCells(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        Class postTableClass = objc_getClass("ASTableView");
+        Class postTableClass = ApolloClassASTableView;
         void (^__block walk)(UIView *) = nil;
         void (^localWalk)(UIView *) = ^(UIView *root) {
             BOOL hostsPostCells = postTableClass ? [root isKindOfClass:postTableClass]

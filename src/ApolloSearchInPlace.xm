@@ -21,6 +21,7 @@
 #import "ApolloSearchNativeBar.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 // Forward ref for the setContentInset:/setContentOffset: hooks below (also declared in
 // ApolloLiquidGlass.xm; a forward @interface in a second .xm is fine).
@@ -350,7 +351,7 @@ static NSString *ApolloFeedSearchQueryText(void) {
 // that rebuilt header. So those cases keep stock behavior (results below the chrome).
 static BOOL ApolloFeedSearchManagedHeader(UIScrollView *sv) {
     UIView *hdr = [sv respondsToSelector:@selector(tableHeaderView)] ? [(UITableView *)sv tableHeaderView] : nil;
-    return [hdr isMemberOfClass:objc_getClass("ApolloSubredditHeaderWrapperView")];
+    return [hdr isMemberOfClass:ApolloClassApolloSubredditHeaderWrapperView];
 }
 
 static CGFloat ApolloFeedSearchDesiredOffsetY(UIScrollView *sv) {
@@ -495,7 +496,7 @@ static void styleCancelAsRoundX(UIButton *btn, UIView *toolbar, UIView *field) {
     }
 
     // Strip Apollo's own (non-sipX) button animations so only our slide shows.
-    for (NSString *k in [btn.layer.animationKeys copy]) {
+    for (NSString *k in btn.layer.animationKeys) {
         if (![k hasPrefix:@"sipX"]) [btn.layer removeAnimationForKey:k];
     }
 }
@@ -631,7 +632,7 @@ static void recenterCancelButton(void) {
     ++sFeedSearchDismissGen;  // a re-focus during a dismiss window cancels the pending release timer
     id tableNode = ApolloObjectIvar(self, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
-    if ([tv isKindOfClass:objc_getClass("ASTableView")]) sFeedSearchTable = (UIScrollView *)tv;
+    if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
     id upper = ApolloObjectIvar(self, "upperToolbar");
     if ([upper isKindOfClass:[UIView class]]) {
         sFeedSearchToolbar = (UIView *)upper;
@@ -656,14 +657,14 @@ static void recenterCancelButton(void) {
 // changes across keystroke reloads). Idempotent; the clamp is armed by sFeedSearchActive.
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return; // feed-only; skip comments search
     // Navigation transitions lay out multiple ASTableViewControllers in the
     // same frame. Only the focused/restored feed may refresh the shared refs.
     if (sFeedSearchOwner != (UIViewController *)self) return;
+    if (MSHookIvar<BOOL>(self, "searchBarShouldStickToKeyboard")) return; // feed-only; skip comments search
     // Keep the offset-stabilizer refs current (runs regardless of Liquid Glass).
     id tableNode = ApolloObjectIvar(self, "tableNode");
     UIView *tv = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
-    if ([tv isKindOfClass:objc_getClass("ASTableView")]) sFeedSearchTable = (UIScrollView *)tv;
+    if ([tv isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tv;
     id upper = ApolloObjectIvar(self, "upperToolbar");
     if ([upper isKindOfClass:[UIView class]]) sFeedSearchToolbar = (UIView *)upper;
     id field = ApolloObjectIvar(self, "searchTextField");
@@ -767,7 +768,7 @@ static void recenterCancelButton(void) {
         sFeedSearchNavBar = [(UIViewController *)self navigationController].navigationBar;
         id tableNode = ApolloObjectIvar(self, "tableNode");
         UIView *tableView = [tableNode respondsToSelector:@selector(view)] ? [tableNode view] : nil;
-        if ([tableView isKindOfClass:objc_getClass("ASTableView")]) sFeedSearchTable = (UIScrollView *)tableView;
+        if ([tableView isKindOfClass:ApolloClassASTableView]) sFeedSearchTable = (UIScrollView *)tableView;
         if ([field isKindOfClass:[UIView class]]) sFeedSearchField = (UIView *)field;
         id upper = ApolloObjectIvar(self, "upperToolbar");
         if ([upper isKindOfClass:[UIView class]]) sFeedSearchToolbar = (UIView *)upper;

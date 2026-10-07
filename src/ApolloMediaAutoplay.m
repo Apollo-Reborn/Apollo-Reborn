@@ -8,6 +8,7 @@
 #import <netinet/in.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // Apollo's native General > Autoplay GIFs/Videos preference. Followed only when the
 // tweak's Autoplay Inline GIFs setting is in Default mode.
@@ -39,15 +40,6 @@ static void ApolloLogAutoplayDecision(NSString *mode, BOOL shouldPlay);
 static void ApolloReloadAutoplayInlineGIFModeFromDefaults(void);
 static NSString *ApolloNativeAutoplayGIFModeString(void);
 
-static Class ApolloASNetworkImageNodeClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        cls = NSClassFromString(@"ASNetworkImageNode");
-    });
-    return cls;
-}
-
 BOOL ApolloInlineGIFNodeIsRegistryEligible(id imageNode) {
     if (!imageNode || imageNode == (id)[NSNull null]) return NO;
     // Native inline animated nodes (giphy-picker embeds, snoomoji) are gated in
@@ -56,7 +48,7 @@ BOOL ApolloInlineGIFNodeIsRegistryEligible(id imageNode) {
         return [imageNode respondsToSelector:@selector(isNodeLoaded)] &&
                [imageNode respondsToSelector:@selector(supernode)];
     }
-    Class cls = ApolloASNetworkImageNodeClass();
+    Class cls = ApolloClassASNetworkImageNode;
     if (!cls || ![imageNode isKindOfClass:cls]) return NO;
     // Deliberately no -clearImage requirement: Apollo's AsyncDisplayKit build
     // doesn't implement it, and requiring it left this registry permanently
@@ -377,18 +369,9 @@ static Ivar ApolloFLShouldAnimateIvar(void) {
     static Ivar ivar = NULL;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        ivar = class_getInstanceVariable(objc_getClass("FLAnimatedImageView"), "_shouldAnimate");
+        ivar = class_getInstanceVariable(ApolloClassFLAnimatedImageView, "_shouldAnimate");
     });
     return ivar;
-}
-
-static Class ApolloFLAnimatedImageViewClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        cls = objc_getClass("FLAnimatedImageView");
-    });
-    return cls;
 }
 
 static void ApolloSetFLAnimatedImageViewShouldAnimate(UIView *view, BOOL shouldAnimate) {
@@ -400,7 +383,7 @@ static void ApolloSetFLAnimatedImageViewShouldAnimate(UIView *view, BOOL shouldA
 }
 
 void ApolloApplyFLAnimatedImageViewAutoplayGate(UIView *view) {
-    Class cls = ApolloFLAnimatedImageViewClass();
+    Class cls = ApolloClassFLAnimatedImageView;
     if (!view || !cls || ![view isKindOfClass:cls]) return;
     if (!ApolloViewIsInlineGIF(view)) return;
 
@@ -415,7 +398,7 @@ void ApolloApplyFLAnimatedImageViewAutoplayGate(UIView *view) {
 
 UIView *ApolloFindFLAnimatedImageViewInView(UIView *view) {
     if (!view) return nil;
-    Class cls = ApolloFLAnimatedImageViewClass();
+    Class cls = ApolloClassFLAnimatedImageView;
     if (cls && [view isKindOfClass:cls]) return view;
     for (UIView *sub in view.subviews) {
         UIView *found = ApolloFindFLAnimatedImageViewInView(sub);

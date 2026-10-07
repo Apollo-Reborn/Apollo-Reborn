@@ -7,6 +7,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 @interface RDKComment : NSObject
 @property(nonatomic) BOOL stickied;
@@ -68,15 +69,9 @@ static UITableView *FindFirstTableViewInView(UIView *view) {
 }
 
 static UITableView *GetCommentsTableView(UIViewController *viewController) {
-    id tableNode = ApolloObjectIvar(viewController, "tableNode");
-    if (tableNode) {
-        SEL viewSelector = NSSelectorFromString(@"view");
-        if ([tableNode respondsToSelector:viewSelector]) {
-            UIView *tableNodeView = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSelector);
-            if ([tableNodeView isKindOfClass:[UITableView class]]) {
-                return (UITableView *)tableNodeView;
-            }
-        }
+    UIView *tableNodeView = [ApolloObjectIvar(viewController, "tableNode") view];
+    if ([tableNodeView isKindOfClass:[UITableView class]]) {
+        return (UITableView *)tableNodeView;
     }
 
     return FindFirstTableViewInView(viewController.view);
@@ -94,7 +89,7 @@ static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
     // transparent rows, and any direction the caller deliberately supplied.
     if (animation != UITableViewRowAnimationAutomatic) return NO;
 
-    Class commentsClass = objc_getClass("_TtC6Apollo22CommentsViewController");
+    Class commentsClass = ApolloClassCommentsViewController;
     if (!commentsClass) return NO;
     for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
         if (![responder isKindOfClass:commentsClass]) continue;
@@ -155,12 +150,8 @@ static BOOL ShouldShowCollapseCoverForTopState(UIViewController *viewController,
     return tableView.contentOffset.y <= (GetCommentsTableTopOffset(tableView) + kCommentsCollapseTopThreshold);
 }
 
-
-static UIColor *GetCommentsCoverColor(UIViewController *viewController, UITableView *tableView) {
-    UIColor *color = tableView.backgroundColor;
-    if (color) return color;
-
-    return [UIColor systemBackgroundColor];
+static UIColor *GetCommentsCoverColor(UITableView *tableView) {
+    return tableView.backgroundColor ?: [UIColor systemBackgroundColor];
 }
 
 static UIView *GetCommentsToolbarHostView(UIViewController *viewController) {
@@ -254,7 +245,7 @@ static void RemoveCommentsCoverSnapshot(UIViewController *viewController) {
 }
 
 static BOOL CommentsCoverSurfaceIsOpaque(UIViewController *viewController, UITableView *tableView) {
-    UIColor *coverColor = GetCommentsCoverColor(viewController, tableView);
+    UIColor *coverColor = GetCommentsCoverColor(tableView);
     UIColor *resolved = [coverColor resolvedColorWithTraitCollection:viewController.view.traitCollection];
     return CGColorGetAlpha(resolved.CGColor) > 0.001;
 }
@@ -304,7 +295,7 @@ static void LayoutCommentsCollapseCover(UIViewController *viewController) {
     if (!hasVisibleCover) return;
 
     CGFloat navBarBottom = GetNavigationBarBottom(viewController);
-    UIColor *coverColor = GetCommentsCoverColor(viewController, tableView);
+    UIColor *coverColor = GetCommentsCoverColor(tableView);
     BOOL opaqueSurface = CommentsCoverSurfaceIsOpaque(viewController, tableView);
     if (rootCoverView) {
         rootCoverView.frame = CGRectMake(0.0, 0.0, CGRectGetWidth(rootView.bounds), navBarBottom);
@@ -400,7 +391,7 @@ static void ShowCommentsCollapseCover(NSString *reason) {
         ApolloLog(@"[CommentsClip] Skip collapse cover reason=%@ offset=%.1f topOffset=%.1f",
                   reason,
                   tableView.contentOffset.y,
-                  GetCommentsTableTopOffset(tableView));
+                  topOffset);
         return;
     }
 

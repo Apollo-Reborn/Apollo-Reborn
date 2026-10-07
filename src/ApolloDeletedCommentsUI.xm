@@ -13,6 +13,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloTranslation.h"
 #import "Tweak.h"
+#import "ApolloClasses.h"
 
 // Private cross-module classification ABI implemented by
 // ApolloDeletedCommentsData.m. It intentionally stays out of the public header.
@@ -198,24 +199,6 @@ static BOOL ApolloDeletedCommentsBodyAttributeFontsDiffer(NSDictionary *left, NS
 static void ApolloDeletedCommentsRestoreAuthorStatusChip(id cellNode);
 static void ApolloDeletedCommentsApplyAuthorStatusChipIfNeeded(id cellNode);
 
-static Class ApolloDeletedCommentsASTextNodeClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = NSClassFromString(@"ASTextNode");
-    });
-    return cls;
-}
-
-static Class ApolloDeletedCommentsASInsetLayoutSpecClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = NSClassFromString(@"ASInsetLayoutSpec");
-    });
-    return cls;
-}
-
 static NSString *ApolloDeletedCommentsTrimmedString(NSString *s) {
     if (![s isKindOfClass:[NSString class]]) return nil;
     return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -315,9 +298,9 @@ static NSString *ApolloDeletedCommentsFullNameForComment(RDKComment *comment) {
     if (!comment) return nil;
     SEL selectors[] = {
         @selector(name),
-        NSSelectorFromString(@"fullName"),
-        NSSelectorFromString(@"identifier"),
-        NSSelectorFromString(@"id"),
+        @selector(fullName),
+        @selector(identifier),
+        @selector(id),
     };
     for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
         SEL sel = selectors[i];
@@ -361,7 +344,7 @@ static NSString *ApolloDeletedCommentsFullNameForComment(RDKComment *comment) {
 
 static RDKComment *ApolloDeletedCommentsCommentFromCellNode(id commentCellNode) {
     id comment = ApolloObjectIvar(commentCellNode, "comment");
-    Class rdkCommentClass = NSClassFromString(@"RDKComment");
+    Class rdkCommentClass = ApolloClassRDKComment;
     if (!rdkCommentClass || ![comment isMemberOfClass:rdkCommentClass]) return nil;
     return (RDKComment *)comment;
 }
@@ -1274,6 +1257,26 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
     NSDictionary *base = [baseAttributes isKindOfClass:[NSDictionary class]] ? baseAttributes : @{};
     if (markdown.length == 0) return [[NSAttributedString alloc] initWithString:@"" attributes:base];
 
+    static NSRegularExpression *headerRe, *bulletRe, *numberRe, *linkRe, *codeRe, *boldRe,
+        *strikeRe, *italicRe, *bareURLRe, *superGroupRe, *superBareRe;
+    static dispatch_once_t regexOnce;
+    dispatch_once(&regexOnce, ^{
+        NSRegularExpression *(^compile)(NSString *) = ^NSRegularExpression *(NSString *pattern) {
+            return [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+        };
+        headerRe = compile(@"^(#{1,6})\\s+(.*)$");
+        bulletRe = compile(@"^(\\s*)[*+-]\\s+(.*)$");
+        numberRe = compile(@"^(\\s*)(\\d{1,3})[.)]\\s+(.*)$");
+        linkRe = compile(@"\\[([^\\]\\n]+?)\\]\\((https?://[^\\s)]+)\\)");
+        codeRe = compile(@"`([^`\\n]+?)`");
+        boldRe = compile(@"\\*\\*([^\\n]+?)\\*\\*|__([^\\n]+?)__");
+        strikeRe = compile(@"~~([^\\n]+?)~~");
+        italicRe = compile(@"(?<![\\*_])[\\*_]([^\\*_\\n]+?)[\\*_](?![\\*_])");
+        bareURLRe = compile(@"https?://[^\\s<>\"\\)\\]]+");
+        superGroupRe = compile(@"\\^\\(([^()\\n]*)\\)");
+        superBareRe = compile(@"\\^([^\\s^()\\[\\]]+)");
+    });
+
     UIFont *baseFont = base[NSFontAttributeName];
     if (![baseFont isKindOfClass:[UIFont class]]) baseFont = [UIFont systemFontOfSize:15.0];
     UIColor *baseColor = base[NSForegroundColorAttributeName];
@@ -1321,7 +1324,6 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
             lineAttrs[NSFontAttributeName] = ApolloDeletedCommentsFontByAddingTraits(baseFont, UIFontDescriptorTraitItalic);
         } else {
             // Header: 1-6 leading #'s.
-            NSRegularExpression *headerRe = [NSRegularExpression regularExpressionWithPattern:@"^(#{1,6})\\s+(.*)$" options:0 error:nil];
             NSTextCheckingResult *header = [headerRe firstMatchInString:content options:0 range:NSMakeRange(0, content.length)];
             if (header) {
                 NSUInteger level = [header rangeAtIndex:1].length;
@@ -1331,9 +1333,7 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
                 lineAttrs[NSFontAttributeName] = headerFont;
             } else {
                 // Bullet / numbered list item.
-                NSRegularExpression *bulletRe = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)[*+-]\\s+(.*)$" options:0 error:nil];
                 NSTextCheckingResult *bullet = [bulletRe firstMatchInString:content options:0 range:NSMakeRange(0, content.length)];
-                NSRegularExpression *numberRe = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)(\\d{1,3})[.)]\\s+(.*)$" options:0 error:nil];
                 NSTextCheckingResult *number = bullet ? nil : [numberRe firstMatchInString:content options:0 range:NSMakeRange(0, content.length)];
                 if (bullet || number) {
                     NSString *marker = bullet ? @"•" : [[content substringWithRange:[number rangeAtIndex:2]] stringByAppendingString:@"."];
@@ -1362,7 +1362,6 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
     };
 
     // 2) Links [text](http(s)://url) — capture url before the replace, keep the visible text.
-    NSRegularExpression *linkRe = [NSRegularExpression regularExpressionWithPattern:@"\\[([^\\]\\n]+?)\\]\\((https?://[^\\s)]+)\\)" options:0 error:nil];
     UIColor *linkColor = ApolloDeletedCommentsBodyLinkColor();
     NSArray<NSTextCheckingResult *> *linkMatches = [linkRe matchesInString:attr.string options:0 range:NSMakeRange(0, attr.string.length)];
     for (NSInteger i = (NSInteger)linkMatches.count - 1; i >= 0; i--) {
@@ -1381,8 +1380,7 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
     // capture group's text and style that range. Alternations such as the bold
     // pass put their second branch in group 2, so assuming group 1 would leave
     // __underscore bold__ untouched.
-    void (^inlinePass)(NSString *, void (^)(NSRange)) = ^(NSString *pattern, void (^style)(NSRange)) {
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+    void (^inlinePass)(NSRegularExpression *, void (^)(NSRange)) = ^(NSRegularExpression *re, void (^style)(NSRange)) {
         if (!re) return;
         NSArray<NSTextCheckingResult *> *ms = [re matchesInString:attr.string options:0 range:NSMakeRange(0, attr.string.length)];
         for (NSInteger i = (NSInteger)ms.count - 1; i >= 0; i--) {
@@ -1403,24 +1401,23 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
     };
 
     // 2) Inline code `code`
-    inlinePass(@"`([^`\\n]+?)`", ^(NSRange r) {
+    inlinePass(codeRe, ^(NSRange r) {
         [attr addAttribute:NSFontAttributeName value:[UIFont monospacedSystemFontOfSize:baseFont.pointSize weight:UIFontWeightRegular] range:r];
     });
     // 3) Bold **text** or __text__
-    inlinePass(@"\\*\\*([^\\n]+?)\\*\\*|__([^\\n]+?)__", ^(NSRange r) {
+    inlinePass(boldRe, ^(NSRange r) {
         [attr addAttribute:NSFontAttributeName value:ApolloDeletedCommentsFontByAddingTraits(baseFont, UIFontDescriptorTraitBold) range:r];
     });
     // 4) Strikethrough ~~text~~
-    inlinePass(@"~~([^\\n]+?)~~", ^(NSRange r) {
+    inlinePass(strikeRe, ^(NSRange r) {
         [attr addAttribute:NSStrikethroughStyleAttributeName value:@(NSUnderlineStyleSingle) range:r];
     });
     // 5) Italic *text* or _text_ (single delimiter; run last so it doesn't eat ** / __)
-    inlinePass(@"(?<![\\*_])[\\*_]([^\\*_\\n]+?)[\\*_](?![\\*_])", ^(NSRange r) {
+    inlinePass(italicRe, ^(NSRange r) {
         [attr addAttribute:NSFontAttributeName value:ApolloDeletedCommentsFontByAddingTraits(baseFont, UIFontDescriptorTraitItalic) range:r];
     });
 
     // 6) Bare URLs (Reddit autolinks these) — only where no link attribute exists yet.
-    NSRegularExpression *bareURLRe = [NSRegularExpression regularExpressionWithPattern:@"https?://[^\\s<>\"\\)\\]]+" options:0 error:nil];
     NSArray<NSTextCheckingResult *> *bareMatches = [bareURLRe matchesInString:attr.string options:0 range:NSMakeRange(0, attr.string.length)];
     for (NSInteger i = (NSInteger)bareMatches.count - 1; i >= 0; i--) {
         NSTextCheckingResult *m = bareMatches[i];
@@ -1446,7 +1443,6 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
         [attr addAttribute:NSBaselineOffsetAttributeName value:@(baseFont.pointSize * 0.30) range:r];
     };
     // Grouped form first; loop a few times for adjacent/nested markers.
-    NSRegularExpression *superGroupRe = [NSRegularExpression regularExpressionWithPattern:@"\\^\\(([^()\\n]*)\\)" options:0 error:nil];
     for (int pass = 0; pass < 3; pass++) {
         NSArray<NSTextCheckingResult *> *ms = [superGroupRe matchesInString:attr.string options:0 range:NSMakeRange(0, attr.string.length)];
         if (ms.count == 0) break;
@@ -1458,7 +1454,6 @@ static NSAttributedString *ApolloDeletedCommentsAttributedStringFromMarkdown(NSS
         }
     }
     // Bare form: ^word (no parens). Reddit superscripts a single token.
-    NSRegularExpression *superBareRe = [NSRegularExpression regularExpressionWithPattern:@"\\^([^\\s^()\\[\\]]+)" options:0 error:nil];
     NSArray<NSTextCheckingResult *> *bareSupers = [superBareRe matchesInString:attr.string options:0 range:NSMakeRange(0, attr.string.length)];
     for (NSInteger i = (NSInteger)bareSupers.count - 1; i >= 0; i--) {
         NSTextCheckingResult *m = bareSupers[i];
@@ -2644,7 +2639,7 @@ static ApolloDeletedCommentsLinkHit *ApolloDeletedCommentsLinkHitAtCellPoint(id 
     if (knownText && ![candidates containsObject:knownText]) [candidates addObject:knownText];
 
     SEL convertSel = @selector(convertPoint:toNode:);
-    SEL linkSel = NSSelectorFromString(@"linkAttributeValueAtPoint:attributeName:range:");
+    SEL linkSel = @selector(linkAttributeValueAtPoint:attributeName:range:);
     for (id textNode in candidates) {
         if (![cellNode respondsToSelector:convertSel] || ![textNode respondsToSelector:linkSel]) continue;
         @try {
@@ -3573,7 +3568,7 @@ static void ApolloDeletedCommentsSetTextNodeAttributedText(id textNode, NSAttrib
 static id ApolloDeletedCommentsBodyReplacementTextNode(id markdownNode, id cellNode) {
     if (!markdownNode || !cellNode) return nil;
     id textNode = objc_getAssociatedObject(markdownNode, kApolloDeletedCommentsBodyReplacementTextNodeKey);
-    Class textNodeClass = ApolloDeletedCommentsASTextNodeClass();
+    Class textNodeClass = ApolloClassASTextNode;
     if (!textNode || !textNodeClass || ![textNode isKindOfClass:textNodeClass]) {
         textNode = [[textNodeClass alloc] init];
         if (!textNode) return nil;
@@ -3767,7 +3762,7 @@ static id __attribute__((unused)) ApolloDeletedCommentsDeletedMarkdownLayoutSpec
     }
 
     ApolloDeletedCommentsSetTextNodeAttributedText(textNode, displayText);
-    Class insetClass = ApolloDeletedCommentsASInsetLayoutSpecClass();
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     if (!insetClass) return nil;
     return [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsZero child:textNode];
 }
@@ -3868,7 +3863,7 @@ static void ApolloDeletedCommentsPrepareBuiltObject(id object) {
         return;
     }
 
-    Class commentClass = NSClassFromString(@"RDKComment");
+    Class commentClass = ApolloClassRDKComment;
     if (!commentClass || ![object isMemberOfClass:commentClass]) return;
     RDKComment *comment = (RDKComment *)object;
     if (!ApolloDeletedCommentsTreatmentAllowedForComment(comment)) return;
@@ -4506,15 +4501,6 @@ static NSAttributedString *__attribute__((unused)) ApolloDeletedCommentsRenameRe
     return renamed;
 }
 
-static Class ApolloDeletedCommentsMarkdownNodeClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = objc_getClass("_TtC6Apollo12MarkdownNode");
-    });
-    return cls;
-}
-
 // Capture Apollo's real comment-body font from a normally-rendered comment body, so
 // deleted comments render at the exact same size (see sApolloDeletedCommentsLiveCommentBodyFont).
 // Runs from the global setAttributedText: hook, so the steady-state path is kept cheap:
@@ -4523,7 +4509,7 @@ static Class ApolloDeletedCommentsMarkdownNodeClass(void) {
 static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttributedString *attributedText) {
     if (![attributedText isKindOfClass:[NSAttributedString class]] || attributedText.length < 2) return;
     // Only comment/post *body* nodes carry a MarkdownNode delegate — gate on it cheaply.
-    Class mdClass = ApolloDeletedCommentsMarkdownNodeClass();
+    Class mdClass = ApolloClassMarkdownNode;
     if (!mdClass || ![textNode respondsToSelector:@selector(delegate)]) return;
     id delegate = nil;
     @try { delegate = ((id (*)(id, SEL))objc_msgSend)(textNode, @selector(delegate)); } @catch (__unused NSException *e) {}
@@ -4578,10 +4564,6 @@ static void ApolloDeletedCommentsCaptureLiveCommentBodyFont(id textNode, NSAttri
     displayText = ApolloDeletedCommentsAttributedTextWithReasonChipIfNeeded((id)self, displayText);
     displayText = ApolloDeletedCommentsAttributedTextWithReasonPrefix((id)self, displayText);
     %orig(displayText);
-}
-
-- (void)didEnterDisplayState {
-    %orig;
 }
 
 %end
@@ -4776,7 +4758,7 @@ static void ApolloDeletedCommentsAdoptRawDeletedStubIfNeeded(id cellNode) {
         !ApolloDeletedCommentsCommentIsCollapsed(comment) &&
         ApolloDeletedCommentsCellNodeShouldShowDeletedTreatment((id)self) &&
         spec) {
-        Class insetClass = ApolloDeletedCommentsASInsetLayoutSpecClass();
+        Class insetClass = ApolloClassASInsetLayoutSpec;
         if (insetClass) {
             @try {
                 // Even when MarkdownNode returns a zero-height replacement,

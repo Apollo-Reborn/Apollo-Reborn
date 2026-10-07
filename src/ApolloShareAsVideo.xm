@@ -67,6 +67,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloHostedVideo.h"
 #import "ApolloShareAsImageLinkMode.h"
+#import "ApolloClasses.h"
 
 #pragma mark - Tunables
 
@@ -218,8 +219,7 @@ static BOOL ApolloSVPostIsExportableVideo(id link) {
 static BOOL ApolloSVCommentExportable(id comment) {
     if (!comment) return NO;
     NSDictionary *giphy = (NSDictionary *)ApolloSVCall(comment, @selector(inlineGiphyIDsToURLs));
-    if ([giphy isKindOfClass:[NSDictionary class]] && giphy.count > 0) return YES;
-    return NO;
+    return [giphy isKindOfClass:[NSDictionary class]] && giphy.count > 0;
 }
 
 // First Giphy id on the comment, and its progressive .mp4. Apollo's resolver gives
@@ -268,13 +268,11 @@ static NSURL *ApolloSVLowestDashURL(NSData *mpdData, NSURL *mpdURL, NSString *co
         // Bound the search to this AdaptationSet so we don't pick the other track's
         // BaseURL: stop at the next "<AdaptationSet" after the marker.
         NSUInteger start = set.location;
-        NSRange rest = NSMakeRange(start, xml.length - start);
         NSRange next = [xml rangeOfString:@"<AdaptationSet"
                                   options:0
                                     range:NSMakeRange(start + marker.length, xml.length - start - marker.length)];
         NSUInteger end = (next.location != NSNotFound) ? next.location : xml.length;
         searchRange = NSMakeRange(start, end - start);
-        (void)rest;
     } else if (![contentType isEqualToString:@"video"]) {
         // No audio AdaptationSet -> no audio track.
         return nil;
@@ -1290,7 +1288,7 @@ static void ApolloSVLayoutRow(id vc) {
     @try {
         if (!isfinite(frame.origin.y) || !isfinite(frame.size.height) || frame.size.height <= 1.0) return frame;
         id presented = [(UIPresentationController *)self presentedViewController];
-        Class shareVCClass = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
+        Class shareVCClass = ApolloClassShareAsImageViewController;
         if (shareVCClass && [presented isMemberOfClass:shareVCClass] &&
             objc_getAssociatedObject(presented, &kApolloShareVideoSwitchKey)) {
             double pitch = ApolloSVIvarDouble(presented, "rowHeight");

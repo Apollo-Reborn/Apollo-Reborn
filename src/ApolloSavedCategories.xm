@@ -37,7 +37,6 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
                               completion:(ApolloSavedItemsCompletion)completion {
     if (!completion) return %orig;
 
-    ApolloSavedItemsCompletion originalCompletion = [completion copy];
     ApolloSavedItemsCompletion deduplicatingCompletion = ^(NSArray *items,
                                                             RDKPagination *responsePagination,
                                                             NSError *error) {
@@ -46,7 +45,7 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
             ApolloLog(@"[SavedItems] Removed %lu duplicate item(s) from refresh response",
                       (unsigned long)(items.count - deduplicated.count));
         }
-        originalCompletion(deduplicated, responsePagination, error);
+        completion(deduplicated, responsePagination, error);
     };
     return %orig(category, pagination, deduplicatingCompletion);
 }
@@ -159,9 +158,8 @@ static BOOL sSortNextContextMenu = NO;
 + (instancetype)configurationWithIdentifier:(id)identifier previewProvider:(id)previewProvider actionProvider:(UIMenu *(^)(NSArray<UIMenuElement *> *))actionProvider {
     if (sSortNextContextMenu && actionProvider) {
         sSortNextContextMenu = NO;
-        UIMenu *(^originalProvider)(NSArray<UIMenuElement *> *) = [actionProvider copy];
         UIMenu *(^sortedProvider)(NSArray<UIMenuElement *> *) = ^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
-            UIMenu *menu = originalProvider(suggestedActions);
+            UIMenu *menu = actionProvider(suggestedActions);
             if (!menu) return menu;
             NSArray<UIMenuElement *> *children = menu.children;
             if (children.count < 3) return menu; // Need ≥2 categories + "Add"

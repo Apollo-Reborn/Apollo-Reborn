@@ -27,6 +27,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloUserProfileCache.h"
+#import "ApolloClasses.h"
 
 static const CGFloat kApolloModAvatarDiameter = 32.0;
 static const void *kApolloModAvatarUsernameKey = &kApolloModAvatarUsernameKey; // NSString we're fetching for
@@ -43,11 +44,8 @@ static NSString *ApolloModNormalizedUsername(NSString *username) {
     return clean;
 }
 
-static BOOL ApolloModUsernameMatches(NSString *left, NSString *right) {
-    NSString *l = ApolloModNormalizedUsername(left);
-    NSString *r = ApolloModNormalizedUsername(right);
-    if (l.length == 0 || r.length == 0) return NO;
-    return [l caseInsensitiveCompare:r] == NSOrderedSame;
+static BOOL ApolloModCellStillShows(UITableViewCell *cell, NSString *username) {
+    return [objc_getAssociatedObject(cell, kApolloModAvatarUsernameKey) isEqualToString:username];
 }
 
 // Oval-clipped, aspect-fill render of an avatar at `diameter` (transparent
@@ -92,7 +90,7 @@ static void ApolloModAvatarApplyToCell(UITableViewCell *cell, UITraitCollection 
     __weak UITableViewCell *weakCell = cell;
     [cache requestInfoForUsername:username completion:^(ApolloUserProfileInfo *info) {
         UITableViewCell *c1 = weakCell;
-        if (!c1 || !ApolloModUsernameMatches(objc_getAssociatedObject(c1, kApolloModAvatarUsernameKey), username)) return;
+        if (!ApolloModCellStillShows(c1, username)) return;
 
         NSURL *imageURL = info.iconURL ?: info.snoovatarURL;
         if (!imageURL) return; // no avatar available — keep neutral placeholder
@@ -102,7 +100,7 @@ static void ApolloModAvatarApplyToCell(UITableViewCell *cell, UITraitCollection 
             UIImage *circular = ApolloModCircularImage(image, kApolloModAvatarDiameter, traitCollection);
             dispatch_async(dispatch_get_main_queue(), ^{
                 UITableViewCell *c2 = weakCell;
-                if (!c2 || !ApolloModUsernameMatches(objc_getAssociatedObject(c2, kApolloModAvatarUsernameKey), username)) return;
+                if (!ApolloModCellStillShows(c2, username)) return;
                 c2.imageView.image = circular;
                 [c2 setNeedsLayout];
             });
@@ -117,7 +115,7 @@ static void ApolloModAvatarApplyToCell(UITableViewCell *cell, UITraitCollection 
 - (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = %orig;
     if (!sShowUserAvatars) return cell;
-    Class subtitleCellClass = NSClassFromString(@"Apollo.ApolloSubtitleTableViewCell");
+    Class subtitleCellClass = ApolloClassApolloSubtitleTableViewCell;
     if (!subtitleCellClass || ![cell isMemberOfClass:subtitleCellClass]) return cell;
     ApolloModAvatarApplyToCell(cell, tableView.traitCollection);
     // The avatar bitmaps above are rendered at the table's display scale and

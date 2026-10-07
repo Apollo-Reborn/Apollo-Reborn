@@ -8,6 +8,7 @@
 #import "ApolloCommon.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 static CGFloat const ApolloImmersiveBackdropBlurSigma = 28.0;
 // Height of the alpha feather at the sharp banner's bottom edge, where it
@@ -33,7 +34,7 @@ UIColor *ApolloImmersiveResolvedPageColor(UIColor *fallback, UITraitCollection *
 
 UIVisualEffect *ApolloImmersiveGlassEffect(UIColor *tintColor, CGFloat tintAlpha, BOOL interactive) {
     if (!IsLiquidGlass()) return nil;
-    Class glassClass = NSClassFromString(@"UIGlassEffect");
+    Class glassClass = ApolloClassUIGlassEffect;
     id effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(glassClass, @selector(effectWithStyle:), 0);
     if (tintColor) {
         ((void (*)(id, SEL, id))objc_msgSend)(effect, @selector(setTintColor:),

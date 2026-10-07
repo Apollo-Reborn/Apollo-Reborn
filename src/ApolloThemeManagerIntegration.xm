@@ -859,7 +859,7 @@ static void InstallNativeThemeHeaderTypography(void) {
     for (NSString *name in @[@"Apollo.SettingsThemeViewController",
                              @"Apollo.SettingsAppIconViewController",
                              @"Apollo.SettingsCommunityIconPackViewController"]) {
-        Class cls = NSClassFromString(name);
+        Class cls = objc_getClass(name.UTF8String);
         if (!cls) continue;
         SEL selector = @selector(tableView:willDisplayHeaderView:forSection:);
         Method method = class_getInstanceMethod(cls, selector);

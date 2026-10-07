@@ -558,7 +558,7 @@ static CMMotionManager *ApolloBBSharedMotionManager(void) {
                                                object:nil];
     UIColor *background = _background ?: [UIColor systemGroupedBackgroundColor];
     UIColor *surface = _surface ?: [UIColor secondarySystemGroupedBackgroundColor];
-    Class glassClass = NSClassFromString(@"UIGlassEffect");
+    Class glassClass = objc_getClass("UIGlassEffect");
     BOOL useGlass = IsLiquidGlass() && glassClass != nil;
     // On Liquid Glass builds the sheet supplies its own glass drawer material —
     // painting an opaque background over it would flatten the whole presentation.
@@ -1437,7 +1437,7 @@ static void ApolloBBSimHandleCommand(NSString *raw) {
         UINavigationController *nav = content.navigationController
             ?: ([top isKindOfClass:[UINavigationController class]] ? (UINavigationController *)top : top.navigationController);
         UIView *bar = nav.navigationBar ?: top.view.window;
-        SEL sel = NSSelectorFromString(@"recursiveDescription");
+        SEL sel = @selector(recursiveDescription);
         NSString *desc = bar ? ((NSString *(*)(id, SEL))objc_msgSend)(bar, sel) : @"(no bar)";
         [desc writeToFile:@"/tmp/apollofix-navdump.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
         ApolloLog(@"[BadgeBook][sim] nav dump written (%lu chars)", (unsigned long)desc.length);

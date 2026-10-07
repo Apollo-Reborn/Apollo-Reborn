@@ -92,7 +92,7 @@ static UIView *PiPViewForNode(id node) {
 }
 
 static BOOL PiPNodeIsShareable(id videoNode) {
-    SEL sel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
+    SEL sel = @selector(allowPlayerLayerToBeShareable);
     if (![videoNode respondsToSelector:sel]) return NO;
     return ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, sel);
 }
@@ -137,9 +137,9 @@ static NSURL *PiPAssetURLForNode(id videoNode, AVPlayer *player) {
     if ([asset isKindOfClass:[AVURLAsset class]]) {
         return [(AVURLAsset *)asset URL];
     }
-    SEL assetURLSel = NSSelectorFromString(@"assetURL");
-    if ([videoNode respondsToSelector:assetURLSel]) {
-        return ((id (*)(id, SEL))objc_msgSend)(videoNode, assetURLSel);
+    SEL assetURLSelector = @selector(assetURL);
+    if ([videoNode respondsToSelector:assetURLSelector]) {
+        return ((id (*)(id, SEL))objc_msgSend)(videoNode, assetURLSelector);
     }
     return nil;
 }
@@ -2406,7 +2406,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
         }
         if (![AVPictureInPictureController isPictureInPictureSupported]) return;
 
-        SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
+        SEL playerLayerSel = @selector(playerLayer);
         if (![videoNode respondsToSelector:playerLayerSel]) return;
         id layer = ((id (*)(id, SEL))objc_msgSend)(videoNode, playerLayerSel);
         if (![layer isKindOfClass:[AVPlayerLayer class]]) return;
@@ -3212,10 +3212,10 @@ static void PiPHandleFeedViewControllerAppeared(UIViewController *feedVC) {
     UITableView *tableView = PiPFindFeedTableView(feedVC.view, 4);
     // tableView may be nil (feed not laid out the usual way) — the loop simply
     // doesn't run, and we fall through to the dismiss below.
+    SEL nodeSelector = @selector(node);
     for (UITableViewCell *cell in tableView.visibleCells) {
-        SEL nodeSel = NSSelectorFromString(@"node");
-        if (![cell respondsToSelector:nodeSel]) continue;
-        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSel);
+        if (![cell respondsToSelector:nodeSelector]) continue;
+        id cellNode = ((id (*)(id, SEL))objc_msgSend)(cell, nodeSelector);
 
         if (!controller.active) {
             PiPManageInlineNativeForFeedCell(cellNode);
@@ -3291,10 +3291,10 @@ static BOOL PiPPagerLinkNeverAutoplays(id pageVC) {
     if (!link) return NO;
     // getter=isSpoiler / getter=isNSFW — the binary has no plain `spoiler`
     // getter (verified: only -[RDKLink isSpoiler] / -[RDKLink isNSFW] exist).
-    SEL spoilerSel = NSSelectorFromString(@"isSpoiler");
+    SEL spoilerSel = @selector(isSpoiler);
     if ([link respondsToSelector:spoilerSel]
         && ((BOOL (*)(id, SEL))objc_msgSend)(link, spoilerSel)) return YES;
-    SEL nsfwSel = NSSelectorFromString(@"isNSFW");
+    SEL nsfwSel = @selector(isNSFW);
     return [link respondsToSelector:nsfwSel]
         && ((BOOL (*)(id, SEL))objc_msgSend)(link, nsfwSel);
 }
@@ -3419,7 +3419,7 @@ static void PiPRefreshFullscreenPiPButton(id pageVC) {
         [pipButton setImage:icon forState:UIControlStateNormal];
         pipButton.tintColor = [UIColor whiteColor];
         pipButton.accessibilityLabel = @"Picture in Picture";
-        [pipButton addTarget:pageVC action:NSSelectorFromString(@"apolloPiP_enterTapped:")
+        [pipButton addTarget:pageVC action:@selector(apolloPiP_enterTapped:)
             forControlEvents:UIControlEventTouchUpInside];
         pipButton.pointerInteractionEnabled = YES;
         objc_setAssociatedObject(pageVC, kPiPFullscreenButtonKey, pipButton,
@@ -3672,7 +3672,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
 
 %new
 - (void)apolloPiP_enterTapped:(id)sender {
-    if (![self respondsToSelector:NSSelectorFromString(@"close")]) return;
+    if (![self respondsToSelector:@selector(close)]) return;
     // Re-check the gate at tap time: visibility only re-evaluates on layout
     // passes, so a reachability flip while the viewer sits open can leave the
     // button stale-visible. Hide and stand down instead of acting.
@@ -3713,7 +3713,7 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
         }
     });
     // The native X path: haptic + closeMethod=0 + dismissViewControllerAnimated.
-    ((void (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"close"));
+    [(id)self close];
 }
 
 %end

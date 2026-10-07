@@ -58,6 +58,8 @@ extern void ApolloSwipeCommentsSharedPlayerLayerMoved(AVPlayerLayer *playerLayer
 // viewWillAppear: from the commit callback.
 static BOOL sCommittedPopRunningReclaim = NO;
 
+static Class sCommentsViewControllerClass = nil;
+
 // =============================================================================
 // MARK: - Shared Deferral Logic
 // =============================================================================
@@ -72,21 +74,15 @@ static BOOL sCommittedPopRunningReclaim = NO;
 //   4. On cancel: does nothing (video stays in comments header)
 static BOOL DeferReclaimIfInteractivePop(id self_, BOOL animated) {
     UINavigationController *nav = [(UIViewController *)self_ navigationController];
-    id<UIViewControllerTransitionCoordinator> coordinator = nav ? [nav transitionCoordinator] : nil;
+    id<UIViewControllerTransitionCoordinator> coordinator = [nav transitionCoordinator];
 
     // Only defer when a CommentsViewController is being popped.
     // viewWillAppear: also fires during other interactive transitions
     // (e.g. pushing from subreddit list) — we must not interfere.
-    static Class sCommentsVCClass = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sCommentsVCClass = objc_getClass("_TtC6Apollo22CommentsViewController");
-    });
-
     BOOL poppingComments = NO;
-    if (coordinator && [coordinator isInteractive]) {
+    if ([coordinator isInteractive]) {
         id fromVC = [coordinator viewControllerForKey:UITransitionContextFromViewControllerKey];
-        poppingComments = sCommentsVCClass && [fromVC isMemberOfClass:sCommentsVCClass];
+        poppingComments = [fromVC isMemberOfClass:sCommentsViewControllerClass];
     }
 
     if (!poppingComments || sCommittedPopRunningReclaim) return NO;
@@ -215,8 +211,6 @@ static const void *kApolloHeaderLayerRecordKey = &kApolloHeaderLayerRecordKey;
 static NSHashTable *sHeaderLayerNodes = nil;
 
 static Class sRichMediaNodeClass = nil;
-static Class sCommentsViewControllerClass = nil;
-
 
 static BOOL HeaderRetakeNodeIsLoaded(id node) {
     if (!node) return NO;
@@ -231,9 +225,9 @@ static CALayer *HeaderRetakeLayerOfNode(id node) {
 }
 
 static BOOL HeaderRetakeVideoNodeIsShareable(id videoNode) {
-    SEL sel = NSSelectorFromString(@"allowPlayerLayerToBeShareable");
-    if (!videoNode || ![videoNode respondsToSelector:sel]) return NO;
-    return ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, sel);
+    SEL shareableSelector = @selector(allowPlayerLayerToBeShareable);
+    return [videoNode respondsToSelector:shareableSelector]
+        && ((BOOL (*)(id, SEL))objc_msgSend)(videoNode, shareableSelector);
 }
 
 // The shared layer a shareable video node is showing, if any. Mirrors
@@ -364,7 +358,7 @@ static BOOL HeaderRetakeRestore(id richMediaNode, NSString *reason) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [layer removeFromSuperlayer];
-    SEL setPlayerLayerSel = NSSelectorFromString(@"setPlayerLayer:");
+    SEL setPlayerLayerSel = @selector(setPlayerLayer:);
     if ([videoNode respondsToSelector:setPlayerLayerSel]) {
         ((void (*)(id, SEL, id))objc_msgSend)(videoNode, setPlayerLayerSel, layer);
     }
@@ -571,7 +565,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
     Class commentsHeaderClass = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode");
     sCommentsViewControllerClass = objc_getClass("_TtC6Apollo22CommentsViewController");
     if (sRichMediaNodeClass && videoNodeClass
-        && class_getInstanceMethod(videoNodeClass, NSSelectorFromString(@"setPlayerLayer:"))) {
+        && class_getInstanceMethod(videoNodeClass, @selector(setPlayerLayer:))) {
         %init(HeaderRetakeTake, ASVideoNode = videoNodeClass);
     }
     if (richMediaHeaderClass) %init(HeaderRetakeRichMediaHeader, RichMediaHeaderCellNode = richMediaHeaderClass);

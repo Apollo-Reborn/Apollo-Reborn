@@ -130,6 +130,12 @@ void MSHookMessageEx(Class cls, SEL selector, IMP replacement, IMP *original) {
 }
 #endif
 
+static Class ApolloClassASTextNode, ApolloClassASTextNode2, ApolloClassASImageNode;
+__attribute__((constructor)) static void TextureSyncTestResolveClasses(void) {
+    ApolloClassASTextNode = objc_getClass("ASTextNode");
+    ApolloClassASTextNode2 = objc_getClass("ASTextNode2");
+    ApolloClassASImageNode = objc_getClass("ASImageNode");
+}
 // PRODUCTION_MAC_TEXTURE_SYNC
 
 static void Require(BOOL condition, NSString *message) {

@@ -126,8 +126,9 @@ static BOOL PPCSWriteCurrentSort(id vc, int64_t raw) {
 // there the way ApolloURLOpenCommentSort.xm does, so both opens key the same entry.
 static NSString *PPCSPostID(id vc) {
     id link = ApolloObjectIvar(vc, "link");
-    if (link && [link respondsToSelector:@selector(identifier)]) {
-        NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, @selector(identifier));
+    SEL identifierSelector = @selector(identifier);
+    if ([link respondsToSelector:identifierSelector]) {
+        NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, identifierSelector);
         if ([identifier isKindOfClass:[NSString class]] && identifier.length > 0) return identifier;
     }
     NSString *linkID = ApolloReadSwiftStringIvar(vc, "linkID");

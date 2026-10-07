@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "CustomAPIViewController.h"
 #import "ApolloBuyUsACoffeeViewController.h"
 #import "SavedCategoriesViewController.h"
@@ -25,11 +26,6 @@
 
 @interface SettingsAboutViewController : UIViewController
 @end
-
-// Cached snapshot of Apollo's native green-jar Tip Jar icon, captured from the
-// Settings section-0 cell BEFORE PR #294's reskin overwrites it. Used by the
-// About VC injection below so the new Tip Jar row matches Apollo's native look.
-static UIImage *sApolloCachedTipJarIcon = nil;
 
 // When YES, the Settings VC didSelect hook will skip PR #294's "Buy Us a Coffee"
 // reroute for section 0 row 0 and fall through to Apollo's native Tip Jar tap
@@ -240,10 +236,6 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 // because UIKit requires a cell dequeued for an index path to be returned for
 // that same path. Their surface is copied from a real native row below after
 // Apollo has themed it (see the native branch in cellForRowAtIndexPath:).
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return %orig;
-}
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 2;
@@ -488,12 +480,7 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
         UITableViewCell *cell = %orig(tableView, origFirst);
         cell.textLabel.text = @"Tip Jar";
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        UIImage *icon = sApolloCachedTipJarIcon;
-        if (!icon) {
-            ApolloLog(@"[AboutTipJar] native icon not yet cached, using emoji fallback");
-            icon = ApolloEmojiSettingsIcon(@"\xF0\x9F\xAB\x99", [UIColor systemGreenColor], 29.0);
-        }
-        cell.imageView.image = icon;
+        cell.imageView.image = ApolloEmojiSettingsIcon(@"\xF0\x9F\xAB\x99", [UIColor systemGreenColor], 29.0);
         return cell;
     }
     NSIndexPath *adjusted = [NSIndexPath indexPathForRow:indexPath.row inSection:indexPath.section - 1];
@@ -521,10 +508,10 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
         // About is always pushed from Settings, so it lives below us in the stack.
         UIViewController *aboutVC = (UIViewController *)self;
         UIViewController *settingsVC = nil;
-        NSString *settingsClassName = @"_TtC6Apollo22SettingsViewController";
+        Class settingsClass = objc_getClass("_TtC6Apollo22SettingsViewController");
         // 1) Nav stack (when About is pushed).
         for (UIViewController *vc in [aboutVC.navigationController.viewControllers reverseObjectEnumerator]) {
-            if ([NSStringFromClass([vc class]) isEqualToString:settingsClassName]) {
+            if ([vc isKindOfClass:settingsClass]) {
                 settingsVC = vc;
                 break;
             }
@@ -533,10 +520,10 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
         if (!settingsVC) {
             UIViewController *p = aboutVC.presentingViewController;
             while (p && !settingsVC) {
-                if ([NSStringFromClass([p class]) isEqualToString:settingsClassName]) { settingsVC = p; break; }
+                if ([p isKindOfClass:settingsClass]) { settingsVC = p; break; }
                 if ([p isKindOfClass:[UINavigationController class]]) {
                     for (UIViewController *vc in [((UINavigationController *)p).viewControllers reverseObjectEnumerator]) {
-                        if ([NSStringFromClass([vc class]) isEqualToString:settingsClassName]) { settingsVC = vc; break; }
+                        if ([vc isKindOfClass:settingsClass]) { settingsVC = vc; break; }
                     }
                 }
                 p = p.presentingViewController;
@@ -556,20 +543,9 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
         // getter. Read the ivar via the ObjC runtime, then fall back to a
         // subview walk if needed.
         UITableView *settingsTable = nil;
-        Ivar tvIvar = class_getInstanceVariable([settingsVC class], "tableView");
-        if (tvIvar) {
-            id v = object_getIvar(settingsVC, tvIvar);
-            if ([v isKindOfClass:[UITableView class]]) settingsTable = (UITableView *)v;
-        }
-        if (!settingsTable) {
-            // Subview walk fallback.
-            NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:settingsVC.view];
-            while (stack.count) {
-                UIView *v = stack.lastObject; [stack removeLastObject];
-                if ([v isKindOfClass:[UITableView class]]) { settingsTable = (UITableView *)v; break; }
-                for (UIView *sub in v.subviews) [stack addObject:sub];
-            }
-        }
+        id tableIvarValue = ApolloObjectIvar(settingsVC, "tableView");
+        if ([tableIvarValue isKindOfClass:[UITableView class]]) settingsTable = (UITableView *)tableIvarValue;
+        if (!settingsTable) settingsTable = ApolloRootSettingsTableInView(settingsVC.view);
         if (!settingsTable) {
             ApolloLog(@"[AboutTipJar] SettingsVC tableView not accessible (ivar/subview-walk both failed)");
             return;
@@ -678,7 +654,7 @@ static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
 
 %ctor {
     if (@available(iOS 26.0, *)) {
-        %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = NSClassFromString(@"Apollo.SettingsGesturesViewController"));
+        %init(ApolloSettingsGestureHeaders, ApolloSettingsGesturesViewController = objc_getClass("Apollo.SettingsGesturesViewController"));
     }
     %init(SettingsViewController=objc_getClass("_TtC6Apollo22SettingsViewController"),
           SettingsAboutViewController=objc_getClass("_TtC6Apollo27SettingsAboutViewController"));

@@ -2437,7 +2437,7 @@ static NSURL *ApolloWriteTrendingPlist(NSDictionary *table) {
 // Rewrite x.com links as twitter.com
 - (NSString *)host {
     NSString *originalHost = %orig;
-    if (originalHost && [originalHost isEqualToString:@"x.com"]) {
+    if ([originalHost isEqualToString:@"x.com"]) {
         return @"twitter.com";
     }
     return originalHost;
@@ -4361,8 +4361,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // walks all ~2k loaded images per call, and four separate calls paid that
     // walk four times. The Security bindings have to be installed here, before
     // the Web JSON keychain hydration below, so this is the call the others join.
-    // (ApolloSwiftSingletonCapture and ApolloRedgifsQueuedFetchesLock rebind
-    // only Apollo's own image with rebind_symbols_image, which skips that walk.)
+    // (ApolloSwiftSingletonCapture, ApolloRedgifsQueuedFetchesLock and
+    // ApolloImageUploadHost rebind only Apollo's own image with
+    // rebind_symbols_image, which skips that walk.)
     struct rebinding rebindings[5 + 2 * ApolloRebornMaxAppendedRebindings] = {
         {"SecItemAdd", (void *)SecItemAdd_replacement, (void **)&SecItemAdd_orig},
         {"SecItemCopyMatching", (void *)SecItemCopyMatching_replacement, (void **)&SecItemCopyMatching_orig},
@@ -4371,9 +4372,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         {"uname", (void *)uname_replacement, (void **)&uname_orig},
     };
     size_t rebindingCount = 5;
-    rebindingCount += ApolloImageUploadHostAppendRebindings(&rebindings[rebindingCount]);
     rebindingCount += ApolloPhotoComposerAppendRebindings(&rebindings[rebindingCount]);
     rebind_symbols(rebindings, rebindingCount);
+    ApolloImageUploadHostInstallRebindings();
 
     if ([[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX]) {
         if (!%c(FLEXManager)) {

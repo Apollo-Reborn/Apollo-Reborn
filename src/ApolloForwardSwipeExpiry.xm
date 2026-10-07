@@ -45,6 +45,7 @@
 #import "ApolloCommon.h"          // ApolloLog
 #import "ApolloSwiftRuntime.h"    // ApolloObjectIvar
 #import "ApolloState.h"           // sForwardSwipeForgetAfterScrolling
+#import "ApolloClasses.h"
 
 // Expire once the top visible row is this many rows past the anchor. The
 // feed table alternates post cells with ThinSeparatorCellNode rows (verified
@@ -84,15 +85,6 @@ static const CGFloat kApolloForwardExpiryEvaluateStride = 24.0;
 @end
 
 static const void *kApolloForwardExpiryAnchorKey = &kApolloForwardExpiryAnchorKey;
-
-static Class ApolloForwardExpiryNavigationClass(void) {
-    static Class navigationClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        navigationClass = objc_getClass("_TtC6Apollo26ApolloNavigationController");
-    });
-    return navigationClass;
-}
 
 // The Swift array ivar is a single word holding the storage object. Apollo
 // only ever assigns it native Swift storage (init [], insert, removeFirst,
@@ -135,7 +127,7 @@ static void ApolloForwardExpiryHandleScroll(UIViewController *feedController, UI
     CGFloat offsetY = scrollView.contentOffset.y;
     if (state && fabs(offsetY - state.lastEvaluatedY) < kApolloForwardExpiryEvaluateStride) return;
 
-    Class navigationClass = ApolloForwardExpiryNavigationClass();
+    Class navigationClass = ApolloClassApolloNavigationController;
     UINavigationController *navigationController = feedController.navigationController;
     if (!navigationClass || ![navigationController isKindOfClass:navigationClass]) return;
     if (navigationController.topViewController != feedController) return;

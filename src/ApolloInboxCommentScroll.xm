@@ -80,7 +80,7 @@ static UITableView *ICSFindTable(UIView *v) {
 
 static UITableView *ICSTableView(UIViewController *vc, id tableNode) {
     if (tableNode) {
-        SEL viewSel = NSSelectorFromString(@"view");
+        SEL viewSel = @selector(view);
         if ([tableNode respondsToSelector:viewSel]) {
             UIView *tv = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSel);
             if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
@@ -92,9 +92,8 @@ static UITableView *ICSTableView(UIViewController *vc, id tableNode) {
 // Isolated single-comment-thread: has the "View All Comments" footer node, or is a
 // continued-thread view. Either way the linked comment lives near the bottom.
 static BOOL ICSIsIsolatedThread(UIViewController *vc) {
-    if (ApolloObjectIvar(vc, "viewFullPostNode") != nil) return YES;
-    if (ApolloReadBoolIvar(vc, "continuingThread", NO)) return YES;
-    return NO;
+    return ApolloObjectIvar(vc, "viewFullPostNode") != nil ||
+           ApolloReadBoolIvar(vc, "continuingThread", NO);
 }
 
 static NSNumber *ICSNum(id vc, const void *key) { return objc_getAssociatedObject(vc, key); }
@@ -105,20 +104,16 @@ static void ICSSet(id vc, const void *key, id val) {
 // Find the linked comment's index path. AsyncDisplayKit holds a node object for every row —
 // even ones far below the fold — so this resolves the linked comment without scrolling first.
 static NSIndexPath *ICSLinkedIndexPath(id tableNode, UITableView *tableView) {
-    NSIndexPath *linked = nil;
-    NSInteger sections = [tableView numberOfSections];
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
-    BOOL canNode = tableNode && [tableNode respondsToSelector:nodeSel];
-    if (!canNode) return nil;
-    for (NSInteger s = 0; s < sections; s++) {
-        NSInteger rows = [tableView numberOfRowsInSection:s];
-        for (NSInteger r = 0; r < rows; r++) {
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
+    if (![tableNode respondsToSelector:nodeSel]) return nil;
+    for (NSInteger s = [tableView numberOfSections] - 1; s >= 0; s--) {
+        for (NSInteger r = [tableView numberOfRowsInSection:s] - 1; r >= 0; r--) {
             NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
             id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
-            if (node && ApolloReadBoolIvar(node, "isLinkedToComment", NO)) linked = ip;
+            if (node && ApolloReadBoolIvar(node, "isLinkedToComment", NO)) return ip;
         }
     }
-    return linked;
+    return nil;
 }
 
 // Offset that puts a row's top just under the nav bar, clamped to the scrollable range.

@@ -243,8 +243,8 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 static NSString *ApolloGalleryBearerForClient(id client) {
     if (!client) return nil;
 
-    SEL credentialSelector = NSSelectorFromString(@"authorizationCredential");
-    SEL tokenSelector = NSSelectorFromString(@"accessToken");
+    SEL credentialSelector = @selector(authorizationCredential);
+    SEL tokenSelector = @selector(accessToken);
     if (![client respondsToSelector:credentialSelector]) return nil;
     id credential = ((id (*)(id, SEL))objc_msgSend)(client, credentialSelector);
     if (![credential respondsToSelector:tokenSelector]) return nil;

@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <ImageIO/ImageIO.h>
+#import <mach-o/dyld.h>
 #import <CoreFoundation/CoreFoundation.h>
 
 #import "ApolloCommon.h"
@@ -243,15 +244,7 @@ BOOL ApolloIsAuthorizationHeader(NSString *field) {
 
 static BOOL ApolloURLIsRedditOAuth(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
-    NSString *host = url.host.lowercaseString;
-    if (host.length == 0) return NO;
-    if ([host isEqualToString:@"oauth.reddit.com"]) return YES;
-    if ([host isEqualToString:@"www.reddit.com"]) return YES;
-    if ([host isEqualToString:@"ssl.reddit.com"]) return YES;
-    if ([host isEqualToString:@"api.reddit.com"]) return YES;
-    if ([host isEqualToString:@"old.reddit.com"]) return YES;
-    if ([host hasSuffix:@".reddit.com"]) return YES;
-    return NO;
+    return [url.host.lowercaseString hasSuffix:@".reddit.com"];
 }
 
 // Returns YES for Reddit endpoints that are inherently scoped to a *specific*
@@ -499,7 +492,7 @@ static NSString *ApolloRedditUploadFallbackURLForAssetID(NSString *assetID) {
     NSString *extension = [info[@"extension"] isKindOfClass:[NSString class]] ? info[@"extension"] : nil;
     if (ApolloRedditUploadAssetIDIsVideo(assetID)) {
         NSString *stagedURL = [info[@"stagedURL"] isKindOfClass:[NSString class]] ? info[@"stagedURL"] : nil;
-        return stagedURL.length > 0 ? stagedURL : [@"https://v.redd.it/" stringByAppendingString:assetID];
+        return stagedURL.length > 0 ? stagedURL : ApolloRedditNativeVideoURLForAssetID(assetID);
     }
     return [NSString stringWithFormat:@"https://i.redd.it/%@.%@", assetID, extension.length > 0 ? extension : @"jpeg"];
 }
@@ -665,7 +658,7 @@ static NSString *ApolloCommentLinkFormBodyByUnwrappingUploadedEmbeds(NSString *b
     return changed ? [outPairs componentsJoinedByString:@"&"] : nil;
 }
 
-static NSURLRequest *ApolloCommentLinkRequestWithFormBody(NSURLRequest *request, NSString *body) {
+static NSURLRequest *ApolloRequestWithFormBody(NSURLRequest *request, NSString *body) {
     NSMutableURLRequest *modifiedRequest = [request mutableCopy];
     NSData *newBody = [body dataUsingEncoding:NSUTF8StringEncoding];
     [modifiedRequest setHTTPBody:newBody];
@@ -681,7 +674,6 @@ static BOOL ApolloSubmitURLStringLooksLikeHostedMedia(NSString *urlString) {
     NSString *host = url.host.lowercaseString ?: @"";
     if ([host isEqualToString:@"imgur.com"] || [host hasSuffix:@".imgur.com"]) return YES;
     if ([host isEqualToString:@"redd.it"] || [host hasSuffix:@".redd.it"]) return YES;
-    if ([host isEqualToString:@"v.redd.it"] || [host isEqualToString:@"i.redd.it"] || [host isEqualToString:@"preview.redd.it"]) return YES;
     if ([host containsString:@"reddit-uploaded-media"] || [host containsString:@"reddit-uploaded-video"]) return YES;
     return NO;
 }
@@ -762,12 +754,7 @@ static NSURLRequest *ApolloSubmitRequestByInjectingMediaBodyText(NSURLRequest *r
         changed = YES;
     }
     if (!changed) return nil;
-
-    NSMutableURLRequest *modifiedRequest = [request mutableCopy];
-    NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
-    modifiedRequest.HTTPBody = newBody;
-    [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
-    return modifiedRequest;
+    return ApolloRequestWithFormBody(request, [rewrittenPairs componentsJoinedByString:@"&"]);
 }
 
 static NSRegularExpression *ApolloRedditUploadedMediaURLRegex(void) {
@@ -1382,10 +1369,7 @@ static NSURLRequest *ApolloImgChestRewriteSubmitRequest(NSURLRequest *request, N
     }
     if (!changed) return nil;
 
-    NSMutableURLRequest *modified = [request mutableCopy];
-    NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
-    modified.HTTPBody = newBody;
-    [modified setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
+    NSURLRequest *modified = ApolloRequestWithFormBody(request, [rewrittenPairs componentsJoinedByString:@"&"]);
     if (rewrittenURL.length > 0) ApolloLog(@"[ImgChestUpload] Rewrote multi-image submit url to ImgChest album %@", rewrittenURL);
     return modified;
 }
@@ -1862,7 +1846,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
 
         if (giphyRichTextJSONString.length == 0) {
             ApolloLog(@"[RedditUpload] Native giphy detected but no RTJSON built (text pair missing?) — leaving %@ submit untouched", request.URL.path);
-            return linkUnwrappedBody ? ApolloCommentLinkRequestWithFormBody(request, body) : nil;
+            return linkUnwrappedBody ? ApolloRequestWithFormBody(request, body) : nil;
         }
 
         if (!replacedRichTextJSON) {
@@ -1887,7 +1871,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     }
 
     if (!ApolloStringContainsRedditUploadedMedia(body)) {
-        return linkUnwrappedBody ? ApolloCommentLinkRequestWithFormBody(request, body) : nil;
+        return linkUnwrappedBody ? ApolloRequestWithFormBody(request, body) : nil;
     }
 
     NSArray<NSString *> *pairs = [body componentsSeparatedByString:@"&"];
@@ -1913,10 +1897,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
                     // the bare i.redd.it URL to `![gif|image](url)` so all clients
                     // (Apollo via inline-images, reddit.com via RTJSON, official app
                     // via markdown image) display the GIF.
-                    NSString *embeddedValue = ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(value);
-                    if (![embeddedValue isEqualToString:value]) {
-                        value = embeddedValue;
-                    }
+                    value = ApolloCommentTextByEmbeddingRedditUploadedMediaURLs(value);
                     ApolloLog(@"[RedditUpload] Rewriting %@ text to richtext_json (kept markdown body fallback len=%lu)",
                               request.URL.path, (unsigned long)value.length);
                     changed = YES;
@@ -1961,13 +1942,7 @@ NSURLRequest *ApolloRedditMaybeRewriteCommentRequest(NSURLRequest *request) {
     // The rewritten pairs were built from the (possibly link-unwrapped) body, so a
     // link-host unwrap alone still warrants delivering the modified request.
     if (!changed && !linkUnwrappedBody) return nil;
-
-    NSMutableURLRequest *modifiedRequest = [request mutableCopy];
-    NSData *newBody = [[rewrittenPairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
-    [modifiedRequest setHTTPBody:newBody];
-    [modifiedRequest setValue:[NSString stringWithFormat:@"%lu", (unsigned long)newBody.length] forHTTPHeaderField:@"Content-Length"];
-
-    return modifiedRequest;
+    return ApolloRequestWithFormBody(request, [rewrittenPairs componentsJoinedByString:@"&"]);
 }
 
 // MARK: - LinkID resolution (websocket + listing)
@@ -2651,8 +2626,7 @@ static NSArray<NSString *> *ApolloPlainParagraphsFromCommentBody(NSString *body)
     NSCharacterSet *blankSet = [NSCharacterSet whitespaceCharacterSet];
 
     void (^flushParagraph)(void) = ^{
-        NSString *paragraph = [currentParagraph copy];
-        paragraph = [paragraph stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *paragraph = [currentParagraph stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (paragraph.length > 0) [paragraphs addObject:paragraph];
         [currentParagraph setString:@""];
     };
@@ -2839,7 +2813,7 @@ void ApolloRedditTransformCommentResponseAsync(NSData *originalData, ApolloReddi
 
     id json = [NSJSONSerialization JSONObjectWithData:originalData options:NSJSONReadingMutableContainers error:nil];
     if (![json isKindOfClass:[NSDictionary class]]) { completion(originalData); return; }
-    NSMutableDictionary *comment = [(NSDictionary *)json mutableCopy];
+    NSMutableDictionary *comment = json;
     if ([comment[@"json"] isKindOfClass:[NSDictionary class]]) { completion(originalData); return; } // Already wrapped.
     if (![[comment[@"name"] isKindOfClass:[NSString class]] ? comment[@"name"] : @"" hasPrefix:@"t1_"]) {
         completion(originalData);
@@ -2862,7 +2836,7 @@ void ApolloRedditTransformCommentResponseAsync(NSData *originalData, ApolloReddi
 // MARK: - URLSession delegate response transformer (one-time class swizzle)
 
 static void ApolloAppendRedditCommentResponseData(NSURLSessionTask *task, NSData *data) {
-    if (!ApolloRedditIsCommentTask(task) || data.length == 0) return;
+    if (data.length == 0) return;
     NSMutableData *responseData = objc_getAssociatedObject(task, &kApolloRedditCommentResponseDataKey);
     if (!responseData) {
         responseData = [NSMutableData data];
@@ -2872,7 +2846,7 @@ static void ApolloAppendRedditCommentResponseData(NSURLSessionTask *task, NSData
 }
 
 static void ApolloAppendRedditSubmitResponseData(NSURLSessionTask *task, NSData *data) {
-    if (!ApolloRedditIsSubmitTask(task) || data.length == 0) return;
+    if (data.length == 0) return;
     NSMutableData *responseData = objc_getAssociatedObject(task, &kApolloRedditSubmitResponseDataKey);
     if (!responseData) {
         responseData = [NSMutableData data];
@@ -3410,11 +3384,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
                     ApolloCommentLinkShowUploadedToast(@"Image Chest");
                 }
                 NSData *synthetic = ApolloSyntheticImgurUploadResponseData(sendLink, chestMIMEType);
-                NSHTTPURLResponse *fake = [[NSHTTPURLResponse alloc] initWithURL:requestURL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{@"Content-Type": @"application/json"}];
-                completionHandler(synthetic, fake, nil);
+                completionHandler(synthetic, ApolloSyntheticImgurHTTPResponse(requestURL), nil);
             });
             ApolloImgChestAssociateOperationWithTask(operation, proxyTask);
         };
@@ -3608,11 +3578,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
                     ApolloCommentLinkShowUploadedToast(@"Image Chest");
                 }
                 NSData *synthetic = ApolloSyntheticImgurUploadResponseData(sendLink, chestMIMEType);
-                NSHTTPURLResponse *fake = [[NSHTTPURLResponse alloc] initWithURL:requestURL
-                                                                      statusCode:200
-                                                                     HTTPVersion:@"HTTP/1.1"
-                                                                    headerFields:@{@"Content-Type": @"application/json"}];
-                completionHandler(synthetic, fake, nil);
+                completionHandler(synthetic, ApolloSyntheticImgurHTTPResponse(requestURL), nil);
             });
             ApolloImgChestAssociateOperationWithTask(operation, proxyTask);
         };
@@ -3987,8 +3953,8 @@ static void ApolloUploadsApplyDetail(UITableViewCell *cell, NSString *key, NSStr
 // These limits are anachronistic — Imgur now accepts 50 MB and Reddit native ~20 MB.
 // We rebind the two ImageIO C functions Apollo uses for upload prep and rewrite their
 // options dicts so the resulting CGImage is full-resolution and the JPEG is full
-// quality. The hooks only mutate dicts that already opted into the constrained
-// behavior, so non-upload ImageIO callers (which don't pass these keys) are untouched.
+// quality. They are bound only in Apollo's image, whose three callers are all upload
+// prep; the tweak's own decoders pass their own max pixel size and must keep it.
 // EXIF orientation handling is preserved.
 
 static CGImageRef (*orig_CGImageSourceCreateThumbnailAtIndex)(CGImageSourceRef, size_t, CFDictionaryRef) = NULL;
@@ -4032,12 +3998,19 @@ static bool hooked_CGImageDestinationAddImage(CGImageDestinationRef destination,
     return result;
 }
 
-size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out) {
-    out[0] = (struct rebinding){"CGImageSourceCreateThumbnailAtIndex",
-                                (void *)hooked_CGImageSourceCreateThumbnailAtIndex,
-                                (void **)&orig_CGImageSourceCreateThumbnailAtIndex};
-    out[1] = (struct rebinding){"CGImageDestinationAddImage",
-                                (void *)hooked_CGImageDestinationAddImage,
-                                (void **)&orig_CGImageDestinationAddImage};
-    return 2;
+void ApolloImageUploadHostInstallRebindings(void) {
+    Class composeClass = objc_getClass("_TtC6Apollo21ComposeViewController");
+    const char *imageName = composeClass ? class_getImageName(composeClass) : NULL;
+    for (uint32_t i = 0; imageName && i < _dyld_image_count(); i++) {
+        const char *candidate = _dyld_get_image_name(i);
+        if (!candidate || strcmp(candidate, imageName) != 0) continue;
+        rebind_symbols_image((void *)_dyld_get_image_header(i), _dyld_get_image_vmaddr_slide(i), (struct rebinding[2]){
+            {"CGImageSourceCreateThumbnailAtIndex", (void *)hooked_CGImageSourceCreateThumbnailAtIndex,
+             (void **)&orig_CGImageSourceCreateThumbnailAtIndex},
+            {"CGImageDestinationAddImage", (void *)hooked_CGImageDestinationAddImage,
+             (void **)&orig_CGImageDestinationAddImage},
+        }, 2);
+        return;
+    }
+    ApolloLog(@"[ImageUploadHost] Apollo image not found; full-resolution upload bypass inactive");
 }

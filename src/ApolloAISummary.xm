@@ -10,7 +10,7 @@
 //
 //  The Swift-only FoundationModels API is reached through the
 //  `ApolloFoundationModels` @objc bridge (ApolloFoundationModels.swift). We
-//  resolve it via NSClassFromString so there is no link-time dependency on the
+//  resolve it via objc_getClass so there is no link-time dependency on the
 //  Swift-generated interop header.
 //
 //  The summaries are inserted into CommentsHeaderCellNode's layout. The post
@@ -33,11 +33,12 @@
 #import "ApolloTextureDecls.h"
 #import "ApolloDevvitPosts.h"
 #import "Tweak.h"
+#import "ApolloClasses.h"
 
 #pragma mark - FoundationModels bridge (declared, resolved at runtime)
 
 // Mirrors the @objc surface of ApolloFoundationModels.swift. We never reference
-// the class symbol directly (only via NSClassFromString), so this is a pure
+// the class symbol directly (only via objc_getClass), so this is a pure
 // type declaration for clean message sends.
 @interface ApolloFoundationModels : NSObject
 + (instancetype)shared;
@@ -61,7 +62,7 @@ static ApolloFoundationModels *ApolloAIBridge(void) {
     if (sAISummaryProvider.length > 0 && ![sAISummaryProvider isEqualToString:@"apple"]) {
         return (ApolloFoundationModels *)[ApolloAICloudBridge shared];
     }
-    Class cls = NSClassFromString(@"ApolloFoundationModels");
+    Class cls = ApolloClassApolloFoundationModels;
     if (!cls) return nil;
     return [cls shared];
 }
@@ -668,7 +669,7 @@ static void ApolloAIShowLoadingIfIdle(NSString *fullName, BOOL isPost);
 // Reddit fullName ("t3_xxxx") for the post; falls back to a stable key.
 static NSString *ApolloAILinkFullName(id link) {
     if (!link) return nil;
-    SEL sels[] = { @selector(fullName), NSSelectorFromString(@"name"), NSSelectorFromString(@"identifier") };
+    SEL sels[] = { @selector(fullName), @selector(name), @selector(identifier) };
     for (size_t i = 0; i < sizeof(sels) / sizeof(sels[0]); i++) {
         if ([link respondsToSelector:sels[i]]) {
             id v = ((id (*)(id, SEL))objc_msgSend)(link, sels[i]);
@@ -683,7 +684,7 @@ static NSString *ApolloAILinkFullName(id link) {
 // fixed name list misses.
 static id ApolloAIScanForLink(id obj) {
     if (!obj) return nil;
-    Class rdkLink = NSClassFromString(@"RDKLink");
+    Class rdkLink = ApolloClassRDKLink;
     if (!rdkLink) return nil;
 
     static const char *knownNames[] = {
@@ -722,7 +723,7 @@ static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
     // main thread (the old code's biggest stall) and defeats lazy loading.
     // Comment bodies are captured from the cell lifecycle hooks instead, so the
     // already-loaded nodes here are only a supplementary source.
-    SEL nodeForRowSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeForRowSelector = @selector(nodeForRowAtIndexPath:);
     if (tableNode && tableView && [tableNode respondsToSelector:nodeForRowSelector]) {
         NSInteger sectionCount = [tableView numberOfSections];
         for (NSInteger section = 0; section < sectionCount; section++) {
@@ -739,7 +740,7 @@ static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
         }
     }
 
-    SEL visibleNodesSelector = NSSelectorFromString(@"visibleNodes");
+    SEL visibleNodesSelector = @selector(visibleNodes);
     if (tableNode && [tableNode respondsToSelector:visibleNodesSelector]) {
         id visibleNodes = ((id (*)(id, SEL))objc_msgSend)(tableNode, visibleNodesSelector);
         if ([visibleNodes isKindOfClass:[NSArray class]]) {
@@ -818,7 +819,7 @@ static UITableView *ApolloAICommentsTableView(UIViewController *vc) {
 static id ApolloAICommentFromCellNode(id cellNode) {
     if (!cellNode) return nil;
     id comment = ApolloObjectIvar(cellNode, "comment");
-    Class rdkComment = NSClassFromString(@"RDKComment");
+    Class rdkComment = ApolloClassRDKComment;
     if (!rdkComment || ![comment isMemberOfClass:rdkComment]) return nil;
     return comment;
 }
@@ -854,12 +855,14 @@ static NSString *ApolloAICleanInputText(NSString *text, NSUInteger maxLength) {
     }
 
     NSString *clean = [keptLines componentsJoinedByString:@" "];
-    NSError *regexError = nil;
-    NSRegularExpression *urlRegex =
-        [NSRegularExpression regularExpressionWithPattern:@"https?://\\S+"
-                                                  options:NSRegularExpressionCaseInsensitive
-                                                    error:&regexError];
-    if (!regexError) {
+    static NSRegularExpression *urlRegex;
+    static dispatch_once_t urlRegexOnce;
+    dispatch_once(&urlRegexOnce, ^{
+        urlRegex = [NSRegularExpression regularExpressionWithPattern:@"https?://\\S+"
+                                                             options:NSRegularExpressionCaseInsensitive
+                                                               error:NULL];
+    });
+    if (urlRegex) {
         clean = [urlRegex stringByReplacingMatchesInString:clean
                                                    options:0
                                                      range:NSMakeRange(0, clean.length)
@@ -1005,7 +1008,7 @@ static id ApolloAIRDKCommentFromObject(id obj, Class rdkComment) {
 static void ApolloAICollectCommentsFromDataModel(UIViewController *vc,
                                                  NSMutableArray *comments,
                                                  NSMutableSet<NSString *> *candidateKeys) {
-    Class rdkComment = NSClassFromString(@"RDKComment");
+    Class rdkComment = ApolloClassRDKComment;
     if (!rdkComment || !vc || !comments || !candidateKeys) return;
 
     NSArray *bestArray = nil;
@@ -1373,7 +1376,11 @@ static NSString *ApolloAIDecodeHTMLEntities(NSString *s) {
     };
     for (NSString *k in named) s = [s stringByReplacingOccurrencesOfString:k withString:named[k]];
     // Numeric decimal entities (&#160; etc.).
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"&#(\\d{2,7});" options:0 error:nil];
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:@"&#(\\d{2,7});" options:0 error:nil];
+    });
     NSArray<NSTextCheckingResult *> *matches = [re matchesInString:s options:0 range:NSMakeRange(0, s.length)];
     if (matches.count > 0) {
         NSMutableString *out = [s mutableCopy];
@@ -1881,7 +1888,7 @@ static ASTextNode *ApolloAIEnsureSummaryNode(id headerNode, BOOL isPost) {
     ASTextNode *textNode = objc_getAssociatedObject(headerNode, key);
     if (textNode) return textNode;
 
-    Class textNodeClass = NSClassFromString(@"ASTextNode");
+    Class textNodeClass = ApolloClassASTextNode;
     if (!textNodeClass) return nil;
     textNode = [[textNodeClass alloc] init];
     textNode.maximumNumberOfLines = 0;
@@ -1896,8 +1903,8 @@ static ASTextNode *ApolloAIEnsureSummaryNode(id headerNode, BOOL isPost) {
         ASTextNode *strongTextNode = weakTextNode;
         id owner = weakHeaderNode;
         if (!owner || !strongTextNode.view) return;
-        SEL action = isPost ? NSSelectorFromString(@"apollo_togglePostSummary")
-                            : NSSelectorFromString(@"apollo_toggleDiscussionSummary");
+        SEL action = isPost ? @selector(apollo_togglePostSummary)
+                            : @selector(apollo_toggleDiscussionSummary);
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:owner action:action];
         [strongTextNode.view addGestureRecognizer:tap];
         strongTextNode.view.accessibilityTraits |= UIAccessibilityTraitButton;
@@ -1914,7 +1921,7 @@ static ASDisplayNode *ApolloAIEnsureBackgroundNode(id headerNode, BOOL isPost) {
     ASDisplayNode *background = objc_getAssociatedObject(headerNode, key);
     if (background) return background;
 
-    background = [[NSClassFromString(@"ASDisplayNode") alloc] init];
+    background = [[ApolloClassASDisplayNode alloc] init];
     UIColor *accent = ApolloAISummaryThemeAccent(headerNode);
     background.backgroundColor = [accent colorWithAlphaComponent:0.10];
     background.cornerRadius = 12.0;
@@ -2503,8 +2510,8 @@ static void ApolloAIRegisterHeaderNode(id headerNode) {
 }
 
 static id ApolloAISummaryLayoutSpec(id textNode, id backgroundNode) {
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
-    Class backgroundClass = NSClassFromString(@"ASBackgroundLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
+    Class backgroundClass = ApolloClassASBackgroundLayoutSpec;
     if (!insetClass || !backgroundClass || !textNode || !backgroundNode) return nil;
     id inner = [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(12.0, 14.0, 12.0, 14.0)
                                                child:textNode];
@@ -2515,7 +2522,7 @@ static id ApolloAISummaryLayoutSpec(id textNode, id backgroundNode) {
 
 // Rebuild a stack spec with new children, preserving its layout attributes.
 static ASStackLayoutSpec *ApolloAIRebuildStack(ASStackLayoutSpec *stack, NSArray *children) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     ASStackLayoutSpec *s = [stackClass stackLayoutSpecWithDirection:stack.direction
                                                             spacing:stack.spacing
                                                      justifyContent:stack.justifyContent
@@ -2535,10 +2542,10 @@ static ASStackLayoutSpec *ApolloAIRebuildStack(ASStackLayoutSpec *stack, NSArray
 // descend to find the anchor rather than only scanning the top level. Returns a
 // rebuilt stack, or nil if no anchor was found anywhere.
 static ASStackLayoutSpec *ApolloAIInsertPostSummary(ASStackLayoutSpec *stack, id spec, NSUInteger depth) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (![stack isKindOfClass:stackClass] || depth > 4) return nil;
-    Class linkButtonClass = NSClassFromString(@"_TtC6Apollo14LinkButtonNode");
-    Class markdownClass = NSClassFromString(@"_TtC6Apollo12MarkdownNode");
+    Class linkButtonClass = ApolloClassLinkButtonNode;
+    Class markdownClass = ApolloClassMarkdownNode;
     NSArray *children = stack.children ?: @[];
 
     // 1) Directly below the inline link-preview card.
@@ -2613,14 +2620,14 @@ static id ApolloAIPlaceSummariesPreservingRoot(id rootSpec,
                                                id discussionSummarySpec) {
     if (!rootSpec || (!postSummarySpec && !discussionSummarySpec)) return nil;
 
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (stackClass && [rootSpec isKindOfClass:stackClass]) {
         return ApolloAICloneStackWithSummaries((ASStackLayoutSpec *)rootSpec,
                                                postSummarySpec,
                                                discussionSummarySpec);
     }
 
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     if (insetClass && [rootSpec isKindOfClass:insetClass]) {
         ASInsetLayoutSpec *originalInset = (ASInsetLayoutSpec *)rootSpec;
         id newChild = ApolloAIPlaceSummariesPreservingRoot(originalInset.child,
@@ -2646,12 +2653,12 @@ static void ApolloAILogLayoutChildrenOnce(id headerNode, id rootSpec) {
 
     id current = rootSpec;
     NSUInteger depth = 0;
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     while (insetClass && [current isKindOfClass:insetClass] && depth < 8) {
         current = ((ASInsetLayoutSpec *)current).child;
         depth++;
     }
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (![current isKindOfClass:stackClass]) {
         ApolloLog(@"[AISummary][layout] root=%@ unwrapped=%@",
                   NSStringFromClass([rootSpec class]), NSStringFromClass([current class]));
@@ -2916,7 +2923,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
     // Bind the controller's authoritative link identity to the actual Texture
     // header node. Swift Optional ivar encodings can make a later header-only
     // link lookup fail even though this controller lookup succeeded.
-    Class headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode");
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
     for (id node in ApolloAIAvailableNodes(vc)) {
         if (headerClass && [node isMemberOfClass:headerClass]) {
             ApolloAIRegisterHeaderNodeForFullName(node, fullName);
@@ -3370,20 +3377,15 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
 
 %end
 
-%hook _TtC6Apollo15CommentCellNode
-
-- (void)didLoad {
-    %orig;
-    if (!sEnableAISummaries) return;
-    // Weak capture: comment cells die during collapse/scroll churn before the main
-    // queue drains (#630 round-5 crash mechanism).
-    __weak __typeof__(self) weakSelf = self;
+// Weak capture: comment cells die during collapse/scroll churn before the main
+// queue drains (#630 round-5 crash mechanism).
+static void ApolloAICaptureCommentCellNodeLater(id node) {
+    __weak id weakNode = node;
     dispatch_async(dispatch_get_main_queue(), ^{
-        // __strong is load-bearing: in a hook, __typeof__(self) is __unsafe_unretained (owns nothing).
-        __strong __typeof__(self) cellNode = weakSelf;
+        id cellNode = weakNode;
         if (!cellNode) return;
         UIViewController *vc = sVisibleCommentsController;
-        id comment = ApolloAICommentFromCellNode((id)cellNode);
+        id comment = ApolloAICommentFromCellNode(cellNode);
         if (!vc || !comment) return;
         if (ApolloAICaptureCommentForController(comment, vc)) {
             ApolloAIScheduleCommentGeneration(vc);
@@ -3391,20 +3393,18 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     });
 }
 
+%hook _TtC6Apollo15CommentCellNode
+
+- (void)didLoad {
+    %orig;
+    if (!sEnableAISummaries) return;
+    ApolloAICaptureCommentCellNodeLater((id)self);
+}
+
 - (void)didEnterPreloadState {
     %orig;
     if (!sEnableAISummaries) return;
-    __weak __typeof__(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        __strong __typeof__(self) cellNode = weakSelf;
-        if (!cellNode) return;
-        UIViewController *vc = sVisibleCommentsController;
-        id comment = ApolloAICommentFromCellNode((id)cellNode);
-        if (!vc || !comment) return;
-        if (ApolloAICaptureCommentForController(comment, vc)) {
-            ApolloAIScheduleCommentGeneration(vc);
-        }
-    });
+    ApolloAICaptureCommentCellNodeLater((id)self);
 }
 
 %end

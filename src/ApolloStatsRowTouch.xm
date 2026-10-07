@@ -43,6 +43,7 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "UIWindow+Apollo.h"
+#import "ApolloClasses.h"
 
 // MARK: - Minimal AsyncDisplayKit forward declarations
 
@@ -245,9 +246,7 @@ static CGRect SRTClaimRect(id cell, UIView *cellView, NSArray<ApolloSRTTarget *>
     CGFloat bottom = CGRectGetMaxY(u) + 20.0;
 
     // Feed cells: the row is the cell's last line — claim the trailing padding.
-    static Class headerClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode"); });
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
     BOOL isHeader = headerClass && [cell isMemberOfClass:headerClass];
     CGFloat cellBottom = CGRectGetHeight(cellView.bounds);
     if (!isHeader && cellBottom - CGRectGetMaxY(u) < 44.0) bottom = cellBottom;
@@ -361,7 +360,7 @@ static NSInteger SRTNearestTargetIndex(NSArray<ApolloSRTTarget *> *targets, CGFl
 
         // Material: real glass on iOS 26 (matches the nav-bar look), blur fallback.
         UIVisualEffect *effect = nil;
-        Class glassCls = NSClassFromString(@"UIGlassEffect");
+        Class glassCls = objc_getClass("UIGlassEffect");
         if (IsLiquidGlass() && glassCls) {
             effect = [[glassCls alloc] init];
         } else {
@@ -549,7 +548,7 @@ static id SRTUpvoteButtonForCell(id cell) {
 // TouchUpInside (1 << 4). Goes through Apollo's real vote path (state, API,
 // arrow color), so it stays correct across app versions.
 static BOOL SRTSendTouchUpInside(id controlNode) {
-    SEL sel = NSSelectorFromString(@"sendActionsForControlEvents:withEvent:");
+    SEL sel = @selector(sendActionsForControlEvents:withEvent:);
     if (!controlNode || ![controlNode respondsToSelector:sel]) return NO;
     ((void (*)(id, SEL, NSUInteger, id))objc_msgSend)(controlNode, sel, (NSUInteger)(1 << 4), nil);
     return YES;
@@ -560,11 +559,11 @@ static BOOL SRTSendTouchUpInside(id controlNode) {
 // links against that one: shared.pendingLabel = marker; handleCellTap:nil.
 static BOOL SRTToggleTranslationForMarker(UILabel *marker) {
     if (!marker) return NO;
-    Class cls = NSClassFromString(@"ApolloFeedMarkerTapTarget");
+    Class cls = objc_getClass("ApolloFeedMarkerTapTarget");
     if (!cls || ![cls respondsToSelector:@selector(shared)]) return NO;
     id shared = ((id (*)(id, SEL))objc_msgSend)(cls, @selector(shared));
-    SEL setSel = NSSelectorFromString(@"setPendingLabel:");
-    SEL tapSel = NSSelectorFromString(@"handleCellTap:");
+    SEL setSel = @selector(setPendingLabel:);
+    SEL tapSel = @selector(handleCellTap:);
     if (![shared respondsToSelector:setSel] || ![shared respondsToSelector:tapSel]) return NO;
     ((void (*)(id, SEL, id))objc_msgSend)(shared, setSel, marker);
     ((void (*)(id, SEL, id))objc_msgSend)(shared, tapSel, nil);
@@ -796,7 +795,6 @@ static void SRTWireCornerFailureRequirements(UIGestureRecognizer *loupe, UIView 
         }
     }
 }
-
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldReceiveTouch:(UITouch *)touch {
     id cell = SRTCellForGesture(gr);
@@ -1207,7 +1205,7 @@ static UITableView *SRTFindTable(UIView *v) {
 static UITableView *SRTTableForVC(UIViewController *vc) {
     id tableNode = ApolloObjectIvar(vc, "tableNode");
     if (tableNode) {
-        SEL viewSel = NSSelectorFromString(@"view");
+        SEL viewSel = @selector(view);
         if ([tableNode respondsToSelector:viewSel]) {
             UIView *tv = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSel);
             if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
@@ -1219,9 +1217,9 @@ static UITableView *SRTTableForVC(UIViewController *vc) {
 // First row whose node is a CommentCellNode (the start of the comment section,
 // after the post header / media / summary / action rows).
 static NSIndexPath *SRTFirstCommentIndexPath(id tableNode, UITableView *tableView) {
-    Class commentCellClass = NSClassFromString(@"_TtC6Apollo15CommentCellNode");
+    Class commentCellClass = ApolloClassCommentCellNode;
     if (!commentCellClass) return nil;
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return nil;
     NSInteger sections = [tableView numberOfSections];
     for (NSInteger s = 0; s < sections; s++) {
@@ -1249,8 +1247,8 @@ static const CGFloat kSRTLandingMargin = 0.0;
 // Returns NAN if not resolvable. A UITableView's layer bounds.origin == contentOffset,
 // so converting a descendant layer into it yields content coordinates directly.
 static CGFloat SRTQuickBarTopContentY(id tableNode, UITableView *tableView) {
-    Class headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode");
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!headerClass || !tableNode || ![tableNode respondsToSelector:nodeSel] || !tableView.layer) return NAN;
     NSInteger sections = [tableView numberOfSections];
     for (NSInteger s = 0; s < sections; s++) {
@@ -1275,13 +1273,12 @@ static CGFloat SRTQuickBarTopContentY(id tableNode, UITableView *tableView) {
 // (preferred, so the up/down/reply row stays visible), else the first comment as a
 // fallback — at the top of the scroll area, just under the nav bar. Clamped to the
 // current scroll range. Returns NAN when there's nothing to anchor to yet.
-static CGFloat SRTLandingOffset(id tableNode, UITableView *tv, NSIndexPath *firstCommentIP) {
+static CGFloat SRTLandingOffset(UITableView *tv, CGFloat qbTop, NSIndexPath *firstCommentIP) {
     CGFloat insetTop = tv.adjustedContentInset.top;
     CGFloat insetBottom = tv.adjustedContentInset.bottom;
     CGFloat viewportH = tv.bounds.size.height;
     CGFloat maxOff = MAX(-insetTop, tv.contentSize.height - viewportH + insetBottom);
     CGFloat targetTop;
-    CGFloat qbTop = SRTQuickBarTopContentY(tableNode, tv);
     if (!isnan(qbTop))          targetTop = qbTop - kSRTLandingMargin;
     else if (firstCommentIP)    targetTop = [tv rectForRowAtIndexPath:firstCommentIP].origin.y;
     else                        return NAN;
@@ -1326,7 +1323,7 @@ static int SRTPinLanding(UIViewController *vc) {
     CGFloat qbTop = SRTQuickBarTopContentY(tableNode, tv);
     // Only pay for the first-comment scan when the header anchor is unavailable.
     NSIndexPath *first = isnan(qbTop) ? SRTFirstCommentIndexPath(tableNode, tv) : nil;
-    CGFloat desired = SRTLandingOffset(tableNode, tv, first);
+    CGFloat desired = SRTLandingOffset(tv, qbTop, first);
     if (isnan(desired)) return -1;                                   // nothing to anchor to yet
 
     CGFloat cur = tv.contentOffset.y;

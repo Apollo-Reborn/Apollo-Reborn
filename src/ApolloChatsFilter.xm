@@ -29,6 +29,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 #define ChatsFilterLog(fmt, ...) ApolloLogDebug(@"[ChatsFilter] " fmt, ##__VA_ARGS__)
 
@@ -1820,7 +1821,7 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         // labels from colliding with the centered Inbox title.
         switcher = [ApolloInboxModeSwitcherView new];
         switcher.translatesAutoresizingMaskIntoConstraints = NO;
-        [switcher addTarget:controller action:NSSelectorFromString(@"apollo_inboxModeChanged:") forControlEvents:UIControlEventValueChanged];
+        [switcher addTarget:controller action:@selector(apollo_inboxModeChanged:) forControlEvents:UIControlEventValueChanged];
         tableView.tableHeaderView = wrapper;
         [hostView addSubview:switcher];
         [NSLayoutConstraint activateConstraints:@[
@@ -1878,7 +1879,7 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         // unretained, so the pan must never keep a previous (possibly
         // deallocated) controller as its action target.
         [sInboxModePan removeTarget:nil action:NULL];
-        [sInboxModePan addTarget:controller action:NSSelectorFromString(@"apollo_inboxModePanned:")];
+        [sInboxModePan addTarget:controller action:@selector(apollo_inboxModePanned:)];
         sInboxModePanHost = (UIViewController *)controller;
     }
     // Re-wire every install pass: cheap, idempotent (the static weak set
@@ -2179,7 +2180,7 @@ static BOOL sChatFilterActive = NO;
         ((UIViewController *)self).title = @"Direct Chat";   // after %orig so Apollo doesn't override it
     if (ApolloInboxControllerIsAll(self) && ![objc_getAssociatedObject(self, &kInboxAllStatusObserverKey) boolValue]) {
         [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:NSSelectorFromString(@"apollo_modernChatStatusChanged:")
+                                                 selector:@selector(apollo_modernChatStatusChanged:)
                                                      name:ApolloModernChatStatusDidChangeNotification
                                                    object:nil];
         objc_setAssociatedObject(self, &kInboxAllStatusObserverKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2556,7 +2557,7 @@ static NSString *ApolloInboxUsernameFromObject(id object) {
 }
 
 static NSString *ApolloInboxCurrentUser(void) {
-    Class clientClass = objc_getClass("RDKClient");
+    Class clientClass = ApolloClassRDKClient;
     if (!clientClass || ![clientClass respondsToSelector:@selector(sharedClient)]) return nil;
     id client = ((id (*)(id, SEL))objc_msgSend)(clientClass, @selector(sharedClient));
     if (!client || ![client respondsToSelector:@selector(currentUser)]) return nil;
@@ -2798,7 +2799,7 @@ static UIViewController *ApolloInboxHostControllerForTableNode(id tableNode) {
 // A private message that can be a chat mirror: not a post/comment reply or a
 // mention, not a subreddit/moderator message, not admin-distinguished.
 static BOOL ApolloInboxMessageMayBeChatMirror(id message) {
-    Class messageClass = objc_getClass("RDKMessage");
+    Class messageClass = ApolloClassRDKMessage;
     Class replyClass = objc_getClass("RDKCommentReplyMessage");
     if (!messageClass || ![message isKindOfClass:messageClass]) return NO;
     if (replyClass && [message isKindOfClass:replyClass]) return NO;
@@ -3031,9 +3032,7 @@ static void ApolloInboxNoteMessageJSON(id json) {
 // through without a look at its JSON.
 static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
     if (!modelClass || !ApolloModernChatShouldOpen()) return NO;
-    static Class messageClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ messageClass = objc_getClass("RDKMessage"); });
+    Class messageClass = ApolloClassRDKMessage;
     return messageClass != Nil && [modelClass isSubclassOfClass:messageClass];
 }
 

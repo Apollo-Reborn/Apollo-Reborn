@@ -755,5 +755,3 @@ static void ApolloPollComposeInstallSegment(id composeVC) {
 }
 
 %end
-
-%ctor {}

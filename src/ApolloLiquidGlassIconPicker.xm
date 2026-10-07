@@ -313,6 +313,7 @@ static CGFloat LGPackFanTopInset(void) {
 #pragma mark - Generated group/icon data
 
 #include "LiquidGlassIconPreviews.gen.h"
+#import "ApolloClasses.h"
 
 static NSString *LGPrimaryIconID(void) {
     static NSString *s;
@@ -380,15 +381,16 @@ static BOOL LGIsDarkAppearance(UIView *view) {
 
 #pragma mark - Theme background helpers
 
+// objc_getClass: these two classes are declared later in this file.
+
 // Sample an already-themed native cell, same trick as
 // apollo_themeCellBackgroundColor in ApolloSettingsTableViewController.m.
 // Only used while sourceTable is live — see LGThemedCardBackgroundColor.
 static UIColor *LGNativeCellBackgroundColor(UITableView *sourceTable) {
     if (ApolloThemeSourceTableIsStale(sourceTable)) return nil;
 
-    // NSClassFromString: these two classes are declared later in this file.
-    Class packCardClass = NSClassFromString(@"LGPackGridRowCell");
-    Class featuredClass = NSClassFromString(@"LGFeaturedStripCell");
+    Class packCardClass = ApolloClassLGPackGridRowCell;
+    Class featuredClass = ApolloClassLGFeaturedStripCell;
     for (UITableViewCell *cell in sourceTable.visibleCells) {
         if ((packCardClass && [cell isKindOfClass:packCardClass]) ||
             (featuredClass && [cell isKindOfClass:featuredClass])) continue;
@@ -2127,7 +2129,6 @@ typedef void (^LGFeaturedCardTapHandler)(const LGIconRow *row);
 - (void)updateForSelectedIconID:(NSString *)selectedIconID animated:(BOOL)animated;
 @end
 
-
 @implementation LGFeaturedCardView {
     LGIconFanView *_fan;
     LGNameAuthorLabelStack *_labels;
@@ -2541,7 +2542,7 @@ static UIViewController *LGTopViewControllerForView(UIView *view) {
 // Keep the public call as a compatibility fallback.
 static void LGSetAlternateIconName(NSString *name, void (^completion)(NSError *error)) {
     UIApplication *application = UIApplication.sharedApplication;
-    SEL quietSelector = NSSelectorFromString(@"_setAlternateIconName:completionHandler:");
+    SEL quietSelector = @selector(_setAlternateIconName:completionHandler:);
     if ([application respondsToSelector:quietSelector]) {
         typedef void (*LGQuietIconSetter)(id, SEL, NSString *, void (^)(NSError *));
         ((LGQuietIconSetter)objc_msgSend)(application, quietSelector, name, completion);
@@ -2897,8 +2898,7 @@ static UITableViewCell *LGConfigureEAPCell(UITableViewCell *cell) {
 }
 
 static UITableViewCell *LGCreateEAPCell(void) {
-    Class cellClass = NSClassFromString(@"Apollo.ApolloSubtitleTableViewCell");
-    if (!cellClass) cellClass = NSClassFromString(@"_TtC6Apollo27ApolloSubtitleTableViewCell");
+    Class cellClass = ApolloClassApolloSubtitleTableViewCell;
     UITableViewCell *cell = [[cellClass ?: UITableViewCell.class alloc]
         initWithStyle:UITableViewCellStyleSubtitle
        reuseIdentifier:@"ApolloEAPIconCell"];
@@ -4650,10 +4650,9 @@ static void LGKeepMainSettingsIconSquare(UITableViewCell *cell) {
                                      registered, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         if (![registered containsObject:ident]) {
-            NSString *className = nativeSection.integerValue == 0
-                ? @"Apollo.ApolloDefaultTableViewCell"
-                : @"Apollo.ApolloSubtitleTableViewCell";
-            Class cellClass = NSClassFromString(className) ?: UITableViewCell.class;
+            Class cellClass = (nativeSection.integerValue == 0
+                ? ApolloClassApolloDefaultTableViewCell
+                : ApolloClassApolloSubtitleTableViewCell) ?: UITableViewCell.class;
             [self registerClass:cellClass forCellReuseIdentifier:ident];
             [registered addObject:ident];
         }

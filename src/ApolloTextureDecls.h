@@ -8,8 +8,8 @@
 //  Texture headers aren't on this build's include path, so this declares
 //  only the selectors/properties those two files actually use; the runtime
 //  resolves them against Apollo's own bundled Texture implementation, and
-//  every class named below is still looked up via objc_getClass/
-//  NSClassFromString at the point of use rather than referenced directly
+//  every class named below is still looked up via objc_getClass rather than
+//  referenced directly
 //  (ApolloReborn.dylib is injected rather than linked against Apollo, so a
 //  direct class reference fails at link time).
 //
@@ -62,6 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ASTextNode : ASDisplayNode
 @property (nonatomic, copy) NSAttributedString *attributedText;
 @property (nonatomic) NSUInteger maximumNumberOfLines;
+@property (nonatomic) NSLineBreakMode truncationMode;
 @end
 
 @interface ASLayoutSpec : NSObject

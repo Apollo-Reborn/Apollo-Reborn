@@ -20,6 +20,7 @@
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 // Mirrors the profile-banner pattern in ApolloUserAvatars.xm exactly:
 // - Only hooks `_TtC6Apollo19PostsViewController`.
@@ -32,7 +33,6 @@
 // - Subreddit-name detection requires either a real ivar/property on the
 //   controller or a slug-shaped navigation title; we never match by
 //   class-name substring so global search-results VCs don't get a header.
-
 
 static const void *kApolloSubredditHeaderViewKey = &kApolloSubredditHeaderViewKey;
 static const void *kApolloSubredditWrappedHeaderKey = &kApolloSubredditWrappedHeaderKey;
@@ -909,9 +909,9 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     // client that Apollo owns instead.
     id client = ApolloActiveAccountClient();
     SEL selector = desiredState ? @selector(subscribeToSubredditWithName:completion:)
-                                : NSSelectorFromString(@"unsubscribeFromSubredditWithName:completion:");
+                                : @selector(unsubscribeFromSubredditWithName:completion:);
     if (!client || ![client respondsToSelector:selector]) {
-        selector = desiredState ? selector : NSSelectorFromString(@"unsubscribeToSubredditWithName:completion:");
+        selector = desiredState ? selector : @selector(unsubscribeToSubredditWithName:completion:);
     }
     if (!client || ![client respondsToSelector:selector]) {
         self.subscriptionRequestInFlight = NO;
@@ -1313,7 +1313,7 @@ static id ApolloSubredditTypedIvar(id object, const char *name, Class expectedCl
 static BOOL ApolloSubredditSubscribedFromCurrentSubreddit(UIViewController *viewController,
                                                           NSString *subredditName,
                                                           BOOL *outSubscribed) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (![currentSubreddit respondsToSelector:@selector(isSubscriber)]) return NO;
     if ([currentSubreddit respondsToSelector:@selector(name)]) {
         NSString *ivarName = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
@@ -1435,7 +1435,7 @@ static void ApolloSubredditRefreshSubscriptionState(ApolloSubredditHeaderView *h
 
 // The controller's own RDKSubreddit, when it is the subreddit being drawn.
 static id ApolloSubredditCurrentSubredditObject(UIViewController *viewController, NSString *subredditName) {
-    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
+    id currentSubreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (!currentSubreddit || ![currentSubreddit respondsToSelector:@selector(name)]) return nil;
     NSString *name = ((NSString * (*)(id, SEL))objc_msgSend)(currentSubreddit, @selector(name));
     return ApolloSubredditNamesEqual(name, subredditName) ? currentSubreddit : nil;
@@ -1468,7 +1468,7 @@ static void ApolloSubredditRefreshUserFlairAvailability(ApolloSubredditHeaderVie
                                                         UIViewController *viewController) {
     if (!header || !viewController) return;
     id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit",
-                                            objc_getClass("RDKSubreddit"));
+                                            ApolloClassRDKSubreddit);
     if ([subreddit respondsToSelector:@selector(name)]) {
         NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
         if (!ApolloSubredditNamesEqual(name, header.subredditName)) return;
@@ -1543,7 +1543,7 @@ NSString *ApolloSubredditNameFromViewController(UIViewController *viewController
     if (haveTag && tag != kApolloPostsTypeSubreddit && tag != kApolloPostsTypeRandom) return nil;
 
     NSString *loadedName = nil;
-    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", objc_getClass("RDKSubreddit"));
+    id subreddit = ApolloSubredditTypedIvar(viewController, "currentSubreddit", ApolloClassRDKSubreddit);
     if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
         id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
         if ([nameValue isKindOfClass:[NSString class]]) loadedName = ApolloNormalizedSubredditName(nameValue);
@@ -1614,7 +1614,7 @@ NSString *ApolloMultiredditPathFromViewController(UIViewController *viewControll
     if (!ApolloSubredditPostsTypeTag(viewController, &tag) || tag != kApolloPostsTypeMultireddit) return nil;
 
     id multireddit = ApolloSubredditTypedIvar(viewController, "currentMultireddit",
-                                              objc_getClass("RDKMultireddit"));
+                                              ApolloClassRDKMultireddit);
     if (![multireddit respondsToSelector:@selector(path)]) return nil;
     id pathValue = ((id (*)(id, SEL))objc_msgSend)(multireddit, @selector(path));
     if (![pathValue isKindOfClass:[NSString class]]) return nil;
@@ -1655,7 +1655,7 @@ void ApolloSubredditRequestTitleRelayout(UINavigationItem *navigationItem) {
     if (!viewController || !ApolloSubredditTitleShouldTruncate(viewController)) return;
 
     UINavigationBar *navigationBar = viewController.navigationController.navigationBar;
-    Class titleControlClass = NSClassFromString(@"_UINavigationBarTitleControl");
+    Class titleControlClass = ApolloClassUINavigationBarTitleControl;
     UIView *titleControl = ApolloSubredditFindSubviewOfClass(navigationBar, titleControlClass);
     if (!titleControl) return;
 
@@ -2247,7 +2247,7 @@ static void ApolloSubredditUpdateAmbientForManagedTable(UITableView *tableView) 
 }
 
 static UIView *ApolloSubredditFindSearchFieldForViewController(UIViewController *viewController) {
-    Class fieldClass = NSClassFromString(@"Apollo.ApolloSearchBarTextField");
+    Class fieldClass = ApolloClassApolloSearchBarTextField;
     if (!viewController || !fieldClass || !viewController.isViewLoaded) return nil;
     UIView *cachedField = objc_getAssociatedObject(viewController, kApolloSubredditSearchFieldKey);
     if ([cachedField isKindOfClass:fieldClass] &&
@@ -2539,12 +2539,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
     // walker previously trampled across RedditListVC / InboxListVC /
     // ApolloNavigationController because their nav titles happened to be
     // slug-shaped ("Subreddits" / "Boxes" / "Comments").
-    static Class postsVCClass = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        postsVCClass = NSClassFromString(@"_TtC6Apollo19PostsViewController");
-    });
-    if (postsVCClass && ![viewController isMemberOfClass:postsVCClass]) return;
+    if (sPostsViewControllerClass && ![viewController isMemberOfClass:sPostsViewControllerClass]) return;
 
     UITableView *tableView = ApolloSubredditFindTableView(viewController);
     if (!tableView) return;
@@ -3078,7 +3073,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         return;
     }
     %orig;
-    if ([self isKindOfClass:[UITableView class]]) {
+    if (sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
         ApolloSubredditUpdateAmbientForManagedTable((UITableView *)self);
     }
 }
@@ -3090,7 +3085,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
         return;
     }
     %orig;
-    if ([self isKindOfClass:[UITableView class]]) {
+    if (sShowSubredditHeaders && [self isKindOfClass:[UITableView class]]) {
         ApolloSubredditUpdateAmbientForManagedTable((UITableView *)self);
     }
 }

@@ -175,17 +175,12 @@ static BOOL ApolloSearchTabAssignTrendingSubreddits(
     UIViewController *vc,
     NSArray<NSString *> *subreddits
 ) {
-    if (!vc || !subreddits) return NO;
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "trendingSubreddits");
-        if (!ivar) continue;
-        uint8_t *base = (uint8_t *)(__bridge void *)vc;
-        void *storage = base + ivar_getOffset(ivar);
-        ApolloSwiftAssignOptionalStringArray(
-            storage, (__bridge const void *)subreddits);
-        return YES;
-    }
-    return NO;
+    if (!subreddits) return NO;
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(vc), "trendingSubreddits");
+    if (offset < 0) return NO;
+    ApolloSwiftAssignOptionalStringArray((uint8_t *)(__bridge void *)vc + offset,
+                                         (__bridge const void *)subreddits);
+    return YES;
 }
 
 static BOOL ApolloSearchTabRandomNSFWEnabled(void) {
@@ -245,16 +240,9 @@ static void ApolloSearchTabSyncRandomNSFWSection(UIViewController *vc) {
 }
 
 static BOOL ApolloSearchTabNativeSearching(UIViewController *vc) {
-    for (Class cls = object_getClass(vc); cls; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, "searching");
-        if (!ivar) continue;
-        uint8_t value = 0;
-        memcpy(&value,
-               (uint8_t *)(__bridge void *)vc + ivar_getOffset(ivar),
-               sizeof(value));
-        return (value & 1) != 0;
-    }
-    return !ApolloSearchTabIsDefaultState(vc);
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(vc), "searching");
+    if (offset < 0) return !ApolloSearchTabIsDefaultState(vc);
+    return (*((const uint8_t *)(__bridge const void *)vc + offset) & 1) != 0;
 }
 
 // Apollo's native text-change batch inserts/deletes exactly one section-3 row.
@@ -622,7 +610,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
     UINavigationController *nav = (UINavigationController *)page;
     UIViewController *root = nav.viewControllers.firstObject;
     if (nav.viewControllers.count != 1 ||
-        ![root isKindOfClass:NSClassFromString(@"_TtC6Apollo20SearchViewController")]) {
+        ![root isKindOfClass:objc_getClass("_TtC6Apollo20SearchViewController")]) {
         return %orig(tabs, page);
     }
     if (tabs.presentedViewController || nav.presentedViewController ||

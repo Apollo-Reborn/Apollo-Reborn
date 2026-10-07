@@ -80,6 +80,7 @@
 #import <sys/sysctl.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 // Apollo's stock strip height (sub_10030c494) and y (sub_10030c880).
 static const CGFloat kApolloPalStripHeight = 14.0;
@@ -106,10 +107,10 @@ static BOOL sApolloPillKnown = NO;
 // conversion UIKit's status bar uses, so it tracks new devices and iOS
 // releases without a per-device table.
 static BOOL ApolloDynamicIslandRect(UIScreen *screen, CGRect *outRect) {
-    SEL exclusionSel = NSSelectorFromString(@"_exclusionArea");
+    SEL exclusionSel = @selector(_exclusionArea);
     if (![screen respondsToSelector:exclusionSel]) return NO;
     id area = ((id (*)(id, SEL))objc_msgSend)(screen, exclusionSel);
-    SEL rectSel = NSSelectorFromString(@"rect");
+    SEL rectSel = @selector(rect);
     if (!area || ![area respondsToSelector:rectSel]) return NO;
     CGRect rect = ((CGRect (*)(id, SEL))objc_msgSend)(area, rectSel);
     // Mirror -[_UIStatusBarVisualProvider_DynamicSplit sensorAreaRect]'s
@@ -374,7 +375,7 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
 #pragma mark - Window: tap flash, scene elements, freeze guard
 
 static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
-    Class overlayCls = objc_getClass("_TtC6Apollo29PixelPalOverlayViewController");
+    Class overlayCls = ApolloClassPixelPalOverlayViewController;
     UIViewController *vc = window.rootViewController;
     while (vc) {
         UIViewController *presented = vc.presentedViewController;
@@ -411,12 +412,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
         CGFloat dx = CGRectGetMinX(pill) - CGRectGetMinX(apollo);
         CGFloat dy = CGRectGetMinY(pill) - CGRectGetMinY(apollo);
         CGRect f = view.frame;
-
-        static Class elementCls;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            elementCls = objc_getClass("_TtC6Apollo34PixelPalAddedSceneElementImageView");
-        });
+        Class elementCls = ApolloClassPixelPalAddedSceneElementImageView;
 
         BOOL stockFlashSize = fabs(CGRectGetWidth(f) - kApolloStockPillWidth) < 0.5 &&
                               fabs(CGRectGetHeight(f) - kApolloStockPillHeight) < 0.5;

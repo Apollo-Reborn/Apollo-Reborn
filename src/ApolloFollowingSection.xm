@@ -83,6 +83,7 @@
 #import <mach-o/loader.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloMultiredditExpansion.h"
 #import "ApolloState.h"
@@ -514,12 +515,7 @@ void ApolloFollowingAnimateNextRemoval(UITableView *table, NSIndexPath *path) {
 static NSString *const kApolloListHeaderParkKey = @"apolloListHeaderPark";
 
 static NSDictionary<NSString *, UIView *> *ApolloSubredditListVisibleSectionHeaders(UITableView *tableView) {
-    static Class headerClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        headerClass = objc_getClass("_TtC6Apollo31RecreatedTableSectionHeaderView");
-        if (!headerClass) ApolloLog(@"[ListEditing] RecreatedTableSectionHeaderView missing — headers won't animate");
-    });
+    Class headerClass = ApolloClassRecreatedTableSectionHeaderView;
     NSMutableDictionary<NSString *, UIView *> *headers = [NSMutableDictionary dictionary];
     if (!headerClass || !tableView) return headers;
     for (UIView *subview in tableView.subviews) {

@@ -26,6 +26,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 // ---- diagnostics toggle ----------------------------------------------------
 // Off by default; flip to 1 for verbose per-render snoomoji/image/tap tracing.
@@ -204,16 +205,6 @@ static const CGFloat kApolloChatSnoomojiInset      = 9.0;    // breathing room s
 // Apollo bundles Flipboard's FLAnimatedImage (FLAnimatedImage + FLAnimatedImageView,
 // a UIImageView subclass). We render gif messages with it so they animate; static
 // images use the same view's -image. Resolved at runtime to avoid a link dependency.
-static Class ApolloFLAnimatedImageClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = objc_getClass("FLAnimatedImage"); });
-    return c;
-}
-static Class ApolloFLAnimatedImageViewClass(void) {
-    static Class c; static dispatch_once_t once;
-    dispatch_once(&once, ^{ c = objc_getClass("FLAnimatedImageView"); });
-    return c;
-}
 
 // URL -> loaded media (an FLAnimatedImage for animated GIFs, else UIImage).
 // NSCache makes decoded residency pressure-aware and bounds the normal case.
@@ -244,7 +235,7 @@ static NSUInteger ApolloChatDecodedMediaCost(id media, NSUInteger sourceBytes) {
     if ([media isKindOfClass:[UIImage class]]) {
         return ApolloImageByteCost((UIImage *)media);
     }
-    Class animatedClass = ApolloFLAnimatedImageClass();
+    Class animatedClass = ApolloClassFLAnimatedImage;
     if (!animatedClass || ![media isKindOfClass:animatedClass]) return sourceBytes;
 
     NSUInteger frameCount = [media respondsToSelector:@selector(frameCount)]
@@ -437,7 +428,7 @@ static id ApolloChatDecodeMediaData(NSData *data) {
     }
 
     id media = nil;
-    Class animatedClass = ApolloFLAnimatedImageClass();
+    Class animatedClass = ApolloClassFLAnimatedImage;
     if (animatedClass && frameCount > 1 && ApolloDataIsGIF(data)) {
         id (*initFn)(id, SEL, NSData *, NSUInteger, BOOL) =
             (id (*)(id, SEL, NSData *, NSUInteger, BOOL))objc_msgSend;
@@ -463,7 +454,7 @@ static void ApolloChatSetMedia(UIImageView *iv, id media) {
     // Keep a direct handle to the media so the tap-to-fullscreen handler doesn't have to read it
     // back through FLAnimatedImageView's image/animatedImage getters (unreliable for static images).
     objc_setAssociatedObject(iv, &kApolloChatIvMediaKey, media, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    Class fl = ApolloFLAnimatedImageClass();
+    Class fl = ApolloClassFLAnimatedImage;
     if (fl && [media isKindOfClass:fl]) {
         // FLAnimatedImageView setter; clearing -image first avoids a stale poster frame.
         iv.image = nil;
@@ -711,9 +702,9 @@ static UIViewController *ApolloChatHostVC(UIView *view) {
     _scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     [self.view addSubview:_scroll];
 
-    Class fl = ApolloFLAnimatedImageClass();
+    Class fl = ApolloClassFLAnimatedImage;
     BOOL animated = fl && [self.media isKindOfClass:fl];
-    Class ivClass = animated ? (ApolloFLAnimatedImageViewClass() ?: [UIImageView class]) : [UIImageView class];
+    Class ivClass = animated ? (ApolloClassFLAnimatedImageView ?: [UIImageView class]) : [UIImageView class];
     _imageView = [[ivClass alloc] initWithFrame:_scroll.bounds];
     _imageView.contentMode = UIViewContentModeScaleAspectFit;
     _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -835,7 +826,7 @@ static void ApolloChatRenderImageInCell(id vc, id cell, NSURL *url, NSIndexPath 
 
     UIImageView *iv = objc_getAssociatedObject(cell, &kApolloChatImgViewKey);
     if (!iv) {
-        Class ivClass = ApolloFLAnimatedImageViewClass() ?: [UIImageView class];   // animates gifs
+        Class ivClass = ApolloClassFLAnimatedImageView ?: [UIImageView class];   // animates gifs
         iv = [[ivClass alloc] initWithFrame:container.bounds];
         iv.clipsToBounds = YES;
         iv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -1423,7 +1414,7 @@ static CGFloat ApolloChatBubbleDrawnTextHeight(NSAttributedString *text, CGFloat
 // flow-layout attributes object. Shared by both flow-layout attribute queries below.
 static void ApolloChatAdjustLayoutAttributes(NSDictionary *map, UICollectionViewLayoutAttributes *la,
                                              NSIndexPath *indexPath) {
-    NSValue *mv = map[ApolloChatIndexKey(indexPath)];
+    NSValue *mv = map.count ? map[ApolloChatIndexKey(indexPath)] : nil;
     if (mv) {
         ApolloChatSetCGSizeIvar(la, "messageContainerSize", mv.CGSizeValue);
     } else if (sShowUserAvatars) {

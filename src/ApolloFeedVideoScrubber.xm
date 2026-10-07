@@ -498,10 +498,8 @@ static char kFeedScrubStripKey;
             // this touch once we Begin — but Apollo's swipe-anywhere pans are
             // custom recognizers whose delegates may permit simultaneous
             // recognition, so take them out explicitly for the drag too.
-            NSMutableArray *suspended =
-                [NSMutableArray arrayWithArray:self.suspendedGestures ?: @[]];
-            [suspended addObjectsFromArray:SuspendNavigationPans(self)];
-            self.suspendedGestures = suspended;
+            self.suspendedGestures = [(self.suspendedGestures ?: @[])
+                arrayByAddingObjectsFromArray:SuspendNavigationPans(self)];
 
             CGFloat fraction = [self fractionForLocationX:[gesture locationInView:self].x];
             ApolloLog(@"[FeedScrubber] scrub engaged at %.0f%% (duration=%.1fs)",
@@ -700,7 +698,7 @@ static char kFeedScrubStripKey;
 // Give a feed RichMediaNode its touch strip and keep the strip glued to the
 // bottom of the video picture. Called from the cell's visibility events, so
 // it re-asserts geometry as cells scroll, resize, and re-lay out.
-static void EnsureScrubStrip(id richMediaNode) {
+static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
     if (!richMediaNode) return;
 
     UIView *host = ViewForNode(richMediaNode);
@@ -719,9 +717,9 @@ static void EnsureScrubStrip(id richMediaNode) {
     strip.richMediaNode = richMediaNode;
     strip.videoNode = videoNode;
 
-    if (strip.superview != host) [strip removeFromSuperview];
-    if (!strip.superview) [host addSubview:strip];
-    [strip wireFailureRequirements];
+    BOOL needsAttach = strip.superview != host;
+    if (needsAttach) [host addSubview:strip];
+    if (needsAttach || becameVisible) [strip wireFailureRequirements];
 
     // Never move the strip under the user's finger mid-scrub. (.tracking
     // covers the tap path; .scrubbing the gesture path — the gesture cancels
@@ -761,9 +759,9 @@ static void EnsureScrubStrip(id richMediaNode) {
     if (!sFeedVideoScrubber) return;   // feature off: no per-tick work at all
     if (event != 0 && event != 1) return;
 
-    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"), event == 0);
     id crosspostNode = ApolloObjectIvar(self, "crosspostNode");
-    if (crosspostNode) EnsureScrubStrip(ApolloObjectIvar(crosspostNode, "richMediaNode"));
+    if (crosspostNode) EnsureScrubStrip(ApolloObjectIvar(crosspostNode, "richMediaNode"), event == 0);
 }
 
 %end
@@ -780,7 +778,7 @@ static void EnsureScrubStrip(id richMediaNode) {
     %orig;
     if (!sFeedVideoScrubber) return;
     if (event != 0 && event != 1) return;
-    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"), event == 0);
 }
 
 %end
@@ -797,7 +795,7 @@ static void EnsureScrubStrip(id richMediaNode) {
     %orig;
     if (!sFeedVideoScrubber) return;
     if (event != 0 && event != 1) return;
-    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"));
+    EnsureScrubStrip(ApolloObjectIvar(self, "richMediaNode"), event == 0);
 }
 
 %end

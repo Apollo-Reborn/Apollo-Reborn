@@ -58,6 +58,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <os/lock.h>
+#import "ApolloClasses.h"
 
 static NSString *const kApolloOwnFlairGroupSuite = @"group.com.christianselig.apollo";
 static NSString *const kApolloOwnFlairDefaultsKey = @"ApolloOwnCommentFlairV1";
@@ -91,7 +92,7 @@ static NSString *ApolloOwnFlairActiveUsername(void) {
 
     NSString *username = nil;
     @try {
-        Class clientClass = objc_getClass("RDKClient");
+        Class clientClass = ApolloClassRDKClient;
         if (clientClass && [clientClass respondsToSelector:@selector(sharedClient)]) {
             id client = ((id (*)(id, SEL))objc_msgSend)(clientClass, @selector(sharedClient));
             if ([client respondsToSelector:@selector(currentUser)]) {
@@ -543,15 +544,8 @@ static NSArray *ApolloOwnFlairArrayProperty(id model, SEL selector) {
 void ApolloOwnCommentFlairInspectModel(id model) {
     if (!model) return;
 
-    static Class commentClass = Nil, linkClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        commentClass = objc_getClass("RDKComment");
-        linkClass = objc_getClass("RDKLink");
-    });
-
-    BOOL isComment = commentClass && [model isMemberOfClass:commentClass];
-    BOOL isLink = !isComment && linkClass && [model isMemberOfClass:linkClass];
+    BOOL isComment = ApolloClassRDKComment && [model isMemberOfClass:ApolloClassRDKComment];
+    BOOL isLink = !isComment && ApolloClassRDKLink && [model isMemberOfClass:ApolloClassRDKLink];
     if (!isComment && !isLink) return;
 
     NSString *subreddit = ApolloOwnFlairStringProperty(model, @selector(subreddit));

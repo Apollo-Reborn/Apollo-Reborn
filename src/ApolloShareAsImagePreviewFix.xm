@@ -73,6 +73,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Associated-object key: marks that the post-present snapshot refresh has been
 // armed for this VC (so we only schedule it once).
@@ -83,8 +84,8 @@ static char kApolloSIPFRefreshArmedKey;
 // The preview node's measured bounds size. The concrete ASDisplayNode class isn't
 // headered here, so reach `bounds` via objc_msgSend (CGRect-returning), guarded.
 static CGSize ApolloSIPFNodeSize(id node) {
-    if (!node || ![node respondsToSelector:@selector(bounds)]) return CGSizeZero;
-    @try { CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(node, @selector(bounds)); return b.size; }
+    if (![node respondsToSelector:@selector(bounds)]) return CGSizeZero;
+    @try { return [node bounds].size; }
     @catch (__unused NSException *e) { return CGSizeZero; }
 }
 
@@ -94,7 +95,7 @@ static CGSize ApolloSIPFNodeSize(id node) {
 // size has changed since the last snapshot — exactly what happens once a comment's
 // async media finishes loading and the node measures its true height.
 static void ApolloSIPFForceRelayout(UIViewController *vc) {
-    if (![vc isViewLoaded] || !vc.viewIfLoaded.window) return;
+    if (!vc.viewIfLoaded.window) return;
     UIPresentationController *pc = vc.presentationController;
     UIView *container = pc.containerView;
     if (container) {
@@ -119,7 +120,7 @@ static void ApolloSIPFForceRelayout(UIViewController *vc) {
 // changing so `stable` resets and we keep polling. A relayout that finds nothing
 // changed is a native no-op, so the trailing confirmation passes are cheap.
 static void ApolloSIPFPollSnapshot(UIViewController *vc, int attempt, CGFloat prevNodeHeight, int stableCount) {
-    if (![vc isViewLoaded] || !vc.viewIfLoaded.window) return; // dismissed — stop
+    if (!vc.viewIfLoaded.window) return; // dismissed — stop
 
     ApolloSIPFForceRelayout(vc);
 
@@ -164,7 +165,6 @@ static void ApolloSIPFPollSnapshot(UIViewController *vc, int attempt, CGFloat pr
 // bounds/margins) this can't drive another layout pass, so there's no loop. A no-op
 // whenever the button already fits, leaving taller devices untouched.
 static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
-    if (![vc isViewLoaded]) return;
     UIView *root = vc.viewIfLoaded;
     if (!root) return;
 
@@ -299,7 +299,7 @@ static void ApolloSIPFClampShareButtonOnScreen(UIViewController *vc) {
 
         UIPresentationController *pc = (UIPresentationController *)self;
         id presented = [pc presentedViewController];
-        Class shareVCClass = objc_getClass("_TtC6Apollo26ShareAsImageViewController");
+        Class shareVCClass = ApolloClassShareAsImageViewController;
         if (!shareVCClass || ![presented isMemberOfClass:shareVCClass]) return;
 
         UIView *presentedView = [(UIViewController *)presented view];

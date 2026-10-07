@@ -10,6 +10,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <limits.h>
+#import "ApolloClasses.h"
 
 #if APOLLO_SIM_BUILD
 #define ApolloPollDiagnosticLog(format, ...) \
@@ -308,8 +309,8 @@ static BOOL ApolloPollHasAuthoritativeCounts(RDKPoll *poll) {
 // post-Safari poll flow. Broadcasting the notification or calling the comments
 // view controller misses this owner and leaves the old Swift PollNode mounted.
 static void ApolloPollPublishAuthoritativeLink(RDKLink *newLink) {
-    if (!newLink.identifier.length || !ApolloPollDiagnosticMatchesPostID(newLink.identifier) ||
-        !ApolloPollHasAuthoritativeCounts(newLink.poll)) return;
+    if (!ApolloPollHasAuthoritativeCounts(newLink.poll) || !newLink.identifier.length ||
+        !ApolloPollDiagnosticMatchesPostID(newLink.identifier)) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!ApolloPollDiagnosticMatchesPostID(newLink.identifier)) return;
@@ -323,7 +324,7 @@ static void ApolloPollPublishAuthoritativeLink(RDKLink *newLink) {
 #if APOLLO_SIM_BUILD
         id sectionDelegate = ApolloObjectIvar(sectionController, "delegate");
 #endif
-        Class sectionClass = objc_getClass("_TtC6Apollo31CommentsHeaderSectionController");
+        Class sectionClass = ApolloClassCommentsHeaderSectionController;
         RDKLink *mountedLink = ApolloObjectIvar(sectionController, "link");
         ApolloPollDiagnosticLog(@"[+%.1fms] authoritative publish lookup post=%@ newLink=%@ header=%@ section=%@ sectionDelegate=%@ mountedLink=%@",
                   ApolloPollDiagnosticElapsedMs(), newLink.identifier,
@@ -726,7 +727,7 @@ static UIViewController *ApolloPollPresenter(id pollNode) {
 }
 
 static UIViewController *ApolloPollCommentsController(void) {
-    Class commentsClass = objc_getClass("_TtC6Apollo22CommentsViewController");
+    Class commentsClass = ApolloClassCommentsViewController;
     UIViewController *target = ApolloPollPresenter(nil);
     while (target && commentsClass && ![target isMemberOfClass:commentsClass]) {
         target = target.parentViewController;
@@ -741,7 +742,6 @@ static void ApolloPollShowError(UIViewController *presenter, NSString *message) 
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
-
 
 static long long ApolloPollIntegerIvar(id object, const char *name) {
     if (!object) return 0;
@@ -802,7 +802,7 @@ static BOOL ApolloPollVisibleStateIsAuthoritative(NSString *postID) {
     if (!pollView.window || !ApolloPollHasAuthoritativeCounts(poll)) return NO;
     NSUInteger resultCount = 0;
     BOOL allValid = YES;
-    ApolloPollValidateResultViews(pollView, objc_getClass("_TtC6Apollo14PollResultNode"),
+    ApolloPollValidateResultViews(pollView, ApolloClassPollResultNode,
                                   poll, &resultCount, &allValid);
     return allValid && resultCount == poll.options.count && resultCount > 0;
 }
@@ -845,7 +845,7 @@ static UIView *ApolloPollNodeView(id node) {
 // space). Option rows are direct subnodes of the PollNode stack, but recurse
 // one container level in case a future Apollo build wraps them.
 static RDKPollOption *ApolloPollOptionAtPoint(UIView *containerView, CGPoint point, NSUInteger depth) {
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     for (UIView *row in containerView.subviews) {
         if (!CGRectContainsPoint(row.frame, point)) continue;
         id node = [row respondsToSelector:@selector(asyncdisplaykit_node)] ? [row asyncdisplaykit_node] : nil;
@@ -862,7 +862,7 @@ static RDKPollOption *ApolloPollOptionAtPoint(UIView *containerView, CGPoint poi
 
 static UIView *ApolloPollOptionViewAtPoint(UIView *pollView, CGPoint point) {
     UIView *hit = [pollView hitTest:point withEvent:nil];
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     while (hit && hit != pollView) {
         id node = [hit respondsToSelector:@selector(asyncdisplaykit_node)] ? [hit asyncdisplaykit_node] : nil;
         if ([node isMemberOfClass:optionClass]) return hit;
@@ -1347,7 +1347,7 @@ static ASTextNode *ApolloPollEnsureTextNode(ASDisplayNode *host, const void *key
         if (didCreate) *didCreate = NO;
         return node;
     }
-    Class textNodeClass = objc_getClass("ASTextNode");
+    Class textNodeClass = ApolloClassASTextNode;
     if (!textNodeClass) return nil;
     node = [textNodeClass new];
     [host addSubnode:node];
@@ -1384,7 +1384,7 @@ static ASTextNode *ApolloPollEnsureVoteButtonTextNode(ASDisplayNode *pollNode) {
 static ASDisplayNode *ApolloPollEnsureVoteButtonBackgroundNode(ASDisplayNode *pollNode) {
     ASDisplayNode *background = objc_getAssociatedObject(pollNode, kApolloPollVoteButtonNodeKey);
     if (background) return background;
-    Class displayNodeClass = objc_getClass("ASDisplayNode");
+    Class displayNodeClass = ApolloClassASDisplayNode;
     if (!displayNodeClass) return nil;
     background = [displayNodeClass new];
     background.cornerRadius = 10.0;
@@ -1399,7 +1399,7 @@ static ASDisplayNode *ApolloPollEnsureVoteButtonBackgroundNode(ASDisplayNode *po
 // ObjC — see ApolloPollOptionAtPoint above). Mirrors its recursion shape.
 static void ApolloPollForEachOptionNode(UIView *containerView, NSUInteger depth,
                                         void (^body)(id optionNode)) {
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     for (UIView *row in containerView.subviews) {
         id node = [row respondsToSelector:@selector(asyncdisplaykit_node)] ? [row asyncdisplaykit_node] : nil;
         if ([node isMemberOfClass:optionClass]) {
@@ -1463,7 +1463,7 @@ static BOOL ApolloPollTouchHitVoteButton(id pollNode, CGPoint pointInPollView) {
 // returned spec already references this same instance.
 static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     ASTextNode *textNode = ApolloObjectIvar(optionNode, "textNode");
-    if (![textNode isKindOfClass:objc_getClass("ASTextNode")]) return;
+    if (![textNode isKindOfClass:ApolloClassASTextNode]) return;
     NSAttributedString *current = textNode.attributedText;
     if (current.length == 0) return;
     NSTextAlignment alignment = (sPollOptionAlignment == ApolloPollOptionAlignmentLeft)
@@ -1504,7 +1504,7 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     // inset spec) directly, dropping the centering wrapper.
     id optionContent = originalSpec;
     if (sPollOptionAlignment == ApolloPollOptionAlignmentLeft) {
-        Class centerClass = objc_getClass("ASCenterLayoutSpec");
+        Class centerClass = ApolloClassASCenterLayoutSpec;
         if (centerClass && [originalSpec isKindOfClass:centerClass]) {
             id unwrapped = ((ASLayoutSpec *)originalSpec).children.firstObject;
             if (unwrapped) optionContent = unwrapped;
@@ -1519,8 +1519,8 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
 
     ASTextNode *radio = ApolloPollEnsureRadioNode((ASDisplayNode *)self);
     if (!radio) return optionContent;
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
-    Class insetClass = objc_getClass("ASInsetLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     if (!stackClass || !insetClass) return optionContent;
 
     // flexShrink:1 lets optionContent shrink to the width left over after the
@@ -1571,9 +1571,9 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     ASTextNode *text = ApolloPollEnsureVoteButtonTextNode((ASDisplayNode *)self);
     ASDisplayNode *background = ApolloPollEnsureVoteButtonBackgroundNode((ASDisplayNode *)self);
     if (!text || !background) return originalSpec;
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
-    Class insetClass = objc_getClass("ASInsetLayoutSpec");
-    Class backgroundClass = objc_getClass("ASBackgroundLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
+    Class insetClass = ApolloClassASInsetLayoutSpec;
+    Class backgroundClass = ApolloClassASBackgroundLayoutSpec;
     if (!stackClass || !insetClass || !backgroundClass) return originalSpec;
     // The padded text drives the pill's size; the background is stretched to
     // match, so the padding is part of the visible, tappable pill (see
@@ -1751,7 +1751,7 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     }
 
     id pollNode = sender;
-    if (![pollNode isMemberOfClass:objc_getClass("_TtC6Apollo8PollNode")]) {
+    if (![pollNode isMemberOfClass:ApolloClassPollNode]) {
         pollNode = ApolloObjectIvar(self, "pollNode");
     }
 
@@ -1820,4 +1820,3 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
 }
 %end
 
-%ctor {}

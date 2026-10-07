@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <Photos/Photos.h>
+#import <PhotosUI/PhotosUI.h>
 #import <math.h>
 #import <dlfcn.h>
 #import <objc/message.h>
@@ -10,45 +12,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "fishhook.h"
-
-@class PHAssetCollection;
-
-@interface PHPhotoLibrary : NSObject
-+ (NSInteger)authorizationStatusForAccessLevel:(NSInteger)accessLevel;
-+ (void)requestAuthorizationForAccessLevel:(NSInteger)accessLevel handler:(void (^)(NSInteger status))handler;
-@end
-
-@interface PHFetchOptions : NSObject <NSCopying>
-@property (nonatomic, copy) NSPredicate *predicate;
-@end
-
-@interface PHAsset : NSObject
-+ (id)fetchAssetsWithMediaType:(NSInteger)mediaType options:(PHFetchOptions *)options;
-+ (id)fetchAssetsWithOptions:(PHFetchOptions *)options;
-+ (id)fetchAssetsInAssetCollection:(PHAssetCollection *)assetCollection options:(PHFetchOptions *)options;
-@end
-
-@interface PHPickerFilter : NSObject
-+ (PHPickerFilter *)anyFilterMatchingSubfilters:(NSArray<PHPickerFilter *> *)subfilters;
-+ (PHPickerFilter *)imagesFilter;
-+ (PHPickerFilter *)videosFilter;
-@end
-
-@interface PHPickerConfiguration : NSObject
-@property (nonatomic, strong) PHPickerFilter *filter;
-- (instancetype)init;
-- (instancetype)initWithPhotoLibrary:(PHPhotoLibrary *)photoLibrary;
-@end
-
-@interface PHPickerViewController : UIViewController
-- (instancetype)initWithConfiguration:(PHPickerConfiguration *)configuration;
-- (void)setDelegate:(id)delegate;
-@end
-
-@interface PHPickerResult : NSObject
-@property (nonatomic, readonly) NSItemProvider *itemProvider;
-@property (nonatomic, readonly) NSString *assetIdentifier;
-@end
+#import "ApolloClasses.h"
 
 static char kApolloPhotoComposerLoggedControllerKey;
 static char kApolloPhotoComposerScrollFixAppliedKey;
@@ -948,8 +912,6 @@ static void ApolloMediaComposerPresentPickerWarning(id picker, NSString *title, 
     }
 }
 
-
-
 static NSArray *ApolloMediaComposerInspectPickerResults(NSArray *results, id delegate, id picker) {
     if (![results isKindOfClass:[NSArray class]]) return results;
     if (!ApolloMediaComposerShouldBridgeVideoPicker()) return results;
@@ -1729,7 +1691,7 @@ static UIViewController *ApolloComposeFormBodyEditorFormController(UIViewControl
     if (ApolloMediaComposerOwnerForNativeBodyEditor(editor)) return nil; // Media-tab editor: configured elsewhere
     UINavigationController *navigationController = editor.navigationController;
     if (!navigationController) return nil;
-    Class formClass = objc_getClass("_TtC6Apollo25ComposePostViewController");
+    Class formClass = ApolloClassComposePostViewController;
     if (!formClass) return nil;
     NSArray<UIViewController *> *stack = navigationController.viewControllers;
     NSUInteger editorIndex = [stack indexOfObjectIdenticalTo:editor];
@@ -1851,7 +1813,7 @@ static void ApolloMediaComposerWritePostTypeSlot(UIViewController *controller, N
 
 static void ApolloMediaComposerSendPostTypeChanged(UIViewController *controller, UISegmentedControl *segmentedControl) {
     if (!segmentedControl) return;
-    SEL selector = NSSelectorFromString(@"postTypeSegmentedControlValueChanged:");
+    SEL selector = @selector(postTypeSegmentedControlValueChanged:);
     if (![controller respondsToSelector:selector]) return;
     ((void (*)(id, SEL, id))objc_msgSend)(controller, selector, segmentedControl);
 }
@@ -2315,7 +2277,7 @@ static NSString *ApolloMediaComposerSystemImageNameForButton(UIButton *button) {
     if (!image) return nil;
     NSString *name = nil;
     @try {
-        if ([image respondsToSelector:NSSelectorFromString(@"_systemImageName")]) {
+        if ([image respondsToSelector:@selector(_systemImageName)]) {
             name = [image valueForKey:@"_systemImageName"];
         }
     } @catch (__unused NSException *e) {}
@@ -2885,12 +2847,12 @@ static NSString *ApolloMediaComposerBearerTokenFromController(UIViewController *
     id account = object_getIvar(controller, tempIvar);
     if (!account) return nil;
 
-    SEL credSel = NSSelectorFromString(@"authorizationCredential");
+    SEL credSel = @selector(authorizationCredential);
     if (![account respondsToSelector:credSel]) return nil;
     id credential = ((id (*)(id, SEL))objc_msgSend)(account, credSel);
     if (!credential) return nil;
 
-    SEL tokenSel = NSSelectorFromString(@"accessToken");
+    SEL tokenSel = @selector(accessToken);
     if (![credential respondsToSelector:tokenSel]) return nil;
     id accessTokenObj = ((id (*)(id, SEL))objc_msgSend)(credential, tokenSel);
     if (!accessTokenObj) return nil;
@@ -2913,7 +2875,7 @@ static UIViewController *ApolloMediaComposerActiveComposeControllerForToken(void
     UIViewController *tracked = ApolloMediaComposerCanonicalBodyController(sApolloMediaComposerActiveBodyController) ?: sApolloMediaComposerActiveBodyController;
     if (tracked) {
         NSString *cls = NSStringFromClass(tracked.class) ?: @"";
-        if ([cls hasPrefix:@"_TtC6Apollo"] &&
+        if ([cls hasPrefix:@"Apollo."] &&
             ([cls hasSuffix:@"ComposePostViewController"] || [cls hasSuffix:@"ComposeViewController"])) {
             return tracked;
         }
@@ -2926,7 +2888,7 @@ static UIViewController *ApolloMediaComposerActiveComposeControllerForToken(void
         NSUInteger guard = 0;
         while (vc && guard++ < 32) {
             NSString *cls = NSStringFromClass(vc.class) ?: @"";
-            if ([cls hasPrefix:@"_TtC6Apollo"] &&
+            if ([cls hasPrefix:@"Apollo."] &&
                 ([cls hasSuffix:@"ComposePostViewController"] || [cls hasSuffix:@"ComposeViewController"])) {
                 return vc;
             }
@@ -3269,7 +3231,7 @@ static NSPredicate *ApolloMediaComposerPredicateAllowingImagesAndVideos(NSPredic
 }
 
 static PHFetchOptions *ApolloMediaComposerFetchOptionsAllowingImagesAndVideos(PHFetchOptions *options) {
-    if (!ApolloMediaComposerShouldBridgeVideoPicker() || ![options isKindOfClass:objc_getClass("PHFetchOptions")]) return options;
+    if (!ApolloMediaComposerShouldBridgeVideoPicker() || ![options isKindOfClass:[PHFetchOptions class]]) return options;
 
     NSPredicate *predicate = options.predicate;
     NSPredicate *rewritten = ApolloMediaComposerPredicateAllowingImagesAndVideos(predicate);
@@ -3519,7 +3481,7 @@ static CGFloat hooked_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath(i
 }
 
 static void ApolloMediaComposerInstallComposeTableHooks(void) {
-    Class cls = objc_getClass("_TtC6Apollo25ComposePostViewController");
+    Class cls = ApolloClassComposePostViewController;
     if (!cls) {
         ApolloLog(@"[MediaPostBody] compose table hook skipped: class missing");
         return;
@@ -3850,9 +3812,7 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
     if (!ApolloIsSystemShareComposeController(viewControllerToPresent)) {
         ApolloPhotoComposerMaybeEnableMoviePicking(self, viewControllerToPresent);
     }
-    UIViewController *bodyController = ApolloMediaComposerCanonicalBodyController(self);
     %orig;
-    (void)bodyController;
 }
 
 - (void)dismissViewControllerAnimated:(BOOL)flag completion:(void (^)(void))completion {
@@ -4195,11 +4155,7 @@ static void ApolloComposeBodyEditorLogRedirectOnce(UINavigationItem *navigationI
 %end
 
 static PHPickerFilter *ApolloMediaComposerCombinedImagesVideosFilter(void) {
-    Class filterClass = objc_getClass("PHPickerFilter");
-    if (!filterClass || ![filterClass respondsToSelector:@selector(anyFilterMatchingSubfilters:)] ||
-        ![filterClass respondsToSelector:@selector(imagesFilter)] ||
-        ![filterClass respondsToSelector:@selector(videosFilter)]) return nil;
-    return [filterClass anyFilterMatchingSubfilters:@[[filterClass imagesFilter], [filterClass videosFilter]]];
+    return [PHPickerFilter anyFilterMatchingSubfilters:@[PHPickerFilter.imagesFilter, PHPickerFilter.videosFilter]];
 }
 
 static void ApolloMediaComposerApplyCombinedFilterToConfiguration(PHPickerConfiguration *configuration, NSString *reason) {
@@ -4218,12 +4174,7 @@ static void ApolloMediaComposerApplyCombinedFilterToConfiguration(PHPickerConfig
 static void ApolloMediaComposerLogPhotoAuthStateOnce(void) {
     BOOL shouldRequestAccess = ApolloMediaComposerRedditUploadSelected() && !sApolloMediaComposerRequestedPhotoAccess;
     if (sApolloMediaComposerLoggedPhotoAuthState && !shouldRequestAccess) return;
-    Class libClass = objc_getClass("PHPhotoLibrary");
-    if (!libClass || ![libClass respondsToSelector:@selector(authorizationStatusForAccessLevel:)]) {
-        ApolloLog(@"[MediaComposer] PHPhotoLibrary auth-status accessor unavailable");
-        return;
-    }
-    NSInteger status = ((NSInteger (*)(id, SEL, NSInteger))objc_msgSend)(libClass, @selector(authorizationStatusForAccessLevel:), 2 /* PHAccessLevelReadWrite */);
+    NSInteger status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
     NSString *(^statusDescription)(NSInteger) = ^NSString *(NSInteger value) {
         switch (value) {
         case 0: return @"NotDetermined";
@@ -4239,12 +4190,12 @@ static void ApolloMediaComposerLogPhotoAuthStateOnce(void) {
         sApolloMediaComposerLoggedPhotoAuthState = YES;
         ApolloLog(@"[MediaComposer] PHPhotoLibrary access level=%@ - videos require Full Access OR adding videos via 'Manage Selected Photos' in Limited mode", statusDescription(status));
     }
-    if (status == 0 && shouldRequestAccess && [libClass respondsToSelector:@selector(requestAuthorizationForAccessLevel:handler:)]) {
+    if (status == 0 && shouldRequestAccess) {
         sApolloMediaComposerRequestedPhotoAccess = YES;
         ApolloLog(@"[MediaComposer] requesting PHPhotoLibrary read/write access for Reddit media picker");
-        ((void (*)(id, SEL, NSInteger, void (^)(NSInteger)))objc_msgSend)(libClass, @selector(requestAuthorizationForAccessLevel:handler:), 2 /* PHAccessLevelReadWrite */, ^(NSInteger newStatus) {
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelReadWrite handler:^(PHAuthorizationStatus newStatus) {
             ApolloLog(@"[MediaComposer] PHPhotoLibrary access request completed level=%@", statusDescription(newStatus));
-        });
+        }];
     }
 }
 

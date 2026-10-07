@@ -1,3 +1,4 @@
+#import <SafariServices/SafariServices.h>
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloMemoryDiagnostics.h"
@@ -11,6 +12,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <stdlib.h>
+#import "ApolloClasses.h"
 
 static char kApolloUserFlairEditorPresentedKey;
 static char kApolloUserFlairCapturedOptionsKey;
@@ -266,10 +268,8 @@ static id ApolloUserFlairSendObject(id target, NSString *selectorName) {
     }
 }
 
-static BOOL ApolloUserFlairSendBool(id target, NSString *selectorName, BOOL *found) {
+static BOOL ApolloUserFlairSendBool(id target, SEL selector, BOOL *found) {
     if (found) *found = NO;
-    if (!target || selectorName.length == 0) return NO;
-    SEL selector = NSSelectorFromString(selectorName);
     if (![target respondsToSelector:selector]) return NO;
     if (found) *found = YES;
     @try {
@@ -349,13 +349,13 @@ static NSArray *ApolloUserFlairObjectArray(id object, NSArray<NSString *> *names
 
 static BOOL ApolloUserFlairOptionIsEditable(id option, BOOL *found) {
     BOOL localFound = NO;
-    BOOL editable = ApolloUserFlairSendBool(option, @"isEditable", &localFound);
+    BOOL editable = ApolloUserFlairSendBool(option, @selector(isEditable), &localFound);
     if (localFound) {
         if (found) *found = YES;
         return editable;
     }
 
-    editable = ApolloUserFlairSendBool(option, @"editable", &localFound);
+    editable = ApolloUserFlairSendBool(option, @selector(editable), &localFound);
     if (localFound) {
         if (found) *found = YES;
         return editable;
@@ -540,17 +540,7 @@ static NSURL *ApolloUserFlairFirstURL(NSString *text, NSRange *outRange) {
 // flair tool (e.g. r/anime's flair.r-anime.moe). Falls back to the system opener.
 static void ApolloUserFlairOpenURLInApp(UIViewController *controller, NSURL *url) {
     if (!url || !controller) return;
-    Class sfvc = objc_getClass("SFSafariViewController");
-    if (sfvc) {
-        id vc = ((id (*)(id, SEL, NSURL *))objc_msgSend)([sfvc alloc], @selector(initWithURL:), url);
-        if ([vc isKindOfClass:[UIViewController class]]) {
-            [controller presentViewController:vc animated:YES completion:nil];
-            return;
-        }
-    }
-    if ([[UIApplication sharedApplication] respondsToSelector:@selector(openURL:options:completionHandler:)]) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
-    }
+    [controller presentViewController:[[SFSafariViewController alloc] initWithURL:url] animated:YES completion:nil];
 }
 
 // YES when a flair row is really an "external flair tool" link — an instruction
@@ -1893,7 +1883,7 @@ static ApolloUserFlairCollapseModel *ApolloUserFlairCollapseModelFor(UIViewContr
 }
 
 static id ApolloUserFlairMakeTextFlair(NSString *text) {
-    Class flairClass = objc_getClass("RDKFlair");
+    Class flairClass = ApolloClassRDKFlair;
     SEL initSEL = @selector(initWithRawText:);
     if (!flairClass || ![flairClass instancesRespondToSelector:initSEL]) return nil;
     return ((id (*)(id, SEL, id))objc_msgSend)([flairClass alloc], initSEL, text ?: @"");
@@ -2399,7 +2389,7 @@ static NSArray *ApolloUserFlairWebOptionsFromHTML(NSData *data, NSString *subred
             if (label) flairs = @[label];
         }
 
-        Class optionClass = objc_getClass("RDKFlairOption");
+        Class optionClass = ApolloClassRDKFlairOption;
         id option = optionClass ? [optionClass new] : nil;
         if (!option) continue;
         @try {
@@ -2668,8 +2658,7 @@ static void ApolloUserFlairFetchCurrentFlair(UIViewController *controller, NSStr
 
     // Fetch the emoji map FIRST so :token: flairs can render as images, then the
     // current flair, then reload the table once both are available.
-    ApolloUserFlairFetchEmojis(subreddit, ^(NSArray *emojis) {
-        (void)emojis;
+    ApolloUserFlairFetchEmojis(subreddit, ^(__unused NSArray *emojis) {
         NSString *urlStr = [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/api/flairselector?raw_json=1", enc];
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlStr]];
         req.HTTPMethod = @"POST";
@@ -2739,23 +2728,32 @@ static NSString *ApolloUserFlairCurrentFlairTextForOption(UIViewController *cont
 // CSS we can't safely parse (e.g. r/dbz's multi-sheet attribute selectors) fall back
 // to the prettified css_class name; genuinely-empty subs keep the collapse behaviour.
 
-static NSString *ApolloUserFlairRegexSub(NSString *s, NSString *pattern, NSString *tmpl) {
+static NSString *ApolloUserFlairRegexSub(NSString *s, NSRegularExpression *re, NSString *tmpl) {
     if (s.length == 0) return s;
-    return [s stringByReplacingOccurrencesOfString:pattern withString:tmpl
-              options:NSRegularExpressionSearch range:NSMakeRange(0, s.length)];
+    return [re stringByReplacingMatchesInString:s options:0 range:NSMakeRange(0, s.length) withTemplate:tmpl];
 }
 
 // Prettify a css_class for display: drop a trailing numeric variant, split camelCase
 // and separators, title-case. "princessPeach"->"Princess Peach", "Beerus-001"->"Beerus".
 static NSString *ApolloUserFlairPrettifyClass(NSString *cssClass) {
+    static NSRegularExpression *trailingVariant, *separators, *camel, *letterDigit, *digitLetter, *spaces;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        trailingVariant = [NSRegularExpression regularExpressionWithPattern:@"[-_]?[0-9]{1,4}$" options:0 error:NULL];
+        separators = [NSRegularExpression regularExpressionWithPattern:@"[-_]+" options:0 error:NULL];
+        camel = [NSRegularExpression regularExpressionWithPattern:@"([a-z])([A-Z])" options:0 error:NULL];
+        letterDigit = [NSRegularExpression regularExpressionWithPattern:@"([A-Za-z])([0-9])" options:0 error:NULL];
+        digitLetter = [NSRegularExpression regularExpressionWithPattern:@"([0-9])([A-Za-z])" options:0 error:NULL];
+        spaces = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:NULL];
+    });
     NSString *s = [cssClass stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (s.length == 0) return nil;
-    s = ApolloUserFlairRegexSub(s, @"[-_]?[0-9]{1,4}$", @"");
-    s = ApolloUserFlairRegexSub(s, @"[-_]+", @" ");
-    s = ApolloUserFlairRegexSub(s, @"([a-z])([A-Z])", @"$1 $2");
-    s = ApolloUserFlairRegexSub(s, @"([A-Za-z])([0-9])", @"$1 $2");
-    s = ApolloUserFlairRegexSub(s, @"([0-9])([A-Za-z])", @"$1 $2");
-    s = ApolloUserFlairRegexSub(s, @"\\s+", @" ");
+    s = ApolloUserFlairRegexSub(s, trailingVariant, @"");
+    s = ApolloUserFlairRegexSub(s, separators, @" ");
+    s = ApolloUserFlairRegexSub(s, camel, @"$1 $2");
+    s = ApolloUserFlairRegexSub(s, letterDigit, @"$1 $2");
+    s = ApolloUserFlairRegexSub(s, digitLetter, @"$1 $2");
+    s = ApolloUserFlairRegexSub(s, spaces, @" ");
     s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (s.length == 0) return nil;
     return [s capitalizedString];
@@ -3167,7 +3165,6 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
 
     id originalBlock = %orig(tableNode, effectiveIndexPath);
     if (!originalBlock) return originalBlock;
-    (void)isCustomRow;
 
     // Decide what this row should render via the option's (otherwise empty) getters:
     //  - the user's CURRENT flair, if it belongs on this row (so you can see it); or
@@ -3326,9 +3323,7 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
 
     // The "no usable flairs" notice isn't a real choice — explain instead of selecting.
     if (model.active && model.infoMode && effectiveIndexPath.row == model.customRealRow) {
-        if ([tableNode respondsToSelector:@selector(deselectRowAtIndexPath:animated:)]) {
-            ((void (*)(id, SEL, NSIndexPath *, BOOL))objc_msgSend)(tableNode, @selector(deselectRowAtIndexPath:animated:), indexPath, NO);
-        }
+        [tableNode deselectRowAtIndexPath:indexPath animated:NO];
         UIAlertController *info = [UIAlertController alertControllerWithTitle:@"No Usable Flairs"
             message:@"This community has flair enabled, but every flair option is empty and can't be edited, so there's nothing to apply. That's the subreddit's own setup — not an Apollo limitation."
             preferredStyle:UIAlertControllerStyleAlert];
@@ -3345,20 +3340,15 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
     // works regardless of whether the row is editable (an editable tool row would
     // otherwise pop the editor pre-filled with the instruction string) and won't
     // hijack real image/text flairs.
-    {
-        id opt = ApolloUserFlairCapturedOptionAtIndexPath((UIViewController *)self, effectiveIndexPath);
-        NSURL *link = nil;
-        if (ApolloUserFlairOptionIsLinkInstruction(opt, &link) && link) {
-            if ([tableNode respondsToSelector:@selector(deselectRowAtIndexPath:animated:)]) {
-                ((void (*)(id, SEL, NSIndexPath *, BOOL))objc_msgSend)(tableNode, @selector(deselectRowAtIndexPath:animated:), indexPath, NO);
-            }
-            ApolloUserFlairOpenURLInApp((UIViewController *)self, link);
-            ApolloLog(@"[UserFlair] flair-tool link row -> opened %@ in-app", link.absoluteString);
-            return;
-        }
+    id tappedOption = ApolloUserFlairCapturedOptionAtIndexPath((UIViewController *)self, effectiveIndexPath);
+    NSURL *link = nil;
+    if (ApolloUserFlairOptionIsLinkInstruction(tappedOption, &link) && link) {
+        [tableNode deselectRowAtIndexPath:indexPath animated:NO];
+        ApolloUserFlairOpenURLInApp((UIViewController *)self, link);
+        ApolloLog(@"[UserFlair] flair-tool link row -> opened %@ in-app", link.absoluteString);
+        return;
     }
 
-    id tappedOption = ApolloUserFlairCapturedOptionAtIndexPath((UIViewController *)self, effectiveIndexPath);
     %orig(tableNode, effectiveIndexPath);
 
     // When collapsed, the displayed row index differs from the real index Apollo
@@ -3397,7 +3387,7 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
 - (NSString *)textRepresentation {
     NSString *textRepresentation = %orig;
     ApolloUserFlairCaptureOptionIfNeeded(self);
-    if (tApolloUserFlairCustomRowOption && tApolloUserFlairCustomRowOption == self && tApolloUserFlairCustomRowDisplayText) {
+    if (tApolloUserFlairCustomRowOption == self && tApolloUserFlairCustomRowDisplayText) {
         return tApolloUserFlairCustomRowDisplayText;
     }
     return textRepresentation;
@@ -3412,7 +3402,7 @@ static BOOL ApolloUserFlairPresenterHasFlairSelector(UIViewController *presenter
 - (NSArray *)flairs {
     NSArray *flairs = %orig;
     ApolloUserFlairCaptureOptionIfNeeded(self);
-    if (tApolloUserFlairCustomRowOption && tApolloUserFlairCustomRowOption == self && tApolloUserFlairCustomRowFlairs) {
+    if (tApolloUserFlairCustomRowOption == self && tApolloUserFlairCustomRowFlairs) {
         return tApolloUserFlairCustomRowFlairs;
     }
     // Persistent css-class sprite/name override (read by the async layout pass).

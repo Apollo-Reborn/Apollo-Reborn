@@ -10,6 +10,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloToast.h"
+#import "ApolloClasses.h"
 
 static char kApolloGIFSaveContext;
 static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
@@ -102,7 +103,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
             if (success) {
                 // Native completion only displays Apollo's ordinary Saved!
                 // banner; it does not issue another Photos write.
-                id manager = [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init];
+                id manager = [[objc_getClass("_TtC6Apollo17ShareMediaManager") alloc] init];
                 ((void (*)(id,SEL,id,id,void *))objc_msgSend)(manager, @selector(image:didFinishSavingWithError:contextInfo:), nil, nil, NULL);
             } else {
                 ApolloLog(@"[GIFSaveActivity] Photos rejected GIF domain=%@ code=%ld", error.domain, (long)error.code);
@@ -124,7 +125,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
         NSURL *URL = items.firstObject;
         if (URL.isFileURL && [URL.pathExtension.lowercaseString isEqualToString:@"gif"]) {
             for (UIActivity *activity in activities) {
-                if (![activity isKindOfClass:NSClassFromString(@"Apollo.SaveMediaActivity")]) continue;
+                if (![activity isKindOfClass:ApolloClassSaveMediaActivity]) continue;
                 context = [ApolloGIFSaveActivityContext new];
                 context.sourceURL = URL;
                 objc_setAssociatedObject(activity, &kApolloGIFSaveContext, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

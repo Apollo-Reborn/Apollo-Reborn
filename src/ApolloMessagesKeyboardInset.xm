@@ -204,7 +204,7 @@ static void ApolloMessagesSyncDockedReplyBar(UIViewController *controller) {
     UIScrollView *list = ApolloMessagesCollectionView(controller);
     UIEdgeInsets before = list.contentInset;
     ((void (*)(id, SEL, NSNotification *))objc_msgSend)(
-        controller, NSSelectorFromString(@"handleKeyboardDidChangeState:"), notification);
+        controller, @selector(handleKeyboardDidChangeState:), notification);
     UIEdgeInsets after = list.contentInset;
     if (!UIEdgeInsetsEqualToEdgeInsets(before, after)) {
         ApolloLog(@"[MessagesKeyboardInset] reply bar docked at %@ -> inset %@ -> %@",
@@ -271,7 +271,7 @@ static void ApolloMessagesSyncDockedReplyBar(UIViewController *controller) {
     Class controllerClass = objc_getClass("_TtC6Apollo22MessagesViewController");
     Class barClass = objc_getClass("_TtC6Apollo15MessageInputBar");
     if (!controllerClass || !barClass ||
-        !class_getInstanceMethod(controllerClass, NSSelectorFromString(@"handleKeyboardDidChangeState:"))) {
+        !class_getInstanceMethod(controllerClass, @selector(handleKeyboardDidChangeState:))) {
         ApolloLog(@"[MessagesKeyboardInset] MessageKit classes or handler missing; hooks not installed");
         return;
     }

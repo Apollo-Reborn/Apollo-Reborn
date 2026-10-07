@@ -27,7 +27,7 @@ static NSString *sApolloSaveAllPendingBannerTitle;
 static NSObject *sApolloSaveAllPendingBannerToken;
 
 static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
-    Class managerClass = NSClassFromString(@"Apollo.ShareMediaManager");
+    Class managerClass = objc_getClass("Apollo.ShareMediaManager");
     SEL completion = @selector(image:didFinishSavingWithError:contextInfo:);
     id manager = [[managerClass alloc] init];
     if (![manager respondsToSelector:completion]) {
@@ -127,7 +127,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
     self.countLabel.accessibilityLabel = @"Media completed";
 
     UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor;
-    DACircularProgressView *circle = [[NSClassFromString(@"DACircularProgressView") alloc] init];
+    DACircularProgressView *circle = [[objc_getClass("DACircularProgressView") alloc] init];
     circle.trackTintColor = UIColor.tertiarySystemFillColor;
     circle.progressTintColor = accent;
     circle.thicknessRatio = 0.12;

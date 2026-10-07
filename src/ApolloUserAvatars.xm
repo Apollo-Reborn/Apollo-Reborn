@@ -24,6 +24,7 @@
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileLayoutStructureChangedMarker = @"ApolloProfileLayoutStructureChanged";
@@ -1805,7 +1806,7 @@ static NSString *ApolloUsernameFromModelObject(id object) {
 }
 
 static NSString *ApolloCurrentLoggedInUsername(void) {
-    Class clientClass = objc_getClass("RDKClient");
+    Class clientClass = ApolloClassRDKClient;
     SEL sharedClientSEL = @selector(sharedClient);
     if (!clientClass || ![clientClass respondsToSelector:sharedClientSEL]) return nil;
 
@@ -1857,7 +1858,7 @@ static void ApolloNodeSetNeedsLayout(id node) {
         void (*msgSend)(id, SEL) = (void (*)(id, SEL))objc_msgSend;
         msgSend(node, @selector(setNeedsLayout));
     }
-    SEL invalidateLayoutSEL = NSSelectorFromString(@"invalidateCalculatedLayout");
+    SEL invalidateLayoutSEL = @selector(invalidateCalculatedLayout);
     if ([node respondsToSelector:invalidateLayoutSEL]) {
         void (*msgSend)(id, SEL) = (void (*)(id, SEL))objc_msgSend;
         msgSend(node, invalidateLayoutSEL);
@@ -2935,7 +2936,6 @@ static void ApolloApplyAvatarToCellWithDiameter(id cell, NSString *username, CGF
     else ApolloScheduleInlineAvatarInfoFetchForCell(cell, username);
 }
 
-
 // ---- Measure-time binding -------------------------------------------------------------
 // The byline avatar is bound from -didLoad, but a freshly created CommentCellNode reaches
 // -didLoad with its pending layout not applied yet: the author button (ApolloButtonNode, an
@@ -2965,14 +2965,15 @@ static id ApolloAuthorTitleTextNodeForCell(id cell, NSString *username) {
     return ApolloTextNodeContainsUsername(titleNode, username) ? titleNode : nil;
 }
 
-static void ApolloBindAvatarAtMeasureForCell(id cell, NSString *username, CGFloat diameter) {
+static void ApolloBindAvatarAtMeasureForCell(id cell, NSString *modelIvarName, CGFloat diameter) {
     if (!sShowUserAvatars || !cell) return;
-    username = ApolloAvatarNormalizedUsername(username);
-    if (username.length == 0) return;
 
     // A re-measure of an already bound cell: nothing to do.
     id boundNode = objc_getAssociatedObject(cell, kApolloAvatarTextNodeKey);
     if (boundNode && ApolloTextLooksAvatarPrepended(ApolloAttributedTextForNode(boundNode))) return;
+
+    NSString *username = ApolloAvatarNormalizedUsername(ApolloUsernameFromCell(cell, modelIvarName));
+    if (username.length == 0) return;
 
     id textNode = ApolloAuthorTitleTextNodeForCell(cell, username);
     if (!textNode) return;   // -didLoad's scan and retry ladder keep handling this cell
@@ -4076,7 +4077,7 @@ static void ApolloProfileReloadTablesForLayoutStructureInTree(
 }
 
 static SEL ApolloProfileTabAvatarActiveKey(void) {
-    return NSSelectorFromString(@"apollo_profileTabAvatarIconActive");
+    return @selector(apollo_profileTabAvatarIconActive);
 }
 
 static UITabBarItem *ApolloProfileTabItemForController(UITabBarController *tabBarController) {
@@ -4164,8 +4165,8 @@ static BOOL sApolloClampingTabTreatment = NO;
 static void ApolloProfileForceTabAvatarColour(UIImageView *imageView) {
     if (sApolloClampingTabTreatment || ![imageView isKindOfClass:[UIImageView class]]) return;
     sApolloClampingTabTreatment = YES;
-    SEL eSel = NSSelectorFromString(@"_setEnableMonochromaticTreatment:");
-    SEL mSel = NSSelectorFromString(@"_setMonochromaticTreatment:");
+    SEL eSel = @selector(_setEnableMonochromaticTreatment:);
+    SEL mSel = @selector(_setMonochromaticTreatment:);
     if ([imageView respondsToSelector:mSel]) ((void (*)(id, SEL, int64_t))objc_msgSend)(imageView, mSel, 0);
     if ([imageView respondsToSelector:eSel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(imageView, eSel, NO);
     sApolloClampingTabTreatment = NO;
@@ -4187,7 +4188,7 @@ static void ApolloProfileDisableSystemTemplateTreatment(UIImageView *imageView) 
     imageView.image = ApolloProfileTabOriginalRenderingImage(imageView.image);
     imageView.highlightedImage = ApolloProfileTabOriginalRenderingImage(imageView.highlightedImage);
 
-    SEL setEnableMonochromaticTreatment = NSSelectorFromString(@"_setEnableMonochromaticTreatment:");
+    SEL setEnableMonochromaticTreatment = @selector(_setEnableMonochromaticTreatment:);
     if ([imageView respondsToSelector:setEnableMonochromaticTreatment]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(imageView, setEnableMonochromaticTreatment, NO);
     }
@@ -4198,7 +4199,7 @@ static UITabBarItem *ApolloProfileTabItemForTabBarButton(id button) {
     UITabBar *tabBar = ((UITabBar *(*)(id, SEL))objc_msgSend)(button, @selector(tabBar));
     if (![tabBar isKindOfClass:[UITabBar class]]) return nil;
 
-    SEL tabBarButtonSelector = NSSelectorFromString(@"_tabBarButton");
+    SEL tabBarButtonSelector = @selector(_tabBarButton);
     for (UITabBarItem *item in tabBar.items) {
         if (![item respondsToSelector:tabBarButtonSelector]) continue;
         id tabBarButton = ((id (*)(id, SEL))objc_msgSend)(item, tabBarButtonSelector);
@@ -4276,7 +4277,7 @@ static void ApolloProfileSyncLegacyTabButtonAvatar(id button) {
         if ([imageView respondsToSelector:@selector(setImage:)]) {
             ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageView, @selector(setImage:), avatar);
         }
-        SEL setAlternateImage = NSSelectorFromString(@"setAlternateImage:");
+        SEL setAlternateImage = @selector(setAlternateImage:);
         if ([imageView respondsToSelector:setAlternateImage]) {
             ((void (*)(id, SEL, UIImage *))objc_msgSend)(imageView, setAlternateImage, avatar);
         }
@@ -4698,9 +4699,7 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 
 // Texture's layout thread, before the row height is taken — see ApolloBindAvatarAtMeasureForCell.
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
-    if (sShowUserAvatars) {
-        ApolloBindAvatarAtMeasureForCell(self, ApolloUsernameFromCell(self, @"comment"), ApolloCommentInlineAvatarDiameter);
-    }
+    ApolloBindAvatarAtMeasureForCell(self, @"comment", ApolloCommentInlineAvatarDiameter);
     return %orig;
 }
 
@@ -5054,7 +5053,7 @@ static void ApolloProfileZeroNodeHeight(id node) {
     // Keep Apollo's karma row unless the Reborn Stat Cards replace it.
     if (!collapseNativeRow) return spec;
     ApolloProfileZeroNodeHeight(self);
-    Class specClass = NSClassFromString(@"ASLayoutSpec");
+    Class specClass = ApolloClassASLayoutSpec;
     id emptySpec = specClass ? [[specClass alloc] init] : nil;
     return emptySpec ?: spec;
 }
@@ -5403,7 +5402,7 @@ static void ApolloInlineAvatarReapplyAfterModelUpdate(NSString *fullName) {
                                                   usingBlock:^(NSNotification *note) {
         if (!sShowUserAvatars || ![NSThread isMainThread]) return;
         id model = note.object;
-        if (![model isMemberOfClass:objc_getClass("RDKComment")]) return;
+        if (![model isMemberOfClass:ApolloClassRDKComment]) return;
         if (![model respondsToSelector:@selector(fullName)]) return;
         NSString *fullName = ((id (*)(id, SEL))objc_msgSend)(model, @selector(fullName));
         if (![fullName isKindOfClass:[NSString class]] || fullName.length == 0) return;

@@ -63,11 +63,11 @@ static void ApolloProfilePageCompleteOldBatch(UIViewController *owner) {
     if (![node respondsToSelector:@selector(isNodeLoaded)] ||
         !((BOOL (*)(id, SEL))objc_msgSend)(node, @selector(isNodeLoaded))) return;
     id table = ((id (*)(id, SEL))objc_msgSend)(node, @selector(view));
-    SEL contextSelector = NSSelectorFromString(@"batchContext");
+    SEL contextSelector = @selector(batchContext);
     if (![table respondsToSelector:contextSelector]) return;
     id context = ((id (*)(id, SEL))objc_msgSend)(table, contextSelector);
-    SEL fetchingSelector = NSSelectorFromString(@"isFetching");
-    SEL completeSelector = NSSelectorFromString(@"completeBatchFetching:");
+    SEL fetchingSelector = @selector(isFetching);
+    SEL completeSelector = @selector(completeBatchFetching:);
     if ([context respondsToSelector:fetchingSelector] &&
         [context respondsToSelector:completeSelector] &&
         ((BOOL (*)(id, SEL))objc_msgSend)(context, fetchingSelector)) {
@@ -211,10 +211,10 @@ static BOOL ApolloProfilePageIsAccountTab(UIViewController *owner) {
 %end
 
 %ctor {
-    Class profileClass = NSClassFromString(@"Apollo.ProfileViewController");
-    if (!profileClass) profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
+    Class profileClass = objc_getClass("Apollo.ProfileViewController");
+    if (!profileClass) profileClass = objc_getClass("_TtC6Apollo21ProfileViewController");
     if (!profileClass || !class_getInstanceVariable(profileClass, "pagination") ||
-        !class_getInstanceMethod(NSClassFromString(@"RDKClient"),
+        !class_getInstanceMethod(objc_getClass("RDKClient"),
             @selector(overviewOfUserWithUsername:pagination:completion:))) return;
     sApolloProfilePageOwners = [NSHashTable weakObjectsHashTable];
     sApolloProfilePageBindings = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality

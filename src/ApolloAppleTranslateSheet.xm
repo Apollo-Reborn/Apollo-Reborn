@@ -45,6 +45,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Generated umbrella header for this module's Swift compilation units
 // (ApolloAppleTranslation.swift, ApolloAppleTranslateSheet.swift), which vends
@@ -63,7 +64,7 @@
                      animated:(BOOL)animated
                    completion:(void (^)(void))completion {
     if (sAppleTranslateSheet &&
-        [viewControllerToPresent isKindOfClass:objc_getClass("_TtC6Apollo24TranslatorViewController")]) {
+        [viewControllerToPresent isKindOfClass:ApolloClassTranslatorViewController]) {
 #if APOLLO_HAS_APPLE_TRANSLATE_SHEET
         // TranslatorViewController's `textToTranslate` Swift String ivar is set by
         // its initializers, so it's readable here before -viewDidLoad builds the

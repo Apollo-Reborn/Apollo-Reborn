@@ -38,6 +38,7 @@
 #import <math.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // ASSizeRange is { CGSize min; CGSize max; }. Match the class-dumped
 // layoutSpecThatFits: ABI used elsewhere in the tweak.
@@ -204,22 +205,17 @@ static void ApolloFlairAnnotate(NSArray *flairs, UIColor *background, UIColor *t
 // Reddit sometimes nests the link/comment fields under a "data" sub-dictionary
 // (the t3 / t1 "thing" wrapper). Pick whichever dict actually carries the flair
 // keys so recovery works regardless of which layer Mantle handed us.
+static BOOL ApolloFlairHasFlairKeys(NSDictionary *d) {
+    return d[@"link_flair_background_color"] || d[@"author_flair_background_color"] ||
+           d[@"link_flair_text"] || d[@"link_flair_richtext"] ||
+           d[@"author_flair_text"] || d[@"author_flair_richtext"];
+}
+
 static NSDictionary *ApolloFlairFlairSource(NSDictionary *json) {
     if (![json isKindOfClass:[NSDictionary class]]) return nil;
-    if (json[@"link_flair_background_color"] || json[@"author_flair_background_color"] ||
-        json[@"link_flair_text"] || json[@"link_flair_richtext"] ||
-        json[@"author_flair_text"] || json[@"author_flair_richtext"]) {
-        return json;
-    }
+    if (ApolloFlairHasFlairKeys(json)) return json;
     id data = json[@"data"];
-    if ([data isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *d = (NSDictionary *)data;
-        if (d[@"link_flair_background_color"] || d[@"author_flair_background_color"] ||
-            d[@"link_flair_text"] || d[@"link_flair_richtext"] ||
-            d[@"author_flair_text"] || d[@"author_flair_richtext"]) {
-            return d;
-        }
-    }
+    if ([data isKindOfClass:[NSDictionary class]] && ApolloFlairHasFlairKeys(data)) return data;
     return json;
 }
 
@@ -317,7 +313,6 @@ static CGFloat ApolloFlairMaxTextHeight(NSArray *contentNodes) {
 
     CGFloat maxHeight = 0.0;
     for (id contentNode in contentNodes) {
-        if (![contentNode respondsToSelector:@selector(attributedText)]) continue;
         id attributed = ApolloFlairPerformObject(contentNode, @selector(attributedText));
         if (![attributed isKindOfClass:[NSAttributedString class]] || [(NSAttributedString *)attributed length] == 0) continue;
 
@@ -350,14 +345,15 @@ static void ApolloFlairSetLayoutMaxHeight(id layoutElement, CGFloat height) {
 }
 
 static void ApolloFlairFixMaxHeight(id node, id layoutSpec) {
-    NSArray *contentNodes = ApolloFlairSwiftArrayIvar(node, "contentNodes");
-    CGFloat textHeight = ApolloFlairMaxTextHeight(contentNodes);
-    if (textHeight <= 0.0) return;
-
     // FlairNode's layout (sub_10056fd54) only caps maxHeight (16pt) for the
     // non-alert stack; alert flairs get setFlexWrap:YES and no cap at all.
     // Swift ivars have an EMPTY ObjC type encoding, so read the Bool byte directly.
     if (ApolloReadBoolIvar(node, "isForAlert", NO)) return;
+
+    NSArray *contentNodes = ApolloFlairSwiftArrayIvar(node, "contentNodes");
+    CGFloat textHeight = ApolloFlairMaxTextHeight(contentNodes);
+    if (textHeight <= 0.0) return;
+
     CGFloat nativeMaxHeight = 16.0;
     CGFloat desiredMaxHeight = MAX(nativeMaxHeight, ceil(textHeight + 2.0));
     if (desiredMaxHeight <= nativeMaxHeight + 0.5) return;
@@ -368,7 +364,6 @@ static void ApolloFlairFixMaxHeight(id node, id layoutSpec) {
 
 static void ApolloFlairRecolorTextNodes(NSArray *contentNodes, UIColor *textColor) {
     if (![contentNodes isKindOfClass:[NSArray class]]) return;
-    Class imageNodeClass = objc_getClass("ASImageNode");
     UIColor *foreground = textColor ?: [UIColor whiteColor];
 
     for (id contentNode in contentNodes) {
@@ -398,8 +393,7 @@ static void ApolloFlairRecolorTextNodes(NSArray *contentNodes, UIColor *textColo
         // A bare ASDisplayNode (not a text or image node) is almost always a
         // background/fill node — tint it so the pill picks up the flair color
         // even when the background isn't drawn by the node itself.
-        if (object_getClass(contentNode) == objc_getClass("ASDisplayNode") &&
-            !(imageNodeClass && [contentNode isKindOfClass:imageNodeClass])) {
+        if (object_getClass(contentNode) == ApolloClassASDisplayNode) {
             ((void (*)(id, SEL, id))objc_msgSend)(contentNode, @selector(setBackgroundColor:), [UIColor clearColor]);
         }
     }
@@ -461,8 +455,8 @@ static void ApolloFlairApply(id node, BOOL allowTextRecolor) {
 static void ApolloFlairRecoverForModel(id model, NSDictionary *json) {
     if (!model || ![json isKindOfClass:[NSDictionary class]]) return;
     @try {
-        Class linkClass = objc_getClass("RDKLink");
-        Class commentClass = objc_getClass("RDKComment");
+        Class linkClass = ApolloClassRDKLink;
+        Class commentClass = ApolloClassRDKComment;
         if (linkClass && [model isMemberOfClass:linkClass]) {
             ApolloFlairRecoverColors(model, json, YES);
         } else if (commentClass && [model isMemberOfClass:commentClass]) {

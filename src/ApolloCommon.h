@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <os/log.h>
 #import <Security/SecBase.h>
+#import <objc/message.h>
 
 @class CASpringAnimation;
 
@@ -185,6 +186,8 @@ UIViewController *ApolloMainTabBarController(void);
 // GIF/composer machinery pokes at the remote view hierarchy (issue #366).
 // Resolved via objc_getClass so we don't link MessageUI/Social.
 BOOL ApolloIsSystemShareComposeController(UIViewController *controller);
+// YES when the iOS app is running on visionOS (Apple Vision Pro).
+BOOL ApolloIsRunningOnVisionOS(void);
 
 // Present the tweak's fullscreen zoomable image-album viewer (implemented in
 // ApolloInlineImages). Items are dictionaries with an @"url" NSURL; despite
@@ -306,8 +309,14 @@ BOOL ApolloTextNodeIsTweakUI(id node);
 // many it wrote; ApolloRebornMaxAppendedRebindings bounds the caller's array.
 // swift_allocObject stays out of this batch: ApolloSwiftSingletonCapture is its
 // only owner and rebinds just the image that defines each captured class.
+// ApolloImageUploadHost's ImageIO bindings likewise rebind only Apollo's image.
 struct rebinding;
 enum { ApolloRebornMaxAppendedRebindings = 5 };
-size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out);
 size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out);
+void ApolloImageUploadHostInstallRebindings(void);
 __END_DECLS
+
+// Sends a zero-argument object getter when `object` implements it, else nil.
+static inline id ApolloSendObject(id object, SEL selector) {
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}

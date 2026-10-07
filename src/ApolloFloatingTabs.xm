@@ -2396,11 +2396,11 @@ static NSString *ApolloFTStringFromSelector(id object, SEL selector) {
 // values (same validation as Recently Read's thumbnail path).
 static NSString *ApolloFTThumbnailURLStringForLink(id link) {
     if (!link) return nil;
-    SEL nsfwSel = NSSelectorFromString(@"isNSFW");
+    SEL nsfwSel = @selector(isNSFW);
     if ([link respondsToSelector:nsfwSel] && ((BOOL (*)(id, SEL))objc_msgSend)(link, nsfwSel)) return nil;
-    SEL spoilerSel = NSSelectorFromString(@"isSpoiler");
+    SEL spoilerSel = @selector(isSpoiler);
     if ([link respondsToSelector:spoilerSel] && ((BOOL (*)(id, SEL))objc_msgSend)(link, spoilerSel)) return nil;
-    SEL thumbSel = NSSelectorFromString(@"thumbnailURL");
+    SEL thumbSel = @selector(thumbnailURL);
     if (![link respondsToSelector:thumbSel]) return nil;
     id value = ((id (*)(id, SEL))objc_msgSend)(link, thumbSel);
     NSString *urlString = [value isKindOfClass:[NSURL class]] ? [(NSURL *)value absoluteString]

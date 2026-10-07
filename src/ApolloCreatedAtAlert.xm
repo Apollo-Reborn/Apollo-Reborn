@@ -464,7 +464,6 @@ BOOL ApolloPresentInfoDetail(ApolloInfoKind kind, id link, id comment, UIView *a
 // MARK: - Transient info overlay (Info Row "Overlay" mode)
 
 // Only one overlay on screen at a time (rapid taps replace, not stack).
-static const NSInteger kApolloTimeOverlayTag = 0x54494D45;  // 'TIME'
 static __weak UIView *sApolloTimeOverlay = nil;
 static NSUInteger sApolloTimeOverlayToken = 0;
 
@@ -524,7 +523,6 @@ static NSUInteger ApolloPresentInfoOverlayWithToken(NSString *line1, NSString *l
     accent = [accent resolvedColorWithTraitCollection:host.traitCollection];
 
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, cardH)];
-    container.tag = kApolloTimeOverlayTag;
     container.userInteractionEnabled = NO;
     container.layer.shadowColor = [UIColor blackColor].CGColor;
     container.layer.shadowOpacity = 0.35;

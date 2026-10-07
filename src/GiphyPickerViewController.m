@@ -7,6 +7,7 @@
 #import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 static NSString *const kGiphyCellReuseID = @"GiphyCell";
 static const NSTimeInterval kGiphySearchDebounce = 0.30;
@@ -97,7 +98,7 @@ static id ApolloGiphyPreviewMediaFromData(NSData *data) {
     }
 
     if (frameCount > 1 && ApolloGiphyDataIsGIF(data)) {
-        Class animatedClass = objc_getClass("FLAnimatedImage");
+        Class animatedClass = ApolloClassFLAnimatedImage;
         if (animatedClass) {
             id (*initializer)(id, SEL, NSData *, NSUInteger, BOOL) =
                 (id (*)(id, SEL, NSData *, NSUInteger, BOOL))objc_msgSend;
@@ -131,7 +132,7 @@ static void ApolloGiphyClearPreviewView(UIImageView *imageView) {
 
 static void ApolloGiphyApplyPreviewMedia(UIImageView *imageView, id media) {
     if (!imageView || !media) return;
-    Class animatedClass = objc_getClass("FLAnimatedImage");
+    Class animatedClass = ApolloClassFLAnimatedImage;
     if (animatedClass && [media isKindOfClass:animatedClass] &&
         [imageView respondsToSelector:@selector(setAnimatedImage:)]) {
         imageView.image = nil;
@@ -150,7 +151,7 @@ static NSError *ApolloGiphyPreviewResponseError(NSHTTPURLResponse *response) {
 }
 
 static UIImageView *ApolloGiphyCreatePreviewView(CGRect frame) {
-    Class animatedViewClass = objc_getClass("FLAnimatedImageView");
+    Class animatedViewClass = ApolloClassFLAnimatedImageView;
     if (animatedViewClass && [animatedViewClass isSubclassOfClass:[UIImageView class]]) {
         return [[animatedViewClass alloc] initWithFrame:frame];
     }

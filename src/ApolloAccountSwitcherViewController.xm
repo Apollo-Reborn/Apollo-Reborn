@@ -11,6 +11,7 @@
 #import "ApolloUserProfileCache.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // Feature flag: if a future Apollo build changes the native
 // AccountManagerViewController's ObjC selector surface and driving it starts
@@ -515,8 +516,8 @@ static BOOL ApolloAccountReorderPrepare(NSInteger source,
                                         ApolloAccountReorderContext *outContext) {
     if (![NSThread isMainThread] || !outContext) return NO;
 
-    Class managerClass = objc_getClass("_TtC6Apollo14AccountManager");
-    SEL sharedSelector = NSSelectorFromString(@"shared");
+    Class managerClass = ApolloClassAccountManager;
+    SEL sharedSelector = @selector(shared);
     id manager = managerClass && [managerClass respondsToSelector:sharedSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector) : nil;
     if (!manager || object_getClass(manager) != managerClass) return NO;
@@ -533,8 +534,8 @@ static BOOL ApolloAccountReorderPrepare(NSInteger source,
         return NO;
     }
 
-    SEL countSelector = NSSelectorFromString(@"totalAccountsObjC");
-    SEL persistSelector = NSSelectorFromString(@"persistInformationToDisk");
+    SEL countSelector = @selector(totalAccountsObjC);
+    SEL persistSelector = @selector(persistInformationToDisk);
     NSMethodSignature *countSignature = [manager methodSignatureForSelector:countSelector];
     NSMethodSignature *persistSignature = [manager methodSignatureForSelector:persistSelector];
     if (!countSignature || countSignature.numberOfArguments != 2 ||
@@ -644,7 +645,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     BOOL scheduled = NO;
     @try {
         ((void (*)(id, SEL))objc_msgSend)(
-            context->manager, NSSelectorFromString(@"persistInformationToDisk"));
+            context->manager, @selector(persistInformationToDisk));
         scheduled = YES;
     } @catch (NSException *exception) {
         ApolloLog(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
@@ -754,10 +755,10 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)accountStoreDidChange:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.pendingAccountRemovals.count != 1 || self.accountRemovalRefreshScheduled) return;
-        Class cls = NSClassFromString(@"Apollo.AccountManager");
+        Class cls = ApolloClassAccountManager;
         id manager = [cls respondsToSelector:@selector(shared)]
             ? ((id (*)(id, SEL))objc_msgSend)(cls, @selector(shared)) : nil;
-        SEL countSelector = NSSelectorFromString(@"totalAccountsObjC");
+        SEL countSelector = @selector(totalAccountsObjC);
         if (![manager respondsToSelector:countSelector]) return;
         NSInteger count = ((NSInteger (*)(id, SEL))objc_msgSend)(manager, countSelector);
         if (count != (NSInteger)self.rows.count - 1) return;
@@ -1228,15 +1229,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
     }
 }
 
-// Reordering is meaningful only within the account list itself.
-- (NSIndexPath *)tableView:(UITableView *)tableView
-   targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath
-                        toProposedIndexPath:(NSIndexPath *)proposedIndexPath {
-    NSInteger lastRow = MAX((NSInteger)self.rows.count - 1, 0);
-    NSInteger row = MIN(MAX(proposedIndexPath.row, 0), lastRow);
-    return [NSIndexPath indexPathForRow:row inSection:0];
-}
-
 - (NSString *)tableView:(UITableView *)tableView titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)indexPath {
     return @"Remove";
 }
@@ -1256,27 +1248,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // Native removal persists asynchronously. Do not reload the old archive or
     // delete credentials before its confirmation/commit has actually completed.
     [self accountStoreDidChange:nil];
-}
-
-// UIKit has already performed the visual move by the time this is called. Drive
-// the guarded native move first; only commit our cached row order after the
-// native AccountManager confirms success. A failed runtime-layout preflight
-// reloads below on the next main turn, visually cancelling UIKit's move.
-- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
-    if (sourceIndexPath.section != 0 || destinationIndexPath.section != 0) return;
-    if (sourceIndexPath.row < 0 || destinationIndexPath.row < 0 ||
-        sourceIndexPath.row >= (NSInteger)self.rows.count ||
-        destinationIndexPath.row >= (NSInteger)self.rows.count ||
-        ![self driveLiveMoveRowFromIndexPath:sourceIndexPath toIndexPath:destinationIndexPath]) {
-        // Keep the cached order unchanged. ApolloSwitcherAccountCell repairs
-        // UIKit's visual move only after dragStateDidChange: returns to None.
-        return;
-    }
-    NSMutableArray<ApolloSwitcherAccountRow *> *rows = [self.rows mutableCopy];
-    ApolloSwitcherAccountRow *moved = rows[sourceIndexPath.row];
-    [rows removeObjectAtIndex:sourceIndexPath.row];
-    [rows insertObject:moved atIndex:destinationIndexPath.row];
-    self.rows = rows;
 }
 
 #pragma mark - UITableViewDelegate
@@ -1304,7 +1275,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 // singleton; it doesn't depend on which UITableView instance is passed).
 - (void)driveLiveSwitchToRow:(NSInteger)row {
     if (!self.liveManager) return;
-    SEL sel = NSSelectorFromString(@"tableView:didSelectRowAtIndexPath:");
+    SEL sel = @selector(tableView:didSelectRowAtIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
@@ -1331,7 +1302,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 - (void)driveLiveCommitEditingStyle:(UITableViewCellEditingStyle)style atRow:(NSInteger)row {
     if (!self.liveManager) return;
-    SEL sel = NSSelectorFromString(@"tableView:commitEditingStyle:forRowAtIndexPath:");
+    SEL sel = @selector(tableView:commitEditingStyle:forRowAtIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
@@ -1354,7 +1325,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 // after its Swift-layout preflight and identity-preserving move both complete.
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath {
     if (!self.liveManager) return NO;
-    SEL sel = NSSelectorFromString(@"tableView:moveRowAtIndexPath:toIndexPath:");
+    SEL sel = @selector(tableView:moveRowAtIndexPath:toIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return NO;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig || sig.numberOfArguments != 5 || sig.methodReturnLength != 0) return NO;
@@ -1385,7 +1356,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
         ApolloLog(@"[AccountSwitcher] No live manager — cannot start add-account flow");
         return;
     }
-    SEL sel = NSSelectorFromString(@"addBarButtonItemTapped:");
+    SEL sel = @selector(addBarButtonItemTapped:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
@@ -1483,9 +1454,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 @end
 
-// UIKit owns the ellipsis action sheet and its positioning. Speed up only its
-// rendered transition; ordinary alerts elsewhere in Apollo retain their
-// standard animation timing.
 // UIKit's glass press response lives on the platter, above UIButton. Keep
 // the bridging interaction that owns the native morph; remove only flex.
 static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINavigationBar *bar) {
@@ -1506,11 +1474,13 @@ static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINa
 %hook UINavigationBar
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = %orig(point, event);
+    if (!hit) return hit;
     UINavigationBar *bar = (UINavigationBar *)self;
     UIViewController *controller = ApolloEditControllerForBar(bar.window.rootViewController, bar);
+    Class redditListClass = ApolloClassRedditListViewController;
     BOOL scoped = [controller isKindOfClass:ApolloAccountSwitcherViewController.class] ||
-        [NSStringFromClass(controller.class) isEqualToString:@"Apollo.RedditListViewController"];
-    if (!scoped || !hit) return hit;
+        (redditListClass && [controller class] == redditListClass);
+    if (!scoped) return hit;
     UIView *content = nil;
     @try { content = [controller.navigationItem.rightBarButtonItem valueForKey:@"view"]; }
     @catch (__unused NSException *exception) { return hit; }
@@ -1543,6 +1513,9 @@ static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINa
 }
 %end
 
+// UIKit owns the ellipsis action sheet and its positioning. Speed up only its
+// rendered transition; ordinary alerts elsewhere in Apollo retain their
+// standard animation timing.
 %hook UIAlertController
 
 - (void)viewWillAppear:(BOOL)animated {

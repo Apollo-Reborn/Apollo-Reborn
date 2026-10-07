@@ -44,6 +44,7 @@ KSCRASH_FILES := \
 # ApolloFavoriteConfirm.xm must stay after ApolloSubredditIndexPolish.xm and
 # ApolloFollowingSection.xm so its favoriteSubredditButtonTapped: hook is outermost.
 ApolloReborn_FILES = \
+    $(SRC_DIR)/ApolloClasses.m \
     $(SRC_DIR)/ApolloFoundationModels.swift \
     $(SRC_DIR)/ApolloAISummary.xm \
     $(SRC_DIR)/ApolloAICloudBridge.m \

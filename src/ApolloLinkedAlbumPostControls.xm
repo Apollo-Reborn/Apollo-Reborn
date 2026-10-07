@@ -45,8 +45,8 @@ static ApolloLinkedAlbumContext *ApolloLinkedAlbumContextForTap(id markdownNode,
     Class headerClass = objc_getClass("_TtC6Apollo22CommentsHeaderCellNode");
     Class commentClass = objc_getClass("_TtC6Apollo15CommentCellNode");
     Class linkClass = objc_getClass("RDKLink");
-    SEL supernodeSelector = NSSelectorFromString(@"supernode");
-    SEL controllerSelector = NSSelectorFromString(@"closestViewController");
+    SEL supernodeSelector = @selector(supernode);
+    SEL controllerSelector = @selector(closestViewController);
     id descendant = nil;
     for (id node = markdownNode; node;) {
         // Comment media belongs to the comment, even though its screen has a

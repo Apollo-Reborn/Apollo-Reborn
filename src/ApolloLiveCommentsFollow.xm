@@ -45,6 +45,7 @@
 #import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 @interface _TtC6Apollo22CommentsViewController : UIViewController
 @end
@@ -128,7 +129,6 @@ static BOOL LCFIsLive(id vc) {
     return raw == 8;                          // .liveUpdate
 }
 
-// Read a Swift.Bool / BOOL ivar (one inline byte).
 // An isolated single-comment thread (Inbox permalink / continued thread). ApolloInboxCommentScroll
 // owns the scroll position there, so this module stays dormant to avoid two contentOffset writers
 // fighting on the same VC (matters if the user's default sort happens to be Live Update).
@@ -141,31 +141,24 @@ static BOOL LCFIsIsolatedThread(UIViewController *vc) {
 static id LCFTableNode(id vc) { return ApolloObjectIvar(vc, "tableNode"); }
 
 static UITableView *LCFTableView(UIViewController *vc) {
-    id tableNode = LCFTableNode(vc);
-    if (tableNode) {
-        SEL viewSel = NSSelectorFromString(@"view");
-        if ([tableNode respondsToSelector:viewSel]) {
-            UIView *v = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSel);
-            if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
-        }
-    }
-    return nil;
+    UIView *v = [LCFTableNode(vc) view];
+    return [v isKindOfClass:[UITableView class]] ? (UITableView *)v : nil;
 }
 
 // fullName ("t1_xxx") of a comment cell node, or nil for header/footer/spinner/load-more rows.
 static NSString *LCFNodeCommentFullName(id node) {
     id comment = ApolloObjectIvar(node, "comment");   // RDKComment on _TtC6Apollo15CommentCellNode
     if (!comment) return nil;
-    SEL fnSel = NSSelectorFromString(@"fullName");
-    if (![comment respondsToSelector:fnSel]) return nil;
-    NSString *fn = ((id (*)(id, SEL))objc_msgSend)(comment, fnSel);
+    SEL fullNameSelector = @selector(fullName);
+    if (![comment respondsToSelector:fullNameSelector]) return nil;
+    NSString *fn = ((id (*)(id, SEL))objc_msgSend)(comment, fullNameSelector);
     return [fn isKindOfClass:[NSString class]] ? fn : nil;
 }
 
 // Index path of the first (topmost) comment row, skipping the post header / summary / spinner.
 // ASDK holds a node for every row eagerly, so this resolves even when below the fold.
 static NSIndexPath *LCFFirstCommentIndexPath(id tableNode, UITableView *tv) {
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return nil;
     NSInteger sections = [tv numberOfSections];
     for (NSInteger s = 0; s < sections; s++) {
@@ -185,7 +178,7 @@ static NSString *LCFTopCommentFullName(UIViewController *vc) {
     if (!tableNode || !tv) return nil;
     NSIndexPath *ip = LCFFirstCommentIndexPath(tableNode, tv);
     if (!ip) return nil;
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
     return LCFNodeCommentFullName(node);
 }
@@ -195,15 +188,15 @@ static NSString *LCFTopCommentFullName(UIViewController *vc) {
 // is that bar; we convert its rect into the table's content space. Returns NO if unavailable.
 static BOOL LCFQuickBarTopContentY(UIViewController *vc, UITableView *tv, CGFloat *outY) {
     id tableNode = LCFTableNode(vc);
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return NO;
     if ([tv numberOfSections] < 1 || [tv numberOfRowsInSection:0] < 1) return NO;
     NSIndexPath *ip0 = [NSIndexPath indexPathForRow:0 inSection:0];
     id header = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip0);
-    if (![header isMemberOfClass:NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode")]) return NO;
+    if (![header isMemberOfClass:ApolloClassCommentsHeaderCellNode]) return NO;
     id qb = ApolloObjectIvar(header, "quickBarNode");
-    SEL boundsSel = NSSelectorFromString(@"bounds");
-    SEL convSel = NSSelectorFromString(@"convertRect:toNode:");
+    SEL boundsSel = @selector(bounds);
+    SEL convSel = @selector(convertRect:toNode:);
     if (!qb || ![qb respondsToSelector:boundsSel] || ![qb respondsToSelector:convSel]) return NO;
     CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(qb, boundsSel);
     CGRect inCell = ((CGRect (*)(id, SEL, CGRect, id))objc_msgSend)(qb, convSel, b, header);
@@ -238,7 +231,6 @@ static CGFloat LCFLiveEdgeOffset(UIViewController *vc, UITableView *tv) {
     return MIN(MAX(desired, -insetTop), maxOff);
 }
 
-
 // Count comment rows currently ABOVE the anchored comment. Returns the count, or -1 if the
 // anchor can't be found. Only rows with a `comment` ivar are counted, so the post header /
 // footer / spinner / load-more are excluded, and collapse/expand below the anchor never
@@ -248,7 +240,7 @@ static NSInteger LCFCountAboveAnchor(UIViewController *vc, NSString *anchor) {
     id tableNode = LCFTableNode(vc);
     UITableView *tv = LCFTableView(vc);
     if (!tableNode || !tv) return -1;
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (![tableNode respondsToSelector:nodeSel]) return -1;
     NSInteger n = 0;
     NSInteger sections = [tv numberOfSections];
@@ -272,7 +264,7 @@ static NSInteger LCFCountAboveAnchor(UIViewController *vc, NSString *anchor) {
 // of currently-visible rows (UITableView tracks them), not the whole thread.
 static BOOL LCFFirstVisibleCommentInfo(UIViewController *vc, UITableView *tv, NSString **outFN, CGFloat *outY) {
     id tableNode = LCFTableNode(vc);
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return NO;
     NSArray<NSIndexPath *> *vis = [[tv indexPathsForVisibleRows] sortedArrayUsingSelector:@selector(compare:)];
     CGFloat top = tv.contentOffset.y;
@@ -292,7 +284,7 @@ static BOOL LCFFirstVisibleCommentInfo(UIViewController *vc, UITableView *tv, NS
 static BOOL LCFContentYForVisibleComment(UIViewController *vc, UITableView *tv, NSString *fn, CGFloat *outY) {
     if (fn.length == 0) return NO;
     id tableNode = LCFTableNode(vc);
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
     if (!tableNode || ![tableNode respondsToSelector:nodeSel]) return NO;
     for (NSIndexPath *ip in [tv indexPathsForVisibleRows]) {
         id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
@@ -881,9 +873,7 @@ static void LCFReconcileActiveSession(UIViewController *vc) {
     UIViewController *vc = (UIViewController *)self;
     UITableView *tv = LCFTableView(vc);
     if (tv) {
-        if (@available(iOS 10.0, *)) {
-            [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
-        }
+        [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
         // Instant jump (animated:NO): a smooth scroll would be immediately overtaken by the
         // poll's instant follow-pin, and the jump distance can be the full post-header height.
         [tv setContentOffset:CGPointMake(tv.contentOffset.x, LCFLiveEdgeOffset(vc, tv)) animated:NO];

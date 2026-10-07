@@ -622,7 +622,7 @@ static NSString *ApolloNormalizeLinkURLString(NSString *urlString) {
 }
 
 // Present loading alert on top of current view controller
-static UIViewController *PresentResolvingShareLinkAlert() {
+static UIViewController *PresentResolvingShareLinkAlert(void) {
     UIViewController *visibleViewController = [ApolloSharePresentationWindow() visibleViewController];
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:nil message:@"Resolving share link..." preferredStyle:UIAlertControllerStyleAlert];
 
@@ -901,6 +901,46 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
     }
 }
 
+// `owner` is the hooked node: the blocks below may run after share-link
+// resolution, and %orig inside them only holds an __unsafe_unretained self.
+static void ApolloHandleTappedLinkURL(id owner, NSURL *tappedURL, void (^handler)(NSURL *)) {
+    void (^openURL)(NSURL *) = ^(NSURL *url) { (void)owner; handler(url); };
+    NSURL *url = ApolloNormalizeLinkURL(tappedURL) ?: tappedURL;
+    void (^openNormalized)(void) = ^{ openURL(url); };
+    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
+    if (ApolloTryOpenInDedicatedApp(url, openNormalized)) return;
+    TryResolveShareUrl([url absoluteString], ^(NSString *resolvedURL) {
+        openURL([NSURL URLWithString:resolvedURL]);
+    }, openNormalized);
+}
+
+static void ApolloHandleLinkButtonTap(id owner, NSString *urlString, void (^handler)(void)) {
+    void (^orig)(void) = ^{ (void)owner; handler(); };
+    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], orig)) return;
+
+    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
+    if (normalizedURL) {
+        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
+        if ([fixedURL isKindOfClass:[NSURL class]]) {
+            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) return;
+            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
+            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
+            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) return;
+        }
+    }
+
+    if (urlString.length == 0) {
+        orig();
+        return;
+    }
+
+    TryResolveShareUrl(urlString, ^(NSString *resolvedURL) {
+        NSURL *newURL = [NSURL URLWithString:resolvedURL];
+        if ([newURL isKindOfClass:[NSURL class]] && ApolloRouteResolvedURLViaApolloScheme(newURL)) return;
+        orig();
+    }, orig);
+}
+
 // Tappable text link in an inbox item (*not* the links in the PM chat bubbles)
 %hook _TtC6Apollo13InboxCellNode
 
@@ -909,24 +949,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
 }
 %end
 
@@ -938,24 +963,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
 }
 
 %end
@@ -979,48 +989,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         urlString = [rdkLinkURL absoluteString];
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 -(void)textNode:(id)textNode tappedLinkAttribute:(id)attr value:(id)val atPoint:(struct CGPoint)point textRange:(struct _NSRange)range {
@@ -1028,24 +999,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         %orig;
         return;
     }
-    NSURL *normalizedURL = ApolloNormalizeLinkURL((NSURL *)val);
-    if (normalizedURL) {
-        val = normalizedURL;
-    }
-    // Steam store links: deep link to Steam app if enabled, fall back to normal handling
-    void (^dedicatedAppFallback)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    if (ApolloTryOpenInDedicatedApp((NSURL *)val, dedicatedAppFallback)) {
-        return;
-    }
-    void (^ignoreHandler)(void) = ^{
-        %orig(textNode, attr, val, point, range);
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        %orig(textNode, attr, [NSURL URLWithString:resolvedURL], point, range);
-    };
-    TryResolveShareUrl([val absoluteString], successHandler, ignoreHandler);
+    ApolloHandleTappedLinkURL(self, (NSURL *)val, ^(NSURL *url) {
+        %orig(textNode, attr, url, point, range);
+    });
 }
 
 // Large-card link-post thumbnail; see ApolloTryOpenLinkPostThumbnailViaNitter.
@@ -1095,48 +1051,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         }
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 %end
@@ -1161,48 +1078,9 @@ static void TryResolveShareUrl(NSString *urlString, void (^successHandler)(NSStr
         urlString = [rdkLinkURL absoluteString];
     }
 
-    void (^dedicatedAppFallback)(void) = ^{
+    ApolloHandleLinkButtonTap(self, urlString, ^{
         %orig;
-    };
-    if (ApolloTryOpenInDedicatedApp([NSURL URLWithString:urlString], dedicatedAppFallback)) {
-        return;
-    }
-
-    NSString *normalizedURL = ApolloNormalizeLinkURLString(urlString);
-    if (normalizedURL) {
-        NSURL *fixedURL = [NSURL URLWithString:normalizedURL];
-        if ([fixedURL isKindOfClass:[NSURL class]]) {
-            if (ApolloRouteResolvedURLViaApolloScheme(fixedURL)) {
-                return;
-            }
-            // YouTube Shorts with "Open in YouTube App" ON: deep link directly.
-            // Setting OFF or not YouTube: fall through to %orig (web view fallback).
-            if (ApolloOpenInYouTubeAppIfEnabled(fixedURL)) {
-                return;
-            }
-        }
-    }
-
-    if (![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        %orig;
-        return;
-    }
-
-    void (^ignoreHandler)(void) = ^{
-        %orig;
-    };
-    void (^successHandler)(NSString *) = ^(NSString *resolvedURL) {
-        NSURL *newURL = [NSURL URLWithString:resolvedURL];
-        if (![newURL isKindOfClass:[NSURL class]]) {
-            %orig;
-            return;
-        }
-        if (ApolloRouteResolvedURLViaApolloScheme(newURL)) {
-            return;
-        }
-        %orig;
-    };
-    TryResolveShareUrl(urlString, successHandler, ignoreHandler);
+    });
 }
 
 %end

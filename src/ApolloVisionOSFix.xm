@@ -30,35 +30,13 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+#import "ApolloCommon.h"
 
 @interface UIView (ApolloVisionOSFix)
 - (void)_setOverrideVibrancyTrait:(id)arg1;
 - (void)_setOverrideUserInterfaceRenderingMode:(long long)arg1;
 @end
-
-// YES only when this process is an iOS app running on visionOS in compatibility
-// mode. Prefers the official API added in visionOS 26.1
-// (-[NSProcessInfo isiOSAppOnVision]); falls back to visionOS-only class checks
-// on earlier releases. Guarded so it can never raise doesNotRecognizeSelector.
-static BOOL ApolloIsRunningOnVisionOS(void) {
-    static BOOL result = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
-        SEL sel = NSSelectorFromString(@"isiOSAppOnVision");
-        if ([processInfo respondsToSelector:sel]) {
-            BOOL (*msgSend)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
-            if (msgSend(processInfo, sel)) {
-                result = YES;
-                return;
-            }
-        }
-        if (NSClassFromString(@"UIWindowSceneGeometryPreferencesVision") != nil) {
-            result = YES;
-        }
-    });
-    return result;
-}
 
 %group ApolloVisionOSFix
 
