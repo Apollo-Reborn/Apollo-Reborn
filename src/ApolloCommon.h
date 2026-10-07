@@ -320,3 +320,17 @@ __END_DECLS
 static inline id ApolloSendObject(id object, SEL selector) {
     return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
 }
+
+// method_setImplementation(method, imp) for a method found on cls. When cls owns
+// the method, class_replaceMethod makes the same change but flushes only cls's
+// subtree; method_setImplementation does not know the class and flushes the
+// method cache of every realized class (~0.4 ms once the app is running).
+// An inherited method still goes through method_setImplementation unchanged.
+static inline IMP ApolloSetMethodImplementation(Class cls, Method method, IMP imp) {
+    SEL name = method_getName(method);
+    if (class_getInstanceMethod(cls, name) == method &&
+        class_getInstanceMethod(class_getSuperclass(cls), name) != method) {
+        return class_replaceMethod(cls, name, imp, method_getTypeEncoding(method));
+    }
+    return method_setImplementation(method, imp);
+}

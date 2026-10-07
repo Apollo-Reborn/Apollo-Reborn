@@ -3494,12 +3494,12 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
         return;
     }
 
-    orig_ApolloCompose_tableView_cellForRowAtIndexPath = (UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))method_setImplementation(cellMethod, (IMP)hooked_ApolloCompose_tableView_cellForRowAtIndexPath);
+    orig_ApolloCompose_tableView_cellForRowAtIndexPath = (UITableViewCell *(*)(id, SEL, UITableView *, NSIndexPath *))ApolloSetMethodImplementation(cls, cellMethod, (IMP)hooked_ApolloCompose_tableView_cellForRowAtIndexPath);
 
     SEL rowsSelector = @selector(tableView:numberOfRowsInSection:);
     Method rowsMethod = class_getInstanceMethod(cls, rowsSelector);
     if (rowsMethod) {
-        orig_ApolloCompose_tableView_numberOfRowsInSection = (NSInteger (*)(id, SEL, UITableView *, NSInteger))method_setImplementation(rowsMethod, (IMP)hooked_ApolloCompose_tableView_numberOfRowsInSection);
+        orig_ApolloCompose_tableView_numberOfRowsInSection = (NSInteger (*)(id, SEL, UITableView *, NSInteger))ApolloSetMethodImplementation(cls, rowsMethod, (IMP)hooked_ApolloCompose_tableView_numberOfRowsInSection);
     }
 
     BOOL heightHook = NO;
@@ -3507,14 +3507,14 @@ static void ApolloMediaComposerInstallComposeTableHooks(void) {
     SEL heightSelector = @selector(tableView:heightForRowAtIndexPath:);
     Method heightMethod = class_getInstanceMethod(cls, heightSelector);
     if (heightMethod) {
-        orig_ApolloCompose_tableView_heightForRowAtIndexPath = (CGFloat (*)(id, SEL, UITableView *, NSIndexPath *))method_setImplementation(heightMethod, (IMP)hooked_ApolloCompose_tableView_heightForRowAtIndexPath);
+        orig_ApolloCompose_tableView_heightForRowAtIndexPath = (CGFloat (*)(id, SEL, UITableView *, NSIndexPath *))ApolloSetMethodImplementation(cls, heightMethod, (IMP)hooked_ApolloCompose_tableView_heightForRowAtIndexPath);
         heightHook = YES;
     }
 
     SEL estimatedSelector = @selector(tableView:estimatedHeightForRowAtIndexPath:);
     Method estimatedMethod = class_getInstanceMethod(cls, estimatedSelector);
     if (estimatedMethod) {
-        orig_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath = (CGFloat (*)(id, SEL, UITableView *, NSIndexPath *))method_setImplementation(estimatedMethod, (IMP)hooked_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath);
+        orig_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath = (CGFloat (*)(id, SEL, UITableView *, NSIndexPath *))ApolloSetMethodImplementation(cls, estimatedMethod, (IMP)hooked_ApolloCompose_tableView_estimatedHeightForRowAtIndexPath);
         estimatedHook = YES;
     }
 

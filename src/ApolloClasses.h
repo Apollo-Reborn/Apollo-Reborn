@@ -16,7 +16,6 @@ extern Class ApolloClassASBackgroundLayoutSpec;
 extern Class ApolloClassASButtonNode;
 extern Class ApolloClassASCellNode;
 extern Class ApolloClassASCenterLayoutSpec;
-extern Class ApolloClassASCollectionView;
 extern Class ApolloClassASControlNode;
 extern Class ApolloClassASDisplayNode;
 extern Class ApolloClassASEditableTextNode;

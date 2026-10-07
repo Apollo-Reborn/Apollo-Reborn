@@ -2559,7 +2559,7 @@ static void ApolloSubredditIndexInstallHeaderHook(void) {
     IMP hook = (IMP)ApolloSubredditIndexWillDisplayHeaderHook;
     if (method) {
         orig_ApolloRedditListWillDisplayHeader = (void (*)(id, SEL, UITableView *, UIView *, NSInteger))method_getImplementation(method);
-        method_setImplementation(method, hook);
+        ApolloSetMethodImplementation(cls, method, hook);
         ApolloLog(@"[SubredditIndex] header hook installed via replace on %@", NSStringFromClass(cls));
     } else {
         BOOL added = class_addMethod(cls, selector, hook, "v@:@@q");
@@ -2579,7 +2579,7 @@ static void ApolloSubredditIndexInstallCellDisplayHook(void) {
     IMP hook = (IMP)ApolloSubredditIndexWillDisplayCellHook;
     if (method) {
         orig_ApolloRedditListWillDisplayCell = (void (*)(id, SEL, UITableView *, UITableViewCell *, NSIndexPath *))method_getImplementation(method);
-        method_setImplementation(method, hook);
+        ApolloSetMethodImplementation(cls, method, hook);
         ApolloLog(@"[SubredditIndex] cell display hook installed via replace on %@", NSStringFromClass(cls));
     } else {
         BOOL added = class_addMethod(cls, selector, hook, "v@:@@@");
@@ -2602,7 +2602,7 @@ static void ApolloSubredditIndexInstallRowHeightHook(void) {
     const char *types = inheritedOrOwnMethod ? method_getTypeEncoding(inheritedOrOwnMethod) : "d@:@@";
     BOOL added = class_addMethod(cls, selector, (IMP)ApolloSubredditIndexHeightForRowHook, types);
     if (!added && inheritedOrOwnMethod) {
-        method_setImplementation(inheritedOrOwnMethod, (IMP)ApolloSubredditIndexHeightForRowHook);
+        ApolloSetMethodImplementation(cls, inheritedOrOwnMethod, (IMP)ApolloSubredditIndexHeightForRowHook);
     }
     ApolloLog(@"[SubredditIndex] meta-feed shortcut row-height hook installed added=%d", added);
 }
@@ -2628,7 +2628,7 @@ static void ApolloSubredditIndexInstallHeaderLayoutHook(void) {
 
     if (ownMethod) {
         orig_ApolloSubredditHeaderLayoutSubviews = (void (*)(id, SEL))method_getImplementation(ownMethod);
-        method_setImplementation(ownMethod, (IMP)ApolloSubredditIndexHeaderLayoutSubviewsHook);
+        ApolloSetMethodImplementation(cls, ownMethod, (IMP)ApolloSubredditIndexHeaderLayoutSubviewsHook);
         ApolloLog(@"[SubredditIndex] header layout hook installed via replace on %@", NSStringFromClass(cls));
         return;
     }
@@ -2666,7 +2666,7 @@ static void ApolloSubredditIndexInstallHeaderSetFrameHook(void) {
 
     if (ownMethod) {
         orig_ApolloSubredditHeaderSetFrame = (void (*)(id, SEL, CGRect))method_getImplementation(ownMethod);
-        method_setImplementation(ownMethod, (IMP)ApolloSubredditIndexHeaderSetFrameHook);
+        ApolloSetMethodImplementation(cls, ownMethod, (IMP)ApolloSubredditIndexHeaderSetFrameHook);
         ApolloLog(@"[SubredditIndex] header setFrame hook installed via replace on %@", NSStringFromClass(cls));
         return;
     }

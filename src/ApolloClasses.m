@@ -6,7 +6,6 @@ Class ApolloClassASBackgroundLayoutSpec;
 Class ApolloClassASButtonNode;
 Class ApolloClassASCellNode;
 Class ApolloClassASCenterLayoutSpec;
-Class ApolloClassASCollectionView;
 Class ApolloClassASControlNode;
 Class ApolloClassASDisplayNode;
 Class ApolloClassASEditableTextNode;
@@ -123,7 +122,6 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassASButtonNode = objc_getClass("ASButtonNode");
     ApolloClassASCellNode = objc_getClass("ASCellNode");
     ApolloClassASCenterLayoutSpec = objc_getClass("ASCenterLayoutSpec");
-    ApolloClassASCollectionView = objc_getClass("ASCollectionView");
     ApolloClassASControlNode = objc_getClass("ASControlNode");
     ApolloClassASDisplayNode = objc_getClass("ASDisplayNode");
     ApolloClassASEditableTextNode = objc_getClass("ASEditableTextNode");

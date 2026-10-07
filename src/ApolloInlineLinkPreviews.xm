@@ -3855,11 +3855,9 @@ static ASDisplayNode *ApolloLPHostedCellForSizeUpdate(ASDisplayNode *node) {
         ![cell respondsToSelector:@selector(_rootNodeDidInvalidateSize)]) return nil;
 
     // Unhosted cells measure synchronously; only use Texture's queued container path.
+    // ASTableView and ASCollectionView are the only nodeDidInvalidateSize:
+    // implementers, so the selector check below already identifies them.
     id container = ((id (*)(id, SEL))objc_msgSend)(cell, interactionDelegate);
-    Class tableClass = ApolloClassASTableView;
-    Class collectionClass = ApolloClassASCollectionView;
-    if (!((tableClass && [container isKindOfClass:tableClass]) ||
-          (collectionClass && [container isKindOfClass:collectionClass]))) return nil;
     if (![container respondsToSelector:@selector(indexPathForNode:)] ||
         ![container respondsToSelector:@selector(nodeDidInvalidateSize:)]) return nil;
     return cell;

@@ -1128,7 +1128,7 @@ static void ApolloActionMenuInstallWillSelect(void) {
     if (class_addMethod(cls, sel, (IMP)ApolloActionMenuWillSelectRow, method_getTypeEncoding(existing))) {
         sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_getImplementation(existing); // inherited
     } else {
-        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)method_setImplementation(existing, (IMP)ApolloActionMenuWillSelectRow); // own
+        sApolloActionMenuOrigWillSelect = (ApolloActionMenuWillSelectIMP)ApolloSetMethodImplementation(cls, existing, (IMP)ApolloActionMenuWillSelectRow); // own
     }
     ApolloLog(@"[ActionMenu] willSelectRowAtIndexPath: wrapped an existing implementation on ActionController");
 }

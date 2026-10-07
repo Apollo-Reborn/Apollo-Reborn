@@ -958,11 +958,11 @@ static BOOL ApolloInstallScrollAwayBottomGuard(id interaction) {
             sApolloScrollAwayDidEndDraggingOriginal =
                 (ApolloScrollAwayDidEndDraggingIMP)method_getImplementation(
                     didEndDraggingMethod);
-            method_setImplementation(didScrollMethod, (IMP)ApolloScrollAwayDidScroll);
-            method_setImplementation(didEndDeceleratingMethod,
-                                     (IMP)ApolloScrollAwayDidEndDecelerating);
-            method_setImplementation(didEndDraggingMethod,
-                                     (IMP)ApolloScrollAwayDidEndDragging);
+            ApolloSetMethodImplementation(cls, didScrollMethod, (IMP)ApolloScrollAwayDidScroll);
+            ApolloSetMethodImplementation(cls, didEndDeceleratingMethod,
+                                          (IMP)ApolloScrollAwayDidEndDecelerating);
+            ApolloSetMethodImplementation(cls, didEndDraggingMethod,
+                                          (IMP)ApolloScrollAwayDidEndDragging);
             sApolloScrollAwayContentScrollViewIvar = contentScrollViewIvar;
             sApolloScrollAwayInteractionHookedClass = cls;
             ApolloLog(@"[AutoHideTabBarFix] Installed bottom-only scroll-away guard on %@",

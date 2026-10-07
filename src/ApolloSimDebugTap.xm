@@ -975,7 +975,7 @@ static void ApolloSimInstallLowPowerModeOverride(void) {
         return;
     }
     sApolloSimOrigIsLowPowerModeEnabled = (BOOL (*)(id, SEL))method_getImplementation(m);
-    method_setImplementation(m, (IMP)ApolloSimHookedIsLowPowerModeEnabled);
+    ApolloSetMethodImplementation(cls, m, (IMP)ApolloSimHookedIsLowPowerModeEnabled);
     ApolloLog(@"[SimDebugTap] lpm override installed on %@", NSStringFromClass(cls));
 }
 

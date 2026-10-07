@@ -634,7 +634,7 @@ static void ApolloVFForegroundHeal(const char *stage) {
     Method requeryMethod = tableClass ? class_getInstanceMethod(tableClass, @selector(requeryNodeHeights)) : NULL;
     if (requeryMethod) {
         orig_ApolloVFRequeryNodeHeights = (void (*)(id, SEL))method_getImplementation(requeryMethod);
-        method_setImplementation(requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
+        ApolloSetMethodImplementation(tableClass, requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
     }
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
