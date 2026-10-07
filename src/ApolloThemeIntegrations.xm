@@ -192,11 +192,13 @@ static void ApplyAccentImageView(id cell) {
     UIImage *hi = icon.highlightedImage;
     if (hi && hi.renderingMode != UIImageRenderingModeAlwaysTemplate)
         icon.highlightedImage = [hi imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    // Resolve the accent before recording state: a transiently nil accent must
-    // not mark this epoch as applied, or the tint would never be retried.
+    // Check the epoch first: AccentToken() builds a new dynamic colour on every
+    // call, so a row whose epoch hasn't moved must skip it. A nil accent only
+    // means the theme was just switched off, and switching it back on publishes
+    // a new epoch, so the tint is still retried.
+    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     icon.tintColor = accent;
 }
 
@@ -258,11 +260,13 @@ static void ApplyAccentImageNode(id cell) {
     UIImage *current = ((UIImage *(*)(id, SEL))objc_msgSend)(iconNode, @selector(image));
     if (current != templated)
         ((void (*)(id, SEL, UIImage *))objc_msgSend)(iconNode, @selector(setImage:), templated);
-    // Resolve the accent before recording state: a transiently nil accent must
-    // not mark this epoch as applied, or the tint would never be retried.
+    // Check the epoch first: AccentToken() builds a new dynamic colour on every
+    // call, so a row whose epoch hasn't moved must skip it. A nil accent only
+    // means the theme was just switched off, and switching it back on publishes
+    // a new epoch, so the tint is still retried.
+    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     ((void (*)(id, SEL, UIColor *))objc_msgSend)(iconNode, @selector(setTintColor:), accent);
     UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(iconNode, @selector(view));
     view.tintColor = accent;
