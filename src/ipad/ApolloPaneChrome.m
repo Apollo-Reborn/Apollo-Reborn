@@ -7,6 +7,97 @@
 #import "../ApolloThemeRuntime.h"
 #import "../ApolloActionMenu.h"
 #import "../ApolloNativeActionMenus.h"
+#import "../ApolloCommon.h"
+
+CGRect ApolloPaneHeaderContentRect(UITableView *table, UIViewController *controller, CGFloat width) {
+    CGRect content = CGRectMake(0, 0, width, 0);
+    if (!ApolloPaneLayoutEnabled() || !ApolloPaneSplitControllerFor(controller)) return content;
+    if (@available(iOS 26.0, *)) {
+        UILayoutGuide *guide = controller.tabBarController.contentLayoutGuide;
+        if (table.window && guide.owningView.window == table.window) {
+            CGRect available = [guide.owningView convertRect:guide.layoutFrame toView:table];
+            CGFloat left = MAX(CGRectGetMinX(table.bounds), CGRectGetMinX(available));
+            CGFloat right = MIN(CGRectGetMaxX(table.bounds), CGRectGetMaxX(available));
+            // A portrait sidebar may cover all but a dimmed sliver. Keep the
+            // underlying column intact in that overlay presentation.
+            if (right - left >= MIN(width, 340.0)) {
+                content.origin.x = left - CGRectGetMinX(table.bounds);
+                content.size.width = right - left;
+            }
+        }
+    }
+    return content;
+}
+
+@interface ApolloPaneHeaderBackdrop : UIView
+@property(nonatomic, strong) UIImageView *artwork;
+@property(nonatomic, strong) UIView *scrim;
+@end
+@implementation ApolloPaneHeaderBackdrop
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.clipsToBounds = YES;
+        self.accessibilityIdentifier = @"ApolloPaneHeaderBackdrop";
+        _artwork = [UIImageView new];
+        _artwork.contentMode = UIViewContentModeScaleAspectFill;
+        [self addSubview:_artwork];
+        _scrim = [UIView new];
+        [self addSubview:_scrim];
+    }
+    return self;
+}
+@end
+
+static char kPaneHeaderBackdrop;
+void ApolloPaneRefreshHeaderBackdrop(UIViewController *controller) {
+    NSString *name = NSStringFromClass(controller.class);
+    if (![name hasSuffix:@"PostsViewController"] && ![name hasSuffix:@"ProfileViewController"]) return;
+    ApolloPaneHeaderBackdrop *backdrop = objc_getAssociatedObject(controller, &kPaneHeaderBackdrop);
+    ApolloPaneUpdateHeaderBackdrop(controller, backdrop.artwork.image, backdrop.artwork.alpha);
+}
+
+void ApolloPaneHideHeaderBackdrop(UIViewController *controller) {
+    ApolloPaneHeaderBackdrop *backdrop = objc_getAssociatedObject(controller, &kPaneHeaderBackdrop);
+    backdrop.hidden = YES;
+    // The navigation controller outlives popped pages. Detach their plane so
+    // it cannot retain an orphaned backdrop after the page itself is released.
+    [backdrop removeFromSuperview];
+}
+
+void ApolloPaneUpdateHeaderBackdrop(UIViewController *controller, UIImage *artwork, CGFloat progress) {
+    UINavigationController *navigation = controller.navigationController;
+    UINavigationBar *bar = navigation.navigationBar;
+    if (!ApolloPaneLayoutEnabled() || !ApolloPaneSplitControllerFor(controller) || !IsLiquidGlass() ||
+        navigation.topViewController != controller || !bar.window || bar.hidden) {
+        ApolloPaneHideHeaderBackdrop(controller);
+        return;
+    }
+    ApolloPaneHeaderBackdrop *backdrop = objc_getAssociatedObject(controller, &kPaneHeaderBackdrop);
+    if (!backdrop) {
+        backdrop = [ApolloPaneHeaderBackdrop new];
+        objc_setAssociatedObject(controller, &kPaneHeaderBackdrop, backdrop, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloLog(@"[PaneChrome] installed continuous identity backdrop");
+    }
+    UIView *host = bar.superview;
+    if (backdrop.superview != host) [host insertSubview:backdrop belowSubview:bar];
+    CGRect row = [bar convertRect:bar.bounds toView:host];
+    CGRect frame = CGRectMake(row.origin.x + bar.safeAreaInsets.left, 0,
+                             MAX(0, row.size.width - bar.safeAreaInsets.left - bar.safeAreaInsets.right),
+                             CGRectGetMaxY(row));
+    if (!CGRectEqualToRect(backdrop.frame, frame)) {
+        backdrop.frame = frame;
+        backdrop.artwork.frame = backdrop.bounds;
+        backdrop.scrim.frame = backdrop.bounds;
+    }
+    UIColor *page = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
+    backdrop.backgroundColor = page;
+    backdrop.scrim.backgroundColor = page;
+    backdrop.scrim.alpha = 0.72;
+    backdrop.artwork.image = artwork;
+    backdrop.artwork.alpha = MIN(1, MAX(0, progress));
+    backdrop.hidden = NO;
+}
 
 static char kComfortableFeed;
 static NSString *const kPaneDensityPreference = @"ApolloPaneComfortableFeed";
@@ -86,6 +177,7 @@ static void ApolloPaneReloadNativeFeed(UIViewController *controller) {
 void ApolloPaneInstallChromeForController(UIViewController *controller) {
     ApolloPaneSplitViewController *pane = (id)ApolloPaneSplitControllerFor(controller);
     if (!pane || !controller.isViewLoaded) return;
+    ApolloPaneRefreshHeaderBackdrop(controller);
     ApolloPaneApplySearchPlacement(controller);
     // The two columns share a quiet, theme-colored header plane. Let content
     // scroll beneath that plane, not visibly behind one half of the controls.

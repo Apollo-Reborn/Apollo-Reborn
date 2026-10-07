@@ -561,6 +561,14 @@ static char kApolloPaneConfiguredPostSection;
 
 %hook ApolloPaneNavigationController
 
+- (void)viewDidLayoutSubviews {
+    %orig;
+    // A tab re-selection does not always re-deliver appearance to Apollo's
+    // retained Home feed. The visible navigation owner is authoritative for
+    // reattaching its plane and fitting it after sidebar/rotation changes.
+    ApolloPaneRefreshHeaderBackdrop(((UINavigationController *)self).topViewController);
+}
+
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
     if (!ApolloPaneLayoutActive()) { %orig; return; }
 

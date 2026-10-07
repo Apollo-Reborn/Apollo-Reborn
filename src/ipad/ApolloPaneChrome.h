@@ -2,6 +2,14 @@
 __BEGIN_DECLS
 BOOL ApolloPaneUsesUnifiedChrome(UIView *view);
 CGFloat ApolloPaneContextBottomInView(UIView *view);
+// Header content follows the native sidebar's unobscured column, while its
+// table-owned wrapper keeps the table's full width.
+CGRect ApolloPaneHeaderContentRect(UITableView *table, UIViewController *controller, CGFloat width);
+// A continuous, opaque identity plane prevents feed rows leaking above the
+// toolbar. Optional hero artwork hands off as the large identity collapses.
+void ApolloPaneUpdateHeaderBackdrop(UIViewController *controller, UIImage *artwork, CGFloat progress);
+void ApolloPaneHideHeaderBackdrop(UIViewController *controller);
+void ApolloPaneRefreshHeaderBackdrop(UIViewController *controller);
 BOOL ApolloPanePrefersCompactFeed(UIViewController *controller);
 void ApolloPaneSetComfortableFeed(UIViewController *controller, BOOL comfortable);
 void ApolloPaneInstallChromeForController(UIViewController *controller);

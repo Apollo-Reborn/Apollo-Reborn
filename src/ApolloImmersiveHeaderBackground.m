@@ -484,6 +484,11 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
 - (CGFloat)sharpArtworkHeight {
     CGFloat regionHeight = MIN(self.regionHeight, MAX(1.0, self.bounds.size.height));
+    if (self.usesProfileHero && self.topInset > 0 && ApolloPaneContextBottomInView(self) > 0) {
+        CGFloat bannerTop = MIN(regionHeight, self.topInset);
+        CGFloat width = MAX(1.0, self.bounds.size.width - self.artworkInsets.left - self.artworkInsets.right);
+        return bannerTop + MIN(regionHeight - bannerTop, width * 0.64);
+    }
     return self.usesProfileHero
         ? MIN(regionHeight, MAX(1.0, self.bounds.size.width * 0.64))
         : regionHeight;
@@ -541,6 +546,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     self.backdropView.hidden = (hasSharpBanner && !lightPage) || !hasArtwork;
     self.sharpClip.frame = CGRectMake(0.0, 0.0, width, sharpHeight);
     self.sharpView.frame = CGRectMake(0.0, 0.0, width, canvasHeight);
+    if (self.usesProfileHero && self.topInset > 0 && boundary > 0) {
+        // The iPad identity plane is opaque. Frame the profile's hero inside
+        // the visible banner below it; a canvas starting at zero puts the
+        // subject's head behind the toolbar after the sidebar narrows it.
+        self.sharpClip.frame = CGRectMake(0, bannerTop, width, MAX(1, sharpHeight - bannerTop));
+    }
     // Anchor the fade to the image, so moving the identity content does not
     // change where features in the artwork darken.
     if (!self.usesProfileHero) {
