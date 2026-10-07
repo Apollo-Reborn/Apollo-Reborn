@@ -421,6 +421,7 @@ typedef NS_ENUM(NSInteger, ApolloAISummaryDetail) {
 extern NSInteger sAIPostWordThreshold;              // 50...300, step 50
 extern ApolloAISummaryDetail sAIPostSummaryDetail;  // post / link / both
 extern ApolloAISummaryDetail sAICommentSummaryDetail;
+extern NSString *sAISummaryLanguage;                // language code, nil = Device Default
 
 // Horizontal alignment for inline media containers narrower than the row width
 // (tall portrait images, height-capped images). Has no effect on full-width media.

@@ -3764,6 +3764,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyAIPostWordThreshold: @150,
                                     UDKeyAIPostSummaryDetail: @(ApolloAISummaryDetailBalanced),
                                     UDKeyAICommentSummaryDetail: @(ApolloAISummaryDetailBalanced),
+                                    UDKeyAISummaryLanguage: @"",
                                     UDKeyEnableTapToSummarize: @NO,
                                     UDKeyEnableAIAutoExpandSummaries: @NO,
                                     UDKeyAISummaryProvider: @"apple",
@@ -3865,6 +3866,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         sAICommentSummaryDetail = ApolloAISummaryDetailBalanced;
         [standardDefaults setInteger:sAICommentSummaryDetail forKey:UDKeyAICommentSummaryDetail];
     }
+    NSString *aiSummaryLanguage = (NSString *)[standardDefaults objectForKey:UDKeyAISummaryLanguage];
+    sAISummaryLanguage = ([aiSummaryLanguage isKindOfClass:[NSString class]] && aiSummaryLanguage.length > 0)
+        ? [aiSummaryLanguage copy] : nil;
     sEnableTapToSummarize = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableTapToSummarize];
     sEnableAIAutoExpandSummaries = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableAIAutoExpandSummaries];
     // "Tap to Summarize" and "Open Summaries Automatically" are mutually exclusive in

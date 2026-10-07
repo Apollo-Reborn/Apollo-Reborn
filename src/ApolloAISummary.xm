@@ -108,12 +108,13 @@ static NSUInteger ApolloAIMaxPostCharsForDetail(ApolloAISummaryDetail detail) {
 // in the language or languages of its inputs"). So a Portuguese article came
 // back as a Portuguese "Link summary" under an English UI, right below a link
 // card the translation feature had already put into English. Every summary
-// prompt now names the reader's language.
+// prompt now names the reader's language: Apollo AI → Summaries → Language,
+// which defaults to the device language.
 
 // Base language codes the on-device model writes. Read once and kept: the set
 // only changes with an OS model update. An empty answer is not kept, so a model
 // that couldn't say yet is asked again next time. Main thread only, like every
-// caller (generation passes and header restores).
+// caller (generation passes, header restores and the Apollo AI settings screen).
 static NSSet<NSString *> *ApolloAIOnDeviceLanguageCodes(void) {
     static NSSet<NSString *> *sCodes;
     if (sCodes.count > 0) return sCodes;
@@ -127,40 +128,51 @@ static NSSet<NSString *> *ApolloAIOnDeviceLanguageCodes(void) {
     return sCodes;
 }
 
-// The language summaries are written in: Translation's Target Language when one
-// is picked, else the device's preferred languages in order. That is the choice
-// ApolloResolvedTargetLanguageCode() (ApolloTranslation.xm) makes for
-// translated text, except that a language the on-device model can't write is
-// skipped for the next one: asking for it throws unsupportedLanguageOrLocale.
-// Cloud models write any language. Returns language + script only ("en", "pt",
-// "zh-Hant"): the script separates Simplified from Traditional Chinese, and a
-// region adds nothing a summary needs. nil when no candidate fits; the prompts
-// then name no language and the model answers in the text's language, as before.
-// Main thread only, like ApolloAIOnDeviceLanguageCodes.
-static NSString *ApolloAISummaryLanguage(void) {
+// A language code as the model lists it: lowercase, without region or script,
+// and Norwegian "no" (Translation's list, which the summary Language picker
+// shows) as Bokmål "nb".
+static NSString *ApolloAIModelLanguageCode(NSString *identifier) {
+    if (identifier.length == 0) return nil;
+    NSString *language = [[NSLocale componentsFromLocaleIdentifier:identifier][NSLocaleLanguageCode] lowercaseString];
+    return [language isEqualToString:@"no"] ? @"nb" : language;
+}
+
+BOOL ApolloAIOnDeviceCanWrite(NSString *identifier) {
+    NSString *language = ApolloAIModelLanguageCode(identifier);
+    NSSet<NSString *> *writable = ApolloAIOnDeviceLanguageCodes();
+    return language.length > 0 && (!writable || [writable containsObject:language]);
+}
+
+// The language summaries are written in: the one picked in Apollo AI →
+// Summaries → Language, else the device's preferred languages in order (Device
+// Default). A language the on-device model can't write is skipped for the next
+// one: asking for it throws unsupportedLanguageOrLocale. Cloud models write any
+// language. Returns language + script only ("en", "pt", "zh-Hant"): the script
+// separates Simplified from Traditional Chinese, and a region adds nothing a
+// summary needs. nil when no candidate fits; the prompts then name no language
+// and the model answers in the text's language, as before.
+NSString *ApolloAISummaryLanguage(BOOL *picked) {
     BOOL cloud = sAISummaryProvider.length > 0 && ![sAISummaryProvider isEqualToString:@"apple"];
     NSSet<NSString *> *writable = cloud ? nil : ApolloAIOnDeviceLanguageCodes();
     NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    // If the on-device model didn't say what it writes, skip a picked Target
-    // Language (it could be one the model can't write) and use the device
-    // language: Apple Intelligence only runs when the device and Siri language
-    // are the same supported language.
-    if (sTranslationTargetLanguage.length > 0 && (cloud || writable)) {
-        [candidates addObject:sTranslationTargetLanguage];
-    }
+    // If the on-device model didn't say what it writes, skip the picked language
+    // (it could be one the model can't write) and use the device language: Apple
+    // Intelligence only runs when the device and Siri language are the same
+    // supported language.
+    BOOL choiceIsCandidate = sAISummaryLanguage.length > 0 && (cloud || writable);
+    if (choiceIsCandidate) [candidates addObject:sAISummaryLanguage];
     [candidates addObjectsFromArray:[NSLocale preferredLanguages] ?: @[]];
     NSString *summaryLanguage = nil;
-    for (NSString *candidate in candidates) {
-        NSDictionary<NSString *, NSString *> *parts = [NSLocale componentsFromLocaleIdentifier:candidate];
-        NSString *language = [parts[NSLocaleLanguageCode] lowercaseString];
-        // Translation's Norwegian is "no"; the model lists Bokmål as "nb".
-        if ([language isEqualToString:@"no"]) language = @"nb";
+    if (picked) *picked = NO;
+    for (NSUInteger i = 0; i < candidates.count; i++) {
+        NSString *language = ApolloAIModelLanguageCode(candidates[i]);
         if (language.length == 0 || (writable && ![writable containsObject:language])) continue;
-        NSString *script = parts[NSLocaleScriptCode];
+        NSString *script = [NSLocale componentsFromLocaleIdentifier:candidates[i]][NSLocaleScriptCode];
         summaryLanguage = script.length > 0 ? [NSString stringWithFormat:@"%@-%@", language, script] : language;
+        if (picked) *picked = choiceIsCandidate && i == 0;
         break;
     }
-    // Logged when it changes (first use, a Target Language or provider switch),
+    // Logged when it changes (first use, a Language or provider switch),
     // not per call: header restores ask again on every scroll-in.
     static NSString *sLoggedLanguage;
     NSString *logged = summaryLanguage ?: @"(none: the text's own language)";
@@ -177,7 +189,7 @@ static NSString *ApolloAISummaryLanguage(void) {
 // article in Portuguese; leading, it answers in the reader's language for every
 // prompt and detail level here. Unchanged when there is no summary language.
 static NSString *ApolloAIInSummaryLanguage(NSString *instructions) {
-    NSString *language = ApolloAISummaryLanguage();
+    NSString *language = ApolloAISummaryLanguage(NULL);
     NSString *name = language.length > 0
         ? [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:language]
         : nil;
@@ -312,7 +324,7 @@ static NSString *ApolloAICurrentGenerationProfile(void) {
     // another language regenerates instead of being reused. That includes every
     // summary cached before the prompts named a language ("apple" never equals
     // "apple|en").
-    NSString *language = ApolloAISummaryLanguage() ?: @"";
+    NSString *language = ApolloAISummaryLanguage(NULL) ?: @"";
     if (![provider isEqualToString:@"openrouter"] &&
         ![provider isEqualToString:@"gemini"] &&
         ![provider isEqualToString:@"custom"]) {
