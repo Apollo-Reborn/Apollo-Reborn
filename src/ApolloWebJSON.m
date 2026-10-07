@@ -1333,11 +1333,11 @@ static NSDictionary<NSString *, NSDictionary *> *ApolloWebJSONFetchFullPostsForM
             continue;
         }
 
-        // Use old.reddit.com for the enrichment request. The listing response
-        // being serialized already occupies a www.reddit.com connection; using
-        // a separate Reddit host avoids waiting on the same per-host connection
-        // pool while the serializer is intentionally holding that response.
-        NSString *URLString = [NSString stringWithFormat:@"https://old.reddit.com/comments/%@.json?limit=1&depth=1&raw_json=1", escapedID];
+        // www.reddit.com, not old.reddit.com: Reddit is limiting Old Reddit to
+        // accounts with recent Old Reddit use. Sharing the host with the listing
+        // being serialized is fine, since this request runs on its own ephemeral
+        // NSURLSession and so has its own per-host connection pool.
+        NSString *URLString = [NSString stringWithFormat:@"https://www.reddit.com/comments/%@.json?limit=1&depth=1&raw_json=1", escapedID];
         NSURL *URL = ApolloWebJSONURLWithFragment([NSURL URLWithString:URLString], kApolloWebJSONProbeMarker);
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:URL
                                                                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
