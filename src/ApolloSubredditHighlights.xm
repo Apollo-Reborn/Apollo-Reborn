@@ -38,6 +38,7 @@
 #import "ApolloPostReadState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloAccountCredentials.h"
+#import "ApolloReduceRateLimiting.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 
@@ -104,6 +105,12 @@ static NSTimeInterval const kApolloHLWebTimeout = 18.0;
 // cheap (no refetch on every visit) while picking up a mod's pin change on its own;
 // pull-to-refresh always forces an immediate refresh regardless of this window.
 static NSTimeInterval const kApolloHLCacheTTL = 120.0;
+// The same window under Reduce Rate Limiting (API-Key-Free accounts only, see
+// ApolloReduceRateLimiting.h): pins rarely change, and every refresh is two or
+// three requests on the session's small Reddit budget.
+static NSTimeInterval const kApolloHLReducedRequestsCacheTTL = 30.0 * 60.0;
+// How long an /api/info answer for a highlight post is reused (ApolloHLEnrichViaInfo).
+static NSTimeInterval const kApolloHLInfoReuseTTL = 120.0;
 
 #pragma mark - Associated-object keys
 
@@ -1157,6 +1164,15 @@ static NSString *ApolloHLRequestBearerToken(void) {
 // Fetches the subreddit's stickied posts and calls completion on the main queue
 // with the (possibly empty) item array. Caches the result. completion may be nil
 // (warm the cache only).
+// YES while Reddit is refusing the active API-Key-Free account (HTTP 429 until
+// its ten-minute window resets; see ApolloWebJSONOptionalReadBackoff). These
+// fetches spend the same budget as the feed, so during a hold they stand down:
+// the cached carousel stays up and nothing is negative-cached, so the next
+// visit after the reset fetches as usual. Always NO for API-key accounts.
+static BOOL ApolloHLRateLimitHoldActive(void) {
+    return ApolloWebJSONOptionalReadBackoff(ApolloActiveWebSessionUsername()) > 0;
+}
+
 static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^completion)(NSArray<ApolloHLItem *> *items)) {
     NSString *key = subredditName.lowercaseString;
     if (key.length == 0) { if (completion) completion(@[]); return; }
@@ -1168,6 +1184,8 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
         if (cached) { if (completion) completion(cached); return; }
     }
     if ([ApolloHLInFlight() containsObject:key]) { if (completion) completion(nil); return; }
+    // nil = "nothing to apply, try later", the same answer a failed request gives.
+    if (ApolloHLRateLimitHoldActive()) { if (completion) completion(nil); return; }
     [ApolloHLInFlight() addObject:key];
 
     NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
@@ -2705,6 +2723,28 @@ static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
     }
 }
 
+// Recent /api/info answers for highlight posts, by t3_ fullname. Opening a
+// subreddit can enrich the same pinned posts twice within a few seconds (the
+// quiet refresh of the cards seeded from disk, then the web upgrade's own
+// pass), so an answer from the last two minutes is reused instead of asked for
+// again. The items are only ever read (ApolloHLMergeMetadata copies their
+// fields onto the cards). Main queue only.
+static NSMutableDictionary<NSString *, ApolloHLItem *> *ApolloHLInfoReuse(void) {
+    static NSMutableDictionary *d; static dispatch_once_t once;
+    dispatch_once(&once, ^{ d = [NSMutableDictionary dictionary]; });
+    return d;
+}
+static NSMutableDictionary<NSString *, NSDate *> *ApolloHLInfoReuseTime(void) {
+    static NSMutableDictionary *d; static dispatch_once_t once;
+    dispatch_once(&once, ^{ d = [NSMutableDictionary dictionary]; });
+    return d;
+}
+
+static void ApolloHLForgetInfoAnswers(void) {
+    [ApolloHLInfoReuse() removeAllObjects];
+    [ApolloHLInfoReuseTime() removeAllObjects];
+}
+
 // Fetch reliable metadata for every web highlight, including the cards absent
 // from /hot. Merge into a private copy and deliver current results on main.
 static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
@@ -2738,6 +2778,21 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
     };
 
     if (fullnames.count == 0) { finish(@{}); return; }
+    // During a rate limit, behave like a failed request: the cards keep the
+    // metadata they already have.
+    if (ApolloHLRateLimitHoldActive()) { finish(@{}); return; }
+    NSMutableDictionary<NSString *, ApolloHLItem *> *reused = [NSMutableDictionary dictionary];
+    for (NSString *fullname in fullnames) {
+        ApolloHLItem *item = ApolloHLInfoReuse()[fullname];
+        NSDate *answeredAt = ApolloHLInfoReuseTime()[fullname];
+        if (!item || !answeredAt || -answeredAt.timeIntervalSinceNow > kApolloHLInfoReuseTTL) break;
+        reused[fullname] = item;
+    }
+    if (reused.count == fullnames.count) {
+        ApolloLog(@"[Highlights] info enrich r/%@ reused %lu recent answer(s)", sub, (unsigned long)reused.count);
+        finish(reused);
+        return;
+    }
     NSString *idParam = [fullnames componentsJoinedByString:@","];
     NSString *token = ApolloHLRequestBearerToken();
     NSString *urlString = token.length > 0
@@ -2755,6 +2810,25 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
         ApolloLog(@"[Highlights] info enrich status=%ld ids=%lu resolved=%lu listing=%d type=%@ err=%@",
                   (long)status, (unsigned long)fullnames.count, (unsigned long)infoMap.count,
                   validListing, response.MIMEType ?: @"unknown", error.localizedDescription ?: @"nil");
+        if (infoMap.count > 0) {
+            // Queued ahead of finish's own main-queue hop, so a second pass
+            // that starts right after this one already finds the answers.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSDate *answeredAt = [NSDate date];
+                // Answers older than the reuse window are never read again.
+                if (ApolloHLInfoReuseTime().count > 64) {
+                    for (NSString *old in ApolloHLInfoReuseTime().allKeys) {
+                        if (-ApolloHLInfoReuseTime()[old].timeIntervalSinceNow <= kApolloHLInfoReuseTTL) continue;
+                        [ApolloHLInfoReuseTime() removeObjectForKey:old];
+                        [ApolloHLInfoReuse() removeObjectForKey:old];
+                    }
+                }
+                [infoMap enumerateKeysAndObjectsUsingBlock:^(NSString *fullname, ApolloHLItem *item, __unused BOOL *stop) {
+                    ApolloHLInfoReuse()[fullname] = item;
+                    ApolloHLInfoReuseTime()[fullname] = answeredAt;
+                }];
+            });
+        }
         finish(infoMap);
     }] resume];
 }
@@ -2789,6 +2863,8 @@ static void ApolloHLMaybeWebUpgrade(NSString *subreddit) {
     if (!sCommunityHighlights || !sCommunityHighlightsWeb) return;
     NSString *sub = subreddit.lowercaseString;
     if (sub.length == 0 || [ApolloHLWebDone() containsObject:sub] || ApolloHLWebFetchers()[sub]) return;
+    // Not marked done, so the upgrade runs on a visit after the limit resets.
+    if (ApolloHLRateLimitHoldActive()) return;
     if ([ApolloHLWebChallengeStrikes()[sub] intValue] >= kApolloHLWebChallengeMaxStrikes) return;
     NSDate *lastTry = ApolloHLWebChallengeLastTry()[sub];
     if (lastTry && -lastTry.timeIntervalSinceNow < kApolloHLWebChallengeRetrySpacing) return;
@@ -2978,9 +3054,13 @@ static void ApolloHLRefreshSub(NSString *subreddit, BOOL alwaysWeb) {
 static void ApolloHLMaybeRefreshStale(NSString *subreddit) {
     NSString *key = subreddit.lowercaseString;
     if (!ApolloHLCache()[key]) return; // nothing cached yet → the normal fetch path handles it
+    // The refresh couldn't go out anyway, and its time stamp isn't moved, so
+    // the first visit after the limit resets still refreshes.
+    if (ApolloHLRateLimitHoldActive()) return;
+    NSTimeInterval ttl = ApolloReduceRateLimitingActive() ? kApolloHLReducedRequestsCacheTTL : kApolloHLCacheTTL;
     NSDate *ft = ApolloHLFetchTime()[key];
-    if (ft && [[NSDate date] timeIntervalSinceDate:ft] > kApolloHLCacheTTL) {
-        ApolloLog(@"[Highlights] r/%@ cache stale (>%.0fs) → background refresh", subreddit, kApolloHLCacheTTL);
+    if (ft && [[NSDate date] timeIntervalSinceDate:ft] > ttl) {
+        ApolloLog(@"[Highlights] r/%@ cache stale (>%.0fs) → background refresh", subreddit, ttl);
         ApolloHLRefreshSub(subreddit, NO);
     }
 }
@@ -3638,6 +3718,8 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     NSString *sub = ApolloHLSubredditName((UIViewController *)self);
     if (sub.length) {
         ApolloLog(@"[Highlights] r/%@ pull-to-refresh → force refresh", sub);
+        // An explicit refresh wants live comment totals, not a reused answer.
+        ApolloHLForgetInfoAnswers();
         ApolloHLRefreshSub(sub, YES);
     }
 }

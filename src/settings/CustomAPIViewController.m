@@ -19,6 +19,7 @@
 #import "ApolloFloatingTabs.h"       // close-all / fan-out entry points for the toggles
 #import "settings/ApolloAISettingsViewController.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloReduceRateLimiting.h"
 #import "ApolloKagiSearch.h"         // Kagi Session Link (Search tab's Kagi mode)
 #import "ApolloKagiSearchParsing.h"  // ApolloKagiNormalizeSessionToken()
 #import "ApolloAccountCredentials.h"
@@ -1660,6 +1661,22 @@ typedef NS_ENUM(NSInteger, Tag) {
     // Only exists while API-Key-Free Mode is on (see -_applyWebJSONEnabled:).
     webSessionLogin.visible = ^BOOL { return sWebJSONEnabled; };
 
+    // Reddit gives API-key-free accounts a much smaller request budget, so this
+    // trades a little polish for fewer requests while one is active (see
+    // ApolloReduceRateLimiting.h). Offered once at the first API-key-free sign-in.
+    ApolloSettingsRow *reduceRateLimiting =
+        [ApolloSettingsRow customRowWithID:@"api.reduceRateLimiting"
+                                      cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
+            return [weakSelf switchCellWithIdentifier:@"Cell_API_ReduceRateLimiting"
+                                                label:@"Reduce Rate Limiting"
+                                               detail:@"Reddit limits API-key-free accounts more tightly. This uses fewer requests: profile pictures load in batches (without frames), Community Highlights refresh every 30 minutes, and your sign-in is checked less often."
+                                                   on:sReduceRateLimiting
+                                               action:@selector(reduceRateLimitingSwitchToggled:)]
+                ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        }
+                                  onSelect:nil];
+    reduceRateLimiting.visible = ^BOOL { return sWebJSONEnabled; };
+
     // Modern Reddit Chat / Moderator Mail. Both work for API-key and
     // API-key-free accounts alike, so both are a plain choice that stays
     // switchable for everyone. These preferences are app-wide, like the rest of
@@ -1695,7 +1712,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     return [ApolloSettingsSection sectionWithTitle:@"Experimental"
                                             footer:@"Sign in to reddit.com instead of using API keys."
-                                              rows:@[ webJSON, webSessionLogin, modernChat, modernModmail ]];
+                                              rows:@[ webJSON, webSessionLogin, reduceRateLimiting, modernChat, modernModmail ]];
 }
 
 - (ApolloSettingsSection *)buildAPIKeysExtrasSection {
@@ -4425,6 +4442,10 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self visibilityDidChange];
 }
 
+- (void)reduceRateLimitingSwitchToggled:(UISwitch *)sender {
+    ApolloReduceRateLimitingSetEnabled(sender.isOn);
+}
+
 // Modern Chat / Modmail are a plain app-wide choice for every account.
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
@@ -4896,6 +4917,27 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 
 @implementation ApolloAccountsAPIKeysViewController
 - (NSString *)apollo_screenTitle { return @"Accounts & API Keys"; }
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // The sign-in and rate-limit offers can turn Reduce Rate Limiting on while
+    // this screen stays on the stack (the sign-in sheet doesn't trigger
+    // another viewWillAppear), so follow the setting directly.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_reduceRateLimitingDidChange:)
+                                                 name:ApolloReduceRateLimitingDidChangeNotification
+                                               object:nil];
+}
+- (void)apollo_reduceRateLimitingDidChange:(NSNotification *)notification {
+    (void)notification;
+    // Update the switch in place: a reload here would cut short the switch's
+    // own animation when the change came from tapping it.
+    UITableViewCell *cell = [self cellForRowID:@"api.reduceRateLimiting"];
+    for (UIView *subview in cell.contentView.subviews) {
+        if (![subview isKindOfClass:[UISwitch class]]) continue;
+        UISwitch *toggle = (UISwitch *)subview;
+        if (toggle.isOn != sReduceRateLimiting) [toggle setOn:sReduceRateLimiting animated:YES];
+    }
+}
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildAPIKeysDefaultSection],
               [self buildAPIKeysKagiSection],

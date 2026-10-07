@@ -307,6 +307,28 @@ BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 // thread.
 NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
 
+// Duplicate account reads for API-Key-Free accounts. Apollo asks for the same
+// account data twice in quick succession (at launch its account refresh repeats
+// the subscriptions, multireddits, moderated subreddits, /api/v1/me and inbox
+// reads its screens made a second earlier; returning to the app fetches the
+// inbox twice at once), and for a web session every one of them spends the
+// budget above. Called from the RDKClient request chokepoint with the
+// requesting web-session account (nil for an API-key account, which this never
+// touches) and that request's completion. Returns the completion to send the
+// request with (`completion` itself, or one that also answers the callers that
+// join it), or nil when the request shouldn't go out: it joined an identical
+// read already in flight, or one answered in the last few seconds, and
+// `completion` runs with that answer. Only GETs to those account endpoints are
+// shared, and any write from the account starts over, so a read sent after it
+// is always fresh. Any thread.
+typedef void (^ApolloWebJSONTaskCompletion)(NSHTTPURLResponse *response, id object, NSError *error);
+ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NSString *method, NSString *path,
+                                                         id parameters, ApolloWebJSONTaskCompletion completion);
+
+// The task handed back to a caller whose read was shared (see above). Never
+// resumed, so cancelling it can't cancel the request another caller waits on.
+NSURLSessionDataTask *ApolloWebJSONSharedReadPlaceholderTask(void);
+
 // Verify the requesting web account independently of public HTTP successes.
 void ApolloWebJSONCheckAccountSession(NSString *username);
 void ApolloWebJSONNoteMalformedAccountResponse(NSString *username, NSString *path);
