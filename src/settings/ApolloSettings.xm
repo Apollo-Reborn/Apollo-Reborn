@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <LocalAuthentication/LocalAuthentication.h>
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
@@ -66,6 +67,25 @@ static BOOL ApolloRootSettingsHidesPixelPals(id controller, NSIndexPath *indexPa
     // changing it would pair dequeued cells with the wrong request index path.
     return ApolloDuoDeviceDetected() && indexPath.section == 1 && indexPath.row == 1 &&
         [objc_getAssociatedObject(controller, &kApolloRootHasPixelPalsRowKey) boolValue];
+}
+
+static BOOL ApolloRootSettingsIsPasscodeTitle(NSString *title) {
+    return [title isEqualToString:@"Passcode"] || [title isEqualToString:@"Touch ID & Passcode"] ||
+        [title isEqualToString:@"Face ID & Passcode"];
+}
+
+static NSString *ApolloRootSettingsPasscodeTitle(void) {
+    // Apollo's root uses an old device-model table to pick Face vs Touch ID.
+    // Ask LocalAuthentication, as its passcode screen already does; the Duo
+    // compatibility model override must not change the advertised biometric.
+    // This call populates biometryType even when authentication cannot proceed
+    // (for example, no fingerprint is enrolled or biometry is locked out).
+    // The row describes the device's sensor, not its current readiness to unlock.
+    LAContext *context = [LAContext new];
+    [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:nil];
+    if (context.biometryType == LABiometryTypeTouchID) return @"Touch ID & Passcode";
+    if (context.biometryType == LABiometryTypeFaceID) return @"Face ID & Passcode";
+    return @"Passcode";
 }
 
 static void ApolloRootSettingsExposeSelection(UITableViewCell *cell) {
@@ -146,7 +166,7 @@ static UIImage *ApolloRootSettingsIconForTitle(NSString *title) {
     if ([title isEqualToString:@"Notifications"]) {
         return createSettingsIcon(@"bell.fill", [UIColor systemRedColor]);
     }
-    if ([title isEqualToString:@"Passcode"] || [title isEqualToString:@"Face ID & Passcode"]) {
+    if (ApolloRootSettingsIsPasscodeTitle(title)) {
         return createSettingsIcon(@"lock.fill", [UIColor systemPinkColor]);
     }
     if ([title isEqualToString:@"Filters & Blocks"]) {
@@ -390,6 +410,9 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
                 }
             }
         });
+    }
+    if (ApolloRootSettingsIsPasscodeTitle(cell.textLabel.text)) {
+        cell.textLabel.text = ApolloRootSettingsPasscodeTitle();
     }
     UIImage *normalizedIcon = ApolloRootSettingsIconForTitle(cell.textLabel.text);
     if (normalizedIcon) cell.imageView.image = normalizedIcon;
