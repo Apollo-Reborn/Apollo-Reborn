@@ -8,6 +8,10 @@ BOOL ApolloDuoRailHasVisibleSideBar(void);
 /// Live Duo mode for the app window: Phone / Closed / Open.
 int ApolloDuoCurrentMode(void);
 
+/// Device capability independent of pose, visible bars, and Liquid Glass.
+/// Main-thread callers update it; background callers only read the last result.
+BOOL ApolloDuoDeviceDetected(void);
+
 /// Stable Duo capability, independent of whether its rail is currently hidden
 /// or detached during a fold. Legacy (non-glass) app scenes return NO.
 BOOL ApolloDuoUsesAdaptiveBars(void);

@@ -11,6 +11,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
+#import <stdbool.h>
+#import <stdatomic.h>
 
 static char kApolloDuoRailModeKey;
 static char kApolloDuoAdaptiveBarsKey;
@@ -61,6 +63,20 @@ static int ApolloDuoRailCurrentMode(void) {
 
 int ApolloDuoCurrentMode(void) {
     return ApolloDuoRailCurrentMode();
+}
+
+BOOL ApolloDuoDeviceDetected(void) {
+    // Once the cover/inner displays or native Duo canvas prove the capability,
+    // keep it through folds and temporarily detached bars. Never cache an early
+    // NO, and never inspect UIKit geometry from a SpriteKit background callback.
+    static atomic_bool knownDuo = false;
+    if (atomic_load_explicit(&knownDuo, memory_order_relaxed)) return YES;
+    if (!NSThread.isMainThread ||
+        UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
+    BOOL duo = ApolloDuoRailDualDisplays() ||
+        ApolloDuoRailCurrentMode() != ApolloDuoModePhone || ApolloDuoRailHasVisibleSideBar();
+    if (duo) atomic_store_explicit(&knownDuo, true, memory_order_relaxed);
+    return duo;
 }
 
 BOOL ApolloDuoUsesAdaptiveBars(void) {

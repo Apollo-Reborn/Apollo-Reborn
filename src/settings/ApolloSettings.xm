@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "CustomAPIViewController.h"
 #import "ApolloBuyUsACoffeeViewController.h"
 #import "SavedCategoriesViewController.h"
@@ -56,6 +57,16 @@ static NSString *const kApolloRebornFeatureRequestsURL = @"https://apolloreborn.
 static __weak UIViewController *sApolloLastSettingsVC = nil;
 static char kApolloRootNativeSurfaceKey;
 static char kApolloRootNativeCellKey;
+static char kApolloRootHasPixelPalsRowKey;
+
+static BOOL ApolloRootSettingsHidesPixelPals(id controller, NSIndexPath *indexPath) {
+    // Apollo 1.15.11's native mainSettings card has General, Pixel Pals,
+    // Appearance, Notifications, App Icon, Passcode, Filters, and Gestures.
+    // Its seven-row form omits Pixel Pals. Preserve this native index space:
+    // changing it would pair dequeued cells with the wrong request index path.
+    return ApolloDuoDeviceDetected() && indexPath.section == 1 && indexPath.row == 1 &&
+        [objc_getAssociatedObject(controller, &kApolloRootHasPixelPalsRowKey) boolValue];
+}
 
 static void ApolloRootSettingsExposeSelection(UITableViewCell *cell) {
     if (![objc_getAssociatedObject(cell, &kApolloRootNativeCellKey) boolValue]) return;
@@ -259,10 +270,31 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 2;
     if (section == 2) return 3;
-    return %orig;
+    NSInteger count = %orig;
+    if (section == 1) {
+        objc_setAssociatedObject(self, &kApolloRootHasPixelPalsRowKey, @(count == 8),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (ApolloRootSettingsHidesPixelPals(self, indexPath)) {
+        // A zero-height row can still be requested by UIKit or Settings search.
+        // Do not enter Apollo's index-path dequeue for this suppressed row:
+        // repeated offscreen requests violate UIKit's one-dequeue-per-request
+        // contract. An inert, non-index-path cell preserves native row indices.
+        NSString *reuseID = @"Cell_ApolloHiddenPixelPals";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
+        }
+        cell.hidden = YES;
+        cell.accessibilityElementsHidden = YES;
+        cell.userInteractionEnabled = NO;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
     if (indexPath.section == 0) {
         NSString *reuseID = indexPath.row == 0 ? @"Cell_ApolloRebornRoot" : @"Cell_BuyCoffeeRoot";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
@@ -330,8 +362,11 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     // here, while retaining the colors/accessories Apollo just configured.
     // Notifications remains a destination even without push entitlement: its
     // own screen explains availability and offers the supported alternatives.
-    cell.userInteractionEnabled = YES;
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    BOOL hiddenPixelPals = ApolloRootSettingsHidesPixelPals(self, indexPath);
+    cell.hidden = hiddenPixelPals;
+    cell.accessibilityElementsHidden = hiddenPixelPals;
+    cell.userInteractionEnabled = !hiddenPixelPals;
+    cell.selectionStyle = hiddenPixelPals ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
     UIColor *nativeSurface = cell.backgroundColor ?: cell.contentView.backgroundColor;
     if (nativeSurface) {
         objc_setAssociatedObject(self, &kApolloRootNativeSurfaceKey, nativeSurface,
@@ -367,6 +402,10 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (ApolloRootSettingsHidesPixelPals(self, indexPath)) {
+        [tableView deselectRowAtIndexPath:indexPath animated:NO];
+        return;
+    }
     if (indexPath.section == 0) {
         if (sApolloAboutTipJarBypassReskin) {
             // Routed from About → Tip Jar: skip the Buy Us a Coffee reroute and
@@ -416,6 +455,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (ApolloRootSettingsHidesPixelPals(self, indexPath)) return 0.0;
     if (ApolloRootCellCopiesNativeSurface(indexPath)) {
         return MAX(52.0, ceil(ApolloSettingsFont(UIFontTextStyleBody, tableView.traitCollection).lineHeight) + 22.0);
     }

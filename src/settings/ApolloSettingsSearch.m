@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsRouter.h"
 #import "settings/ApolloSettingsSearchNativeIndex.h"
@@ -222,6 +223,7 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
     // note). Navigation is label-matched at selection time, so a moved row
     // degrades to "lands on its screen", never a wrong tap.
     for (NSArray *row in ApolloSettingsSearchNativeRows()) {
+        if (ApolloDuoDeviceDetected() && [row[0] isEqualToString:@"Pixel Pals"]) continue;
         // Reborn replaces this dead Apollo row with its Translation disclosure
         // in General → Other. Keeping the snapshot entry would return a result
         // that can no longer be found or flashed after navigation.

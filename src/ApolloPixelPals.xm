@@ -122,6 +122,7 @@ static __thread UIWindowScene *__unsafe_unretained sApolloPalSizingScene;
 static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window);
 
 static BOOL ApolloPixelPalUsesDuoPlacement(UIWindow *window) {
+    if (ApolloDuoDeviceDetected()) return NO;
     return window && (ApolloDuoCurrentMode() != ApolloDuoModePhone ||
                       ApolloDuoSplitIsUnfolded() || ApolloDuoCoverChromeIsActive());
 }
@@ -325,8 +326,19 @@ static BOOL ApolloDuoPalStrip(UIWindow *window, CGRect *outStrip) {
 static void ApolloDuoPalUpdate(UIWindow *window) {
     ApolloDuoPalPlacement *state = ApolloDuoPalState(window);
     SKView *pal = ApolloPixelPalWindowObject(window, "pixelPalView");
-    ApolloDuoPalUpdateToyStages(window, pal.superview == window);
     UIView *faux = ApolloPixelPalWindowObject(window, "fauxCutOutView");
+    if (ApolloDuoDeviceDetected()) {
+        // Keep the saved native preference intact for restores to an ordinary
+        // iPhone, but do not render, animate, or expose a tap target on Duo.
+        pal.hidden = YES;
+        pal.paused = YES;
+        faux.hidden = YES;
+        [state.tapTarget removeFromSuperview];
+        state.tapTarget = nil;
+        ApolloDuoPalUpdateToyStages(window, NO);
+        return;
+    }
+    ApolloDuoPalUpdateToyStages(window, pal.superview == window);
     CGRect strip;
     BOOL visible = ApolloPixelPalUsesDuoPlacement(window) && pal.superview == window &&
                    ApolloDuoPalStrip(window, &strip);
@@ -369,7 +381,7 @@ static void ApolloDuoPalUpdate(UIWindow *window) {
 }
 
 static void ApolloDuoPalScheduleUpdate(UIWindow *window) {
-    if (!ApolloPixelPalUsesDuoPlacement(window) &&
+    if (!ApolloDuoDeviceDetected() && !ApolloPixelPalUsesDuoPlacement(window) &&
         !objc_getAssociatedObject(window, &kApolloDuoPalPlacementKey)) return;
     ApolloDuoPalPlacement *state = ApolloDuoPalState(window);
     if (state.updatePending) return;
@@ -581,6 +593,7 @@ static NSString *ApolloRectString(CGRect r) {
 // layout untouched) until the pill has been captured, or when no correction is
 // needed.
 static BOOL ApolloPixelPalGeometry(UIWindow *window, CGRect *outApollo, CGRect *outPill) {
+    if (ApolloDuoDeviceDetected()) return NO;
     // Native games calculate window coordinates from the 125pt island even
     // when the scene is elsewhere. Reuse the existing element/physics remap.
     UIWindow *duoWindow = window ?: ApolloMainTabBarController().viewIfLoaded.window;
@@ -658,7 +671,7 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
 %hook _TtC6Apollo14FauxCutOutView
 
 - (void)setHidden:(BOOL)hidden {
-    if (ApolloPixelPalUsesDuoPlacement(((UIView *)self).window)) hidden = YES;
+    if (ApolloDuoDeviceDetected() || ApolloPixelPalUsesDuoPlacement(((UIView *)self).window)) hidden = YES;
     %orig(hidden);
 }
 
@@ -714,7 +727,8 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
 
 - (void)setHidden:(BOOL)hidden {
     UIWindow *window = ((UIView *)self).window;
-    if (ApolloPixelPalUsesDuoPlacement(window)) hidden = !ApolloDuoPalStrip(window, NULL);
+    if (ApolloDuoDeviceDetected()) hidden = YES;
+    else if (ApolloPixelPalUsesDuoPlacement(window)) hidden = !ApolloDuoPalStrip(window, NULL);
     %orig(hidden);
 }
 
@@ -903,6 +917,12 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 // (PixelPalAddedSceneElementImageView). Both are framed before being added.
 - (void)addSubview:(UIView *)view {
     UIWindow *window = (UIWindow *)self;
+    BOOL nativePal = [NSStringFromClass(view.class) isEqualToString:@"Apollo.PixelPalView"];
+    BOOL nativePill = [NSStringFromClass(view.class) isEqualToString:@"Apollo.FauxCutOutView"];
+    if (ApolloDuoDeviceDetected() && (nativePal || nativePill)) {
+        view.hidden = YES;
+        if (nativePal && [view isKindOfClass:SKView.class]) ((SKView *)view).paused = YES;
+    }
     CGRect apollo, pill;
     if (view && ApolloPixelPalGeometry(window, &apollo, &pill)) {
         CGFloat dx = CGRectGetMinX(pill) - CGRectGetMinX(apollo);
@@ -951,6 +971,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 // Suppress the Pixel Pals menu while media / a website / any modal is open or
 // mid-transition — opening it then races UIKit and freezes the app (issue #305).
 - (void)pixelPalTappedWithTapGestureRecognizer:(id)recognizer {
+    if (ApolloDuoDeviceDetected()) return;
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Tap ignored — a modal is open/transitioning (issue #305 freeze guard)");
         return;
@@ -960,6 +981,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
 
 // Same guard for the auto-open path when a pal barks for attention.
 - (void)dogBarkedWithNotification:(id)notification {
+    if (ApolloDuoDeviceDetected()) return;
     if (ApolloPixelPalsBlockedByModal((UIWindow *)self)) {
         ApolloLog(@"[PixelPals] Bark menu suppressed — a modal is open/transitioning (issue #305 freeze guard)");
         return;
