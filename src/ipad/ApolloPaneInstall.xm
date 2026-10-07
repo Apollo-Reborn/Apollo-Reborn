@@ -26,6 +26,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloPaneLayout.h"
+#import "ApolloIPadLayoutWelcome.h"
 #import "ApolloPaneSidebar.h"
 #import "ApolloPaneChrome.h"
 #import "ApolloPaneSplitViewController.h"
@@ -487,6 +488,8 @@ static BOOL ApolloPaneInstallIntoTabBarController(UITabBarController *tabBarCont
     // iPhone never loads any of this: the idiom check comes first, so the hook
     // is not even installed on a device that can never run the pane layout.
     if (!ApolloPaneLayoutSupported()) return;
+    // The invitation must run while the layout is still off.
+    ApolloIPadLayoutWelcomeStart();
 
     if (!ApolloPaneLayoutEnabled()) {
         ApolloLog(@"[PaneInstall] iPad detected, pane layout off (UDKeyIPadPaneLayout); hook not installed");

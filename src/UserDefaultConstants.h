@@ -334,6 +334,9 @@ static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 // Supersedes UDKeyIPadTabBarBottom while active (the floating pill is hidden).
 // See src/ipad/ and docs/ipad-pane-layout-plan.md.
 static NSString *const UDKeyIPadPaneLayout = @"IPadPaneLayout";
+// Consumed after the one-time iPad Layout invitation is actually presented.
+// Independent of the layout toggle: declining never enables or re-prompts.
+static NSString *const UDKeyIPadLayoutWelcomeSeen = @"IPadLayoutWelcomeSeen";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

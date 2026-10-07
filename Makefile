@@ -172,6 +172,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloTabBarHideStyle.xm \
     $(SRC_DIR)/ApolloIPadTabBarBottom.xm \
     $(SRC_DIR)/ipad/ApolloPaneLayout.m \
+    $(SRC_DIR)/ipad/ApolloIPadLayoutWelcome.m \
     $(SRC_DIR)/ipad/ApolloPaneDiagnostics.m \
     $(SRC_DIR)/ipad/ApolloPaneGeometry.m \
     $(SRC_DIR)/ipad/ApolloPaneTransitionObserver.m \
