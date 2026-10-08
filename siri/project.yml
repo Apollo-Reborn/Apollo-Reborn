@@ -1,0 +1,36 @@
+name: ApolloSiri
+
+options:
+  deploymentTarget:
+    iOS: "27.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    TARGETED_DEVICE_FAMILY: "1,2"
+
+# This builds ONLY a framework. Its code and extracted metadata are injected
+# into the real Apollo app by scripts/inject-siri-proof.sh.
+targets:
+  ApolloSiri:
+    type: framework
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.apolloreborn.Siri
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        DEFINES_MODULE: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        BUILD_LIBRARY_FOR_DISTRIBUTION: NO
+
+schemes:
+  ApolloSiri:
+    build:
+      targets:
+        ApolloSiri: all

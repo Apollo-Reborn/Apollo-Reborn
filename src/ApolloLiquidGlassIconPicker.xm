@@ -4,6 +4,7 @@
 #import <math.h>
 #import <stdint.h>
 #import <stdlib.h>
+#import "ApolloAppIcon.h"
 #import "ApolloCommon.h"
 #import "ApolloMemoryDiagnostics.h"
 #import "ApolloBarkNotifications.h"
@@ -4527,6 +4528,48 @@ static void LGKeepMainSettingsIconSquare(UITableViewCell *cell) {
     cell.imageView.layer.cornerRadius = 0.0;
 }
 
+// The applied custom icon (a Liquid Glass row, or an Ultra-pack addition) as a preview image and
+// display name, from our own record rather than UIApplication.alternateIconName, which is wrong
+// on some sideloaded installs. NO for the default icon and Apollo's stock icons. `preview` can
+// still come back nil when the artwork is missing; `dark` picks the variant for an "automatic"
+// appearance. Shared by the Settings row below and the sheets outside the picker.
+static BOOL LGActiveCustomIcon(BOOL dark, UIImage **preview, NSString **displayName) {
+    NSString *activeID = LGActiveIconID();
+    const LGIconRow *row = activeID.length ? LGRowForIconID(activeID) : NULL;
+    const LGIconRowEntry *added = LGActiveStandardPack() == LGStandardPackUltra
+        ? LGStandardPackAddedEntryForIconID(LGActiveStandardAddedIconID()) : NULL;
+    if (!row && !added) return NO;
+
+    if (added) {
+        NSString *iconID = @(added->iconID);
+        // Tweak-supplied Ultra additions use generated previews, while SPCA keeps Apollo's
+        // original file-based icon, so fall back to the file-based one.
+        if (preview) *preview = LGPreviewImage(iconID, @"default") ?: LGStandardIconPreview(iconID);
+        if (displayName) *displayName = @(added->displayName);
+    } else {
+        LGIconAppearanceMode mode = LGAppearanceModeFromAlternateIconName(LGActiveAlternateIconName());
+        NSString *variant = mode == LGIconAppearanceModeLight ? @"default"
+            : mode == LGIconAppearanceModeDark ? @"dark"
+            : (dark ? @"dark" : @"default");
+        if (preview) *preview = LGPreviewImage(row->iconID, variant);
+        if (displayName) *displayName = row->displayName;
+    }
+    return YES;
+}
+
+// For sheets outside the picker (What's New, the update prompt), which showed the default icon
+// before this record was consulted. nil for the default icon and Apollo's stock icons, which
+// ApolloCurrentAppIcon resolves from Info.plist.
+static UIImage *LGActiveIconPreviewForSheets(void) {
+    BOOL dark = NO;
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (window.isKeyWindow) { dark = LGIsDarkAppearance(window); break; }
+    }
+    UIImage *preview = nil;
+    LGActiveCustomIcon(dark, &preview, NULL);
+    return preview;
+}
+
 %hook _TtC6Apollo22SettingsViewController
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -4539,30 +4582,10 @@ static void LGKeepMainSettingsIconSquare(UITableViewCell *cell) {
     if (indexPath.section != 1) return cell;
     if (![cell.textLabel.text isEqualToString:@"App Icon"]) return cell;
 
-    NSString *activeID = LGActiveIconID();
-    const LGIconRow *row = activeID.length ? LGRowForIconID(activeID) : NULL;
-    LGStandardPack activePack = LGActiveStandardPack();
-    const LGIconRowEntry *addedStandardEntry = activePack == LGStandardPackUltra
-        ? LGStandardPackAddedEntryForIconID(LGActiveStandardAddedIconID()) : NULL;
-    if (!row && !addedStandardEntry) return cell; // true Default or a stock Apollo icon
-
     UIImage *preview = nil;
     NSString *displayName = nil;
-    if (addedStandardEntry) {
-        NSString *iconID = @(addedStandardEntry->iconID);
-        // Tweak-supplied Ultra additions use generated previews, while SPCA
-        // keeps Apollo's original file-based icon. Match the Ultra detail row
-        // fallback so the parent Settings row refreshes correctly for both.
-        preview = LGPreviewImage(iconID, @"default") ?: LGStandardIconPreview(iconID);
-        displayName = @(addedStandardEntry->displayName);
-    } else {
-        NSString *activeName = LGActiveAlternateIconName();
-        LGIconAppearanceMode mode = LGAppearanceModeFromAlternateIconName(activeName);
-        NSString *variant = mode == LGIconAppearanceModeLight ? @"default"
-            : mode == LGIconAppearanceModeDark ? @"dark"
-            : (LGIsDarkAppearance(cell) ? @"dark" : @"default");
-        preview = LGPreviewImage(row->iconID, variant);
-        displayName = row->displayName;
+    if (!LGActiveCustomIcon(LGIsDarkAppearance(cell), &preview, &displayName)) {
+        return cell; // true Default or a stock Apollo icon
     }
     if (preview) {
         cell.imageView.image = LGMainSettingsIconThumbnail(preview);
@@ -4651,6 +4674,7 @@ static void LGKeepMainSettingsIconSquare(UITableViewCell *cell) {
 
 %ctor {
     if (LGAlternateIconsAvailable()) {
+        ApolloAppIconSetProvider(LGActiveIconPreviewForSheets);
         NSMutableString *summary = [NSMutableString string];
         if (sFeaturedCount > 0) [summary appendFormat:@"%ld featured, ", (long)sFeaturedCount];
         for (NSInteger i = 0; i < sGroupCount; i++) {

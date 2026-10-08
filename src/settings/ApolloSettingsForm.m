@@ -629,7 +629,11 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             // Shared pool: reset what a sibling's configure block may have added
             // (e.g. Translation's "Add Language…" disclosure chevron).
             cell.accessoryType = UITableViewCellAccessoryNone;
-            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            // Match switch/disclosure rows: unavailable actions must look
+            // disabled too. Reset both values for this shared reuse pool.
+            BOOL enabled = row.enabled ? row.enabled() : YES;
+            cell.textLabel.enabled = enabled;
+            cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
             [self apollo_applyAccentActionTextColorToCell:cell];
             break;
         }
@@ -767,7 +771,9 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     if (!pending || !template) return NO;
 
     UILabel *label = template.textLabel;
-    NSString *ownText = label.text;
+    // Preserve attributed content: assigning label.text for measurement strips
+    // attachments and other attributes from the borrowed footer.
+    NSAttributedString *ownAttributedText = label.attributedText;
     BOOL adopted = NO;
     for (NSInteger section = 0; section < sections; section++) {
         if (![pending containsIndex:(NSUInteger)section]) continue;
@@ -788,7 +794,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         adopted = YES;
         ApolloLog(@"[SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt", (long)section, fitted);
     }
-    label.text = ownText;
+    label.attributedText = ownAttributedText;
     [template setNeedsLayout];
     [template layoutIfNeeded];
     return adopted;

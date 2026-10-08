@@ -3,6 +3,9 @@
 static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
 
 // UserDefaults keys
+// Optional iOS 27 Siri framework's preference; default OFF. The actor owns
+// state, with no duplicate BOOL mirror (Shortcuts can change it out of UI).
+static NSString *const UDKeySiriContentIndexing = @"ApolloSiriContentEnabled";
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
 // when the self-hosted notification backend stores per-account creds and
@@ -321,7 +324,8 @@ static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
 static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
-// bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
+// bar out, 3 = slide/fade down, 4 = minimize into a centered pill naming the
+// current tab. The styles plus Off are
 // surfaced on Reborn's Interface > Tab Bar row (Off = the native toggle off).
 // See ApolloTabBarHideStyle.xm and ApolloAutoHideTabBar.xm.
 static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";
@@ -680,6 +684,14 @@ static NSString *const UDKeyDisableUsageHeartbeat = @"DisableUsageHeartbeat";
 static NSString *const UDKeyHeartbeatMonth   = @"UsageHeartbeatMonth";   // "2026-07"
 static NSString *const UDKeyHeartbeatToken   = @"UsageHeartbeatToken";   // monthly UUID
 static NSString *const UDKeyHeartbeatLastDay = @"UsageHeartbeatLastDay"; // "2026-07-05"
+
+// In-app update check (ApolloUpdateChecker.{h,m}). Once a day it reads
+// release-manifest.json from GitHub and offers to hand off to the user's
+// sideloader. Default ON; the Manual "Check for Updates" row works either way.
+static NSString *const UDKeyAutomaticUpdateChecks = @"AutomaticUpdateChecks";
+// Internal bookkeeping (not user-facing).
+static NSString *const UDKeyUpdateLastCheck = @"UpdateLastCheck";           // NSDate of the last good fetch
+static NSString *const UDKeyUpdateSkippedVersion = @"UpdateSkippedVersion"; // "3.9.0" the user chose to skip
 
 // Feed thumbnails for text posts with embedded images (off = native behavior).
 static NSString *const UDKeyFeedTextPostThumbnails = @"FeedTextPostThumbnails";
