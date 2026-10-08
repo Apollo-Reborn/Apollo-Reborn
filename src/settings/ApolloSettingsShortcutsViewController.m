@@ -7,7 +7,7 @@ NSArray<NSString *> *ApolloSettingsShortcutCatalog(void) {
     // Fixed discovery order mirrors Settings and the Reborn hub. Included
     // shortcuts use their separately persisted user order instead.
     return @[@"reborn", @"accounts-api-keys", @"posts-feeds", @"comments", @"media",
-        @"subreddits", @"profile-layout", @"interface", @"rich-link-previews", @"apollo-ai",
+        @"subreddits", @"user-profiles", @"interface", @"rich-link-previews", @"apollo-ai",
         @"theme-manager", @"open-in-app", @"picture-in-picture", @"translation", @"saved-categories", @"tag-filters",
         @"automatic-backups", @"crash-reports", @"feature-requests", @"bug-reports",
         @"buy-coffee", @"general", @"pixel-pals", @"appearance", @"app-icon", @"filters", @"gestures"];
@@ -21,6 +21,7 @@ NSArray<NSString *> *ApolloSettingsShortcutIDs(void) {
     NSMutableArray *valid = [NSMutableArray array];
     for (id entry in saved) {
         id identifier = [entry isEqual:@"inline-media"] ? @"media" : entry;
+        if ([identifier isEqual:@"profile-layout"]) identifier = @"user-profiles";
         if ([identifier isKindOfClass:NSString.class] && [ApolloSettingsShortcutCatalog() containsObject:identifier]
             && valid.count < ApolloSettingsShortcutLimit && ![valid containsObject:identifier]) [valid addObject:identifier];
     }
@@ -53,7 +54,7 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
                 @"automatic-backups": @"square.and.arrow.up.fill", @"tag-filters": @"tag.fill", @"translation": @"character.bubble.fill",
                 @"picture-in-picture": @"pip.fill", @"apollo-ai": @"sparkles", @"open-in-app": @"arrow.up.forward.app.fill",
                 @"media": @"play.rectangle.fill", @"posts-feeds": @"newspaper.fill", @"comments": @"text.bubble.fill",
-                @"subreddits": @"person.3.fill", @"profile-layout": @"person.crop.circle.fill", @"interface": @"slider.horizontal.3", @"accounts-api-keys": @"key.fill", @"rich-link-previews": @"link", @"crash-reports": @"bandage"};
+                @"subreddits": @"person.3.fill", @"user-profiles": @"person.crop.circle.fill", @"interface": @"slider.horizontal.3", @"accounts-api-keys": @"key.fill", @"rich-link-previews": @"link", @"crash-reports": @"bandage"};
             UIColor *color = UIColor.systemBlueColor;
             if ([identifier isEqualToString:@"theme-manager"]) color = ApolloThemeManagerIconColor();
             else if ([identifier isEqualToString:@"saved-categories"]) color = UIColor.systemGreenColor;
@@ -64,7 +65,7 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
             else if ([identifier isEqualToString:@"posts-feeds"]) color = UIColor.systemOrangeColor;
             else if ([identifier isEqualToString:@"comments"]) color = UIColor.systemGreenColor;
             else if ([identifier isEqualToString:@"subreddits"]) color = UIColor.systemRedColor;
-            else if ([identifier isEqualToString:@"profile-layout"]) color = UIColor.systemTealColor;
+            else if ([identifier isEqualToString:@"user-profiles"]) color = UIColor.systemTealColor;
             else if ([identifier isEqualToString:@"interface"]) color = UIColor.systemPurpleColor;
             else if ([identifier isEqualToString:@"accounts-api-keys"]) color = UIColor.systemGrayColor;
             else if ([identifier isEqualToString:@"tag-filters"] || [identifier isEqualToString:@"crash-reports"]) color = UIColor.systemOrangeColor;

@@ -225,6 +225,15 @@ For the least moving parts:
 
 That reproduces Balackburn’s distribution model, but with the Liquid Glass asset catalog and icon pipeline owned by this repo instead of living out-of-band.
 
+## In-App Update Prompt
+
+A sideloaded app can't install its own update (iOS only runs code signed by the user's certificate, which their sideloader holds), so the tweak (`src/ApolloUpdateChecker.m`) checks for a newer release and hands off:
+
+- It fetches [release-manifest.json](release-manifest.json) from `main` at most once a day, plus Settings → About → Check for Updates. Versions compare on `release.tweakVersion`, so it must keep increasing per public release.
+- The `ARBuildVariant` Info.plist stamp (`stamp-build-variant` in `build_release_variants.sh`) picks the manifest `variants` key: `ipa` → `standard`, `ipa-noext` → `noExtensions`, `glass` → `glass`, `glass-noext` → `noExtensionsGlass`, `glassicons` → `glassIcons`, `glassicons-noext` → `noExtensionsGlassIcons`. A sideloaded build with no stamp (an injected `.deb`, e.g. a `Build IPA` run) can't tell which variant it is, so its chooser just opens each sideloader app and swaps the IPA download for the release page; dev builds get only the release page, and `.deb` installs hide the feature. A new variant in `update_source_json.py` needs its mapping in `ApolloUpdateManifest.m`.
+- A half-height sheet offers Update / Later / Skip this version. Release Notes expands it to show the changelog from the variant's source JSON (`apps[].versions[].localizedDescription`), prefetched when the sheet appears.
+- Update opens a chooser (icons in `Resources/update-icon-*.png`): add-source links for AltStore Classic and SideStore, `feather://install/<ipa>` for Feather, `flarestore://downloadApp=<ipa>` for FlareStore, and a direct IPA download.
+
 ## Hosted Base IPA
 
 This release pipeline expects a user-supplied public URL for an unmodified Apollo base IPA or another prepared Apollo base build. The workflow consumes that file as a plain download URL and does not require R2 credentials or GitHub secrets.

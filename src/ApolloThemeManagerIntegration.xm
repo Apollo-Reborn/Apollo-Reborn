@@ -44,6 +44,47 @@ static UISwipeActionsConfiguration *(*sTrailingSwipeOrig)(id, SEL, UITableView *
 static CGFloat (*sHeightForHeaderOrig)(id, SEL, UITableView *, NSInteger);
 static void (*sWillDisplayHeaderOrig)(id, SEL, UITableView *, UIView *, NSInteger);
 
+// The moved list-icons toggle is the sole row in this native section. Keep
+// native section identities intact so Eureka's other index paths do not shift.
+static NSString *(*sAppearanceHeaderTitleOrig)(id, SEL, UITableView *, NSInteger);
+static NSString *(*sAppearanceFooterTitleOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceHeaderHeightOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceFooterHeightOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceHeaderEstimateOrig)(id, SEL, UITableView *, NSInteger);
+static CGFloat (*sAppearanceFooterEstimateOrig)(id, SEL, UITableView *, NSInteger);
+
+static BOOL IsMovedListIconsSection(id vc, UITableView *table, NSInteger section) {
+    NSString *title = sAppearanceHeaderTitleOrig
+        ? sAppearanceHeaderTitleOrig(vc, @selector(tableView:titleForHeaderInSection:), table, section) : nil;
+    return [title isKindOfClass:NSString.class] &&
+        [title caseInsensitiveCompare:@"Subreddits List"] == NSOrderedSame &&
+        sRowsOrig && sRowsOrig(vc, @selector(tableView:numberOfRowsInSection:), table, section) == 1;
+}
+
+static NSString *AppearanceHeaderTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return nil;
+    return sAppearanceHeaderTitleOrig ? sAppearanceHeaderTitleOrig(vc, cmd, table, section) : nil;
+}
+static NSString *AppearanceFooterTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return nil;
+    return sAppearanceFooterTitleOrig ? sAppearanceFooterTitleOrig(vc, cmd, table, section) : nil;
+}
+static CGFloat AppearanceHeaderHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceHeaderHeightOrig ? sAppearanceHeaderHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceFooterHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceFooterHeightOrig ? sAppearanceFooterHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceHeaderEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceHeaderEstimateOrig ? sAppearanceHeaderEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
+static CGFloat AppearanceFooterEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
+    return sAppearanceFooterEstimateOrig ? sAppearanceFooterEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
+}
 static inline BOOL IsThemesRow(NSIndexPath *ip) { return ip.section == 0 && ip.row == 0; }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +381,7 @@ extern "C" BOOL ApolloThemeOpenNativeCommentsThemeFromHub(UIViewController *hub)
 }
 
 static NSInteger Rows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
+    if (IsMovedListIconsSection(self, tv, section)) return 0;
     NSInteger n = sRowsOrig ? sRowsOrig(self, _cmd, tv, section) : 0;
     if (AppendedRowForSection(self, tv, section)) n += 1; // the appended switch slot
     return n;
@@ -576,6 +618,12 @@ static void InstallAppearanceHooks(void) {
     SAVE_AND_REPLACE(@selector(tableView:heightForHeaderInSection:), sHeightForHeaderOrig, HeightForHeader, "d@:@q");
     SAVE_AND_REPLACE(@selector(tableView:willDisplayHeaderView:forSection:), sWillDisplayHeaderOrig, WillDisplayHeader, "v@:@@q");
     SAVE_AND_REPLACE(@selector(tableView:numberOfRowsInSection:), sRowsOrig, Rows, "q@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:titleForHeaderInSection:), sAppearanceHeaderTitleOrig, AppearanceHeaderTitle, "@@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:titleForFooterInSection:), sAppearanceFooterTitleOrig, AppearanceFooterTitle, "@@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:heightForHeaderInSection:), sAppearanceHeaderHeightOrig, AppearanceHeaderHeight, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:heightForFooterInSection:), sAppearanceFooterHeightOrig, AppearanceFooterHeight, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForHeaderInSection:), sAppearanceHeaderEstimateOrig, AppearanceHeaderEstimate, "d@:@q");
+    SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForFooterInSection:), sAppearanceFooterEstimateOrig, AppearanceFooterEstimate, "d@:@q");
     SAVE_AND_REPLACE(@selector(tableView:cellForRowAtIndexPath:), sCellOrig, Cell, "@@:@@");
     SAVE_AND_REPLACE(@selector(tableView:heightForRowAtIndexPath:), sHeightOrig, Height, "d@:@@");
     SAVE_AND_REPLACE(@selector(tableView:estimatedHeightForRowAtIndexPath:), sEstHeightOrig, EstHeight, "d@:@@");

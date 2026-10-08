@@ -144,7 +144,6 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
-
 // Runs update (a -rebuildSectionContainingRowID:…, -rebuildForm or other
 // reload) for an edit made while the list is scrolled, and keeps the rows that
 // were on screen where they were. After a reload UIKit puts the scroll
