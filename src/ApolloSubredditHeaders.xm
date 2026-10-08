@@ -2706,6 +2706,33 @@ static void ApolloSubredditScheduleRepairPass(UIViewController *viewController, 
 
 #pragma mark - Install / restore
 
+BOOL ApolloPaneRefitSubredditHeaderGeometry(UIViewController *controller) {
+    if (!ApolloPaneLayoutActive() || !controller.viewIfLoaded.window) return NO;
+    UITableView *table = ApolloSubredditFindTableView(controller);
+    ApolloSubredditHeaderView *header = objc_getAssociatedObject(controller, kApolloSubredditHeaderViewKey);
+    UIView *wrapper = objc_getAssociatedObject(controller, kApolloSubredditWrappedHeaderKey);
+    if (!header || !wrapper || table.tableHeaderView != wrapper) return NO;
+    UIView *original = objc_getAssociatedObject(controller, kApolloSubredditOriginalHeaderKey);
+    CGFloat previousHeight = CGRectGetHeight(wrapper.frame);
+    ApolloSubredditLayoutWrappedHeader(wrapper, header, original, CGRectGetWidth(table.bounds));
+    [header setNeedsLayout];
+    [header layoutIfNeeded];
+    if (fabs(previousHeight - CGRectGetHeight(wrapper.frame)) > 0.5) table.tableHeaderView = wrapper;
+    ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(controller, kApolloSubredditAmbientViewKey);
+    if (ambient) {
+        ambient.frame = table.bounds;
+        ApolloSubredditSyncAmbient(header);
+        [ambient setNeedsLayout];
+        [ambient layoutIfNeeded];
+        ApolloSubredditUpdateAmbientScroll(controller, table);
+    }
+    ApolloSubredditUpdateCompactChrome(controller, table);
+    ApolloLog(@"[PaneHeaderGeometry] subreddit table=%.1f content=%.1f/%.1f top=%.1f artwork=%.1f/%.1f",
+        CGRectGetWidth(table.bounds), header.frame.origin.x, CGRectGetWidth(header.frame),
+        table.adjustedContentInset.top, ambient.artworkInsets.left, ambient.artworkInsets.right);
+    return YES;
+}
+
 static void ApolloSubredditRefreshBannerInTree(UIViewController *viewController,
                                                NSString *subredditName,
                                                NSHashTable *visited);

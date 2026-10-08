@@ -4007,6 +4007,32 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
                              currentInstallSignature(), OBJC_ASSOCIATION_COPY_NONATOMIC);
 }
 
+BOOL ApolloPaneRefitProfileHeaderGeometry(UIViewController *controller) {
+    if (!ApolloPaneLayoutActive() || !controller.viewIfLoaded.window) return NO;
+    UITableView *table = ApolloFindTableView(controller);
+    ApolloProfileHeaderView *header = objc_getAssociatedObject(controller, kApolloProfileHeaderViewKey);
+    UIView *wrapper = objc_getAssociatedObject(controller, kApolloProfileWrappedHeaderKey);
+    if (!header || !wrapper || table.tableHeaderView != wrapper) return NO;
+    UIView *original = objc_getAssociatedObject(controller, kApolloProfileOriginalHeaderKey);
+    CGFloat previousHeight = CGRectGetHeight(wrapper.frame);
+    ApolloProfileLayoutWrappedHeader(wrapper, header, original, CGRectGetWidth(table.bounds));
+    [header setNeedsLayout];
+    [header layoutIfNeeded];
+    if (fabs(previousHeight - CGRectGetHeight(wrapper.frame)) > 0.5) table.tableHeaderView = wrapper;
+    ApolloImmersiveHeaderBackgroundView *ambient = objc_getAssociatedObject(controller, kApolloProfileAmbientViewKey);
+    if (ambient) {
+        ambient.frame = table.bounds;
+        ApolloProfileSyncAmbient(header);
+        [ambient setNeedsLayout];
+        [ambient layoutIfNeeded];
+    }
+    ApolloProfileSyncNavTitleFade(controller);
+    ApolloLog(@"[PaneHeaderGeometry] profile table=%.1f content=%.1f/%.1f top=%.1f artwork=%.1f/%.1f",
+        CGRectGetWidth(table.bounds), header.frame.origin.x, CGRectGetWidth(header.frame),
+        table.adjustedContentInset.top, ambient.artworkInsets.left, ambient.artworkInsets.right);
+    return YES;
+}
+
 static void ApolloProfileScheduleInstallOrUpdateHeader(id viewControllerObject) {
     if (!viewControllerObject || [objc_getAssociatedObject(viewControllerObject, kApolloProfileInstallScheduledKey) boolValue]) return;
     objc_setAssociatedObject(viewControllerObject, kApolloProfileInstallScheduledKey, @YES,

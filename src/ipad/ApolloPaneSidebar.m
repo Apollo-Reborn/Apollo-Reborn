@@ -2,6 +2,7 @@
 #import "ApolloPaneLayout.h"
 #import "ApolloPaneSplitViewController.h"
 #import "ApolloPaneGallery.h"
+#import "ApolloPaneChrome.h"
 #import "ApolloPaneGeometryPolicy.h"
 #import <objc/message.h>
 #import "../ApolloCommon.h"
@@ -65,6 +66,10 @@ API_AVAILABLE(ios(18.0))
 }
 - (void)tabBarController:(UITabBarController *)tabs sidebarVisibilityWillChange:(UITabBarControllerSidebar *)sidebar
                animator:(id<UITabBarControllerSidebarAnimating>)animator {
+    // A resting profile does not always follow UIKit's 54pt tab-chrome inset
+    // change. Remember only genuinely resting headers before it begins; the
+    // settled geometry transaction restores those, never a scrolled feed.
+    dispatch_block_t restoreHeaderAnchors = ApolloPaneCaptureIdentityHeaderScrollAnchors(tabs.selectedViewController);
     if ([self.originalDelegate respondsToSelector:_cmd]) {
         [self.originalDelegate tabBarController:tabs sidebarVisibilityWillChange:sidebar animator:animator];
     }
@@ -80,6 +85,10 @@ API_AVAILABLE(ios(18.0))
                     [(ApolloPaneSplitViewController *)child apollo_resolvedDisplayStateMayHaveChanged];
                 }
             }
+            // Run after the queued column geometry update, and only from this
+            // native animation's completion. Safe-area callbacks mid-animation
+            // must not consume a resting anchor before UIKit finishes.
+            if (restoreHeaderAnchors) dispatch_async(dispatch_get_main_queue(), restoreHeaderAnchors);
         });
     }];
 }

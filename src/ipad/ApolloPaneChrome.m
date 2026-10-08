@@ -8,6 +8,7 @@
 #import "../ApolloActionMenu.h"
 #import "../ApolloNativeActionMenus.h"
 #import "../ApolloCommon.h"
+#import "../ApolloImmersiveHeaderBackground.h"
 
 CGRect ApolloPaneHeaderContentRect(UITableView *table, UIViewController *controller, CGFloat width) {
     CGRect content = CGRectMake(0, 0, width, 0);
@@ -27,6 +28,77 @@ CGRect ApolloPaneHeaderContentRect(UITableView *table, UIViewController *control
         }
     }
     return content;
+}
+
+static UITableView *ApolloPaneIdentityTable(UIView *view) {
+    if ([view isKindOfClass:UITableView.class] &&
+        [((UITableView *)view).backgroundView isKindOfClass:ApolloImmersiveHeaderBackgroundView.class]) return (id)view;
+    for (UIView *child in view.subviews) {
+        UITableView *table = ApolloPaneIdentityTable(child);
+        if (table) return table;
+    }
+    return nil;
+}
+
+dispatch_block_t ApolloPaneCaptureIdentityHeaderScrollAnchors(UIViewController *controller) {
+    if (!ApolloPaneLayoutActive() || ![controller isKindOfClass:ApolloPaneSplitViewController.class]) return nil;
+    ApolloPaneSplitViewController *pane = (id)controller;
+    NSMutableArray *anchors = [NSMutableArray array];
+    for (NSNumber *column in @[@(ApolloPaneColumnPrimary), @(ApolloPaneColumnSecondary)]) {
+        UIViewController *top = [pane apollo_navigationControllerForColumn:column.integerValue].topViewController;
+        UITableView *table = ApolloPaneIdentityTable(top.viewIfLoaded);
+        if (table.window) ApolloLog(@"[PaneHeaderAnchor] transition offset=%.1f inset=%.1f resting=%d",
+            table.contentOffset.y, table.adjustedContentInset.top,
+            fabs(table.contentOffset.y + table.adjustedContentInset.top) <= 1.0);
+        if (!table.window || !table.tableHeaderView || table.tracking || table.dragging || table.decelerating ||
+            fabs(table.contentOffset.y + table.adjustedContentInset.top) > 1.0) continue;
+        CGPoint offset = table.contentOffset;
+        __weak UITableView *weakTable = table;
+        __weak UIView *weakHeader = table.tableHeaderView;
+        __weak UIViewController *weakTop = top;
+        [anchors addObject:[^{
+            UITableView *current = weakTable;
+            UIViewController *owner = weakTop;
+            UIView *header = weakHeader;
+            if (!owner || !header || !current.window || current.window != owner.viewIfLoaded.window ||
+                owner.navigationController.topViewController != owner ||
+                current.tableHeaderView != header || current.tracking || current.dragging || current.decelerating) return;
+            CGFloat resting = -current.adjustedContentInset.top;
+            // Only finish UIKit's resting-offset adjustment. A user/programmatic
+            // scroll that departed from both resting offsets cancels the anchor.
+            if (fabs(current.contentOffset.y - offset.y) > 1.0 &&
+                fabs(current.contentOffset.y - resting) > 1.0) return;
+            if (fabs(current.contentOffset.y - resting) > 0.5) {
+                [current setContentOffset:CGPointMake(current.contentOffset.x, resting) animated:NO];
+                ApolloLog(@"[PaneHeaderAnchor] restored resting offset %.1f", resting);
+            }
+        } copy]];
+    }
+    if (!anchors.count) return nil;
+    __weak ApolloPaneSplitViewController *weakPane = pane;
+    return ^{
+        ApolloPaneSplitViewController *owner = weakPane;
+        if (!owner.viewIfLoaded.window || owner.tabBarController.selectedViewController != owner) return;
+        ApolloPaneRefreshIdentityHeaderGeometry(owner);
+        for (dispatch_block_t restore in anchors) restore();
+    };
+}
+
+void ApolloPaneRefreshIdentityHeaderGeometry(UIViewController *controller) {
+    if (!ApolloPaneLayoutActive() ||
+        ![controller isKindOfClass:ApolloPaneSplitViewController.class] || !controller.viewIfLoaded.window) return;
+    ApolloPaneSplitViewController *pane = (id)controller;
+    // Sidebar overlap changes the content guide without necessarily changing
+    // the feed controller's bounds or safe area. Finish pending column layout
+    // before measuring; this runs in the pane's deferred geometry transaction,
+    // never inside a layoutSubviews hook.
+    [pane.view layoutIfNeeded];
+    for (NSNumber *column in @[@(ApolloPaneColumnPrimary), @(ApolloPaneColumnSecondary)]) {
+        UINavigationController *navigation = [pane apollo_navigationControllerForColumn:column.integerValue];
+        UIViewController *top = navigation.topViewController;
+        if (top.viewIfLoaded.window != pane.view.window || !top.viewIfLoaded.window) continue;
+        if (!ApolloPaneRefitSubredditHeaderGeometry(top)) ApolloPaneRefitProfileHeaderGeometry(top);
+    }
 }
 
 @interface ApolloPaneHeaderBackdrop : UIView

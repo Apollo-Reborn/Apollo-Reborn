@@ -2438,6 +2438,11 @@ apply:
         apollo_scheduleListColumnGeometryRefresh];
     [self apollo_layoutColumnGrabber];
 
+    // Native sidebar completion reaches this transaction even when the
+    // controller's bounds are unchanged. Its table header and ambient artwork
+    // must both measure the newly settled content guide and chrome inset.
+    ApolloPaneRefreshIdentityHeaderGeometry(self);
+
     UIViewController *detailTop = self.apollo_detailNav.topViewController;
     BOOL resolvedStateChanged = !_apollo_hasSampledResolvedDisplayState ||
         _apollo_lastSampledDisplayMode != self.displayMode ||
