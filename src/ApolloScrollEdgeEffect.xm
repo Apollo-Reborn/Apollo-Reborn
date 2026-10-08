@@ -490,6 +490,10 @@ void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar) {
 static char kApolloHeaderStyleHeldItemKey;   // UINavigationItem -> state
 static char kApolloHeaderStyleHeldBarKey;    // UISearchBar -> the same state
 static NSHashTable<ApolloHeaderStyleHeldSearchBar *> *sApolloHeaderStyleHeldSearchBars;
+// Set once the hooks below install (Liquid Glass, with UIKit's search bar
+// provider and its pinned report present). Without them nothing would take a
+// backing down again or keep the field's pill, so nothing gets registered.
+static BOOL sApolloHeaderStyleHeldSearchBarHooksInstalled;
 
 static BOOL ApolloHeaderStyleHoldsScrollAwayLook(ApolloHeaderStyleHeldSearchBar *state) {
     UISearchBar *searchBar = state.searchBar;
@@ -562,7 +566,7 @@ static void ApolloHeaderStyleUpdateHeldSearchBar(ApolloHeaderStyleHeldSearchBar 
 
 void ApolloHeaderStyleRegisterScrollAwaySearchBar(UISearchBar *searchBar, UINavigationItem *item,
                                                   UIScrollView *backdropScrollView) {
-    if (!searchBar || !item || !IsLiquidGlass()) return;
+    if (!searchBar || !item || !sApolloHeaderStyleHeldSearchBarHooksInstalled) return;
     ApolloHeaderStyleHeldSearchBar *state = objc_getAssociatedObject(item, &kApolloHeaderStyleHeldItemKey);
     if (!state || state.searchBar != searchBar) {
         state = [ApolloHeaderStyleHeldSearchBar new];
@@ -759,7 +763,10 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
         class_getInstanceMethod(searchProviderClass, @selector(searchBar))) {
         %init(ApolloHeaderStyleHeldSearchBarHooks,
               ApolloRuntimeSearchBarVisualProvider = searchProviderClass);
+        sApolloHeaderStyleHeldSearchBarHooksInstalled = YES;
         ApolloLog(@"[HeaderStyle] held scroll-away search bar hooks installed");
+    } else if (IsLiquidGlass()) {
+        ApolloLog(@"[HeaderStyle] held scroll-away search bar hooks NOT installed: provider/selectors missing");
     }
     ApolloLog(@"[HeaderStyle] module loaded, mode=%ld liquidGlass=%d", (long)sScrollEdgeEffectStyle, IsLiquidGlass());
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloScrollEdgeEffectStyleChangedNotification

@@ -310,7 +310,8 @@ void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
 // the band with a glass field; while held, the bar keeps the look it has once
 // released instead (#1361). backdropScrollView: the list whose background
 // shows behind the search row once the bar is released. No-op off Liquid
-// Glass. Defined in ApolloScrollEdgeEffect.xm.
+// Glass, or when the UIKit hooks it relies on didn't install. Defined in
+// ApolloScrollEdgeEffect.xm.
 void ApolloHeaderStyleRegisterScrollAwaySearchBar(UISearchBar *searchBar, UINavigationItem *item,
                                                   UIScrollView *backdropScrollView);
 // Applies the selected style to every scroll view owned by an Apollo list
