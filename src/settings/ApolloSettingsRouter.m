@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "ApolloSettingsRouter.h"
+#import "ApolloSiriSettingsViewController.h"
 
 #import <objc/message.h>
 
@@ -62,6 +63,9 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             };
 
         add(@"reborn", @"Apollo Reborn", @"Settings", ApolloSettingsInsetGrouped([CustomAPIViewController class]));
+        if (NSClassFromString(@"ApolloContentBridge")) {
+            add(@"siri-spotlight", @"Siri & Spotlight", @"Apollo Reborn", ApolloSettingsInsetGrouped([ApolloSiriSettingsViewController class]));
+        }
         // The hub's group screens (settings IA restructure).
         add(@"accounts-api-keys", @"Accounts & API Keys", @"Apollo Reborn → Setup", ApolloSettingsInsetGrouped([ApolloAccountsAPIKeysViewController class]));
         add(@"posts-feeds", @"Posts & Feeds", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloPostsFeedsViewController class]));
@@ -73,7 +77,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
             return [[ApolloFeedShortcutsSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         });
         add(@"subreddit-layout", @"Subreddit Layout", @"Apollo Reborn → Features → Subreddits", ApolloSettingsInsetGrouped([ApolloSubredditLayoutViewController class]));
-        add(@"subreddit-sections", @"Subreddit Sections", @"Apollo Reborn → Features → Subreddits", ^UIViewController *{
+        add(@"subreddit-sections", @"Subreddit List Sections", @"Apollo Reborn → Features → Subreddits", ^UIViewController *{
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         });
         add(@"user-profiles", @"User Profiles", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloUserProfilesSettingsViewController class]));

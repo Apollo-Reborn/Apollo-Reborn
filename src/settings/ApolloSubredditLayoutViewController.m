@@ -644,7 +644,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
 
     ApolloSettingsSection *headerSection =
         [ApolloSettingsSection sectionWithTitle:@"Layout"
-                                         footer:@"Immersive and Compact use Apollo Reborn’s customizable header. Native keeps Apollo’s original layout."
+                                         footer:nil
                                            rows:@[ density, banner, joinButton, userFlairButton, sidebarButton,
                                                    displayName, subtitle, description ]];
 

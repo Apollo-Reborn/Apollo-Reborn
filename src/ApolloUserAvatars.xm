@@ -23,6 +23,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
+#import "ApolloUserAvatars.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileLayoutStructureChangedMarker = @"ApolloProfileLayoutStructureChanged";
@@ -4397,6 +4398,10 @@ static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason) {
     }
 }
 
+void ApolloRefreshProfileTabAvatarAfterPresentation(void) {
+    ApolloProfileScheduleTabAvatarRefresh(@"tab bar presentation restore");
+}
+
 static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {
     if (!sUseProfileAvatarTabIcon) return;
     ApolloProfileScheduleTabAvatarRefresh(reason ?: @"account change");
@@ -4944,9 +4949,7 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
 %end
 
 // Apollo's native profile stats cell (Comment Karma / Post Karma / Account Age). When
-// "Detailed Profiles" is on, our custom header already surfaces these as glass stat
-// cards, so collapse the native cell to an empty (zero-height) layout to avoid the
-// duplicate, unstyled row.
+// Detailed Profiles is on, the custom header owns stats; collapse this row.
 // Zero an ASDisplayNode's fixed style heights so an empty layoutSpec actually
 // collapses it — a bare ASLayoutSpec doesn't override the node's own height/preferredSize
 // (see ApolloSubredditHighlights' ApolloHLZeroNodeHeight, same trick).
@@ -5037,12 +5040,9 @@ static void ApolloProfileZeroNodeHeight(id node) {
 %hook _TtC6Apollo21ProfileHeaderCellNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
-    BOOL collapseNativeRow = sShowDetailedProfiles && sProfileShowStatCards;
-    // Zeroing Texture style dimensions is persistent. Restore the exact values
-    // captured from Apollo before asking it for a Native/Stat-Cards-off layout.
+    BOOL collapseNativeRow = sShowDetailedProfiles;
     if (!collapseNativeRow) ApolloProfileRestoreNodeHeight(self);
     id spec = %orig;
-    // Keep Apollo's karma row unless the Reborn Stat Cards replace it.
     if (!collapseNativeRow) return spec;
     ApolloProfileZeroNodeHeight(self);
     Class specClass = NSClassFromString(@"ASLayoutSpec");

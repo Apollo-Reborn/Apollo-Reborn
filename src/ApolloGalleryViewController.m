@@ -972,6 +972,30 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
         self.waterfallLayout.columnCount = columns;
         [self.waterfallLayout invalidateLayout];
     }
+
+    // UIKit installs Gallery's full-width bottom scroll-edge material after
+    // the collection view has already entered the window. Register that late
+    // effect after layout so Minimize can keep it hidden behind the compact pill.
+    ApolloApplyScrollEdgeEffectStyle(self.collectionView);
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != self.collectionView ||
+        sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
+
+    // The first drag can create a fresh edge-effect object after the layout
+    // pass above. Only revisit the shared styler while that late object is
+    // visible; after it is registered, the Minimize edge state filters subsequent
+    // UIKit visibility writes without doing work on every scroll callback.
+    SEL bottomSelector = NSSelectorFromString(@"bottomEdgeEffect");
+    id effect = [scrollView respondsToSelector:bottomSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(scrollView, bottomSelector)
+        : nil;
+    if ([effect respondsToSelector:@selector(isHidden)] &&
+        !((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) {
+        ApolloApplyScrollEdgeEffectStyle(scrollView);
+    }
 }
 
 - (NSInteger)apollo_columnCountForWidth:(CGFloat)width {

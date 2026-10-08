@@ -1598,6 +1598,9 @@ UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSetting
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).
+// Keep the plain subreddit list independent of the grouped settings-card
+// palette. Both Pure Black tiers retain #1A1A1A section bands and use the
+// page's black (or smearing-reduced black) for rows.
 static UIColor *ApolloThemeSubredditListColor(NSUInteger role) {
     ApolloThemeToken token = role == 0 ? ApolloThemeTokenSecondaryBackground
         : role == 1 ? ApolloThemeTokenBackground
