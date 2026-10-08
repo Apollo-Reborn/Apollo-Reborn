@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloScrollToTop.h"
@@ -47,16 +48,12 @@ static CASpringAnimation *ApolloScrollReturnSpring(void) {
     return spring;
 }
 
-static id ApolloReturnObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable([object class], name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 static NSString *ApolloReturnItemID(id node) {
+    SEL fullNameSelector = @selector(fullName);
     for (NSString *key in @[@"comment", @"link"]) {
-        id model = ApolloReturnObjectIvar(node, key.UTF8String);
-        SEL selector = NSSelectorFromString(@"fullName");
-        if ([model respondsToSelector:selector]) {
-            id value = ((id (*)(id, SEL))objc_msgSend)(model, selector);
+        id model = ApolloObjectIvar(node, key.UTF8String);
+        if ([model respondsToSelector:fullNameSelector]) {
+            id value = ((id (*)(id, SEL))objc_msgSend)(model, fullNameSelector);
             if ([value isKindOfClass:NSString.class]) return value;
         }
     }
@@ -200,8 +197,8 @@ static NSString *ApolloReturnItemID(id node) {
 - (void)captureVisibleItem {
     self.itemLookupAttempted = NO;
     UITableView *table = [self.scrollView isKindOfClass:UITableView.class] ? (id)self.scrollView : nil;
-    id tableNode = ApolloReturnObjectIvar(self.owner, "tableNode");
-    SEL selector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    id tableNode = ApolloObjectIvar(self.owner, "tableNode");
+    SEL selector = @selector(nodeForRowAtIndexPath:);
     if (!table || ![tableNode respondsToSelector:selector]) return;
     CGFloat y = self.savedOffset.y + self.savedTopInset;
     for (NSIndexPath *path in [table.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)]) {
@@ -215,12 +212,12 @@ static NSString *ApolloReturnItemID(id node) {
 }
 - (CGFloat)returnTargetY {
     UITableView *table = [self.scrollView isKindOfClass:UITableView.class] ? (id)self.scrollView : nil;
-    id tableNode = ApolloReturnObjectIvar(self.owner, "tableNode");
-    SEL lookup = NSSelectorFromString(@"indexPathForNode:");
+    id tableNode = ApolloObjectIvar(self.owner, "tableNode");
+    SEL lookup = @selector(indexPathForNode:);
     NSIndexPath *path = self.savedNode && [tableNode respondsToSelector:lookup]
         ? ((id (*)(id, SEL, id))objc_msgSend)(tableNode, lookup, self.savedNode) : nil;
     // A rebuilt node can still represent the same Reddit item.
-    SEL nodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSelector = @selector(nodeForRowAtIndexPath:);
     if (!path && self.savedItemID && !self.itemLookupAttempted && [tableNode respondsToSelector:nodeSelector]) {
         self.itemLookupAttempted = YES;
         for (NSInteger section = 0; section < table.numberOfSections && !path; section++) {
@@ -358,6 +355,25 @@ static NSString *ApolloReturnItemID(id node) {
     self.jumpLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepTopJump:)];
     [self.jumpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
+// Shared entry for status/title and Posts-tab jumps. Capture before revealing
+// chrome changes the inset, and retain the original spot on repeated tab taps.
+- (void)scrollToTopSavingPosition {
+    UIScrollView *scroll = self.scrollView;
+    if (!self.hasPosition) {
+        self.savedOffset = scroll.contentOffset;
+        self.savedTopInset = scroll.adjustedContentInset.top;
+        self.hasPosition = YES;
+        [self captureVisibleItem];
+    }
+    UINavigationController *navigation = self.owner.navigationController;
+    ApolloTopBarSetScrollToTopActive(navigation, YES);
+    if (navigation.navigationBarHidden) {
+        [navigation setNavigationBarHidden:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+    }
+    [self startTopJump];
+    [self showButton];
+    ApolloLog(@"[ScrollReturn] Saved position and started jump for %@", NSStringFromClass(self.owner.class));
+}
 - (void)returnToPosition {
     UIScrollView *scroll = self.scrollView;
     if (!self.hasPosition || !scroll.window || !self.owner.view.window) return;
@@ -464,7 +480,7 @@ static NSString *ApolloReturnItemID(id node) {
     self.returnItem = [[UIBarButtonItem alloc] initWithCustomView:button];
     // The custom button already supplies glass. Suppress the bar's additional
     // shared background while letting UIKit place it beside the native back.
-    SEL hideBackground = NSSelectorFromString(@"setHidesSharedBackground:");
+    SEL hideBackground = @selector(setHidesSharedBackground:);
     if ([self.returnItem respondsToSelector:hideBackground]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(self.returnItem, hideBackground, YES);
     }
@@ -506,8 +522,7 @@ static NSString *ApolloReturnItemID(id node) {
 @end
 
 static UIScrollView *ApolloScrollReturnTable(id owner) {
-    Ivar ivar = class_getInstanceVariable([owner class], "tableNode");
-    id node = ivar ? object_getIvar(owner, ivar) : nil;
+    id node = ApolloObjectIvar(owner, "tableNode");
     SEL viewSelector = @selector(view);
     id view = [node respondsToSelector:viewSelector] ? ((id (*)(id, SEL))objc_msgSend)(node, viewSelector) : nil;
     return [view isKindOfClass:UIScrollView.class] ? view : nil;
@@ -527,7 +542,7 @@ void ApolloScrollReturnButtonSettingChanged(void) {
               (unsigned long)sApolloScrollReturnStates.count);
 }
 
-static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
+static ApolloScrollReturn *ApolloScrollReturnStateForScrollView(UIViewController *owner, UIScrollView *scroll) {
     ApolloScrollReturn *state = objc_getAssociatedObject(owner, &kApolloScrollReturn);
     if (!state) {
         state = [ApolloScrollReturn new];
@@ -536,7 +551,6 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
         if (!sApolloScrollReturnStates) sApolloScrollReturnStates = [NSHashTable weakObjectsHashTable];
         [sApolloScrollReturnStates addObject:state];
     }
-    UIScrollView *scroll = ApolloScrollReturnTable(owner);
     if (state.scrollView != scroll) {
         [state.scrollView.panGestureRecognizer removeTarget:state action:@selector(dragged:)];
         [state clearAnimated:NO];
@@ -554,6 +568,19 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
     return state;
 }
 
+static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
+    return ApolloScrollReturnStateForScrollView(owner, ApolloScrollReturnTable(owner));
+}
+
+// Posts-tab jumps also support UIKit lists outside Apollo's Texture base class.
+// Tear down their observers and return affordance when leaving the page too.
+%hook UIViewController
+- (void)viewWillDisappear:(BOOL)animated {
+    [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:NO];
+    %orig;
+}
+%end
+
 %hook ApolloScrollReturnTableController
 - (void)textFieldEditingChangedWithSender:(id)sender {
     [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:YES];
@@ -566,8 +593,7 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloScrollReturn *state = ApolloScrollReturnState((UIViewController *)self);
-    Ivar ivar = class_getInstanceVariable([self class], "interceptingScrollView");
-    UIScrollView *proxy = ivar ? object_getIvar(self, ivar) : nil;
+    UIScrollView *proxy = ApolloObjectIvar(self, "interceptingScrollView");
     if ([proxy isKindOfClass:UIScrollView.class]) {
         // UIKit refuses status-bar scrolling when two visible scroll views
         // opt in. Apollo's real table and its full-screen proxy both did.
@@ -581,37 +607,23 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
     ApolloScrollReturn *state = ApolloScrollReturnState(owner);
     UIScrollView *scroll = state.scrollView;
     if (!scroll || !owner.view.window || owner.navigationController.topViewController != owner) return %orig;
-    // Capture the old viewport before revealing legacy UIKit chrome, whose
-    // inset changes. The modern hide-header path is presentation-only.
-    CGPoint previousOffset = scroll.contentOffset;
-    CGFloat previousInset = scroll.adjustedContentInset.top;
-    UINavigationController *navigation = owner.navigationController;
-    ApolloTopBarSetScrollToTopActive(navigation, YES);
-    if (navigation.navigationBarHidden) {
-        [navigation setNavigationBarHidden:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
-    }
-    // A second top tap is an undo, including while the first animation runs.
+    // A second title/status-bar tap remains an undo. Posts-tab re-selection
+    // shares the jump implementation below, but keeps its navigation semantics.
     if (state.hasPosition) {
         [state returnToPosition];
         return NO;
     }
-    if (previousOffset.y <= -previousInset + 1) {
+    if (scroll.contentOffset.y <= -scroll.adjustedContentInset.top + 1) {
+        ApolloTopBarSetScrollToTopActive(owner.navigationController, YES);
+        if (owner.navigationController.navigationBarHidden) {
+            [owner.navigationController setNavigationBarHidden:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+        }
         ApolloTabBarRevealAfterScrollToTop(owner.tabBarController);
-        ApolloTopBarSetScrollToTopActive(navigation, NO);
+        ApolloTopBarSetScrollToTopActive(owner.navigationController, NO);
         return NO;
     }
-    state.savedOffset = previousOffset;
-    state.savedTopInset = previousInset;
-    state.hasPosition = YES;
-    [state captureVisibleItem];
-    [state startTopJump];
-    [state showButton];
-    ApolloLog(@"[ScrollReturn] Saved position and scrolled to top");
+    [state scrollToTopSavingPosition];
     return NO;
-}
-- (void)viewWillDisappear:(BOOL)animated {
-    [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:NO];
-    %orig;
 }
 %end
 
@@ -638,9 +650,8 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    Ivar ivar = class_getInstanceVariable([self class], "dropDownTableView");
-    UITableView *dropdown = ivar ? object_getIvar(self, ivar) : nil;
-    if (dropdown && tableView == dropdown) {
+    UITableView *dropdown = ApolloObjectIvar(self, "dropDownTableView");
+    if (tableView == dropdown) {
         [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:YES];
         ApolloLog(@"[ScrollReturn] Cleared position for title feed selection");
     }
@@ -736,23 +747,14 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
     if (!scroll.window || scroll.hidden) {
         scroll = ApolloPostsTabContentScrollView(content, [content convertRect:content.bounds toView:nil]);
     }
+    ApolloScrollReturn *state = scroll ? ApolloScrollReturnStateForScrollView(owner, scroll) : nil;
+    // A second tap during the jump must not replace its original return spot
+    // or pop the page if an intermediate frame has already reached the top.
+    if (state.jumpLink && !state.restoring) return NO;
     CGFloat top = -scroll.adjustedContentInset.top;
     if (scroll && scroll.contentOffset.y > top + 1) {
-        // A tab tap must never enter the status-bar undo path.
-        [objc_getAssociatedObject(owner, &kApolloScrollReturn) clearAnimated:NO];
-        // The user asked for the top of the list, so a managed feed's native
-        // search bar comes down with it (#1138); the call is a no-op for lists
-        // native search does not manage. Stop any momentum first, as the
-        // status-bar jump does: a list still coasting from a flick reports
-        // isDragging and would refuse the reveal as the user's own scroll (the
-        // write below would stop it anyway, only too late for the arm). Arm
-        // before the write: the Reduce Motion jump is not animated, and a
-        // non-animated offset write never arms the reveal on its own.
-        [scroll setContentOffset:scroll.contentOffset animated:NO];
-        ApolloNativeFeedSearchWillScrollToTop(scroll);
-        [scroll setContentOffset:CGPointMake(scroll.contentOffset.x, top)
-                       animated:!UIAccessibilityIsReduceMotionEnabled()];
-        ApolloLog(@"[PostsTab] Scrolled %@ to top", NSStringFromClass(owner.class));
+        [state scrollToTopSavingPosition];
+        ApolloLog(@"[PostsTab] Jumping %@ to top with return position", NSStringFromClass(owner.class));
     } else if (nav.viewControllers.count > 1) {
         [nav popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
         ApolloLog(@"[PostsTab] Returned one page from %@", NSStringFromClass(owner.class));

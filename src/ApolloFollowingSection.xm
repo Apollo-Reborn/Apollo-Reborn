@@ -56,14 +56,17 @@
 //    once the handler closes its point window. Apollo's name-based expansion
 //    state can affect more models than that batch accounts for; see
 //    ApolloMultiredditExpansion.h for the reproduced invalid-row-count case.
+//    The favorite star's batch takes the same route when the table's cached
+//    counts are already stale before it starts (#1335).
 //
 // Everything else Apollo does to this table is reloadData (unsubscribe commits,
 // model refreshes), which is remap-safe: our mapping is invalidated in a
 // reloadData hook before the table re-queries anything.
 //
 // When "Separate Followed Users" is OFF and the section order is the default,
-// every hook is a straight %orig passthrough (one static + pointer check), so
-// the module is inert for anyone not using the feature.
+// the remapping hooks are straight %orig passthroughs (one static + pointer
+// check). The two crash guards on this list still run for everyone: the
+// multireddit expansion deferral and the favorite star's stale-count check.
 //
 // ============================ Reading the model ==============================
 // The u_ rows' native positions come from the sectionedSubreddits ivar. It's a
@@ -83,9 +86,11 @@
 #import <mach-o/loader.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloMultiredditExpansion.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "UserDefaultConstants.h"
 
 @interface RedditListViewController : UIViewController // Apollo.RedditListViewController
@@ -513,18 +518,12 @@ void ApolloFollowingAnimateNextRemoval(UITableView *table, NSIndexPath *path) {
 static NSString *const kApolloListHeaderParkKey = @"apolloListHeaderPark";
 
 static NSDictionary<NSString *, UIView *> *ApolloSubredditListVisibleSectionHeaders(UITableView *tableView) {
-    static Class headerClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        headerClass = objc_getClass("_TtC6Apollo31RecreatedTableSectionHeaderView");
-        if (!headerClass) ApolloLog(@"[ListEditing] RecreatedTableSectionHeaderView missing — headers won't animate");
-    });
+    Class headerClass = ApolloClassRecreatedTableSectionHeaderView;
     NSMutableDictionary<NSString *, UIView *> *headers = [NSMutableDictionary dictionary];
     if (!headerClass || !tableView) return headers;
     for (UIView *subview in tableView.subviews) {
         if (subview.hidden || ![subview isKindOfClass:headerClass]) continue;
-        Ivar labelIvar = class_getInstanceVariable(object_getClass(subview), "label");
-        UILabel *label = labelIvar ? object_getIvar(subview, labelIvar) : nil;
+        UILabel *label = ApolloObjectIvar(subview, "label");
         NSString *title = [label isKindOfClass:[UILabel class]] ? label.text.uppercaseString : nil;
         if (title.length > 0) headers[title] = subview;
     }
@@ -877,9 +876,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 // stored properties are real runtime ivars — read it that way (same approach
 // as ApolloHideModSubreddits/ApolloMultiredditEdit).
 static UITableView *ApolloFollowingTableViewOf(UIViewController *listVC) {
-    if (!listVC) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(listVC), "tableView");
-    UITableView *tableView = ivar ? object_getIvar(listVC, ivar) : nil;
+    UITableView *tableView = ApolloObjectIvar(listVC, "tableView");
     return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
 }
 
@@ -1092,8 +1089,7 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
         // label text and re-fitting is sufficient.
         UIView *header = %orig(tableView, kApolloNativeSectionModerator);
         if (!header) return nil;
-        Ivar labelIvar = class_getInstanceVariable(object_getClass(header), "label");
-        UILabel *label = labelIvar ? object_getIvar(header, labelIvar) : nil;
+        UILabel *label = ApolloObjectIvar(header, "label");
         if ([label isKindOfClass:[UILabel class]]) {
             label.text = @"FOLLOWING";
             [header sizeToFit];
@@ -1418,6 +1414,38 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     %orig;
 }
 
+// Apollo's favorite star (see ApolloTableSnapshotIsStale). The check runs
+// before the block, while UIKit's cached counts and the model should still
+// agree. When they don't, no row the block names can pass UIKit's validation,
+// so the favorite change lands and one reload presents it. The star resolved
+// its row from the on-screen layout and reads the name from the current model,
+// so the tapped subreddit is the one toggled as long as the stale change is in
+// another section (the #1335 case: Moderator Posts, MODERATOR, Multireddits).
+// No caller gate: a stale snapshot fails every batch, whoever submits it.
+- (void)performBatchUpdates:(void (^)(void))updates completion:(void (^)(BOOL))completion {
+    UITableView *table = (UITableView *)self;
+    if (!ApolloFollowingTableIsList(table)) {
+        %orig;
+        return;
+    }
+    if (ApolloDeferMultiredditTableUpdate(table)) {
+        // Inside an expansion scope the row calls are deferred, so a real
+        // batch would register nothing and fail the same validation.
+        if (updates) updates();
+    } else if (ApolloTableSnapshotIsStale(table)) {
+        ApolloLog(@"[FollowingSection] list counts changed since the last reload; applying this batch with a reload");
+        ApolloPerformBatchAsReload(table, updates);
+    } else {
+        %orig;
+        return;
+    }
+    if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(YES);
+        });
+    }
+}
+
 - (NSIndexPath *)indexPathForRowAtPoint:(CGPoint)point {
     NSIndexPath *visible = %orig;
     void *caller = __builtin_return_address(0);
@@ -1451,8 +1479,9 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     NSIndexPath *visible = ApolloFollowingVisiblePathForNative(map, indexPath);
     if (!visible) return %orig;
     if (visible.section != indexPath.section || visible.row != indexPath.row) {
-        ApolloLog(@"[FollowingSection] cell lookup native %ld/%ld -> visible %ld/%ld (caller %p)",
-                  (long)indexPath.section, (long)indexPath.row, (long)visible.section, (long)visible.row, caller);
+        // Every remapped lookup Apollo makes: debug level.
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [FollowingSection] cell lookup native %ld/%ld -> visible %ld/%ld (caller %p)",
+                     (long)indexPath.section, (long)indexPath.row, (long)visible.section, (long)visible.row, caller);
     }
     return %orig(visible);
 }

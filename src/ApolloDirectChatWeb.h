@@ -37,6 +37,12 @@ void ApolloMigrateModernMailboxPreferences(void);
 // never keep showing — or composing as — a previous account.
 BOOL ApolloModernChatControllerSessionIsCurrent(UIViewController * _Nullable controller);
 UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role);
+// The same palette as CSS-ready strings: hex colors for accent, primary (page),
+// secondary (grouped), tertiary (raised), separator, bar, text and
+// secondaryText, plus font (a CSS font-family list) and mode ("light" or
+// "dark"). Also styles the in-app profile editor's Reddit page
+// (ApolloProfileEditorWebViewController.m).
+NSDictionary<NSString *, NSString *> *ApolloModernWebThemePalette(UITraitCollection *traits);
 NSDictionary<NSString *, id> * _Nullable ApolloModernChatCachedStatus(void);
 extern NSString * const ApolloModernChatStatusDidChangeNotification;
 // Authoritative full-state publish from the background unread poller
@@ -45,7 +51,6 @@ extern NSString * const ApolloModernChatStatusDidChangeNotification;
 // polled snapshot covers both the messages and requests surfaces at once,
 // with exact counts.
 void ApolloModernChatPublishPolledStatus(NSDictionary<NSString *, id> *status);
-UIViewController *ApolloCreateModernChatViewController(void);
 // Notification/deep-link entry point. The optional destination must be a
 // Reddit Chat path such as /chat/room/<opaque-room-id>; invalid paths safely
 // fall back to the normal Chat entry screen.

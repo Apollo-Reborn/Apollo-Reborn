@@ -244,8 +244,9 @@ moderator menu its Moderator row opens) means the menu isn't even read.
 Visibility-only layouts drop the hidden rows and keep Apollo's order. Under a
 saved order, the catalogued rows are sorted by it and dealt back into the slots
 catalogued rows held. A row the context doesn't catalogue keeps Apollo's
-position: the comments header's Moderator row stays first, and Remind Me In…
-stays last. A layout that would empty the menu shows Apollo's menu. An
+position: the comments header's Moderator row stays first. Remind Me In… is
+catalogued (kind 2, the `remind-me` item), so it is hidden and sorted like any
+other row. A layout that would empty the menu shows Apollo's menu. An
 exception inside the layout step also falls back to Apollo's menu.
 
 The long press's Moderator row opens the object's moderator sheet after the

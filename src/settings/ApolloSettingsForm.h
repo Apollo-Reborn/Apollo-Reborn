@@ -112,6 +112,15 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 // UITableView's native fade animation. nil == always visible.
 @property (nonatomic, copy, nullable) BOOL (^visible)(void);
 
+// Extra styling for this section's header or footer view (an inline glyph in
+// the title, say), run each time the view is displayed, after the theme's own
+// styling. Header/footer views are reused across sections, so set everything
+// the block changes every time; accessibility it set is cleared again when the
+// view next shows a section without a block. Keep the title text the model's:
+// footer heights are measured from the plain footer string.
+@property (nonatomic, copy, nullable) void (^headerDisplay)(UITableViewHeaderFooterView *view);
+@property (nonatomic, copy, nullable) void (^footerDisplay)(UITableViewHeaderFooterView *view);
+
 @end
 
 @interface ApolloSettingsFormViewController : ApolloSettingsTableViewController
@@ -144,7 +153,6 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
-
 // Runs update (a -rebuildSectionContainingRowID:…, -rebuildForm or other
 // reload) for an edit made while the list is scrolled, and keeps the rows that
 // were on screen where they were. After a reload UIKit puts the scroll

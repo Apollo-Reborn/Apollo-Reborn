@@ -80,6 +80,7 @@
 #import <sys/sysctl.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 // Apollo's stock strip height (sub_10030c494) and y (sub_10030c880).
 static const CGFloat kApolloPalStripHeight = 14.0;
@@ -105,12 +106,11 @@ static BOOL sApolloPillKnown = NO;
 // only — nil on notch/older hardware). This is the exact source and
 // conversion UIKit's status bar uses, so it tracks new devices and iOS
 // releases without a per-device table.
-static BOOL ApolloDynamicIslandRect(CGRect *outRect) {
-    UIScreen *screen = [UIScreen mainScreen];
-    SEL exclusionSel = NSSelectorFromString(@"_exclusionArea");
+static BOOL ApolloDynamicIslandRect(UIScreen *screen, CGRect *outRect) {
+    SEL exclusionSel = @selector(_exclusionArea);
     if (![screen respondsToSelector:exclusionSel]) return NO;
     id area = ((id (*)(id, SEL))objc_msgSend)(screen, exclusionSel);
-    SEL rectSel = NSSelectorFromString(@"rect");
+    SEL rectSel = @selector(rect);
     if (!area || ![area respondsToSelector:rectSel]) return NO;
     CGRect rect = ((CGRect (*)(id, SEL))objc_msgSend)(area, rectSel);
     // Mirror -[_UIStatusBarVisualProvider_DynamicSplit sensorAreaRect]'s
@@ -140,17 +140,17 @@ static BOOL ApolloDynamicIslandRect(CGRect *outRect) {
     return YES;
 }
 
-static CGFloat ApolloNativeScale(void) {
-    CGFloat nativeScale = [UIScreen mainScreen].nativeScale;
+static CGFloat ApolloNativeScale(UIScreen *screen) {
+    CGFloat nativeScale = screen.nativeScale;
     return nativeScale > 0 ? nativeScale : 3.0;
 }
 
 // Rounds each edge (not origin + size) to the nearest physical pixel, so the
 // pill's top and bottom land on the same pixel rows as the island.
-static CGRect ApolloPixelAlignedRect(CGRect rect) {
+static CGRect ApolloPixelAlignedRect(CGRect rect, UIScreen *screen) {
     // Work in whole pixels and divide once, so a 375px width comes out as exactly
     // 125pt rather than 263.333 - 138.333 = 125.00000000000001.
-    CGFloat s = ApolloNativeScale();
+    CGFloat s = ApolloNativeScale(screen);
     CGFloat minX = round(CGRectGetMinX(rect) * s);
     CGFloat minY = round(CGRectGetMinY(rect) * s);
     CGFloat maxX = round(CGRectGetMaxX(rect) * s);
@@ -178,16 +178,29 @@ static BOOL ApolloPixelPalGeometry(UIWindow *window, CGRect *outApollo, CGRect *
     if (!sApolloPillKnown) return NO;
     CGRect apollo = sApolloPill;
     CGRect pill = apollo;
-    CGFloat halfPx = 0.5 / ApolloNativeScale();
+    // The island belongs to the screen the pill's window is on.
+    UIScreen *screen = window.windowScene.screen;
+    // TODO: Modernization - the UICollisionBehavior hooks have no window in
+    // scope (the behavior is usually not attached to an animator yet), so they
+    // pass nil. Until a window can be threaded through, reuse the screen seen by
+    // the last window-backed call (the pill's own window, captured from
+    // FauxCutOutView/PixelPalView/ThemeableWindow) instead of the main screen.
+    static __weak UIScreen *sLastPixelPalScreen;
+    if (screen) {
+        sLastPixelPalScreen = screen;
+    } else {
+        screen = sLastPixelPalScreen;
+    }
+    CGFloat halfPx = 0.5 / ApolloNativeScale(screen);
 
     CGRect island;
-    BOOL haveIsland = ApolloDynamicIslandRect(&island);
+    BOOL haveIsland = ApolloDynamicIslandRect(screen, &island);
     if (haveIsland && CGRectGetWidth(island) <= CGRectGetWidth(apollo) + kApolloIslandWidenSlack) {
         // Take the island rect as-is, each edge on a whole physical pixel. Every
         // island measured so far is 36.667pt tall (16 Pro: {138.333, 14, 125,
         // 36.667}; 18 Pro: {153.667, 14, 94.667, 36.667}), so Apollo's 37pt pill
         // always overhangs it somewhere.
-        pill = ApolloPixelAlignedRect(island);
+        pill = ApolloPixelAlignedRect(island, screen);
     } else if (haveIsland) {
         // The island came back clearly wider than Apollo's pill — only seen as a
         // suspect Display Zoom conversion. Never widen: keep Apollo's size and
@@ -196,7 +209,7 @@ static BOOL ApolloPixelPalGeometry(UIWindow *window, CGRect *outApollo, CGRect *
         CGFloat correctY = floor((CGRectGetMidY(island) - CGRectGetHeight(pill) / 2.0) / halfPx) * halfPx;
         if (fabs(correctY - CGRectGetMinY(apollo)) >= 0.75) pill.origin.y = correctY;
     } else if (window &&
-               [UIScreen mainScreen].nativeScale == [UIScreen mainScreen].scale &&
+               screen.nativeScale == screen.scale &&
                fabs(CGRectGetMinY(apollo) - kApolloStockPillY) < 0.25 &&
                fabs(CGRectGetHeight(apollo) - kApolloStockPillHeight) < 0.25) {
         // Fallback (private API gone): proportional model — gap between DI
@@ -218,7 +231,7 @@ static BOOL ApolloPixelPalGeometry(UIWindow *window, CGRect *outApollo, CGRect *
         ApolloRealMachineIdentifier(),
         haveIsland ? ApolloRectString(island) : @"(unavailable)",
         ApolloRectString(apollo), ApolloRectString(pill),
-        [UIScreen mainScreen].nativeScale, [UIScreen mainScreen].scale];
+        screen.nativeScale, screen.scale];
     if (![summary isEqualToString:lastLogged]) {
         lastLogged = summary;
         ApolloLog(@"[PixelPals] geometry %@", summary);
@@ -362,7 +375,7 @@ static UIWindow *ApolloPixelPalWindowForView(UIView *view) {
 #pragma mark - Window: tap flash, scene elements, freeze guard
 
 static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
-    Class overlayCls = objc_getClass("_TtC6Apollo29PixelPalOverlayViewController");
+    Class overlayCls = ApolloClassPixelPalOverlayViewController;
     UIViewController *vc = window.rootViewController;
     while (vc) {
         UIViewController *presented = vc.presentedViewController;
@@ -399,12 +412,7 @@ static BOOL ApolloPixelPalsBlockedByModal(UIWindow *window) {
         CGFloat dx = CGRectGetMinX(pill) - CGRectGetMinX(apollo);
         CGFloat dy = CGRectGetMinY(pill) - CGRectGetMinY(apollo);
         CGRect f = view.frame;
-
-        static Class elementCls;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            elementCls = objc_getClass("_TtC6Apollo34PixelPalAddedSceneElementImageView");
-        });
+        Class elementCls = ApolloClassPixelPalAddedSceneElementImageView;
 
         BOOL stockFlashSize = fabs(CGRectGetWidth(f) - kApolloStockPillWidth) < 0.5 &&
                               fabs(CGRectGetHeight(f) - kApolloStockPillHeight) < 0.5;

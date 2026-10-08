@@ -197,6 +197,9 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
 // Associates the model row with its live UISwitch so one shared valueChanged
 // target can dispatch to the row's block across cell reuse.
 static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
+// Marks a header/footer view a section's display block has styled, so the
+// accessibility it set can be cleared when the view is reused elsewhere.
+static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
 
 @implementation ApolloSettingsFormViewController {
     NSArray<ApolloSettingsSection *> *_sections;
@@ -624,6 +627,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             static NSString *const reuseID = @"ApolloSFButton";
             cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
             if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
+            BOOL enabled = row.enabled ? row.enabled() : YES;
             cell.textLabel.text = row.title;
             cell.textLabel.numberOfLines = 0;
             // Shared pool: reset what a sibling's configure block may have added
@@ -631,10 +635,14 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
             cell.accessoryType = UITableViewCellAccessoryNone;
             // Match switch/disclosure rows: unavailable actions must look
             // disabled too. Reset both values for this shared reuse pool.
-            BOOL enabled = row.enabled ? row.enabled() : YES;
-            cell.textLabel.enabled = enabled;
             cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
-            [self apollo_applyAccentActionTextColorToCell:cell];
+            cell.textLabel.enabled = enabled;
+            if (enabled) {
+                [self apollo_applyAccentActionTextColorToCell:cell];
+            } else {
+                [self apollo_removeAccentActionTextColorFromCell:cell];
+                cell.textLabel.textColor = [UIColor tertiaryLabelColor];
+            }
             break;
         }
         case ApolloSFRowKindCustom: {
@@ -792,7 +800,8 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         // its own height; the measurement is simply unused there.
         if (fabs([self tableView:tableView heightForFooterInSection:section] - fitted) >= 0.5) continue;
         adopted = YES;
-        ApolloLog(@"[SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt", (long)section, fitted);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt",
+                     (long)section, fitted);
     }
     label.attributedText = ownAttributedText;
     [template setNeedsLayout];
@@ -810,9 +819,36 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return measured ? (CGFloat)measured.doubleValue : UITableViewAutomaticDimension;
 }
 
+// Runs the section's headerDisplay/footerDisplay block on a view that is about
+// to show (see ApolloSettingsSection). A reused view that a block styled for
+// another section loses that styling's accessibility first; its text is the
+// table's own again by now (UIKit sets each section's title before display).
+- (void)apollo_sf_runDisplayBlockForView:(UIView *)view section:(NSInteger)section footer:(BOOL)footer {
+    if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    UITableViewHeaderFooterView *titleView = (UITableViewHeaderFooterView *)view;
+    ApolloSettingsSection *model = (section >= 0 && (NSUInteger)section < _visibleSections.count)
+        ? _visibleSections[(NSUInteger)section] : nil;
+    void (^display)(UITableViewHeaderFooterView *) = footer ? model.footerDisplay : model.headerDisplay;
+    if (objc_getAssociatedObject(titleView, kApolloSFDisplayStyledKey)) {
+        titleView.isAccessibilityElement = NO;
+        titleView.accessibilityLabel = nil;
+        titleView.textLabel.accessibilityLabel = nil;
+        objc_setAssociatedObject(titleView, kApolloSFDisplayStyledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!display) return;
+    display(titleView);
+    objc_setAssociatedObject(titleView, kApolloSFDisplayStyledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
+    [self apollo_sf_runDisplayBlockForView:view section:section footer:NO];
+}
+
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
     [super tableView:tableView willDisplayFooterView:view forSection:section];
     if (![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
+    [self apollo_sf_runDisplayBlockForView:view section:section footer:YES];
     [self apollo_sf_scheduleFooterHeightCheck];
 }
 

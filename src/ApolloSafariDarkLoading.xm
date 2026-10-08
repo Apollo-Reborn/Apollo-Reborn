@@ -265,11 +265,7 @@ static void ApolloSafariShieldRemoveNow(UIViewController *controller, NSString *
 %end
 
 %ctor {
-    Class safariClass = objc_getClass("SFSafariViewController");
-    if (!safariClass) {
-        ApolloLog(@"[SafariDark] SFSafariViewController unavailable, module idle");
-        return;
-    }
+    Class safariClass = [SFSafariViewController class];
     %init(ApolloSafariDarkLoadingBase);
 
     BOOL hasWebViewCallback = class_getInstanceMethod(safariClass, @selector(remoteViewControllerDidLoadWebView:)) != NULL;

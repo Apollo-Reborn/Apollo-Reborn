@@ -5,6 +5,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // MARK: - Header Style (Liquid Glass, iOS 26+)
 //
@@ -16,9 +17,10 @@
 // tweak-drawn progressive blur — see ApolloProgressiveBlur.xm), or Hidden
 // (no native edge effect and no replacement blur).
 //
-// Only the top edge is ever touched. Earlier builds applied the chosen style
+// Header Style only changes the top edge. Earlier builds applied its style
 // to all four edges, which painted a hard band behind the tab bar in Hard
-// mode; the bottom/left/right edges now always keep the system's treatment.
+// mode. Minimize separately suppresses the bottom effect behind its floating
+// pill; bottom/left/right styles always keep the system's treatment.
 //
 // UIScrollEdgeEffect/UIScrollEdgeEffectStyle are public iOS 26 SDK classes,
 // but referencing them directly would create a hard class reference that
@@ -67,14 +69,14 @@ static BOOL ApolloHeaderStyleHidesNativeEffect(NSInteger mode) {
 }
 
 static id ApolloScrollEdgeEffectStyleObjectForMode(NSInteger mode) {
-    Class styleClass = objc_getClass("UIScrollEdgeEffectStyle");
+    Class styleClass = ApolloClassUIScrollEdgeEffectStyle;
     if (!styleClass) return nil;
 
     SEL selector;
     switch (mode) {
-        case ApolloScrollEdgeEffectStyleSoft: selector = NSSelectorFromString(@"softStyle"); break;
-        case ApolloScrollEdgeEffectStyleHard: selector = NSSelectorFromString(@"hardStyle"); break;
-        default: selector = NSSelectorFromString(@"automaticStyle"); break;
+        case ApolloScrollEdgeEffectStyleSoft: selector = @selector(softStyle); break;
+        case ApolloScrollEdgeEffectStyleHard: selector = @selector(hardStyle); break;
+        default: selector = @selector(automaticStyle); break;
     }
     if (![styleClass respondsToSelector:selector]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(styleClass, selector);
@@ -107,10 +109,109 @@ static void ApolloNudgeEdgeEffectRebuild(UIScrollView *scrollView) {
     }
 }
 
+// Minimize keeps one native glass platter throughout its morph. UIKit also draws
+// a separate full-width bottom pocket inside the content scroll view. Leaving
+// that pocket enabled produces a stationary blur behind the compact pill on
+// iOS 27. Keep it disabled for the entire Minimize mode, including expanded, so
+// expansion never changes the material sampled by the selected tab at settle.
+// This is independent of Header Style and never changes an edge's style.
+@interface ApolloMinimizeBottomEdgeState : NSObject
+@property (nonatomic, weak) UIScrollView *scrollView;
+@property (nonatomic, weak) id effect;
+@property (nonatomic) BOOL nativeHidden;
+@property (nonatomic) BOOL writingHidden;
+@property (nonatomic) BOOL refreshScheduled;
+@end
+@implementation ApolloMinimizeBottomEdgeState
+@end
+static char kApolloMinimizeBottomEdgeStateKey;
+static NSHashTable<ApolloMinimizeBottomEdgeState *> *sApolloMinimizeBottomEdges;
+
+static BOOL ApolloMinimizeBottomEdgeEnabled(void) {
+    return sTabBarHideStyle == ApolloTabBarHideStyleMinimize &&
+        ApolloSupportsNativeTabBarScrollBehavior() &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll];
+}
+
+static BOOL ApolloMinimizeOwnsBottomEdge(UIScrollView *scrollView) {
+    if (!scrollView.window || !ApolloMinimizeBottomEdgeEnabled()) return NO;
+    UITabBarController *controller = nil;
+    for (UIResponder *responder = scrollView; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            controller = ((UIViewController *)responder).tabBarController;
+            if (controller) break;
+        }
+    }
+    UITabBar *bar = controller.tabBar;
+    UIView *content = controller.selectedViewController.viewIfLoaded;
+    if (!content || ![scrollView isDescendantOfView:content] ||
+        bar.window != scrollView.window || bar.hidden) return NO;
+    CGRect scrollFrame = [scrollView convertRect:scrollView.bounds toView:bar.window];
+    CGRect barFrame = [bar convertRect:bar.bounds toView:bar.window];
+    // Only the main content reaching this bottom bar qualifies. Do not hide
+    // pockets belonging to embedded carousels, small lists, or modal sheets.
+    return scrollFrame.size.width >= barFrame.size.width * 0.75 &&
+        scrollFrame.size.height >= bar.window.bounds.size.height * 0.5 &&
+        CGRectIntersectsRect(scrollFrame, barFrame);
+}
+
+static void ApolloRefreshMinimizeBottomEdge(ApolloMinimizeBottomEdgeState *state) {
+    id effect = state.effect;
+    if (!effect) return;
+    BOOL enabled = ApolloMinimizeBottomEdgeEnabled();
+    BOOL hidden = (enabled && ApolloMinimizeOwnsBottomEdge(state.scrollView)) || state.nativeHidden;
+    BOOL current = ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden));
+    if (current != hidden) {
+        state.writingHidden = YES;
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, @selector(setHidden:), hidden);
+        state.writingHidden = NO;
+        ApolloNudgeEdgeEffectRebuild(state.scrollView);
+    }
+    if (!enabled) {
+        // Restore native intent once, including cached/offscreen views, then
+        // stop retaining state or intercepting their bottom-edge updates.
+        objc_setAssociatedObject(effect, &kApolloMinimizeBottomEdgeStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [sApolloMinimizeBottomEdges removeObject:state];
+    }
+}
+
+static void ApolloApplyMinimizeBottomEdge(UIScrollView *scrollView) {
+    // The settings notification revisits every window when enabled later.
+    // Other styles need no bottom-effect lookup, state, or queued refresh.
+    if (!ApolloMinimizeBottomEdgeEnabled()) return;
+    SEL selector = NSSelectorFromString(@"bottomEdgeEffect");
+    if (![scrollView respondsToSelector:selector]) return;
+    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, selector);
+    if (![effect respondsToSelector:@selector(isHidden)] ||
+        ![effect respondsToSelector:@selector(setHidden:)]) return;
+    ApolloMinimizeBottomEdgeState *state = objc_getAssociatedObject(effect, &kApolloMinimizeBottomEdgeStateKey);
+    if (!state) {
+        state = [ApolloMinimizeBottomEdgeState new];
+        state.effect = effect;
+        state.nativeHidden = ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden));
+        objc_setAssociatedObject(effect, &kApolloMinimizeBottomEdgeStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!sApolloMinimizeBottomEdges) sApolloMinimizeBottomEdges = [NSHashTable weakObjectsHashTable];
+        [sApolloMinimizeBottomEdges addObject:state];
+    }
+    state.scrollView = scrollView;
+    ApolloRefreshMinimizeBottomEdge(state);
+    // didMoveToWindow can precede the tab controller's final geometry. Check
+    // again after that layout without installing another layoutSubviews hook.
+    if (!state.refreshScheduled) {
+        state.refreshScheduled = YES;
+        __weak ApolloMinimizeBottomEdgeState *weakState = state;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloMinimizeBottomEdgeState *current = weakState;
+            current.refreshScheduled = NO;
+            ApolloRefreshMinimizeBottomEdge(current);
+        });
+    }
+}
+
 static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger mode) {
-    SEL topSelector = NSSelectorFromString(@"topEdgeEffect");
-    if (![scrollView respondsToSelector:topSelector]) return;
-    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, topSelector);
+    SEL topEdgeEffectSelector = @selector(topEdgeEffect);
+    if (![scrollView respondsToSelector:topEdgeEffectSelector]) return;
+    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, topEdgeEffectSelector);
     if (!effect) return;
 
     objc_setAssociatedObject(effect, &kApolloScrollEdgeEffectIsTopKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -130,7 +231,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
         mode = ApolloScrollEdgeEffectStyleHidden;
     }
 
-    SEL setHiddenSelector = NSSelectorFromString(@"setHidden:");
+    SEL setHiddenSelector = @selector(setHidden:);
     BOOL hasSetHidden = [effect respondsToSelector:setHiddenSelector];
     if (hasSetHidden) {
         if (ApolloHeaderStyleHidesNativeEffect(mode)) {
@@ -142,7 +243,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
             // (never stamp — restoring must not un-hide an edge they keep
             // disabled) or was stamped by an earlier pass of ours (stamp is
             // already present and stays).
-            SEL isHiddenSelector = NSSelectorFromString(@"isHidden");
+            SEL isHiddenSelector = @selector(isHidden);
             BOOL alreadyHidden = [effect respondsToSelector:isHiddenSelector] &&
                 ((BOOL (*)(id, SEL))objc_msgSend)(effect, isHiddenSelector);
             if (!alreadyHidden) {
@@ -161,7 +262,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
     BOOL hasSetStyle = NO;
     id style = nil;
     if (!ApolloHeaderStyleHidesNativeEffect(mode)) {
-        SEL setStyleSelector = NSSelectorFromString(@"setStyle:");
+        SEL setStyleSelector = @selector(setStyle:);
         style = ApolloScrollEdgeEffectStyleObjectForMode(mode);
         hasSetStyle = (style != nil) && [effect respondsToSelector:setStyleSelector];
         if (hasSetStyle) {
@@ -182,6 +283,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView) {
     if (!IsLiquidGlass()) return;
     ApolloApplyHeaderStyleToTopEdge(scrollView, ApolloResolvedScrollEdgeEffectStyle());
+    ApolloApplyMinimizeBottomEdge(scrollView);
 }
 
 static void ApolloApplyScrollEdgeEffectStyleToViewTree(UIView *view) {
@@ -267,10 +369,10 @@ static NSHashTable<UISearchBar *> *sApolloHeaderStyleSearchBars;
 static char kApolloHeaderStyleSearchBarBaseInsetKey;   // NSValue(UIEdgeInsets): UIKit's own insets
 
 static void ApolloHeaderStyleApplySearchBarInsets(UISearchBar *searchBar) {
-    SEL overrideSelector = NSSelectorFromString(@"_setOverrideContentInsets:forRectEdges:");
-    SEL querySelector = NSSelectorFromString(@"_getOverrideContentInsets:overriddenEdges:");
-    SEL effectiveSelector = NSSelectorFromString(@"_effectiveContentInset");
-    SEL refreshSelector = NSSelectorFromString(@"_updateEffectiveContentInset");
+    SEL overrideSelector = @selector(_setOverrideContentInsets:forRectEdges:);
+    SEL querySelector = @selector(_getOverrideContentInsets:overriddenEdges:);
+    SEL effectiveSelector = @selector(_effectiveContentInset);
+    SEL refreshSelector = @selector(_updateEffectiveContentInset);
     if (!searchBar || ![searchBar respondsToSelector:overrideSelector] ||
         ![searchBar respondsToSelector:querySelector] ||
         ![searchBar respondsToSelector:effectiveSelector]) return;
@@ -329,21 +431,180 @@ void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar) {
     ApolloHeaderStyleApplySearchBarInsets(searchBar);
 }
 
+// MARK: - Hard: a scroll-away search bar keeps its look while held pinned
+//
+// The feed and comments search bars scroll away with the list
+// (hidesSearchBarWhenScrolling = YES), but they are attached pinned and only
+// switched to scroll-away once the screen has appeared: with no large title,
+// UIKit lays a scroll-away search bar out collapsed for the push, and the
+// field would be missing on arrival (NSBAttachNativeSearch). The same pin
+// holds the bar on screen for a few other moments: a re-appearance at the
+// top rest, the reveal at the top rest, the teardown after cancelling a
+// search, a cancelled swipe back.
+//
+// Under Hard those pins show (#1361). UIKit draws a pinned search bar as part
+// of the bar: the band runs down behind its row, with the band's edge line
+// under it, and the field gets a glass background that all but disappears
+// against the band. The moment the pin is released the band shrinks back to
+// the title row and the field crossfades to its filled background, half a
+// second after the push has landed. On a light or tinted theme that reads as
+// the search field loading in late; on a black theme as a flash (the row
+// stepping from gray to black behind a field that brightens and settles).
+// The release can't come earlier: UIKit keeps an item's pinned layout until
+// its push completes, and a bar that is scroll-away from the start is laid
+// out collapsed for the whole push.
+//
+// So while such a bar is held pinned under Hard, it keeps the look it will
+// have once released:
+// - the field is told it is not pinned (-updateIsPinnedInNavigationBar:NO),
+//   so it keeps its filled pill instead of turning to glass;
+// - a backing view behind the field paints the search row with the list's
+//   own background, which is what shows there once the band has shrunk.
+// What still changes on release: the band's edge line is UIKit's and stays
+// under whatever the band covers, so that 1pt line moves up to the title row;
+// and on a freshly pushed screen the placeholder settles a shade dimmer as the
+// field takes on UIKit's material, as it does in every style (see the hook).
+// UIKit shrinks the band on its next layout pass rather than inside the setter
+// that releases the pin, so the backing fades out over a few frames instead of
+// leaving the row to the band for one. A release with animations off (a
+// cancelled swipe-back's completion runs in performWithoutAnimation) removes
+// it at once.
+//
+// An active search keeps UIKit's own pinned presentation (band behind the
+// field); UIKit re-reports the pinned state on every layout of the bar, which
+// is where a search starting or ending during a hold is picked up. Soft, Blur
+// and Hidden are untouched: without an opaque band the two looks match.
+@interface ApolloRuntimeSearchBarVisualProvider : NSObject
+- (UISearchBar *)searchBar;
+@end
+
+@interface ApolloHeaderStyleHeldSearchBar : NSObject
+@property (nonatomic, weak) UISearchBar *searchBar;
+@property (nonatomic, weak) UINavigationItem *item;
+@property (nonatomic, weak) UIScrollView *backdropScrollView;
+@property (nonatomic, strong) UIView *backing;
+@property (nonatomic) BOOL lastHeld;
+@property (nonatomic) BOOL refreshScheduled;
+@property (nonatomic) BOOL materialPending;  // a pinned report was answered "not pinned" (see the hook)
+@end
+@implementation ApolloHeaderStyleHeldSearchBar
+@end
+
+static char kApolloHeaderStyleHeldItemKey;   // UINavigationItem -> state
+static char kApolloHeaderStyleHeldBarKey;    // UISearchBar -> the same state
+static NSHashTable<ApolloHeaderStyleHeldSearchBar *> *sApolloHeaderStyleHeldSearchBars;
+// Set once the hooks below install (Liquid Glass, with UIKit's search bar
+// provider and its pinned report present). Without them nothing would take a
+// backing down again or keep the field's pill, so nothing gets registered.
+static BOOL sApolloHeaderStyleHeldSearchBarHooksInstalled;
+
+static BOOL ApolloHeaderStyleHoldsScrollAwayLook(ApolloHeaderStyleHeldSearchBar *state) {
+    UISearchBar *searchBar = state.searchBar;
+    UINavigationItem *item = state.item;
+    if (!searchBar || !item || !IsLiquidGlass()) return NO;
+    if (ApolloResolvedScrollEdgeEffectStyle() != ApolloScrollEdgeEffectStyleHard) return NO;
+    UISearchController *searchController = item.searchController;
+    if (searchController.searchBar != searchBar || searchController.active) return NO;
+    if (item.hidesSearchBarWhenScrolling) return NO;   // not held: UIKit's look already matches
+    // No band behind the bar (a visible profile hero hides it): nothing to
+    // match, and the backing would paint over the hero. An edge effect that
+    // can't be read (the list is gone) counts the same: UIKit's look stays.
+    UIScrollView *backdrop = state.backdropScrollView;
+    id effect = ApolloSendObject(backdrop, @selector(topEdgeEffect));
+    if (![effect respondsToSelector:@selector(isHidden)] ||
+        ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) return NO;
+    return YES;
+}
+
+// The list's background, as it shows through the search row once the band
+// has shrunk. Only an opaque color can stand in for it.
+static UIColor *ApolloHeaderStyleHeldBackingColor(ApolloHeaderStyleHeldSearchBar *state) {
+    UIColor *color = state.backdropScrollView.backgroundColor;
+    if (!color) return nil;
+    UIColor *resolved = [color resolvedColorWithTraitCollection:state.searchBar.traitCollection];
+    return CGColorGetAlpha(resolved.CGColor) >= 0.99 ? color : nil;
+}
+
+static void ApolloHeaderStyleUpdateHeldSearchBar(ApolloHeaderStyleHeldSearchBar *state) {
+    UISearchBar *searchBar = state.searchBar;
+    if (!searchBar) return;
+    BOOL held = ApolloHeaderStyleHoldsScrollAwayLook(state);
+    BOOL wasHeld = state.lastHeld;
+    state.lastHeld = held;
+    UIColor *color = held ? ApolloHeaderStyleHeldBackingColor(state) : nil;
+    UIView *backing = state.backing;
+    if (color) {
+        if (!backing) {
+            backing = [[UIView alloc] initWithFrame:searchBar.bounds];
+            backing.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            backing.userInteractionEnabled = NO;
+            state.backing = backing;
+        }
+        [backing.layer removeAllAnimations];
+        backing.alpha = 1.0;
+        backing.backgroundColor = color;
+        if (backing.superview != searchBar) {
+            backing.frame = searchBar.bounds;
+            [searchBar insertSubview:backing atIndex:0];
+        }
+    } else if (backing) {
+        state.backing = nil;
+        if (backing.window && [UIView areAnimationsEnabled]) {
+            [UIView animateWithDuration:0.2 delay:0.0
+                                options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                             animations:^{ backing.alpha = 0.0; }
+                             completion:^(__unused BOOL finished) { [backing removeFromSuperview]; }];
+        } else {
+            [backing removeFromSuperview];
+        }
+    }
+    if (held != wasHeld) {
+        ApolloLog(@"[HeaderStyle] scroll-away search bar %@ (%@): backing=%d",
+                  held ? @"held pinned, keeping its scroll-away look" : @"released",
+                  searchBar.placeholder ?: @"", (int)(state.backing != nil));
+    }
+}
+
+void ApolloHeaderStyleRegisterScrollAwaySearchBar(UISearchBar *searchBar, UINavigationItem *item,
+                                                  UIScrollView *backdropScrollView) {
+    if (!searchBar || !item || !sApolloHeaderStyleHeldSearchBarHooksInstalled) return;
+    ApolloHeaderStyleHeldSearchBar *state = objc_getAssociatedObject(item, &kApolloHeaderStyleHeldItemKey);
+    if (!state || state.searchBar != searchBar) {
+        state = [ApolloHeaderStyleHeldSearchBar new];
+        objc_setAssociatedObject(item, &kApolloHeaderStyleHeldItemKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(searchBar, &kApolloHeaderStyleHeldBarKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!sApolloHeaderStyleHeldSearchBars) sApolloHeaderStyleHeldSearchBars = [NSHashTable weakObjectsHashTable];
+        [sApolloHeaderStyleHeldSearchBars addObject:state];
+    }
+    state.searchBar = searchBar;
+    state.item = item;
+    state.backdropScrollView = backdropScrollView;
+    ApolloHeaderStyleUpdateHeldSearchBar(state);
+}
+
 static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     // Registered bars on screen first; the ones off screen pick the style up
     // when they next enter a window.
     for (UISearchBar *searchBar in sApolloHeaderStyleSearchBars) {
         if (searchBar.window) ApolloHeaderStyleApplySearchBarInsets(searchBar);
     }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+    for (ApolloHeaderStyleHeldSearchBar *state in sApolloHeaderStyleHeldSearchBars.allObjects) {
+        ApolloHeaderStyleUpdateHeldSearchBar(state);
+    }
+    for (UIWindow *window in ApolloAllWindows()) {
         ApolloApplyAndNudgeViewTree(window);
+    }
+    // Also release effects on detached/cached controllers when Minimize is
+    // disabled. The weak registry does not keep those controllers alive.
+    for (ApolloMinimizeBottomEdgeState *state in sApolloMinimizeBottomEdges.allObjects) {
+        ApolloRefreshMinimizeBottomEdge(state);
     }
     // The rebuild that runs in the same turn as an un-hide/style change can
     // compute pocket geometry from mid-change state (observed: hard band
     // missing its status-bar cover until the next scroll tick). A second
     // nudge on the next runloop turn recomputes from settled geometry.
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        for (UIWindow *window in ApolloAllWindows()) {
             ApolloNudgeViewTree(window);
         }
     });
@@ -354,8 +615,8 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 // new hard default while navigation chrome changes. SwiftUI solves this through
 // an inherited environment value on NavigationStack; Apollo is UIKit, so the
 // equivalent app-wide enforcement point is UIScrollEdgeEffect's setters. Both
-// hooks act only on effects stamped as top-edge by the apply pass — bottom and
-// horizontal edges always keep whatever UIKit wants.
+// Header style hooks act only on stamped top effects. Minimize's separate bottom
+// lease records UIKit's latest visibility request while temporarily hiding it.
 %group ApolloScrollEdgeEffectRuntimeHooks
 
 %hook ApolloRuntimeScrollEdgeEffect
@@ -377,6 +638,13 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 }
 
 - (void)setHidden:(BOOL)hidden {
+    ApolloMinimizeBottomEdgeState *bottom = ApolloMinimizeBottomEdgeEnabled()
+        ? objc_getAssociatedObject(self, &kApolloMinimizeBottomEdgeStateKey) : nil;
+    if (bottom && !bottom.writingHidden) {
+        bottom.nativeHidden = hidden;
+        %orig(ApolloMinimizeOwnsBottomEdge(bottom.scrollView) || hidden);
+        return;
+    }
     NSInteger mode = ApolloResolvedScrollEdgeEffectStyle();
     BOOL hideForHero = mode == ApolloScrollEdgeEffectStyleHard &&
         [objc_getAssociatedObject(self, &kApolloEdgeHasVisibleProfileHeroKey) boolValue];
@@ -408,11 +676,98 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 
 %end
 
+// Hard's held scroll-away search bars (see the MARK above): the policy setter
+// is where a hold starts and ends; the provider's pinned report, sent on
+// every layout of the bar, keeps the field's filled background while held.
+%group ApolloHeaderStyleHeldSearchBarHooks
+
+%hook UINavigationItem
+
+- (void)setHidesSearchBarWhenScrolling:(BOOL)hidesSearchBarWhenScrolling {
+    %orig;
+    ApolloHeaderStyleHeldSearchBar *state = objc_getAssociatedObject(self, &kApolloHeaderStyleHeldItemKey);
+    if (state) ApolloHeaderStyleUpdateHeldSearchBar(state);
+}
+
+%end
+
+%hook ApolloRuntimeSearchBarVisualProvider
+
+- (void)updateIsPinnedInNavigationBar:(BOOL)pinned {
+    UISearchBar *searchBar = [self searchBar];
+    ApolloHeaderStyleHeldSearchBar *state = searchBar
+        ? objc_getAssociatedObject(searchBar, &kApolloHeaderStyleHeldBarKey) : nil;
+    if (!state) {
+        %orig;
+        return;
+    }
+    BOOL held = ApolloHeaderStyleHoldsScrollAwayLook(state);
+    if (pinned && held) {
+        state.materialPending = YES;
+        %orig(NO);
+    } else {
+        // A released field draws its pill through UIKit's dynamic background
+        // material, a layer UIKit wraps around the field when the pinned state
+        // changes after the bar is hosted. A bar held from the moment it was
+        // attached never saw that change and still has the plain fill it was
+        // created with. That fill is what keeps the pill visible while the
+        // screen slides in (the push shows the bar through a portal, which
+        // draws a plain fill but not the material), but its placeholder reads
+        // brighter than a released bar's. So once the hold is over, run the
+        // change through glass inside this same pass: the field lands on the
+        // released material, with nothing drawn in between.
+        if (!pinned && state.materialPending) {
+            UITextField *field = searchBar.searchTextField;
+            CALayer *superlayer = field.layer.superlayer;
+            BOOL hasMaterial = field.superview && superlayer && superlayer != field.superview.layer;
+            if (hasMaterial) {
+                state.materialPending = NO;
+            } else if (field.window) {
+                state.materialPending = NO;
+                %orig(YES);
+            }
+        }
+        %orig;
+    }
+    // This arrives from the bar's layout pass: keep the backing's color in
+    // step (a plain property, not a layout input), and leave adding or
+    // removing it for a search that started or ended during the hold to the
+    // next turn instead of changing the view tree inside the pass.
+    UIView *backing = state.backing;
+    UIColor *color = backing ? state.backdropScrollView.backgroundColor : nil;
+    if (color && ![backing.backgroundColor isEqual:color]) backing.backgroundColor = color;
+    if (held != state.lastHeld && !state.refreshScheduled) {
+        state.refreshScheduled = YES;
+        __weak ApolloHeaderStyleHeldSearchBar *weakState = state;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloHeaderStyleHeldSearchBar *current = weakState;
+            if (!current) return;
+            current.refreshScheduled = NO;
+            ApolloHeaderStyleUpdateHeldSearchBar(current);
+        });
+    }
+}
+
+%end
+
+%end
+
 %ctor {
     Class edgeEffectClass = objc_getClass("UIScrollEdgeEffect");
     if (edgeEffectClass) {
         %init(ApolloScrollEdgeEffectRuntimeHooks,
               ApolloRuntimeScrollEdgeEffect = edgeEffectClass);
+    }
+    Class searchProviderClass = objc_getClass("_UISearchBarVisualProviderIOS");
+    if (IsLiquidGlass() && searchProviderClass &&
+        class_getInstanceMethod(searchProviderClass, @selector(updateIsPinnedInNavigationBar:)) &&
+        class_getInstanceMethod(searchProviderClass, @selector(searchBar))) {
+        %init(ApolloHeaderStyleHeldSearchBarHooks,
+              ApolloRuntimeSearchBarVisualProvider = searchProviderClass);
+        sApolloHeaderStyleHeldSearchBarHooksInstalled = YES;
+        ApolloLog(@"[HeaderStyle] held scroll-away search bar hooks installed");
+    } else if (IsLiquidGlass()) {
+        ApolloLog(@"[HeaderStyle] held scroll-away search bar hooks NOT installed: provider/selectors missing");
     }
     ApolloLog(@"[HeaderStyle] module loaded, mode=%ld liquidGlass=%d", (long)sScrollEdgeEffectStyle, IsLiquidGlass());
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloScrollEdgeEffectStyleChangedNotification
@@ -421,4 +776,8 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
                                                    usingBlock:^(__unused NSNotification *notification) {
         ApolloApplyScrollEdgeEffectStyleToAllScrollViews();
     }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloTabBarScrollBehaviorChangedNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
+            ApolloApplyScrollEdgeEffectStyleToAllScrollViews();
+        }];
 }

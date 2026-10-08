@@ -11,9 +11,11 @@
 #import "ApolloInlineImageMetadata.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloMediaMetadata.h"
 #import "ApolloMarkdownToolbarGif.h"
 #import "Tweak.h"
+#import "ApolloClasses.h"
 
 // FFmpegKit's static libs are device-arm64 only, so simulator/dev builds
 // (APOLLO_SIM_BUILD, see Makefile + scripts/run-in-sim.sh) compile without it.
@@ -41,8 +43,7 @@ static const void *kApolloRouteButtonStyleLoggedKey = &kApolloRouteButtonStyleLo
 // color hides the feed at rest, while view alpha supplies the smooth opening,
 // drag, dismissal, and cancelled-drag transitions.
 static UIView *ApolloMediaPresentationView(id owner, const char *name) {
-    Ivar ivar = class_getInstanceVariable([owner class], name);
-    id value = ivar ? object_getIvar(owner, ivar) : nil;
+    id value = ApolloObjectIvar(owner, name);
     return [value isKindOfClass:UIView.class] ? value : nil;
 }
 
@@ -67,7 +68,7 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     object_setClass(wrapper, ApolloMediaTransparentWrapperView.class);
     wrapper.opaque = NO;
     wrapper.backgroundColor = UIColor.clearColor;
-    ApolloLogDebug(@"[MediaBackdrop] transparent media wrapper installed");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaBackdrop] transparent media wrapper installed");
 }
 
 %hook _TtC6Apollo33MediaViewerPresentationController
@@ -132,7 +133,7 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
         dim.alpha = 0.0;
         snapshot.alpha = 0.0;
     } completion:nil];
-    ApolloLogDebug(@"[MediaBackdrop] finishing dismissal fade from %.3f snapshot=%d",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaBackdrop] finishing dismissal fade from %.3f snapshot=%d",
                    visibleAlpha, snapshot != nil);
 }
 
@@ -151,13 +152,12 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     // Apollo ignores this handler while its zoom view is double-tapped. Keep
     // zoom/pan gestures from fading the backdrop when no dismissal is active.
     UIView *scrollView = ApolloMediaPresentationView(self, "scrollView");
-    SEL doubleTapped = NSSelectorFromString(@"doubleTapped");
-    if (!scrollView || ([scrollView respondsToSelector:doubleTapped] &&
-        ((BOOL (*)(id, SEL))objc_msgSend)(scrollView, doubleTapped))) return;
+    SEL doubleTappedSelector = @selector(doubleTapped);
+    if (!scrollView || ([scrollView respondsToSelector:doubleTappedSelector] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(scrollView, doubleTappedSelector))) return;
     UIViewController *page = ((UIViewController *)self).parentViewController;
     UIPresentationController *presentation = page.presentationController;
-    if (![NSStringFromClass(presentation.class)
-            isEqualToString:@"_TtC6Apollo33MediaViewerPresentationController"]) return;
+    if (![presentation isMemberOfClass:ApolloClassMediaViewerPresentationController]) return;
     UIView *dim = ApolloMediaPresentationView(presentation, "dimmingView");
     if (!dim || page.isBeingDismissed) return;
 
@@ -169,6 +169,138 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     CGFloat travel = MAX(1.0, MIN(size.width, size.height) * 0.5);
     CGFloat alpha = MAX(0.0, 1.0 - hypot(translation.x, translation.y) / travel);
     dim.alpha = MIN(dim.alpha, alpha);
+}
+
+%end
+
+// #1346: when a swipe between pages of the fullscreen viewer settles,
+// UIPageViewController looks up the controller of the page it ended on and
+// asserts "No view controller managing visible view" when there is none
+// (-queuingScrollView:didEndManualScroll:..., UIPageViewController.m:2072 on
+// iOS 27.0). It finds that controller one of two ways:
+//   - a finished swipe (or a programmatic page change): the controller whose
+//     root view is revealView (+[UIViewController viewControllerForView:]);
+//   - a swipe that bounced back: the outgoing controller recorded when the
+//     finger lifted, in _incomingAndOutgoingViewControllersForManualTransition.
+// Apollo's pager is exposed to both. Its data source builds a new page
+// controller on every before/after call, and its async media loads
+// (loadViewControllers(), 0x100264814) change the page with an animated
+// setViewControllers:, whose commit replaces that record with an empty one.
+// When the lookup would come back empty, finish the swipe on the page that is
+// showing so UIKit's appearance and delegate bookkeeping still run.
+static NSString *const kApolloMediaPagerOutgoingKey = @"UIPageCurlControllerOutgoingLeftViewControllerKey";
+
+// The same lookup UIKit makes (the view's __viewDelegate). nextResponder is
+// the fallback: for a controller's root view it returns that controller.
+static UIViewController *ApolloMediaPagerOwner(UIView *view) {
+    if (!view) return nil;
+    static BOOL hasLookup;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        hasLookup = [UIViewController respondsToSelector:@selector(viewControllerForView:)];
+        if (!hasLookup) ApolloLog(@"[MediaPagerGuard] +viewControllerForView: missing; using nextResponder to find page owners");
+    });
+    id owner = hasLookup
+        ? ((id (*)(id, SEL, id))objc_msgSend)(UIViewController.class, @selector(viewControllerForView:), view)
+        : view.nextResponder;
+    return [owner isKindOfClass:UIViewController.class] ? owner : nil;
+}
+
+static UIView *ApolloMediaPagerVisibleView(id queuingScrollView) {
+    id view = ApolloSendObject(queuingScrollView, @selector(visibleView));
+    return [view isKindOfClass:UIView.class] ? view : nil;
+}
+
+// The page on screen, else the pager's current page.
+static UIViewController *ApolloMediaPagerShowingPage(UIPageViewController *pager, id queuingScrollView) {
+    UIViewController *page = ApolloMediaPagerOwner(ApolloMediaPagerVisibleView(queuingScrollView));
+    if (page.parentViewController == pager) return page;
+    page = pager.viewControllers.firstObject;
+    return (page.parentViewController == pager && page.isViewLoaded) ? page : nil;
+}
+
+static Ivar ApolloMediaPagerTransitionIvar(void) {
+    static Ivar ivar;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ivar = class_getInstanceVariable(UIPageViewController.class,
+                                         "_incomingAndOutgoingViewControllersForManualTransition");
+        if (!ivar) ApolloLog(@"[MediaPagerGuard] manual transition record missing; bounced-back swipes go straight to UIKit");
+    });
+    return ivar;
+}
+
+// UIKit owns this ivar strongly (objc_storeStrong); store it the same way.
+static void ApolloMediaPagerStoreTransition(UIPageViewController *pager, Ivar ivar, NSDictionary *transition) {
+    void **slot = (void **)((uint8_t *)(__bridge void *)pager + ivar_getOffset(ivar));
+    void *previous = *slot;
+    *slot = (void *)CFBridgingRetain(transition);
+    if (previous) CFRelease(previous);
+}
+
+// A page left on screen without a controller can't page any further (the
+// data source has nothing to step from), so put the pager's current page
+// back once the scroll has stopped.
+static void ApolloMediaPagerRestoreLivePage(UIPageViewController *pager, UIScrollView *queuingScrollView) {
+    __weak UIPageViewController *weakPager = pager;
+    __weak UIScrollView *weakScrollView = queuingScrollView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIPageViewController *strongPager = weakPager;
+        UIScrollView *scrollView = weakScrollView;
+        if (!strongPager.viewIfLoaded.window || !scrollView) return;
+        if (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) return;
+        UIView *visible = ApolloMediaPagerVisibleView(scrollView);
+        if (!visible || ApolloMediaPagerOwner(visible)) return;
+        UIViewController *page = strongPager.viewControllers.firstObject;
+        if (page.parentViewController != strongPager) return;
+        ApolloLog(@"[MediaPagerGuard] page on screen has no controller; showing the pager's current page again");
+        [strongPager setViewControllers:@[page]
+                              direction:UIPageViewControllerNavigationDirectionForward
+                               animated:NO
+                             completion:nil];
+    });
+}
+
+%hook _TtC6Apollo23MediaPageViewController
+
+- (void)queuingScrollView:(UIScrollView *)queuingScrollView didEndManualScroll:(BOOL)manual
+             toRevealView:(UIView *)revealView direction:(NSInteger)direction animated:(BOOL)animated
+                didFinish:(BOOL)finished didComplete:(BOOL)completed {
+    UIPageViewController *pager = (UIPageViewController *)self;
+    if (!manual || completed) {
+        if (ApolloMediaPagerOwner(revealView)) {
+            %orig;
+            return;
+        }
+        UIViewController *showing = ApolloMediaPagerShowingPage(pager, queuingScrollView);
+        ApolloLog(@"[MediaPagerGuard] swipe settled on a page with no controller (manual=%d); %@", manual,
+                  showing ? @"finishing it on the page that is showing" : @"no live page, skipping UIKit's update");
+        if (showing) %orig(queuingScrollView, manual, showing.view, direction, animated, finished, completed);
+        ApolloMediaPagerRestoreLivePage(pager, queuingScrollView);
+        return;
+    }
+
+    Ivar ivar = ApolloMediaPagerTransitionIvar();
+    id transition = ivar ? object_getIvar(self, ivar) : nil;
+    if (!ivar || ([transition isKindOfClass:NSDictionary.class] &&
+                  ((NSDictionary *)transition)[kApolloMediaPagerOutgoingKey])) {
+        %orig;
+        return;
+    }
+    UIViewController *showing = ApolloMediaPagerShowingPage(pager, queuingScrollView);
+    ApolloLog(@"[MediaPagerGuard] bounced-back swipe lost the page it started from; %@",
+              showing ? @"finishing it on the page that is showing" : @"no live page, skipping UIKit's update");
+    if (showing) {
+        NSMutableDictionary *repaired = [transition isKindOfClass:NSDictionary.class]
+            ? [(NSDictionary *)transition mutableCopy] : [NSMutableDictionary dictionary];
+        repaired[kApolloMediaPagerOutgoingKey] = showing;
+        ApolloMediaPagerStoreTransition(pager, ivar, repaired);
+        %orig;
+    }
+    // As after a finished swipe: a page left on screen without a controller
+    // gets the pager's current page back once scrolling stops (a no-op when
+    // the page on screen has one).
+    ApolloMediaPagerRestoreLivePage(pager, queuingScrollView);
 }
 
 %end
@@ -212,7 +344,10 @@ static void ApolloMediaClearRouteButtonLayer(CALayer *layer, CALayer *primaryIma
 static void ApolloMediaStyleVideoControlsAirPlayButton(UIButton *button, NSString *reason) {
     if (![button isKindOfClass:[UIButton class]] || !ApolloMediaViewIsInClassNamed(button, @"VideoControlsView")) return;
 
-    UIImage *airPlayImage = [[UIImage imageNamed:@"video-player-airplay"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    static UIImage *airPlayImage;
+    if (!airPlayImage) {
+        airPlayImage = [[UIImage imageNamed:@"video-player-airplay"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
     if (!airPlayImage) return;
 
     if ([button respondsToSelector:@selector(setConfiguration:)]) {
@@ -240,7 +375,7 @@ static void ApolloMediaStyleVideoControlsAirPlayButton(UIButton *button, NSStrin
 
     BOOL activeRoute = button.selected || ((button.state & UIControlStateSelected) == UIControlStateSelected);
     if (activeRoute) {
-        button.tintColor = [UIColor respondsToSelector:@selector(systemBlueColor)] ? [UIColor systemBlueColor] : [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+        button.tintColor = [UIColor systemBlueColor];
     } else {
         button.tintColor = [UIColor whiteColor];
     }
@@ -348,8 +483,7 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
 
 + (UIImage *)createContentsForkey:(id)key drawParameters:(id)parameters isCancelled:(id)cancelled {
     @try {
-        UIImage *result = %orig;
-        return result;
+        return %orig;
     }
     @catch (NSException *exception) {
         return nil;
@@ -369,7 +503,7 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
 }
 
 - (void)startAnimating {
-    if (ApolloViewIsInlineGIF(self) && !ApolloInlineGIFViewShouldAutoplay(self)) {
+    if (!ApolloInlineGIFViewShouldAutoplay(self)) {
         MSHookIvar<BOOL>(self, "_shouldAnimate") = NO;
         return;
     }
@@ -383,19 +517,18 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
         return;
     }
 
-    if (ApolloViewIsInlineGIF(self) && !ApolloInlineGIFViewShouldAutoplay(self)) {
-        MSHookIvar<BOOL>(self, "_shouldAnimate") = NO;
+    BOOL &shouldAnimate = MSHookIvar<BOOL>(self, "_shouldAnimate");
+    if (!ApolloInlineGIFViewShouldAutoplay(self)) {
+        shouldAnimate = NO;
         return;
     }
-
-    BOOL shouldAnimate = MSHookIvar<BOOL>(self, "_shouldAnimate");
     if (!shouldAnimate) {
         return;
     }
 
-    NSDictionary *delayTimesForIndexes = [animatedImage delayTimesForIndexes];
-    NSUInteger currentFrameIndex = MSHookIvar<NSUInteger>(self, "_currentFrameIndex");
-    NSNumber *delayTimeNumber = [delayTimesForIndexes objectForKey:@(currentFrameIndex)];
+    NSUInteger &currentFrameIndex = MSHookIvar<NSUInteger>(self, "_currentFrameIndex");
+    BOOL &needsDisplay = MSHookIvar<BOOL>(self, "_needsDisplayWhenImageBecomesAvailable");
+    NSNumber *delayTimeNumber = [[animatedImage delayTimesForIndexes] objectForKey:@(currentFrameIndex)];
 
     if (delayTimeNumber != nil) {
         NSTimeInterval delayTime = [delayTimeNumber doubleValue];
@@ -404,53 +537,49 @@ static void ApolloMediaRepairRouteControlLayout(UIView *routeView, NSString *rea
         if (image) {
             MSHookIvar<UIImage *>(self, "_currentFrame") = image;
 
-            BOOL needsDisplay = MSHookIvar<BOOL>(self, "_needsDisplayWhenImageBecomesAvailable");
             if (needsDisplay) {
                 [self.layer setNeedsDisplay];
-                MSHookIvar<BOOL>(self, "_needsDisplayWhenImageBecomesAvailable") = NO;
+                needsDisplay = NO;
             }
 
             // Fix for 120Hz displays: use preferredFramesPerSecond instead of duration * frameInterval
-            double *accumulatorPtr = &MSHookIvar<double>(self, "_accumulator");
-            if (@available(iOS 10.0, *)) {
-                NSInteger preferredFPS = displayLink.preferredFramesPerSecond;
-                if (preferredFPS > 0) {
-                    *accumulatorPtr += 1.0 / (double)preferredFPS;
-                } else {
-                    *accumulatorPtr += displayLink.duration;
-                }
+            double &accumulator = MSHookIvar<double>(self, "_accumulator");
+            NSInteger preferredFPS = displayLink.preferredFramesPerSecond;
+            if (preferredFPS > 0) {
+                accumulator += 1.0 / (double)preferredFPS;
             } else {
-                *accumulatorPtr += displayLink.duration;
+                accumulator += displayLink.duration;
             }
 
             NSUInteger frameCount = [animatedImage frameCount];
             NSUInteger loopCount = [animatedImage loopCount];
 
-            while (*accumulatorPtr >= delayTime) {
-                *accumulatorPtr -= delayTime;
-                MSHookIvar<NSUInteger>(self, "_currentFrameIndex")++;
+            while (accumulator >= delayTime) {
+                accumulator -= delayTime;
+                currentFrameIndex++;
 
-                if (MSHookIvar<NSUInteger>(self, "_currentFrameIndex") >= frameCount) {
-                    MSHookIvar<NSUInteger>(self, "_loopCountdown")--;
+                if (currentFrameIndex >= frameCount) {
+                    NSUInteger &loopCountdown = MSHookIvar<NSUInteger>(self, "_loopCountdown");
+                    loopCountdown--;
 
                     void (^loopCompletionBlock)(NSUInteger) = MSHookIvar<void (^)(NSUInteger)>(self, "_loopCompletionBlock");
                     if (loopCompletionBlock) {
-                        loopCompletionBlock(MSHookIvar<NSUInteger>(self, "_loopCountdown"));
+                        loopCompletionBlock(loopCountdown);
                     }
 
-                    if (MSHookIvar<NSUInteger>(self, "_loopCountdown") == 0 && loopCount > 0) {
+                    if (loopCountdown == 0 && loopCount > 0) {
                         [self stopAnimating];
                         return;
                     }
-                    MSHookIvar<NSUInteger>(self, "_currentFrameIndex") = 0;
+                    currentFrameIndex = 0;
                 }
-                MSHookIvar<BOOL>(self, "_needsDisplayWhenImageBecomesAvailable") = YES;
+                needsDisplay = YES;
             }
         } else {
-            MSHookIvar<BOOL>(self, "_needsDisplayWhenImageBecomesAvailable") = YES;
+            needsDisplay = YES;
         }
     } else {
-        MSHookIvar<NSUInteger>(self, "_currentFrameIndex")++;
+        currentFrameIndex++;
     }
 }
 
@@ -508,9 +637,8 @@ static const NSTimeInterval kApolloGifLoopSeekDedupeWindow = 0.25;
                           self, delta * 1000.0);
             }
             if (completionHandler) {
-                void (^handler)(BOOL) = [completionHandler copy];
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    handler(YES);
+                    completionHandler(YES);
                 });
             }
             return;
@@ -522,7 +650,6 @@ static const NSTimeInterval kApolloGifLoopSeekDedupeWindow = 0.25;
 }
 
 %end
-
 
 %hook NSRegularExpression
 
@@ -819,16 +946,12 @@ static NSString *ApolloExtractGiphyIDFromToken(NSString *token) {
     return giphyID.length > 0 ? giphyID : nil;
 }
 
-static NSDictionary *ApolloFixInvalidGiphyMetadata(NSDictionary *orig, NSUInteger *outSynthesizedCount) {
-    if (outSynthesizedCount) {
-        *outSynthesizedCount = 0;
-    }
+static NSDictionary *ApolloFixInvalidGiphyMetadata(NSDictionary *orig) {
     if (![orig isKindOfClass:[NSDictionary class]] || orig.count == 0) {
         return orig;
     }
 
     NSMutableDictionary *fixed = nil;
-    NSUInteger synthesizedCount = 0;
 
     for (NSString *key in orig) {
         if (![key isKindOfClass:[NSString class]] || ![key hasPrefix:@"giphy|"]) {
@@ -868,28 +991,14 @@ static NSDictionary *ApolloFixInvalidGiphyMetadata(NSDictionary *orig, NSUIntege
             @"t": @"giphy",
             @"id": key,
         };
-        synthesizedCount++;
     }
 
-    if (outSynthesizedCount) {
-        *outSynthesizedCount = synthesizedCount;
-    }
     return fixed ?: orig;
 }
 
-static NSDictionary *ApolloFixMediaMetadata(NSDictionary *orig, NSUInteger *outGiphyCount, NSUInteger *outRedditGifCount) {
-    if (outGiphyCount) *outGiphyCount = 0;
-    if (outRedditGifCount) *outRedditGifCount = 0;
+static NSDictionary *ApolloFixMediaMetadata(NSDictionary *orig) {
     if (![orig isKindOfClass:[NSDictionary class]] || orig.count == 0) return orig;
-
-    NSUInteger giphyCount = 0;
-    NSDictionary *fixed = ApolloFixInvalidGiphyMetadata(orig, &giphyCount);
-    NSUInteger redditGifCount = 0;
-    fixed = ApolloFixRedditHostedGifMetadata(fixed, &redditGifCount);
-
-    if (outGiphyCount) *outGiphyCount = giphyCount;
-    if (outRedditGifCount) *outRedditGifCount = redditGifCount;
-    return fixed;
+    return ApolloFixRedditHostedGifMetadata(ApolloFixInvalidGiphyMetadata(orig), NULL);
 }
 
 // MARK: - "Processing img" Placeholder Fix (shared between RDKComment and RDKLink)
@@ -926,9 +1035,9 @@ static NSString *ApolloFixProcessingImgPlaceholders(NSString *text, NSDictionary
         regex = [NSRegularExpression regularExpressionWithPattern:@"\\*Processing img ([a-zA-Z0-9_]+)\\.{3}\\*" options:0 error:nil];
     });
 
-    NSMutableString *fixed = [text mutableCopy];
-    NSArray *matches = [regex matchesInString:fixed options:0 range:NSMakeRange(0, fixed.length)];
+    NSArray *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
     if (matches.count == 0) return text;
+    NSMutableString *fixed = [text mutableCopy];
 
     NSUInteger replacedCount = 0;
     for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
@@ -1016,8 +1125,7 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 %hook RDKComment
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
-    NSUInteger giphyCount = 0, redditGifCount = 0;
-    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
+    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata);
     %orig(fixed);
     ApolloInlineImageRegisterMediaMetadata(fixed);
 }
@@ -1034,8 +1142,7 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 %hook RDKLink
 
 - (void)setMediaMetadata:(NSDictionary *)mediaMetadata {
-    NSUInteger giphyCount = 0, redditGifCount = 0;
-    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata, &giphyCount, &redditGifCount);
+    NSDictionary *fixed = ApolloFixMediaMetadata(mediaMetadata);
     %orig(fixed);
     ApolloInlineImageRegisterMediaMetadata(fixed);
 }
@@ -1062,4 +1169,5 @@ static NSString *ApolloRewriteNativeGiphyTokens(NSString *text, NSDictionary *me
 %ctor {
     %init;
     ApolloLog(@"[ShareMediaTmp] download cleanup hook installed");
+    ApolloLog(@"[MediaPagerGuard] swipe-end hook installed");
 }

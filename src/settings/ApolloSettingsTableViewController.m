@@ -241,6 +241,11 @@ void ApolloSettingsApplyCellTypography(UITableViewCell *cell) {
     objc_setAssociatedObject(cell, &kApolloAccentActionCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+- (void)apollo_removeAccentActionTextColorFromCell:(UITableViewCell *)cell {
+    if (!cell) return;
+    objc_setAssociatedObject(cell, &kApolloAccentActionCellKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 - (void)apollo_applyThemeToCell:(UITableViewCell *)cell {
     if (!cell) return;
 

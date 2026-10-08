@@ -38,7 +38,7 @@ BOOL ApolloImageChestIsDirectImageURL(NSURL *url) {
     if (![url isKindOfClass:[NSURL class]]) return NO;
 
     NSString *host = [[url host] lowercaseString] ?: @"";
-    if (![host isEqualToString:@"cdn.imgchest.com"] && ![host hasSuffix:@".imgchest.com"] && ![host isEqualToString:@"imgchest.com"]) return NO;
+    if (![host hasSuffix:@".imgchest.com"] && ![host isEqualToString:@"imgchest.com"]) return NO;
 
     NSString *ext = [[[url path] pathExtension] lowercaseString];
     static NSSet<NSString *> *imageExts;
@@ -91,7 +91,7 @@ static NSMutableDictionary<NSString *, NSMutableArray *> *ApolloImageChestResolv
 // Must be called while holding ApolloImageChestResolverLock().
 static BOOL ApolloImageChestFreshFailureForKey(NSString *cacheKey) {
     NSDate *cached = ApolloImageChestFailureCache()[cacheKey];
-    if (![cached isKindOfClass:[NSDate class]]) return NO;
+    if (!cached) return NO;
     if ([[NSDate date] timeIntervalSinceDate:cached] < kApolloImageChestFailureCacheLifetime) return YES;
     [ApolloImageChestFailureCache() removeObjectForKey:cacheKey];
     [ApolloImageChestFailureCacheOrder() removeObject:cacheKey];
@@ -242,7 +242,7 @@ static void ApolloDeliverImageChestResolution(NSString *cacheKey, NSDictionary *
     NSArray *callbacks = nil;
     @synchronized (ApolloImageChestResolverLock()) {
         ApolloImageChestStoreResolution(cacheKey, result);
-        callbacks = [ApolloImageChestResolverPending()[cacheKey] copy];
+        callbacks = ApolloImageChestResolverPending()[cacheKey];
         [ApolloImageChestResolverPending() removeObjectForKey:cacheKey];
     }
 
@@ -298,7 +298,7 @@ static void ApolloFetchImageChestPublicPage(NSString *postID, NSString *cacheKey
             return;
         }
 
-        ApolloLogDebug(@"[ImageChest] public resolved post=%@ count=%@ url=%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [ImageChest] public resolved post=%{public}@ count=%{public}@ url=%{public}@",
                        postID, result[@"count"] ?: @"?", result[@"url"]);
         ApolloDeliverImageChestResolution(cacheKey, result);
     }];
@@ -326,7 +326,7 @@ static void ApolloFetchImageChestAPIThenFallback(NSString *postID, NSString *cac
             ? ApolloImageChestResultFromAPIData(data, postID)
             : nil;
         if (result) {
-            ApolloLogDebug(@"[ImageChest] api resolved post=%@ count=%@ url=%@",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [ImageChest] api resolved post=%{public}@ count=%{public}@ url=%{public}@",
                            postID, result[@"count"] ?: @"?", result[@"url"]);
             ApolloDeliverImageChestResolution(cacheKey, result);
             return;
@@ -375,6 +375,6 @@ void ApolloImageChestResolveURL(NSURL *url, void (^completion)(NSDictionary *res
     }
     if (!shouldStartFetch) return;
 
-    ApolloLogDebug(@"[ImageChest] resolve START post=%@ apiToken=%d", postID, sImageChestAPIToken.length > 0);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [ImageChest] resolve START post=%{public}@ apiToken=%d", postID, sImageChestAPIToken.length > 0);
     ApolloFetchImageChestAPIThenFallback(postID, cacheKey);
 }

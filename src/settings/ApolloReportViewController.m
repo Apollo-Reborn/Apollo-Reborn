@@ -232,7 +232,7 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         BOOL attached = !error && ([result isEqual:@"ok"] || [result isEqual:@"legacy"]);
         if (error) {
-            ApolloLog(@"[BugReport] attach bridge failed for %@: %@", filename, error.localizedDescription);
+            ApolloLogError(@"[BugReport] attach bridge failed for %@: %@", filename, error.localizedDescription);
         } else if (!attached) {
             ApolloLog(@"[BugReport] attach bridge unavailable for %@ (%@)", filename, result);
         }
@@ -376,7 +376,7 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
         didFailProvisionalNavigation:(__unused WKNavigation *)navigation
                            withError:(NSError *)error {
     self.progressView.hidden = YES;
-    ApolloLog(@"[BugReport] form load failed: %@", error.localizedDescription);
+    ApolloLogError(@"[BugReport] form load failed: %@", error.localizedDescription);
     [self showLoadError:error];
 }
 

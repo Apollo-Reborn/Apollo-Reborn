@@ -89,30 +89,10 @@ static const NSUInteger kPPCSMaxEntries = 500;
 
 // MARK: - runtime helpers (superclass-chain ivar access, matches ApolloLiveCommentsFollow)
 
-static id PPCSObjectIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-static ptrdiff_t PPCSIvarOffset(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return ivar_getOffset(iv);
-        cls = class_getSuperclass(cls);
-    }
-    return -1;
-}
-
 // Read currentSort (Optional<RDKCommentSortingMethod>: Int64 raw at +0, nil byte at +8).
 // Returns NO when the optional is .none or the ivar can't be located.
 static BOOL PPCSReadCurrentSort(id vc, int64_t *outRaw) {
-    ptrdiff_t off = PPCSIvarOffset(vc, "currentSort");
+    ptrdiff_t off = ApolloIvarOffset(object_getClass(vc), "currentSort");
     if (off < 0) return NO;
     const uint8_t *base = (const uint8_t *)(__bridge const void *)vc;
     if ((*(base + off + 8)) & 0x1) return NO;   // .none
@@ -126,7 +106,7 @@ static BOOL PPCSReadCurrentSort(id vc, int64_t *outRaw) {
 // blind write is riskier than the reads the other modules do; on any layout surprise
 // we bail and Apollo's native sort stands.
 static BOOL PPCSWriteCurrentSort(id vc, int64_t raw) {
-    ptrdiff_t off = PPCSIvarOffset(vc, "currentSort");
+    ptrdiff_t off = ApolloIvarOffset(object_getClass(vc), "currentSort");
     if (off < 0) return NO;
     if ((size_t)(off + 9) > class_getInstanceSize(object_getClass(vc))) return NO;
     uint8_t *base = (uint8_t *)(__bridge void *)vc;
@@ -145,9 +125,10 @@ static BOOL PPCSWriteCurrentSort(id vc, int64_t raw) {
 // Swift ivar instead — normally the same bare form, but tolerate a t3_ fullname
 // there the way ApolloURLOpenCommentSort.xm does, so both opens key the same entry.
 static NSString *PPCSPostID(id vc) {
-    id link = PPCSObjectIvar(vc, "link");
-    if (link && [link respondsToSelector:@selector(identifier)]) {
-        NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, @selector(identifier));
+    id link = ApolloObjectIvar(vc, "link");
+    SEL identifierSelector = @selector(identifier);
+    if ([link respondsToSelector:identifierSelector]) {
+        NSString *identifier = ((NSString *(*)(id, SEL))objc_msgSend)(link, identifierSelector);
         if ([identifier isKindOfClass:[NSString class]] && identifier.length > 0) return identifier;
     }
     NSString *linkID = ApolloReadSwiftStringIvar(vc, "linkID");
@@ -318,7 +299,7 @@ static void PPCSDisarm(void) {
 
 BOOL ApolloCommentsVCReadCurrentSort(id vc, int64_t *outRaw) { return PPCSReadCurrentSort(vc, outRaw); }
 BOOL ApolloCommentsVCWriteCurrentSort(id vc, int64_t raw) { return PPCSWriteCurrentSort(vc, raw); }
-id ApolloCommentsVCLink(id vc) { return PPCSObjectIvar(vc, "link"); }
+id ApolloCommentsVCLink(id vc) { return ApolloObjectIvar(vc, "link"); }
 NSString *ApolloCommentSortName(int64_t raw) { return PPCSSortName(raw); }
 int64_t ApolloPerPostCommentSortSavedSort(NSString *postID) { return postID.length ? PPCSSavedSortForPost(postID) : 0; }
 

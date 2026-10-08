@@ -7,6 +7,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
+#import "ApolloClasses.h"
 
 // Use the pill's spring for glyphs without changing button frames,
 // which translation measures when inserting its globe.
@@ -78,15 +79,15 @@ static UIImage *ApolloActionsTemplateImage(UIImage *image) {
 }
 
 static BOOL ApolloActionsIsAutoModClose(UIBarButtonItem *item) {
-    return item.action == NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:") &&
+    return item.action == @selector(cancelBarButtonItemTappedWithSender:) &&
         [NSStringFromClass([item.target class]) isEqualToString:@"Apollo.AutoModeratorViewController"];
 }
 
 static BOOL ApolloActionsUsesPlainSubmitStyle(UIBarButtonItem *item) {
     NSString *targetClass = NSStringFromClass([item.target class]);
-    return (item.action == NSSelectorFromString(@"submitBarButtonTapped:") &&
+    return (item.action == @selector(submitBarButtonTapped:) &&
             [targetClass isEqualToString:@"Apollo.ComposeViewController"]) ||
-           (item.action == NSSelectorFromString(@"updateBarButtonItemTappedWithSender:") &&
+           (item.action == @selector(updateBarButtonItemTappedWithSender:) &&
             [targetClass isEqualToString:@"Apollo.FlairSelectorViewController"]);
 }
 
@@ -97,13 +98,13 @@ static BOOL ApolloActionsUsesAccentSubmitStyle(UIBarButtonItem *item) {
     NSString *targetClass = NSStringFromClass([item.target class]);
     SEL action = item.action;
     if ([targetClass isEqualToString:@"Apollo.ComposePostViewController"]) {
-        return action == NSSelectorFromString(@"postButtonTapped:");
+        return action == @selector(postButtonTapped:);
     }
     if ([targetClass isEqualToString:@"Apollo.ComposeViewController"]) {
-        return action == NSSelectorFromString(@"apollo_mediaBodyDoneButtonTapped:") ||
-            action == NSSelectorFromString(@"apollo_textBodyDoneButtonTapped:");
+        return action == @selector(apollo_mediaBodyDoneButtonTapped:) ||
+            action == @selector(apollo_textBodyDoneButtonTapped:);
     }
-    return action == NSSelectorFromString(@"postTapped") &&
+    return action == @selector(postTapped) &&
         [targetClass isEqualToString:@"ApolloPollComposeViewController"];
 }
 
@@ -259,7 +260,7 @@ static NSUInteger ApolloActionsControlCount(UIView *root) {
 }
 
 static BOOL ApolloActionsIsPickerCancel(UIBarButtonItem *item) {
-    SEL cancel = NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:");
+    SEL cancel = @selector(cancelBarButtonItemTappedWithSender:);
     if (item.action == cancel) return YES;
     UIView *view = item.customView;
     if (![view isKindOfClass:UIButton.class]) return NO;
@@ -332,15 +333,15 @@ UIView *ApolloNavigationActionsMenuSourceView(UIView *action) {
     _iconMotionKey = [NSString stringWithFormat:@"ApolloReborn.actions.motion.%p", self];
     _iconOpacityKey = [NSString stringWithFormat:@"ApolloReborn.actions.opacity.%p", self];
     self.clipsToBounds = NO;
-    Class effectClass = NSClassFromString(@"UIGlassEffect");
-    UIVisualEffect *effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(effectClass, NSSelectorFromString(@"effectWithStyle:"), 0);
+    Class effectClass = ApolloClassUIGlassEffect;
+    UIVisualEffect *effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(effectClass, @selector(effectWithStyle:), 0);
     self.surface = [[UIVisualEffectView alloc] initWithEffect:effect];
     self.surface.frame = self.bounds;
     self.surface.clipsToBounds = YES;
     self.surface.layer.cornerRadius = 22;
-    Class cornerClass = NSClassFromString(@"UICornerConfiguration");
-    SEL capsule = NSSelectorFromString(@"capsuleConfiguration");
-    SEL setter = NSSelectorFromString(@"setCornerConfiguration:");
+    Class cornerClass = ApolloClassUICornerConfiguration;
+    SEL capsule = @selector(capsuleConfiguration);
+    SEL setter = @selector(setCornerConfiguration:);
     if ([cornerClass respondsToSelector:capsule] && [self.surface respondsToSelector:setter]) {
         id configuration = ((id (*)(id, SEL))objc_msgSend)(cornerClass, capsule);
         ((void (*)(id, SEL, id))objc_msgSend)(self.surface, setter, configuration);
@@ -657,7 +658,7 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     if ([self deferGeometryUpdate]) return;
     self.preparing = YES;
     for (UIBarButtonItem *item in items) {
-        if (item.action == NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:") &&
+        if (item.action == @selector(cancelBarButtonItemTappedWithSender:) &&
             [NSStringFromClass(self.controller.class) isEqualToString:@"Apollo.PostsViewController"]) {
             // Search replaces these actions in the same update. Settle the old
             // strip now so dismissal restores it collapsed, without a second spring.
@@ -668,8 +669,11 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
     BOOL retargetAnimation = NO;
     NSMutableArray *strips = [NSMutableArray array];
     ApolloNavigationActionsControllerBox *controllerBox = objc_getAssociatedObject(self.item, &kActionsControllerKey);
-    BOOL approvedSubmitters = [NSStringFromClass(controllerBox.controller.class)
-        isEqualToString:@"Apollo.ModeratorApprovedSubmittersViewController"];
+    NSString *controllerClass = NSStringFromClass(controllerBox.controller.class);
+    BOOL approvedSubmitters = [controllerClass isEqualToString:@"Apollo.ModeratorApprovedSubmittersViewController"];
+    BOOL blueDone = controllerBox.controller.isEditing &&
+        ([controllerClass isEqualToString:@"Apollo.RedditListViewController"] ||
+         [controllerClass isEqualToString:@"ApolloSettingsShortcutsViewController"]);
     for (UIBarButtonItem *item in items) {
         // Legacy Done buttons become filled/prominent on Liquid Glass.
         if (ApolloActionsUsesPlainSubmitStyle(item) && item.style != UIBarButtonItemStylePlain) {
@@ -688,10 +692,6 @@ static NSArray<UIBarButtonItem *> *ApolloActionsInboxItems(UINavigationItem *ite
                 }
             }
         }
-        NSString *editingControllerClass = NSStringFromClass(controllerBox.controller.class);
-        BOOL blueDone = controllerBox.controller.isEditing &&
-            ([editingControllerClass isEqualToString:@"Apollo.RedditListViewController"] ||
-             [editingControllerClass isEqualToString:@"ApolloSettingsShortcutsViewController"]);
         objc_setAssociatedObject(item, &kActionsBlueDoneKey, @(blueDone), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         BOOL accentSubmit = ApolloActionsUsesAccentSubmitStyle(item);
         if (accentSubmit && !objc_getAssociatedObject(item, &kActionsAccentSubmitKey)) {
@@ -1056,14 +1056,14 @@ NSArray<UIView *> *ApolloNavigationActionsManagedRoots(UINavigationBar *bar) {
 %hook UIViewController
 - (UINavigationItem *)navigationItem {
     UINavigationItem *item = %orig;
-    if (IsLiquidGlass() && ApolloActionsAppController(self)) {
-        ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
-        if (!box) {
-            box = [ApolloNavigationActionsControllerBox new];
-            objc_setAssociatedObject(item, &kActionsControllerKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        box.controller = self;
+    if (!IsLiquidGlass()) return item;
+    ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
+    if (box.controller == self || !ApolloActionsAppController(self)) return item;
+    if (!box) {
+        box = [ApolloNavigationActionsControllerBox new];
+        objc_setAssociatedObject(item, &kActionsControllerKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    box.controller = self;
     return item;
 }
 - (void)viewWillAppear:(BOOL)animated {

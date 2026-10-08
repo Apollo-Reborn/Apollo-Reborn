@@ -62,16 +62,6 @@ static BOOL sBlockerFailed;                     // don't retry forever
 static BOOL sCompileInFlight;
 static NSMutableArray<void (^)(void)> *sWaiters;
 
-static UIWindow *ApolloScrapeKeyWindow(void) {
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-            if (w.isKeyWindow) return w;
-        }
-    }
-    return nil;
-}
-
 // Real mobile Safari UA for this OS version. WKWebView's default UA is missing
 // the trailing "Version/x ... Safari" token, which marks the request as an
 // embedded web view and measurably raises Reddit's challenge rate.
@@ -86,7 +76,11 @@ static NSString *ApolloScrapeSafariUserAgent(void) {
 }
 
 CGRect ApolloScrapeWebViewFrame(void) {
-    CGRect frame = ApolloScrapeKeyWindow().bounds;
+    CGRect frame = ApolloKeyWindow().bounds;
+    // TODO: Modernization - offscreen scrape view with no hosting view or scene
+    // in scope; when there is no key window yet (cold launch / background) this
+    // still borrows the main screen's size as the viewport. Callers of
+    // ApolloScrapeWebViewCreate would need to pass a container size to drop it.
     if (CGRectIsEmpty(frame)) frame = UIScreen.mainScreen.bounds;
     // Last resort: a plausible phone viewport, so shreddit still picks its mobile
     // breakpoint rather than hydrating against a zero-sized layout.
@@ -179,7 +173,7 @@ void ApolloScrapeWebViewCreate(WKWebViewConfiguration *config, void (^ready)(WKW
         // exactly the #902 configuration (fullscreen video promotion over the app)
         // — so on that path the scrape stays detached instead: it still runs, it
         // just can't clear a bot challenge, which is the safer way to degrade.
-        UIWindow *win = ApolloScrapeKeyWindow();
+        UIWindow *win = ApolloKeyWindow();
         if (win && sBlocker) [win insertSubview:web atIndex:0];
         ready(web);
     });

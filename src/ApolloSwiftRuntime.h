@@ -36,7 +36,9 @@ static inline NSString *ApolloDecodeSwiftString(uint64_t w0, uint64_t w1) {
         return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
     }
 
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
+    // Swift returns owned (+1); without ns_returns_retained ARC would retain
+    // the result again and leak every large-string decode.
+    typedef NSString *(*BridgeFn)(uint64_t, uint64_t) __attribute__((ns_returns_retained));
     static BridgeFn sBridge = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -47,21 +49,25 @@ static inline NSString *ApolloDecodeSwiftString(uint64_t w0, uint64_t w1) {
     return sBridge ? sBridge(w0, w1) : nil;
 }
 
-static inline ptrdiff_t ApolloIvarOffset(Class cls, const char *name) {
+// Ivar names are always compile-time C strings: nonnull makes a NULL literal a
+// build error instead of a runtime check. A nil `object` needs no check either:
+// object_getClass(nil) is Nil and class_getInstanceVariable(Nil, ...) is NULL,
+// so every reader below falls through to its "missing ivar" result.
+#define APOLLO_IVAR_NAME __attribute__((nonnull(2)))
+
+static inline APOLLO_IVAR_NAME ptrdiff_t ApolloIvarOffset(Class cls, const char *name) {
     Ivar ivar = class_getInstanceVariable(cls, name);
     return ivar ? ivar_getOffset(ivar) : -1;
 }
 
-static inline void *ApolloReadRawIvar(id object, const char *name) {
-    if (!object) return NULL;
+static inline APOLLO_IVAR_NAME void *ApolloReadRawIvar(id object, const char *name) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return NULL;
     uint8_t *base = (uint8_t *)(__bridge void *)object;
     return *(void **)(base + offset);
 }
 
-static inline id ApolloReadObjectIvar(id object, const char *name) {
-    if (!object) return nil;
+static inline APOLLO_IVAR_NAME id ApolloReadObjectIvar(id object, const char *name) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return nil;
     uint8_t *base = (uint8_t *)(__bridge void *)object;
@@ -69,16 +75,42 @@ static inline id ApolloReadObjectIvar(id object, const char *name) {
     return (__bridge id)value;
 }
 
-static inline BOOL ApolloReadBoolIvar(id object, const char *name, BOOL defaultValue) {
-    if (!object) return defaultValue;
+// ObjC-object ivar read through object_getIvar, which (unlike
+// ApolloReadObjectIvar's raw load) also honors ObjC __weak ivars. Superclass
+// ivars resolve via class_getInstanceVariable. Use for ivars typed as ObjC
+// objects; Swift weak refs need ApolloReadSwiftWeakObjectIvar, Swift value
+// types (String, Bool, structs) the typed readers here.
+// No @try or nil guards needed: libobjc's object_getIvar returns nil itself for
+// a nil/tagged object or NULL ivar, then does a plain load or objc_loadWeak —
+// it never sends a message and cannot raise (verified from its disassembly).
+static inline APOLLO_IVAR_NAME id ApolloObjectIvar(id object, const char *name) {
+    return object_getIvar(object, class_getInstanceVariable(object_getClass(object), name));
+}
+
+// Swift weak storage must be loaded by its runtime, not object_getIvar.
+// The loader returns +1 ownership; transfer it to ARC.
+static inline APOLLO_IVAR_NAME id ApolloReadSwiftWeakObjectIvar(id object, const char *name) {
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
+    if (offset < 0) return nil;
+    typedef void *(*LoadStrongFunction)(void *slot);
+    static LoadStrongFunction loadStrong;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        loadStrong = (LoadStrongFunction)dlsym(RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
+    });
+    if (!loadStrong) return nil;
+    void *value = loadStrong((uint8_t *)(__bridge void *)object + offset);
+    return (__bridge_transfer id)value;
+}
+
+static inline APOLLO_IVAR_NAME BOOL ApolloReadBoolIvar(id object, const char *name, BOOL defaultValue) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return defaultValue;
     uint8_t *base = (uint8_t *)(__bridge void *)object;
     return *(uint8_t *)(base + offset) != 0;
 }
 
-static inline NSString *ApolloReadSwiftStringIvar(id object, const char *name) {
-    if (!object) return nil;
+static inline APOLLO_IVAR_NAME NSString *ApolloReadSwiftStringIvar(id object, const char *name) {
     ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return nil;
     uint8_t *base = (uint8_t *)(__bridge void *)object;

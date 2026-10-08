@@ -11,6 +11,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <dlfcn.h>
+#import "ApolloClasses.h"
 
 static char kApolloNativeActionMenuControllerKey;
 static char kApolloNativeActionMenuInvokingActionKey;
@@ -267,7 +268,7 @@ BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
 
 static BOOL ApolloNativeActionMenusEnabled(void) {
     if (@available(iOS 26.0, *)) {
-        return IsLiquidGlass() && objc_getClass("_UIContextMenuPlatformMetrics_Glass") != Nil;
+        return IsLiquidGlass() && ApolloClassUIContextMenuPlatformMetricsGlass != Nil;
     }
     return NO;
 }
@@ -294,10 +295,6 @@ static NSString *ApolloNativeActionDefaultTitle(uint16_t actionKind) {
     return actionKind < count ? kApolloNativeActionDefaultTitles[actionKind] : nil;
 }
 
-static UIColor *ApolloNativeActionMenuModeratorColor(void) {
-    return ApolloModeratorColor();
-}
-
 static BOOL ApolloNativeActionKindOpensModeratorMenu(uint16_t actionKind) {
     return actionKind == 124;
 }
@@ -315,16 +312,7 @@ static BOOL ApolloNativeActionMenuTitleIsDestructive(NSString *title) {
 
 static UIImage *ApolloNativeActionMenuTintedImage(UIImage *image, UIColor *tintColor) {
     if (!image || !tintColor) return image;
-
-    SEL tintSelector = @selector(imageWithTintColor:renderingMode:);
-    if (![image respondsToSelector:tintSelector]) return image;
-
-    return ((UIImage *(*)(id, SEL, UIColor *, UIImageRenderingMode))objc_msgSend)(
-        image,
-        tintSelector,
-        tintColor,
-        UIImageRenderingModeAlwaysOriginal
-    );
+    return [image imageWithTintColor:tintColor renderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
 static void ApolloNativeActionMenuStyleElementTitle(UIMenuElement *element, UIColor *tintColor) {
@@ -354,7 +342,7 @@ static void ApolloNativeActionMenuStyleElementImage(UIMenuElement *element, UICo
     if (!tintedImage) return;
 
     SEL setImageSelector = @selector(setImage:);
-    SEL privateSetImageSelector = NSSelectorFromString(@"_setImage:");
+    SEL privateSetImageSelector = @selector(_setImage:);
     if ([element respondsToSelector:setImageSelector]) {
         ((void (*)(id, SEL, id))objc_msgSend)(element, setImageSelector, tintedImage);
     } else if ([element respondsToSelector:privateSetImageSelector]) {
@@ -389,10 +377,6 @@ static void ApolloNativeActionMenuPrimeSource(UIView *sourceView, NSValue *sourc
     });
 }
 
-static void ApolloNativeActionMenuPrimeSourceView(UIView *sourceView) {
-    ApolloNativeActionMenuPrimeSource(sourceView, nil);
-}
-
 static void ApolloNativeActionMenuWrapSourceAction(UIAction *action, UIView *sourceView) {
     if (!action || !sourceView || objc_getAssociatedObject(action, &kApolloNativeActionMenuWrappedSourceActionKey)) return;
     if (![action respondsToSelector:@selector(handler)] || ![action respondsToSelector:@selector(setHandler:)]) return;
@@ -404,7 +388,7 @@ static void ApolloNativeActionMenuWrapSourceAction(UIAction *action, UIView *sou
     originalHandler = [originalHandler copy];
     __weak UIView *weakSourceView = sourceView;
     ApolloNativeActionMenuActionHandler wrappedHandler = ^(UIAction *selectedAction) {
-        ApolloNativeActionMenuPrimeSourceView(weakSourceView);
+        ApolloNativeActionMenuPrimeSource(weakSourceView, nil);
         originalHandler(selectedAction);
     };
 
@@ -447,7 +431,7 @@ static void ApolloNativeActionMenuStyleElement(UIMenuElement *element, BOOL mode
     NSString *title = element.title ?: @"";
     BOOL opensModeratorMenu = ApolloNativeActionMenuTitleIsModerator(title);
     BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
-    UIColor *moderatorTintColor = ApolloNativeActionMenuModeratorColor();
+    UIColor *moderatorTintColor = ApolloModeratorColor();
     UIColor *elementTintColor = (!destructive && (moderatorStyle || opensModeratorMenu)) ? moderatorTintColor : nil;
 
     ApolloNativeActionMenuStyleElementTitle(element, elementTintColor ? UIColor.labelColor : nil);
@@ -500,6 +484,11 @@ static UIImage *ApolloNativeActionMenuSizedIcon(UIImage *image) {
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
     format.opaque = NO;
+    // TODO: Modernization - the fallback assumes the main screen. The menu is built from the
+    // never-presented ActionController before a source view is resolved (and via the public
+    // ApolloNativeActionMenuBuildCaptured(controller), which has no view), so no trait source
+    // is reachable here. Asset-catalog images always carry scale > 0, so the image's own
+    // scale (picked by UIKit for the trait environment) is the branch that runs in practice.
     format.scale = image.scale > 0.0 ? image.scale : UIScreen.mainScreen.scale;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvasSize format:format];
     UIImage *resized = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
@@ -658,7 +647,7 @@ static UIView *ApolloNativeActionMenuCreateProxyAnchorView(UIView *sourceView, B
 static BOOL ApolloNativeActionMenuViewShouldMorph(UIView *view) {
     if (!view || !view.window) return NO;
     if ([view isKindOfClass:[UITableViewCell class]]) return NO;
-    if ([view isKindOfClass:objc_getClass("UICollectionViewCell")]) return NO;
+    if ([view isKindOfClass:[UICollectionViewCell class]]) return NO;
     // The gesture fallback can resolve the whole table/scroll view.
     if ([view isKindOfClass:[UIScrollView class]]) return NO;
     // Anything near full-width is a row, not a control (ASDK cell nodes and
@@ -688,7 +677,7 @@ static BOOL ApolloNativeActionMenuActionControllerIsModeratorOnly(id actionContr
 // ApolloNativeActionMenuBuildModeratorReportSections), so it is not treated as
 // an opaque custom header here.
 static BOOL ApolloNativeActionMenuActionControllerHasCustomHeader(id actionController) {
-    if ([actionController isMemberOfClass:objc_getClass("_TtC6Apollo26ModeratorReportsController")]) {
+    if ([actionController isMemberOfClass:ApolloClassModeratorReportsController]) {
         return NO;
     }
     return ApolloReadObjectIvar(actionController, "headerView") != nil;
@@ -803,12 +792,12 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
     if (sApolloNativeCapturingController &&
-        [actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) {
+        [actionController isKindOfClass:ApolloClassActionController]) {
         sApolloNativeCapturedController = actionController;
         return YES;
     }
     UIViewController *owner = sApolloNativeDirectActionOwner;
-    if (!owner || ![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) {
+    if (!owner || ![actionController isKindOfClass:ApolloClassActionController]) {
         return NO;
     }
 
@@ -910,7 +899,7 @@ BOOL ApolloNativeActionMenusActive(void) {
 UIMenuElement *ApolloNativeActionMenuPreviewAction(NSString *title, UIImage *image, BOOL moderator, BOOL enabled) {
     if (title.length == 0) return nil;
     BOOL destructive = ApolloNativeActionMenuTitleIsDestructive(title);
-    UIColor *tintColor = (moderator && !destructive) ? ApolloNativeActionMenuModeratorColor() : nil;
+    UIColor *tintColor = (moderator && !destructive) ? ApolloModeratorColor() : nil;
     if (tintColor && image) image = ApolloNativeActionMenuTintedImage(image, tintColor);
     UIAction *action = [UIAction actionWithTitle:title image:image identifier:nil handler:^(__unused UIAction *selectedAction) {}];
     ApolloNativeActionMenuStyleElementTitle(action, tintColor ? UIColor.labelColor : nil);
@@ -975,7 +964,7 @@ static void ApolloNativeActionMenuSortSavedCategoriesIfNeeded(id presenter, id a
 static UIMenuElement *ApolloNativeActionMenuMakeReportRow(NSString *title, NSString *subtitle) {
     UIAction *row = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(__unused UIAction *action) {}];
     row.attributes = UIMenuElementAttributesDisabled;
-    SEL setSubtitleSelector = NSSelectorFromString(@"setSubtitle:");
+    SEL setSubtitleSelector = @selector(setSubtitle:);
     if (subtitle.length > 0 && [row respondsToSelector:setSubtitleSelector]) {
         ((void (*)(id, SEL, id))objc_msgSend)(row, setSubtitleSelector, subtitle);
     }
@@ -1006,7 +995,7 @@ static NSString *ApolloNativeActionMenuReportSectionHeader(id controller, NSInte
 }
 
 static NSArray<UIMenuElement *> *ApolloNativeActionMenuBuildModeratorReportSections(id actionController) {
-    if (![actionController isMemberOfClass:objc_getClass("_TtC6Apollo26ModeratorReportsController")]) {
+    if (![actionController isMemberOfClass:ApolloClassModeratorReportsController]) {
         return nil;
     }
 
@@ -1047,7 +1036,7 @@ static NSArray<UIMenuElement *> *ApolloNativeActionMenuBuildModeratorReportSecti
             }
         }
     } @catch (__unused NSException *exception) {
-        ApolloLog(@"[NativeActionMenu] Failed to render moderator reports: %@", exception);
+        ApolloLogError(@"[NativeActionMenu] Failed to render moderator reports: %@", exception);
         return nil;
     }
 
@@ -1073,7 +1062,7 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     }
 
     NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
-    UIColor *moderatorTintColor = ApolloNativeActionMenuModeratorColor();
+    UIColor *moderatorTintColor = ApolloModeratorColor();
     UIColor *menuTintColor = moderatorStyle ? moderatorTintColor : nil;
 
     NSArray<UIMenuElement *> *reportSections = ApolloNativeActionMenuBuildModeratorReportSections(actionController);
@@ -1185,17 +1174,17 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
 // this style is only correct for menus that have NO preview platter.
 static id ApolloNativeActionMenuCompactMenuStyle(void) {
     Class styleClass = objc_getClass("_UIContextMenuStyle");
-    SEL defaultStyleSelector = NSSelectorFromString(@"defaultStyle");
+    SEL defaultStyleSelector = @selector(defaultStyle);
     if (!styleClass || ![styleClass respondsToSelector:defaultStyleSelector]) return nil;
 
     id style = ((id (*)(id, SEL))objc_msgSend)(styleClass, defaultStyleSelector);
     if (!style) return nil;
 
-    SEL setPreferredLayoutSelector = NSSelectorFromString(@"setPreferredLayout:");
+    SEL setPreferredLayoutSelector = @selector(setPreferredLayout:);
     if ([style respondsToSelector:setPreferredLayoutSelector]) {
         ((void (*)(id, SEL, NSInteger))objc_msgSend)(style, setPreferredLayoutSelector, 3);
     }
-    SEL setOverlapSelector = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+    SEL setOverlapSelector = @selector(setShouldMenuOverlapSourcePreview:);
     if ([style respondsToSelector:setOverlapSelector]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(style, setOverlapSelector, ApolloNativeActionMenuMagicMorphEnabled());
     }
@@ -1205,7 +1194,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
 - (id)_contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
     id style = ApolloNativeActionMenuCompactMenuStyle();
     // A finger location has no visible control to morph into the menu.
-    SEL overlap = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+    SEL overlap = @selector(setShouldMenuOverlapSourcePreview:);
     if (self.sourcePoint && [style respondsToSelector:overlap]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
     }
@@ -1223,7 +1212,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     UIView *geometry = ownedSurface ?: source;
     // For non-owned controls, copy native geometry without portaling the live view.
     if (geometry == source && self.morphSourceView) {
-        SEL selector = NSSelectorFromString(@"_morphView");
+        SEL selector = @selector(_morphView);
         if ([source respondsToSelector:selector]) {
             UIView *resolved = ((id (*)(id, SEL))objc_msgSend)(source, selector);
             if (resolved.window == window) geometry = resolved;
@@ -1350,7 +1339,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
 
 - (void)captureNativePresentation {
     if (self.ended || self.nativePresentation) return;
-    SEL presentations = NSSelectorFromString(@"presentationsByIdentifier");
+    SEL presentations = @selector(presentationsByIdentifier);
     if (![self.interaction respondsToSelector:presentations]) return;
     id values = ((id (*)(id, SEL))objc_msgSend)(self.interaction, presentations);
     // Capture the sole presentation before dismissMenu clears it mid-animation;
@@ -1366,8 +1355,8 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
         surface != self.morphPreview.view || surface.window != self.presentationWindow ||
         !self.didRequestConfiguration || !ApolloNativeActionMenuMagicMorphEnabled()) return nil;
 
-    SEL disappearance = NSSelectorFromString(@"disappearanceTransition");
-    if (![self.interaction respondsToSelector:NSSelectorFromString(@"setOutgoingPresentation:")]) return nil;
+    SEL disappearance = @selector(disappearanceTransition);
+    if (![self.interaction respondsToSelector:@selector(setOutgoingPresentation:)]) return nil;
     id previous = self.nativePresentation;
     id transition = [previous respondsToSelector:disappearance] ?
         ((id (*)(id, SEL))objc_msgSend)(previous, disappearance) : nil;
@@ -1411,10 +1400,10 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     }
 
     UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
-    SEL present = NSSelectorFromString(@"_presentMenuAtLocation:");
+    SEL present = @selector(_presentMenuAtLocation:);
     if (![interaction respondsToSelector:present]) return NO;
     // Share UIKit's outgoing transition to avoid competing return/open glass animations.
-    SEL setOutgoing = NSSelectorFromString(@"setOutgoingPresentation:");
+    SEL setOutgoing = @selector(setOutgoingPresentation:);
     if (previousPresentation && [interaction respondsToSelector:setOutgoing]) {
         ((void (*)(id, SEL, id))objc_msgSend)(interaction, setOutgoing, previousPresentation);
     }
@@ -1439,7 +1428,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     self.surfaceLease = ApolloNativeActionMenuAcquireSurface(
         ApolloNavigationActionsMenuSourceView(self.morphSourceView), self.requestGeneration);
 
-    SEL driver = NSSelectorFromString(@"_setFallbackDriverStyle:");
+    SEL driver = @selector(_setFallbackDriverStyle:);
     if ([interaction respondsToSelector:driver]) {
         ((void (*)(id, SEL, NSUInteger))objc_msgSend)(interaction, driver, 1);
     }
@@ -1610,7 +1599,7 @@ void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *
     id style = ApolloNativeActionMenuCompactMenuStyle();
     if (objc_getAssociatedObject(configuration, &kApolloMediaMenuPressLocationKey)) {
         // Avoid stretching the menu through a one-point bubble.
-        SEL overlap = NSSelectorFromString(@"setShouldMenuOverlapSourcePreview:");
+        SEL overlap = @selector(setShouldMenuOverlapSourcePreview:);
         if ([style respondsToSelector:overlap]) {
             ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
         }
@@ -1653,7 +1642,7 @@ static BOOL ApolloLegacyBannedUserActionMenuPresent(id presenter,
                                                      id actionController,
                                                      void (^completion)(void)) {
     if (ApolloNativeActionMenusEnabled()) return NO;
-    if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
+    if (![actionController isKindOfClass:ApolloClassActionController]) return NO;
 
     UIViewController *host = [presenter isKindOfClass:[UIViewController class]] ? presenter : nil;
     UIViewController *content = [host isKindOfClass:[UINavigationController class]]
@@ -1716,7 +1705,7 @@ static BOOL ApolloLegacyBannedUserActionMenuPresent(id presenter,
 // ActionController (which the native-menu path never actually presents).
 static UIViewController *ApolloNativeActionMenuTopMostPresenter(UIViewController *viewController) {
     UIViewController *result = viewController;
-    Class actionControllerClass = objc_getClass("_TtC6Apollo16ActionController");
+    Class actionControllerClass = ApolloClassActionController;
     while (result.presentedViewController
            && ![result.presentedViewController isKindOfClass:actionControllerClass]) {
         result = result.presentedViewController;
@@ -1754,7 +1743,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
     // callbacks until after the originating tap has returned.
     ApolloActionMenuCaptureContextForController(actionController);
     if (!ApolloNativeActionMenusEnabled()) return NO;
-    if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
+    if (![actionController isKindOfClass:ApolloClassActionController]) return NO;
     if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
     if (ApolloNativeActionMenuActionControllerHasCustomHeader(actionController)) return NO;
 
@@ -1792,7 +1781,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
 
 static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionController) {
     if (!ApolloNativeActionMenusEnabled()) return NO;
-    if (![actionController isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return NO;
+    if (![actionController isKindOfClass:ApolloClassActionController]) return NO;
     if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
     if (ApolloNativeActionMenuActionControllerHasCustomHeader(actionController)) return NO;
 
@@ -2427,7 +2416,7 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
     // presentation is a silent no-op. Redirect it to the real captured
     // presenter. Working actions (Reply/Give Award/Report) dismiss first, so
     // their invoking flag is already cleared and they never hit this path.
-    Class actionControllerClass = objc_getClass("_TtC6Apollo16ActionController");
+    Class actionControllerClass = ApolloClassActionController;
     if ([self isKindOfClass:actionControllerClass]
         && [objc_getAssociatedObject(self, &kApolloNativeActionMenuInvokingActionKey) boolValue]
         && ![viewControllerToPresent isKindOfClass:actionControllerClass]
@@ -2449,7 +2438,7 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 }
 
 - (void)dismissViewControllerAnimated:(BOOL)flag completion:(void (^)(void))completion {
-    if ([self isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]
+    if ([self isKindOfClass:ApolloClassActionController]
         && [objc_getAssociatedObject(self, &kApolloNativeActionMenuInvokingActionKey) boolValue]) {
         objc_setAssociatedObject(self, &kApolloNativeActionMenuInvokingActionKey, nil, OBJC_ASSOCIATION_ASSIGN);
         if (completion) completion();

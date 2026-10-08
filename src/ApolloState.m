@@ -118,6 +118,7 @@ NSArray<NSDictionary<NSString *, NSString *> *> *sCustomAIHeaders = nil;
 NSInteger sAIPostWordThreshold = 150;
 ApolloAISummaryDetail sAIPostSummaryDetail = ApolloAISummaryDetailBalanced;
 ApolloAISummaryDetail sAICommentSummaryDetail = ApolloAISummaryDetailBalanced;
+NSString *sAISummaryLanguage = nil;
 NSInteger sInlineImageAlignment = ApolloInlineImageAlignmentCenter;
 NSInteger sAutoplayInlineGIFMode = ApolloAutoplayInlineGIFModeDefault;
 NSInteger sInlineMediaSizePercent = 100;

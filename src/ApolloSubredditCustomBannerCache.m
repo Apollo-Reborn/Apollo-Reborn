@@ -108,7 +108,9 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
 - (void)publishStoredKey:(NSString *)key present:(BOOL)present {
     if (key.length == 0) return;
     @synchronized (self.storedKeysLock) {
-        NSMutableSet<NSString *> *keys = [self.storedKeys mutableCopy] ?: [NSMutableSet set];
+        NSSet<NSString *> *storedKeys = self.storedKeys;
+        if ([storedKeys containsObject:key] == present) return;
+        NSMutableSet<NSString *> *keys = [storedKeys mutableCopy];
         if (present) [keys addObject:key];
         else [keys removeObject:key];
         self.storedKeys = keys;
@@ -150,6 +152,10 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
     CGSize targetSize = CGSizeMake(targetWidth / cropped.scale, targetHeight / cropped.scale);
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - the normalized banner is persisted and served from a
+    // subreddit-keyed cache to every window, so there is no single display
+    // scale to use; the fallback only matters for a zero-scale source. Needs a
+    // scale-independent pipeline (pixel-sized render) rather than a caller's traits.
     format.scale = cropped.scale > 0.0 ? cropped.scale : [UIScreen mainScreen].scale;
     format.opaque = YES;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:targetSize format:format];
@@ -200,6 +206,10 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
             [self postChangedNotificationForSubreddit:key];
             return;
         }
+        // TODO: Modernization - rehydrates the shared, subreddit-keyed cache entry
+        // (any window may read it) with no caller trait source. Keep in step with
+        // the save-path decode in -saveBanner:forSubreddit:error:; a fix needs a
+        // scale-independent decode, which changes image.size for all consumers.
         UIImage *diskImage = [UIImage imageWithData:data scale:UIScreen.mainScreen.scale];
         if (!diskImage) {
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -263,6 +273,9 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
         return NO;
     }
 
+    // TODO: Modernization - must decode at the same scale as the cold-cache
+    // rehydrate in -cachedBannerForSubreddit: (no trait source there), so the
+    // in-memory entry matches whichever path populated it.
     UIImage *stored = [UIImage imageWithData:jpeg scale:[UIScreen mainScreen].scale];
     if (stored) [self cacheImage:stored forKey:key];
 
@@ -290,7 +303,7 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
         }
         if (!removed) {
             [self publishStoredKey:key present:YES];
-            ApolloLog(@"[SubredditHeaders] failed to remove custom banner subreddit=%@ error=%@",
+            ApolloLogError(@"[SubredditHeaders] failed to remove custom banner subreddit=%@ error=%@",
                 key, removeError.localizedDescription ?: @"unknown");
             // Always publish the final state. Startup inventory may have run
             // between the optimistic update and this queued mutation even when
@@ -327,14 +340,12 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
                 }
                 if (!removed) {
                     if (key.length > 0) [failedKeys addObject:key];
-                    ApolloLog(@"[SubredditHeaders] failed clearing custom banner file=%@ error=%@",
+                    ApolloLogError(@"[SubredditHeaders] failed clearing custom banner file=%@ error=%@",
                         file, removeError.localizedDescription ?: @"unknown");
-                } else if (key.length > 0) {
-                    [self publishStoredKey:key present:NO];
                 }
             }
         }
-        for (NSString *key in failedKeys) [self publishStoredKey:key present:YES];
+        [self replaceStoredKeys:failedKeys];
         ApolloLog(@"[SubredditHeaders] cleared all custom banners");
         // Correct any startup-inventory notification that reached the main
         // queue before deletion completed, regardless of the optimistic state.

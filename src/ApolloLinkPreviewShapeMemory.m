@@ -206,14 +206,12 @@ static BOOL ApolloLPHostIsIgnored(NSString *host) {
     NSRange firstDot = [normalized rangeOfString:@"."];
     if (firstDot.location != NSNotFound) {
         NSString *candidate = [normalized substringFromIndex:firstDot.location + 1];
-        if ([candidate rangeOfString:@"."].location != NSNotFound) {
+        NSRange secondDot = [candidate rangeOfString:@"."];
+        if (secondDot.location != NSNotFound) {
             parent = candidate;
-            NSRange secondDot = [candidate rangeOfString:@"."];
-            if (secondDot.location != NSNotFound) {
-                candidate = [candidate substringFromIndex:secondDot.location + 1];
-                if ([candidate rangeOfString:@"."].location != NSNotFound) {
-                    grandparent = candidate;
-                }
+            candidate = [candidate substringFromIndex:secondDot.location + 1];
+            if ([candidate rangeOfString:@"."].location != NSNotFound) {
+                grandparent = candidate;
             }
         }
     }
@@ -279,40 +277,10 @@ static BOOL ApolloLPHostIsIgnored(NSString *host) {
 }
 
 - (void)recordHostAdvertisedImageWasDead:(NSString *)host {
-    NSString *normalized = ApolloLPNormalizedHost(host);
-    if (!normalized) return;
-    if (ApolloLPHostIsIgnored(normalized)) return;
-
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    BOOL inserted = NO;
-    NS_VALID_UNTIL_END_OF_SCOPE ApolloLPShapeEntry *created = nil;
-    CFTypeRef evictedHost = NULL;
-    CFTypeRef evictedEntry = NULL;
-    os_unfair_lock_lock(&_lock);
-    ApolloLPShapeEntry *entry = _hosts[normalized];
-    if (!entry) {
-        os_unfair_lock_unlock(&_lock);
-        created = [ApolloLPShapeEntry new];
-        os_unfair_lock_lock(&_lock);
-        entry = _hosts[normalized];
-        if (!entry) {
-            entry = created;
-            _hosts[normalized] = entry;
-            inserted = YES;
-        }
-    }
     // Same shape as an ordinary imageless observation: the fetcher already
     // counted this host as imageful on the strength of an og:image URL that
     // turns out to 404, so that credit has to come back off.
-    if (entry->imaged > 0) entry->imaged--;
-    if (entry->imageless < kApolloLPMaxCount) entry->imageless++;
-    entry->lastSeen = now;
-    if (inserted) [self evictIfNeededLockedRetainingHost:&evictedHost entry:&evictedEntry];
-    os_unfair_lock_unlock(&_lock);
-    if (evictedHost) CFRelease(evictedHost);
-    if (evictedEntry) CFRelease(evictedEntry);
-
-    [self markDirty];
+    [self recordHost:host hasUsableImage:NO];
 }
 
 - (void)evictIfNeededLockedRetainingHost:(CFTypeRef *)retainedHost

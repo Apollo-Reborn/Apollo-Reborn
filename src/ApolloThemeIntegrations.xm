@@ -17,6 +17,7 @@
 #import <objc/message.h>
 #import "ApolloThemeTokens.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloSwiftRuntime.h"
 
 // AsyncDisplayKit's -layoutSpecThatFits: takes an ASSizeRange by value.
 typedef struct { CGSize min; CGSize max; } ApolloASSizeRange;
@@ -46,11 +47,6 @@ static inline BOOL ApolloThemeStateUnchanged(id object, const void *key, uint64_
 static inline UIColor *AccentToken(void)    { return ApolloThemeRuntimeColor(ApolloThemeTokenAccent); }
 static inline UIColor *SelectionToken(void) { return ApolloThemeRuntimeColor(ApolloThemeTokenRowHighlight); }
 static inline UIColor *CardToken(void)      { return ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryBackground); }
-
-static id ObjectIvar(id object, const char *name) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 
 // ---------------------------------------------------------------------------
 // Selection highlight — settings/search UIKit cells
@@ -187,7 +183,7 @@ static void ColorListCell(UITableViewCell *cell) {
 
 static void ApplyAccentImageView(id cell) {
     if (!ApolloThemeRuntimeIsActive()) return;
-    id iconObj = ObjectIvar(cell, "iconImageView");
+    id iconObj = ApolloObjectIvar(cell, "iconImageView");
     if (![iconObj isKindOfClass:[UIImageView class]]) return;
     UIImageView *icon = (UIImageView *)iconObj;
     UIImage *image = icon.image;
@@ -196,9 +192,13 @@ static void ApplyAccentImageView(id cell) {
     UIImage *hi = icon.highlightedImage;
     if (hi && hi.renderingMode != UIImageRenderingModeAlwaysTemplate)
         icon.highlightedImage = [hi imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    // Check the epoch first: AccentToken() builds a new dynamic colour on every
+    // call, so a row whose epoch hasn't moved must skip it. A nil accent only
+    // means the theme was just switched off, and switching it back on publishes
+    // a new epoch, so the tint is still retried.
+    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(icon, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     icon.tintColor = accent;
 }
 
@@ -244,8 +244,8 @@ static void ApplyAccentImageView(id cell) {
 
 static void ApplyAccentImageNode(id cell) {
     if (!ApolloThemeRuntimeIsActive()) return;
-    id iconNode = ObjectIvar(cell, "iconNode");
-    id iconImage = ObjectIvar(cell, "iconImage");
+    id iconNode = ApolloObjectIvar(cell, "iconNode");
+    id iconImage = ApolloObjectIvar(cell, "iconImage");
     if (!iconNode || ![iconImage isKindOfClass:[UIImage class]]) return;
 
     UIImage *templated = objc_getAssociatedObject(iconNode, &kAppliedTemplateImageKey);
@@ -255,29 +255,27 @@ static void ApplyAccentImageNode(id cell) {
         objc_setAssociatedObject(iconNode, &kAppliedSourceImageKey, iconImage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(iconNode, &kAppliedTemplateImageKey, templated, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    if ([iconNode respondsToSelector:@selector(setImage:)]) {
-        UIImage *current = [iconNode respondsToSelector:@selector(image)]
-            ? ((UIImage *(*)(id, SEL))objc_msgSend)(iconNode, @selector(image)) : nil;
-        if (current != templated)
-            ((void (*)(id, SEL, UIImage *))objc_msgSend)(iconNode, @selector(setImage:), templated);
-    }
+    // IconTextCellNode declares `let iconNode: ASImageNode`, so image/setImage:
+    // (ASImageNode) and tintColor/view (ASDisplayNode) always exist.
+    UIImage *current = ((UIImage *(*)(id, SEL))objc_msgSend)(iconNode, @selector(image));
+    if (current != templated)
+        ((void (*)(id, SEL, UIImage *))objc_msgSend)(iconNode, @selector(setImage:), templated);
+    // Check the epoch first: AccentToken() builds a new dynamic colour on every
+    // call, so a row whose epoch hasn't moved must skip it. A nil accent only
+    // means the theme was just switched off, and switching it back on publishes
+    // a new epoch, so the tint is still retried.
+    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
     UIColor *accent = AccentToken();
     if (!accent) return;
-    if (ApolloThemeStateUnchanged(iconNode, &kAppliedColorStateKey, ApolloThemeRuntimeEpoch())) return;
-    if ([iconNode respondsToSelector:@selector(setTintColor:)])
-        ((void (*)(id, SEL, UIColor *))objc_msgSend)(iconNode, @selector(setTintColor:), accent);
-    if ([iconNode respondsToSelector:@selector(view)]) {
-        UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(iconNode, @selector(view));
-        view.tintColor = accent;
-    }
+    ((void (*)(id, SEL, UIColor *))objc_msgSend)(iconNode, @selector(setTintColor:), accent);
+    UIView *view = ((UIView *(*)(id, SEL))objc_msgSend)(iconNode, @selector(view));
+    view.tintColor = accent;
 }
 
 %hook _TtC6Apollo16IconTextCellNode
 - (id)layoutSpecThatFits:(ApolloASSizeRange)fits {
     ApplyAccentImageNode(self);
-    id spec = %orig;
-    ApplyAccentImageNode(self);
-    return spec;
+    return %orig;
 }
 %end
 
@@ -293,7 +291,7 @@ static void ApplyNodeHighlight(id node, BOOL highlighted) {
     if (!sel) return;
     // Profile feature rows darken a child inset card (insideNode); post/comment
     // cells darken the node itself.
-    id target = ObjectIvar(node, "insideNode");
+    id target = ApolloObjectIvar(node, "insideNode");
     if (![target respondsToSelector:@selector(setBackgroundColor:)]) target = node;
     if ([target respondsToSelector:@selector(setBackgroundColor:)])
         ((void (*)(id, SEL, UIColor *))objc_msgSend)(target, @selector(setBackgroundColor:), sel);

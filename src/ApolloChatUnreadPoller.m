@@ -608,7 +608,7 @@ static void ApolloChatPollRunSync(NSString *username, NSString *bearer, BOOL isR
                 if (statusCode == 429 || statusCode >= 500) {
                     sChatPollServerBlockedUntil = [NSDate date].timeIntervalSince1970 + kChatPollServerBackoff;
                 }
-                ApolloLog(@"[ChatPoller] Sync failed for u/%@ (HTTP %ld, %@)",
+                ApolloLogError(@"[ChatPoller] Sync failed for u/%@ (HTTP %ld, %@)",
                           username, (long)statusCode, error.localizedDescription ?: @"unparseable body");
                 ApolloChatPollFinish();
                 return;

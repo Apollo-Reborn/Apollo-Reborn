@@ -70,14 +70,13 @@ NSString *const ApolloPostFiltersChangedNotification = @"ApolloPostFiltersChange
 // the flair normalizer (emoji-strip + whitespace-collapse); keywords use the plain
 // term normalizer.
 + (NSArray<NSString *> *)cleanArray:(NSArray *)arr flairs:(BOOL)flairs {
-    NSMutableArray<NSString *> *out = [NSMutableArray array];
-    if ([arr isKindOfClass:[NSArray class]]) {
-        for (id t in arr) {
-            NSString *s = flairs ? [self normalizeFlair:t] : [self normalizeTerm:t];
-            if (s.length > 0 && ![out containsObject:s]) [out addObject:s];
-        }
+    if (![arr isKindOfClass:[NSArray class]]) return @[];
+    NSMutableOrderedSet<NSString *> *out = [NSMutableOrderedSet orderedSetWithCapacity:arr.count];
+    for (id t in arr) {
+        NSString *s = flairs ? [self normalizeFlair:t] : [self normalizeTerm:t];
+        if (s.length > 0) [out addObject:s];
     }
-    return [out copy];
+    return [[NSArray alloc] initWithArray:out.array];
 }
 
 #pragma mark - Per-subreddit rules
