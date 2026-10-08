@@ -4,6 +4,7 @@
 #import <os/lock.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import "ApolloSwiftRuntime.h"
 
 // =============================================================================
@@ -97,10 +98,17 @@ static SEL sApolloSubredditIconAvailableSelector;
 static NSHashTable *sApolloFeedSubredditIconWaiters;
 static os_unfair_lock sApolloFeedSubredditIconWaitersLock = OS_UNFAIR_LOCK_INIT;
 
+// Runs for every row Apollo builds (on Texture's threads), so the classes come
+// from the shared class table, in the same order as kApolloFeedSubredditIconSpecs.
 static const ApolloFeedSubredditIconSpec *ApolloFeedSubredditIconSpecForObject(id object) {
-    for (size_t i = 0; i < sizeof(kApolloFeedSubredditIconSpecs) / sizeof(kApolloFeedSubredditIconSpecs[0]); i++) {
-        Class cls = objc_getClass(kApolloFeedSubredditIconSpecs[i].className);
-        if (cls && [object isKindOfClass:cls]) return &kApolloFeedSubredditIconSpecs[i];
+    __unsafe_unretained Class classes[] = {
+        ApolloClassPostInfoNode, ApolloClassLargePostCellNode, ApolloClassCrosspostNode,
+    };
+    static_assert(sizeof(classes) / sizeof(classes[0]) ==
+                  sizeof(kApolloFeedSubredditIconSpecs) / sizeof(kApolloFeedSubredditIconSpecs[0]),
+                  "one class per spec, in the same order");
+    for (size_t i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
+        if (classes[i] && [object isKindOfClass:classes[i]]) return &kApolloFeedSubredditIconSpecs[i];
     }
     return NULL;
 }
@@ -217,7 +225,7 @@ static void ApolloFeedSubredditIconDeliverToWaiters(id postedLink, NSString *sub
 %end
 
 %ctor {
-    sApolloSubredditIconAvailableSelector = NSSelectorFromString(@"subredditIconAvailableWithNotification:");
+    sApolloSubredditIconAvailableSelector = @selector(subredditIconAvailableWithNotification:);
     // Pointer personality: entries are added mid-init on Texture's background
     // threads, so never message the node (-hash/-isEqual:) to store it.
     sApolloFeedSubredditIconWaiters = [[NSHashTable alloc]

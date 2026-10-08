@@ -46,6 +46,7 @@ Class ApolloClassCommentsViewController;
 Class ApolloClassCompactPostCellNode;
 Class ApolloClassComposePostViewController;
 Class ApolloClassComposeViewController;
+Class ApolloClassCrosspostNode;
 Class ApolloClassCrosspostPerformViewController;
 Class ApolloClassDualStateButtonNode;
 Class ApolloClassFLAnimatedImage;
@@ -175,6 +176,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassCompactPostCellNode = objc_getClass("_TtC6Apollo19CompactPostCellNode");
     ApolloClassComposePostViewController = objc_getClass("_TtC6Apollo25ComposePostViewController");
     ApolloClassComposeViewController = objc_getClass("_TtC6Apollo21ComposeViewController");
+    ApolloClassCrosspostNode = objc_getClass("_TtC6Apollo13CrosspostNode");
     ApolloClassCrosspostPerformViewController = objc_getClass("_TtC6Apollo30CrosspostPerformViewController");
     ApolloClassDualStateButtonNode = objc_getClass("_TtC6Apollo19DualStateButtonNode");
     ApolloClassFLAnimatedImage = objc_getClass("FLAnimatedImage");

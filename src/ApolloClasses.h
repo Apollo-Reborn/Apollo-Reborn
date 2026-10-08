@@ -56,6 +56,7 @@ extern Class ApolloClassCommentsViewController;
 extern Class ApolloClassCompactPostCellNode;
 extern Class ApolloClassComposePostViewController;
 extern Class ApolloClassComposeViewController;
+extern Class ApolloClassCrosspostNode;
 extern Class ApolloClassCrosspostPerformViewController;
 extern Class ApolloClassDualStateButtonNode;
 extern Class ApolloClassFLAnimatedImage;
