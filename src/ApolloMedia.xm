@@ -194,23 +194,19 @@ static NSString *const kApolloMediaPagerOutgoingKey = @"UIPageCurlControllerOutg
 // the fallback: for a controller's root view it returns that controller.
 static UIViewController *ApolloMediaPagerOwner(UIView *view) {
     if (!view) return nil;
-    static SEL lookup;
     static BOOL hasLookup;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        lookup = NSSelectorFromString(@"viewControllerForView:");
-        hasLookup = [UIViewController respondsToSelector:lookup];
+        hasLookup = [UIViewController respondsToSelector:@selector(viewControllerForView:)];
     });
-    id owner = hasLookup ? ((id (*)(id, SEL, id))objc_msgSend)(UIViewController.class, lookup, view)
-                         : view.nextResponder;
+    id owner = hasLookup
+        ? ((id (*)(id, SEL, id))objc_msgSend)(UIViewController.class, @selector(viewControllerForView:), view)
+        : view.nextResponder;
     return [owner isKindOfClass:UIViewController.class] ? owner : nil;
 }
 
 static UIView *ApolloMediaPagerVisibleView(id queuingScrollView) {
-    static SEL visibleView;
-    if (!visibleView) visibleView = NSSelectorFromString(@"visibleView");
-    if (![queuingScrollView respondsToSelector:visibleView]) return nil;
-    id view = ((id (*)(id, SEL))objc_msgSend)(queuingScrollView, visibleView);
+    id view = ApolloSendObject(queuingScrollView, @selector(visibleView));
     return [view isKindOfClass:UIView.class] ? view : nil;
 }
 
