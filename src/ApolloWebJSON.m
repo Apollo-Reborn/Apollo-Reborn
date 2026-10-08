@@ -1173,8 +1173,22 @@ static NSString *ApolloWebJSONSharedReadKey(NSString *user, NSString *method, NS
     return [NSString stringWithFormat:@"%@|%@?%@", user, path, [pairs componentsJoinedByString:@"&"]];
 }
 
+// RDKClient's markRead:YES sends mark=true (the message/<where> listings) or
+// markRead=true (a new modmail conversation) on a GET, and Reddit marks those
+// messages read, so that GET is a write. Apollo 1.15.11 passes NO at every call
+// site; this keeps the rule true if one ever passes YES.
+static BOOL ApolloWebJSONRequestMarksRead(id parameters) {
+    if (![parameters isKindOfClass:[NSDictionary class]]) return NO;
+    for (NSString *flag in @[ @"mark", @"markRead" ]) {
+        id value = ((NSDictionary *)parameters)[flag];
+        if (([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]]) && [value boolValue]) return YES;
+    }
+    return NO;
+}
+
 // A write can change what these reads return: forget the account's recent
 // answers, and let reads already in flight answer only the callers they have.
+// Called when a write is sent and again when it's answered.
 static void ApolloWebJSONNoteAccountWrite(NSString *user) {
     NSString *prefix = [user stringByAppendingString:@"|"];
     @synchronized (ApolloWebJSONSharedReadLock()) {
@@ -1193,9 +1207,14 @@ ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NS
                                                          id parameters, ApolloWebJSONTaskCompletion completion) {
     NSString *user = username.lowercaseString;
     if (!sWebJSONEnabled || user.length == 0 || !completion) return completion;
-    if (![method.uppercaseString isEqualToString:@"GET"]) {
+    if (![method.uppercaseString isEqualToString:@"GET"] || ApolloWebJSONRequestMarksRead(parameters)) {
+        // Noted again once it's answered: a read sent while the write was in
+        // flight may have been answered from before it, so it isn't reused.
         ApolloWebJSONNoteAccountWrite(user);
-        return completion;
+        return [^(NSHTTPURLResponse *response, id object, NSError *error) {
+            ApolloWebJSONNoteAccountWrite(user);
+            completion(response, object, error);
+        } copy];
     }
     NSString *key = ApolloWebJSONSharedReadKey(user, method, path, parameters);
     if (!key) return completion;

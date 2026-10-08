@@ -319,8 +319,9 @@ NSTimeInterval ApolloWebJSONOptionalReadBackoff(NSString *username);
 // join it), or nil when the request shouldn't go out: it joined an identical
 // read already in flight, or one answered in the last few seconds, and
 // `completion` runs with that answer. Only GETs to those account endpoints are
-// shared, and any write from the account starts over, so a read sent after it
-// is always fresh. Any thread.
+// shared, and any write from the account (a GET that marks messages read
+// included) starts over when it's sent and again when it's answered, so a read
+// sent after a write never gets an answer kept from before it. Any thread.
 typedef void (^ApolloWebJSONTaskCompletion)(NSHTTPURLResponse *response, id object, NSError *error);
 ApolloWebJSONTaskCompletion ApolloWebJSONShareAccountRead(NSString *username, NSString *method, NSString *path,
                                                          id parameters, ApolloWebJSONTaskCompletion completion);
