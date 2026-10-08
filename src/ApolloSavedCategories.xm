@@ -14,10 +14,10 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#include <dlfcn.h>
 
 #import "ApolloCommon.h"
 #import "ApolloSavedItemsDeduplicator.h"
+#import "ApolloSwiftRuntime.h"
 
 @class RDKPagination;
 typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagination, NSError *error);
@@ -37,7 +37,6 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
                               completion:(ApolloSavedItemsCompletion)completion {
     if (!completion) return %orig;
 
-    ApolloSavedItemsCompletion originalCompletion = [completion copy];
     ApolloSavedItemsCompletion deduplicatingCompletion = ^(NSArray *items,
                                                             RDKPagination *responsePagination,
                                                             NSError *error) {
@@ -46,7 +45,7 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
             ApolloLog(@"[SavedItems] Removed %lu duplicate item(s) from refresh response",
                       (unsigned long)(items.count - deduplicated.count));
         }
-        originalCompletion(deduplicated, responsePagination, error);
+        completion(deduplicated, responsePagination, error);
     };
     return %orig(category, pagination, deduplicatingCompletion);
 }
@@ -54,39 +53,6 @@ typedef void (^ApolloSavedItemsCompletion)(NSArray *items, RDKPagination *pagina
 %end
 
 // MARK: - ActionController In-Place Sort
-
-// Decode a Swift String stored as two raw 64-bit words into an NSString.
-// Handles both small strings (≤15 bytes, inline) and large strings (native
-// storage, shared, bridged NSString, etc.) by falling back to the Swift
-// runtime's _bridgeToObjectiveC when the inline decode doesn't apply.
-static NSString *decodeSwiftString(uint64_t w0, uint64_t w1) {
-    // Small string: discriminator 0xE0-0xEF in MSB of w1 encodes length
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-
-    // Large string: call Swift.String._bridgeToObjectiveC() -> NSString
-    // Symbol: $sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF
-    // Takes String value in (x0=_countAndFlagsBits, x1=_object), returns +1 NSString.
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT,
-            "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-    if (sBridge) {
-        return sBridge(w0, w1);
-    }
-    return nil;
-}
 
 // Sort the category entries in an ActionController's actions array in-place.
 // Keeps "All" (index 0) fixed; sorts only the category entries after it.
@@ -118,13 +84,13 @@ static void sortActionControllerCategories(id actionController) {
     uint8_t tmpAct[0x30];
     for (int64_t i = lo + 1; i <= hi; i++) {
         uint8_t *elemI = (uint8_t *)actBuf + 0x20 + i * 0x30;
-        NSString *titleI = decodeSwiftString(*(uint64_t *)(elemI + 0x08), *(uint64_t *)(elemI + 0x10));
+        NSString *titleI = ApolloDecodeSwiftString(*(uint64_t *)(elemI + 0x08), *(uint64_t *)(elemI + 0x10));
         if (!titleI) continue;
 
         int64_t j = i - 1;
         while (j >= lo) {
             uint8_t *elemJ = (uint8_t *)actBuf + 0x20 + j * 0x30;
-            NSString *titleJ = decodeSwiftString(*(uint64_t *)(elemJ + 0x08), *(uint64_t *)(elemJ + 0x10));
+            NSString *titleJ = ApolloDecodeSwiftString(*(uint64_t *)(elemJ + 0x08), *(uint64_t *)(elemJ + 0x10));
             if (!titleJ || [titleJ localizedCaseInsensitiveCompare:titleI] <= 0) break;
             j--;
         }
@@ -192,9 +158,8 @@ static BOOL sSortNextContextMenu = NO;
 + (instancetype)configurationWithIdentifier:(id)identifier previewProvider:(id)previewProvider actionProvider:(UIMenu *(^)(NSArray<UIMenuElement *> *))actionProvider {
     if (sSortNextContextMenu && actionProvider) {
         sSortNextContextMenu = NO;
-        UIMenu *(^originalProvider)(NSArray<UIMenuElement *> *) = [actionProvider copy];
         UIMenu *(^sortedProvider)(NSArray<UIMenuElement *> *) = ^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
-            UIMenu *menu = originalProvider(suggestedActions);
+            UIMenu *menu = actionProvider(suggestedActions);
             if (!menu) return menu;
             NSArray<UIMenuElement *> *children = menu.children;
             if (children.count < 3) return menu; // Need ≥2 categories + "Add"

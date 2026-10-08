@@ -93,7 +93,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor systemBackgroundColor];
 
-    UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor ?: [UIColor systemBlueColor];
+    UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor;
     _accent = accent;
 
     _continueButton = [self apollo_makeContinueButtonWithAccent:accent];
@@ -389,14 +389,7 @@ static NSString *ApolloWhatsNewCurrentVersion(void);
 // MARK: - Presentation
 
 static UIViewController *ApolloWhatsNewTopViewController(void) {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *window in ApolloAllWindows()) {
-        if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
-        }
-    }
-    return [keyWindow visibleViewController];
+    return [ApolloKeyWindow() visibleViewController];
 }
 
 // A top VC that's mid-transition, or already presenting something, will

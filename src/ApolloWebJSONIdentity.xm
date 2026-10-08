@@ -518,7 +518,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
         id cred = ApolloWebJSONMakeSyntheticCredential(username);
         if (cred) [client setValue:cred forKey:@"authorizationCredential"];
     } @catch (NSException *ex) {
-        ApolloLog(@"[WebJSON][identity] account configuration failed: %@", ex);
+        ApolloLogError(@"[WebJSON][identity] account configuration failed: %@", ex);
         return NO;
     }
 
@@ -531,7 +531,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:newAccounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive accounts array: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive accounts array: %@", err);
         return NO;
     }
 
@@ -560,7 +560,7 @@ BOOL ApolloWebJSONSynthesizeSignedInAccount(NSString *username) {
     [newValet addObject:sensitive];
     NSData *sensitiveData = [NSKeyedArchiver archivedDataWithRootObject:newValet requiringSecureCoding:NO error:&err];
     if (![sensitiveData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
+        ApolloLogFault(@"[WebJSON][identity] failed to archive sensitive blob: %@", err);
         return NO;
     }
 
@@ -717,7 +717,7 @@ void ApolloWebJSONRepairPoisonedAccountBlobs(void) {
     NSError *err = nil;
     NSData *accountsData = [NSKeyedArchiver archivedDataWithRootObject:accounts requiringSecureCoding:NO error:&err];
     if (![accountsData isKindOfClass:[NSData class]]) {
-        ApolloLog(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
+        ApolloLogFault(@"[WebJSON][repair] failed to re-archive repaired accounts array: %@ — leaving blob unchanged", err);
         return;
     }
     [group setObject:accountsData forKey:@"RedditAccounts2"];
@@ -790,7 +790,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenForApplicationOnlyWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited app-only token mint (cookie session)");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited app-only token mint (cookie session)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
     }
@@ -800,7 +800,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)retrieveAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token retrieval (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;
@@ -811,7 +811,7 @@ static id ApolloWebJSONThingProperty(id thing, SEL selector) {
 - (id)refreshAccessTokenWithCompletion:(id)completion {
     if (ApolloWebJSONShouldActForClient(self)) {
         ApolloWebJSONInstallSyntheticCredentialIfNeeded(self);
-        ApolloLogDebug(@"[WebJSON][identity] Short-circuited token refresh (cookie session) for u/%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON][identity] Short-circuited token refresh (cookie session) for u/%{public}@",
                        ApolloWebJSONClientUsername(self) ?: @"(anonymous)");
         ApolloWebJSONFulfillTokenCompletion(completion);
         return nil;

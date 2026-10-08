@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloTabBarHideStyle.h"
 #import "UserDefaultConstants.h"
@@ -51,20 +52,11 @@ NSArray<NSString *> *ApolloTabBarHideStyleOptionTitles(void) {
 }
 
 NSString *ApolloTabBarHideStyleCurrentTitle(void) {
-    NSArray<NSString *> *titles = ApolloTabBarHideStyleOptionTitles();
-    NSInteger index = ApolloTabBarHideStyleCurrentOptionIndex();
-    return (index >= 0 && index < (NSInteger)titles.count) ? titles[index] : @"Left";
+    // The index is clamped to the enum range, which matches the titles array.
+    return ApolloTabBarHideStyleOptionTitles()[ApolloTabBarHideStyleCurrentOptionIndex()];
 }
 
 // MARK: Runtime pill mirroring
-
-static UIView *TabBarHideStyleProviderIvarView(id provider, const char *name) {
-    if (!provider) return nil;
-    Ivar ivar = class_getInstanceVariable([provider class], name);
-    if (!ivar) return nil;
-    id value = object_getIvar(provider, ivar);
-    return [value isKindOfClass:[UIView class]] ? (UIView *)value : nil;
-}
 
 // The post-layout mirror. UITabBar's layoutSubviews runs the provider's
 // layout FIRST (RE: UIKitCore UITabBar.mm), which docks the collapsed platter
@@ -91,7 +83,8 @@ static void TabBarHideStyleApplyMirror(UITabBar *tabBar) {
         ApolloTabBarHideStyleUsesCustomPresentation(sTabBarHideStyle)) return;
     id provider = ApolloTabBarVisualProvider(tabBar);
     if (!provider) return;
-    UIView *collapsePlatter = TabBarHideStyleProviderIvarView(provider, "collapsePlatterView");
+    id platterValue = ApolloObjectIvar(provider, "collapsePlatterView");
+    UIView *collapsePlatter = [platterValue isKindOfClass:[UIView class]] ? (UIView *)platterValue : nil;
     if (!collapsePlatter || !collapsePlatter.superview) return;
 
     CGFloat width = collapsePlatter.superview.bounds.size.width;
@@ -109,12 +102,10 @@ static void TabBarHideStyleApplyMirror(UITabBar *tabBar) {
     NSInteger morphTarget = ApolloTabBarVisualMorphTarget(tabBar,
                                                            &morphTargetKnown);
     if (morphTargetKnown && morphTarget != 0) {
-        id pocket = nil;
-        Ivar pocketIvar = class_getInstanceVariable([provider class], "scrollPocketInteraction");
-        if (pocketIvar) pocket = object_getIvar(provider, pocketIvar);
-        SEL setRect = NSSelectorFromString(@"_setRect:");
-        if (pocket && [pocket respondsToSelector:setRect]) {
-            ((void (*)(id, SEL, CGRect))objc_msgSend)(pocket, setRect, collapsePlatter.frame);
+        id pocket = ApolloObjectIvar(provider, "scrollPocketInteraction");
+        SEL setRectSelector = @selector(_setRect:);
+        if ([pocket respondsToSelector:setRectSelector]) {
+            ((void (*)(id, SEL, CGRect))objc_msgSend)(pocket, setRectSelector, collapsePlatter.frame);
         }
     }
 }
@@ -142,7 +133,7 @@ static void TabBarHideStyleRelayoutVisibleTabBars(void) {
                 [view layoutIfNeeded];
                 continue;
             }
-            for (UIView *sub in view.subviews) [stack addObject:sub];
+            [stack addObjectsFromArray:view.subviews];
         }
     }
 }
@@ -182,9 +173,7 @@ void ApolloTabBarHideBarsSetEnabled(BOOL enabled) {
 }
 
 void ApolloTabBarHideStyleApplyOptionIndex(NSInteger optionIndex) {
-    NSInteger mode = MIN(ApolloTabBarHideStyleMinimize,
-                         MAX(ApolloTabBarHideStyleLeft, optionIndex));
-    TabBarHideStyleSet((ApolloTabBarHideStyle)mode);
+    TabBarHideStyleSet((ApolloTabBarHideStyle)optionIndex);   // clamps
     TabBarHideStyleReconcileRuntime();
 }
 

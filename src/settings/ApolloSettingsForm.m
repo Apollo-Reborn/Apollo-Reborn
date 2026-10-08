@@ -792,7 +792,8 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
         // its own height; the measurement is simply unused there.
         if (fabs([self tableView:tableView heightForFooterInSection:section] - fitted) >= 0.5) continue;
         adopted = YES;
-        ApolloLog(@"[SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt", (long)section, fitted);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SettingsForm] footer %ld is not on screen yet — measured it ahead at %.1fpt",
+                     (long)section, fitted);
     }
     label.attributedText = ownAttributedText;
     [template setNeedsLayout];

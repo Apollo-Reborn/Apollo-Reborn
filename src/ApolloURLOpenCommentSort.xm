@@ -187,8 +187,7 @@ static NSString *UCSSortAccessibilityLabel(int64_t raw) {
 // the whole job. Goes through UIButton's setter so the Liquid Glass item strip's re-templating
 // hook sees the change like it sees Apollo's own.
 static void UCSRedrawSortButton(id vc, int64_t raw) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(vc), "sortBarButtonItem");
-    UIButton *button = ivar ? object_getIvar(vc, ivar) : nil;
+    UIButton *button = ApolloObjectIvar(vc, "sortBarButtonItem");
     if (![button isKindOfClass:[UIButton class]]) return;
     NSString *asset = UCSSortAssetName(raw);
     UIImage *image = asset ? [UIImage imageNamed:asset] : nil;
@@ -379,7 +378,7 @@ static NSString *UCSBarePostID(NSString *identifier) {
                 // icon and menu describe the comments that are actually on screen.
                 id vc2 = weakVC;
                 if (vc2 && ApolloCommentsVCWriteCurrentSort(vc2, preRaw)) UCSRedrawSortButton(vc2, preRaw);
-                ApolloLog(@"[URLOpenSort] %@: refetch on %@ failed (%@); showing the %@ response",
+                ApolloLogError(@"[URLOpenSort] %@: refetch on %@ failed (%@); showing the %@ response",
                           postID, ApolloCommentSortName(desired), [error2 isKindOfClass:[NSError class]] ? ((NSError *)error2).localizedDescription : @"no link",
                           ApolloCommentSortName(preRaw));
                 original(result, error);

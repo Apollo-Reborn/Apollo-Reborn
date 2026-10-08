@@ -136,7 +136,7 @@ static NSDictionary *ApolloTweetBuddyTransformResult(NSDictionary *result) {
 
     [ApolloTweetProtocol resolveGuestToken:^(NSString *token, NSError *tokenError) {
         if (!token) {
-            ApolloLog(@"[TweetBuddy] guest token fetch failed: %@", tokenError.localizedDescription);
+            ApolloLogError(@"[TweetBuddy] guest token fetch failed: %@", tokenError.localizedDescription);
             NSError *error = tokenError ?: [NSError errorWithDomain:@"ApolloTweetProtocol"
                                                                code:-1
                                                            userInfo:@{NSLocalizedDescriptionKey: @"Failed to obtain guest token"}];
@@ -146,7 +146,7 @@ static NSDictionary *ApolloTweetBuddyTransformResult(NSDictionary *result) {
 
         [ApolloTweetProtocol fetchTweet:tweetId guestToken:token completion:^(NSDictionary *tweetDict, NSError *fetchError) {
             if (!tweetDict) {
-                ApolloLog(@"[TweetBuddy] GraphQL fetch failed: %@", fetchError.localizedDescription);
+                ApolloLogError(@"[TweetBuddy] GraphQL fetch failed: %@", fetchError.localizedDescription);
                 [client URLProtocol:self didFailWithError:fetchError];
                 return;
             }

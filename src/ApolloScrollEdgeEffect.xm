@@ -5,6 +5,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // MARK: - Header Style (Liquid Glass, iOS 26+)
 //
@@ -68,14 +69,14 @@ static BOOL ApolloHeaderStyleHidesNativeEffect(NSInteger mode) {
 }
 
 static id ApolloScrollEdgeEffectStyleObjectForMode(NSInteger mode) {
-    Class styleClass = objc_getClass("UIScrollEdgeEffectStyle");
+    Class styleClass = ApolloClassUIScrollEdgeEffectStyle;
     if (!styleClass) return nil;
 
     SEL selector;
     switch (mode) {
-        case ApolloScrollEdgeEffectStyleSoft: selector = NSSelectorFromString(@"softStyle"); break;
-        case ApolloScrollEdgeEffectStyleHard: selector = NSSelectorFromString(@"hardStyle"); break;
-        default: selector = NSSelectorFromString(@"automaticStyle"); break;
+        case ApolloScrollEdgeEffectStyleSoft: selector = @selector(softStyle); break;
+        case ApolloScrollEdgeEffectStyleHard: selector = @selector(hardStyle); break;
+        default: selector = @selector(automaticStyle); break;
     }
     if (![styleClass respondsToSelector:selector]) return nil;
     return ((id (*)(id, SEL))objc_msgSend)(styleClass, selector);
@@ -208,9 +209,9 @@ static void ApolloApplyMinimizeBottomEdge(UIScrollView *scrollView) {
 }
 
 static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger mode) {
-    SEL topSelector = NSSelectorFromString(@"topEdgeEffect");
-    if (![scrollView respondsToSelector:topSelector]) return;
-    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, topSelector);
+    SEL topEdgeEffectSelector = @selector(topEdgeEffect);
+    if (![scrollView respondsToSelector:topEdgeEffectSelector]) return;
+    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, topEdgeEffectSelector);
     if (!effect) return;
 
     objc_setAssociatedObject(effect, &kApolloScrollEdgeEffectIsTopKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -230,7 +231,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
         mode = ApolloScrollEdgeEffectStyleHidden;
     }
 
-    SEL setHiddenSelector = NSSelectorFromString(@"setHidden:");
+    SEL setHiddenSelector = @selector(setHidden:);
     BOOL hasSetHidden = [effect respondsToSelector:setHiddenSelector];
     if (hasSetHidden) {
         if (ApolloHeaderStyleHidesNativeEffect(mode)) {
@@ -242,7 +243,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
             // (never stamp — restoring must not un-hide an edge they keep
             // disabled) or was stamped by an earlier pass of ours (stamp is
             // already present and stays).
-            SEL isHiddenSelector = NSSelectorFromString(@"isHidden");
+            SEL isHiddenSelector = @selector(isHidden);
             BOOL alreadyHidden = [effect respondsToSelector:isHiddenSelector] &&
                 ((BOOL (*)(id, SEL))objc_msgSend)(effect, isHiddenSelector);
             if (!alreadyHidden) {
@@ -261,7 +262,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
     BOOL hasSetStyle = NO;
     id style = nil;
     if (!ApolloHeaderStyleHidesNativeEffect(mode)) {
-        SEL setStyleSelector = NSSelectorFromString(@"setStyle:");
+        SEL setStyleSelector = @selector(setStyle:);
         style = ApolloScrollEdgeEffectStyleObjectForMode(mode);
         hasSetStyle = (style != nil) && [effect respondsToSelector:setStyleSelector];
         if (hasSetStyle) {
@@ -368,10 +369,10 @@ static NSHashTable<UISearchBar *> *sApolloHeaderStyleSearchBars;
 static char kApolloHeaderStyleSearchBarBaseInsetKey;   // NSValue(UIEdgeInsets): UIKit's own insets
 
 static void ApolloHeaderStyleApplySearchBarInsets(UISearchBar *searchBar) {
-    SEL overrideSelector = NSSelectorFromString(@"_setOverrideContentInsets:forRectEdges:");
-    SEL querySelector = NSSelectorFromString(@"_getOverrideContentInsets:overriddenEdges:");
-    SEL effectiveSelector = NSSelectorFromString(@"_effectiveContentInset");
-    SEL refreshSelector = NSSelectorFromString(@"_updateEffectiveContentInset");
+    SEL overrideSelector = @selector(_setOverrideContentInsets:forRectEdges:);
+    SEL querySelector = @selector(_getOverrideContentInsets:overriddenEdges:);
+    SEL effectiveSelector = @selector(_effectiveContentInset);
+    SEL refreshSelector = @selector(_updateEffectiveContentInset);
     if (!searchBar || ![searchBar respondsToSelector:overrideSelector] ||
         ![searchBar respondsToSelector:querySelector] ||
         ![searchBar respondsToSelector:effectiveSelector]) return;
@@ -590,7 +591,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     for (ApolloHeaderStyleHeldSearchBar *state in sApolloHeaderStyleHeldSearchBars.allObjects) {
         ApolloHeaderStyleUpdateHeldSearchBar(state);
     }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
+    for (UIWindow *window in ApolloAllWindows()) {
         ApolloApplyAndNudgeViewTree(window);
     }
     // Also release effects on detached/cached controllers when Minimize is
@@ -603,7 +604,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     // missing its status-bar cover until the next scroll tick). A second
     // nudge on the next runloop turn recomputes from settled geometry.
     dispatch_async(dispatch_get_main_queue(), ^{
-        for (UIWindow *window in UIApplication.sharedApplication.windows) {
+        for (UIWindow *window in ApolloAllWindows()) {
             ApolloNudgeViewTree(window);
         }
     });

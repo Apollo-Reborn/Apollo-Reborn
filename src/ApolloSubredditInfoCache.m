@@ -474,7 +474,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
             }
         }
 
-        NSArray<void (^)(ApolloSubredditInfo *)> *callbacks = [self.infoCompletions[key] copy];
+        NSArray<void (^)(ApolloSubredditInfo *)> *callbacks = self.infoCompletions[key];
         [self.infoCompletions removeObjectForKey:key];
 
         // A forced request that arrived while a non-forced fetch was already

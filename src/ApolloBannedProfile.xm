@@ -1,10 +1,12 @@
 #import "ApolloBannedProfile.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import <objc/message.h>
 #import <dlfcn.h>
 #import <string.h>
+#import "ApolloClasses.h"
 
 static const void *kApolloBannedProfileOverlayKey = &kApolloBannedProfileOverlayKey;
 static const void *kApolloBannedProfileOverlayBottomConstraintKey = &kApolloBannedProfileOverlayBottomConstraintKey;
@@ -12,7 +14,6 @@ static const void *kApolloBannedProfileRefreshScheduledKey = &kApolloBannedProfi
 static const void *kApolloBannedProfileCommentHintKey = &kApolloBannedProfileCommentHintKey;
 static const void *kApolloBannedProfileLinkCardHintLoggedKey = &kApolloBannedProfileLinkCardHintLoggedKey;
 
-static Class sProfileViewControllerClass = Nil;
 static NSMutableSet<NSString *> *sListEndpoint403Usernames = nil;
 static NSSet<NSString *> *sBlockedNavTitles = nil;
 
@@ -75,89 +76,6 @@ void ApolloBannedProfileClearDismissedOverlays(void) {
     ApolloLog(@"[BannedProfile] cleared all dismissed banned overlays and 403 markers");
 }
 
-// A Swift class instance is a real heap pointer that is safe to read with
-// object_getIvar and retain. Value types (String "SS", Bool, structs "V",
-// enums "O", tuples) are stored inline; reading them as an object pointer and
-// retaining the result crashes (the root cause of the viewDidLayoutSubviews
-// crash on UserCommentsViewController's `username: String` ivar).
-//
-// ObjC ivars use the "@"/"#" encodings. Swift ivars use the mangled type name:
-// classes end in "C" (or "CSg" when optional), e.g. "_$sSo10RDKCommentC" (an
-// imported ObjC class) or "_$s6Apollo16ApolloButtonNodeC" (a pure Swift class).
-static BOOL ApolloBannedProfileIvarEncodingIsRetainableObject(const char *encoding) {
-    if (!encoding) return NO;
-    if (encoding[0] == '@' || encoding[0] == '#') return YES;
-
-    NSString *type = [NSString stringWithUTF8String:encoding];
-    if (!type) return NO;
-    if (![type containsString:@"$s"]) return NO;
-    return [type hasSuffix:@"C"] || [type hasSuffix:@"CSg"];
-}
-
-static id ApolloBannedProfileObjectIvar(id object, NSString *name) {
-    if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        if (!ApolloBannedProfileIvarEncodingIsRetainableObject(ivar_getTypeEncoding(ivar))) return nil;
-        @try {
-            return object_getIvar(object, ivar);
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
-    }
-    return nil;
-}
-
-// Decodes a Swift.String value held in two 64-bit words. Small strings (<= 15
-// bytes) are stored inline; longer strings use a buffer pointer and are decoded
-// via Swift's _bridgeToObjectiveC. Mirrors ApolloDecodeSwiftString in
-// ApolloTranslation.xm.
-static NSString *ApolloBannedProfileDecodeSwiftString(uint64_t w0, uint64_t w1) {
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-
-    return sBridge ? sBridge(w0, w1) : nil;
-}
-
-// Reads a Swift.String stored as an inline ivar. object_getIvar must NOT be
-// used here: a String is a 16-byte value, not an object pointer.
-static NSString *ApolloBannedProfileSwiftStringIvar(id object, NSString *name) {
-    if (!object || name.length == 0) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-
-        const char *encoding = ivar_getTypeEncoding(ivar);
-        // Match non-optional Swift.String ("_$sSS"); skip anything else.
-        if (!encoding || !strstr(encoding, "$sSS")) return nil;
-
-        uint64_t words[2] = {0, 0};
-        const uint8_t *storage = (const uint8_t *)(__bridge const void *)object + ivar_getOffset(ivar);
-        memcpy(words, storage, sizeof(words));
-
-        NSString *value = ApolloBannedProfileDecodeSwiftString(words[0], words[1]);
-        return ApolloBannedProfileNormalizedUsername(value);
-    }
-    return nil;
-}
-
 static NSString *ApolloBannedProfileUsernameFromModelObject(id object) {
     if (!object) return nil;
     if ([object isKindOfClass:[NSString class]]) {
@@ -179,7 +97,7 @@ static NSString *ApolloBannedProfileUsernameFromModelObject(id object) {
 // Currently logged-in account username, or nil. Used to avoid blocking the
 // user's own profile when their account is temporarily banned.
 static NSString *ApolloBannedProfileCurrentLoggedInUsername(void) {
-    Class clientClass = objc_getClass("RDKClient");
+    Class clientClass = ApolloClassRDKClient;
     SEL sharedClientSEL = @selector(sharedClient);
     if (!clientClass || ![clientClass respondsToSelector:sharedClientSEL]) return nil;
 
@@ -202,19 +120,15 @@ static BOOL ApolloBannedProfileIsCurrentLoggedInUser(NSString *username) {
 static NSString *ApolloBannedProfileUsernameFromViewControllerDirect(UIViewController *viewController) {
     if (!viewController) return nil;
 
-    NSArray<NSString *> *preferredIvars = @[@"username", @"userName", @"_username", @"account", @"user", @"userInfo", @"profile", @"viewModel"];
-    for (NSString *ivarName in preferredIvars) {
-        NSString *swiftString = ApolloBannedProfileSwiftStringIvar(viewController, ivarName);
-        if (swiftString.length > 0) return swiftString;
-
-        id value = ApolloBannedProfileObjectIvar(viewController, ivarName);
-        if ([value isKindOfClass:[NSString class]]) {
-            NSString *username = ApolloBannedProfileNormalizedUsername(value);
-            if (username.length > 0) return username;
-        }
-        NSString *username = ApolloBannedProfileUsernameFromModelObject(value);
-        if (username.length > 0) return username;
+    // UserCommentsViewController.username is an inline Swift String and
+    // ProfileViewController.userInfo an object; read each only on its own class.
+    NSString *username = nil;
+    if ([viewController isKindOfClass:ApolloClassUserCommentsViewController]) {
+        username = ApolloBannedProfileNormalizedUsername(ApolloReadSwiftStringIvar(viewController, "username"));
+    } else if ([viewController isKindOfClass:ApolloClassProfileViewController]) {
+        username = ApolloBannedProfileUsernameFromModelObject(ApolloObjectIvar(viewController, "userInfo"));
     }
+    if (username.length > 0) return username;
 
     id titleValue = viewController.navigationItem.title ?: viewController.title;
     if ([titleValue isKindOfClass:[NSString class]]) {
@@ -235,12 +149,7 @@ static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController 
 
     for (UIViewController *controller in viewController.navigationController.viewControllers.reverseObjectEnumerator) {
         if (controller == viewController) continue;
-        if (sProfileViewControllerClass && [controller isMemberOfClass:sProfileViewControllerClass]) {
-            NSString *username = ApolloBannedProfileUsernameFromViewControllerDirect(controller);
-            if (username.length > 0) return username;
-        }
-        NSString *className = NSStringFromClass(controller.class);
-        if ([className containsString:@"ProfileViewController"]) {
+        if ([controller isKindOfClass:ApolloClassProfileViewController]) {
             NSString *username = ApolloBannedProfileUsernameFromViewControllerDirect(controller);
             if (username.length > 0) return username;
         }
@@ -261,16 +170,10 @@ static NSString *ApolloBannedProfileUsernameFromViewController(UIViewController 
     return nil;
 }
 
+// Apollo's only profile list controllers (checked against the binary's class list).
 static BOOL ApolloBannedProfileViewControllerLooksLikeProfileList(UIViewController *viewController) {
-    NSString *className = NSStringFromClass(viewController.class);
-    if ([className containsString:@"ProfileViewController"]) return YES;
-    if (![className containsString:@"User"]) return NO;
-    return [className containsString:@"Comment"] ||
-        [className containsString:@"Post"] ||
-        [className containsString:@"Overview"] ||
-        [className containsString:@"Submitted"] ||
-        [className containsString:@"Upvoted"] ||
-        [className containsString:@"Downvoted"];
+    return [viewController isKindOfClass:ApolloClassProfileViewController] ||
+           [viewController isKindOfClass:ApolloClassUserCommentsViewController];
 }
 
 static NSArray *ApolloBannedProfileSubnodesForNode(id node) {
@@ -328,10 +231,8 @@ static id ApolloBannedProfileBestAuthorTextNodeInRoot(id root, NSString *usernam
 }
 
 static NSString *ApolloBannedProfileUsernameFromCommentCell(id cell) {
-    if (!cell) return nil;
-    NSString *username = ApolloBannedProfileUsernameFromModelObject(ApolloBannedProfileObjectIvar(cell, @"comment"));
-    if (username.length > 0) return username;
-    return ApolloBannedProfileUsernameFromModelObject(ApolloBannedProfileObjectIvar(cell, @"link"));
+    if (![cell isKindOfClass:ApolloClassCommentCellNode]) return nil;
+    return ApolloBannedProfileUsernameFromModelObject(ApolloObjectIvar(cell, "comment"));
 }
 
 static void ApolloBannedProfileApplyCommentAuthorHint(id cell, NSString *username) {
@@ -341,7 +242,7 @@ static void ApolloBannedProfileApplyCommentAuthorHint(id cell, NSString *usernam
 
     if (!ApolloBannedProfileCachedIsSuspended(username)) return;
 
-    id authorRoot = ApolloBannedProfileObjectIvar(cell, @"authorNode");
+    id authorRoot = ApolloObjectIvar(cell, "authorNode");
     id textNode = ApolloBannedProfileBestAuthorTextNodeInRoot(authorRoot ?: cell, username);
     if (!textNode) return;
 
@@ -422,7 +323,7 @@ static void ApolloBannedProfileTriggerLinkButtonRelayout(id linkButtonNode) {
             ((void (*)(id, SEL))objc_msgSend)(current, invalidate);
         }
 
-        SEL relayout = NSSelectorFromString(@"_u_setNeedsLayoutFromAbove");
+        SEL relayout = @selector(_u_setNeedsLayoutFromAbove);
         if ([current respondsToSelector:relayout]) {
             ((void (*)(id, SEL))objc_msgSend)(current, relayout);
         }
@@ -443,8 +344,8 @@ id ApolloBannedProfileWrapLinkButtonSpecWithBannedHint(id linkButtonNode, id nat
     username = ApolloBannedProfileNormalizedUsername(username);
     if (!nativeSpec || username.length == 0) return nativeSpec;
 
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
-    Class textNodeClass = NSClassFromString(@"ASTextNode");
+    Class stackClass = ApolloClassASStackLayoutSpec;
+    Class textNodeClass = ApolloClassASTextNode;
     if (!stackClass || !textNodeClass) return nativeSpec;
 
     id textNode = [[textNodeClass alloc] init];
@@ -556,17 +457,8 @@ static void ApolloBannedProfileStopVisibleSpinnersInView(UIView *view) {
     }
 }
 
-static Class ApolloBannedProfileHeaderViewClass(void) {
-    static Class cls;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        cls = NSClassFromString(@"ApolloProfileHeaderView");
-    });
-    return cls;
-}
-
 static void ApolloBannedProfileApplyHeaderSuspendedAppearance(UIViewController *viewController, BOOL suspended) {
-    Class headerClass = ApolloBannedProfileHeaderViewClass();
+    Class headerClass = ApolloClassApolloProfileHeaderView;
     if (!headerClass || !viewController.view) return;
 
     NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:viewController.view];
@@ -907,6 +799,16 @@ static BOOL ApolloBannedProfileURLMatchesUserListEndpoint(NSURL *url) {
 
 %end
 
+// Keep a cached overlay pinned during layout. Revalidation runs from the
+// appearance hooks: both controllers have their username from init (title and
+// UserComments' `username` ivar), so it never needs a per-layout refresh. A manual
+// dismissal is respected: no re-pin (or header layout churn) for that account.
+static void ApolloBannedProfileDidLayout(UIViewController *viewController) {
+    NSString *username = ApolloBannedProfileUsernameFromViewController(viewController);
+    if (username.length == 0 || ApolloBannedProfileOverlayDismissedForUsername(username)) return;
+    if (ApolloBannedProfileCachedIsSuspended(username)) ApolloBannedProfileInstallOverlay(viewController, username);
+}
+
 %hook _TtC6Apollo21ProfileViewController
 
 - (void)viewDidLoad {
@@ -926,7 +828,7 @@ static BOOL ApolloBannedProfileURLMatchesUserListEndpoint(NSURL *url) {
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloBannedProfileScheduleRefresh((UIViewController *)self);
+    ApolloBannedProfileDidLayout((UIViewController *)self);
 }
 
 %end
@@ -950,7 +852,7 @@ static BOOL ApolloBannedProfileURLMatchesUserListEndpoint(NSURL *url) {
 
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloBannedProfileScheduleRefresh((UIViewController *)self);
+    ApolloBannedProfileDidLayout((UIViewController *)self);
 }
 
 %end
@@ -964,39 +866,7 @@ static BOOL ApolloBannedProfileURLMatchesUserListEndpoint(NSURL *url) {
 
 %end
 
-%hook UIViewController
-
-- (void)viewWillAppear:(BOOL)animated {
-    %orig;
-    if (ApolloBannedProfileViewControllerLooksLikeProfileList(self)) {
-        ApolloBannedProfileScheduleRefresh(self);
-    }
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    if (!ApolloBannedProfileViewControllerLooksLikeProfileList(self)) return;
-
-    NSString *username = ApolloBannedProfileUsernameFromViewController(self);
-    if (username.length == 0) return;
-    // Respect a manual dismissal: don't re-pin (or churn header layout) for an
-    // account the user chose to reveal.
-    if (ApolloBannedProfileOverlayDismissedForUsername(username)) return;
-    if (ApolloBannedProfileCachedIsSuspended(username)) {
-        // Keep the overlay pinned during layout, but also schedule a revalidation
-        // so a lifted ban clears it instead of re-pinning the stale cached state.
-        ApolloBannedProfileInstallOverlay(self, username);
-        ApolloBannedProfileScheduleRefresh(self);
-    }
-}
-
-%end
-
 %ctor {
-    sProfileViewControllerClass = objc_getClass("_TtC6Apollo21ProfileViewController");
-    if (!sProfileViewControllerClass) {
-        sProfileViewControllerClass = NSClassFromString(@"Apollo.ProfileViewController");
-    }
     ApolloLog(@"[BannedProfile] module loaded");
     sBlockedNavTitles = [NSSet setWithObjects:
         @"accounts", @"account", @"profile", @"settings", @"overview",

@@ -1267,7 +1267,7 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
 #pragma mark - Helpers
 
 - (NSInteger)modelAvailabilityStatus {
-    Class bridgeClass = NSClassFromString(@"ApolloFoundationModels");
+    Class bridgeClass = objc_getClass("ApolloFoundationModels");
     if (!bridgeClass || ![bridgeClass respondsToSelector:@selector(shared)]) return 4;
 
     ApolloFoundationModels *bridge = [(id)bridgeClass shared];

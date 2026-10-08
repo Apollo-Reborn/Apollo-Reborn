@@ -2,6 +2,8 @@
 #import "ApolloThemePaletteEngine.h"
 #import "ApolloThemeTokens.h"
 #import "ApolloCommon.h"
+#import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 @interface ApolloFoundationModels : NSObject
 + (instancetype)shared;
@@ -17,7 +19,7 @@ static NSString * const kATBRequestID = @"theme-ai-generation";
 static NSString * const kATBErrorDomain = @"ApolloThemeAI";
 
 static ApolloFoundationModels *ATBBridge(void) {
-    Class cls = NSClassFromString(@"ApolloFoundationModels");
+    Class cls = ApolloClassApolloFoundationModels;
     return [cls respondsToSelector:@selector(shared)] ? [cls shared] : nil;
 }
 

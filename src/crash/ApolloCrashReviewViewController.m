@@ -310,7 +310,7 @@
                                           encoding:NSUTF8StringEncoding
                                              error:&error];
     if (error) {
-        ApolloLog(@"[CrashCapture] export write failed: %@", error.localizedDescription);
+        ApolloLogError(@"[CrashCapture] export write failed: %@", error.localizedDescription);
         return;
     }
 

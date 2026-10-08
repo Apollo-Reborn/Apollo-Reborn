@@ -7,6 +7,7 @@
 #import <ImageIO/ImageIO.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 static NSString *const kGiphyCellReuseID = @"GiphyCell";
 static const NSTimeInterval kGiphySearchDebounce = 0.30;
@@ -97,7 +98,7 @@ static id ApolloGiphyPreviewMediaFromData(NSData *data) {
     }
 
     if (frameCount > 1 && ApolloGiphyDataIsGIF(data)) {
-        Class animatedClass = objc_getClass("FLAnimatedImage");
+        Class animatedClass = ApolloClassFLAnimatedImage;
         if (animatedClass) {
             id (*initializer)(id, SEL, NSData *, NSUInteger, BOOL) =
                 (id (*)(id, SEL, NSData *, NSUInteger, BOOL))objc_msgSend;
@@ -131,7 +132,7 @@ static void ApolloGiphyClearPreviewView(UIImageView *imageView) {
 
 static void ApolloGiphyApplyPreviewMedia(UIImageView *imageView, id media) {
     if (!imageView || !media) return;
-    Class animatedClass = objc_getClass("FLAnimatedImage");
+    Class animatedClass = ApolloClassFLAnimatedImage;
     if (animatedClass && [media isKindOfClass:animatedClass] &&
         [imageView respondsToSelector:@selector(setAnimatedImage:)]) {
         imageView.image = nil;
@@ -150,19 +151,14 @@ static NSError *ApolloGiphyPreviewResponseError(NSHTTPURLResponse *response) {
 }
 
 static UIImageView *ApolloGiphyCreatePreviewView(CGRect frame) {
-    Class animatedViewClass = objc_getClass("FLAnimatedImageView");
+    Class animatedViewClass = ApolloClassFLAnimatedImageView;
     if (animatedViewClass && [animatedViewClass isSubclassOfClass:[UIImageView class]]) {
         return [[animatedViewClass alloc] initWithFrame:frame];
     }
     return [[UIImageView alloc] initWithFrame:frame];
 }
 
-static UIColor *ApolloGiphyAccentColorFromController(UIViewController *controller) {
-    return ApolloThemeAccentColor() ?: controller.view.tintColor;
-}
-
 static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *controller) {
-    if (!controller) return nil;
     UIColor *backgroundColor = controller.view.backgroundColor;
     if (backgroundColor && CGColorGetAlpha(backgroundColor.CGColor) > 0.01) {
         return backgroundColor;
@@ -363,7 +359,7 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
 
 - (void)applyApolloTheme {
     UIViewController *source = self.themeSourceViewController;
-    UIColor *accent = ApolloGiphyAccentColorFromController(source) ?: self.view.tintColor ?: [UIColor systemBlueColor];
+    UIColor *accent = ApolloThemeAccentColor() ?: source.view.tintColor ?: self.view.tintColor;
     UIColor *background = ApolloGiphyBackgroundColorFromController(source) ?: [UIColor systemBackgroundColor];
     UIColor *cellBackground = [accent colorWithAlphaComponent:0.12];
 
@@ -381,10 +377,8 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
 
     UISearchBar *searchBar = self.searchController.searchBar;
     searchBar.tintColor = accent;
-    if (@available(iOS 13.0, *)) {
-        searchBar.searchTextField.textColor = [UIColor labelColor];
-        searchBar.searchTextField.tintColor = accent;
-    }
+    searchBar.searchTextField.textColor = [UIColor labelColor];
+    searchBar.searchTextField.tintColor = accent;
     // Under Liquid Glass UIKit draws the field's surface itself: in this sheet
     // the field is lifted out of the bar into a glass capsule in the floating
     // bar at the bottom, taller than the field. Any fill on the field showed
@@ -393,9 +387,7 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
     if (!IsLiquidGlass()) {
         searchBar.barTintColor = background;
         searchBar.backgroundColor = background;
-        if (@available(iOS 13.0, *)) {
-            searchBar.searchTextField.backgroundColor = cellBackground;
-        }
+        searchBar.searchTextField.backgroundColor = cellBackground;
     }
 
     UINavigationController *nav = self.navigationController;
@@ -513,7 +505,7 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
 
         if (error) {
             if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return;
-            ApolloLog(@"[MarkdownGif] giphy fetch failed: %@", error.localizedDescription);
+            ApolloLogError(@"[MarkdownGif] giphy fetch failed: %@", error.localizedDescription);
             if (!append) {
                 strongSelf.gifs = @[];
                 strongSelf.statusLabel.hidden = NO;

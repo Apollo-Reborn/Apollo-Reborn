@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <string.h>
+#import "ApolloClasses.h"
 
 // UIKit may hide the title to fit the uncollapsed action group. Host a native
 // title control outside that allocator, preserving the item's original custom
@@ -17,8 +18,8 @@ static NSUInteger sApolloTitlePresentationWriteDepth;
 
 static BOOL ApolloTitlePresentationAvailable(void) {
     // IsLiquidGlass checks the linked SDK; also require a glass-capable OS.
-    return IsLiquidGlass() && objc_getClass("UIGlassEffect") != Nil &&
-        objc_getClass("_UINavigationBarTitleControl") != Nil;
+    return IsLiquidGlass() && ApolloClassUIGlassEffect != Nil &&
+        ApolloClassUINavigationBarTitleControl != Nil;
 }
 
 @interface _UINavigationBarTitleControl : UIControl
@@ -80,12 +81,6 @@ static BOOL ApolloTitlePresentationAvailable(void) {
 - (ApolloTitlePresentationSource *)captureSource:(UIView *)view;
 @end
 
-static id ApolloTitlePresentationRead(id object, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
-    return [object respondsToSelector:selector]
-        ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
-
 static id ApolloTitlePresentationItemToken(UINavigationItem *item) {
     if (!item) return nil;
     id token = objc_getAssociatedObject(item, &kApolloTitlePresentationItemTokenKey);
@@ -97,8 +92,7 @@ static id ApolloTitlePresentationItemToken(UINavigationItem *item) {
     return token;
 }
 
-static id ApolloTitlePresentationReadOrCaptured(id object, NSString *name, id captured) {
-    SEL selector = NSSelectorFromString(name);
+static id ApolloTitlePresentationReadOrCaptured(id object, SEL selector, id captured) {
     // A supported getter's nil clears the value; never replay stale metadata.
     return [object respondsToSelector:selector]
         ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : captured;
@@ -106,11 +100,13 @@ static id ApolloTitlePresentationReadOrCaptured(id object, NSString *name, id ca
 
 static NSAttributedString *ApolloTitlePresentationSourceTitle(ApolloTitlePresentationSource *source) {
     UIView *view = source.view;
-    BOOL hasAttributedGetter = [view respondsToSelector:NSSelectorFromString(@"attributedTitle")];
-    NSAttributedString *title = ApolloTitlePresentationReadOrCaptured(view, @"attributedTitle", source.attributedTitle);
+    SEL attributedTitleSelector = @selector(attributedTitle);
+    BOOL hasAttributedGetter = [view respondsToSelector:attributedTitleSelector];
+    NSAttributedString *title = hasAttributedGetter
+        ? ((id (*)(id, SEL))objc_msgSend)(view, attributedTitleSelector) : source.attributedTitle;
     if (hasAttributedGetter && title) return title;
-    if ([view respondsToSelector:NSSelectorFromString(@"title")]) {
-        NSString *plain = ApolloTitlePresentationRead(view, @"title");
+    if ([view respondsToSelector:@selector(title)]) {
+        NSString *plain = [(id)view title];
         // Preserve matching formatting, but honor direct plaintext updates.
         if ([plain isKindOfClass:NSString.class]) {
             return [title.string isEqualToString:plain] ? title : [[NSAttributedString alloc] initWithString:plain];
@@ -125,7 +121,7 @@ static BOOL ApolloTitlePresentationEqual(id left, id right) {
 }
 
 static BOOL ApolloTitlePresentationIsControl(UIView *view) {
-    Class cls = NSClassFromString(@"_UINavigationBarTitleControl");
+    Class cls = ApolloClassUINavigationBarTitleControl;
     return cls && [view isKindOfClass:cls];
 }
 
@@ -168,7 +164,7 @@ static BOOL ApolloTitlePresentationVisible(UIView *view, UINavigationBar *bar) {
 }
 
 static UIView *ApolloTitlePresentationHost(UINavigationBar *bar) {
-    Class hostClass = NSClassFromString(@"_UINavigationBarHostedViewContainer");
+    Class hostClass = ApolloClassUINavigationBarHostedViewContainer;
     if (!hostClass || CGRectGetWidth(bar.bounds) <= 0) return nil;
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:bar];
     for (NSUInteger index = 0; index < queue.count; index++) {
@@ -192,7 +188,7 @@ static UIView *ApolloTitlePresentationHost(UINavigationBar *bar) {
 static NSArray<UIView *> *ApolloTitlePresentationVisibleSources(UINavigationBar *bar, UINavigationItem *item) {
     NSMutableArray<UIView *> *result = [NSMutableArray array];
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:bar];
-    NSAttributedString *itemAttributed = ApolloTitlePresentationRead(item, @"attributedTitle");
+    NSAttributedString *itemAttributed = ApolloSendObject(item, @selector(attributedTitle));
     NSString *expectedTitle = itemAttributed.string ?: item.title ?: @"";
     for (NSUInteger index = 0; index < queue.count; index++) {
         UIView *view = queue[index];
@@ -200,8 +196,8 @@ static NSArray<UIView *> *ApolloTitlePresentationVisibleSources(UINavigationBar 
         if (ApolloTitlePresentationIsControl(view)) {
             if (!ApolloTitlePresentationVisible(view, bar)) continue;
             ApolloTitlePresentationSource *state = objc_getAssociatedObject(view, &kApolloTitlePresentationSourceKey);
-            UIView *custom = state ? state.customView : ApolloTitlePresentationRead(view, @"titleView");
-            NSString *title = state ? ApolloTitlePresentationSourceTitle(state).string : ApolloTitlePresentationRead(view, @"title");
+            UIView *custom = state ? state.customView : ApolloSendObject(view, @selector(titleView));
+            NSString *title = state ? ApolloTitlePresentationSourceTitle(state).string : ApolloSendObject(view, @selector(title));
             if (item.titleView ? custom == item.titleView : (!custom && [title ?: @"" isEqualToString:expectedTitle])) {
                 [result addObject:view];
             }
@@ -213,7 +209,7 @@ static NSArray<UIView *> *ApolloTitlePresentationVisibleSources(UINavigationBar 
 }
 
 static SEL ApolloTitlePresentationConfigureSelector(void) {
-    return NSSelectorFromString(@"setTitleAttributes:titleMenuProvider:documentProperties:titleView:attributedTitle:");
+    return @selector(setTitleAttributes:titleMenuProvider:documentProperties:titleView:attributedTitle:);
 }
 
 static void ApolloTitlePresentationConfigure(UIView *control, NSDictionary *attributes,
@@ -228,9 +224,9 @@ static void ApolloTitlePresentationConfigure(UIView *control, NSDictionary *attr
 }
 
 static void ApolloTitlePresentationDetachCustom(UIView *source) {
-    if (!source || ![source respondsToSelector:NSSelectorFromString(@"setTitleView:")]) return;
+    if (!source || ![source respondsToSelector:@selector(setTitleView:)]) return;
     sApolloTitlePresentationWriteDepth++;
-    ((void (*)(id, SEL, id))objc_msgSend)(source, NSSelectorFromString(@"setTitleView:"), nil);
+    [(id)source setTitleView:nil];
     // Tear down _UITAMICAdaptorView before transfer; otherwise it keeps writing
     // the custom view's frame after reparenting.
     [source setNeedsUpdateConstraints];
@@ -278,13 +274,13 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     state.nativeHidden = view.hidden;
     state.nativeInteraction = view.userInteractionEnabled;
     state.nativeAccessibilityHidden = view.accessibilityElementsHidden;
-    state.attributes = ApolloTitlePresentationRead(view, @"titleAttributes");
-    state.menuProvider = ApolloTitlePresentationRead(view, @"titleMenuProvider");
-    state.documentProperties = ApolloTitlePresentationRead(view, @"documentProperties");
-    state.customView = ApolloTitlePresentationRead(view, @"titleView");
-    state.attributedTitle = ApolloTitlePresentationRead(view, @"attributedTitle");
+    state.attributes = ApolloSendObject(view, @selector(titleAttributes));
+    state.menuProvider = ApolloSendObject(view, @selector(titleMenuProvider));
+    state.documentProperties = ApolloSendObject(view, @selector(documentProperties));
+    state.customView = ApolloSendObject(view, @selector(titleView));
+    state.attributedTitle = ApolloSendObject(view, @selector(attributedTitle));
     if (!state.attributedTitle) {
-        NSString *plainTitle = ApolloTitlePresentationRead(view, @"title");
+        NSString *plainTitle = ApolloSendObject(view, @selector(title));
         if ([plainTitle isKindOfClass:NSString.class]) {
             state.attributedTitle = [[NSAttributedString alloc] initWithString:plainTitle];
         }
@@ -301,9 +297,9 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     objc_setAssociatedObject(view, &kApolloTitlePresentationSourceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sApolloTitlePresentationWriteDepth++;
     // Restore only titleView; preserve native metadata updates made while hidden.
-    SEL setTitleView = NSSelectorFromString(@"setTitleView:");
+    SEL setTitleView = @selector(setTitleView:);
     if ([view respondsToSelector:setTitleView] &&
-        ApolloTitlePresentationRead(view, @"titleView") != state.customView) {
+        ApolloSendObject(view, @selector(titleView)) != state.customView) {
         ((void (*)(id, SEL, id))objc_msgSend)(view, setTitleView, state.customView);
         [view setNeedsUpdateConstraints];
         [view updateConstraintsIfNeeded];
@@ -456,7 +452,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
         if (candidate.navigationItemToken == itemToken) { source = candidate; break; }
     }
 
-    NSDictionary *sourceAttributes = ApolloTitlePresentationReadOrCaptured(source.view, @"titleAttributes", source.attributes);
+    NSDictionary *sourceAttributes = ApolloTitlePresentationReadOrCaptured(source.view, @selector(titleAttributes), source.attributes);
     NSAttributedString *sourceTitle = ApolloTitlePresentationSourceTitle(source);
     NSMutableDictionary *attributes = [sourceAttributes mutableCopy] ?: [NSMutableDictionary dictionary];
     [attributes addEntriesFromDictionary:bar.titleTextAttributes ?: @{}];
@@ -465,11 +461,11 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     if (!attributes[NSForegroundColorAttributeName]) attributes[NSForegroundColorAttributeName] = UIColor.labelColor;
     // The source control owns resolved metadata, including nil. Use the item
     // only when no source was captured.
-    id menu = source ? ApolloTitlePresentationReadOrCaptured(source.view, @"titleMenuProvider", source.menuProvider)
-        : ApolloTitlePresentationRead(item, @"titleMenuProvider");
-    id document = source ? ApolloTitlePresentationReadOrCaptured(source.view, @"documentProperties", source.documentProperties)
-        : ApolloTitlePresentationRead(item, @"documentProperties");
-    NSAttributedString *title = ApolloTitlePresentationRead(item, @"attributedTitle");
+    id menu = source ? ApolloTitlePresentationReadOrCaptured(source.view, @selector(titleMenuProvider), source.menuProvider)
+        : ApolloSendObject(item, @selector(titleMenuProvider));
+    id document = source ? ApolloTitlePresentationReadOrCaptured(source.view, @selector(documentProperties), source.documentProperties)
+        : ApolloSendObject(item, @selector(documentProperties));
+    NSAttributedString *title = ApolloSendObject(item, @selector(attributedTitle));
     // The attributed item title wins; preserve source formatting only for matching text.
     if (!title && [sourceTitle.string isEqualToString:item.title ?: @""]) title = sourceTitle;
     if (!title) title = [[NSAttributedString alloc] initWithString:item.title ?: @""];
@@ -484,7 +480,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
         !ApolloTitlePresentationEqual(title, self.appliedTitle) ||
         !ApolloTitlePresentationEqual(preferredFont, self.appliedPreferredFont);
     if (!self.control) {
-        Class cls = NSClassFromString(@"_UINavigationBarTitleControl");
+        Class cls = ApolloClassUINavigationBarTitleControl;
         UIView *control = [[cls alloc] initWithFrame:CGRectMake(0, 0, 1, 21)];
         if (!control || ![control respondsToSelector:ApolloTitlePresentationConfigureSelector()]) {
             [self resetPresentation];
@@ -500,14 +496,14 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     // detached until teardown, including during offscreen updates.
     if (self.customView) {
         for (ApolloTitlePresentationSource *state in self.sources) {
-            if (ApolloTitlePresentationRead(state.view, @"titleView") == self.customView) {
+            if (ApolloSendObject(state.view, @selector(titleView)) == self.customView) {
                 ApolloTitlePresentationDetachCustom(state.view);
             }
         }
     }
     if (configurationChanged || (self.customView && ![self.customView isDescendantOfView:self.control])) {
         ApolloTitlePresentationConfigure(self.control, attributes, menu, document, self.customView, title);
-        SEL setContentAlpha = NSSelectorFromString(@"setContentAlpha:");
+        SEL setContentAlpha = @selector(setContentAlpha:);
         if ([self.control respondsToSelector:setContentAlpha]) {
             ((void (*)(id, SEL, CGFloat))objc_msgSend)(self.control, setContentAlpha, 1.0);
         }
@@ -607,7 +603,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     if (changed) {
         [bar setNeedsLayout];
         ApolloNavigationTitlesRefreshBar(bar);
-        ApolloLogDebug(@"[NavigationTitlePresentation] %@ native title ready=%d custom=%d sources=%lu",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitlePresentation] %{public}@ native title ready=%d custom=%d sources=%lu",
             NSStringFromClass(top.class), self.ready, self.customView != nil, (unsigned long)self.sources.count);
     }
 }
@@ -768,7 +764,7 @@ static void ApolloTitlePresentationItemChanged(UINavigationItem *item) {
 %end
 
 %ctor {
-    Class cls = NSClassFromString(@"_UINavigationBarTitleControl");
+    Class cls = objc_getClass("_UINavigationBarTitleControl");
     if (ApolloTitlePresentationAvailable() && [cls instancesRespondToSelector:ApolloTitlePresentationConfigureSelector()]) {
         %init(ApolloTitlePresentationHooks);
         ApolloLog(@"[NavigationTitlePresentation] Native title ownership hooks installed");

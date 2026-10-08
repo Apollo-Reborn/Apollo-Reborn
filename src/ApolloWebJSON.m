@@ -533,7 +533,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         // it (an active web session exists) — otherwise this is just the
         // normal OAuth path and logging would fire for every request.
         if (ApolloActiveWebSession() != nil) {
-            ApolloLogDebug(@"[WebJSON] Foreign real bearer (u/%@) on %@ %@ — leaving on oauth path",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Foreign real bearer (u/%{public}@) on %{public}@ %{public}@ — leaving on oauth path",
                            ApolloWebJSONUsernameForRegisteredBearer(bearer) ?: @"unknown", request.HTTPMethod ?: @"GET", url.path);
         }
         return nil;
@@ -589,7 +589,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
         [modMutable setValue:session.cookieHeader forHTTPHeaderField:@"Cookie"];
         modMutable.HTTPShouldHandleCookies = NO;
         [modMutable setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
-        ApolloLogDebug(@"[WebJSON] Rewrote moderators GET %@ -> %@ for u/%@", url.absoluteString, modURL.absoluteString, sessionUsername);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Rewrote moderators GET %{public}@ -> %{public}@ for u/%{public}@", url.absoluteString, modURL.absoluteString, sessionUsername);
         return modMutable;
     }
 
@@ -694,7 +694,7 @@ NSURLRequest *ApolloWebJSONRewriteRequest(NSURLRequest *request) {
 
     [mutable setValue:ApolloWebJSONBrowserUserAgent() forHTTPHeaderField:@"User-Agent"];
 
-    ApolloLogDebug(@"[WebJSON] Rewrote %@ %@ -> %@ for u/%@ (%@%@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Rewrote %{public}@ %{public}@ -> %{public}@ for u/%{public}@ (%{public}@%{public}@)",
                    method, url.absoluteString, rewrittenURL.absoluteString, sessionUsername,
                    isWrite ? @"write" : @"read",
                    (isWrite && session.modhash.length > 0) ? @", modhash" : @"");
@@ -1371,13 +1371,13 @@ static NSDictionary<NSString *, NSDictionary *> *ApolloWebJSONFetchFullPostsForM
                 @synchronized (results) { foundPreview = results[identifier] != nil; }
                 if (!foundPreview) {
                     ApolloWebJSONFinishMediaHydration(identifier, nil);
-                    ApolloLog(@"[WebJSON] Direct-image metadata failed for t3_%@: HTTP %ld, %lu bytes, error=%@",
+                    ApolloLogError(@"[WebJSON] Direct-image metadata failed for t3_%@: HTTP %ld, %lu bytes, error=%@",
                               identifier, (long)HTTPResponse.statusCode,
                               (unsigned long)responseData.length, error);
                 }
             } @catch (NSException *exception) {
                 ApolloWebJSONFinishMediaHydration(identifier, nil);
-                ApolloLog(@"[WebJSON] Direct-image metadata parsing failed for t3_%@: %@",
+                ApolloLogError(@"[WebJSON] Direct-image metadata parsing failed for t3_%@: %@",
                           identifier, exception);
             } @finally {
                 dispatch_group_leave(group);
@@ -1494,7 +1494,7 @@ NSData *ApolloWebJSONFixupListingMediaResponseData(NSURLResponse *response, NSDa
     NSData *fixed = [NSJSONSerialization dataWithJSONObject:root options:0 error:NULL];
     if (!fixed) return data;
 
-    ApolloLogDebug(@"[WebJSON] Hydrated image metadata for %lu direct Reddit post%@ in %@",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebJSON] Hydrated image metadata for %lu direct Reddit post%{public}@ in %{public}@",
                    (unsigned long)repaired, repaired == 1 ? @"" : @"s", responseURL.path);
     return fixed;
 }

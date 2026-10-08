@@ -35,8 +35,7 @@ static NSArray *ApolloAllArray(id value) {
 
 // Only known object-returning model properties reach this helper. Swift value
 // ivars (ImgurAlbum / foundURLs / URL) must first pass through a Swift bridge.
-static id ApolloAllProperty(id object, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
+static id ApolloAllProperty(id object, SEL selector) {
     return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
 }
 
@@ -134,13 +133,13 @@ NSArray<ApolloSaveAllMediaItem *> *ApolloSaveAllMediaItemsFromURLs(NSArray<NSURL
 
 NSArray<ApolloSaveAllMediaItem *> *ApolloSaveAllMediaItemsFromGallery(id gallery, NSError **error) {
     if (error) *error = nil;
-    NSArray *members = ApolloAllArray(ApolloAllProperty(gallery, @"items"));
+    NSArray *members = ApolloAllArray(ApolloAllProperty(gallery, @selector(items)));
     if (!members.count) return nil;
     NSMutableArray *items = [NSMutableArray arrayWithCapacity:members.count];
     for (id member in members) {
-        id image = ApolloAllProperty(member, @"image");
-        NSURL *URL = ApolloAllURL(ApolloAllProperty(image, @"url"));
-        NSURL *mp4 = ApolloAllURL(ApolloAllProperty(image, @"mp4URL"));
+        id image = ApolloAllProperty(member, @selector(image));
+        NSURL *URL = ApolloAllURL(ApolloAllProperty(image, @selector(url)));
+        NSURL *mp4 = ApolloAllURL(ApolloAllProperty(image, @selector(mp4URL)));
         // Native animated gallery items expose a still URL and an mp4URL.
         // Preserve a real GIF when present, otherwise use the animation.
         if (mp4 && ![URL.pathExtension.lowercaseString isEqualToString:@"gif"]) URL = mp4;
@@ -157,7 +156,7 @@ static id ApolloAllMediaLink(id link) {
     NSMutableArray *seen = [NSMutableArray array];
     for (NSUInteger depth = 0; link && depth < 8; depth++) {
         [seen addObject:link];
-        id parent = ApolloAllProperty(link, @"crosspostParent");
+        id parent = ApolloAllProperty(link, @selector(crosspostParent));
         if (!parent || [seen indexOfObjectIdenticalTo:parent] != NSNotFound) break;
         link = parent;
     }
@@ -165,7 +164,7 @@ static id ApolloAllMediaLink(id link) {
 }
 
 static NSArray *ApolloAllGalleryOrder(id link) {
-    id order = ApolloAllProperty(link, @"galleryData");
+    id order = ApolloAllProperty(link, @selector(galleryData));
     return ApolloAllArray(order) ?: ApolloAllArray(ApolloAllDictionary(order)[@"items"]);
 }
 
@@ -173,7 +172,7 @@ NSArray<ApolloSaveAllMediaItem *> *ApolloSaveAllMediaItemsFromLink(id link, NSEr
     if (error) *error = nil;
     link = ApolloAllMediaLink(link);
     NSArray *order = ApolloAllGalleryOrder(link);
-    NSDictionary *metadata = ApolloAllDictionary(ApolloAllProperty(link, @"mediaMetadata"));
+    NSDictionary *metadata = ApolloAllDictionary(ApolloAllProperty(link, @selector(mediaMetadata)));
     if (order.count && metadata.count) {
         NSMutableArray *items = [NSMutableArray arrayWithCapacity:order.count];
         for (id member in order) {
@@ -184,8 +183,8 @@ NSArray<ApolloSaveAllMediaItem *> *ApolloSaveAllMediaItemsFromLink(id link, NSEr
         }
         return [items copy];
     }
-    id gallery = ApolloAllProperty(link, @"gallery");
-    NSUInteger nativeCount = ApolloAllArray(ApolloAllProperty(gallery, @"items")).count;
+    id gallery = ApolloAllProperty(link, @selector(gallery));
+    NSUInteger nativeCount = ApolloAllArray(ApolloAllProperty(gallery, @selector(items))).count;
     if (nativeCount) {
         if (order.count && order.count != nativeCount) return ApolloAllFailed(error);
         return ApolloSaveAllMediaItemsFromGallery(gallery, error);
@@ -212,8 +211,8 @@ BOOL ApolloSaveAllMediaURLIsCollection(NSURL *URL) {
 BOOL ApolloSaveAllMediaLinkHasCollection(id link) {
     link = ApolloAllMediaLink(link);
     if (ApolloAllGalleryOrder(link).count > 1) return YES;
-    if (ApolloAllArray(ApolloAllProperty(ApolloAllProperty(link, @"gallery"), @"items")).count > 1) return YES;
-    return ApolloSaveAllMediaURLIsCollection(ApolloAllURL(ApolloAllProperty(link, @"URL")));
+    if (ApolloAllArray(ApolloAllProperty(ApolloAllProperty(link, @selector(gallery)), @selector(items))).count > 1) return YES;
+    return ApolloSaveAllMediaURLIsCollection(ApolloAllURL(ApolloAllProperty(link, @selector(URL))));
 }
 
 static void ApolloAllDeliver(ApolloSaveAllMediaResolutionCompletion completion, NSArray *items, NSError *error) {
@@ -339,11 +338,11 @@ void ApolloSaveAllMediaResolveURL(NSURL *URL, ApolloSaveAllMediaResolutionComple
 
 void ApolloSaveAllMediaResolveLink(id link, ApolloSaveAllMediaResolutionCompletion completion) {
     link = ApolloAllMediaLink(link);
-    if (ApolloAllGalleryOrder(link).count || ApolloAllArray(ApolloAllProperty(ApolloAllProperty(link, @"gallery"), @"items")).count) {
+    if (ApolloAllGalleryOrder(link).count || ApolloAllArray(ApolloAllProperty(ApolloAllProperty(link, @selector(gallery)), @selector(items))).count) {
         NSError *error = nil;
         NSArray *items = ApolloSaveAllMediaItemsFromLink(link, &error);
         ApolloAllDeliver(completion, items, error ?: (items ? nil : ApolloAllError(@"The media in this post could not be loaded.")));
         return;
     }
-    ApolloSaveAllMediaResolveURL(ApolloAllURL(ApolloAllProperty(link, @"URL")), completion);
+    ApolloSaveAllMediaResolveURL(ApolloAllURL(ApolloAllProperty(link, @selector(URL))), completion);
 }

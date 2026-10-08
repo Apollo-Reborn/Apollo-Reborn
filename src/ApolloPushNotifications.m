@@ -1,19 +1,14 @@
 #import "ApolloPushNotifications.h"
 
 // `aps-environment` registration failures come back as NSCocoaErrorDomain 3000.
-// Kept as named constants so the intent is obvious and the defensive fallback
-// below documents why the literal string match also exists.
-static NSString *const kApolloAPSEntitlementErrorDomain = @"NSCocoaErrorDomain";
 static const NSInteger kApolloAPSEntitlementErrorCode = 3000;
 static NSString *const kApolloAPSEntitlementMarker = @"aps-environment";
 
 BOOL ApolloErrorIsMissingPushEntitlement(NSError *error) {
-    if (![error isKindOfClass:[NSError class]]) {
-        return NO;
-    }
+    if (!error) return NO;
 
     // Canonical signature returned by iOS today.
-    if ([error.domain isEqualToString:kApolloAPSEntitlementErrorDomain] &&
+    if ([error.domain isEqualToString:NSCocoaErrorDomain] &&
         error.code == kApolloAPSEntitlementErrorCode) {
         return YES;
     }

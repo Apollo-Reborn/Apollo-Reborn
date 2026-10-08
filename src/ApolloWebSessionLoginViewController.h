@@ -117,13 +117,6 @@ void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyH
 // removed; `completion(NO)` on cancel. Completion is optional.
 void ApolloPresentSwitchToAPIKeyFlow(UIViewController *host, NSString *username, void (^ _Nullable completion)(BOOL switched));
 
-// API key -> keyless: confirms, then presents the web-session login so the
-// user signs u/`username` in on reddit.com. The harvest stores the session
-// under whatever username actually logs in (normally the same account) and
-// enables the transport flag; the account's stored API key is kept but goes
-// unused while the web session exists.
-void ApolloPresentSwitchToKeylessFlow(UIViewController *host, NSString *username);
-
 #ifdef __cplusplus
 }
 #endif

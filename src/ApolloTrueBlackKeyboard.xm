@@ -8,6 +8,7 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 // The dark-config swap below hooks +configForAppearance:inputMode:traitEnvironment:, which UIKit
 // added in iOS 15. iOS 14 only has +configForAppearance:inputMode:, so the hook never installs
@@ -17,7 +18,7 @@ static BOOL DarkConfigSwapAvailable(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         available = class_getClassMethod(objc_getClass("UIKBRenderConfig"),
-            NSSelectorFromString(@"configForAppearance:inputMode:traitEnvironment:")) != NULL;
+            @selector(configForAppearance:inputMode:traitEnvironment:)) != NULL;
     });
     return available;
 }
@@ -99,11 +100,12 @@ static void RevertTrueBlack(UIVisualEffectView *backdrop) {
 // UIKBVisualEffectView inside TUIVariantSelectorView, or one owned by a key view). Painting those
 // black leaves a black cover under the pressed key, so only the keyboard's own background
 // backdrops are touched.
+
 static BOOL BackdropBelongsToKey(UIView *backdrop) {
-    Class effectView = objc_getClass("UIKBVisualEffectView");
+    Class effectView = ApolloClassUIKBVisualEffectView;
     if (effectView && [backdrop isKindOfClass:effectView]) return YES;
-    Class keyView = objc_getClass("UIKBKeyView");
-    Class variantSelector = objc_getClass("TUIVariantSelectorView");
+    Class keyView = ApolloClassUIKBKeyView;
+    Class variantSelector = ApolloTUIVariantSelectorViewClass();
     for (UIView *view = backdrop.superview; view; view = view.superview) {
         if ((keyView && [view isKindOfClass:keyView]) || (variantSelector && [view isKindOfClass:variantSelector])) return YES;
     }

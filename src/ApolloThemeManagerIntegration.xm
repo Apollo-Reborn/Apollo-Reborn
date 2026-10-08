@@ -827,7 +827,7 @@ static UIImage *CustomPickerSwatch(void) {
         UITableViewCell *cell = %orig(tv, [NSIndexPath indexPathForRow:0 inSection:0]);
         cell.accessoryView = nil;
         cell.textLabel.text = @"Custom";
-        if ([cell.detailTextLabel respondsToSelector:@selector(setText:)]) {
+        if (cell.detailTextLabel) {
             ApolloThemeStore *store = [ApolloThemeStore shared];
             NSDictionary *active = [store activeTheme];
             NSString *name = [active[@"name"] isKindOfClass:NSString.class] ? active[@"name"] : nil;
@@ -907,7 +907,7 @@ static void InstallNativeThemeHeaderTypography(void) {
     for (NSString *name in @[@"Apollo.SettingsThemeViewController",
                              @"Apollo.SettingsAppIconViewController",
                              @"Apollo.SettingsCommunityIconPackViewController"]) {
-        Class cls = NSClassFromString(name);
+        Class cls = objc_getClass(name.UTF8String);
         if (!cls) continue;
         SEL selector = @selector(tableView:willDisplayHeaderView:forSection:);
         Method method = class_getInstanceMethod(cls, selector);

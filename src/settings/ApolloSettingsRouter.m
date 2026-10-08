@@ -169,7 +169,7 @@ BOOL ApolloSettingsRouteOpenNow(NSString *routeId) {
         @try {
             ((void (*)(id, SEL))objc_msgSend)(tabBarController, @selector(goToSettingsTab));
         } @catch (NSException *exception) {
-            ApolloLog(@"[SettingsRouter] goToSettingsTab threw: %@", exception);
+            ApolloLogError(@"[SettingsRouter] goToSettingsTab threw: %@", exception);
         }
     }
 

@@ -226,7 +226,6 @@ static NSString *const UDKeyTapToRevealDeletedComments = @"TapToRevealDeletedCom
 // single comment thread from the comments "..." menu; the per-thread switch
 // resets when that thread is left. See ApolloDeletedCommentsMenu.xm.
 static NSString *const UDKeyPassiveDeletedComments = @"PassiveDeletedComments";
-static NSString *const UDKeyLegacyRevealDeletedComments = @"RevealDeletedComments";
 static NSString *const UDKeyFilterNSFWRecentlyRead = @"FilterNSFWRecentlyRead";
 static NSString *const UDKeyProxyImgurDDG = @"ProxyImgurDDG";
 // Allow non-DDG public text proxies (r.jina.ai, allorigins, codetabs) as a
@@ -680,10 +679,6 @@ static NSString *const UDKeyBarkSelectedIconName = @"BarkSelectedIconName";
 // DisableApollonouncements pattern (a disable flag that defaults to NO gives us
 // on-by-default). See ApolloUsageHeartbeat.{h,m}.
 static NSString *const UDKeyDisableUsageHeartbeat = @"DisableUsageHeartbeat";
-// Internal bookkeeping for the heartbeat (not user-facing).
-static NSString *const UDKeyHeartbeatMonth   = @"UsageHeartbeatMonth";   // "2026-07"
-static NSString *const UDKeyHeartbeatToken   = @"UsageHeartbeatToken";   // monthly UUID
-static NSString *const UDKeyHeartbeatLastDay = @"UsageHeartbeatLastDay"; // "2026-07-05"
 
 // In-app update check (ApolloUpdateChecker.{h,m}). Once a day it reads
 // release-manifest.json from GitHub and offers to hand off to the user's

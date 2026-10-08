@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloScrollToTop.h"
@@ -47,16 +48,12 @@ static CASpringAnimation *ApolloScrollReturnSpring(void) {
     return spring;
 }
 
-static id ApolloReturnObjectIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable([object class], name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 static NSString *ApolloReturnItemID(id node) {
+    SEL fullNameSelector = @selector(fullName);
     for (NSString *key in @[@"comment", @"link"]) {
-        id model = ApolloReturnObjectIvar(node, key.UTF8String);
-        SEL selector = NSSelectorFromString(@"fullName");
-        if ([model respondsToSelector:selector]) {
-            id value = ((id (*)(id, SEL))objc_msgSend)(model, selector);
+        id model = ApolloObjectIvar(node, key.UTF8String);
+        if ([model respondsToSelector:fullNameSelector]) {
+            id value = ((id (*)(id, SEL))objc_msgSend)(model, fullNameSelector);
             if ([value isKindOfClass:NSString.class]) return value;
         }
     }
@@ -200,8 +197,8 @@ static NSString *ApolloReturnItemID(id node) {
 - (void)captureVisibleItem {
     self.itemLookupAttempted = NO;
     UITableView *table = [self.scrollView isKindOfClass:UITableView.class] ? (id)self.scrollView : nil;
-    id tableNode = ApolloReturnObjectIvar(self.owner, "tableNode");
-    SEL selector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    id tableNode = ApolloObjectIvar(self.owner, "tableNode");
+    SEL selector = @selector(nodeForRowAtIndexPath:);
     if (!table || ![tableNode respondsToSelector:selector]) return;
     CGFloat y = self.savedOffset.y + self.savedTopInset;
     for (NSIndexPath *path in [table.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)]) {
@@ -215,12 +212,12 @@ static NSString *ApolloReturnItemID(id node) {
 }
 - (CGFloat)returnTargetY {
     UITableView *table = [self.scrollView isKindOfClass:UITableView.class] ? (id)self.scrollView : nil;
-    id tableNode = ApolloReturnObjectIvar(self.owner, "tableNode");
-    SEL lookup = NSSelectorFromString(@"indexPathForNode:");
+    id tableNode = ApolloObjectIvar(self.owner, "tableNode");
+    SEL lookup = @selector(indexPathForNode:);
     NSIndexPath *path = self.savedNode && [tableNode respondsToSelector:lookup]
         ? ((id (*)(id, SEL, id))objc_msgSend)(tableNode, lookup, self.savedNode) : nil;
     // A rebuilt node can still represent the same Reddit item.
-    SEL nodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSelector = @selector(nodeForRowAtIndexPath:);
     if (!path && self.savedItemID && !self.itemLookupAttempted && [tableNode respondsToSelector:nodeSelector]) {
         self.itemLookupAttempted = YES;
         for (NSInteger section = 0; section < table.numberOfSections && !path; section++) {
@@ -483,7 +480,7 @@ static NSString *ApolloReturnItemID(id node) {
     self.returnItem = [[UIBarButtonItem alloc] initWithCustomView:button];
     // The custom button already supplies glass. Suppress the bar's additional
     // shared background while letting UIKit place it beside the native back.
-    SEL hideBackground = NSSelectorFromString(@"setHidesSharedBackground:");
+    SEL hideBackground = @selector(setHidesSharedBackground:);
     if ([self.returnItem respondsToSelector:hideBackground]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(self.returnItem, hideBackground, YES);
     }
@@ -525,8 +522,7 @@ static NSString *ApolloReturnItemID(id node) {
 @end
 
 static UIScrollView *ApolloScrollReturnTable(id owner) {
-    Ivar ivar = class_getInstanceVariable([owner class], "tableNode");
-    id node = ivar ? object_getIvar(owner, ivar) : nil;
+    id node = ApolloObjectIvar(owner, "tableNode");
     SEL viewSelector = @selector(view);
     id view = [node respondsToSelector:viewSelector] ? ((id (*)(id, SEL))objc_msgSend)(node, viewSelector) : nil;
     return [view isKindOfClass:UIScrollView.class] ? view : nil;
@@ -597,8 +593,7 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloScrollReturn *state = ApolloScrollReturnState((UIViewController *)self);
-    Ivar ivar = class_getInstanceVariable([self class], "interceptingScrollView");
-    UIScrollView *proxy = ivar ? object_getIvar(self, ivar) : nil;
+    UIScrollView *proxy = ApolloObjectIvar(self, "interceptingScrollView");
     if ([proxy isKindOfClass:UIScrollView.class]) {
         // UIKit refuses status-bar scrolling when two visible scroll views
         // opt in. Apollo's real table and its full-screen proxy both did.
@@ -655,9 +650,8 @@ static ApolloScrollReturn *ApolloScrollReturnState(UIViewController *owner) {
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    Ivar ivar = class_getInstanceVariable([self class], "dropDownTableView");
-    UITableView *dropdown = ivar ? object_getIvar(self, ivar) : nil;
-    if (dropdown && tableView == dropdown) {
+    UITableView *dropdown = ApolloObjectIvar(self, "dropDownTableView");
+    if (tableView == dropdown) {
         [objc_getAssociatedObject(self, &kApolloScrollReturn) clearAnimated:YES];
         ApolloLog(@"[ScrollReturn] Cleared position for title feed selection");
     }
