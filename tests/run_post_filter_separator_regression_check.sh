@@ -40,7 +40,7 @@ reject_source 'ApolloPFHeightSnapshot snapshot = {0};' \
     'Objective-C++ snapshot initialization does not trigger missing-braces errors'
 require_source 'ApolloPFWriteDimension(style, @selector(setHeight:), snapshot.height);' \
     'normal separator height is restored after reuse'
-require_source 'SEL selector = NSSelectorFromString(@"nodeForRowAtIndexPath:");' \
+require_source 'SEL selector = @selector(nodeForRowAtIndexPath:);' \
     'a changed post targets only its trailing separator'
 require_source 'BOOL had = [set containsObject:postPath];' \
     'hidden post identity retains its table section'

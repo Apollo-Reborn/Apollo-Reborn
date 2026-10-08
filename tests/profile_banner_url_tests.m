@@ -21,6 +21,7 @@ static NSData *UIImagePNGRepresentation(UIImage *image) { return [@"image" dataU
 static NSData *UIImageJPEGRepresentation(UIImage *image, double quality) { return UIImagePNGRepresentation(image); }
 static BOOL ApolloUserProfileErrorIsTransient(NSError *error) { return error.code == NSURLErrorCancelled || error.code == NSURLErrorTimedOut; }
 #define ApolloLog(...) do {} while (0)
+#define ApolloLogError(...) do {} while (0)
 @interface BannerTask : NSObject
 @property(copy) void (^run)(void);
 - (void)resume;

@@ -2,6 +2,8 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities, kEditingSelection;
@@ -14,13 +16,8 @@ static UITableView *ApolloEditingTable(UIView *view) {
 }
 
 static BOOL ApolloEditingIsList(UITableView *table) {
-    Class cls = NSClassFromString(@"Apollo.RedditListViewController");
+    Class cls = ApolloClassRedditListViewController;
     return cls && [(id)table.dataSource isKindOfClass:cls];
-}
-
-static id ApolloEditingIvar(id object, const char *name) {
-    Ivar ivar = object ? class_getInstanceVariable([object class], name) : NULL;
-    return ivar ? object_getIvar(object, ivar) : nil;
 }
 
 // Keep the stars in place while editing; restore on exit. Apply at lifecycle
@@ -33,7 +30,7 @@ static id ApolloEditingIvar(id object, const char *name) {
 // Enhancements' wider inset, 8pt without it), so a fixed 23pt there moved the
 // non-Favorites stars 15pt left on some lists.
 static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
-    UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
+    UIButton *star = ApolloObjectIvar(cell, "accessoryButton");
     if (![star isKindOfClass:UIButton.class]) return;
     NSNumber *original = objc_getAssociatedObject(cell, &kEditingRightMargin);
     NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
@@ -203,7 +200,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [surface addSubview:button];
     [cell addSubview:panel];
     // Preserve native button sizing, rounded to the display pixel.
-    CGFloat scale = MAX(1.0, cell.traitCollection.displayScale);
+    CGFloat scale = cell.traitCollection.displayScale;
     CGFloat textWidth = [title sizeWithAttributes:@{NSFontAttributeName: button.titleLabel.font}].width;
     CGFloat width = ceil((textWidth + 24.0) * scale) / scale;
     [NSLayoutConstraint activateConstraints:@[
@@ -244,7 +241,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
         }
     }
     [cell bringSubviewToFront:panel];
-    state.star = ApolloEditingIvar(cell, "accessoryButton");
+    state.star = ApolloObjectIvar(cell, "accessoryButton");
     state.starTransform = state.star.transform;
     state.contentMargins = cell.contentView.layoutMargins;
     CGRect starFrame = [state.star convertRect:state.star.bounds toView:cell];
@@ -267,8 +264,8 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
     // The minus sends rotation and confirmation actions; only the latter toggles the panel.
-    if (action == NSSelectorFromString(@"editControlWasClicked:") && ApolloEditingShowConfirmation(self)) return;
-    if (action == NSSelectorFromString(@"_toggleRotate") &&
+    if (action == @selector(editControlWasClicked:) && ApolloEditingShowConfirmation(self)) return;
+    if (action == @selector(_toggleRotate) &&
         [NSStringFromClass(self.class) isEqualToString:@"UITableViewCellEditControl"] &&
         ApolloEditingIsList(ApolloEditingTable(self))) return;
     %orig;
@@ -285,7 +282,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     }
     %orig;
     if (list) {
-        for (NSIndexPath *path in self.indexPathsForSelectedRows.copy) [self deselectRowAtIndexPath:path animated:NO];
+        for (NSIndexPath *path in self.indexPathsForSelectedRows) [self deselectRowAtIndexPath:path animated:NO];
         for (UITableViewCell *cell in self.visibleCells) [cell setHighlighted:NO animated:NO];
         if (!editing) {
             NSNumber *previous = objc_getAssociatedObject(self, &kEditingSelection);
@@ -394,11 +391,11 @@ static void ApolloEditingMatchListBackground(UIViewController *controller) {
 
 %ctor {
     %init;
-    Class listClass = NSClassFromString(@"Apollo.RedditListViewController");
+    Class listClass = objc_getClass("_TtC6Apollo24RedditListViewController");
     if (listClass) {
         %init(ApolloListEditingController, ApolloEditListController = listClass);
     }
-    Class cellClass = NSClassFromString(@"Apollo.RedditListTableViewCell");
+    Class cellClass = objc_getClass("_TtC6Apollo23RedditListTableViewCell");
     if (cellClass) {
         %init(ApolloListEditingCells, ApolloEditListCell = cellClass);
     }

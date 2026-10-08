@@ -35,6 +35,7 @@
 @interface ASDisplayNode (ApolloAsyncDisplayGuard)
 - (CGRect)bounds;
 - (CGFloat)contentsScaleForDisplay;
+- (CALayer *)layer;
 @end
 
 // 64 million pixels is about 256 MB of RGBA: an 8000 x 8000 px square, or on
@@ -78,7 +79,12 @@ static BOOL ApolloDisplayGuardShouldLog(NSString *key) {
     // The same bounds and scale ASDK just captured for the block.
     CGRect bounds = [self bounds];
     CGFloat scale = [self respondsToSelector:@selector(contentsScaleForDisplay)] ? [self contentsScaleForDisplay] : 0;
-    if (!(scale > 0) || !isfinite(scale)) scale = UIScreen.mainScreen.scale;
+    // Fallback: the scale of the layer being displayed (this method runs on the
+    // main thread for a node whose layer is already loaded, since the layer is what
+    // asked for display). Never the node's view/traitCollection: layer-backed
+    // nodes have no view. A layer reporting no usable scale leaves pixels at 0,
+    // which simply lets the display through unguarded.
+    if (!(scale > 0) || !isfinite(scale)) scale = [self layer].contentsScale;
     double width = bounds.size.width;
     double height = bounds.size.height;
     double pixels = width * scale * height * scale;

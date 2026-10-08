@@ -52,24 +52,25 @@ static char kApolloPreviewDefaultBGKey;
 
 static BOOL sLoggedPreviewStamp = NO;
 
-%hook UIPreviewParameters
-
-- (instancetype)init {
-    UIPreviewParameters *params = %orig;
-    if (params && params.backgroundColor) {
+static UIPreviewParameters *ApolloPreviewTagDefaultBackground(UIPreviewParameters *params) {
+    UIColor *background = params.backgroundColor;
+    if (background) {
         objc_setAssociatedObject(params, &kApolloPreviewDefaultBGKey,
-                                 params.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                                 background, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return params;
 }
 
+%hook UIPreviewParameters
+
+- (instancetype)init {
+    UIPreviewParameters *params = %orig;
+    return ApolloPreviewTagDefaultBackground(params);
+}
+
 - (instancetype)initWithTextLineRects:(NSArray *)rects {
     UIPreviewParameters *params = %orig;
-    if (params && params.backgroundColor) {
-        objc_setAssociatedObject(params, &kApolloPreviewDefaultBGKey,
-                                 params.backgroundColor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    return params;
+    return ApolloPreviewTagDefaultBackground(params);
 }
 
 %end

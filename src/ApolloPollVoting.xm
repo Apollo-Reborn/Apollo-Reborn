@@ -4,11 +4,13 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTextureDecls.h"
 #import "UIWindow+Apollo.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <limits.h>
+#import "ApolloClasses.h"
 
 #if APOLLO_SIM_BUILD
 #define ApolloPollDiagnosticLog(format, ...) \
@@ -216,9 +218,8 @@ static NSString *ApolloPollRememberedVote(NSString *username, NSString *postID) 
     }
 }
 
-static UIViewController *ApolloPollPresenter(void);
+static UIViewController *ApolloPollPresenter(id pollNode);
 static UIViewController *ApolloPollCommentsController(void);
-static id ApolloPollObjectIvar(id object, const char *name);
 static UIView *ApolloPollNodeView(id node);
 static void ApolloPollRenderCurrentVote(id pollNode);
 static void ApolloPollScheduleAuthoritativeRefreshes(NSString *postID, NSString *username,
@@ -308,8 +309,8 @@ static BOOL ApolloPollHasAuthoritativeCounts(RDKPoll *poll) {
 // post-Safari poll flow. Broadcasting the notification or calling the comments
 // view controller misses this owner and leaves the old Swift PollNode mounted.
 static void ApolloPollPublishAuthoritativeLink(RDKLink *newLink) {
-    if (!newLink.identifier.length || !ApolloPollDiagnosticMatchesPostID(newLink.identifier) ||
-        !ApolloPollHasAuthoritativeCounts(newLink.poll)) return;
+    if (!ApolloPollHasAuthoritativeCounts(newLink.poll) || !newLink.identifier.length ||
+        !ApolloPollDiagnosticMatchesPostID(newLink.identifier)) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!ApolloPollDiagnosticMatchesPostID(newLink.identifier)) return;
@@ -319,12 +320,12 @@ static void ApolloPollPublishAuthoritativeLink(RDKLink *newLink) {
             ![remembered isEqualToString:newLink.poll.userSelectionIdentifier]) return;
         NSString *baseID = ApolloPollCanonicalBaseID(newLink);
         id header = [sApolloPollHeadersByPostID objectForKey:baseID];
-        id sectionController = ApolloPollObjectIvar(header, "actionDelegate");
+        id sectionController = ApolloObjectIvar(header, "actionDelegate");
 #if APOLLO_SIM_BUILD
-        id sectionDelegate = ApolloPollObjectIvar(sectionController, "delegate");
+        id sectionDelegate = ApolloObjectIvar(sectionController, "delegate");
 #endif
-        Class sectionClass = objc_getClass("_TtC6Apollo31CommentsHeaderSectionController");
-        RDKLink *mountedLink = ApolloPollObjectIvar(sectionController, "link");
+        Class sectionClass = ApolloClassCommentsHeaderSectionController;
+        RDKLink *mountedLink = ApolloObjectIvar(sectionController, "link");
         ApolloPollDiagnosticLog(@"[+%.1fms] authoritative publish lookup post=%@ newLink=%@ header=%@ section=%@ sectionDelegate=%@ mountedLink=%@",
                   ApolloPollDiagnosticElapsedMs(), newLink.identifier,
                   ApolloPollPointer(newLink), ApolloPollPointer(header),
@@ -364,14 +365,14 @@ static BOOL ApolloPollRefreshAuthoritativeModel(NSString *postID, NSString *user
     UIViewController *target = ApolloPollCommentsController();
     if (![target respondsToSelector:@selector(refreshControlActivatedWithSender:)]) {
 #if APOLLO_SIM_BUILD
-        UIViewController *presenter = ApolloPollPresenter();
+        UIViewController *presenter = ApolloPollPresenter(nil);
         ApolloPollDiagnosticLog(@" authoritative refresh unavailable presenter=%@(%@) target=%@(%@)",
                   presenter, ApolloPollPointer(presenter), target, ApolloPollPointer(target));
 #endif
         return NO;
     }
-    id refreshControl = ApolloPollObjectIvar(target, "refreshControl");
-    RDKLink *targetLink = ApolloPollObjectIvar(target, "link");
+    id refreshControl = ApolloObjectIvar(target, "refreshControl");
+    RDKLink *targetLink = ApolloObjectIvar(target, "link");
     NSString *expectedBaseID = ApolloPollCanonicalBaseIDString(postID);
     if (expectedBaseID.length > 0 &&
         ![ApolloPollCanonicalBaseID(targetLink) isEqualToString:expectedBaseID]) {
@@ -388,7 +389,7 @@ static BOOL ApolloPollRefreshAuthoritativeModel(NSString *postID, NSString *user
         return NO;
     }
 #if APOLLO_SIM_BUILD
-    id listAdapter = ApolloPollObjectIvar(target, "listAdapter");
+    id listAdapter = ApolloObjectIvar(target, "listAdapter");
     ApolloPollDiagnosticLog(@"[+%.1fms] requesting Apollo native post-vote refresh target=%@(%@) control=%@(%@) listAdapter=%@(%@)",
               ApolloPollDiagnosticElapsedMs(), target, ApolloPollPointer(target),
               refreshControl, ApolloPollPointer(refreshControl), listAdapter,
@@ -565,7 +566,7 @@ static NSDictionary<NSString *, NSString *> *ApolloPollCookiePairs(NSString *hea
     NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0
                                                      error:&serializationError];
     if (!data) {
-        ApolloLog(@"[PollVoting] vote request failed stage=serialization errorDomain=%@ code=%ld",
+        ApolloLogError(@"[PollVoting] vote request failed stage=serialization errorDomain=%@ code=%ld",
                   serializationError.domain, (long)serializationError.code);
         [self finish:NO message:@"Apollo could not prepare the poll vote."];
         return;
@@ -716,17 +717,18 @@ static NSDictionary<NSString *, NSString *> *ApolloPollCookiePairs(NSString *hea
 }
 @end
 
-static UIViewController *ApolloPollPresenter(void) {
-    NSArray<UIWindow *> *windows = ApolloAllWindows();
-    for (UIWindow *window in windows) {
-        if (window.isKeyWindow) return window.visibleViewController;
-    }
-    return windows.firstObject.visibleViewController;
+// Present from the poll's own window when its node is loaded and on screen
+// (never force-loads the view); otherwise the key window, else the first one.
+static UIViewController *ApolloPollPresenter(id pollNode) {
+    BOOL loaded = [pollNode respondsToSelector:@selector(isNodeLoaded)] && [pollNode isNodeLoaded];
+    UIWindow *window = (loaded ? ApolloPollNodeView(pollNode).window : nil) ?:
+        ApolloKeyWindow() ?: ApolloAllWindows().firstObject;
+    return window.visibleViewController;
 }
 
 static UIViewController *ApolloPollCommentsController(void) {
-    Class commentsClass = objc_getClass("_TtC6Apollo22CommentsViewController");
-    UIViewController *target = ApolloPollPresenter();
+    Class commentsClass = ApolloClassCommentsViewController;
+    UIViewController *target = ApolloPollPresenter(nil);
     while (target && commentsClass && ![target isMemberOfClass:commentsClass]) {
         target = target.parentViewController;
     }
@@ -739,12 +741,6 @@ static void ApolloPollShowError(UIViewController *presenter, NSString *message) 
         preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
     [presenter presentViewController:alert animated:YES completion:nil];
-}
-
-static id ApolloPollObjectIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
 }
 
 static long long ApolloPollIntegerIvar(id object, const char *name) {
@@ -772,7 +768,7 @@ static void ApolloPollValidateResultViews(UIView *view, Class resultClass, RDKPo
         ? [view asyncdisplaykit_node] : nil;
     if ([node isMemberOfClass:resultClass]) {
         *resultCount += 1;
-        RDKPollOption *option = ApolloPollObjectIvar(node, "option");
+        RDKPollOption *option = ApolloObjectIvar(node, "option");
         if (!option || ApolloPollIntegerIvar(node, "totalVotesInPoll") != poll.totalVoteCount) {
             *allValid = NO;
         }
@@ -800,13 +796,13 @@ static BOOL ApolloPollVisibleStateIsAuthoritative(NSString *postID) {
     if (!ApolloPollDiagnosticMatchesPostID(postID)) return NO;
     NSString *canonical = ApolloPollCanonicalBaseIDString(postID);
     id header = [sApolloPollHeadersByPostID objectForKey:canonical];
-    id pollNode = ApolloPollObjectIvar(header, "pollNode");
-    RDKPoll *poll = ApolloPollObjectIvar(pollNode, "poll");
+    id pollNode = ApolloObjectIvar(header, "pollNode");
+    RDKPoll *poll = ApolloObjectIvar(pollNode, "poll");
     UIView *pollView = ApolloPollNodeView(pollNode);
     if (!pollView.window || !ApolloPollHasAuthoritativeCounts(poll)) return NO;
     NSUInteger resultCount = 0;
     BOOL allValid = YES;
-    ApolloPollValidateResultViews(pollView, objc_getClass("_TtC6Apollo14PollResultNode"),
+    ApolloPollValidateResultViews(pollView, ApolloClassPollResultNode,
                                   poll, &resultCount, &allValid);
     return allValid && resultCount == poll.options.count && resultCount > 0;
 }
@@ -849,12 +845,12 @@ static UIView *ApolloPollNodeView(id node) {
 // space). Option rows are direct subnodes of the PollNode stack, but recurse
 // one container level in case a future Apollo build wraps them.
 static RDKPollOption *ApolloPollOptionAtPoint(UIView *containerView, CGPoint point, NSUInteger depth) {
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     for (UIView *row in containerView.subviews) {
         if (!CGRectContainsPoint(row.frame, point)) continue;
         id node = [row respondsToSelector:@selector(asyncdisplaykit_node)] ? [row asyncdisplaykit_node] : nil;
         if ([node isMemberOfClass:optionClass]) {
-            return ApolloPollObjectIvar(node, "option");
+            return ApolloObjectIvar(node, "option");
         }
         if (depth > 0) {
             RDKPollOption *nested = ApolloPollOptionAtPoint(row, [containerView convertPoint:point toView:row], depth - 1);
@@ -866,7 +862,7 @@ static RDKPollOption *ApolloPollOptionAtPoint(UIView *containerView, CGPoint poi
 
 static UIView *ApolloPollOptionViewAtPoint(UIView *pollView, CGPoint point) {
     UIView *hit = [pollView hitTest:point withEvent:nil];
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     while (hit && hit != pollView) {
         id node = [hit respondsToSelector:@selector(asyncdisplaykit_node)] ? [hit asyncdisplaykit_node] : nil;
         if ([node isMemberOfClass:optionClass]) return hit;
@@ -903,8 +899,8 @@ static BOOL ApolloPollConsumeLastTouchPoint(id pollNode, CGPoint *outPoint) {
 // the leading count in place, keeping the string's attributes; if a future
 // Apollo build changes the format, the regex misses and this no-ops.
 static void ApolloPollRefreshVoteCountTitle(id pollNode) {
-    RDKPoll *poll = ApolloPollObjectIvar(pollNode, "poll");
-    id titleNode = ApolloPollObjectIvar(pollNode, "titleNode");
+    RDKPoll *poll = ApolloObjectIvar(pollNode, "poll");
+    id titleNode = ApolloObjectIvar(pollNode, "titleNode");
     NSAttributedString *title = [titleNode respondsToSelector:@selector(attributedText)]
         ? [titleNode attributedText] : nil;
     if (!poll || title.length == 0) return;
@@ -972,7 +968,7 @@ static void ApolloPollReconcileRememberedVote(RDKLink *link, NSString *username)
 
 static void ApolloPollRenderCurrentVote(id pollNode) {
     if (!pollNode) return;
-    ApolloPollNormalizeSelectedCounts(ApolloPollObjectIvar(pollNode, "poll"));
+    ApolloPollNormalizeSelectedCounts(ApolloObjectIvar(pollNode, "poll"));
     if ([pollNode respondsToSelector:@selector(didLoad)]) {
         [pollNode didLoad];
         [pollNode setNeedsLayout];
@@ -1038,17 +1034,17 @@ static void ApolloPollRollbackOptimisticVote(NSString *postID, RDKLink *original
                                              id originalPollNode, NSString *optionID) {
     NSString *baseID = ApolloPollCanonicalBaseIDString(postID);
     id header = [sApolloPollHeadersByPostID objectForKey:baseID];
-    RDKLink *currentLink = ApolloPollObjectIvar(header, "link");
-    id currentPollNode = ApolloPollObjectIvar(header, "pollNode");
+    RDKLink *currentLink = ApolloObjectIvar(header, "link");
+    id currentPollNode = ApolloObjectIvar(header, "pollNode");
     if (![ApolloPollCanonicalBaseID(currentLink) isEqualToString:baseID]) {
         currentLink = nil;
         currentPollNode = nil;
     }
 
     RDKPoll *originalPoll = originalLink.poll;
-    RDKPoll *originalNodePoll = ApolloPollObjectIvar(originalPollNode, "poll");
+    RDKPoll *originalNodePoll = ApolloObjectIvar(originalPollNode, "poll");
     RDKPoll *currentPoll = currentLink.poll;
-    RDKPoll *currentNodePoll = ApolloPollObjectIvar(currentPollNode, "poll");
+    RDKPoll *currentNodePoll = ApolloObjectIvar(currentPollNode, "poll");
     ApolloPollRollbackPoll(originalPoll, optionID);
     if (originalNodePoll != originalPoll) ApolloPollRollbackPoll(originalNodePoll, optionID);
     if (currentPoll != originalPoll && currentPoll != originalNodePoll) {
@@ -1079,7 +1075,7 @@ static void ApolloPollCastVote(RDKLink *link, RDKPollOption *option,
     NSString *baseID = ApolloPollCanonicalBaseID(link);
     if (baseID.length == 0 || option.identifier.length == 0) {
         ApolloLog(@"[PollVoting] vote rejected invalid local identifiers");
-        ApolloPollShowError(ApolloPollPresenter(), @"Apollo could not identify this poll post.");
+        ApolloPollShowError(ApolloPollPresenter(pollNode), @"Apollo could not identify this poll post.");
         return;
     }
     // RDKLink.fullName can format missing backing fields as the non-empty
@@ -1117,14 +1113,14 @@ static void ApolloPollCastVote(RDKLink *link, RDKPollOption *option,
             ApolloPollRollbackOptimisticVote(linkIdentifier, strongLink, weakPollNode,
                                              option.identifier);
             id header = [sApolloPollHeadersByPostID objectForKey:linkIdentifier];
-            RDKLink *mountedLink = ApolloPollObjectIvar(header, "link");
+            RDKLink *mountedLink = ApolloObjectIvar(header, "link");
             id mountedPollNode = [ApolloPollCanonicalBaseID(mountedLink)
-                isEqualToString:linkIdentifier] ? ApolloPollObjectIvar(header, "pollNode") : nil;
+                isEqualToString:linkIdentifier] ? ApolloObjectIvar(header, "pollNode") : nil;
             UIView *nodeView = ApolloPollNodeView(mountedPollNode ?: weakPollNode);
             if (nodeView.window) {
                 UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
                 [feedback notificationOccurred:UINotificationFeedbackTypeError];
-                ApolloPollShowError(ApolloPollPresenter(), message);
+                ApolloPollShowError(ApolloPollPresenter(mountedPollNode ?: weakPollNode), message);
             }
             return;
         }
@@ -1161,7 +1157,7 @@ static void ApolloPollBeginVote(RDKLink *link, RDKPollOption *option, NSString *
     NSString *baseID = ApolloPollCanonicalBaseID(link);
     if (baseID.length == 0 || option.identifier.length == 0 || option.identifier.length > 256) {
         ApolloLog(@"[PollVoting] vote rejected invalid local identifiers");
-        ApolloPollShowError(ApolloPollPresenter(), @"Apollo could not identify this poll post.");
+        ApolloPollShowError(ApolloPollPresenter(pollNode), @"Apollo could not identify this poll post.");
         return;
     }
     NSString *inFlightKey = ApolloPollCacheKey(username, baseID);
@@ -1207,7 +1203,7 @@ static void ApolloPollBeginVote(RDKLink *link, RDKPollOption *option, NSString *
             ApolloPollForgetVote(username, link.identifier);
             ApolloPollRollbackOptimisticVote(baseID, link, pollNode, option.identifier);
             if (ApolloPollNodeView(pollNode).window) {
-                ApolloPollShowError(ApolloPollPresenter(), @"A Reddit web session is required to vote in polls.");
+                ApolloPollShowError(ApolloPollPresenter(pollNode), @"A Reddit web session is required to vote in polls.");
             }
             return;
         }
@@ -1236,7 +1232,7 @@ static void ApolloPollBeginVote(RDKLink *link, RDKPollOption *option, NSString *
             ApolloPollRollbackOptimisticVote(baseID, link, pollNode, option.identifier);
         }];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:login];
-    UIViewController *presenter = ApolloPollPresenter();
+    UIViewController *presenter = ApolloPollPresenter(pollNode);
     if (presenter) {
         [presenter presentViewController:nav animated:YES completion:nil];
     } else {
@@ -1252,7 +1248,7 @@ static void ApolloPollBeginVote(RDKLink *link, RDKPollOption *option, NSString *
 static void ApolloPollPresentAccessibilityPicker(id pollNode, RDKLink *link,
                                                  NSString *username) {
     RDKPoll *poll = link.poll;
-    UIViewController *presenter = ApolloPollPresenter();
+    UIViewController *presenter = ApolloPollPresenter(pollNode);
     if (!presenter || poll.options.count == 0) return;
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Vote in Poll"
         message:nil preferredStyle:UIAlertControllerStyleActionSheet];
@@ -1351,7 +1347,7 @@ static ASTextNode *ApolloPollEnsureTextNode(ASDisplayNode *host, const void *key
         if (didCreate) *didCreate = NO;
         return node;
     }
-    Class textNodeClass = objc_getClass("ASTextNode");
+    Class textNodeClass = ApolloClassASTextNode;
     if (!textNodeClass) return nil;
     node = [textNodeClass new];
     [host addSubnode:node];
@@ -1388,7 +1384,7 @@ static ASTextNode *ApolloPollEnsureVoteButtonTextNode(ASDisplayNode *pollNode) {
 static ASDisplayNode *ApolloPollEnsureVoteButtonBackgroundNode(ASDisplayNode *pollNode) {
     ASDisplayNode *background = objc_getAssociatedObject(pollNode, kApolloPollVoteButtonNodeKey);
     if (background) return background;
-    Class displayNodeClass = objc_getClass("ASDisplayNode");
+    Class displayNodeClass = ApolloClassASDisplayNode;
     if (!displayNodeClass) return nil;
     background = [displayNodeClass new];
     background.cornerRadius = 10.0;
@@ -1403,7 +1399,7 @@ static ASDisplayNode *ApolloPollEnsureVoteButtonBackgroundNode(ASDisplayNode *po
 // ObjC — see ApolloPollOptionAtPoint above). Mirrors its recursion shape.
 static void ApolloPollForEachOptionNode(UIView *containerView, NSUInteger depth,
                                         void (^body)(id optionNode)) {
-    Class optionClass = objc_getClass("_TtC6Apollo14PollOptionNode");
+    Class optionClass = ApolloClassPollOptionNode;
     for (UIView *row in containerView.subviews) {
         id node = [row respondsToSelector:@selector(asyncdisplaykit_node)] ? [row asyncdisplaykit_node] : nil;
         if ([node isMemberOfClass:optionClass]) {
@@ -1424,7 +1420,7 @@ static void ApolloPollRefreshOptionRadios(id pollNode) {
     ApolloPollForEachOptionNode(pollView, 1, ^(id optionNode) {
         ASTextNode *radio = ApolloPollEnsureRadioNode(optionNode);
         if (!radio) return;
-        RDKPollOption *option = ApolloPollObjectIvar(optionNode, "option");
+        RDKPollOption *option = ApolloObjectIvar(optionNode, "option");
         BOOL selected = pending.length > 0 && [pending isEqualToString:option.identifier];
         UIColor *tint = ApolloPollResolvedAccentColor(optionNode);
         radio.attributedText = ApolloPollRadioAttributedText(selected, tint);
@@ -1466,8 +1462,8 @@ static BOOL ApolloPollTouchHitVoteButton(id pollNode, CGPoint pointInPollView) {
 // this must re-run every time; mutating the node in place works since %orig's
 // returned spec already references this same instance.
 static void ApolloPollApplyOptionTextAlignment(id optionNode) {
-    ASTextNode *textNode = ApolloPollObjectIvar(optionNode, "textNode");
-    if (![textNode isKindOfClass:objc_getClass("ASTextNode")]) return;
+    ASTextNode *textNode = ApolloObjectIvar(optionNode, "textNode");
+    if (![textNode isKindOfClass:ApolloClassASTextNode]) return;
     NSAttributedString *current = textNode.attributedText;
     if (current.length == 0) return;
     NSTextAlignment alignment = (sPollOptionAlignment == ApolloPollOptionAlignmentLeft)
@@ -1508,7 +1504,7 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     // inset spec) directly, dropping the centering wrapper.
     id optionContent = originalSpec;
     if (sPollOptionAlignment == ApolloPollOptionAlignmentLeft) {
-        Class centerClass = objc_getClass("ASCenterLayoutSpec");
+        Class centerClass = ApolloClassASCenterLayoutSpec;
         if (centerClass && [originalSpec isKindOfClass:centerClass]) {
             id unwrapped = ((ASLayoutSpec *)originalSpec).children.firstObject;
             if (unwrapped) optionContent = unwrapped;
@@ -1518,13 +1514,13 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     if (!ApolloPollsFeatureEnabled()) return optionContent;
 
     id pollNode = [(ASDisplayNode *)self supernode];
-    RDKPoll *poll = pollNode ? ApolloPollObjectIvar(pollNode, "poll") : nil;
+    RDKPoll *poll = pollNode ? ApolloObjectIvar(pollNode, "poll") : nil;
     if (poll.hasPollEnded) return optionContent;
 
     ASTextNode *radio = ApolloPollEnsureRadioNode((ASDisplayNode *)self);
     if (!radio) return optionContent;
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
-    Class insetClass = objc_getClass("ASInsetLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     if (!stackClass || !insetClass) return optionContent;
 
     // flexShrink:1 lets optionContent shrink to the width left over after the
@@ -1568,16 +1564,16 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
 - (id)layoutSpecThatFits:(struct ApolloTextureSizeRange)constrainedSize {
     id originalSpec = %orig;
     if (!ApolloPollsFeatureEnabled()) return originalSpec;
-    RDKPoll *poll = ApolloPollObjectIvar(self, "poll");
+    RDKPoll *poll = ApolloObjectIvar(self, "poll");
     if (!poll || poll.hasPollEnded || poll.userSelectionIdentifier.length > 0) return originalSpec;
 
     ApolloPollRefreshVoteButton(self);
     ASTextNode *text = ApolloPollEnsureVoteButtonTextNode((ASDisplayNode *)self);
     ASDisplayNode *background = ApolloPollEnsureVoteButtonBackgroundNode((ASDisplayNode *)self);
     if (!text || !background) return originalSpec;
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
-    Class insetClass = objc_getClass("ASInsetLayoutSpec");
-    Class backgroundClass = objc_getClass("ASBackgroundLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
+    Class insetClass = ApolloClassASInsetLayoutSpec;
+    Class backgroundClass = ApolloClassASBackgroundLayoutSpec;
     if (!stackClass || !insetClass || !backgroundClass) return originalSpec;
     // The padded text drives the pill's size; the background is stretched to
     // match, so the padding is part of the visible, tappable pill (see
@@ -1719,11 +1715,11 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
         NSString *baseID = ApolloPollCanonicalBaseID(link);
         if (baseID.length > 0) [sApolloPollHeadersByPostID setObject:self forKey:baseID];
     }
-    id pollNode = ApolloPollObjectIvar(self, "pollNode");
+    id pollNode = ApolloObjectIvar(self, "pollNode");
     // PollNode may retain a copy made during the header's initializer rather
     // than the exact RDKPoll currently attached to link. Reconcile both sides
     // of that boundary before asking the mounted node to rebuild its rows.
-    RDKPoll *nodePoll = ApolloPollObjectIvar(pollNode, "poll");
+    RDKPoll *nodePoll = ApolloObjectIvar(pollNode, "poll");
     NSString *selectionBefore = [nodePoll.userSelectionIdentifier copy];
     long long totalBefore = nodePoll.totalVoteCount;
     long long optionSumBefore = 0;
@@ -1755,8 +1751,8 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
     }
 
     id pollNode = sender;
-    if (![pollNode isMemberOfClass:objc_getClass("_TtC6Apollo8PollNode")]) {
-        pollNode = ApolloPollObjectIvar(self, "pollNode");
+    if (![pollNode isMemberOfClass:ApolloClassPollNode]) {
+        pollNode = ApolloObjectIvar(self, "pollNode");
     }
 
     // Apollo's original action is still useful for an ended/already-voted
@@ -1788,7 +1784,7 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
                   link.identifier, ApolloPollPointer(link), ApolloPollPointer(pollNode),
                   pendingOption.identifier, ApolloPollPointer(pendingOption));
         if (username.length == 0) {
-            ApolloPollShowError(ApolloPollPresenter(), @"Sign in to a Reddit account to vote in polls.");
+            ApolloPollShowError(ApolloPollPresenter(pollNode), @"Sign in to a Reddit account to vote in polls.");
             return;
         }
         ApolloPollBeginVote(link, pendingOption, username, pollNode);
@@ -1818,10 +1814,9 @@ static void ApolloPollApplyOptionTextAlignment(id optionNode) {
         if (username.length > 0) {
             ApolloPollPresentAccessibilityPicker(pollNode, link, username);
         } else {
-            ApolloPollShowError(ApolloPollPresenter(), @"Sign in to a Reddit account to vote in polls.");
+            ApolloPollShowError(ApolloPollPresenter(pollNode), @"Sign in to a Reddit account to vote in polls.");
         }
     }
 }
 %end
 
-%ctor {}

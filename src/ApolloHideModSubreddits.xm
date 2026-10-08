@@ -5,6 +5,7 @@
 
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
+#import "ApolloSwiftRuntime.h"
 #import "UserDefaultConstants.h"
 
 // MARK: - Hide Moderated Subreddits
@@ -118,8 +119,7 @@ static char kApolloHideModButtonNameKey;
 // MARK: - Hidden list persistence
 
 static NSArray<NSString *> *ApolloHideModHiddenList(void) {
-    NSArray *list = [[NSUserDefaults standardUserDefaults] stringArrayForKey:UDKeyHiddenModeratorSubreddits];
-    return [list isKindOfClass:[NSArray class]] ? list : @[];
+    return [[NSUserDefaults standardUserDefaults] stringArrayForKey:UDKeyHiddenModeratorSubreddits] ?: @[];
 }
 
 static void ApolloHideModSetHiddenList(NSArray<NSString *> *list) {
@@ -286,14 +286,9 @@ static NSString *ApolloHideModVisibleSectionTitle(id delegate, UITableView *tabl
     return ApolloHideModHeaderWalkTitle(delegate, tableView, section);
 }
 
-static id ApolloHideModObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
 
 static UITableView *ApolloHideModTableView(UIViewController *viewController) {
-    UITableView *tableView = (UITableView *)ApolloHideModObjectIvar(viewController, "tableView");
+    UITableView *tableView = (UITableView *)ApolloObjectIvar(viewController, "tableView");
     return [tableView isKindOfClass:[UITableView class]] ? tableView : nil;
 }
 
@@ -541,7 +536,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     // Fire on touch-down: registers the instant the finger lands instead of
     // waiting for touch-up, so the control never feels like it dropped a tap.
     [button removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
-    [button addTarget:viewController action:NSSelectorFromString(@"apolloHideModToggleTapped:") forControlEvents:UIControlEventTouchDown];
+    [button addTarget:viewController action:@selector(apolloHideModToggleTapped:) forControlEvents:UIControlEventTouchDown];
     objc_setAssociatedObject(button, &kApolloHideModButtonNameKey, name, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     // Hidden rows render faded so it's obvious they won't appear outside
@@ -550,7 +545,6 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     if (created && animated) {
         ApolloHideModAnimateControl(button, ApolloHideModTableView(viewController), YES);
     }
-
 
     ApolloLog(@"[HideModSubs] decorated moderator row '%@' hidden=%d", name, (int)hidden);
 }
@@ -678,14 +672,12 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     sListFilterDepth++;
     UITableViewCell *cell = %orig;
     sListFilterDepth--;
-    if (![cell isKindOfClass:[UITableViewCell class]]) return cell;
 
     NSString *sectionTitle = ApolloHideModSectionTitle(self, tableView, indexPath.section);
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
-    NSString *name = isModeratorRow ? ApolloHideModLeftmostLabelText(cell.contentView ?: cell) : nil;
-
     // A row's swipe-to-delete also reports isEditing; only Edit mode gets the control.
     BOOL editing = tableView.isEditing && !ApolloSubredditListIsSwipeEditing(tableView);
+    NSString *name = (isModeratorRow && editing) ? ApolloHideModLeftmostLabelText(cell.contentView) : nil;
     ApolloHideModDecorateCell((UIViewController *)self, cell, isModeratorRow, editing, name, NO);
     return cell;
 }
@@ -781,9 +773,8 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
     %init;
 
     Class listClass = objc_getClass("Apollo.RedditListViewController");
-    if (!listClass) listClass = NSClassFromString(@"Apollo.RedditListViewController");
     if (listClass) {
-        %init(ApolloHideModList, RedditListViewController = listClass, RedditListTableViewCell = NSClassFromString(@"Apollo.RedditListTableViewCell"));
+        %init(ApolloHideModList, RedditListViewController = listClass, RedditListTableViewCell = objc_getClass("Apollo.RedditListTableViewCell"));
         ApolloLog(@"[HideModSubs] list hooks installed on %@", NSStringFromClass(listClass));
     } else {
         ApolloLog(@"[HideModSubs] RedditListViewController class missing; Hide UI unavailable");

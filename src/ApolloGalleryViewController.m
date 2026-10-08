@@ -13,6 +13,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
+#import "ApolloClasses.h"
 
 // Target tile width. The column count is derived from it so the grid widens
 // sensibly on iPad and in landscape instead of stretching two huge columns.
@@ -162,15 +163,6 @@ static double const kApolloGalleryTilePeakBitRate = 1500000.0;
 // same memory-safe way the viewer plays it — compressed data plus a small
 // frame window, never every frame as a bitmap (issue #1000). Resolved once;
 // nil means GIF tiles without an mp4 transcode simply stay stills.
-static Class ApolloGalleryTileImageViewClass(void) {
-    static Class viewClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        viewClass = NSClassFromString(@"FLAnimatedImageView") ?: UIImageView.class;
-    });
-    return viewClass;
-}
-
 // FLAnimatedImageView keeps animating whatever it was last handed until the
 // animation is cleared explicitly (its -setImage: only clears it for a non-nil
 // image), so every change of what a tile shows goes through here.
@@ -227,7 +219,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         self.contentView.layer.cornerCurve = kCACornerCurveContinuous;
         self.contentView.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.14];
 
-        _imageView = [[ApolloGalleryTileImageViewClass() alloc] initWithFrame:self.contentView.bounds];
+        _imageView = [[(ApolloClassFLAnimatedImageView ?: UIImageView.class) alloc] initWithFrame:self.contentView.bounds];
         _imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _imageView.contentMode = UIViewContentModeScaleAspectFill;
         _imageView.clipsToBounds = YES;
@@ -424,8 +416,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 - (void)apollo_startPlayerWithURL:(NSURL *)url {
     AVPlayerItem *playerItem = [AVPlayerItem playerItemWithURL:url];
     playerItem.preferredPeakBitRate = kApolloGalleryTilePeakBitRate;
-    CGFloat scale = self.traitCollection.displayScale > 0.0 ? self.traitCollection.displayScale
-                                                            : UIScreen.mainScreen.scale;
+    CGFloat scale = self.traitCollection.displayScale;
     CGSize size = self.contentView.bounds.size;
     if (size.width > 0.0 && size.height > 0.0) {
         playerItem.preferredMaximumResolution = CGSizeMake(size.width * scale, size.height * scale);
@@ -502,7 +493,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         typeof(self) strongSelf = weakSelf;
         // Reused or stopped meanwhile: the failure belongs to an old item.
         if (!strongSelf || strongSelf.observedPlayerItem != playerItem) return;
-        ApolloLog(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
+        ApolloLogError(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
                   error.domain, (long)error.code);
         [strongSelf stopPlayback];
     });
@@ -971,6 +962,30 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     if (columns != self.waterfallLayout.columnCount) {
         self.waterfallLayout.columnCount = columns;
         [self.waterfallLayout invalidateLayout];
+    }
+
+    // UIKit installs Gallery's full-width bottom scroll-edge material after
+    // the collection view has already entered the window. Register that late
+    // effect after layout so Minimize can keep it hidden behind the compact pill.
+    ApolloApplyScrollEdgeEffectStyle(self.collectionView);
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView != self.collectionView ||
+        sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
+
+    // The first drag can create a fresh edge-effect object after the layout
+    // pass above. Only revisit the shared styler while that late object is
+    // visible; after it is registered, the Minimize edge state filters subsequent
+    // UIKit visibility writes without doing work on every scroll callback.
+    SEL bottomSelector = NSSelectorFromString(@"bottomEdgeEffect");
+    id effect = [scrollView respondsToSelector:bottomSelector]
+        ? ((id (*)(id, SEL))objc_msgSend)(scrollView, bottomSelector)
+        : nil;
+    if ([effect respondsToSelector:@selector(isHidden)] &&
+        !((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) {
+        ApolloApplyScrollEdgeEffectStyle(scrollView);
     }
 }
 
@@ -1637,7 +1652,7 @@ static void ApolloGalleryDebugRotate(CFNotificationCenterRef center, void *obser
                     initWithInterfaceOrientations:(portrait ? UIInterfaceOrientationMaskLandscapeRight
                                                             : UIInterfaceOrientationMaskPortrait)];
             [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-                ApolloLog(@"[GalleryDebug] rotate failed: %@", error);
+                ApolloLogError(@"[GalleryDebug] rotate failed: %@", error);
             }];
             ApolloLog(@"[GalleryDebug] rotate -> %@", portrait ? @"landscape" : @"portrait");
         }

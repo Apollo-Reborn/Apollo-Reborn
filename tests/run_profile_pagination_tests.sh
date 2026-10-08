@@ -23,6 +23,6 @@ source = source[source.index('typedef void (^ApolloProfileOverviewCompletion)'):
 PY
 
 perl "$test_logos" -c generator=internal "$test_build_dir/ProfilePagination.xm" > "$test_build_dir/ProfilePagination.mm"
-xcrun --sdk macosx clang++ -fobjc-arc -fblocks -Wall -Wextra -Werror \
+xcrun --sdk macosx clang++ -fobjc-arc -fblocks -Wall -Wextra -Werror -I"$test_repo_root/src" \
     -framework Foundation "$test_build_dir/ProfilePagination.mm" -o "$test_build_dir/profile_pagination_tests"
 "$test_build_dir/profile_pagination_tests"

@@ -36,6 +36,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloCommentVoteInsights.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloCreatedAtAlert.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -185,19 +186,6 @@ static NSDateFormatter *ApolloCompactDateFormatter(void) {
         fmt.timeStyle = NSDateFormatterShortStyle;
     });
     return fmt;
-}
-
-static id ApolloIvarValueByName(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Class cls = object_getClass(obj);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            return object_getIvar(obj, ivar);
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
 }
 
 // Compact relative-time format matching Apollo's native ageNode/edited alert
@@ -476,13 +464,8 @@ BOOL ApolloPresentInfoDetail(ApolloInfoKind kind, id link, id comment, UIView *a
 // MARK: - Transient info overlay (Info Row "Overlay" mode)
 
 // Only one overlay on screen at a time (rapid taps replace, not stack).
-static const NSInteger kApolloTimeOverlayTag = 0x54494D45;  // 'TIME'
 static __weak UIView *sApolloTimeOverlay = nil;
 static NSUInteger sApolloTimeOverlayToken = 0;
-
-static NSUInteger ApolloCurrentInfoOverlayToken(void) {
-    return sApolloTimeOverlayToken;
-}
 
 static NSUInteger ApolloPresentInfoOverlayWithToken(NSString *line1, NSString *line2,
                                                     UIView *anchorView,
@@ -536,11 +519,10 @@ static NSUInteger ApolloPresentInfoOverlayWithToken(NSString *line1, NSString *l
 
     // Border + a faint fill both tint with the theme accent ("undercolour"); the
     // card itself is a dark material so the text stays readable over any feed image.
-    UIColor *accent = ApolloThemeAccentColor() ?: host.tintColor ?: [UIColor systemBlueColor];
+    UIColor *accent = ApolloThemeAccentColor() ?: host.tintColor;
     accent = [accent resolvedColorWithTraitCollection:host.traitCollection];
 
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, cardW, cardH)];
-    container.tag = kApolloTimeOverlayTag;
     container.userInteractionEnabled = NO;
     container.layer.shadowColor = [UIColor blackColor].CGColor;
     container.layer.shadowOpacity = 0.35;
@@ -620,36 +602,48 @@ static CGRect ApolloNodeHitRect(ApolloASDisplayNode *node, UIView *containerView
     return UIEdgeInsetsInsetRect(rect, UIEdgeInsetsMake(-9.0, -7.0, -9.0, -7.0));
 }
 
+// Node bounds in window coords, or CGRectNull when the node/window is missing.
+static CGRect ApolloNodeRectInWindow(ApolloASDisplayNode *node, UIWindow *window) {
+    if (!window) return CGRectNull;
+    CALayer *layer = nil;
+    @try { layer = node.layer; } @catch (__unused id e) {}
+    CGRect rect = CGRectNull;
+    if (layer) {
+        @try { rect = [layer convertRect:layer.bounds toLayer:window.layer]; } @catch (__unused id e) {}
+    }
+    return rect;
+}
+
 // Resolves the timestamp node. Comment cells expose ageNode directly; post-style
 // cells embed PostInfoNode.ageButtonNode.
 static ApolloASDisplayNode *ApolloAgeDisplayNodeForCell(id cell) {
     if (!cell) return nil;
-    ApolloASDisplayNode *direct = ApolloIvarValueByName(cell, "ageNode");
+    ApolloASDisplayNode *direct = ApolloObjectIvar(cell, "ageNode");
     if (direct) return direct;
-    id postInfoNode = ApolloIvarValueByName(cell, "postInfoNode");
-    return postInfoNode ? ApolloIvarValueByName(postInfoNode, "ageButtonNode") : nil;
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
+    return postInfoNode ? ApolloObjectIvar(postInfoNode, "ageButtonNode") : nil;
 }
 
 // The "% Upvoted" smiley — post/comments-header only (PostInfoNode); nil elsewhere.
 static ApolloASDisplayNode *ApolloPercentageDisplayNodeForCell(id cell) {
-    id postInfoNode = ApolloIvarValueByName(cell, "postInfoNode");
-    return postInfoNode ? ApolloIvarValueByName(postInfoNode, "percentageLikedButtonNode") : nil;
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
+    return postInfoNode ? ApolloObjectIvar(postInfoNode, "percentageLikedButtonNode") : nil;
 }
 
 // Comment cells expose their arrow + score node directly. Unlike a post's
 // percentage node this is a real vote control, so its normal tap remains intact;
 // only our dedicated hold recognizer claims it.
 static ApolloASDisplayNode *ApolloCommentPointsDisplayNodeForCell(id cell) {
-    return ApolloIvarValueByName(cell, "pointsNode");
+    return ApolloObjectIvar(cell, "pointsNode");
 }
 
 // The edited pencil. Comment cells expose editedIndicatorNode; post-style cells
 // embed PostInfoNode.editedButtonNode.
 static ApolloASDisplayNode *ApolloEditedDisplayNodeForCell(id cell) {
-    ApolloASDisplayNode *direct = ApolloIvarValueByName(cell, "editedIndicatorNode");
+    ApolloASDisplayNode *direct = ApolloObjectIvar(cell, "editedIndicatorNode");
     if (direct) return direct;
-    id postInfoNode = ApolloIvarValueByName(cell, "postInfoNode");
-    return postInfoNode ? ApolloIvarValueByName(postInfoNode, "editedButtonNode") : nil;
+    id postInfoNode = ApolloObjectIvar(cell, "postInfoNode");
+    return postInfoNode ? ApolloObjectIvar(postInfoNode, "editedButtonNode") : nil;
 }
 
 // Which info icon a point (in cellView coords) lands on — age / % / edited —
@@ -691,7 +685,7 @@ static void ApolloInstallInfoTapOnCell(id cell, SEL handler) {
 }
 
 static BOOL ApolloCommentInsightEligibleForCell(id cell) {
-    id comment = ApolloIvarValueByName(cell, "comment");
+    id comment = ApolloObjectIvar(cell, "comment");
     if (![comment respondsToSelector:@selector(fullName)] ||
         ![comment respondsToSelector:@selector(author)] ||
         ![comment respondsToSelector:@selector(score)]) {
@@ -783,7 +777,7 @@ static void ApolloInstallCommentInsightHoldOnCell(id cell) {
         UIView *strongCellView = weakCellView;
         if (!strongCell || !strongCellView ||
             !ApolloCommentInsightPointIsEligible(strongCell, strongCellView, point)) return NO;
-        id comment = ApolloIvarValueByName(strongCell, "comment");
+        id comment = ApolloObjectIvar(strongCell, "comment");
         warmFullName = [[comment fullName] copy];
         warmAuthor = [[comment author] copy];
         suppressedRecognizers = ApolloCommentInsightSuppressLongPresses(
@@ -851,7 +845,7 @@ static void ApolloShowCommentInsightResult(BOOL overlay, UIAlertController *load
                                            ApolloCommentVoteInsight *insight,
                                            long long capturedScore, NSUInteger overlayToken,
                                            NSError *error) {
-    id currentComment = ApolloIvarValueByName(cell, "comment");
+    id currentComment = ApolloObjectIvar(cell, "comment");
     NSString *currentFullName = [currentComment respondsToSelector:@selector(fullName)]
         ? [currentComment fullName] : nil;
     BOOL sameComment = currentFullName.length > 0 &&
@@ -860,7 +854,7 @@ static void ApolloShowCommentInsightResult(BOOL overlay, UIAlertController *load
     // the network request ran, never paint the old comment's result over its new
     // occupant. A popup is its own presented controller and remains valid.
     if (overlay && (!sameComment || !cellView.window ||
-                    overlayToken != ApolloCurrentInfoOverlayToken())) return;
+                    overlayToken != sApolloTimeOverlayToken)) return;
     long long score = sameComment && [currentComment respondsToSelector:@selector(score)]
         ? (long long)[currentComment score] : capturedScore;
     NSString *line1 = nil, *line2 = nil;
@@ -889,19 +883,14 @@ static BOOL ApolloBeginCommentInsightHold(id cell) {
     // Cheap defaults/account revalidation (no keychain read) protects against a
     // cell reload or account switch during the hold threshold.
     if (!ApolloCommentInsightEligibleForCell(cell)) return NO;
-    id comment = ApolloIvarValueByName(cell, "comment");
+    id comment = ApolloObjectIvar(cell, "comment");
     UIView *cellView = nil;
     @try { cellView = [(ApolloASDisplayNode *)cell view]; } @catch (__unused id e) {}
     UIWindow *window = cellView.window;
     ApolloASDisplayNode *node = ApolloCommentPointsDisplayNodeForCell(cell);
     if (!comment || !cellView || !window || !node) return NO;
 
-    CGRect anchor = CGRectNull;
-    CALayer *nodeLayer = nil;
-    @try { nodeLayer = node.layer; } @catch (__unused id e) {}
-    if (nodeLayer) {
-        @try { anchor = [nodeLayer convertRect:nodeLayer.bounds toLayer:window.layer]; } @catch (__unused id e) {}
-    }
+    CGRect anchor = ApolloNodeRectInWindow(node, window);
 
     BOOL overlay = sInfoRowOverlayMode && !CGRectIsNull(anchor) && !CGRectIsEmpty(anchor);
     UIAlertController *loadingAlert = nil;
@@ -950,15 +939,10 @@ static BOOL ApolloHandleEditedButtonTap(id cell, id sender) {
     // Anchor on the tapped button itself; fall back to the resolved edited node.
     ApolloASDisplayNode *node = [sender respondsToSelector:@selector(layer)] ? (ApolloASDisplayNode *)sender : nil;
     if (!node) node = ApolloEditedDisplayNodeForCell(cell);
-    CGRect anchor = CGRectNull;
-    CALayer *nl = nil;
-    @try { nl = node.layer; } @catch (__unused id e) {}
-    if (nl && window) {
-        @try { anchor = [nl convertRect:nl.bounds toLayer:window.layer]; } @catch (__unused id e) {}
-    }
+    CGRect anchor = ApolloNodeRectInWindow(node, window);
 
-    id link = ApolloIvarValueByName(cell, "link");
-    id comment = ApolloIvarValueByName(cell, "comment");
+    id link = ApolloObjectIvar(cell, "link");
+    id comment = ApolloObjectIvar(cell, "comment");
     if (ApolloPresentInfoDetail(ApolloInfoKindEdited, link, comment, cellView, anchor, window)) {
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
         return YES;
@@ -989,15 +973,10 @@ static void ApolloInfoTapFired(id cell, UITapGestureRecognizer *tap) {
     if (kind == ApolloInfoKindEdited) { ApolloHandleEditedButtonTap(cell, node); return; }
 
     UIWindow *window = cellView.window;
-    CGRect anchor = CGRectNull;
-    CALayer *nl = nil;
-    @try { nl = node.layer; } @catch (__unused id e) {}
-    if (nl && window) {
-        @try { anchor = [nl convertRect:nl.bounds toLayer:window.layer]; } @catch (__unused id e) {}
-    }
+    CGRect anchor = ApolloNodeRectInWindow(node, window);
 
-    id link = ApolloIvarValueByName(cell, "link");
-    id comment = ApolloIvarValueByName(cell, "comment");
+    id link = ApolloObjectIvar(cell, "link");
+    id comment = ApolloObjectIvar(cell, "comment");
     if (ApolloPresentInfoDetail(kind, link, comment, cellView, anchor, window)) {
         // Match the vote buttons' native feedback: a light tick on the tap.
         [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];

@@ -6,10 +6,12 @@
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "UserDefaultConstants.h"
 #import "ApolloUserProfileCache.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // Feature flag: if a future Apollo build changes the native
 // AccountManagerViewController's ObjC selector surface and driving it starts
@@ -49,10 +51,10 @@ static const void *kApolloSwitcherEditButtonUsernameKey = &kApolloSwitcherEditBu
 static const void *kApolloSwitcherFastEllipsisMenuKey = &kApolloSwitcherFastEllipsisMenuKey;
 
 // Match Profile Layout shape; Full uses a circle for compact user pictures.
-static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diameter) {
+static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diameter, UITraitCollection *traitCollection) {
     CGSize size = CGSizeMake(diameter, diameter);
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
-    format.scale = [UIScreen mainScreen].scale;
+    format.scale = traitCollection.displayScale;
     format.opaque = NO;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
     return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
@@ -74,10 +76,10 @@ static UIImage *ApolloSwitcherCircularImage(UIImage *sourceImage, CGFloat diamet
     }];
 }
 
-static void ApolloSwitcherApplyAvatarToCell(UITableViewCell *cell, NSString *username) {
+static void ApolloSwitcherApplyAvatarToCell(UITableViewCell *cell, NSString *username, UITraitCollection *traitCollection) {
     if (username.length == 0) return;
     objc_setAssociatedObject(cell, kApolloSwitcherAvatarUsernameKey, username, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    cell.imageView.image = ApolloSwitcherCircularImage(nil, kApolloSwitcherAvatarDiameter);
+    cell.imageView.image = ApolloSwitcherCircularImage(nil, kApolloSwitcherAvatarDiameter, traitCollection);
 
     ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
     __weak UITableViewCell *weakCell = cell;
@@ -90,7 +92,7 @@ static void ApolloSwitcherApplyAvatarToCell(UITableViewCell *cell, NSString *use
 
         [cache requestImageForURL:imageURL completion:^(UIImage *image) {
             if (!image) return;
-            UIImage *circular = ApolloSwitcherCircularImage(image, kApolloSwitcherAvatarDiameter);
+            UIImage *circular = ApolloSwitcherCircularImage(image, kApolloSwitcherAvatarDiameter, traitCollection);
             dispatch_async(dispatch_get_main_queue(), ^{
                 UITableViewCell *c2 = weakCell;
                 if (!c2 || ![objc_getAssociatedObject(c2, kApolloSwitcherAvatarUsernameKey) isEqualToString:username]) return;
@@ -392,14 +394,6 @@ static NSArray<ApolloSwitcherAccountRow *> *ApolloSwitcherLoadAccountRows(void) 
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath;
 @end
 
-// Fetches a private ivar of object type by name (e.g. the real `tableView`
-// ivar on the live AccountManagerViewController instance), defensively.
-static id _Nullable ApolloGetObjectIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable([object class], name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
 #pragma mark - Identity-preserving native account reorder
 
 // The overlay calls Apollo's native move handler. This result lets it commit
@@ -522,8 +516,8 @@ static BOOL ApolloAccountReorderPrepare(NSInteger source,
                                         ApolloAccountReorderContext *outContext) {
     if (![NSThread isMainThread] || !outContext) return NO;
 
-    Class managerClass = objc_getClass("_TtC6Apollo14AccountManager");
-    SEL sharedSelector = NSSelectorFromString(@"shared");
+    Class managerClass = ApolloClassAccountManager;
+    SEL sharedSelector = @selector(shared);
     id manager = managerClass && [managerClass respondsToSelector:sharedSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(managerClass, sharedSelector) : nil;
     if (!manager || object_getClass(manager) != managerClass) return NO;
@@ -540,8 +534,8 @@ static BOOL ApolloAccountReorderPrepare(NSInteger source,
         return NO;
     }
 
-    SEL countSelector = NSSelectorFromString(@"totalAccountsObjC");
-    SEL persistSelector = NSSelectorFromString(@"persistInformationToDisk");
+    SEL countSelector = @selector(totalAccountsObjC);
+    SEL persistSelector = @selector(persistInformationToDisk);
     NSMethodSignature *countSignature = [manager methodSignatureForSelector:countSelector];
     NSMethodSignature *persistSignature = [manager methodSignatureForSelector:persistSelector];
     if (!countSignature || countSignature.numberOfArguments != 2 ||
@@ -651,10 +645,10 @@ static BOOL ApolloAccountReorderSchedulePersist(
     BOOL scheduled = NO;
     @try {
         ((void (*)(id, SEL))objc_msgSend)(
-            context->manager, NSSelectorFromString(@"persistInformationToDisk"));
+            context->manager, @selector(persistInformationToDisk));
         scheduled = YES;
     } @catch (NSException *exception) {
-        ApolloLog(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
+        ApolloLogError(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
     } @finally {
         sApolloAccountReorderMutationInProgress = previousMutationState;
     }
@@ -725,6 +719,15 @@ static BOOL ApolloAccountReorderSchedulePersist(
     self.accountReorderGesture.cancelsTouchesInView = YES;
     self.accountReorderGesture.delegate = self;
     [self.tableView addGestureRecognizer:self.accountReorderGesture];
+    // Account avatars are rendered at the table's display scale in
+    // cellForRowAtIndexPath: (ApolloSwitcherApplyAvatarToCell); reload so a
+    // display-scale change re-renders them.
+    if (@available(iOS 17.0, *)) {
+        [self.tableView registerForTraitChanges:@[UITraitDisplayScale.class]
+                                    withHandler:^(__kindof UITableView *v, __unused UITraitCollection *previous) {
+            [v reloadData];
+        }];
+    }
     self.pendingAccountRemovals = [NSMutableSet set];
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(accountStoreDidChange:) name:NSUserDefaultsDidChangeNotification object:nil];
@@ -752,10 +755,10 @@ static BOOL ApolloAccountReorderSchedulePersist(
 - (void)accountStoreDidChange:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.pendingAccountRemovals.count != 1 || self.accountRemovalRefreshScheduled) return;
-        Class cls = NSClassFromString(@"Apollo.AccountManager");
+        Class cls = ApolloClassAccountManager;
         id manager = [cls respondsToSelector:@selector(shared)]
             ? ((id (*)(id, SEL))objc_msgSend)(cls, @selector(shared)) : nil;
-        SEL countSelector = NSSelectorFromString(@"totalAccountsObjC");
+        SEL countSelector = @selector(totalAccountsObjC);
         if (![manager respondsToSelector:countSelector]) return;
         NSInteger count = ((NSInteger (*)(id, SEL))objc_msgSend)(manager, countSelector);
         if (count != (NSInteger)self.rows.count - 1) return;
@@ -887,7 +890,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     cell.textLabel.text = row.username;
     cell.detailTextLabel.text = row.keyStatusText;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    ApolloSwitcherApplyAvatarToCell(cell, row.username);
+    ApolloSwitcherApplyAvatarToCell(cell, row.username, tableView.traitCollection);
     cell.accessoryView = [self accessoryViewForRow:row];
     UIImageView *reorderHandle = [[UIImageView alloc]
         initWithImage:[UIImage systemImageNamed:@"line.3.horizontal"]];
@@ -1226,15 +1229,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
     }
 }
 
-// Reordering is meaningful only within the account list itself.
-- (NSIndexPath *)tableView:(UITableView *)tableView
-   targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath
-                        toProposedIndexPath:(NSIndexPath *)proposedIndexPath {
-    NSInteger lastRow = MAX((NSInteger)self.rows.count - 1, 0);
-    NSInteger row = MIN(MAX(proposedIndexPath.row, 0), lastRow);
-    return [NSIndexPath indexPathForRow:row inSection:0];
-}
-
 - (NSString *)tableView:(UITableView *)tableView titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)indexPath {
     return @"Remove";
 }
@@ -1245,7 +1239,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     ApolloSwitcherAccountRow *row = self.rows[indexPath.row];
     [self.pendingAccountRemovals removeAllObjects];
     [self.pendingAccountRemovals addObject:row.username];
-    UITableView *nativeTable = ApolloGetObjectIvar(self.liveManager, "tableView");
+    UITableView *nativeTable = ApolloObjectIvar(self.liveManager, "tableView");
     __weak typeof(self) weakSelf = self;
     objc_setAssociatedObject(nativeTable, &kApolloNativeAccountTableChangedKey, ^{
         [weakSelf accountStoreDidChange:nil];
@@ -1254,27 +1248,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // Native removal persists asynchronously. Do not reload the old archive or
     // delete credentials before its confirmation/commit has actually completed.
     [self accountStoreDidChange:nil];
-}
-
-// UIKit has already performed the visual move by the time this is called. Drive
-// the guarded native move first; only commit our cached row order after the
-// native AccountManager confirms success. A failed runtime-layout preflight
-// reloads below on the next main turn, visually cancelling UIKit's move.
-- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
-    if (sourceIndexPath.section != 0 || destinationIndexPath.section != 0) return;
-    if (sourceIndexPath.row < 0 || destinationIndexPath.row < 0 ||
-        sourceIndexPath.row >= (NSInteger)self.rows.count ||
-        destinationIndexPath.row >= (NSInteger)self.rows.count ||
-        ![self driveLiveMoveRowFromIndexPath:sourceIndexPath toIndexPath:destinationIndexPath]) {
-        // Keep the cached order unchanged. ApolloSwitcherAccountCell repairs
-        // UIKit's visual move only after dragStateDidChange: returns to None.
-        return;
-    }
-    NSMutableArray<ApolloSwitcherAccountRow *> *rows = [self.rows mutableCopy];
-    ApolloSwitcherAccountRow *moved = rows[sourceIndexPath.row];
-    [rows removeObjectAtIndex:sourceIndexPath.row];
-    [rows insertObject:moved atIndex:destinationIndexPath.row];
-    self.rows = rows;
 }
 
 #pragma mark - UITableViewDelegate
@@ -1302,13 +1275,13 @@ static BOOL ApolloAccountReorderSchedulePersist(
 // singleton; it doesn't depend on which UITableView instance is passed).
 - (void)driveLiveSwitchToRow:(NSInteger)row {
     if (!self.liveManager) return;
-    SEL sel = NSSelectorFromString(@"tableView:didSelectRowAtIndexPath:");
+    SEL sel = @selector(tableView:didSelectRowAtIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     inv.selector = sel;
-    id tv = ApolloGetObjectIvar(self.liveManager, "tableView");
+    id tv = ApolloObjectIvar(self.liveManager, "tableView");
     NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
     [inv setArgument:&tv atIndex:2];
     [inv setArgument:&path atIndex:3];
@@ -1318,7 +1291,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live switch call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live switch call failed: %@", ex);
         return;
     }
     id selectedAccount = ApolloActiveAccountClient();
@@ -1329,13 +1302,13 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 - (void)driveLiveCommitEditingStyle:(UITableViewCellEditingStyle)style atRow:(NSInteger)row {
     if (!self.liveManager) return;
-    SEL sel = NSSelectorFromString(@"tableView:commitEditingStyle:forRowAtIndexPath:");
+    SEL sel = @selector(tableView:commitEditingStyle:forRowAtIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     inv.selector = sel;
-    id tv = ApolloGetObjectIvar(self.liveManager, "tableView");
+    id tv = ApolloObjectIvar(self.liveManager, "tableView");
     NSIndexPath *path = [NSIndexPath indexPathForRow:row inSection:0];
     [inv setArgument:&tv atIndex:2];
     [inv setArgument:&style atIndex:3];
@@ -1343,7 +1316,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live delete call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live delete call failed: %@", ex);
     }
 }
 
@@ -1352,7 +1325,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
 // after its Swift-layout preflight and identity-preserving move both complete.
 - (BOOL)driveLiveMoveRowFromIndexPath:(NSIndexPath *)fromPath toIndexPath:(NSIndexPath *)toPath {
     if (!self.liveManager) return NO;
-    SEL sel = NSSelectorFromString(@"tableView:moveRowAtIndexPath:toIndexPath:");
+    SEL sel = @selector(tableView:moveRowAtIndexPath:toIndexPath:);
     if (![self.liveManager respondsToSelector:sel]) return NO;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig || sig.numberOfArguments != 5 || sig.methodReturnLength != 0) return NO;
@@ -1360,14 +1333,14 @@ static BOOL ApolloAccountReorderSchedulePersist(
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     inv.selector = sel;
-    id tv = ApolloGetObjectIvar(self.liveManager, "tableView");
+    id tv = ApolloObjectIvar(self.liveManager, "tableView");
     [inv setArgument:&tv atIndex:2];
     [inv setArgument:&fromPath atIndex:3];
     [inv setArgument:&toPath atIndex:4];
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live move call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live move call failed: %@", ex);
         return NO;
     }
     return [objc_getAssociatedObject(self.liveManager, kApolloAccountReorderSucceededKey) boolValue];
@@ -1383,7 +1356,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
         ApolloLog(@"[AccountSwitcher] No live manager — cannot start add-account flow");
         return;
     }
-    SEL sel = NSSelectorFromString(@"addBarButtonItemTapped:");
+    SEL sel = @selector(addBarButtonItemTapped:);
     if (![self.liveManager respondsToSelector:sel]) return;
     NSMethodSignature *sig = [self.liveManager methodSignatureForSelector:sel];
     if (!sig) return;
@@ -1394,7 +1367,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live add-account call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live add-account call failed: %@", ex);
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self reloadRows];
@@ -1481,9 +1454,6 @@ static BOOL ApolloAccountReorderSchedulePersist(
 
 @end
 
-// UIKit owns the ellipsis action sheet and its positioning. Speed up only its
-// rendered transition; ordinary alerts elsewhere in Apollo retain their
-// standard animation timing.
 // UIKit's glass press response lives on the platter, above UIButton. Keep
 // the bridging interaction that owns the native morph; remove only flex.
 static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINavigationBar *bar) {
@@ -1504,11 +1474,13 @@ static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINa
 %hook UINavigationBar
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = %orig(point, event);
+    if (!hit) return hit;
     UINavigationBar *bar = (UINavigationBar *)self;
     UIViewController *controller = ApolloEditControllerForBar(bar.window.rootViewController, bar);
+    Class redditListClass = ApolloClassRedditListViewController;
     BOOL scoped = [controller isKindOfClass:ApolloAccountSwitcherViewController.class] ||
-        [NSStringFromClass(controller.class) isEqualToString:@"Apollo.RedditListViewController"];
-    if (!scoped || !hit) return hit;
+        (redditListClass && [controller class] == redditListClass);
+    if (!scoped) return hit;
     UIView *content = nil;
     @try { content = [controller.navigationItem.rightBarButtonItem valueForKey:@"view"]; }
     @catch (__unused NSException *exception) { return hit; }
@@ -1541,6 +1513,9 @@ static UIViewController *ApolloEditControllerForBar(UIViewController *root, UINa
 }
 %end
 
+// UIKit owns the ellipsis action sheet and its positioning. Speed up only its
+// rendered transition; ordinary alerts elsewhere in Apollo retain their
+// standard animation timing.
 %hook UIAlertController
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1604,13 +1579,13 @@ static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
             ?: [UIColor systemGroupedBackgroundColor];
         [host.view addSubview:overlayNav.view];
         [overlayNav didMoveToParentViewController:host];
-        id realTableView = ApolloGetObjectIvar(host, "tableView");
+        id realTableView = ApolloObjectIvar(host, "tableView");
         if ([realTableView isKindOfClass:[UIView class]]) {
             ((UIView *)realTableView).hidden = YES;
         }
         ApolloLog(@"[AccountSwitcher] Overlay installed on live AccountManagerViewController");
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Overlay install failed, leaving native UI visible: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Overlay install failed, leaving native UI visible: %@", ex);
     }
 }
 
@@ -1758,8 +1733,11 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
 
 %new
 - (void)apollo_handleAccountSwitcherPanelPan:(UIPanGestureRecognizer *)pan {
-    UIView *presentedView = ((UIPresentationController *)self).presentedView;
-    UIView *container = ((UIPresentationController *)self).containerView;
+    // Hooked self is __unsafe_unretained; the completion blocks below capture
+    // this strong local instead so they never message a freed controller.
+    UIPresentationController *controller = (UIPresentationController *)self;
+    UIView *presentedView = controller.presentedView;
+    UIView *container = controller.containerView;
     if (!presentedView || !container) return;
 
     if (pan.state == UIGestureRecognizerStateBegan) {
@@ -1809,14 +1787,14 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
         BOOL shouldDismiss = pan.state == UIGestureRecognizerStateEnded &&
             (distance >= dismissDistance || (distance > 20.0 && velocity > 700.0));
         if (shouldDismiss) {
-            UIViewController *host = ((UIPresentationController *)self).presentedViewController;
+            UIViewController *host = controller.presentedViewController;
             [host.view endEditing:YES];
             // Keep the dragging flag until dismissal completes so a layout
             // pass cannot snap the panel back before its exit animation.
             [host dismissViewControllerAnimated:YES completion:^{
-                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, nil,
+                objc_setAssociatedObject(controller, kApolloAccountSwitcherPanelDraggingKey, nil,
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
+                objc_setAssociatedObject(controller, kApolloAccountSwitcherPanelRestingFrameKey, nil,
                                          OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }];
             return;
@@ -1832,9 +1810,9 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
             presentedView.frame = restingFrame;
             [presentedView layoutIfNeeded];
         } completion:^(__unused BOOL finished) {
-            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelDraggingKey, @NO,
+            objc_setAssociatedObject(controller, kApolloAccountSwitcherPanelDraggingKey, @NO,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            objc_setAssociatedObject(self, kApolloAccountSwitcherPanelRestingFrameKey, nil,
+            objc_setAssociatedObject(controller, kApolloAccountSwitcherPanelRestingFrameKey, nil,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             [container setNeedsLayout];
         }];
@@ -1922,7 +1900,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
             %orig(tableView, fromPath, toPath);
             moved = YES;
         } @catch (NSException *exception) {
-            ApolloLog(@"[AccountSwitcher] Native reorder %ld -> %ld failed: %@",
+            ApolloLogError(@"[AccountSwitcher] Native reorder %ld -> %ld failed: %@",
                       (long)from, (long)to, exception);
         } @finally {
             sApolloAccountReorderMutationInProgress = previousMutationState;
@@ -2012,7 +1990,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     }
     objc_setAssociatedObject(self, kApolloAccountReorderSucceededKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloLogDebug(@"[AccountSwitcher] Reordered row %ld -> %ld; active index %ld -> %ld",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AccountSwitcher] Reordered row %ld -> %ld; active index %ld -> %ld",
                    (long)source, (long)destination,
                    (long)context.currentIndex, (long)context.movedIndex);
 }
@@ -2027,7 +2005,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
 
 - (void)redditAccountChangedWithNotification:(id)notification {
     if (sApolloAccountReorderMutationInProgress) {
-        ApolloLogDebug(@"[AccountSwitcher] Suppressed redundant subreddit refresh during reorder");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AccountSwitcher] Suppressed redundant subreddit refresh during reorder");
         return;
     }
     %orig(notification);

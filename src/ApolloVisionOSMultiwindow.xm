@@ -28,7 +28,9 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "Tweak.h"   // RDKLink, RDKComment
+#import "ApolloClasses.h"
 
 // RedditKit accessors not in Tweak.h's shared surface; resolved at runtime
 // against Apollo's own classes.
@@ -53,40 +55,19 @@
 
 #pragma mark - visionOS gate
 
-static BOOL ApolloIsRunningOnVisionOS(void) {
-    static BOOL result = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
-        SEL sel = NSSelectorFromString(@"isiOSAppOnVision");
-        if ([processInfo respondsToSelector:sel]) {
-            BOOL (*msgSend)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
-            if (msgSend(processInfo, sel)) {
-                result = YES;
-                return;
-            }
-        }
-        if (NSClassFromString(@"UIWindowSceneGeometryPreferencesVision") != nil) {
-            result = YES;
-        }
-    });
-    return result;
-}
-
 #pragma mark - Window / scene helpers
 
 // Multiple windows can stay foreground-active at once on visionOS, and
 // connectedScenes is unordered, so prefer the scene that owns the key window
 // before falling back to any foreground-active scene.
 static UIWindowScene *ApolloForegroundWindowScene(void) {
+    UIWindowScene *keyScene = ApolloKeyWindow().windowScene;
+    if (keyScene) return keyScene;
     UIWindowScene *foreground = nil;
     UIWindowScene *fallback = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *windowScene = (UIWindowScene *)scene;
-        for (UIWindow *window in windowScene.windows) {
-            if (window.isKeyWindow) return windowScene;
-        }
         if (!foreground &&
             windowScene.activationState == UISceneActivationStateForegroundActive) {
             foreground = windowScene;
@@ -119,7 +100,7 @@ static void ApolloOpenWindow(NSUserActivity *activity) {
                                                         userActivity:activity
                                                              options:nil
                                                         errorHandler:^(NSError *error) {
-        ApolloLog(@"[VisionOSMultiwindow] scene activation failed: %@", error);
+        ApolloLogError(@"[VisionOSMultiwindow] scene activation failed: %@", error);
     }];
 }
 
@@ -161,12 +142,9 @@ static ASDisplayNode *ApolloNodeOfView(UIView *view) {
 
 // The RedditKit model stored under ivar `ivarName` on a Swift cell node,
 // provided it is an instance of the named class.
-static id ApolloModelIvar(id node, const char *ivarName, NSString *className) {
-    Ivar ivar = class_getInstanceVariable(object_getClass(node), ivarName);
-    if (!ivar) return nil;
-    id value = object_getIvar(node, ivar);
-    Class modelClass = NSClassFromString(className);
-    return (value && modelClass && [value isKindOfClass:modelClass]) ? value : nil;
+static id ApolloModelIvar(id node, const char *ivarName, Class modelClass) {
+    id value = ApolloObjectIvar(node, ivarName);
+    return [value isKindOfClass:modelClass] ? value : nil;
 }
 
 static NSString *ApolloID36FromFullName(NSString *fullName) {
@@ -222,10 +200,10 @@ static NSURL *ApolloDeepLinkFromView(UIView *view) {
         for (ASDisplayNode *n = ApolloNodeOfView(v); n && nodeHops < 40; nodeHops++) {
             NSString *cls = NSStringFromClass([n class]);
             if ([cls hasSuffix:@"PostCellNode"]) {
-                RDKLink *link = ApolloModelIvar(n, "link", @"RDKLink");
+                RDKLink *link = ApolloModelIvar(n, "link", ApolloClassRDKLink);
                 if (link) return ApolloDeepLinkForLink(link);
             } else if ([cls hasSuffix:@"CommentCellNode"]) {
-                RDKComment *comment = ApolloModelIvar(n, "comment", @"RDKComment");
+                RDKComment *comment = ApolloModelIvar(n, "comment", ApolloClassRDKComment);
                 if (comment) return ApolloDeepLinkForComment(comment);
             }
             n = [n respondsToSelector:@selector(supernode)] ? [n supernode] : nil;

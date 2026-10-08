@@ -4,11 +4,13 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloState.h"
 #import "ApolloNavigationTitleGeometry.h"
 #import "ApolloNavigationActions.h"
 #import "ApolloNavigationTitlePresentation.h"
 #import "ApolloFindInCommentsGlass.h"
+#import "ApolloClasses.h"
 
 /// Helpers for restoring long-press to activate account switcher w/ Liquid Glass
 static char kApolloTabButtonSetupKey;
@@ -18,12 +20,8 @@ static char kApolloTabBarHasScrubbedAppearanceKey;
 
 static void ApolloCancelLiquidLensGesture(UITabBar *tabBar);
 
-static BOOL ApolloDictionaryHasForegroundColor(NSDictionary *attributes) {
-    return [attributes isKindOfClass:[NSDictionary class]] && attributes[NSForegroundColorAttributeName] != nil;
-}
-
 static NSDictionary *ApolloTitleTextAttributesWithoutForegroundColor(NSDictionary *attributes) {
-    if (!ApolloDictionaryHasForegroundColor(attributes)) {
+    if (!attributes[NSForegroundColorAttributeName]) {
         return attributes;
     }
 
@@ -90,7 +88,7 @@ static UIImage *ApolloTemplateTabBarImage(UIImage *image) {
 }
 
 static BOOL ApolloTabBarItemUsesProfileAvatarIcon(UITabBarItem *item) {
-    return [objc_getAssociatedObject(item, NSSelectorFromString(@"apollo_profileTabAvatarIconActive")) boolValue];
+    return [objc_getAssociatedObject(item, @selector(apollo_profileTabAvatarIconActive)) boolValue];
 }
 
 static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reason) {
@@ -145,8 +143,8 @@ static void ApolloApplyAdaptiveTabBarAppearance(UITabBar *tabBar, NSString *reas
             changed = YES;
         }
 
-        SEL scrollEdgeSelector = NSSelectorFromString(@"scrollEdgeAppearance");
-        SEL setScrollEdgeSelector = NSSelectorFromString(@"setScrollEdgeAppearance:");
+        SEL scrollEdgeSelector = @selector(scrollEdgeAppearance);
+        SEL setScrollEdgeSelector = @selector(setScrollEdgeAppearance:);
         if ([tabBar respondsToSelector:scrollEdgeSelector] &&
             [tabBar respondsToSelector:setScrollEdgeSelector]) {
             UITabBarAppearance *scrollEdgeAppearance =
@@ -176,19 +174,6 @@ static UITabBar *FindAncestorTabBar(UIView *view) {
     return (UITabBar *)view;
 }
 
-static id ApolloObjectIvar(id object, const char *name) {
-    if (!object || !name) return nil;
-    Class cls = object_getClass(object);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) {
-            return object_getIvar(object, ivar);
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static id ApolloSendObjectReturningSelector(id target, SEL selector) {
     if (!target || !selector || ![target respondsToSelector:selector]) return nil;
     id (*send)(id, SEL) = (id (*)(id, SEL))objc_msgSend;
@@ -200,7 +185,7 @@ static UITabBarItem *ApolloLinkedTabBarItemForObject(id object) {
         return (UITabBarItem *)object;
     }
 
-    id linkedItem = ApolloSendObjectReturningSelector(object, NSSelectorFromString(@"_linkedTabBarItem"));
+    id linkedItem = ApolloSendObjectReturningSelector(object, @selector(_linkedTabBarItem));
     if ([linkedItem isKindOfClass:[UITabBarItem class]]) {
         return (UITabBarItem *)linkedItem;
     }
@@ -218,7 +203,7 @@ static UITabBarItem *ApolloTabBarItemForTabView(UIView *view) {
 static UITabBarItem *ApolloTabBarItemForButtonInTabBar(UIView *button, UITabBar *tabBar) {
     if (!button || !tabBar) return nil;
 
-    SEL tabBarButtonSelector = NSSelectorFromString(@"_tabBarButton");
+    SEL tabBarButtonSelector = @selector(_tabBarButton);
     for (UITabBarItem *item in tabBar.items) {
         id tabBarButton = ApolloSendObjectReturningSelector(item, tabBarButtonSelector);
         if (tabBarButton == button) {
@@ -260,8 +245,10 @@ static BOOL ApolloIsProfileTabView(UIView *view) {
     return items.count > 2 && items[2] == item;
 }
 
-// Opens Apollo's account switcher by invoking ProfileViewController's bar button action
-static void OpenAccountManager(void) {
+// Opens Apollo's account switcher by invoking ProfileViewController's bar button action.
+// sourceWindow is the window of the long-pressed tab button (the scene the user is in);
+// the app-wide key window / first visible window is only a fallback.
+static void OpenAccountManager(UIWindow *sourceWindow) {
     static CFTimeInterval lastOpen = 0;
     CFTimeInterval now = CACurrentMediaTime();
     if (now - lastOpen < 0.75) {
@@ -269,14 +256,13 @@ static void OpenAccountManager(void) {
     }
     lastOpen = now;
 
-    UIWindow *lastKeyWindow = nil;
-    for (UIWindow *window in ApolloAllWindows()) {
-        if (window.isKeyWindow) {
-            lastKeyWindow = window;
-            break;
-        }
-        if (!lastKeyWindow && !window.hidden && window.alpha > 0.01) {
-            lastKeyWindow = window;
+    UIWindow *lastKeyWindow = sourceWindow ?: ApolloKeyWindow();
+    if (!lastKeyWindow) {
+        for (UIWindow *window in ApolloAllWindows()) {
+            if (!window.hidden && window.alpha > 0.01) {
+                lastKeyWindow = window;
+                break;
+            }
         }
     }
 
@@ -314,7 +300,8 @@ static void OpenAccountManager(void) {
         }
     }
 
-    if (profileVC && [profileVC respondsToSelector:@selector(accountsBarButtonItemTappedWithSender:)]) {
+    // isMemberOfClass:ProfileViewController above guarantees the @objc action exists.
+    if (profileVC) {
         [profileVC performSelector:@selector(accountsBarButtonItemTappedWithSender:) withObject:nil];
         UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
         [feedback impactOccurred];
@@ -343,13 +330,13 @@ static void ApolloHandleAccountTabLongPress(UIView *view, UILongPressGestureReco
     UITabBar *tabBar = FindAncestorTabBar(view);
     if (ApolloIsProfileTabView(view)) {
         ApolloCancelLiquidLensGesture(tabBar);
-        OpenAccountManager();
+        OpenAccountManager(view.window);
     }
 }
 
 static UIGestureRecognizer *ApolloFindLiquidLensGesture(UITabBar *tabBar) {
     for (UIGestureRecognizer *gesture in tabBar.gestureRecognizers) {
-        if ([gesture isKindOfClass:NSClassFromString(@"_UIContinuousSelectionGestureRecognizer")]) {
+        if ([gesture isKindOfClass:ApolloClassUIContinuousSelectionGestureRecognizer]) {
             return gesture;
         }
     }
@@ -405,7 +392,7 @@ static void ApolloPrioritizeSwipeNavigationOverLiquidLens(UITabBarController *ta
 static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
     if (!IsLiquidGlass() || !tabButton.window) return;
 
-    Class badgeClass = NSClassFromString(@"_UIBarBadgeView");
+    Class badgeClass = ApolloClassUIBarBadgeView;
     if (!badgeClass) return;
 
     // iOS 26 renders both a normal and selected-content copy of each tab item.
@@ -581,7 +568,7 @@ static void ApolloInsetLiquidGlassTabBadges(UIView *tabButton) {
 
     // Find the direct UIView child and fix UIButton heights within it
     for (UIView *child in self.subviews) {
-        if (![NSStringFromClass([child class]) isEqualToString:@"UIView"]) continue;
+        if (![child isMemberOfClass:UIView.class]) continue;
 
         CGFloat parentHeight = child.bounds.size.height;
         for (UIView *subview in child.subviews) {
@@ -622,7 +609,7 @@ static char kASTableViewHasSearchToolbarKey;
 
         // Retroactively remove target UIView if already added
         for (UIView *existingSubview in [self.subviews copy]) {
-            if ([NSStringFromClass([existingSubview class]) isEqualToString:@"UIView"]) {
+            if ([existingSubview isMemberOfClass:UIView.class]) {
                 [existingSubview removeFromSuperview];
             }
         }
@@ -630,7 +617,7 @@ static char kASTableViewHasSearchToolbarKey;
     }
 
     // Prevent target UIView from being added if search toolbar is present
-    if ([className isEqualToString:@"UIView"]) {
+    if ([subview isMemberOfClass:UIView.class]) {
         NSNumber *hasToolbar = objc_getAssociatedObject(self, &kASTableViewHasSearchToolbarKey);
         if ([hasToolbar boolValue]) {
             ApolloLog(@"[ASTableView addSubview] Blocking opaque UIView from being added");
@@ -699,40 +686,13 @@ static void FixScrollEdgeEffectInversion(UIScrollView *scrollView) {
 @interface _TtC6Apollo26ApolloNavigationController : UINavigationController
 @end
 
-static Class ApolloTableVCClass(void) {
-    static Class cls = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo25ApolloTableViewController"); });
-    return cls;
-}
-
-static Ivar ApolloTableVCTableViewIvar(void) {
-    static Ivar iv = NULL;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class c = ApolloTableVCClass();
-        if (c) iv = class_getInstanceVariable(c, "tableView");
-    });
-    return iv;
-}
-
 // Hide the translucent grey statusBarBackgroundView Apollo overlays on the window when
 // "Hide Bars on Scroll" is enabled. Pre-26 it blended with the opaque nav bar; on Liquid
 // Glass it shows through as a visible strip at the top of the screen.
 static void HideApolloStatusBarBackgroundView(UINavigationController *navController) {
     if (!IsLiquidGlass() || !navController) return;
 
-    static Ivar sIvar = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class cls = objc_getClass("_TtC6Apollo26ApolloNavigationController");
-        if (cls) {
-            sIvar = class_getInstanceVariable(cls, "statusBarBackgroundView");
-        }
-    });
-    if (!sIvar) return;
-
-    UIView *bgView = object_getIvar(navController, sIvar);
+    UIView *bgView = ApolloObjectIvar(navController, "statusBarBackgroundView");
     if ([bgView isKindOfClass:[UIView class]] && !bgView.hidden) {
         bgView.hidden = YES;
         ApolloLog(@"[ApolloNavigationController] Hid statusBarBackgroundView for Liquid Glass");
@@ -759,14 +719,13 @@ static void HideApolloStatusBarBackgroundView(UINavigationController *navControl
     // while the bar is hidden (origin.y < 0).
     if (self.navigationBar.frame.origin.y < 0) return;
 
-    Class apolloTblCls = ApolloTableVCClass();
-    Ivar tvIvar = ApolloTableVCTableViewIvar();
-    if (!apolloTblCls || !tvIvar) return;
+    Class apolloTblCls = ApolloClassApolloTableViewController;
+    if (!apolloTblCls) return;
 
     UIViewController *topVC = self.topViewController;
     if (![topVC isKindOfClass:apolloTblCls]) return;
 
-    UIScrollView *tv = object_getIvar(topVC, tvIvar);
+    UIScrollView *tv = ApolloObjectIvar(topVC, "tableView");
     if (![tv isKindOfClass:[UIScrollView class]]) return;
 
     UIEdgeInsets ci = tv.contentInset;
@@ -851,7 +810,7 @@ static char kApolloNavigationTitleGlassControllerKey;
 
 static UIView *ApolloFindJumpBar(UIView *root) {
     if (!root) return nil;
-    if ([NSStringFromClass(root.class) isEqualToString:@"Apollo.JumpBar"]) return root;
+    if ([root isMemberOfClass:ApolloClassJumpBar]) return root;
     for (UIView *subview in root.subviews) {
         UIView *match = ApolloFindJumpBar(subview);
         if (match) return match;
@@ -926,7 +885,7 @@ static void ApolloLayoutJumpBarSearchContent(UIView *jumpBar) {
 }
 
 static BOOL ApolloViewIsProfileNavTitleView(UIView *view) {
-    return [NSStringFromClass(view.class) isEqualToString:@"ApolloProfileNavTitleView"];
+    return [view isMemberOfClass:ApolloClassApolloProfileNavTitleView];
 }
 
 static void ApolloCollectNavigationTitleContent(UIView *root,
@@ -1155,7 +1114,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     // Measure this control's custom view, not the possibly incoming screen's.
     // Composite controls supply their own intrinsic width; the caller caps it.
-    SEL titleViewSelector = NSSelectorFromString(@"titleView");
+    SEL titleViewSelector = @selector(titleView);
     UIView *custom = [self.titleControl respondsToSelector:titleViewSelector]
         ? ((id (*)(id, SEL))objc_msgSend)(self.titleControl, titleViewSelector) : nil;
     if ([custom isKindOfClass:UIView.class] && !custom.hidden &&
@@ -1167,8 +1126,8 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 }
 
 - (UIVisualEffectView *)newRegularGlassView {
-    Class glassEffectClass = objc_getClass("UIGlassEffect");
-    SEL effectSelector = NSSelectorFromString(@"effectWithStyle:");
+    Class glassEffectClass = ApolloClassUIGlassEffect;
+    SEL effectSelector = @selector(effectWithStyle:);
     if (!glassEffectClass || ![glassEffectClass respondsToSelector:effectSelector]) return nil;
 
     UIVisualEffect *effect = ((id (*)(id, SEL, NSInteger))objc_msgSend)(
@@ -1179,9 +1138,9 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     glassView.userInteractionEnabled = NO;
     glassView.clipsToBounds = YES;
 
-    Class cornerClass = objc_getClass("UICornerConfiguration");
-    SEL capsuleSelector = NSSelectorFromString(@"capsuleConfiguration");
-    SEL setCornerSelector = NSSelectorFromString(@"setCornerConfiguration:");
+    Class cornerClass = ApolloClassUICornerConfiguration;
+    SEL capsuleSelector = @selector(capsuleConfiguration);
+    SEL setCornerSelector = @selector(setCornerConfiguration:);
     if (cornerClass && [cornerClass respondsToSelector:capsuleSelector] &&
         [glassView respondsToSelector:setCornerSelector]) {
         id capsule = ((id (*)(id, SEL))objc_msgSend)(cornerClass, capsuleSelector);
@@ -1245,7 +1204,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         }
     }
 
-    CGFloat scale = hostView.window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGFloat scale = hostView.traitCollection.displayScale;
     frame.origin.x = round(frame.origin.x * scale) / scale;
     frame.origin.y = round(frame.origin.y * scale) / scale;
     frame.size.width = round(frame.size.width * scale) / scale;
@@ -1451,7 +1410,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
     // A native input temporarily hidden during a transition is still an input;
     // never install a title-width constraint merely because UIKit faded it out.
     if (!view) return NO;
-    if ([NSStringFromClass(view.class) isEqualToString:@"Apollo.JumpBar"]) return NO;
+    if ([view isMemberOfClass:ApolloClassJumpBar]) return NO;
     if ([view isKindOfClass:UISearchBar.class]) return YES;
     for (UIView *child in view.subviews) {
         if (ApolloNavigationTitleContainsNativeSearchSurface(child)) return YES;
@@ -1710,7 +1669,7 @@ void ApolloNavigationTitleGlassRefreshNavigationBar(UINavigationBar *bar) {
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:(UIView *)bar];
     for (NSUInteger index = 0; index < queue.count && index < 400; index++) {
         UIView *view = queue[index];
-        if ([NSStringFromClass(view.class) isEqualToString:@"_UINavigationBarTitleControl"]) {
+        if ([view isMemberOfClass:ApolloClassUINavigationBarTitleControl]) {
             ApolloUpdateNavigationTitleGlass(view);
             ApolloNavigationTitleGlassController *controller =
                 objc_getAssociatedObject(view, &kApolloNavigationTitleGlassControllerKey);
@@ -1729,7 +1688,7 @@ void ApolloNavigationTitleGlassSetContentAlpha(UIView *contentView, CGFloat alph
     if (!IsLiquidGlass() || !contentView) return;
     UIView *titleControl = contentView;
     while (titleControl &&
-           ![NSStringFromClass(titleControl.class) isEqualToString:@"_UINavigationBarTitleControl"]) {
+           ![titleControl isMemberOfClass:ApolloClassUINavigationBarTitleControl]) {
         titleControl = titleControl.superview;
     }
     if (!titleControl) return;
@@ -1761,7 +1720,7 @@ CGRect ApolloIPadFloatingTabsFrame(UINavigationBar *bar, UIViewController *top) 
     for (NSUInteger index = 0; index < queue.count; index++) {
         UIView *view = queue[index];
         if (view.hidden || view.alpha < 0.01) continue;
-        if ([NSStringFromClass(view.class) isEqualToString:@"_UIFloatingTabBarSelectionContainerView"]) {
+        if ([view isMemberOfClass:ApolloClassUIFloatingTabBarSelectionContainerView]) {
             if (view.window == bar.window && !CGRectIsEmpty(view.bounds)) {
                 return [view convertRect:view.bounds toView:bar];
             }
@@ -1847,7 +1806,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     BOOL searchActions = NO;
     CGFloat searchActionsWidth = 0;
     for (UIBarButtonItem *item in bar.topItem.rightBarButtonItems) {
-        searchActions |= item.action == NSSelectorFromString(@"cancelBarButtonItemTappedWithSender:");
+        searchActions |= item.action == @selector(cancelBarButtonItemTappedWithSender:);
         CGFloat width = item.customView ? item.customView.intrinsicContentSize.width : item.width;
         searchActionsWidth += MAX(44.0, width);
     }
@@ -2032,7 +1991,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         controller.appliedTranslationX = previous + parentDelta;
         controller.appliedTranslationY = previousY + parentDeltaY;
         controller.lastAppliedTransform = desired;
-        ApolloLogDebug(@"[NavigationTitleLayout] %@ centered edges=%.1f/%.1f content=%.1f max=%.1f shift=%.1f",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitleLayout] %{public}@ centered edges=%.1f/%.1f content=%.1f max=%.1f shift=%.1f",
                        NSStringFromClass(topVC.class), leftLimit, rightLimit,
                        CGRectGetWidth(contentFrame), maximumWidth, delta);
     }
@@ -2107,7 +2066,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 static void ApolloRefreshJumpBarSearchPresentation(UIView *jumpBar) {
     if (!IsLiquidGlass() || !jumpBar.window) return;
     for (UIView *view = jumpBar.superview; view; view = view.superview) {
-        if (![NSStringFromClass(view.class) isEqualToString:@"_UINavigationBarTitleControl"]) continue;
+        if (![view isMemberOfClass:ApolloClassUINavigationBarTitleControl]) continue;
         ApolloNavigationTitleGlassController *controller =
             objc_getAssociatedObject(view, &kApolloNavigationTitleGlassControllerKey);
         // Settle the field and capsule before the Cancel-item animation commits.
@@ -2142,7 +2101,7 @@ static void ApolloRefreshJumpBarSearchPresentation(UIView *jumpBar) {
     // glass view is our own subview of this bar). The controller's refresh is
     // already coalesced and no-ops when the frame is unchanged.
     for (UIView *view = ((UIView *)self).superview; view != nil; view = view.superview) {
-        if ([NSStringFromClass(view.class) isEqualToString:@"_UINavigationBarTitleControl"]) {
+        if ([view isMemberOfClass:ApolloClassUINavigationBarTitleControl]) {
             ApolloNavigationTitleGlassController *controller =
                 objc_getAssociatedObject(view, &kApolloNavigationTitleGlassControllerKey);
             [controller scheduleTargetRefreshIfNeeded];
@@ -2341,7 +2300,7 @@ void ApolloNavigationTitlesRefresh(void) {
                                                  usingBlock:^(NSNotification *notification) {
         UIView *field = notification.object;
         if ([field isKindOfClass:UITextField.class] &&
-            [NSStringFromClass(field.superview.class) isEqualToString:@"Apollo.JumpBar"]) {
+            [field.superview isMemberOfClass:ApolloClassJumpBar]) {
             __weak UIView *jumpBar = field.superview;
             dispatch_async(dispatch_get_main_queue(), ^{
                 ApolloRefreshJumpBarSearchPresentation(jumpBar);

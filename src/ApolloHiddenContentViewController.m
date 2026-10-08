@@ -954,7 +954,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     self.statusContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundView = self.statusContainerView;
 
-    self.progressRing = [[NSClassFromString(@"DACircularProgressView") alloc] init];
+    self.progressRing = [[objc_getClass("DACircularProgressView") alloc] init];
     // Keep archive loading neutral and readable against the active system
     // appearance: black in light mode, white in dark mode.
     self.progressRing.trackTintColor = [UIColor.labelColor colorWithAlphaComponent:0.16];

@@ -2,14 +2,12 @@
 
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
+#import <os/lock.h>
 
-NSString * const ApolloMessageDraftKeychainService = @"app.apolloreborn.message-drafts";
-
-#ifndef APOLLO_MESSAGE_DRAFTS_TESTING
 // Deliberately outside Apollo's Valet service prefix: draft traffic must not
 // enter the account keychain self-heal/mirror pipeline.
-static NSString *const kApolloMessageDraftService = ApolloMessageDraftKeychainService;
-#endif
+NSString * const ApolloMessageDraftKeychainService = @"app.apolloreborn.message-drafts";
+
 static NSString *const kApolloMessageDraftNamespace = @"apollo-message-draft-v1";
 static NSString *const kApolloMessageDraftIndexKey = @"ApolloMessageDraftOpaqueIndex";
 static const NSTimeInterval kApolloMessageDraftMaximumAge = 30.0 * 24.0 * 60.0 * 60.0;
@@ -17,16 +15,50 @@ static NSString *ApolloMessageDraftAccountHash(NSString *account);
 static dispatch_queue_t ApolloMessageDraftStoreQueue(void) { static dispatch_queue_t q; static dispatch_once_t once; dispatch_once(&once, ^{ q = dispatch_queue_create("app.apolloreborn.message-drafts", DISPATCH_QUEUE_SERIAL); }); return q; }
 void ApolloMessageDraftStoreAsync(dispatch_block_t block) { if (block) dispatch_async(ApolloMessageDraftStoreQueue(), block); }
 void ApolloMessageDraftStoreBarrier(dispatch_block_t block) { if (block) dispatch_sync(ApolloMessageDraftStoreQueue(), block); }
+// Generation tokens have their own short lock so the main thread's per-keystroke
+// snapshot reads never wait behind keychain I/O, which runs on the store queue
+// under the store lock (@synchronized ApolloMessageDraftKeychainService). The
+// store lock still wraps "check generation + write" and "advance generation +
+// mark index", so a stale save is either rejected or marked for deletion.
+static os_unfair_lock sApolloMessageDraftGenerationLock = OS_UNFAIR_LOCK_INIT;
 static NSUInteger sApolloMessageDraftInvalidationGeneration = 0;
 static NSMutableDictionary<NSString *, NSNumber *> *sApolloMessageDraftAccountGenerations;
-NSUInteger ApolloMessageDraftStoreInvalidationGeneration(void) { @synchronized (ApolloMessageDraftKeychainService) { return sApolloMessageDraftInvalidationGeneration; } }
-NSUInteger ApolloMessageDraftStoreAccountGeneration(NSString *account) { @synchronized (ApolloMessageDraftKeychainService) { return sApolloMessageDraftAccountGenerations[ApolloMessageDraftAccountHash(account)] .unsignedIntegerValue; } }
-static void ApolloMessageDraftAdvanceInvalidationGeneration(void) { @synchronized (ApolloMessageDraftKeychainService) { sApolloMessageDraftInvalidationGeneration += 1; } }
-static void ApolloMessageDraftAdvanceAccountGeneration(NSString *account) { @synchronized (ApolloMessageDraftKeychainService) { NSString *key = ApolloMessageDraftAccountHash(account); if (!sApolloMessageDraftAccountGenerations) sApolloMessageDraftAccountGenerations = [NSMutableDictionary dictionary]; sApolloMessageDraftAccountGenerations[key] = @([sApolloMessageDraftAccountGenerations[key] unsignedIntegerValue] + 1); } }
+
+static NSUInteger ApolloMessageDraftAccountGenerationForHash(NSString *accountHash) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
+    NSUInteger generation = sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue;
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
+    return generation;
+}
+
+NSUInteger ApolloMessageDraftStoreInvalidationGeneration(void) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
+    NSUInteger generation = sApolloMessageDraftInvalidationGeneration;
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
+    return generation;
+}
+
+NSUInteger ApolloMessageDraftStoreAccountGeneration(NSString *account) {
+    NSString *key = ApolloMessageDraftAccountHash(account);
+    return key ? ApolloMessageDraftAccountGenerationForHash(key) : 0;
+}
+
+// Callers hold the store lock while advancing a generation and changing its
+// index entries, so a queued save cannot slip between those two operations.
+static void ApolloMessageDraftAdvanceGenerationLocked(NSString *accountHash) {
+    os_unfair_lock_lock(&sApolloMessageDraftGenerationLock);
+    if (!accountHash) {
+        sApolloMessageDraftInvalidationGeneration += 1;
+    } else {
+        if (!sApolloMessageDraftAccountGenerations) sApolloMessageDraftAccountGenerations = [NSMutableDictionary dictionary];
+        sApolloMessageDraftAccountGenerations[accountHash] = @(sApolloMessageDraftAccountGenerations[accountHash].unsignedIntegerValue + 1);
+    }
+    os_unfair_lock_unlock(&sApolloMessageDraftGenerationLock);
+}
 
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
 static NSMutableDictionary<NSString *, NSString *> *sApolloMessageDraftTestItems;
-static NSMutableDictionary *sApolloMessageDraftTestIndex;
+static NSDictionary *sApolloMessageDraftTestIndex;
 static NSTimeInterval sApolloMessageDraftTestNow = 0;
 static BOOL sApolloMessageDraftTestDeleteFailure = NO;
 #endif
@@ -49,41 +81,36 @@ static NSString *ApolloMessageDraftAccountHash(NSString *account) {
     return ApolloMessageDraftOpaqueKey(account, @"account-index");
 }
 
-static NSMutableDictionary *ApolloMessageDraftIndex(void) {
+static NSDictionary *ApolloMessageDraftIndex(void) {
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
-    if (!sApolloMessageDraftTestIndex) sApolloMessageDraftTestIndex = [NSMutableDictionary dictionary];
-    return [sApolloMessageDraftTestIndex mutableCopy];
+    return sApolloMessageDraftTestIndex ?: @{};
 #else
-    NSDictionary *stored = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kApolloMessageDraftIndexKey];
-    return [stored isKindOfClass:[NSDictionary class]] ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+    return [[NSUserDefaults standardUserDefaults] dictionaryForKey:kApolloMessageDraftIndexKey] ?: @{};
 #endif
 }
 
 static void ApolloMessageDraftWriteIndex(NSDictionary *index) {
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
-    sApolloMessageDraftTestIndex = [index mutableCopy];
+    sApolloMessageDraftTestIndex = [index copy];
 #else
     [[NSUserDefaults standardUserDefaults] setObject:index forKey:kApolloMessageDraftIndexKey];
 #endif
 }
 
-static void ApolloMessageDraftIndexTouch(NSString *opaqueKey, NSString *account) {
-    @synchronized (ApolloMessageDraftKeychainService) {
+static void ApolloMessageDraftIndexTouchLocked(NSString *opaqueKey, NSString *account) {
     NSString *accountHash = ApolloMessageDraftAccountHash(account);
     if (opaqueKey.length == 0 || accountHash.length == 0) return;
-    NSMutableDictionary *index = ApolloMessageDraftIndex();
+    NSMutableDictionary *index = [ApolloMessageDraftIndex() mutableCopy];
     index[opaqueKey] = @{ @"account": accountHash, @"updated": @(ApolloMessageDraftNow()) };
     ApolloMessageDraftWriteIndex(index);
-    }
 }
 
-static void ApolloMessageDraftIndexRemove(NSString *opaqueKey) {
-    @synchronized (ApolloMessageDraftKeychainService) {
-    NSMutableDictionary *index = ApolloMessageDraftIndex();
+static void ApolloMessageDraftIndexRemoveLocked(NSString *opaqueKey) {
+    NSDictionary *index = ApolloMessageDraftIndex();
     if (!index[opaqueKey]) return;
-    [index removeObjectForKey:opaqueKey];
-    ApolloMessageDraftWriteIndex(index);
-    }
+    NSMutableDictionary *updated = [index mutableCopy];
+    [updated removeObjectForKey:opaqueKey];
+    ApolloMessageDraftWriteIndex(updated);
 }
 
 NSString *ApolloMessageDraftOpaqueKey(NSString *account, NSString *conversation) {
@@ -110,7 +137,7 @@ NSString *ApolloMessageDraftOpaqueKey(NSString *account, NSString *conversation)
 static NSDictionary *ApolloMessageDraftIdentity(NSString *opaqueKey) {
     if (opaqueKey.length == 0) return nil;
     return @{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-              (__bridge id)kSecAttrService: kApolloMessageDraftService,
+              (__bridge id)kSecAttrService: ApolloMessageDraftKeychainService,
               (__bridge id)kSecAttrAccount: opaqueKey };
 }
 #endif
@@ -122,36 +149,40 @@ BOOL ApolloMessageDraftStoreText(NSString *account, NSString *conversation, NSSt
 
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
     if (!data) return NO;
+    @synchronized (ApolloMessageDraftKeychainService) {
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
-    if (!sApolloMessageDraftTestItems) sApolloMessageDraftTestItems = [NSMutableDictionary dictionary];
-    sApolloMessageDraftTestItems[key] = text;
-    ApolloMessageDraftIndexTouch(key, account);
-    return YES;
+        if (!sApolloMessageDraftTestItems) sApolloMessageDraftTestItems = [NSMutableDictionary dictionary];
+        sApolloMessageDraftTestItems[key] = [text copy];
+        ApolloMessageDraftIndexTouchLocked(key, account);
+        return YES;
 #else
-    NSDictionary *identity = ApolloMessageDraftIdentity(key);
-    NSDictionary *update = @{ (__bridge id)kSecValueData: data };
-    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)identity, (__bridge CFDictionaryRef)update);
-    if (status == errSecItemNotFound) {
-        NSMutableDictionary *add = [identity mutableCopy];
-        add[(__bridge id)kSecValueData] = data;
-        // The app must be unlocked before the user can compose. This keeps the
-        // draft encrypted at rest and out of iCloud Keychain synchronization.
-        add[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
-        status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
-        if (status == errSecDuplicateItem) status = SecItemUpdate((__bridge CFDictionaryRef)identity, (__bridge CFDictionaryRef)update);
-    }
-    if (status == errSecSuccess) ApolloMessageDraftIndexTouch(key, account);
-    return status == errSecSuccess;
+        NSDictionary *identity = ApolloMessageDraftIdentity(key);
+        NSDictionary *update = @{ (__bridge id)kSecValueData: data };
+        OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)identity, (__bridge CFDictionaryRef)update);
+        if (status == errSecItemNotFound) {
+            NSMutableDictionary *add = [identity mutableCopy];
+            add[(__bridge id)kSecValueData] = data;
+            // The app must be unlocked before the user can compose. This keeps the
+            // draft encrypted at rest and out of iCloud Keychain synchronization.
+            add[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+            status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+            if (status == errSecDuplicateItem) status = SecItemUpdate((__bridge CFDictionaryRef)identity, (__bridge CFDictionaryRef)update);
+        }
+        if (status == errSecSuccess) ApolloMessageDraftIndexTouchLocked(key, account);
+        return status == errSecSuccess;
 #endif
+    }
 }
 
 BOOL ApolloMessageDraftStoreTextIfCurrent(NSString *account, NSString *conversation, NSString *text, NSUInteger globalGeneration, NSUInteger accountGeneration) {
+    NSString *accountHash = ApolloMessageDraftAccountHash(account);
+    if (!accountHash) return NO;
     // This is deliberately one lock scope with IndexTouch/MarkPending. Either
     // a write lands and cleanup subsequently marks its index entry, or cleanup
     // advances a token first and the stale write is rejected.
     @synchronized (ApolloMessageDraftKeychainService) {
-        if (globalGeneration != sApolloMessageDraftInvalidationGeneration ||
-            accountGeneration != sApolloMessageDraftAccountGenerations[ApolloMessageDraftAccountHash(account)].unsignedIntegerValue) return NO;
+        if (globalGeneration != ApolloMessageDraftStoreInvalidationGeneration() ||
+            accountGeneration != ApolloMessageDraftAccountGenerationForHash(accountHash)) return NO;
         return ApolloMessageDraftStoreText(account, conversation, text);
     }
 }
@@ -159,32 +190,29 @@ BOOL ApolloMessageDraftStoreTextIfCurrent(NSString *account, NSString *conversat
 NSString *ApolloMessageDraftLoadText(NSString *account, NSString *conversation) {
     NSString *key = ApolloMessageDraftOpaqueKey(account, conversation);
     if (key.length == 0) return nil;
+    @synchronized (ApolloMessageDraftKeychainService) {
+        NSDictionary *entry = ApolloMessageDraftIndex()[key];
+        if ([entry[@"pendingDelete"] boolValue]) return nil;
+        NSTimeInterval updated = [entry[@"updated"] doubleValue];
+        if (updated > 0 && ApolloMessageDraftNow() - updated > kApolloMessageDraftMaximumAge) {
+            ApolloMessageDraftClear(account, conversation);
+            return nil;
+        }
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
-    if ([ApolloMessageDraftIndex()[key][@"pendingDelete"] boolValue]) return nil;
-    NSDictionary *entry = ApolloMessageDraftIndex()[key];
-    if ([entry[@"updated"] doubleValue] > 0 && ApolloMessageDraftNow() - [entry[@"updated"] doubleValue] > kApolloMessageDraftMaximumAge) {
-        ApolloMessageDraftClear(account, conversation);
-        return nil;
-    }
-    return sApolloMessageDraftTestItems[key];
+        return sApolloMessageDraftTestItems[key];
 #else
-    NSDictionary *entry = ApolloMessageDraftIndex()[key];
-    if ([entry[@"pendingDelete"] boolValue]) return nil;
-    if ([entry[@"updated"] doubleValue] > 0 && ApolloMessageDraftNow() - [entry[@"updated"] doubleValue] > kApolloMessageDraftMaximumAge) {
-        ApolloMessageDraftClear(account, conversation);
-        return nil;
-    }
-    NSMutableDictionary *query = [ApolloMessageDraftIdentity(key) mutableCopy];
-    query[(__bridge id)kSecReturnData] = @YES;
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (status != errSecSuccess || !result) {
-        if (result) CFRelease(result);
-        return nil;
-    }
-    NSData *data = CFBridgingRelease(result);
-    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        NSMutableDictionary *query = [ApolloMessageDraftIdentity(key) mutableCopy];
+        query[(__bridge id)kSecReturnData] = @YES;
+        CFTypeRef result = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        if (status != errSecSuccess || !result) {
+            if (result) CFRelease(result);
+            return nil;
+        }
+        NSData *data = CFBridgingRelease(result);
+        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 #endif
+    }
 }
 
 static BOOL ApolloMessageDraftDeleteOpaqueKey(NSString *key) {
@@ -198,113 +226,90 @@ static BOOL ApolloMessageDraftDeleteOpaqueKey(NSString *key) {
 #endif
 }
 
-static void ApolloMessageDraftRetryPendingDeletes(void) {
+// The caller holds the state lock across keychain deletion and index publication.
+// Keep failed deletions indexed so a later retry can still find them.
+static void ApolloMessageDraftDeleteMatchingLocked(BOOL (^predicate)(NSDictionary *entry)) {
     NSDictionary *index = ApolloMessageDraftIndex();
-    NSMutableDictionary *updated = [index mutableCopy];
-    for (NSString *key in index.allKeys) {
-        if (![index[key][@"pendingDelete"] boolValue]) continue;
-        if (ApolloMessageDraftDeleteOpaqueKey(key)) [updated removeObjectForKey:key];
+    NSMutableDictionary *updated = nil;
+    for (NSString *key in index) {
+        if (!predicate(index[key]) || !ApolloMessageDraftDeleteOpaqueKey(key)) continue;
+        if (!updated) updated = [index mutableCopy];
+        [updated removeObjectForKey:key];
     }
-    if (updated.count != index.count) ApolloMessageDraftWriteIndex(updated);
+    if (updated) ApolloMessageDraftWriteIndex(updated);
 }
 
-static void ApolloMessageDraftMarkPending(BOOL (^predicate)(NSDictionary *entry)) {
+static void ApolloMessageDraftMarkPending(NSString *accountHash) {
     @synchronized (ApolloMessageDraftKeychainService) {
-    NSMutableDictionary *index = ApolloMessageDraftIndex();
-    for (NSString *key in index.allKeys) {
-        NSDictionary *entry = index[key];
-        if (!predicate(entry)) continue;
-        NSMutableDictionary *marked = [entry mutableCopy];
-        marked[@"pendingDelete"] = @YES;
-        index[key] = marked;
+        ApolloMessageDraftAdvanceGenerationLocked(accountHash);
+        NSDictionary *index = ApolloMessageDraftIndex();
+        NSMutableDictionary *updated = nil;
+        for (NSString *key in index) {
+            NSDictionary *entry = index[key];
+            if (accountHash && ![entry[@"account"] isEqualToString:accountHash]) continue;
+            if ([entry[@"pendingDelete"] boolValue]) continue;
+            if (!updated) updated = [index mutableCopy];
+            NSMutableDictionary *marked = [entry mutableCopy];
+            marked[@"pendingDelete"] = @YES;
+            updated[key] = marked;
+        }
+        if (updated) ApolloMessageDraftWriteIndex(updated);
     }
-    ApolloMessageDraftWriteIndex(index);
-    }
-    ApolloMessageDraftStoreAsync(^{ ApolloMessageDraftRetryPendingDeletes(); });
+    ApolloMessageDraftStoreAsync(^{
+        @synchronized (ApolloMessageDraftKeychainService) {
+            ApolloMessageDraftDeleteMatchingLocked(^BOOL(NSDictionary *entry) {
+                return [entry[@"pendingDelete"] boolValue];
+            });
+        }
+    });
 }
 
 void ApolloMessageDraftStoreMarkAllPendingDelete(void) {
-    ApolloMessageDraftAdvanceInvalidationGeneration();
-    ApolloMessageDraftMarkPending(^BOOL(__unused NSDictionary *entry) { return YES; });
+    ApolloMessageDraftMarkPending(nil);
 }
 
 void ApolloMessageDraftStoreMarkAccountPendingDelete(NSString *account) {
     NSString *hash = ApolloMessageDraftAccountHash(account);
     if (hash.length == 0) return;
-    ApolloMessageDraftAdvanceAccountGeneration(account);
-    ApolloMessageDraftMarkPending(^BOOL(NSDictionary *entry) { return [entry[@"account"] isEqualToString:hash]; });
+    ApolloMessageDraftMarkPending(hash);
 }
 
 BOOL ApolloMessageDraftClear(NSString *account, NSString *conversation) {
     NSString *key = ApolloMessageDraftOpaqueKey(account, conversation);
     if (key.length == 0) return NO;
-#ifdef APOLLO_MESSAGE_DRAFTS_TESTING
-    [sApolloMessageDraftTestItems removeObjectForKey:key];
-    ApolloMessageDraftIndexRemove(key);
-    return YES;
-#else
-    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)ApolloMessageDraftIdentity(key));
-    if (status == errSecSuccess || status == errSecItemNotFound) ApolloMessageDraftIndexRemove(key);
-    return status == errSecSuccess || status == errSecItemNotFound;
-#endif
+    @synchronized (ApolloMessageDraftKeychainService) {
+        if (!ApolloMessageDraftDeleteOpaqueKey(key)) return NO;
+        ApolloMessageDraftIndexRemoveLocked(key);
+        return YES;
+    }
 }
 
 void ApolloMessageDraftStoreRemoveAccount(NSString *account) {
-    ApolloMessageDraftAdvanceAccountGeneration(account);
     NSString *accountHash = ApolloMessageDraftAccountHash(account);
     if (accountHash.length == 0) return;
-    NSDictionary *index = ApolloMessageDraftIndex();
-    NSMutableDictionary *updated = [index mutableCopy];
-    for (NSString *key in index.allKeys) {
-        if (![index[key][@"account"] isEqualToString:accountHash]) continue;
-        BOOL deleted = NO;
-#if APOLLO_MESSAGE_DRAFTS_TESTING
-        [sApolloMessageDraftTestItems removeObjectForKey:key];
-        deleted = YES;
-#else
-        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)ApolloMessageDraftIdentity(key));
-        deleted = status == errSecSuccess || status == errSecItemNotFound;
-#endif
-        if (deleted) [updated removeObjectForKey:key];
+    @synchronized (ApolloMessageDraftKeychainService) {
+        ApolloMessageDraftAdvanceGenerationLocked(accountHash);
+        ApolloMessageDraftDeleteMatchingLocked(^BOOL(NSDictionary *entry) {
+            return [entry[@"account"] isEqualToString:accountHash];
+        });
     }
-    ApolloMessageDraftWriteIndex(updated);
 }
 
 void ApolloMessageDraftStoreClearAll(void) {
-    ApolloMessageDraftAdvanceInvalidationGeneration();
-    NSDictionary *index = ApolloMessageDraftIndex();
-    NSMutableDictionary *updated = [index mutableCopy];
-    for (NSString *key in index.allKeys) {
-        BOOL deleted = NO;
-#if APOLLO_MESSAGE_DRAFTS_TESTING
-        [sApolloMessageDraftTestItems removeObjectForKey:key];
-        deleted = YES;
-#else
-        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)ApolloMessageDraftIdentity(key));
-        deleted = status == errSecSuccess || status == errSecItemNotFound;
-#endif
-        if (deleted) [updated removeObjectForKey:key];
+    @synchronized (ApolloMessageDraftKeychainService) {
+        ApolloMessageDraftAdvanceGenerationLocked(nil);
+        ApolloMessageDraftDeleteMatchingLocked(^BOOL(__unused NSDictionary *entry) { return YES; });
     }
-    ApolloMessageDraftWriteIndex(updated);
 }
 
 void ApolloMessageDraftStorePruneExpired(void) {
-    ApolloMessageDraftRetryPendingDeletes();
-    NSDictionary *index = ApolloMessageDraftIndex();
-    NSTimeInterval now = ApolloMessageDraftNow();
-    NSMutableDictionary *updated = [index mutableCopy];
-    for (NSString *key in index.allKeys) {
-        if (now - [index[key][@"updated"] doubleValue] <= kApolloMessageDraftMaximumAge) continue;
-#if APOLLO_MESSAGE_DRAFTS_TESTING
-        [sApolloMessageDraftTestItems removeObjectForKey:key];
-        BOOL deleted = YES;
-#else
-        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)ApolloMessageDraftIdentity(key));
-        BOOL deleted = status == errSecSuccess || status == errSecItemNotFound;
-#endif
-        if (deleted) [updated removeObjectForKey:key];
+    @synchronized (ApolloMessageDraftKeychainService) {
+        NSTimeInterval now = ApolloMessageDraftNow();
+        ApolloMessageDraftDeleteMatchingLocked(^BOOL(NSDictionary *entry) {
+            return [entry[@"pendingDelete"] boolValue] ||
+                now - [entry[@"updated"] doubleValue] > kApolloMessageDraftMaximumAge;
+        });
     }
-    if (updated.count != index.count) ApolloMessageDraftWriteIndex(updated);
 }
 
 BOOL ApolloMessageDraftShouldClearForHTTPStatus(NSInteger statusCode) {
@@ -338,8 +343,11 @@ BOOL ApolloMessageDraftHandleSendHTTPStatus(NSString *account,
 #ifdef APOLLO_MESSAGE_DRAFTS_TESTING
 void ApolloMessageDraftStoreResetForTesting(void) {
     sApolloMessageDraftTestItems = [NSMutableDictionary dictionary];
-    sApolloMessageDraftTestIndex = [NSMutableDictionary dictionary];
+    sApolloMessageDraftTestIndex = @{};
     sApolloMessageDraftTestNow = 0;
+    sApolloMessageDraftTestDeleteFailure = NO;
+    sApolloMessageDraftInvalidationGeneration = 0;
+    sApolloMessageDraftAccountGenerations = nil;
 }
 void ApolloMessageDraftStoreSetTestingNow(NSTimeInterval now) { sApolloMessageDraftTestNow = now; }
 void ApolloMessageDraftStoreSetTestingDeleteFailure(BOOL fail) { sApolloMessageDraftTestDeleteFailure = fail; }

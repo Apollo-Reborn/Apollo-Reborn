@@ -131,8 +131,8 @@ static ApolloFeedSubredditIconState ApolloFeedSubredditIconStateOf(id node, cons
 static BOOL ApolloFeedSubredditIconShouldRunHandler(id node) {
     const ApolloFeedSubredditIconSpec *spec = ApolloFeedSubredditIconSpecForObject(node);
     if (ApolloFeedSubredditIconStateOf(node, spec) != ApolloFeedSubredditIconStateResolved) return YES;
-    ApolloLogDebug(@"[FeedSubredditIcons] skipped a second icon delivery to a %s that already has its icon",
-                   spec->className);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedSubredditIcons] skipped a second icon delivery to a %{public}s that already has its icon",
+                 spec->className);
     return NO;
 }
 

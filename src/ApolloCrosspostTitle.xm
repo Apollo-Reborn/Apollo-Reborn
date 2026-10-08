@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // MARK: - Crosspost: start the title as the original post's title
 //
@@ -89,10 +90,10 @@ static const CGFloat kApolloCrosspostClearButtonWidth = 34.0;
 static const CGFloat kApolloCrosspostClearButtonTextGap = 2.0;
 
 static ASEditableTextNode *ApolloCrosspostTitleNode(id controller) {
-    Class controllerClass = objc_getClass("_TtC6Apollo30CrosspostPerformViewController");
+    Class controllerClass = ApolloClassCrosspostPerformViewController;
     if (!controllerClass || ![controller isKindOfClass:controllerClass]) return nil;
     id node = ApolloReadObjectIvar(controller, "textEntryNode");
-    Class nodeClass = objc_getClass("ASEditableTextNode");
+    Class nodeClass = ApolloClassASEditableTextNode;
     return (nodeClass && [node isKindOfClass:nodeClass]) ? node : nil;
 }
 
@@ -175,7 +176,7 @@ static void ApolloCrosspostRefreshClearButton(ASEditableTextNode *node) {
     button.tintColor = ApolloCrosspostClearButtonTint(node);
 
     UITextView *textView = node.textView;
-    NSMutableArray *actions = [NSMutableArray arrayWithArray:textView.accessibilityCustomActions ?: @[]];
+    NSMutableArray *actions = [NSMutableArray arrayWithArray:textView.accessibilityCustomActions];
     [actions removeObject:button.clearAction];
     if (hasText && button.clearAction) [actions addObject:button.clearAction];
     textView.accessibilityCustomActions = actions.count > 0 ? actions : nil;
@@ -341,7 +342,8 @@ static void ApolloCrosspostSetUpTitle(UIViewController *controller) {
     UIEdgeInsets insets = self.textContainerInset;
     CGFloat horizontal = insets.left + insets.right;
     if (constrainedSize.width <= horizontal) return size;
-    size.height = %orig(CGSizeMake(constrainedSize.width - horizontal, constrainedSize.height)).height;
+    CGSize textSize = %orig(CGSizeMake(constrainedSize.width - horizontal, constrainedSize.height));
+    size.height = textSize.height;
     return size;
 }
 

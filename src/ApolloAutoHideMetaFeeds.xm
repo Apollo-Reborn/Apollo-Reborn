@@ -41,21 +41,27 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 static NSString *const kApolloDisableInSubredditsKey = @"DisableAutoHideReadPostsInSubreddits";
 
 // Select the active app window deterministically. ApolloAllWindows() spans every
 // connected scene, so a hidden normal-level window from an inactive scene must
 // not win merely because it happened to be enumerated first.
+static BOOL ApolloAHWindowIsCandidate(UIWindow *w) {
+    if (!w || w.isHidden || w.alpha <= 0.01 || !w.rootViewController) return NO;
+    return w.windowLevel == UIWindowLevelNormal;
+}
+
 static UIWindow *ApolloAHActiveWindow(void) {
-    UIWindow *normalFallback = nil;
+    // The shared key-window lookup (foreground-active scene first) wins only if
+    // it also passes this module's visible/normal-level filters.
+    UIWindow *keyWindow = ApolloKeyWindow();
+    if (ApolloAHWindowIsCandidate(keyWindow)) return keyWindow;
     for (UIWindow *w in ApolloAllWindows()) {
-        if (![w isKindOfClass:[UIWindow class]] || w.isHidden || w.alpha <= 0.01 || !w.rootViewController) continue;
-        if (w.windowLevel != UIWindowLevelNormal) continue;
-        if (w.isKeyWindow) return w;
-        if (!normalFallback) normalFallback = w;
+        if (ApolloAHWindowIsCandidate(w)) return w;
     }
-    return normalFallback;
+    return nil;
 }
 
 // Collect every visible leaf in the active container hierarchy. A split view is
@@ -143,7 +149,7 @@ static BOOL ApolloAHTypeIsMetaFeed(id postsVC) {
 // is not lost behind a secondary comments controller. A presented Settings screen
 // replaces the underlying hierarchy, so its toggle still reads the stored value.
 static BOOL ApolloAHOnMetaFeed(void) {
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass) return NO;
     for (UIViewController *leaf in ApolloAHVisibleLeaves()) {
         if ([leaf isMemberOfClass:postsClass] && ApolloAHTypeIsMetaFeed(leaf)) return YES;
