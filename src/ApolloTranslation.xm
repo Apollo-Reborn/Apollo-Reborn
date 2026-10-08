@@ -8882,6 +8882,7 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
 
 @interface ApolloInsertTranslationArm : NSObject
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *translations; // fullName -> translation
+@property (nonatomic) NSUInteger wrapCountAtArm; // sApolloInsertTranslationWrapCount when armed
 @end
 
 @implementation ApolloInsertTranslationArm
@@ -8892,10 +8893,18 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
 static NSMutableArray<ApolloInsertTranslationArm *> *sApolloInsertTranslationArms = nil;
 // Fast first-line check for the ListAdapter hook: number of armed tokens.
 static NSUInteger sApolloInsertTranslationArmCount = 0;
+// Node blocks the ListAdapter hook has wrapped (main thread). A disarm that sees
+// no new ones means Texture built the inserted rows some other way.
+static NSUInteger sApolloInsertTranslationWrapCount = 0;
 // How many of a load's comments the prefetch waits for: the first ones land right below the
 // tapped row, on screen. The rest are requested too but not awaited — they land below the
 // fold, where a later reflow can't move anything the user is looking at.
 static const NSUInteger kApolloInsertTranslationAwaitedComments = 8;
+// How many are requested up front: the awaited ones plus about a screen. Each
+// request runs a name-tagging pass on the main thread before it goes out, so a
+// 100-comment load shouldn't start them all in one block; the rest translate
+// through the per-cell path as they near the screen, as before.
+static const NSUInteger kApolloInsertTranslationPrefetchLimit = 24;
 
 // Text nodes whose attributedText Apollo set while THIS thread runs a wrapped
 // node block (nil everywhere else). The wrapper owns the array; this is only a
@@ -8931,9 +8940,13 @@ static BOOL ApolloInsertCommentIsTranslatable(RDKComment *comment, NSString *ful
 
 // The thread is showing translations (auto-translate or its globe), but not in
 // tap-to-translate mode: that holds every swap until the user taps, so there is
-// nothing to apply before the insert.
+// nothing to apply before the insert. The thread must also still be the visible
+// one: the rest of the translation code (ownership tags, the globe's restore)
+// only follows sVisibleCommentsViewController, so replies translated for a
+// thread the user has pushed away from couldn't be restored later.
 static BOOL ApolloInsertTranslationModeActive(UIViewController *commentsController) {
     return sEnableBulkTranslation && !sTapToTranslate && commentsController &&
+           commentsController == sVisibleCommentsViewController &&
            ApolloControllerIsInTranslatedMode(commentsController) &&
            ApolloResolvedTargetLanguageCode().length > 0;
 }
@@ -8984,11 +8997,12 @@ BOOL ApolloTranslationPrefetchCommentsForInsertion(id commentsController, NSArra
                 return;
             }
             NSUInteger awaited = MIN(needed.count, kApolloInsertTranslationAwaitedComments);
+            NSUInteger requested = MIN(needed.count, kApolloInsertTranslationPrefetchLimit);
             __block NSUInteger remaining = awaited;
-            ApolloLog(@"[Translation] load more: translating %lu comment(s), waiting for the first %lu before they are inserted",
-                      (unsigned long)needed.count, (unsigned long)awaited);
+            ApolloLog(@"[Translation] load more: translating %lu of %lu comment(s) now, waiting for the first %lu before they are inserted",
+                      (unsigned long)requested, (unsigned long)needed.count, (unsigned long)awaited);
             // Display order, so a sequential provider (Apple) answers the awaited ones first.
-            [needed enumerateObjectsUsingBlock:^(NSDictionary *candidate, NSUInteger index, __unused BOOL *stop) {
+            [[needed subarrayWithRange:NSMakeRange(0, requested)] enumerateObjectsUsingBlock:^(NSDictionary *candidate, NSUInteger index, __unused BOOL *stop) {
                 BOOL isAwaited = index < awaited;
                 NSString *fullName = candidate[@"fullName"];
                 NSString *sourceText = candidate[@"source"];
@@ -9026,6 +9040,7 @@ id ApolloTranslationArmInsertedComments(id commentsController, NSArray *things) 
     if (translations.count == 0) return nil;
     ApolloInsertTranslationArm *arm = [ApolloInsertTranslationArm new];
     arm.translations = translations;
+    arm.wrapCountAtArm = sApolloInsertTranslationWrapCount;
     @synchronized (ApolloInsertTranslationLock()) {
         if (!sApolloInsertTranslationArms) sApolloInsertTranslationArms = [NSMutableArray array];
         [sApolloInsertTranslationArms addObject:arm];
@@ -9036,6 +9051,15 @@ id ApolloTranslationArmInsertedComments(id commentsController, NSArray *things) 
 
 void ApolloTranslationDisarmInsertedComments(id token) {
     if (!token) return;
+    if ([token isKindOfClass:[ApolloInsertTranslationArm class]] &&
+        ((ApolloInsertTranslationArm *)token).wrapCountAtArm == sApolloInsertTranslationWrapCount) {
+        // The insert asked for no node blocks through ListAdapter while armed, so
+        // the replies went in untranslated and translate after the insert again.
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            ApolloLog(@"[Translation] load more: translations armed but no row was built through ListAdapter; NOT applied before the insert");
+        });
+    }
     @synchronized (ApolloInsertTranslationLock()) {
         [sApolloInsertTranslationArms removeObjectIdenticalTo:token];
         __atomic_store_n(&sApolloInsertTranslationArmCount, sApolloInsertTranslationArms.count, __ATOMIC_RELEASE);
@@ -9282,7 +9306,9 @@ static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTe
 
 // Load more: wrap the node blocks Apollo hands Texture while a load-more insert
 // is armed (ApolloTranslationArmInsertedComments). Every list in the app builds
-// its rows through here, so bail in the first line when nothing is armed. The
+// its rows through here, so bail in the first line when nothing is armed.
+// ApolloHiddenContentMenu.xm wraps the same selector; both pass through what
+// they don't own, so their order doesn't matter. The
 // armed set is read once here, on the main thread inside Apollo's batch; the
 // block itself runs later on Texture's allocation thread.
 %hook _TtC6Apollo11ListAdapter
@@ -9293,6 +9319,7 @@ static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTe
     NSDictionary<NSString *, NSString *> *translations = ApolloInsertTranslationsSnapshot();
     if (!original || translations.count == 0) return original;
     id (^nodeBlock)(void) = original;
+    sApolloInsertTranslationWrapCount++;
     return [^id {
         NSMutableArray *captured = [NSMutableArray array];
         NSMutableArray *outer = tApolloInsertCapturedTextNodes;

@@ -77,8 +77,7 @@ static id ApolloLoadMoreVisibleCellNode(id moreComments, UIViewController **cont
             [stack removeLastObject];
             if ([view isKindOfClass:[UITableView class]]) {
                 for (UITableViewCell *cell in ((UITableView *)view).visibleCells) {
-                    if (![cell respondsToSelector:@selector(node)]) continue;
-                    id node = ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node));
+                    id node = ApolloSendObject(cell, @selector(node));
                     if (![node isKindOfClass:cellNodeClass]) continue;
                     if (ApolloObjectIvar(node, "moreComments") != moreComments) continue;
                     UIViewController *controller = ApolloLoadMoreCommentsControllerForView(view);
@@ -98,8 +97,7 @@ static id ApolloLoadMoreVisibleCellNode(id moreComments, UIViewController **cont
 // subnode's alpha (the label and disclosure arrow) and the spinner's alpha.
 static void ApolloLoadMoreSetRowLoading(id cellNode, BOOL loading) {
     if (!cellNode) return;
-    NSArray *subnodes = [cellNode respondsToSelector:@selector(subnodes)]
-        ? ((NSArray *(*)(id, SEL))objc_msgSend)(cellNode, @selector(subnodes)) : nil;
+    NSArray *subnodes = ApolloSendObject(cellNode, @selector(subnodes));
     for (id subnode in subnodes) {
         if ([subnode respondsToSelector:@selector(setAlpha:)]) {
             ((void (*)(id, SEL, CGFloat))objc_msgSend)(subnode, @selector(setAlpha:), loading ? 0.0 : 1.0);
@@ -222,8 +220,9 @@ static void ApolloLoadMoreHandleResponse(ApolloLoadMoreRequest *request, id resu
 // Highlight New Accounts: Apollo's morechildren completion fetches the new authors and inserts
 // from this completion. Only the lookup issued from inside a load-more response is touched.
 - (id)usersByFullNames:(id)names completion:(ApolloLoadMoreCompletion)completion {
+    if (!completion || !NSThread.isMainThread) return %orig;
     ApolloLoadMoreRequest *request = sApolloLoadMoreRespondingRequest;
-    if (!request || !completion || !NSThread.isMainThread) return %orig;
+    if (!request) return %orig;
     ApolloLoadMoreCompletion wrapped = ^(id users, NSError *error) {
         if (!NSThread.isMainThread) {
             completion(users, error);
