@@ -234,7 +234,7 @@ static NSUInteger ApolloChatRoomDirectoryMergePage(NSDictionary *payload,
 
 static void ApolloChatRoomDirectoryFinish(BOOL ready) {
     sDirectoryInFlight = NO;
-    NSArray *waiters = [sDirectoryWaiters copy];
+    NSArray *waiters = sDirectoryWaiters;
     sDirectoryWaiters = nil;
     for (void (^waiter)(BOOL) in waiters) waiter(ready);
 }
@@ -275,7 +275,7 @@ static void ApolloChatRoomDirectoryFetchPage(NSString *username, NSString *beare
                 return;
             }
             if (!payload) {
-                ApolloLog(@"[ChatRooms] Room directory sync page %lu failed (HTTP %ld, %@)",
+                ApolloLogError(@"[ChatRooms] Room directory sync page %lu failed (HTTP %ld, %@)",
                           (unsigned long)page, (long)statusCode,
                           error.localizedDescription ?: @"unparseable body");
                 if (statusCode == 401 || statusCode == 403) ApolloChatPollNoteBearerRejected(bearer);

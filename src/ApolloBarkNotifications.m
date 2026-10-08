@@ -369,7 +369,7 @@ void ApolloBarkSendChatNotification(NSString *title, NSString *body, NSString *c
             ? [(NSHTTPURLResponse *)response statusCode] : 0;
         BOOL delivered = !error && status == 200;
         if (!delivered) {
-            ApolloLog(@"[Bark] Chat push failed (HTTP %ld, %@)", (long)status,
+            ApolloLogError(@"[Bark] Chat push failed (HTTP %ld, %@)", (long)status,
                       error.localizedDescription ?: @"server error");
         } else {
             ApolloLog(@"[Bark] Chat push delivered: %@", title);
@@ -437,7 +437,7 @@ void ApolloBarkSyncBackendDeviceTransport(void) {
     [[[NSURLSession sharedSession] dataTaskWithRequest:request
                                       completionHandler:^(NSData * __unused data, NSURLResponse *response, NSError *error) {
         if (error) {
-            ApolloLog(@"[Bark] Transport sync failed: %@", error.localizedDescription);
+            ApolloLogError(@"[Bark] Transport sync failed: %@", error.localizedDescription);
         } else {
             ApolloLog(@"[Bark] Transport sync answered HTTP %ld", (long)[(NSHTTPURLResponse *)response statusCode]);
         }
@@ -467,7 +467,7 @@ void ApolloBarkDeleteBackendDevice(NSString *tokenHex) {
     [[[NSURLSession sharedSession] dataTaskWithRequest:request
                                       completionHandler:^(NSData * __unused data, NSURLResponse *response, NSError *error) {
         if (error) {
-            ApolloLog(@"[Bark] Backend device delete failed: %@", error.localizedDescription);
+            ApolloLogError(@"[Bark] Backend device delete failed: %@", error.localizedDescription);
         } else {
             ApolloLog(@"[Bark] Backend device delete answered HTTP %ld", (long)[(NSHTTPURLResponse *)response statusCode]);
         }

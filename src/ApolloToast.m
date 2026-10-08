@@ -29,9 +29,8 @@
 static __weak ApolloToastView *sApolloActiveToast = nil;
 
 static UIWindow *ApolloToastKeyWindow(void) {
-    for (UIWindow *window in ApolloAllWindows()) {
-        if (window.isKeyWindow && !window.isHidden) return window;
-    }
+    UIWindow *keyWindow = ApolloKeyWindow();
+    if (keyWindow && !keyWindow.isHidden) return keyWindow;
     // No key window (e.g. mid-transition) — fall back to any visible foreground
     // window so a "done" toast still lands somewhere sensible.
     for (UIWindow *window in ApolloAllWindows()) {

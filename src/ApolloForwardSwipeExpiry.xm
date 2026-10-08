@@ -43,7 +43,9 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"          // ApolloLog
+#import "ApolloSwiftRuntime.h"    // ApolloObjectIvar
 #import "ApolloState.h"           // sForwardSwipeForgetAfterScrolling
+#import "ApolloClasses.h"
 
 // Expire once the top visible row is this many rows past the anchor. The
 // feed table alternates post cells with ThinSeparatorCellNode rows (verified
@@ -84,15 +86,6 @@ static const CGFloat kApolloForwardExpiryEvaluateStride = 24.0;
 
 static const void *kApolloForwardExpiryAnchorKey = &kApolloForwardExpiryAnchorKey;
 
-static Class ApolloForwardExpiryNavigationClass(void) {
-    static Class navigationClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        navigationClass = objc_getClass("_TtC6Apollo26ApolloNavigationController");
-    });
-    return navigationClass;
-}
-
 // The Swift array ivar is a single word holding the storage object. Apollo
 // only ever assigns it native Swift storage (init [], insert, removeFirst,
 // __swiftEmptyArrayStorage) and both native storages are NSArray subclasses
@@ -125,9 +118,7 @@ static id ApolloForwardExpiryPoppedStack(UINavigationController *navigationContr
 }
 
 static void ApolloForwardExpiryHandleScroll(UIViewController *feedController, UIScrollView *scrollView) {
-    // Also checked by the caller's early-out; kept so the function is safe to
-    // call from anywhere.
-    if (!sForwardSwipeForgetAfterScrolling) return;
+    // The caller has already checked sForwardSwipeForgetAfterScrolling.
     // Only user-driven motion counts, in both directions of the state machine.
     if (!scrollView.isTracking && !scrollView.isDragging && !scrollView.isDecelerating) return;
 
@@ -136,7 +127,7 @@ static void ApolloForwardExpiryHandleScroll(UIViewController *feedController, UI
     CGFloat offsetY = scrollView.contentOffset.y;
     if (state && fabs(offsetY - state.lastEvaluatedY) < kApolloForwardExpiryEvaluateStride) return;
 
-    Class navigationClass = ApolloForwardExpiryNavigationClass();
+    Class navigationClass = ApolloClassApolloNavigationController;
     UINavigationController *navigationController = feedController.navigationController;
     if (!navigationClass || ![navigationController isKindOfClass:navigationClass]) return;
     if (navigationController.topViewController != feedController) return;
@@ -223,14 +214,8 @@ static const void *kApolloForwardExpiryOwnerKey = &kApolloForwardExpiryOwnerKey;
 static void ApolloForwardExpiryMarkTable(UIViewController *feedController) {
     // tableNode is declared on the ASTableViewController superclass; the
     // runtime lookup walks up to it. It holds a plain ObjC ASTableNode.
-    Ivar ivar = class_getInstanceVariable([feedController class], "tableNode");
-    if (!ivar) return;
-    id tableNode = nil;
-    @try {
-        tableNode = object_getIvar(feedController, ivar);
-    } @catch (__unused NSException *exception) {
-        return;
-    }
+    id tableNode = ApolloObjectIvar(feedController, "tableNode");
+    if (!tableNode) return;
     if (![tableNode respondsToSelector:@selector(isNodeLoaded)] ||
         ![tableNode respondsToSelector:@selector(view)]) return;
     // Never force a node load from here.
@@ -271,7 +256,7 @@ static void ApolloForwardExpiryMarkTable(UIViewController *feedController) {
     // on the next scroll without waiting for the feed to reappear.
     if (!sForwardSwipeForgetAfterScrolling) return;
     ApolloForwardExpiryOwnerBox *box = objc_getAssociatedObject(self, kApolloForwardExpiryOwnerKey);
-    UIViewController *owner = box ? box.owner : nil;
+    UIViewController *owner = box.owner;
     if (owner) ApolloForwardExpiryHandleScroll(owner, self);
 }
 

@@ -104,7 +104,7 @@ static void ApolloSearchScanTable(UITableView *table,
             @try {
                 cell = [dataSource tableView:table cellForRowAtIndexPath:indexPath];
             } @catch (NSException *exception) {
-                ApolloLog(@"[SettingsSearch] scan threw at %ld.%ld: %@", (long)s, (long)r, exception);
+                ApolloLogError(@"[SettingsSearch] scan threw at %ld.%ld: %@", (long)s, (long)r, exception);
                 continue;
             }
             if (!cell) continue;
@@ -186,7 +186,7 @@ static NSArray<ApolloSettingsSearchEntry *> *ApolloSettingsSearchBuildIndex(UITr
         @try {
             [vc loadViewIfNeeded];
         } @catch (NSException *exception) {
-            ApolloLog(@"[SettingsSearch] load of '%@' threw: %@", routeId, exception);
+            ApolloLogError(@"[SettingsSearch] load of '%@' threw: %@", routeId, exception);
             continue;
         }
         UITableView *table = ApolloSearchTableInViewController(vc);

@@ -14,12 +14,14 @@ typedef NS_ENUM(NSInteger, ApolloTabBarHideStyle) {
     ApolloTabBarHideStyleRight = 1,
     ApolloTabBarHideStyleFade = 2,
     ApolloTabBarHideStyleDown = 3,
+    ApolloTabBarHideStyleMinimize = 4,
 };
 
 static inline BOOL ApolloTabBarHideStyleUsesCustomPresentation(
     ApolloTabBarHideStyle style) {
     return style == ApolloTabBarHideStyleFade ||
-           style == ApolloTabBarHideStyleDown;
+           style == ApolloTabBarHideStyleDown ||
+           style == ApolloTabBarHideStyleMinimize;
 }
 
 extern NSString *sRedditClientId;
@@ -298,16 +300,10 @@ void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
 // its field clear of the Hard style's band edge; re-applied on style changes.
 // No-op off Liquid Glass. Defined in ApolloScrollEdgeEffect.xm; C linkage so
 // the .m screens can call it.
-#ifdef __cplusplus
-extern "C" {
-#endif
 void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar);
 // Called from ApolloThemeRuntime.xm's UISearchBar didMoveToWindow hook (the one
 // hook that class gets); applies the Hard-style insets to registered bars.
 void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
-#ifdef __cplusplus
-}
-#endif
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its

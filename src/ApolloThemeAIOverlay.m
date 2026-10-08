@@ -224,7 +224,7 @@ static BOOL ATGEnsureBlobPipeline(void) {
     [super layoutSubviews];
     if (_metalReady) {
         CAMetalLayer *layer = (CAMetalLayer *)self.layer;
-        CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
+        CGFloat scale = self.traitCollection.displayScale;
         // Render at HALF resolution: the blob is soft gradients end to end, so
         // CA's upscale is visually lossless and the fragment cost drops 4x —
         // the difference between "warm phone" and "free" on older devices.

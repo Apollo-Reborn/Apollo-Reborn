@@ -1,6 +1,7 @@
 #import "settings/ApolloLinkCompanionViewController.h"
 
 #import <objc/message.h>
+#import <objc/runtime.h>
 
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
@@ -258,7 +259,7 @@ static const NSUInteger kHeroRingCount = 3;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.clipsToBounds = YES;
 
-        Class glassCls = NSClassFromString(@"UIGlassEffect");
+        Class glassCls = objc_getClass("UIGlassEffect");
         if (IsLiquidGlass() && glassCls) {
             _glassEffect = [[glassCls alloc] init];
             @try { [_glassEffect setValue:@YES forKey:@"interactive"]; } @catch (__unused id e) {}
@@ -305,7 +306,7 @@ static UIView *LinkCompanionMakeCard(void) {
     card.layer.cornerCurve = kCACornerCurveContinuous;
     card.clipsToBounds = YES;
 
-    Class glassCls = NSClassFromString(@"UIGlassEffect");
+    Class glassCls = objc_getClass("UIGlassEffect");
     if (IsLiquidGlass() && glassCls) {
         UIVisualEffect *effect = [[glassCls alloc] init];
         UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
@@ -524,7 +525,7 @@ static UIView *LinkCompanionMakeStep(NSString *number, NSString *title, NSString
         _shortcutCard.layer.cornerCurve = kCACornerCurveContinuous;
         _shortcutCard.clipsToBounds = YES;
         // Same glass/translucent treatment as the other cards.
-        Class glassCls = NSClassFromString(@"UIGlassEffect");
+        Class glassCls = objc_getClass("UIGlassEffect");
         if (IsLiquidGlass() && glassCls) {
             UIVisualEffect *effect = [[glassCls alloc] init];
             UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];

@@ -23,6 +23,12 @@ void ApolloGoogleSearchTabDidCancel(UIViewController *searchVC);
 // focus the field when already there) and return YES. NO = Apollo's table is
 // showing; the caller handles it.
 BOOL ApolloGoogleSearchTabHandleReselect(UIViewController *searchVC);
+#if APOLLO_SIM_BUILD
+// Sim debug bridge "searchtab <query>": submit `query` in the Search tab's
+// Google/Kagi mode exactly as the keyboard's Search button does (the bridge's
+// "text" command can't reach the search field on iOS 26+).
+void ApolloGoogleSearchTabDebugSubmit(NSString *query);
+#endif
 #ifdef __cplusplus
 }
 #endif

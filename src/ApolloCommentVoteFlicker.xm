@@ -45,8 +45,10 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTranslation.h"
 #import "ApolloState.h"
+#import "ApolloClasses.h"
 
 @interface ASDisplayNode : NSObject
 @property (nonatomic) BOOL neverShowPlaceholders;
@@ -70,31 +72,15 @@
 // the hierarchy and synchronously finish their pending display at each Mac
 // focus boundary. Normal scrolling and ordinary redraws remain asynchronous.
 static BOOL ApolloVFIsMacRuntime(void) {
-    static BOOL result = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
-        NSArray<NSString *> *selectorNames = @[ @"isiOSAppOnMac", @"isMacCatalystApp" ];
-        for (NSString *selectorName in selectorNames) {
-            SEL selector = NSSelectorFromString(selectorName);
-            if ([processInfo respondsToSelector:selector] &&
-                ((BOOL (*)(id, SEL))objc_msgSend)(processInfo, selector)) {
-                result = YES;
-                break;
-            }
-        }
-    });
-    return result;
+    NSProcessInfo *processInfo = NSProcessInfo.processInfo;
+    return processInfo.isiOSAppOnMac || processInfo.isMacCatalystApp;
 }
 
 static BOOL ApolloVFNeedsMacSynchronousDisplay(id node) {
     if (!node) return NO;
-    const char *classNames[] = { "ASTextNode", "ASTextNode2", "ASImageNode" };
-    for (size_t i = 0; i < sizeof(classNames) / sizeof(classNames[0]); i++) {
-        Class nodeClass = objc_getClass(classNames[i]);
-        if (nodeClass && [node isKindOfClass:nodeClass]) return YES;
-    }
-    return NO;
+    return [node isKindOfClass:ApolloClassASTextNode] ||
+           [node isKindOfClass:ApolloClassASTextNode2] ||
+           [node isKindOfClass:ApolloClassASImageNode];
 }
 
 static NSHashTable *ApolloVFMacDisplayLeaves(void) {
@@ -230,15 +216,8 @@ static void ApolloVFTrackCell(id cell, BOOL visible) {
     else [sApolloVFVisibleCells removeObject:cell];
 }
 
-static id ApolloVFIvar(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    if (!iv) return nil;
-    @try { return object_getIvar(obj, iv); } @catch (__unused NSException *e) { return nil; }
-}
-
 static NSString *ApolloVFFullName(id model) {
-    if (!model || ![model respondsToSelector:@selector(fullName)]) return nil;
+    if (![model respondsToSelector:@selector(fullName)]) return nil;
     @try {
         NSString *fn = ((NSString *(*)(id, SEL))objc_msgSend)(model, @selector(fullName));
         return [fn isKindOfClass:[NSString class]] ? fn : nil;
@@ -254,7 +233,7 @@ static NSArray *ApolloVFCellsForUpdatedModel(id note) {
     if (fullName.length == 0) return @[];
     NSMutableArray *hits = [NSMutableArray array];
     for (id cell in sApolloVFVisibleCells.allObjects) {
-        id m = ApolloVFIvar(cell, "comment") ?: ApolloVFIvar(cell, "link");
+        id m = ApolloObjectIvar(cell, "comment") ?: ApolloObjectIvar(cell, "link");
         if ([ApolloVFFullName(m) isEqualToString:fullName]) [hits addObject:cell];
     }
     return hits;
@@ -272,8 +251,8 @@ static void ApolloVFEnsureSynchronousDisplay(NSArray *cells, const char *stage) 
         } @catch (__unused NSException *e) {}
     }
     if (cells.count > 0) {
-        ApolloLog(@"[VoteFlicker] ensured synchronous display for %lu cell(s) (%s)",
-                  (unsigned long)cells.count, stage);
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] ensured synchronous display for %lu cell(s) (%{public}s)",
+                    (unsigned long)cells.count, stage);
     }
 }
 
@@ -318,9 +297,8 @@ static void ApolloVFStabilizeCommentsInfoNode(ASDisplayNode *node, BOOL flush) {
 }
 
 static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
-    if (!postInfo) return;
     @try {
-        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(postInfo, "commentsInfoNode");
+        ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(postInfo, "commentsInfoNode");
         if (!commentsInfo) return;
         ApolloVFStabilizeCommentsInfoNode(commentsInfo, NO);
         if ([postInfo respondsToSelector:@selector(setNeedsLayout)]) {
@@ -333,7 +311,8 @@ static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
         if ([postInfo respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
             [postInfo recursivelyEnsureDisplaySynchronously:YES];
         }
-        ApolloLog(@"[VoteFlicker] read-comments update realized synchronously (%s)", stage);
+        // Confirmation only (helpful, not essential): info level.
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] read-comments update realized synchronously (%{public}s)", stage);
     } @catch (__unused NSException *e) {}
 }
 
@@ -386,15 +365,15 @@ static BOOL ApolloVFAccessoryNodeIsLive(id node) {
 }
 
 static BOOL ApolloVFCellRendersCollapsed(id cell) {
-    return ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "totalCollapsedChildrenIndicator")) ||
-           ApolloVFAccessoryNodeIsLive(ApolloVFIvar(cell, "collapseDisclosureIndicator"));
+    return ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "totalCollapsedChildrenIndicator")) ||
+           ApolloVFAccessoryNodeIsLive(ApolloObjectIvar(cell, "collapseDisclosureIndicator"));
 }
 
 static void ApolloVFNeutralizeCarriedOverCollapse(id note) {
     @try {
         id oldModel = [note isKindOfClass:[NSNotification class]] ? [(NSNotification *)note object] : nil;
         id newModel = [note isKindOfClass:[NSNotification class]] ? [(NSNotification *)note userInfo][@"newModel"] : nil;
-        Class commentClass = objc_getClass("RDKComment");
+        Class commentClass = ApolloClassRDKComment;
         if (!commentClass || ![oldModel isMemberOfClass:commentClass] || ![newModel isMemberOfClass:commentClass]) return;
         if (![newModel respondsToSelector:@selector(collapsed)]) return;
         BOOL newCollapsed = ((BOOL (*)(id, SEL))objc_msgSend)(newModel, @selector(collapsed));
@@ -562,7 +541,7 @@ static void ApolloVFHandleModelUpdate(id note, void (^origCall)(void)) {
 %hook _TtC6Apollo12PostInfoNode
 - (void)didEnterHierarchy {
     %orig;
-    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloVFIvar(self, "commentsInfoNode");
+    ASDisplayNode *commentsInfo = (ASDisplayNode *)ApolloObjectIvar(self, "commentsInfoNode");
     ApolloVFStabilizeCommentsInfoNode(commentsInfo, YES);
 }
 
@@ -653,10 +632,10 @@ static void ApolloVFForegroundHeal(const char *stage) {
     // internal — if a future Apollo binary ships without it, the quiesce
     // silently disarms and the rest of the module is unaffected.
     Class tableClass = objc_getClass("ASTableView");
-    Method requeryMethod = tableClass ? class_getInstanceMethod(tableClass, NSSelectorFromString(@"requeryNodeHeights")) : NULL;
+    Method requeryMethod = tableClass ? class_getInstanceMethod(tableClass, @selector(requeryNodeHeights)) : NULL;
     if (requeryMethod) {
         orig_ApolloVFRequeryNodeHeights = (void (*)(id, SEL))method_getImplementation(requeryMethod);
-        method_setImplementation(requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
+        ApolloSetMethodImplementation(tableClass, requeryMethod, (IMP)ApolloVFRequeryNodeHeights);
     }
 
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];

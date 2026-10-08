@@ -39,3 +39,6 @@
 
 @interface ApolloNotificationBackendViewController : CustomAPIViewController // Advanced → Notification Backend
 @end
+
+@interface ApolloUserProfilesSettingsViewController : CustomAPIViewController // Features → User Profiles
+@end

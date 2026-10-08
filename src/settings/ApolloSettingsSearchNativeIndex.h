@@ -87,7 +87,6 @@ static NSArray<NSArray *> *ApolloSettingsSearchNativeRows(void) {
             @[@"Show Voting Buttons", @"Appearance → Compact Posts", @"Appearance", @NO],
             @[@"Voting Buttons Position", @"Appearance → Compact Posts", @"Appearance", @NO],
             @[@"Show GIF Progress", @"Appearance → Media", @"Appearance", @NO],
-            @[@"Show Subreddit Icons", @"Appearance → Subreddits List", @"Appearance", @NO],
             @[@"Post Flair", @"Appearance → Flair", @"Appearance", @NO],
             @[@"User Flair", @"Appearance → Flair", @"Appearance", @NO],
             @[@"Show Awards", @"Appearance → Other", @"Appearance", @NO],

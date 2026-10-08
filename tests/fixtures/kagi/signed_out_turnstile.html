@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en" class="theme_light theme_moon_dark_conditional">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="/asset/bc010a6/css/turnstile_page.scss.css" rel="stylesheet" />
+  <link href="/asset/bc010a6/css/kagi_themes.scss.css" rel="stylesheet" />
+  <link href="/asset/bc010a6/css/app_font.css" rel="stylesheet" />
+  <link href="/asset/bc010a6/css/framework/main.scss.css" rel="stylesheet" />
+</head>
+<body class="ox-h">
+  <div class="search-hero_cloud-1"><svg></svg></div>
+  <div class="search-hero_cloud-2"><svg></svg></div>
+  <div class="flex flex-column min-h-screen align-center relative z-1 p-16">
+    <div class="w-full max-w-lg md:mt-100">
+      <h2 class="font-lufga fs-32">
+        kagi.com
+      </h2>
+      <h3 class="fw-n fs-20 mt-16 font-lufga c-p-850">
+        Verifying you’re human. This may take a few seconds.
+      </h3>
+      <div class="my-62 spin-box flex justify-center align-center">
+        <div class="doggo-spin _0_doggo_spin">
+          <svg></svg>
+        </div>
+        <div hidden class="_0_success_circle success-circle rounded-full bg-success c-white flex justify-center align-center" style="width: 102px; height: 102px;">
+          <i class="icon-xl">
+            <svg></svg>
+          </i>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <div
+          class="cf-turnstile"
+          data-sitekey="0x4AAAAAAA7Z442JvrIDJyyD"
+          data-callback="onTurnstileSuccess"
+          data-appearance="interaction-only"
+        ></div>
+      </div>
+    </div>
+  </div>
+  <script
+    nonce="ae4Tpr6qHh5QvXqOAhHpBQ"
+    src="https://challenges.cloudflare.com/turnstile/v0/api.js"
+    async defer
+  ></script>
+  <script nonce="ae4Tpr6qHh5QvXqOAhHpBQ">
+    async function onTurnstileSuccess(token) {
+      const encodedRedirect = "/html/search?q=test";
+      const decodedRedirect = decodeURIComponent(encodedRedirect);
+      const redirectUrl = new URL(decodedRedirect, window.location.origin);
+      const response = await fetch("/turnstile/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+        },
+        body: token,
+        credentials: "same-origin",
+      });
+      const ok = await response.json();
+      const spinningDoggo = document.querySelector('._0_doggo_spin');
+      const successCircle = document.querySelector('._0_success_circle');
+      spinningDoggo.hidden = true;
+      successCircle.hidden = false;
+      if (ok) {
+        window.location = redirectUrl;
+      } else {
+        alert("Turnstile verification failed. If this persists, please reach out to support@kagi.com with details.");
+        window.location = "/#cf-verification-error";
+      }
+    }
+  </script>
+</body>
+</html>

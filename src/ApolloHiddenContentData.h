@@ -49,8 +49,6 @@ typedef void (^ApolloHiddenContentFetchCompletion)(NSArray<ApolloHiddenContentIt
 // Arctic Shift is shared/unauthenticated/rate-limited, and firing posts+comments
 // concurrently occasionally trips a transient error on one of the two. Cached
 // per username+kind; pass forceRefresh:YES to bypass (e.g. pull-to-refresh).
-void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentFetchCompletion completion);
-
 // Main-thread progress measures completed work within three bounded phases.
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress _Nullable progress, ApolloHiddenContentFetchCompletion completion);
 

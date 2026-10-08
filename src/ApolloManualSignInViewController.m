@@ -298,7 +298,7 @@ static NSString *ARExtractParam(NSString *urlString, NSString *name) {
 
 - (UIButton *)_button:(NSString *)title filled:(BOOL)filled action:(SEL)action {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIColor *tint = ApolloThemeAccentColor() ?: self.view.tintColor ?: [UIColor systemBlueColor];
+    UIColor *tint = ApolloThemeAccentColor() ?: self.view.tintColor;
     b.tintColor = tint;   // themes both branches (UIButtonConfiguration derives from tintColor)
     BOOL lightAccent = ApolloColorIsLight([tint resolvedColorWithTraitCollection:self.traitCollection]);
 

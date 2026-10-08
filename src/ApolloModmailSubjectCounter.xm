@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // MARK: - Character counter for the "Message Moderators" subject field
 //
@@ -34,12 +35,6 @@ static const NSInteger kApolloModSubjectMaxLength = 25;
 static char kApolloSubjectCounterLabelKey;   // on the field: the "n/25" label
 static char kApolloSubjectCounterClearKey;   // on the field: our stand-in clear button
 static char kApolloSubjectCounterModeKey;    // on the field: the clear-button mode we took over
-
-static id ApolloSubjectCounterIvar(id obj, const char *name) {
-    if (!obj) return nil;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
-    return iv ? object_getIvar(obj, iv) : nil;
-}
 
 // Apollo counts with Swift's `String.count`, i.e. grapheme clusters — an emoji
 // is one character there and two or more UTF-16 units in `NSString.length`.
@@ -191,14 +186,14 @@ static void ApolloSubjectCounterDecoratePresentedSheet(UIViewController *present
     UIViewController *sheet = presenter.navigationController.presentedViewController ?: presenter.presentedViewController;
     if (![sheet isKindOfClass:objc_getClass("_TtC6Apollo16ActionController")]) return;
 
-    id header = ApolloSubjectCounterIvar(sheet, "headerView");
+    id header = ApolloObjectIvar(sheet, "headerView");
     if (![header isMemberOfClass:objc_getClass("_TtC6Apollo13TextEntryView")]) return;
 
     // The 25-character sheet is the single-field one. The two-field sheets this
     // class also backs (new message, "Create Conversation") allow 100, so bail
     // rather than show a wrong limit.
-    UITextField *subjectField = ApolloSubjectCounterIvar(header, "textField1");
-    UITextField *secondField = ApolloSubjectCounterIvar(header, "textField2");
+    UITextField *subjectField = ApolloObjectIvar(header, "textField1");
+    UITextField *secondField = ApolloObjectIvar(header, "textField2");
     if (![subjectField isKindOfClass:[UITextField class]] || secondField) return;
 
     NSString *placeholder = subjectField.placeholder;
