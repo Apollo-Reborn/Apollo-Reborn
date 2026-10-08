@@ -18,8 +18,11 @@
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
+    // Reddit's generic avatars, bundled so the preview loads immediately
+    // without looking up real users. Orange/teal sources are avatar_default_1.png
+    // and avatar_default_5.png at https://www.redditstatic.com/avatars/defaults/v2/.
     NSMutableArray *avatars = [NSMutableArray array];
-    for (NSString *name in @[@"ProfilePreviewJohnTernus", @"ProfilePreviewCorderjones"]) {
+    for (NSString *name in @[@"ProfilePreviewDefaultOrange", @"ProfilePreviewDefaultTeal"]) {
         NSString *path = ApolloBundledResourcePath(name, @"png");
         [avatars addObject:(path ? [UIImage imageWithContentsOfFile:path] : nil) ?: [UIImage new]];
     }
@@ -27,7 +30,7 @@
     self.avatarProgress = self.targetProgress = sShowUserAvatars ? 1 : 0;
     self.userInteractionEnabled = NO;
     self.isAccessibilityElement = YES;
-    self.accessibilityLabel = @"Preview: a comment by JohnTernus and a reply by corderjones.";
+    self.accessibilityLabel = @"Preview: a comment by Winter121921 and a reply by TheBean31415.";
     for (NSString *notification in @[@"ApolloUserAvatarsToggleChangedNotification"]) {
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:notification object:nil];
     }
@@ -81,7 +84,7 @@
 - (void)drawRect:(CGRect)rect {
     UIColor *primary = ApolloThemeSubredditListTextColor() ?: UIColor.labelColor;
     UIColor *secondary = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
-    // Keep inline flair and trailing actions separated on narrow phones.
+    // Keep the comment header within the preview on narrow phones.
     CGFloat scale = MIN(1, CGRectGetWidth(self.bounds) / 390.0);
     CGContextScaleCTM(UIGraphicsGetCurrentContext(), scale, scale);
     CGFloat width = CGRectGetWidth(self.bounds) / scale;
@@ -92,8 +95,8 @@
     CGFloat chromeSize = bodyFont.pointSize * (14.0 / 15.0);
     UIFont *nameFont = [UIFont systemFontOfSize:chromeSize weight:UIFontWeightMedium];
     UIFont *metadataFont = [UIFont systemFontOfSize:chromeSize weight:UIFontWeightRegular];
-    NSArray *names = @[@"JohnTernus", @"corderjones"];
-    NSArray *bodies = @[@"This app is working great on my iPhone Duo.", @"Thanks John! Glad to hear it."];
+    NSArray *names = @[@"Winter121921", @"TheBean31415"];
+    NSArray *bodies = @[@"Found a new hiking trail this weekend.", @"Nice! I tried a new coffee shop."];
     for (NSUInteger index = 0; index < 2; index++) {
         CGFloat left = index == 0 ? 14 : 28;
         CGFloat top = index == 0 ? 14 : 110;
@@ -109,8 +112,7 @@
                 ? [UIBezierPath bezierPathWithRoundedRect:avatar cornerRadius:avatar.size.width * 0.24]
                 : [UIBezierPath bezierPathWithOvalInRect:avatar];
             [clip addClip];
-            // Bundle the original cached public artwork, not screenshot crops,
-            // so Square can expose real corners and transparent Snoos stay clear.
+            // Keep the bundled avatar's aspect ratio within the selected shape.
             CGFloat diameter = 28 * self.avatarProgress;
             CGFloat scale = diameter / MAX(MAX(image.size.width, image.size.height), 1);
             CGSize size = CGSizeMake(image.size.width * scale, image.size.height * scale);
@@ -145,16 +147,6 @@
                   rect:CGRectMake(width - 34, top + 5, 25, metadataFont.lineHeight + 2)
                   font:metadataFont
                  color:secondary];
-        if (index == 1) {
-            CGFloat flairTextWidth = [@"Maintainer" sizeWithAttributes:@{NSFontAttributeName:metadataFont}].width;
-            CGRect flair = CGRectMake(scoreX + scoreWidth + 7, top + 4, ceil(flairTextWidth) + 10, 20);
-            [[UIColor colorWithRed:0.49 green:0.14 blue:0.87 alpha:1] setFill];
-            [[UIBezierPath bezierPathWithRoundedRect:flair cornerRadius:4] fill];
-            [self drawText:@"Maintainer"
-                      rect:CGRectInset(flair, 5, 1)
-                      font:metadataFont
-                     color:UIColor.whiteColor];
-        }
         [self drawText:bodies[index]
                   rect:CGRectMake(left, top + 37, width - left - 14, 64)
                   font:bodyFont
