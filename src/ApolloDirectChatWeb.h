@@ -45,7 +45,6 @@ extern NSString * const ApolloModernChatStatusDidChangeNotification;
 // polled snapshot covers both the messages and requests surfaces at once,
 // with exact counts.
 void ApolloModernChatPublishPolledStatus(NSDictionary<NSString *, id> *status);
-UIViewController *ApolloCreateModernChatViewController(void);
 // Notification/deep-link entry point. The optional destination must be a
 // Reddit Chat path such as /chat/room/<opaque-room-id>; invalid paths safely
 // fall back to the normal Chat entry screen.

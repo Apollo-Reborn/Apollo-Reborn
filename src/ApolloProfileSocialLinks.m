@@ -104,9 +104,7 @@ static UIImage *ApolloSLPlaceholderIcon(void) {
     static UIImage *icon;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        if (@available(iOS 13.0, *)) {
-            icon = [[UIImage systemImageNamed:@"link"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        }
+        icon = [[UIImage systemImageNamed:@"link"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     });
     return icon;
 }
@@ -890,7 +888,7 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
     __weak typeof(self) ws = self;
     [self.web evaluateJavaScript:[self extractionJS] completionHandler:^(id res, NSError *e) {
         typeof(self) ss = ws; if (!ss || ss.finished) return;
-        if (e) ApolloLog(@"[SocialLinks][web] u/%@ JS error (poll#%d): %@", ss.username, ss.polls, e.localizedDescription);
+        if (e) ApolloLogError(@"[SocialLinks][web] u/%@ JS error (poll#%d): %@", ss.username, ss.polls, e.localizedDescription);
         NSString *s = [res isKindOfClass:[NSString class]] ? res : @"{}";
         NSDictionary *j = [NSJSONSerialization JSONObjectWithData:[s dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
         if (![j isKindOfClass:[NSDictionary class]]) j = @{};
@@ -1001,7 +999,7 @@ static NSTimeInterval const kApolloSLWebMinTimeForNone  = 4.0;
 // our own stopLoading during teardown; ignore it.
 - (void)webView:(WKWebView *)wv didFailProvisionalNavigation:(WKNavigation *)nav withError:(NSError *)error {
     if (self.finished || error.code == NSURLErrorCancelled) return;
-    ApolloLog(@"[SocialLinks][web] u/%@ page load failed (err=%ld) — abandoning", self.username, (long)error.code);
+    ApolloLogError(@"[SocialLinks][web] u/%@ page load failed (err=%ld) — abandoning", self.username, (long)error.code);
     [self finish:nil];
 }
 

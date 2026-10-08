@@ -2,20 +2,49 @@
 #import <UIKit/UIKit.h>
 #import <os/log.h>
 #import <Security/SecBase.h>
+#import <objc/message.h>
 
 @class CASpringAnimation;
 
 // On iOS 26, NSLog redacts strings, so use os_log: https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-26-release-notes#NSLog
 // Uses a dedicated subsystem so OSLogStore can efficiently filter our entries.
-#define ApolloLogWithType(type, fmt, ...) do { \
-    NSString *logMessage = [NSString stringWithFormat:@"[ApolloFix] " fmt, ##__VA_ARGS__]; \
-    os_log_with_type(ApolloFixLog(), type, "%{public}s", [logMessage UTF8String]); \
-} while(0)
-#define ApolloLog(fmt, ...) ApolloLogWithType(OS_LOG_TYPE_DEFAULT, fmt, ##__VA_ARGS__)
-#define ApolloLogDebug(fmt, ...) ApolloLogWithType(OS_LOG_TYPE_DEBUG, fmt, ##__VA_ARGS__)
+//
+// These wrappers exist for the PERSISTED levels, the ones Export Debug Logs and
+// the bug-report flow read back from OSLogStore. They take an NSString format
+// and publish the whole message as one public string, so every %@ shows up in
+// a user's export without a per-argument %{public} annotation:
+//   ApolloLog       DEFAULT  The normal level for diagnostics.
+//   ApolloLogError  ERROR    A real failure in our process: an NSError from a
+//                            request/IO/parse, an exception caught in a hook.
+//   ApolloLogFault  FAULT    A broken invariant / should-never-happen state.
+//                            Use sparingly.
+// These levels are on unless the subsystem is deliberately switched off (log
+// config, a logging profile, OSLogPreferences), so there is no level check up
+// front: the line is always formatted, once, into a non-autoreleased string
+// inside its own autorelease pool (see ApolloLogEmit), and os_log_with_type
+// does its usual check after that.
+//
+// The in-memory levels have no wrapper: call os_log_info / os_log_debug
+// directly with ApolloFixLog() and a C-literal format that starts with
+// "[ApolloFix] [Tag] ". They never reach exports and belong to chatty call
+// sites and hot paths (per cell, per layout pass, per scroll tick, per touch).
+// Debug is off unless something asks for it (log stream --level debug, log
+// config, a profile), and Apple's macros check the level before touching the
+// arguments, so a disabled debug line costs one os_log_type_enabled call and
+// its arguments are not evaluated (no side effects in log arguments). An
+// enabled direct call is ~2.5-3x cheaper than the wrapper and never builds an
+// NSString, so a hot path that must stay in exports calls os_log /
+// os_log_error directly too. In every direct call each dynamic string or
+// object needs %{public}@ / %{public}s, or it is <private> in exports;
+// integers, floats, bools and %p are public by default.
+#define ApolloLog(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_DEFAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
+#define ApolloLogError(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_ERROR, @"[ApolloFix] " fmt, ##__VA_ARGS__)
+#define ApolloLogFault(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_FAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 
 __BEGIN_DECLS
 os_log_t ApolloFixLog(void);
+// Formats and emits one log line. Call through the ApolloLog* macros.
+void ApolloLogEmit(os_log_type_t type, NSString *format, ...) NS_FORMAT_FUNCTION(2, 3);
 NSString *ApolloCollectLogs(void);
 
 // --- Row-measure re-entrancy guard (issues #831/#833/#838/#839/#841) ---
@@ -143,6 +172,13 @@ BOOL ApolloRouteURLThroughApp(NSURL *url);
 // Returns all UIWindows across every connected UIWindowScene.
 // Use instead of the deprecated UIApplication.windows property.
 NSArray<UIWindow *> *ApolloAllWindows(void);
+// The key window, preferring a foreground-active scene's (each iPad scene can
+// have its own key window), else any key window; nil when none is key (e.g.
+// mid scene transition) — callers keep their own fallback policy.
+// This is app-global state: on multi-window iPad it is the window the user
+// last interacted with, not necessarily the one a given piece of UI lives in.
+// When a view or view controller is in scope, use its view.window instead.
+UIWindow *ApolloKeyWindow(void);
 // Refresh title geometry/capsules on one known bar after a local content or
 // action change. Never walks the window/page hierarchy (no-op off Liquid Glass).
 void ApolloNavigationTitlesRefreshBar(UINavigationBar *bar);
@@ -178,6 +214,8 @@ UIViewController *ApolloMainTabBarController(void);
 // GIF/composer machinery pokes at the remote view hierarchy (issue #366).
 // Resolved via objc_getClass so we don't link MessageUI/Social.
 BOOL ApolloIsSystemShareComposeController(UIViewController *controller);
+// YES when the iOS app is running on visionOS (Apple Vision Pro).
+BOOL ApolloIsRunningOnVisionOS(void);
 
 // Present the tweak's fullscreen zoomable image-album viewer (implemented in
 // ApolloInlineImages). Items are dictionaries with an @"url" NSURL; despite
@@ -299,8 +337,28 @@ BOOL ApolloTextNodeIsTweakUI(id node);
 // many it wrote; ApolloRebornMaxAppendedRebindings bounds the caller's array.
 // swift_allocObject stays out of this batch: ApolloSwiftSingletonCapture is its
 // only owner and rebinds just the image that defines each captured class.
+// ApolloImageUploadHost's ImageIO bindings likewise rebind only Apollo's image.
 struct rebinding;
 enum { ApolloRebornMaxAppendedRebindings = 5 };
-size_t ApolloImageUploadHostAppendRebindings(struct rebinding *out);
 size_t ApolloPhotoComposerAppendRebindings(struct rebinding *out);
+void ApolloImageUploadHostInstallRebindings(void);
 __END_DECLS
+
+// Sends a zero-argument object getter when `object` implements it, else nil.
+static inline id ApolloSendObject(id object, SEL selector) {
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+// method_setImplementation(method, imp) for a method found on cls. When cls owns
+// the method, class_replaceMethod makes the same change but flushes only cls's
+// subtree; method_setImplementation does not know the class and flushes the
+// method cache of every realized class (~0.4 ms once the app is running).
+// An inherited method still goes through method_setImplementation unchanged.
+static inline IMP ApolloSetMethodImplementation(Class cls, Method method, IMP imp) {
+    SEL name = method_getName(method);
+    if (class_getInstanceMethod(cls, name) == method &&
+        class_getInstanceMethod(class_getSuperclass(cls), name) != method) {
+        return class_replaceMethod(cls, name, imp, method_getTypeEncoding(method));
+    }
+    return method_setImplementation(method, imp);
+}

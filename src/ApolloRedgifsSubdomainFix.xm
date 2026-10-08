@@ -60,7 +60,7 @@ static NSString *const kApolloRedgifsAnySubdomain = @"(?:[\\w-]+\\.)*";
 // Returns a widened copy of the RedGifs host-recognition pattern, or the input
 // unchanged for every other pattern.
 static NSString *ApolloWidenRedgifsPatternIfNeeded(NSString *pattern) {
-    if (![pattern isKindOfClass:[NSString class]] || pattern.length == 0) return pattern;
+    if (pattern.length == 0) return pattern;
 
     // Fast reject: only the RedGifs host recognizer is of interest.
     if ([pattern rangeOfString:@"redgifs" options:NSCaseInsensitiveSearch].location == NSNotFound) {
@@ -79,11 +79,6 @@ static NSString *ApolloWidenRedgifsPatternIfNeeded(NSString *pattern) {
         });
         return pattern;
     }
-    // Already widened (defensive; our replacement contains no `(?:www\.)?`).
-    if ([pattern rangeOfString:kApolloRedgifsAnySubdomain].location != NSNotFound) {
-        return pattern;
-    }
-
     NSString *widened = [pattern stringByReplacingCharactersInRange:wwwRange
                                                          withString:kApolloRedgifsAnySubdomain];
     static dispatch_once_t logOnce;

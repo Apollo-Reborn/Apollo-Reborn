@@ -10,6 +10,7 @@
 #import <os/lock.h>
 #import <malloc/malloc.h>
 #include <string.h>
+#import "ApolloClasses.h"
 
 @implementation ApolloAccountCredentialEntry
 
@@ -216,8 +217,8 @@ static ApolloPersistedAccountIdentityStatus ApolloResolveLiveAccountClient(id *o
     // fails closed rather than trusting a future off-main caller not to exist.
     if (![NSThread isMainThread]) return ApolloPersistedAccountIdentityUnknown;
 
-    Class managerClass = objc_getClass("_TtC6Apollo14AccountManager");
-    SEL sharedSelector = NSSelectorFromString(@"shared");
+    Class managerClass = ApolloClassAccountManager;
+    SEL sharedSelector = @selector(shared);
     if (!managerClass || ![managerClass respondsToSelector:sharedSelector]) {
         return ApolloPersistedAccountIdentityUnknown;
     }
@@ -283,7 +284,7 @@ static ApolloPersistedAccountIdentityStatus ApolloResolveLiveAccountClient(id *o
     if (!ApolloAccountLooksLikeHeapPointer(rawClientAddress)) {
         return ApolloPersistedAccountIdentityUnknown;
     }
-    Class clientClass = objc_getClass("RDKClient");
+    Class clientClass = ApolloClassRDKClient;
     if (!clientClass) return ApolloPersistedAccountIdentityUnknown;
     void *rawClient = (void *)rawClientAddress;
     if (malloc_size(rawClient) < class_getInstanceSize(clientClass) ||

@@ -32,6 +32,7 @@
 #import <stdarg.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloListLayoutSupport.h"
 #import "ApolloState.h"
 
@@ -77,19 +78,11 @@ void ApolloListLayoutLog(NSString *format, ...) {
 }
 
 // Swift's `tableNode` is an ObjC object ivar on ASTableViewController, but it
-// has no public getter. Static helpers cannot use MSHookIvar, so walk the
-// runtime ivars and ask the ASTableNode for its underlying ASTableView.
+// has no public getter. Static helpers cannot use MSHookIvar, so read it by
+// name through the runtime (inherited ivars resolve too) and ask the
+// ASTableNode for its underlying ASTableView.
 UIScrollView *ApolloListTableForController(UIViewController *controller) {
-    if (!controller) return nil;
-    Ivar tableNodeIvar = NULL;
-    Class cls = object_getClass(controller);
-    while (cls && !tableNodeIvar) {
-        tableNodeIvar = class_getInstanceVariable(cls, "tableNode");
-        cls = class_getSuperclass(cls);
-    }
-    if (!tableNodeIvar) return nil;
-
-    id tableNode = object_getIvar(controller, tableNodeIvar);
+    id tableNode = ApolloObjectIvar(controller, "tableNode");
     if (![tableNode respondsToSelector:@selector(view)]) return nil;
     UIView *tableView = [tableNode view];
     return [tableView isKindOfClass:[UIScrollView class]] ? (UIScrollView *)tableView : nil;
@@ -318,7 +311,15 @@ static NSNotification *ApolloListNormalizedKeyboardNotification(
     CGRect rawEnd = [endValue CGRectValue];
     UIScreen *notificationScreen = [notification.object isKindOfClass:UIScreen.class]
         ? (UIScreen *)notification.object : nil;
-    UIScreen *sourceScreen = notificationScreen ?: view.window.screen ?: UIScreen.mainScreen;
+    // The keyboard frame is in the coordinate space of notification.object
+    // (the UIScreen) on iOS 16+; before that the object is nil, so fall back to
+    // the screen of the controller's own window scene.
+    // TODO: Modernization - with no screen object and no window (iOS 14/15,
+    // off-hierarchy controller) sourceScreen is nil: the hidden-controller
+    // visible-frame check below is skipped and the raw frame passes through
+    // unconverted. Such an event should ideally be ignored for a hidden
+    // controller instead of being judged against the main screen.
+    UIScreen *sourceScreen = notificationScreen ?: view.window.windowScene.screen;
 
     // Apollo observes globally, so live but off-hierarchy list controllers also
     // receive every event. Ignore a visible keyboard for those controllers;

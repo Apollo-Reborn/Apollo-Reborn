@@ -7,6 +7,8 @@
 
 #import <ImageIO/ImageIO.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // Decoded-image cache budget, in bytes of backing store. Grid thumbnails are
 // small; a handful of fullscreen originals is what actually fills this.
@@ -93,19 +95,9 @@ static UIImage *ApolloGalleryDecodeStillThumbnail(NSData *data, CGFloat maxPixel
 
 // Apollo already embeds FLAnimatedImage (Frameworks/FLAnimatedImage.framework),
 // so the streaming decoder is in the process at launch and the tweak just has
-// to find it. Resolved once and cached — NSClassFromString on every GIF would
+// to find it. Resolved once and cached — objc_getClass on every GIF would
 // be needless work, and a nil result is a permanent condition, not a transient
 // one.
-static Class ApolloGalleryFLAnimatedImageClass(void) {
-    static Class flClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        flClass = NSClassFromString(@"FLAnimatedImage");
-        if (!flClass) ApolloLog(@"[Gallery] FLAnimatedImage unavailable — GIFs will show as stills");
-    });
-    return flClass;
-}
-
 // YES when `data` holds more than one frame, i.e. it is worth handing to
 // FLAnimatedImage at all. Reads the container index only; decodes nothing.
 // A multi-frame container FLAnimatedImage doesn't handle (APNG, animated WebP)
@@ -122,7 +114,7 @@ static BOOL ApolloGalleryDataIsMultiFrame(NSData *data) {
 // Builds the streaming animation. nil for single-frame data (and if the
 // framework ever goes missing), so the caller falls through to a still decode.
 static id ApolloGalleryBuildAnimatedImage(NSData *data) {
-    Class flClass = ApolloGalleryFLAnimatedImageClass();
+    Class flClass = ApolloClassFLAnimatedImage;
     if (!flClass || !ApolloGalleryDataIsMultiFrame(data)) return nil;
     id animated = ((id (*)(id, SEL, id))objc_msgSend)(flClass, @selector(animatedImageWithGIFData:), data);
     return animated;
@@ -424,7 +416,7 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
         }
         BOOL wasCancelled = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
         if (!decoded && error && !wasCancelled) {
-            ApolloLog(@"[Gallery] image load failed (%@): %@", url.host ?: @"?", error.localizedDescription);
+            ApolloLogError(@"[Gallery] image load failed (%@): %@", url.host ?: @"?", error.localizedDescription);
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{

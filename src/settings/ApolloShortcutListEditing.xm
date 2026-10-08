@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
-
+#import "ApolloClasses.h"
 
 // Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingSelection;
@@ -14,7 +14,7 @@ static UITableView *ApolloEditingTable(UIView *view) {
 }
 
 static id ApolloShortcutEditingOwner(UITableView *table) {
-    Class cls = NSClassFromString(@"ApolloSettingsShortcutsViewController");
+    Class cls = ApolloClassApolloSettingsShortcutsViewController;
     // UIKit may wrap the data source in _UIFilteredDataSource during editing.
     // The responder chain still identifies the actual owning controller.
     for (UIResponder *responder = table; responder; responder = responder.nextResponder) {
@@ -204,8 +204,8 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
     // The minus sends rotation and confirmation actions; only the latter toggles the panel.
-    if (action == NSSelectorFromString(@"editControlWasClicked:") && ApolloEditingShowConfirmation(self)) return;
-    if (action == NSSelectorFromString(@"_toggleRotate") &&
+    if (action == @selector(editControlWasClicked:) && ApolloEditingShowConfirmation(self)) return;
+    if (action == @selector(_toggleRotate) &&
         [NSStringFromClass(self.class) isEqualToString:@"UITableViewCellEditControl"] &&
         ApolloEditingIsList(ApolloEditingTable(self))) return;
     %orig;

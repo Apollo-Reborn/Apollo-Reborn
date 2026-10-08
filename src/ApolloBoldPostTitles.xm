@@ -72,17 +72,16 @@ static CGFloat ApolloFontWeight(UIFont *font) {
 
 // `font` at kApolloBoldPostTitleWeight in its own family/design and point
 // size. Returns `font` itself when it is already that heavy or no heavier face
-// exists. Cached per (name, size): the sink runs for every title.
+// exists. Cached per font: the sink runs for every title.
 static UIFont *ApolloBoldPostTitleFont(UIFont *font) {
-    static NSCache<NSString *, UIFont *> *cache;
+    static NSCache<UIFont *, UIFont *> *cache;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         cache = [NSCache new];
         cache.countLimit = 64;
     });
 
-    NSString *key = [NSString stringWithFormat:@"%@|%.2f", font.fontName, font.pointSize];
-    UIFont *cached = [cache objectForKey:key];
+    UIFont *cached = [cache objectForKey:font];
     if (cached) return cached;
 
     CGFloat sourceWeight = ApolloFontWeight(font);
@@ -107,7 +106,7 @@ static UIFont *ApolloBoldPostTitleFont(UIFont *font) {
     if (!bold) bold = font;
     ApolloLog(@"BoldPostTitles: %@ %.1fpt (weight %.2f) -> %@ (weight %.2f)",
               font.fontName, font.pointSize, sourceWeight, bold.fontName, ApolloFontWeight(bold));
-    [cache setObject:bold forKey:key];
+    [cache setObject:bold forKey:font];
     return bold;
 }
 

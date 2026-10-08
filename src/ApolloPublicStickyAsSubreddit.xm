@@ -67,6 +67,7 @@
 
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // Title prefix of the menu we augment (ellipsis is U+2026; matched with
 // hasPrefix so the exact trailing glyph never matters).
@@ -88,20 +89,6 @@ static NSString *const kTypePublicAsSubreddit = @"public_as_subreddit";
 // can't leak into a later genuine "Public Sticky". UI is main-thread only, so a
 // plain BOOL is sufficient.
 static BOOL sSendNextRemovalAsSubreddit = NO;
-
-#pragma mark - Runtime helper
-
-// Read an object-typed ivar by name, walking the superclass chain. Used to
-// recover a UIAction's private handler block so our injected action can run it.
-static id PSObjectIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
 
 #pragma mark - Type rewrite at the API boundary
 
@@ -201,7 +188,7 @@ static id PSObjectIvar(id obj, const char *name) {
 
         // Recover the original action's handler so ours can run the exact
         // native compose flow after arming the flag.
-        void (^publicHandler)(UIAction *) = (void (^)(UIAction *))PSObjectIvar(publicAction, "_handler");
+        void (^publicHandler)(UIAction *) = (void (^)(UIAction *))ApolloObjectIvar(publicAction, "_handler");
         NSString *newTitle = [publicAction.title stringByAppendingString:kAsSubredditSuffix];
 
         UIAction *injected =
@@ -226,7 +213,7 @@ static id PSObjectIvar(id obj, const char *name) {
         @try {
             origAttributed = [publicAction valueForKey:@"attributedTitle"];
         } @catch (__unused NSException *e) {
-            origAttributed = (NSAttributedString *)PSObjectIvar(publicAction, "_attributedTitle");
+            origAttributed = (NSAttributedString *)ApolloObjectIvar(publicAction, "_attributedTitle");
         }
         if ([origAttributed isKindOfClass:[NSAttributedString class]] && origAttributed.length > 0) {
             UIColor *color = [origAttributed attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:NULL];

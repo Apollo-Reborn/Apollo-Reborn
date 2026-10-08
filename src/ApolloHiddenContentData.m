@@ -17,8 +17,14 @@ static NSTimeInterval const kApolloHiddenContentCacheTTL = 3600.0;
 
 #pragma mark - Result cache
 
-static NSMutableDictionary<NSString *, NSArray<ApolloHiddenContentItem *> *> *sApolloHiddenContentCache;
-static NSMutableDictionary<NSString *, NSDate *> *sApolloHiddenContentCacheTimestamps;
+@interface ApolloHiddenContentCacheEntry : NSObject
+@property (nonatomic, copy) NSArray<ApolloHiddenContentItem *> *items;
+@property (nonatomic) NSTimeInterval expiresAt;
+@end
+@implementation ApolloHiddenContentCacheEntry
+@end
+
+static NSMutableDictionary<NSString *, ApolloHiddenContentCacheEntry *> *sApolloHiddenContentCache;
 
 static NSObject *ApolloHiddenContentCacheLock(void) {
     static NSObject *lock;
@@ -29,22 +35,25 @@ static NSObject *ApolloHiddenContentCacheLock(void) {
 
 static NSArray<ApolloHiddenContentItem *> *ApolloHiddenContentCachedResult(NSString *cacheKey) {
     @synchronized (ApolloHiddenContentCacheLock()) {
-        NSDate *cachedAt = sApolloHiddenContentCacheTimestamps[cacheKey];
-        if (!cachedAt || [[NSDate date] timeIntervalSinceDate:cachedAt] > kApolloHiddenContentCacheTTL) {
+        ApolloHiddenContentCacheEntry *entry = sApolloHiddenContentCache[cacheKey];
+        if (!entry) return nil;
+        if ([NSDate timeIntervalSinceReferenceDate] > entry.expiresAt) {
+            [sApolloHiddenContentCache removeObjectForKey:cacheKey];
             return nil;
         }
-        return sApolloHiddenContentCache[cacheKey];
+        return entry.items;
     }
 }
 
 static void ApolloHiddenContentStoreResult(NSString *cacheKey, NSArray<ApolloHiddenContentItem *> *results) {
+    ApolloHiddenContentCacheEntry *entry = [ApolloHiddenContentCacheEntry new];
+    entry.items = results;
+    entry.expiresAt = [NSDate timeIntervalSinceReferenceDate] + kApolloHiddenContentCacheTTL;
     @synchronized (ApolloHiddenContentCacheLock()) {
         if (!sApolloHiddenContentCache) {
             sApolloHiddenContentCache = [NSMutableDictionary dictionary];
-            sApolloHiddenContentCacheTimestamps = [NSMutableDictionary dictionary];
         }
-        sApolloHiddenContentCache[cacheKey] = results;
-        sApolloHiddenContentCacheTimestamps[cacheKey] = [NSDate date];
+        sApolloHiddenContentCache[cacheKey] = entry;
     }
 }
 
@@ -283,7 +292,7 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
             NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
             BOOL failed = error || !data.length || (http && (http.statusCode < 200 || http.statusCode >= 300));
             if (failed) {
-                ApolloLog(@"[HiddenContent] /api/info chunk of %lu id(s) failed (status=%ld error=%@) -- excluding those item(s) from results this pass",
+                ApolloLogError(@"[HiddenContent] /api/info chunk of %lu id(s) failed (status=%ld error=%@) -- excluding those item(s) from results this pass",
                           (unsigned long)chunk.count, (long)(http ? http.statusCode : 0), error.localizedDescription ?: @"none");
                 @synchronized (lock) {
                     [unresolvable addObjectsFromArray:chunk];
@@ -465,10 +474,6 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
 
 #pragma mark - Public entry point
 
-void ApolloHiddenContentFetch(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentFetchCompletion completion) {
-    ApolloHiddenContentFetchWithProgress(username, kind, forceRefresh, nil, completion);
-}
-
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress progress, ApolloHiddenContentFetchCompletion completion) {
     if (!completion) return;
     if (progress) progress(0, @"Checking current content");
@@ -528,14 +533,13 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
             // fall through to a false HIDDEN.
             NSString *prefix = ApolloHiddenContentFullNamePrefix(kind);
             NSMutableArray<NSDictionary *> *candidates = [NSMutableArray array];
-            NSMutableArray<NSString *> *candidateFullNames = [NSMutableArray array];
-            NSMutableSet<NSString *> *seenFullNames = [NSMutableSet set];
+            NSMutableOrderedSet<NSString *> *candidateFullNames = [NSMutableOrderedSet orderedSet];
             NSUInteger droppedForIncompleteLiveCoverage = 0;
 
             for (NSDictionary *raw in arcticItems) {
                 NSString *rawID = [raw[@"id"] isKindOfClass:[NSString class]] ? raw[@"id"] : nil;
                 NSString *name = [raw[@"name"] isKindOfClass:[NSString class]] ? raw[@"name"] : (rawID.length > 0 ? [prefix stringByAppendingString:rawID] : nil);
-                if (name.length == 0 || [liveFullNames containsObject:name] || [seenFullNames containsObject:name]) continue;
+                if (name.length == 0 || [liveFullNames containsObject:name] || [candidateFullNames containsObject:name]) continue;
 
                 if (liveIncomplete && liveOldestCreatedUTCSeen) {
                     id createdUTC = raw[@"created_utc"];
@@ -546,7 +550,6 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
                     }
                 }
 
-                [seenFullNames addObject:name];
                 [candidates addObject:raw];
                 [candidateFullNames addObject:name];
             }
@@ -563,7 +566,7 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
 
             // Parent-post metadata provides the same context card as a profile
             // overview. Batch it with classification, never one request per cell.
-            NSMutableOrderedSet *lookupNames = [NSMutableOrderedSet orderedSetWithArray:candidateFullNames];
+            NSMutableOrderedSet<NSString *> *lookupNames = [candidateFullNames mutableCopy];
             if (kind == ApolloHiddenContentKindComment) {
                 for (NSDictionary *raw in candidates) {
                     NSString *linkID = [raw[@"link_id"] isKindOfClass:NSString.class] ? raw[@"link_id"] : nil;

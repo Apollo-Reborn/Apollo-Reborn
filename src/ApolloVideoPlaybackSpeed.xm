@@ -32,6 +32,7 @@
 // "<number>×"), which is specific to the speed picker and localization-safe.
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -45,7 +46,7 @@ static const float kSpeedSlow = 0.75f;   // inserted after 0.5×
 static const float kSpeedFast = 1.25f;   // inserted before 1.5×
 
 static NSString *MultiplicationSign(void) {
-    return [NSString stringWithFormat:@"%C", (unichar)0x00D7];
+    return @"\u00D7";
 }
 
 // "0.75×" / "1.25×" / "0.5×" / "1.5×" — built with the real U+00D7 so source
@@ -87,12 +88,9 @@ static UIViewController *CurrentMediaViewer(void) {
 
     Class cls = objc_getClass([kMediaViewerClassName UTF8String]);
     if (!cls) return nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            UIViewController *found = SearchMediaViewer(window.rootViewController, cls);
-            if (found) return found;
-        }
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *found = SearchMediaViewer(window.rootViewController, cls);
+        if (found) return found;
     }
     return nil;
 }
@@ -134,7 +132,7 @@ static AVPlayer *PlayerFromLayer(CALayer *layer) {
 
 static AVPlayer *PlayerFromView(UIView *view) {
     if (!view) return nil;
-    SEL playerLayerSel = NSSelectorFromString(@"playerLayer");
+    SEL playerLayerSel = @selector(playerLayer);
     if ([view respondsToSelector:playerLayerSel]) {
         id pl = ((id (*)(id, SEL))objc_msgSend)(view, playerLayerSel);
         if ([pl isKindOfClass:[AVPlayerLayer class]]) {
@@ -158,19 +156,13 @@ static AVPlayer *PlayerFromView(UIView *view) {
 static AVPlayer *MediaViewerPlayer(UIViewController *mvc) {
     if (!mvc) return nil;
 
-    Ivar playerIvar = class_getInstanceVariable([mvc class], "player");
-    if (playerIvar) {
-        id player = object_getIvar(mvc, playerIvar);
-        if ([player isKindOfClass:[AVPlayer class]]) return (AVPlayer *)player;
-    }
+    id player = ApolloObjectIvar(mvc, "player");
+    if ([player isKindOfClass:[AVPlayer class]]) return (AVPlayer *)player;
 
-    Ivar containerIvar = class_getInstanceVariable([mvc class], "playerLayerContainerView");
-    if (containerIvar) {
-        id container = object_getIvar(mvc, containerIvar);
-        if ([container isKindOfClass:[UIView class]]) {
-            AVPlayer *p = PlayerFromView((UIView *)container);
-            if (p) return p;
-        }
+    id container = ApolloObjectIvar(mvc, "playerLayerContainerView");
+    if ([container isKindOfClass:[UIView class]]) {
+        AVPlayer *p = PlayerFromView((UIView *)container);
+        if (p) return p;
     }
 
     return PlayerFromView(mvc.isViewLoaded ? mvc.view : nil);
@@ -199,16 +191,6 @@ static void ApplyPlaybackSpeed(float speed) {
 
 #pragma mark - Speed submenu detection + augmentation
 
-// Read a menu element's title/image without assuming it's a UIAction — the speed
-// rows could be UIAction, UICommand, or another UIMenuElement subclass.
-static NSString *ElementTitle(UIMenuElement *e) {
-    return [e respondsToSelector:@selector(title)] ? [(id)e title] : nil;
-}
-
-static UIImage *ElementImage(UIMenuElement *e) {
-    return [e respondsToSelector:@selector(image)] ? ((UIAction *)e).image : nil;
-}
-
 // A speed row's title is digits/dot followed by the × sign, e.g. "0.5×", "2×".
 static BOOL TitleIsSpeed(NSString *title) {
     if (title.length < 2 || ![title hasSuffix:MultiplicationSign()]) return NO;
@@ -228,7 +210,7 @@ static BOOL ShouldAugmentSpeedMenu(NSArray<UIMenuElement *> *children) {
 
     NSUInteger speedCount = 0;
     for (UIMenuElement *element in children) {
-        NSString *title = ElementTitle(element);
+        NSString *title = element.title;
         if (!title) continue;
         if ([title isEqualToString:slowTitle] || [title isEqualToString:fastTitle]) {
             return NO;   // already augmented — avoid double-insert
@@ -307,9 +289,9 @@ static NSArray<UIMenuElement *> *AugmentedSpeedChildren(NSArray<UIMenuElement *>
     UIImage *slowImage = nil;
     UIImage *fastImage = nil;
     for (UIMenuElement *element in children) {
-        NSString *title = ElementTitle(element);
-        if ([title isEqualToString:half]) slowImage = ElementImage(element);
-        else if ([title isEqualToString:oneHalf]) fastImage = ElementImage(element);
+        NSString *title = element.title;
+        if ([title isEqualToString:half]) slowImage = element.image;
+        else if ([title isEqualToString:oneHalf]) fastImage = element.image;
     }
 
     float current = 1.0f;
@@ -321,7 +303,7 @@ static NSArray<UIMenuElement *> *AugmentedSpeedChildren(NSArray<UIMenuElement *>
     NSMutableArray<UIMenuElement *> *result = [NSMutableArray arrayWithCapacity:children.count + 2];
     BOOL insertedSlow = NO, insertedFast = NO;
     for (UIMenuElement *element in children) {
-        NSString *title = ElementTitle(element);
+        NSString *title = element.title;
         if (!insertedFast && [title isEqualToString:oneHalf]) {
             [result addObject:fastAction];   // 1.25× immediately before 1.5×
             insertedFast = YES;

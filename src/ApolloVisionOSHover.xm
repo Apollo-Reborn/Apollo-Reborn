@@ -20,9 +20,10 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 
 // Minimal Texture surface used here. Classes are resolved at runtime via
-// NSClassFromString because ApolloReborn.dylib is injected rather than linked
+// objc_getClass because ApolloReborn.dylib is injected rather than linked
 // against Apollo, so a direct class reference would fail at link time.
 @interface ASDisplayNode : NSObject
 - (id)supernode;
@@ -59,31 +60,6 @@ static const CFTimeInterval kApolloGhostSettleDelay = 0.15;
 
 #pragma mark - visionOS gate
 
-// YES only when this process is an iOS app running on visionOS in compatibility
-// mode. Prefers the official API added in visionOS 26.1
-// (-[NSProcessInfo isiOSAppOnVision]); falls back to a visionOS-only class
-// check on earlier releases. Guarded so it can never raise
-// doesNotRecognizeSelector.
-static BOOL ApolloIsRunningOnVisionOS(void) {
-    static BOOL result = NO;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
-        SEL sel = NSSelectorFromString(@"isiOSAppOnVision");
-        if ([processInfo respondsToSelector:sel]) {
-            BOOL (*msgSend)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
-            if (msgSend(processInfo, sel)) {
-                result = YES;
-                return;
-            }
-        }
-        if (NSClassFromString(@"UIWindowSceneGeometryPreferencesVision") != nil) {
-            result = YES;
-        }
-    });
-    return result;
-}
-
 #pragma mark - Hover styles
 
 // Resolved at runtime rather than linked: a linked class reference is bound by
@@ -96,14 +72,14 @@ static id ApolloHoverEffect(NSInteger kind) {
     } else if (kind == 1) {
         name = @"UIHoverLiftEffect";
     }
-    Class effectClass = NSClassFromString(name);
+    Class effectClass = objc_getClass(name.UTF8String);
     if (!effectClass) return nil;
     id (*msgSend)(Class, SEL) = (id (*)(Class, SEL))objc_msgSend;
     return msgSend(effectClass, @selector(effect));
 }
 
 static id ApolloRectShape(CGFloat cornerRadius) {
-    Class shapeClass = NSClassFromString(@"UIShape");
+    Class shapeClass = objc_getClass("UIShape");
     if (!shapeClass) return nil;
     id (*msgSend)(Class, SEL, CGFloat) = (id (*)(Class, SEL, CGFloat))objc_msgSend;
     return msgSend(shapeClass, @selector(rectShapeWithCornerRadius:), cornerRadius);
@@ -113,7 +89,7 @@ static id ApolloRowHoverStyle(void) {
     static id style = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Class styleClass = NSClassFromString(@"UIHoverStyle");
+        Class styleClass = objc_getClass("UIHoverStyle");
         id effect = ApolloHoverEffect(kApolloRowHoverEffect);
         if (!styleClass || !effect) return;
         id (*msgSend)(Class, SEL, id, id) = (id (*)(Class, SEL, id, id))objc_msgSend;
@@ -129,11 +105,11 @@ static id ApolloControlHoverStyle(void) {
     static id style = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Class styleClass = NSClassFromString(@"UIHoverStyle");
+        Class styleClass = objc_getClass("UIHoverStyle");
         id effect = ApolloHoverEffect(kApolloRowHoverEffect);
         if (!styleClass || !effect) return;
         id shape = nil;
-        Class shapeClass = NSClassFromString(@"UIShape");
+        Class shapeClass = objc_getClass("UIShape");
         if ([shapeClass respondsToSelector:@selector(capsuleShape)]) {
             id (*msgSend)(Class, SEL) = (id (*)(Class, SEL))objc_msgSend;
             shape = msgSend(shapeClass, @selector(capsuleShape));
@@ -188,7 +164,7 @@ static void ApolloGazeEnroll(UIView *view) {
 // so calling it with YES lets UIKit's own code clear the correct layer; a hook
 // keeps ordinary scrolling from re-sticking it.
 static void ApolloUnstickScrollGaze(void) {
-    SEL sel = NSSelectorFromString(@"_setRemoteHoverInteractionEnabled:");
+    SEL sel = @selector(_setRemoteHoverInteractionEnabled:);
     void (*msgSend)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))objc_msgSend;
     for (UIWindow *window in ApolloAllWindows()) {
         NSMutableArray<UIView *> *stack = [NSMutableArray arrayWithObject:window];
@@ -401,7 +377,7 @@ static void ApolloRegisterBarControlsIn(UIView *bar) {
 // backing node is an ASControlNode qualifies, except inside a *PostCellNode
 // subtree.
 static BOOL ApolloIsGhostableADKControl(UIView *view) {
-    Class controlNodeClass = NSClassFromString(@"ASControlNode");
+    Class controlNodeClass = ApolloClassASControlNode;
     if (!controlNodeClass || !view.userInteractionEnabled) return NO;
     ASDisplayNode *node = ApolloNodeOfView(view);
     if (![node isKindOfClass:controlNodeClass]) return NO;
@@ -461,9 +437,8 @@ static NSHashTable<UIView *> *gApolloSearchBars = nil;
 static NSHashTable<UIView *> *gApolloSearchTabBars = nil;
 static const void *kApolloSearchEnrolledKey = &kApolloSearchEnrolledKey;
 
-// Swift classes report as "Apollo.ApolloSearchToolbar" or the mangled
-// "_TtC6Apollo19ApolloSearchToolbar" depending on how they were declared, so
-// the test is a substring rather than an equality or a class lookup. Matching
+// Swift classes report their names in dotted form ("Apollo.ApolloSearchToolbar"),
+// and the test is a substring rather than an equality or a class lookup. Matching
 // UISearchBar alone finds nothing here: the visible field is Apollo's own
 // toolbar, not a UISearchBar.
 static BOOL ApolloIsSearchBarView(UIView *view) {
@@ -1115,7 +1090,7 @@ static void ApolloStartHoverTimers(void) {
 
     %init(ApolloVisionOSCellHover);
     %init(ApolloVisionOSHoverKeepAlive);
-    if (NSClassFromString(@"_ASTableViewCell")) {
+    if (objc_getClass("_ASTableViewCell")) {
         %init(ApolloVisionOSASCellHover);
     }
     ApolloStartHoverTimers();

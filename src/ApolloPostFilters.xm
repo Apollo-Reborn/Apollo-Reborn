@@ -35,8 +35,10 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloPostFilterStore.h"
+#import "ApolloSwiftRuntime.h"
 #import "Tweak.h"
 #import "UserDefaultConstants.h"
+#import "ApolloClasses.h"
 
 // RDKLink fields not declared on the shared interface in Tweak.h.
 @interface RDKLink (ApolloPostFilters)
@@ -113,7 +115,7 @@ static NSString *ApolloPFNormalizedFlairLabel(id linkObj) {
 // Tests a single link object (top-level post or a crosspost parent) against the
 // configured rules. Returns YES if it should be hidden.
 static BOOL ApolloPFLinkMatchesRules(id linkObj) {
-    Class linkCls = objc_getClass("RDKLink");
+    Class linkCls = ApolloClassRDKLink;
     if (!linkCls || ![linkObj isMemberOfClass:linkCls]) return NO;
     RDKLink *link = (RDKLink *)linkObj;
 
@@ -155,10 +157,12 @@ static BOOL ApolloPFLinkMatchesRules(id linkObj) {
     return NO;
 }
 
+static BOOL ApolloPFFiltersConfigured(void) {
+    return sPostFilterSubreddits.count > 0 || sPostFilterNameSubstrings.count > 0;
+}
+
 static BOOL ApolloPFShouldHideLink(id link) {
     if (!link) return NO;
-    // Fast out: nothing configured (the common case).
-    if (sPostFilterSubreddits.count == 0 && sPostFilterNameSubstrings.count == 0) return NO;
     if (ApolloPFLinkMatchesRules(link)) return YES;
     // Crosspost: also test the original post so a crosspost FROM a filtered sub
     // (or carrying the parent's title/flair) is filtered too.
@@ -171,25 +175,15 @@ static BOOL ApolloPFShouldHideLink(id link) {
 
 #pragma mark - Cell / node helpers
 
-static id ApolloPFIvarValueByName(id obj, const char *name) {
-    if (!obj || !name) return nil;
-    Class cls = object_getClass(obj);
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(obj, ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
 static BOOL ApolloPFCellShouldHide(id cell) {
-    id link = ApolloPFIvarValueByName(cell, "link");
-    return ApolloPFShouldHideLink(link);
+    // Fast out: nothing configured (the common case).
+    if (!ApolloPFFiltersConfigured()) return NO;
+    return ApolloPFShouldHideLink(ApolloObjectIvar(cell, "link"));
 }
 
 // Zero-size layout spec used to collapse a hidden cell.
 static id ApolloPFEmptySpec(void) {
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (!stackClass) return nil;
     return [stackClass stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:0 children:@[]];
 }
@@ -333,17 +327,17 @@ static void ApolloPFUpdateHiddenRow(id postNode, BOOL hidden) {
         NSIndexPath *separatorPath = [NSIndexPath indexPathForRow:row + 1 inSection:postPath.section];
         dispatch_async(dispatch_get_main_queue(), ^{
             id tableNode = weakOwning;
-            SEL selector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+            SEL selector = @selector(nodeForRowAtIndexPath:);
             if (!tableNode || ![tableNode respondsToSelector:selector]) return;
             id separator = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, selector, separatorPath);
-            if ([NSStringFromClass([separator class]) isEqualToString:@"Apollo.ThickSeparatorCellNode"]) {
+            if ([separator class] == ApolloClassThickSeparatorCellNode) {
                 ApolloPFRefreshSeparatorNode(separator);
             }
         });
     }
 }
 static BOOL ApolloPFSeparatorShouldCollapse(id sepNode) {
-    if (sPostFilterSubreddits.count == 0 && sPostFilterNameSubstrings.count == 0) return NO;
+    if (!ApolloPFFiltersConfigured()) return NO;
     NSIndexPath *separatorPath = ApolloPFNodeIndexPath(sepNode);
     NSIndexPath *postPath = ApolloPFPostPathForSeparatorPath(separatorPath);
     if (!postPath) return NO;
@@ -411,13 +405,13 @@ static const void *kApolloPFAppliedGenKey = &kApolloPFAppliedGenKey;
 // relayoutItems alone does not for already-measured/cached nodes. This is the
 // reliable way to apply a filter change to an existing feed.
 static void ApolloPFReloadTableNode(id tableNode) {
-    if (tableNode && [tableNode respondsToSelector:@selector(reloadData)]) {
+    if ([tableNode respondsToSelector:@selector(reloadData)]) {
         @try { ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData)); } @catch (__unused id e) {}
     }
 }
 
 static void ApolloPFReloadTableNodeOfVC(id vc) {
-    ApolloPFReloadTableNode(ApolloPFIvarValueByName(vc, "tableNode"));
+    ApolloPFReloadTableNode(ApolloObjectIvar(vc, "tableNode"));
 }
 
 #pragma mark - Cell hooks
@@ -460,7 +454,7 @@ static void ApolloPFReloadTableNodeOfVC(id vc) {
     if (layout) {
         CGSize s = ((CGSize (*)(id, SEL))objc_msgSend)(layout, @selector(size));
         if (s.height > 0.0) {
-            Class ASLayoutCls = objc_getClass("ASLayout");
+            Class ASLayoutCls = ApolloClassASLayout;
             if (ASLayoutCls) {
                 id zero = ((id (*)(id, SEL, id, CGSize))objc_msgSend)(ASLayoutCls, @selector(layoutWithLayoutElement:size:), self, CGSizeMake(s.width, 0.0));
                 if (zero) return zero;
@@ -496,15 +490,15 @@ static void ApolloPFReloadTableNodeOfVC(id vc) {
 // instead of the row-keyed set: hiding a post deletes its two rows, which shifts
 // every row below it while the set still holds the old row numbers.
 static BOOL ApolloPFSeparatorShouldCollapseOnMain(id separatorNode) {
-    if (sPostFilterSubreddits.count == 0 && sPostFilterNameSubstrings.count == 0) return NO;
+    if (!ApolloPFFiltersConfigured()) return NO;
     id owning = ApolloPFOwningTableNode(separatorNode);
     NSIndexPath *postPath = ApolloPFPostPathForSeparatorPath(ApolloPFNodeIndexPath(separatorNode));
-    SEL nodeSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeSelector = @selector(nodeForRowAtIndexPath:);
     if (!owning || !postPath || ![owning respondsToSelector:nodeSelector]) return NO;
     id postNode = ((id (*)(id, SEL, id))objc_msgSend)(owning, nodeSelector, postPath);
-    NSString *postClass = NSStringFromClass([postNode class]);
-    BOOL hidden = ([postClass isEqualToString:@"Apollo.LargePostCellNode"] ||
-                   [postClass isEqualToString:@"Apollo.CompactPostCellNode"]) &&
+    Class postClass = [postNode class];
+    BOOL hidden = (postClass == ApolloClassLargePostCellNode ||
+                   postClass == ApolloClassCompactPostCellNode) &&
                   ApolloPFCellShouldHide(postNode);
     // Put this row back in step so the next off-main measurement agrees with
     // the current table geometry rather than a pre-deletion index path.
@@ -533,7 +527,7 @@ static void ApolloPFRefreshSeparatorNode(id separatorNode) {
 %hook _TtC6Apollo19PostsViewController
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
-    if (sPostFilterSubreddits.count == 0 && sPostFilterNameSubstrings.count == 0) return;
+    if (!ApolloPFFiltersConfigured()) return;
     NSNumber *applied = objc_getAssociatedObject(self, kApolloPFAppliedGenKey);
     objc_setAssociatedObject(self, kApolloPFAppliedGenKey, @(sApolloPFGeneration), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     // First appearance under the current generation already measured with the live
@@ -614,12 +608,12 @@ static NSString *ApolloPFSubredditNameFromSearchCell(UITableViewCell *cell) {
 static BOOL ApolloPFResultsRowBlocked(id vc, NSIndexPath *ip) {
     if (!ip || ip.section != 0) return NO;
     @try {
-        id arr = ApolloPFIvarValueByName(vc, "subreddits");
+        id arr = ApolloObjectIvar(vc, "subreddits");
         if (![arr isKindOfClass:[NSArray class]]) return NO;
         NSArray *subs = (NSArray *)arr;
         if (ip.row < 0 || ip.row >= (NSInteger)subs.count) return NO;
         id sub = subs[(NSUInteger)ip.row];
-        Class subCls = objc_getClass("RDKSubreddit");
+        Class subCls = ApolloClassRDKSubreddit;
         if (!subCls || ![sub isMemberOfClass:subCls] || ![sub respondsToSelector:@selector(name)]) return NO;
         NSString *name = ((NSString *(*)(id, SEL))objc_msgSend)(sub, @selector(name));
         return ApolloPFSubredditNameBlocked(name);

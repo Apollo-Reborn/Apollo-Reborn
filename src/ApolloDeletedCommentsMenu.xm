@@ -26,6 +26,7 @@
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloDeletedCommentsData.h"
 #import "UserDefaultConstants.h"
 
@@ -60,15 +61,6 @@ static NSHashTable *sApolloDCAllCommentsVCs = nil;
 
 #pragma mark - Helpers
 
-static id ApolloDCMenuIvarObject(id object, const char *name) {
-    if (!object || !name) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return object_getIvar(object, ivar);
-    }
-    return nil;
-}
-
 // Resolve and permanently tag the ActionController presenting the armed
 // comments menu. Both the ApolloActionMenu `matches` block and any later
 // re-ask (e.g. `title`, `perform`) use this same one-shot claim, whichever
@@ -97,7 +89,7 @@ static id ApolloDCMenuOwnerForController(id actionController) {
 // RDKLink ivar. Nil until the first fetch completes (URL-scheme opens), but by
 // the time the "..." menu is usable the link is loaded.
 static NSString *ApolloDCMenuLinkKeyForVC(id vc) {
-    id link = ApolloDCMenuIvarObject(vc, "link");
+    id link = ApolloObjectIvar(vc, "link");
     if (!link) return nil;
     NSString *fullName = nil;
     if ([link respondsToSelector:@selector(fullName)]) {
@@ -153,12 +145,10 @@ static void ApolloDCMenuSweepDeadOverrides(void) {
 static void ApolloDCMenuRefreshComments(id vc) {
     if (!vc) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if ([vc respondsToSelector:@selector(refreshControlActivatedWithSender:)]) {
-            ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(refreshControlActivatedWithSender:), nil);
-            ApolloLog(@"[DeletedCommentsMenu] Triggered comments refresh after toggle");
-        } else {
-            ApolloLog(@"[DeletedCommentsMenu] WARN: refreshControlActivatedWithSender: missing; pull to refresh manually");
-        }
+        // vc is always a CommentsViewController, which implements this
+        // @objc action (-[_TtC6Apollo22CommentsViewController refreshControlActivatedWithSender:]).
+        ((void (*)(id, SEL, id))objc_msgSend)(vc, @selector(refreshControlActivatedWithSender:), nil);
+        ApolloLog(@"[DeletedCommentsMenu] Triggered comments refresh after toggle");
     });
 }
 

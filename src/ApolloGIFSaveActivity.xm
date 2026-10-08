@@ -10,6 +10,7 @@
 #import <objc/message.h>
 #import "ApolloCommon.h"
 #import "ApolloToast.h"
+#import "ApolloClasses.h"
 
 static char kApolloGIFSaveContext;
 static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
@@ -49,7 +50,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
     NSError *error = nil;
     BOOL copied = [NSFileManager.defaultManager createDirectoryAtURL:self.directoryURL withIntermediateDirectories:YES attributes:nil error:&error] &&
         [NSFileManager.defaultManager copyItemAtURL:self.sourceURL toURL:self.fileURL error:&error];
-    if (!copied) ApolloLog(@"[GIFSaveActivity] file handoff failed domain=%@ code=%ld", error.domain, (long)error.code);
+    if (!copied) ApolloLogError(@"[GIFSaveActivity] file handoff failed domain=%@ code=%ld", error.domain, (long)error.code);
     return copied;
 }
 - (void)save {
@@ -102,10 +103,8 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
             if (success) {
                 // Native completion only displays Apollo's ordinary Saved!
                 // banner; it does not issue another Photos write.
-                id manager = [[NSClassFromString(@"Apollo.ShareMediaManager") alloc] init];
-                SEL selector = @selector(image:didFinishSavingWithError:contextInfo:);
-                if ([manager respondsToSelector:selector]) ((void (*)(id,SEL,id,id,void *))objc_msgSend)(manager,selector,nil,nil,NULL);
-                else ApolloShowToastWithStyle(@"Saved!", nil, ApolloToastStyleSuccess, nil);
+                id manager = [[objc_getClass("_TtC6Apollo17ShareMediaManager") alloc] init];
+                ((void (*)(id,SEL,id,id,void *))objc_msgSend)(manager, @selector(image:didFinishSavingWithError:contextInfo:), nil, nil, NULL);
             } else {
                 ApolloLog(@"[GIFSaveActivity] Photos rejected GIF domain=%@ code=%ld", error.domain, (long)error.code);
                 [self reportError:error.localizedDescription ?: @"Photos couldn't save this GIF. Try again." permission:NO];
@@ -126,7 +125,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
         NSURL *URL = items.firstObject;
         if (URL.isFileURL && [URL.pathExtension.lowercaseString isEqualToString:@"gif"]) {
             for (UIActivity *activity in activities) {
-                if (![activity isKindOfClass:NSClassFromString(@"Apollo.SaveMediaActivity")]) continue;
+                if (![activity isKindOfClass:ApolloClassSaveMediaActivity]) continue;
                 context = [ApolloGIFSaveActivityContext new];
                 context.sourceURL = URL;
                 objc_setAssociatedObject(activity, &kApolloGIFSaveContext, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);

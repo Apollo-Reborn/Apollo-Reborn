@@ -1,5 +1,7 @@
+#import "ApolloProfilePicturesPreview.h"
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
+#import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
@@ -7,6 +9,7 @@
 #import "ApolloBarkNotifications.h"
 #import "ApolloPushNotifications.h"
 #import "ApolloUsageHeartbeat.h"
+#import "ApolloUpdateChecker.h"
 #import "InlineMediaSettingsViewController.h"
 #import "settings/ApolloPollSettingsViewController.h"
 #import "settings/ApolloSettingsRouter.h"
@@ -928,10 +931,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
     [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
-    [self reloadRowWithID:@"interface.avatarShape"];
-    // Refresh the Profile Layout summary after returning from that screen
-    // (Density/Avatar/band switches may have just changed).
-    [self reloadRowWithID:@"feat.profileLayout"];
+    [self reloadRowWithID:@"siri.settings"];
     // The Setup section footer (onboarding nudge) collapses once a Reddit key
     // exists, which may have just been entered on the pushed API Keys screen.
     // Section 0 is Setup on the hub; reloading it re-evaluates the footer.
@@ -996,6 +996,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[
         [self buildSetupSection],
+        [self buildSiriSection],
         [self buildFeaturesSection],
         [self buildShortcutsSection],
         [self buildDataSection],
@@ -1102,6 +1103,40 @@ typedef NS_ENUM(NSInteger, Tag) {
     }];
 }
 
+// Compact disclosure row for settings hubs where the current value belongs on
+// the trailing edge instead of wrapping beneath the navigation title.
+- (ApolloSettingsRow *)hubValueDisclosureRowWithID:(NSString *)rowID
+                                             title:(NSString *)title
+                                             value:(NSString * (^)(void))value
+                                              push:(UIViewController * (^)(void))makeVC {
+    __weak typeof(self) weakSelf = self;
+    NSString *reuseID = [@"Cell_HubValue_" stringByAppendingString:rowID];
+    return [ApolloSettingsRow customRowWithID:rowID
+                                         cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseID];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        }
+        cell.textLabel.text = title;
+        cell.detailTextLabel.text = value ? value() : nil;
+        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+        return cell;
+    }
+                                     onSelect:^{
+        UIViewController *vc = makeVC();
+        if (!vc) return;
+        if (weakSelf.navigationController) {
+            [weakSelf.navigationController pushViewController:vc animated:YES];
+        } else {
+            UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:vc];
+            [weakSelf presentViewController:navigation animated:YES completion:nil];
+        }
+    }];
+}
+
 - (ApolloSettingsSection *)buildSetupSection {
     ApolloSettingsRow *apiKeys =
         [self hubDisclosureRowWithID:@"setup.apiKeys"
@@ -1118,8 +1153,6 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (ApolloSettingsSection *)buildFeaturesSection {
-    __weak typeof(self) weakSelf = self;
-
     ApolloSettingsRow *posts =
         [self hubDisclosureRowWithID:@"feat.posts" title:@"Posts & Feeds" subtitle:nil
                                 push:^UIViewController * {
@@ -1142,10 +1175,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     ApolloSettingsRow *profileLayout =
         [self hubDisclosureRowWithID:@"feat.profileLayout"
-                               title:@"Profile Layout"
-                            subtitle:^NSString * { return [weakSelf profileLayoutSummaryText]; }
+                               title:@"User Profiles"
+                            subtitle:nil
                                 push:^UIViewController * {
-            return [[ApolloProfileLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            return [[ApolloUserProfilesSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
     ApolloSettingsRow *interface_ =
         [self hubDisclosureRowWithID:@"feat.interface" title:@"Interface" subtitle:nil
@@ -1830,10 +1863,10 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf textPostThumbnailsSwitchToggled:sender]; }];
 
     ApolloSettingsRow *infoRow =
-        [self hubDisclosureRowWithID:@"feat.infoRow"
-                               title:@"Info Row"
-                            subtitle:^NSString * { return [weakSelf infoRowSummaryText]; }
-                                push:^UIViewController * {
+        [self hubValueDisclosureRowWithID:@"feat.infoRow"
+                                    title:@"Info Row"
+                                    value:^NSString * { return [weakSelf infoRowSummaryText]; }
+                                     push:^UIViewController * {
             return [[InfoRowSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
@@ -2085,8 +2118,44 @@ typedef NS_ENUM(NSInteger, Tag) {
                                               rows:@[ actionMenus ]];
 }
 
-- (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
+- (ApolloSettingsSection *)buildUserProfilesLayoutSection {
+    ApolloSettingsRow *layout =
+        [ApolloSettingsRow disclosureRowWithID:@"profiles.layout"
+                                        title:@"Profile Layout"
+                                       detail:^NSString * {
+            if (!sShowDetailedProfiles) return @"Native";
+            return sProfileHeaderImmersive ? @"Immersive" : @"Compact";
+        }
+                                         push:^UIViewController * {
+            return [[ApolloProfileLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+    return [ApolloSettingsSection sectionWithTitle:nil footer:nil rows:@[ layout ]];
+}
+
+- (ApolloSettingsSection *)buildUserProfilePicturesSection {
     __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *preview = [ApolloSettingsRow customRowWithID:@"profiles.picturesPreview"
+        cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ProfilePicturesPreview"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"ProfilePicturesPreview"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                ApolloProfilePicturesPreview *sample = [ApolloProfilePicturesPreview new];
+                sample.tag = 7302;
+                sample.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:sample];
+                [NSLayoutConstraint activateConstraints:@[
+                    [sample.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+                    [sample.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+                    [sample.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+                    [sample.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor]
+                ]];
+            }
+            [(ApolloProfilePicturesPreview *)[cell.contentView viewWithTag:7302] refresh];
+            return cell;
+        } onSelect:nil];
+    preview.height = ^CGFloat { return 214; };
 
     ApolloSettingsRow *userAvatars =
         [ApolloSettingsRow switchRowWithID:@"interface.userAvatars"
@@ -2105,6 +2174,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     avatarShape.configure = ^(UITableViewCell *cell) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     };
+    return [ApolloSettingsSection sectionWithTitle:@"Preview"
+                                            footer:@"Show user profile pictures beside usernames in posts, comments, messages, inbox rows, and moderator lists. Shape also applies to profile headers and the profile tab icon."
+                                              rows:@[ preview, userAvatars, avatarShape ]];
+}
+
+- (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
+    __weak typeof(self) weakSelf = self;
 
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
@@ -2190,8 +2266,8 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. True Black Keyboard paints the keyboard background pure black in the chosen appearance (takes effect the next time the keyboard appears). Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                            footer:@"Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. True Black Keyboard paints the keyboard background pure black in the chosen appearance (takes effect the next time the keyboard appears). Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2260,22 +2336,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             if (!cell) {
                 // Match the standard disclosure-row behavior used by API setup and
                 // other navigable settings: UIKit owns the chevron and the full row.
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
                                               reuseIdentifier:@"Cell_ApolloAI"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
             cell.textLabel.text = @"Apollo AI";
-            NSString *activeProviderName = @"On-device AI";
-            if ([sAISummaryProvider isEqualToString:@"openrouter"]) activeProviderName = @"OpenRouter AI";
-            else if ([sAISummaryProvider isEqualToString:@"gemini"]) activeProviderName = @"Gemini AI";
-            else if ([sAISummaryProvider isEqualToString:@"custom"]) activeProviderName = @"Custom cloud AI";
-            cell.detailTextLabel.text = sEnableAISummaries
-                ? [NSString stringWithFormat:@"%@ enabled", activeProviderName]
-                : @"On-device or cloud summaries and generation settings";
+            NSString *activeProviderName = @"On-device";
+            if ([sAISummaryProvider isEqualToString:@"openrouter"]) activeProviderName = @"OpenRouter";
+            else if ([sAISummaryProvider isEqualToString:@"gemini"]) activeProviderName = @"Gemini";
+            else if ([sAISummaryProvider isEqualToString:@"custom"]) activeProviderName = @"Custom";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@",
+                                         sEnableAISummaries ? @"On" : @"Off",
+                                         activeProviderName];
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2377,15 +2452,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Polls"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_Polls"];
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Polls"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
             cell.textLabel.text = @"Polls";
             cell.detailTextLabel.text = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled] ? @"On" : @"Off";
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2630,26 +2704,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                               rows:@[ proxyImgur, albumFallback ]];
 }
 
-- (NSString *)profileLayoutSummaryText {
-    if (!sShowDetailedProfiles) return @"Native (Apollo)";
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sProfileHeaderImmersive ? @"Immersive" : @"Compact"];
-    switch (sProfileAvatarStyle) {
-        case 1:  [parts addObject:@"Circle"]; break;
-        case 2:  [parts addObject:@"Square"]; break;
-        default: [parts addObject:@"Full"]; break;
-    }
-    NSInteger hiddenCount = (!sProfileShowBanner ? 1 : 0)
-        + (!sProfileShowStatCards ? 1 : 0)
-        + (!sProfileShowSocialLinks ? 1 : 0)
-        + (!sBadgeBookEnabled ? 1 : 0)
-        + (!sProfileShowActions ? 1 : 0);
-    if (hiddenCount > 0) {
-        [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
-    }
-    return [parts componentsJoinedByString:@" · "];
-}
-
 - (NSString *)profilePictureShapeText {
     switch (sProfileAvatarStyle) {
         case 1:  return @"Circle";
@@ -2660,7 +2714,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 - (void)presentProfilePictureShapePickerFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
-    ApolloSettingsPresentPicker(self, sourceView, @"Profile Picture Shape",
+    ApolloSettingsPresentPicker(self, sourceView, nil,
                                 @[@"Full", @"Circle", @"Square"],
                                 sProfileAvatarStyle, ^(NSInteger pickedIndex) {
         if (pickedIndex < 0 || pickedIndex > 2) return;
@@ -2668,7 +2722,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [[NSUserDefaults standardUserDefaults] setInteger:pickedIndex
                                                    forKey:UDKeyProfileAvatarStyle];
         [weakSelf reloadRowWithID:@"interface.avatarShape"];
-        [weakSelf reloadRowWithID:@"feat.profileLayout"];
         [[NSNotificationCenter defaultCenter]
             postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
                           object:@"ApolloProfileAvatarStyleChanged"];
@@ -2678,15 +2731,15 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-// Subreddits group screen (ApolloSubredditsSettingsViewController), two
-// sections: the list/browsing toggles and the custom Sources.
+// Subreddits group screen: list organization, subreddit page layout, and
+// the sources used by the Search tab.
 - (ApolloSettingsSection *)buildSubredditsMainSection {
     __weak typeof(self) weakSelf = self;
 
     ApolloSettingsRow *feedShortcuts =
-        [self hubDisclosureRowWithID:@"sub.feedShortcuts"
+        [ApolloSettingsRow disclosureRowWithID:@"sub.feedShortcuts"
                                title:@"Feed Shortcuts"
-                            subtitle:^NSString * {
+                            detail:^NSString * {
             return [NSString stringWithFormat:@"%@ · %@",
                     [weakSelf subredditFeedIconStyleText],
                     [weakSelf subredditFeedLayoutText]];
@@ -2695,28 +2748,62 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
-    ApolloSettingsRow *subredditLayout =
-        [self hubDisclosureRowWithID:@"sub.layout"
-                                title:@"Subreddit Layout"
-                             subtitle:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
-                                 push:^UIViewController * {
-            return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-        }];
-
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
     ApolloSettingsRow *subredditSections =
-        [self hubDisclosureRowWithID:@"sub.sections"
-                                title:@"Subreddit Sections"
-                             subtitle:^NSString * { return [weakSelf subredditSectionsSummaryText]; }
+        [ApolloSettingsRow disclosureRowWithID:@"sub.sections"
+                                title:@"Subreddit List Sections"
+                             detail:nil
                                  push:^UIViewController * {
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
-    return [ApolloSettingsSection sectionWithTitle:nil
-                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit Sections arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
-                                              rows:@[ feedShortcuts, subredditSections, subredditLayout ]];
+    ApolloSettingsRow *perAccountFavorites =
+        [ApolloSettingsRow switchRowWithID:@"sub.perAccountFavorites"
+                                     title:@"Per-Account Favorites"
+                                      isOn:^BOOL { return sPerAccountFavoritesEnabled; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
+    ApolloSettingsRow *sortFavoritesAlphabetically =
+        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
+                                     title:@"Sort Favorites Alphabetically"
+                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
+                                  onToggle:^(UISwitch *sender) {
+                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
+                                      if (sender.isOn != sSortFavoritesAlphabetically) {
+                                          [sender setOn:sSortFavoritesAlphabetically animated:YES];
+                                      }
+                                  }];
+    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
+    ApolloSettingsRow *confirmFavoriteToggle =
+        [ApolloSettingsRow switchRowWithID:@"sub.confirmFavoriteToggle"
+                                     title:@"Confirm Favorite Changes"
+                                      isOn:^BOOL { return sConfirmFavoriteToggle; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sConfirmFavoriteToggle = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyConfirmFavoriteToggle];
+                                  }];
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
+                                            footer:nil
+                                              rows:@[ feedShortcuts, subredditSections,
+                                                      perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
+}
+
+- (ApolloSettingsSection *)buildSubredditsLayoutSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *subredditLayout =
+        [ApolloSettingsRow disclosureRowWithID:@"sub.layout"
+                                title:@"Subreddit Layout"
+                             detail:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
+                                 push:^UIViewController * {
+            return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit Appearance"
+                                            footer:nil
+                                              rows:@[ subredditLayout ]];
 }
 
 - (ApolloSettingsSection *)buildFeedShortcutsVisibilitySection {
@@ -2749,7 +2836,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             [weakSelf setFeedShortcutVisible:sender.isOn defaultsKey:UDKeyHideModeratorRedditList];
         }];
     return [ApolloSettingsSection sectionWithTitle:@"Visible Shortcuts"
-                                            footer:@"Home is always shown. Choose which other shortcuts appear."
+                                            footer:nil
                                               rows:@[ showPopular, showAll, showModerator ]];
 }
 
@@ -2780,7 +2867,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // Only the Rows layout has room for a subtitle under each shortcut, so
     // the descriptions switch rides along with the layout picker (it hides
     // with any other layout). Hide Multireddit Descriptions lives on the
-    // Subreddit Sections screen beside its preview.
+    // Subreddit List screen beside its preview.
     ApolloSettingsRow *hideFeedDescriptions =
         [ApolloSettingsRow switchRowWithID:@"sub.hideFeedDescriptions"
                                      title:@"Hide Feed Descriptions"
@@ -2859,63 +2946,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-- (NSString *)subredditSectionsSummaryText {
-    BOOL separate = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySeparateFollowedUsers];
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    for (NSString *token in ApolloSubredditSectionsResolvedOrder()) {
-        if (!separate && [token isEqualToString:ApolloSubredditSectionTokenFollowing]) continue;
-        [parts addObject:ApolloSubredditSectionDisplayName(token)];
-    }
-    return [parts componentsJoinedByString:@" · "];
-}
-
-- (ApolloSettingsSection *)buildSubredditsFavoritesSection {
-    __weak typeof(self) weakSelf = self;
-    ApolloSettingsRow *perAccountFavorites =
-        [ApolloSettingsRow switchRowWithID:@"sub.perAccountFavorites"
-                                     title:@"Per-Account Favorites"
-                                      isOn:^BOOL { return sPerAccountFavoritesEnabled; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
-    ApolloSettingsRow *sortFavoritesAlphabetically =
-        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
-                                     title:@"Sort Favorites Alphabetically"
-                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
-                                  onToggle:^(UISwitch *sender) {
-                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
-                                      [sender setOn:sSortFavoritesAlphabetically animated:YES];
-                                  }];
-    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
-    ApolloSettingsRow *confirmFavoriteToggle =
-        [ApolloSettingsRow switchRowWithID:@"sub.confirmFavoriteToggle"
-                                     title:@"Confirm Favorite Changes"
-                                      isOn:^BOOL { return sConfirmFavoriteToggle; }
-                                  onToggle:^(UISwitch *sender) {
-                                      sConfirmFavoriteToggle = sender.isOn;
-                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
-                                                                              forKey:UDKeyConfirmFavoriteToggle];
-                                  }];
-
-    return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list.\nConfirm Favorite Changes asks before adding or removing a favorite from the Subreddits list star."
-                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
-}
-
 - (NSString *)subredditLayoutSummaryText {
     if (!sShowSubredditHeaders) return @"Native";
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sSubredditHeaderImmersive ? @"Immersive" : @"Compact"];
-    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-    if (!sSubredditShowBanner) [hidden addObject:@"Banner"];
-    if (!sSubredditShowJoinButton) [hidden addObject:@"Join Button"];
-    if (!sSubredditShowUserFlairButton) [hidden addObject:@"User Flair Button"];
-    if (!sSubredditShowSidebarButton) [hidden addObject:@"Sidebar Button"];
-    if (!sSubredditShowDisplayName) [hidden addObject:@"Subreddit Name"];
-    if (!sSubredditShowSubtitle) [hidden addObject:@"Subtitle"];
-    if (!sSubredditShowDescription) [hidden addObject:@"Description"];
-    if (hidden.count > 0) {
-        [parts addObject:[NSString stringWithFormat:@"%@ off", [hidden componentsJoinedByString:@", "]]];
-    }
-    return [parts componentsJoinedByString:@" · "];
+    return sSubredditHeaderImmersive ? @"Immersive" : @"Compact";
 }
 
 - (ApolloSettingsSection *)buildSubredditsSourcesSection {
@@ -2976,7 +3009,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }
                                   onSelect:nil];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Sources"
+    return [ApolloSettingsSection sectionWithTitle:@"Search Tab Sources"
                                             footer:nil
                                               rows:@[ trendingLimit, trendingSource, randomSource,
                                                       randNSFW, randNSFWSource ]];
@@ -3113,6 +3146,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     heartbeat.iconSystemName = @"waveform.path.ecg";
     heartbeat.iconTileColor = [UIColor systemPinkColor];
 
+    ApolloSettingsRow *updateChecks =
+        [ApolloSettingsRow switchRowWithID:@"privacy.updateChecks"
+                                     title:@"Automatic Update Checks"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutomaticUpdateChecks]; }
+                                  onToggle:^(UISwitch *sender) {
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyAutomaticUpdateChecks];
+        }];
+    updateChecks.iconSystemName = @"arrow.down.circle";
+    updateChecks.iconTileColor = [UIColor systemBlueColor];
+    updateChecks.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
+
     // Local crash recording (src/crash/). The pending count re-reads on every
     // configure, so returning from the sub-screen after a delete/submit shows
     // the fresh number without any manual reload plumbing.
@@ -3129,7 +3173,25 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     crashReports.iconSystemName = @"bandage";
     crashReports.iconTileColor = [UIColor systemOrangeColor];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports ]];
+    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, updateChecks, crashReports ]];
+}
+
+// An opt-in integration belongs near Setup, with its own explanation rather
+// than below crash reports and the unrelated anonymous-heartbeat footer.
+- (ApolloSettingsSection *)buildSiriSection {
+    ApolloSettingsRow *siri = [ApolloSettingsRow disclosureRowWithID:@"siri.settings" title:@"Siri & Spotlight"
+        detail:^NSString * {
+            return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySiriContentIndexing] ? @"On" : @"Off";
+        } push:^UIViewController * {
+            return ApolloSettingsRouteInstantiate(@"siri-spotlight");
+        }];
+    siri.iconSystemName = @"sparkle.magnifyingglass";
+    siri.iconTileColor = UIColor.systemPurpleColor;
+    ApolloSettingsSection *section = [ApolloSettingsSection sectionWithTitle:nil
+        footer:@"Find Apollo posts and communities with Siri, Spotlight and Shortcuts. Content indexing is off until you enable it."
+        rows:@[siri]];
+    section.visible = ^BOOL { return NSClassFromString(@"ApolloContentBridge") != Nil; };
+    return section;
 }
 
 - (ApolloSettingsSection *)buildAboutSection {
@@ -3256,9 +3318,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                    detail:^NSString * { return @TWEAK_VERSION; }
                                  onSelect:nil];
 
+    // Sideloaded builds can't replace themselves, so this reports the newest
+    // release and hands off to the user's sideloader (ApolloUpdateChecker.m).
+    ApolloSettingsRow *updates =
+        [ApolloSettingsRow valueRowWithID:@"about.updates"
+                                    title:@"Check for Updates"
+                                   detail:^NSString * { return ApolloUpdateStatusText(); }
+                                 onSelect:^{
+            ApolloUpdateCheckNow(^{ [weakSelf reloadRowWithID:@"about.updates"]; });
+        }];
+    updates.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
+
     return [ApolloSettingsSection sectionWithTitle:@"About"
                                             footer:@"Request features, report bugs, or browse the source. Apollo Reborn is free and open source."
-                                              rows:@[ featureRequests, bugReports, github, subreddit, thanksTo, privacyPolicy, version ]];
+                                              rows:@[ featureRequests, bugReports, github, subreddit, thanksTo, privacyPolicy, version, updates ]];
 }
 
 #pragma mark - Cell Builders
@@ -3621,7 +3694,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"). The Reddit API Key/Secret/Redirect URI above are the default, used by any signed-in account that doesn't have its own key — set a different key per account from the account switcher."
             attributes:plainAttrs]];
-    } else if ([sectionTitle isEqualToString:@"Sources"]) {
+    } else if ([sectionTitle isEqualToString:@"Search Tab Sources"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Configure custom subreddit sources by providing a URL to a plaintext file with line-separated subreddit names (without /r/). "
             attributes:plainAttrs];
@@ -3662,7 +3735,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkTail attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Privacy"]) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our "
+            initWithString:(ApolloUpdateChecksAvailable()
+                ? @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. Update checks read the latest release info from GitHub once a day, and the update sheet reads its release notes from there too. GitHub only sees your IP address. More details can be found in our "
+                : @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our ")
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"privacy policy"
             attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
@@ -4470,15 +4545,32 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 
 // Subreddit List Enhancements, Modern Subreddit Dividers and Hide Multireddit
-// Descriptions live on the Subreddit Sections screen now
+// Descriptions live on the Subreddit List screen now
 // (ApolloSubredditSectionsViewController), beside the live preview that shows
 // what they change.
+
+// Keep the same UISwitch instances alive while their touch animations run.
+// Account changes still refresh their values and sorting availability in place.
+- (void)refreshFavoritesSwitches {
+    for (NSString *rowID in @[ @"sub.perAccountFavorites", @"sub.sortFavoritesAlphabetically" ]) {
+        UITableViewCell *cell = [self cellForRowID:rowID];
+        if (![cell.accessoryView isKindOfClass:UISwitch.class]) continue;
+        UISwitch *toggle = (UISwitch *)cell.accessoryView;
+        BOOL sorting = [rowID isEqualToString:@"sub.sortFavoritesAlphabetically"];
+        BOOL on = sorting ? sSortFavoritesAlphabetically : sPerAccountFavoritesEnabled;
+        BOOL enabled = !sorting || ApolloFavoritesSortingIsAvailable();
+        // Reapplying even the same value can interrupt the user's animation.
+        if (toggle.isOn != on) [toggle setOn:on animated:YES];
+        toggle.enabled = enabled;
+        cell.textLabel.enabled = enabled;
+    }
+}
 
 - (void)perAccountFavoritesSwitchToggled:(UISwitch *)sender {
     ApolloPerAccountFavoritesSetResult result =
         ApolloPerAccountFavoritesSetEnabled(sender.isOn);
     if (result == ApolloPerAccountFavoritesSetResultApplied) {
-        [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+        [self refreshFavoritesSwitches];
         return;
     }
 
@@ -4927,21 +5019,17 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 - (void)apollo_favoritesSortingStateDidChange:(NSNotification *)notification {
     (void)notification;
-    [self reloadRowWithID:@"sub.perAccountFavorites"];
-    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+    [self refreshFavoritesSwitches];
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildSubredditsMainSection],
-              [self buildSubredditsFavoritesSection],
+              [self buildSubredditsLayoutSection],
               [self buildSubredditsSourcesSection] ];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Refresh the Subreddit Sections summary after returning from that screen
-    // (the order / Following toggle may have just changed).
-    [self reloadRowWithID:@"sub.sections"];
     // Account changes can select a different alphabetical-sorting preference.
-    [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
+    [self refreshFavoritesSwitches];
 }
 @end
 
@@ -5027,7 +5115,8 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     if (liquidGlass) {
         titleLabel.text = @"Preview";
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
+        // Match the semibold inset-grouped section titles beneath the preview.
+        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
         titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
             scaledFontForFont:titleFont];
     } else {
@@ -5306,6 +5395,21 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [animator startAnimation];
 }
 
+@end
+
+@implementation ApolloUserProfilesSettingsViewController
+- (NSString *)apollo_screenTitle { return @"User Profiles"; }
+- (NSArray<ApolloSettingsSection *> *)buildForm {
+    return @[ [self buildUserProfilesLayoutSection],
+              [self buildUserProfilePicturesSection] ];
+}
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadRowWithID:@"profiles.layout"];
+    // Appearance can change Apollo's independent comment text-size slider
+    // while this controller remains on the navigation stack.
+    [self reloadRowWithID:@"profiles.picturesPreview"];
+}
 @end
 
 @implementation ApolloInterfaceSettingsViewController

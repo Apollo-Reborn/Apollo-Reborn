@@ -41,11 +41,11 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#include <dlfcn.h>
-#include <string.h>
 
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Generated umbrella header for this module's Swift compilation units
 // (ApolloAppleTranslation.swift, ApolloAppleTranslateSheet.swift), which vends
@@ -58,62 +58,18 @@
 #define APOLLO_HAS_APPLE_TRANSLATE_SHEET 0
 #endif
 
-// Local copy of the small-Swift-string decoder, matching the copies already
-// living independently in ApolloTranslation.xm and ApolloNativeActionMenus.xm —
-// this codebase duplicates this helper per-file rather than sharing it.
-// Strings <=15 bytes are packed inline across two registers/words; longer
-// strings fall back to Swift's _bridgeToObjectiveC bridging thunk.
-static NSString *ApolloAppleSheetDecodeSwiftString(uint64_t w0, uint64_t w1) {
-    if (w1 == 0) return nil;
-
-    uint8_t disc = (uint8_t)(w1 >> 56);
-    if (disc >= 0xE0 && disc <= 0xEF) {
-        NSUInteger len = disc - 0xE0;
-        if (len == 0) return @"";
-
-        char buf[16] = {0};
-        memcpy(buf, &w0, 8);
-        uint64_t w1clean = w1 & 0x00FFFFFFFFFFFFFFULL;
-        memcpy(buf + 8, &w1clean, 7);
-        return [[NSString alloc] initWithBytes:buf length:len encoding:NSUTF8StringEncoding];
-    }
-
-    typedef NSString *(*BridgeFn)(uint64_t, uint64_t);
-    static BridgeFn sBridge = NULL;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sBridge = (BridgeFn)dlsym(RTLD_DEFAULT, "$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF");
-    });
-
-    return sBridge ? sBridge(w0, w1) : nil;
-}
-
-// Reads TranslatorViewController's `textToTranslate` Swift String ivar directly
-// off the not-yet-presented instance. Safe to call before -viewDidLoad runs:
-// the ivar is set in -initWithCoder:/-initWithNibName:bundle: (Hopper confirms
-// the class-dump-visible initializers take the text), well before viewDidLoad
-// builds the Google Translate URL from it.
-static NSString *ApolloTranslatorTextToTranslate(id translatorVC) {
-    if (!translatorVC) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(translatorVC), "textToTranslate");
-    if (!ivar) return nil;
-
-    ptrdiff_t offset = ivar_getOffset(ivar);
-    uint8_t *base = (uint8_t *)(__bridge void *)translatorVC;
-    uint64_t w0 = *(uint64_t *)(base + offset);
-    uint64_t w1 = *(uint64_t *)(base + offset + 0x08);
-    return ApolloAppleSheetDecodeSwiftString(w0, w1);
-}
-
 %hook UIViewController
 
 - (void)presentViewController:(UIViewController *)viewControllerToPresent
                      animated:(BOOL)animated
                    completion:(void (^)(void))completion {
     if (sAppleTranslateSheet &&
-        [viewControllerToPresent isKindOfClass:objc_getClass("_TtC6Apollo24TranslatorViewController")]) {
+        [viewControllerToPresent isKindOfClass:ApolloClassTranslatorViewController]) {
 #if APOLLO_HAS_APPLE_TRANSLATE_SHEET
-        NSString *text = ApolloTranslatorTextToTranslate(viewControllerToPresent);
+        // TranslatorViewController's `textToTranslate` Swift String ivar is set by
+        // its initializers, so it's readable here before -viewDidLoad builds the
+        // Google Translate URL from it.
+        NSString *text = ApolloReadSwiftStringIvar(viewControllerToPresent, "textToTranslate");
         if (text.length > 0 && [ApolloAppleTranslateSheet isSupported] &&
             [ApolloAppleTranslateSheet present:text from:self]) {
             ApolloLog(@"[AppleTranslateSheet] Presented Apple's Translate sheet for %lu chars instead of Apollo's Google web view",
