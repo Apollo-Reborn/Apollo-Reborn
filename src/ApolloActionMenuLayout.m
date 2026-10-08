@@ -658,9 +658,7 @@ void ApolloActionMenuRecordPresentedItemIDs(ApolloActionMenuContext context, NSA
 NSArray<NSString *> *ApolloActionMenuLastPresentedItemIDs(ApolloActionMenuContext context) {
     id stored = [[NSUserDefaults standardUserDefaults] objectForKey:UDKeyActionMenuLastPresented];
     if (![stored isKindOfClass:[NSDictionary class]]) return nil;
-    id list = ((NSDictionary *)stored)[context ?: @""];
-    if (![list isKindOfClass:[NSArray class]]) return nil;
-    NSArray<NSString *> *clean = ApolloActionMenuStringArray(list);
+    NSArray<NSString *> *clean = ApolloActionMenuStringArray(((NSDictionary *)stored)[context ?: @""]);
     return clean.count > 0 ? clean : nil;
 }
 

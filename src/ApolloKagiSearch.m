@@ -339,7 +339,7 @@ static void ApolloKagiDebugDumpPage(NSString *html, NSString *token) {
         if (response.statusCode >= 400) {
             description = [NSString stringWithFormat:@"Kagi returned an error (HTTP %ld).", (long)response.statusCode];
         }
-        ApolloLog(@"[KagiSearch] request failed: status=%ld %@ %ld", (long)response.statusCode,
+        ApolloLogError(@"[KagiSearch] request failed: status=%ld %@ %ld", (long)response.statusCode,
                   error.domain, (long)error.code);
         [self finishWithResults:nil mayHaveMore:NO
                           error:ApolloKagiSearchError(timedOut ? ApolloGoogleSearchErrorTimedOut : ApolloGoogleSearchErrorNetwork,
@@ -482,7 +482,7 @@ static void ApolloKagiDebugDumpPage(NSString *html, NSString *token) {
     _pageTask = nil;
     [_infoTask cancel];
     _infoTask = nil;
-    if (error) ApolloLog(@"[KagiSearch] failed: %@", error.localizedDescription);
+    if (error) ApolloLogError(@"[KagiSearch] failed: %@", error.localizedDescription);
     if (completion) completion(results ?: @[], error ? NO : more, error);
 }
 

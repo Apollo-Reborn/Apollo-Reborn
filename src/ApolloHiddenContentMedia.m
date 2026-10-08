@@ -38,7 +38,7 @@ static char kApolloHiddenMediaDelegate;
 BOOL ApolloHiddenContentPresentMedia(NSArray<NSURL *> *urls, NSUInteger initialIndex, UIImageView *sourceView, UIViewController *presenter, void (^selectionChanged)(NSUInteger)) {
     if (!urls.count || !presenter.viewIfLoaded.window || presenter.presentedViewController || !sourceView.window || !sourceView.image) return NO;
     initialIndex = MIN(initialIndex, urls.count - 1);
-    Class pageClass = NSClassFromString(@"_TtC6Apollo23MediaPageViewController");
+    Class pageClass = objc_getClass("_TtC6Apollo23MediaPageViewController");
     Method coder = class_getInstanceMethod(pageClass, @selector(initWithCoder:));
     Ivar thumbnails = class_getInstanceVariable(pageClass, "thumbnails");
     Ivar selectedIndex = class_getInstanceVariable(pageClass, "selectedThumbnailIndex");

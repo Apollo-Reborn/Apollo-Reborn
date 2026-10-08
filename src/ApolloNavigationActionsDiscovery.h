@@ -8,7 +8,7 @@
 static inline NSArray<UIView *> *ApolloNavigationActionsItemViewCandidates(UIBarButtonItem *item) {
     NSMutableArray<UIView *> *views = [NSMutableArray array];
     if (item.customView) [views addObject:item.customView];
-    SEL selector = NSSelectorFromString(@"view");
+    SEL selector = @selector(view);
     @try {
         id native = [item respondsToSelector:selector]
             ? ((id (*)(id, SEL))objc_msgSend)(item, selector)

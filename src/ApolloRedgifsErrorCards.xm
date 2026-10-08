@@ -258,8 +258,8 @@ static void ApolloRedgifsUpdateErrorCard(id mediaNode) {
 
     NSString *title = ApolloRedgifsCardTitleForFailure(failure);
     if (!title) {
-        ApolloLogDebug(@"[RedgifsCards] %@ card: no nameable reason, keeping Apollo's title",
-                       lookupCard ? @"Lookup" : @"Video");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [RedgifsCards] %{public}s card: no nameable reason, keeping Apollo's title",
+                     lookupCard ? "Lookup" : "Video");
         return;
     }
     ApolloRedgifsPinCardTitle(titleNode, title);

@@ -348,7 +348,7 @@ void ApolloSendUsageHeartbeatIfNeeded(void) {
                 // read on main, so set it there.
                 dispatch_async(dispatch_get_main_queue(), ^{ sHeartbeatDaySatisfied = [today copy]; });
             } else {
-                ApolloLog(@"[heartbeat] send failed (code %ld): %@", (long)code, error.localizedDescription);
+                ApolloLogError(@"[heartbeat] send failed (code %ld): %@", (long)code, error.localizedDescription);
             }
             [session finishTasksAndInvalidate];
         }];

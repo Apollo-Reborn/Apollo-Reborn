@@ -22,6 +22,7 @@
 #import <math.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 @interface UITabBarController (ApolloModernMailboxTabBarVisibility)
 - (void)setTabBarHidden:(BOOL)hidden animated:(BOOL)animated;
@@ -43,10 +44,7 @@ static NSString *ApolloDirectChatHex(NSString *hex) {
 static NSString *ApolloDirectChatHexFromColor(UIColor *color,
                                                UITraitCollection *traits,
                                                NSString *fallback) {
-    UIColor *resolved = color;
-    if (@available(iOS 13.0, *)) {
-        resolved = [color resolvedColorWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
-    }
+    UIColor *resolved = [color resolvedColorWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
     CGFloat red = 0.0, green = 0.0, blue = 0.0, alpha = 0.0;
     if ([resolved getRed:&red green:&green blue:&blue alpha:&alpha]) {
         return [NSString stringWithFormat:@"#%02X%02X%02X",
@@ -685,15 +683,14 @@ static void ApolloSeedModernMailboxCookies(NSString *cookieHeader,
     NSDictionary<NSString *, NSString *> *pairs = ApolloDirectChatCookiePairs(cookieHeader ?: @"");
     dispatch_group_t group = dispatch_group_create();
     [pairs enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSString *value, BOOL *stop) {
-        NSMutableDictionary *properties = [@{
+        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:@{
             NSHTTPCookieName: name,
             NSHTTPCookieValue: value,
             NSHTTPCookieDomain: @".reddit.com",
             NSHTTPCookiePath: @"/",
             NSHTTPCookieSecure: @"TRUE",
             NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:24.0 * 60.0 * 60.0],
-        } mutableCopy];
-        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:properties];
+        }];
         if (!cookie) return;
         dispatch_group_enter(group);
         [store setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
@@ -1497,8 +1494,6 @@ static NSString *ApolloDirectChatDraftScript(void) {
     // restores Reddit's own scroller padding instead of leaving a stale gap.
     if (countChanged || allowanceChanged || generationChanged) {
         [self apollo_applyEmbeddedBottomScrollAllowance:bottomAllowance];
-    }
-    if (countChanged || allowanceChanged || generationChanged) {
         ApolloLog(@"[DirectChatWeb] Enabled Apollo-style bounce on %lu WebKit scroll view(s), bottom allowance %.1fpt",
                   (unsigned long)configured, bottomAllowance);
     }
@@ -1868,7 +1863,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         NSString *script = ApolloDirectChatEnhancementScript(palette);
         [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
             if (error) {
-                ApolloLog(@"[DirectChatWeb] Theme injection failed: %@", error);
+                ApolloLogError(@"[DirectChatWeb] Theme injection failed: %@", error);
             } else if ([result isKindOfClass:[NSDictionary class]] && [result[@"giphyGrids"] integerValue] > 0) {
                 ApolloLog(@"[DirectChatWeb] Applied Apollo theme and compact GIPHY grid");
             }
@@ -2079,18 +2074,12 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 
     UITabBarController *tabBarController = self.tabBarController;
     UITabBar *tabBar = tabBarController.tabBar;
-    BOOL usedSystemVisibilityAPI = NO;
     if (@available(iOS 18.0, *)) {
-        if (tabBarController && [tabBarController respondsToSelector:
-            @selector(setTabBarHidden:animated:)]) {
-            // Use UIKit to update the safe area, but keep the transition
-            // non-animated. Reddit performs its own list/room animation and two
-            // independently animated bars produce a visible jump on iOS 26.
-            [tabBarController setTabBarHidden:hidesForConversation animated:NO];
-            usedSystemVisibilityAPI = YES;
-        }
-    }
-    if (!usedSystemVisibilityAPI) {
+        // Use UIKit to update the safe area, but keep the transition
+        // non-animated. Reddit performs its own list/room animation and two
+        // independently animated bars produce a visible jump on iOS 26.
+        [tabBarController setTabBarHidden:hidesForConversation animated:NO];
+    } else {
         tabBar.hidden = hidesForConversation;
     }
 
@@ -3569,11 +3558,8 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 - (void)apollo_applyEmbeddedInboxFilterAttempt:(NSUInteger)attempt generation:(NSUInteger)generation {
     if (!self.embeddedInInbox || generation != self.readinessGeneration || self.didRevealChat) return;
     ApolloModernChatInboxSection desiredSection = self.embeddedInboxSection;
-    if (desiredSection == ApolloModernChatInboxSectionRequests) {
-        [self apollo_waitForChatReadinessAttempt:0 generation:generation];
-        return;
-    }
-    if (desiredSection == ApolloModernChatInboxSectionThreads) {
+    if (desiredSection == ApolloModernChatInboxSectionRequests ||
+        desiredSection == ApolloModernChatInboxSectionThreads) {
         [self apollo_waitForChatReadinessAttempt:0 generation:generation];
         return;
     }
@@ -4522,13 +4508,13 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
         [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
-    ApolloLog(@"[DirectChatWeb] Provisional navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[DirectChatWeb] Provisional navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
         [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
-    ApolloLog(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
@@ -4606,10 +4592,6 @@ void ApolloMigrateModernMailboxPreferences(void) {
         ApolloLog(@"[DirectChatWeb] Recorded modern Chat/Modmail as on for this web-session setup "
                   @"(previously implied); both are now switchable in Settings");
     }
-}
-
-UIViewController *ApolloCreateModernChatViewController(void) {
-    return ApolloCreateModernChatViewControllerForPath(nil);
 }
 
 UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinationPath) {
@@ -5042,7 +5024,7 @@ static void ApolloStandaloneChatBackPanForgetHost(ApolloDirectChatWebViewControl
     // push Apollo's OAuth-only ModmailInboxViewController. Replace that
     // destination before its view loads so API-key-free accounts never land
     // on the legacy screen, and API-key accounts follow their explicit toggle.
-    Class nativeModmailClass = objc_getClass("_TtC6Apollo26ModmailInboxViewController");
+    Class nativeModmailClass = ApolloClassModmailInboxViewController;
     if (nativeModmailClass &&
         [viewController isMemberOfClass:nativeModmailClass] &&
         ApolloModernModmailShouldOpen()) {

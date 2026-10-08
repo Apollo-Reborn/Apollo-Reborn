@@ -32,8 +32,6 @@ static BOOL ApolloIsAppSubredditSubscribePrompt(UIViewController *presented) {
     if (![presented isKindOfClass:[UIAlertController class]]) return NO;
 
     NSString *title = [(UIAlertController *)presented title];
-    if (title.length == 0) return NO;
-
     return [title isEqualToString:@"Subscribe to r/ApolloApp?"] ||
            [title isEqualToString:@"Subscribe to r/ApolloAppBeta Beta Subreddit?"];
 }

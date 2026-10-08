@@ -32,6 +32,7 @@
 #import <math.h>
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloScrapeWebView.h"
 #import "ApolloSubredditHighlights.h"
 #import "ApolloDevvitPosts.h"
@@ -40,6 +41,7 @@
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloClasses.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -139,21 +141,18 @@ static BOOL ApolloHLIsLikelyObjectPointer(id value) {
 
 static id ApolloHLTypedIvar(id object, NSString *name, Class expectedClass) {
     if (!object || name.length == 0 || !expectedClass) return nil;
-    for (Class cls = [object class]; cls && cls != [NSObject class]; cls = class_getSuperclass(cls)) {
-        Ivar ivar = class_getInstanceVariable(cls, name.UTF8String);
-        if (!ivar) continue;
-        ptrdiff_t offset = ivar_getOffset(ivar);
-        void *raw = NULL;
-        memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
-        id value = (__bridge id)raw;
-        if (!ApolloHLIsLikelyObjectPointer(value)) return nil;
-        @try {
-            return [value isKindOfClass:expectedClass] ? value : nil;
-        } @catch (__unused NSException *exception) {
-            return nil;
-        }
+    Ivar ivar = class_getInstanceVariable(object_getClass(object), name.UTF8String);
+    if (!ivar) return nil;
+    ptrdiff_t offset = ivar_getOffset(ivar);
+    void *raw = NULL;
+    memcpy(&raw, (uint8_t *)(__bridge void *)object + offset, sizeof(raw));
+    id value = (__bridge id)raw;
+    if (!ApolloHLIsLikelyObjectPointer(value)) return nil;
+    @try {
+        return [value isKindOfClass:expectedClass] ? value : nil;
+    } @catch (__unused NSException *exception) {
+        return nil;
     }
-    return nil;
 }
 
 // PostsType case tag lives at offset 0x20 of the `currentPostsType` Swift-enum
@@ -228,8 +227,8 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     // subreddit. It is only read for a feed with no title yet.
     NSString *rawName = nil;
     if (rawTitle.length == 0) {
-        id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
-        if (subreddit && [subreddit respondsToSelector:@selector(name)]) {
+        id subreddit = ApolloHLTypedIvar(viewController, @"currentSubreddit", ApolloClassRDKSubreddit);
+        if ([subreddit respondsToSelector:@selector(name)]) {
             id nameValue = ((id (*)(id, SEL))objc_msgSend)(subreddit, @selector(name));
             if ([nameValue isKindOfClass:[NSString class]]) rawName = nameValue;
         }
@@ -288,8 +287,8 @@ static UITableView *ApolloHLFindTableView(UIViewController *viewController) {
 // Reload the feed's ASTableNode (used only on the rare path where we need to
 // restore inline stickied cells we optimistically collapsed).
 static void ApolloHLReloadFeed(UIViewController *vc) {
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
-    if (tableNode && [tableNode respondsToSelector:@selector(reloadData)]) {
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
+    if ([tableNode respondsToSelector:@selector(reloadData)]) {
         ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(reloadData));
     }
 }
@@ -309,7 +308,7 @@ static BOOL ApolloHLFeedRowsBelongTo(UIViewController *vc, NSString *subreddit) 
     if (sub.length == 0 || ![tableView respondsToSelector:@selector(nodeForRowAtIndexPath:)] ||
         tableView.numberOfSections == 0) return YES;
     NSInteger rows = [tableView numberOfRowsInSection:0];
-    Class linkClass = objc_getClass("RDKLink");
+    Class linkClass = ApolloClassRDKLink;
     NSInteger posts = 0;
     for (NSInteger row = 0; row < rows && row < 12 && posts < 3; row++) {
         id node = ((id (*)(id, SEL, NSIndexPath *))objc_msgSend)(tableView, @selector(nodeForRowAtIndexPath:),
@@ -1072,7 +1071,7 @@ static NSArray<ApolloHLItem *> *ApolloHLDropFeedOwned(NSString *sub, NSArray<Apo
             if (ss.sawChallenge && ss.bestItems.count == 0)
                 ApolloLog(@"[Highlights][web] r/%@ blocked by Reddit's bot challenge after %.1fs — will retry later", ss.sub, now);
             else
-                ApolloLog(@"[Highlights][web] r/%@ timed out after %.1fs (%d probes, last error=%@)", ss.sub, now, ss.polls, e.localizedDescription ?: @"nil");
+                ApolloLogError(@"[Highlights][web] r/%@ timed out after %.1fs (%d probes, last error=%@)", ss.sub, now, ss.polls, e.localizedDescription ?: @"nil");
             [ss finish:ss.bestItems ?: @[]];
         } else {
             [ss pollAfter:kApolloHLWebPollInterval];
@@ -1139,8 +1138,8 @@ static NSString *ApolloHLRequestBearerToken(void) {
     }
     id client = ApolloActiveAccountClient();
     if (client) {
-        SEL credentialSelector = NSSelectorFromString(@"authorizationCredential");
-        SEL tokenSelector = NSSelectorFromString(@"accessToken");
+        SEL credentialSelector = @selector(authorizationCredential);
+        SEL tokenSelector = @selector(accessToken);
         id credential = [client respondsToSelector:credentialSelector]
             ? ((id (*)(id, SEL))objc_msgSend)(client, credentialSelector) : nil;
         id accessToken = [credential respondsToSelector:tokenSelector]
@@ -2073,7 +2072,6 @@ static void ApolloHLClearDeDup(NSString *subreddit) {
 }
 @end
 
-static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
 static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
 static void ApolloHLInstall(UIViewController *vc); // defined with the PostsViewController hooks
 
@@ -2109,7 +2107,7 @@ UIView *ApolloHLHeaderOriginalSubstitute(NSString *subreddit, UIViewController *
         return realOriginal;
     }
     NSString *sub = subreddit.lowercaseString;
-    if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
+    if (width <= 0) width = hostVC.view.bounds.size.width;
 
     // De-dup membership now (the header installs before cells render).
     ApolloHLHideSubsAdd(sub);
@@ -2260,7 +2258,7 @@ static void ApolloHLTeardown(UIViewController *vc, BOOL restoreNativeHeader) {
     // Clear the per-table de-duped-sticky rows so the next sub's separators can't
     // self-collapse against stale rows. EMPTY it (don't free the set) under the same
     // owningTable lock — an off-main layout pass may be reading it concurrently.
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
     if (tableNode) @synchronized(tableNode) {
         [(NSMutableSet *)objc_getAssociatedObject(tableNode, &kApolloHLHiddenRowsKey) removeAllObjects];
     }
@@ -2445,7 +2443,8 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
         return;
     }
 
-    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = tableView.bounds.size.width > 0 ? tableView.bounds.size.width
+        : (tableView.window.bounds.size.width ?: vc.view.bounds.size.width);
 
     if (sameContent && wrapper) {
         // A deferred snap-free change for this same content is still waiting for
@@ -2507,29 +2506,20 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
     ApolloLog(@"[Highlights] installed carousel r/%@ items=%lu width=%.0f", subreddit, (unsigned long)items.count, width);
 }
 
-// Collect all live root view controllers across every connected window scene
-// (iOS 13+/scene apps; UIApplication.windows alone can miss the active scene).
+// Collect all live root view controllers across every connected window scene.
 static NSArray<UIViewController *> *ApolloHLRootViewControllers(void) {
     NSMutableArray<UIViewController *> *roots = [NSMutableArray array];
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.rootViewController) [roots addObject:window.rootViewController];
-        }
-    }
-    for (UIWindow *window in UIApplication.sharedApplication.windows) {
-        if (window.rootViewController && ![roots containsObject:window.rootViewController]) {
-            [roots addObject:window.rootViewController];
-        }
+    for (UIWindow *window in ApolloAllWindows()) {
+        if (window.rootViewController) [roots addObject:window.rootViewController];
     }
     return roots;
 }
 
 // Walk the live VC hierarchy and invoke `block` for every PostsViewController.
 static void ApolloHLForEachPostsVC(void (^block)(UIViewController *postsVC)) {
-    Class postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass || !block) return;
-    NSMutableArray<UIViewController *> *stack = [[ApolloHLRootViewControllers() mutableCopy] ?: [NSMutableArray array] mutableCopy];
+    NSMutableArray<UIViewController *> *stack = [ApolloHLRootViewControllers() mutableCopy];
     NSMutableSet *seen = [NSMutableSet set];
     while (stack.count) {
         UIViewController *vc = stack.lastObject;
@@ -2601,7 +2591,7 @@ static void ApolloHLApplyItems(NSString *sub, NSArray<ApolloHLItem *> *items) {
         } else {
             ApolloHLHeaderContainerView *c = objc_getAssociatedObject(postsVC, kApolloHLContainerKey);
             if (![c isMemberOfClass:[ApolloHLHeaderContainerView class]]) return;
-            CGFloat w = c.bounds.size.width > 0 ? c.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+            CGFloat w = c.bounds.size.width > 0 ? c.bounds.size.width : c.window.bounds.size.width;
             UIView *newCarousel = ApolloHLBuildCarousel(sub, items, w);
             UIView *wrapper = c.superview;
             UITableView *tv = ApolloHLFindTableView(postsVC);
@@ -2995,7 +2985,7 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc); // defined w
 // (N already published before cells measure) never re-measure. Returns YES when it
 // reloaded the feed.
 static BOOL ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit) {
-    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+    id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
     NSString *subKey = subreddit.lowercaseString;
     NSNumber *stickyN = ApolloHLStickyCount()[subKey];
     if (!tableNode || !stickyN) return NO;
@@ -3186,8 +3176,8 @@ static BOOL ApolloHLShouldBlockOffset(UITableView *tableView, CGPoint newOffset)
 static BOOL ApolloHLShouldHideCell(id cellNode) {
     if (!sCommunityHighlights) return NO;
     if (ApolloHLHideSubsIsEmpty()) return NO;
-    RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(cellNode, @"link", objc_getClass("RDKLink"));
-    if (!link || ![link respondsToSelector:@selector(stickied)] || !link.stickied) return NO;
+    RDKLinkLite *link = (RDKLinkLite *)ApolloHLTypedIvar(cellNode, @"link", ApolloClassRDKLink);
+    if (![link respondsToSelector:@selector(stickied)] || !link.stickied) return NO;
     // …except a live interactive post while the feed renders those widgets: the
     // feed owns it, so it keeps its row (the widget IS the post) and the carousel
     // dropped it instead — no duplicate. Read straight off the link so this can
@@ -3201,7 +3191,7 @@ static BOOL ApolloHLShouldHideCell(id cellNode) {
 
 // Zero-size layout spec used to collapse a hidden cell.
 static id ApolloHLEmptySpec(void) {
-    Class stackClass = objc_getClass("ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (!stackClass) return nil;
     return [stackClass stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:0 children:@[]];
 }
@@ -3215,7 +3205,7 @@ static id ApolloHLEmptySpec(void) {
 static char kApolloHLSepCollapseKey;
 
 static BOOL ApolloHLNodeIsSeparator(id node) {
-    return node && [NSStringFromClass([node class]) isEqualToString:@"Apollo.ThickSeparatorCellNode"];
+    return [node isMemberOfClass:ApolloClassThickSeparatorCellNode];
 }
 
 // Zero a node's fixed style.height so an empty layoutSpec actually collapses it
@@ -3242,13 +3232,11 @@ static void ApolloHLZeroNodeHeight(id node) {
 // as the single breaker. (kApolloHLHiddenRowsKey declared up top so teardown can clear it.)
 
 static id ApolloHLOwningTableNode(id cellNode) {
-    id me = (id)cellNode;
-    return [me respondsToSelector:@selector(owningNode)] ? ((id (*)(id, SEL))objc_msgSend)(me, @selector(owningNode)) : nil;
+    return [cellNode respondsToSelector:@selector(owningNode)] ? ((id (*)(id, SEL))objc_msgSend)(cellNode, @selector(owningNode)) : nil;
 }
 static NSInteger ApolloHLNodeRow(id cellNode) {
-    id me = (id)cellNode;
-    if (![me respondsToSelector:@selector(indexPath)]) return -1;
-    NSIndexPath *ip = ((NSIndexPath *(*)(id, SEL))objc_msgSend)(me, @selector(indexPath));
+    if (![cellNode respondsToSelector:@selector(indexPath)]) return -1;
+    NSIndexPath *ip = ((NSIndexPath *(*)(id, SEL))objc_msgSend)(cellNode, @selector(indexPath));
     return ip ? ip.row : -1;
 }
 // Caller MUST hold @synchronized(owningTable). The set is associated with the
@@ -3345,7 +3333,7 @@ static void ApolloHLCollapseOrphanSeparators(UIViewController *vc) {
             NSTimeInterval now = CACurrentMediaTime();
             if (now - sLastHLRelayoutUptime > 10.0) {
                 sLastHLRelayoutUptime = now;
-                id tableNode = ApolloHLTypedIvar(vc, @"tableNode", objc_getClass("ASTableNode"));
+                id tableNode = ApolloHLTypedIvar(vc, @"tableNode", ApolloClassASTableNode);
                 if ([tableNode respondsToSelector:@selector(relayoutItems)]) ((void (*)(id, SEL))objc_msgSend)(tableNode, @selector(relayoutItems));
                 // relayoutItems re-measures but the shrink doesn't paint until the next
                 // layout pass (otherwise the breaker stays thick until the user scrolls) —
@@ -3505,7 +3493,7 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     }
 
     // Re-wrap: stack our carousel above whatever Apollo is installing.
-    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : UIScreen.mainScreen.bounds.size.width;
+    CGFloat width = self.bounds.size.width > 0 ? self.bounds.size.width : self.window.bounds.size.width;
     UIView *wrapper = ApolloHLBuildWrapper(carousel, tableHeaderView, width);
     objc_setAssociatedObject(vc, kApolloHLWrapperKey, wrapper, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(vc, kApolloHLOriginalHeaderKey, tableHeaderView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3582,7 +3570,7 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
     if (layout) {
         CGSize s = ((CGSize (*)(id, SEL))objc_msgSend)(layout, @selector(size));
         if (s.height > 0.0) {
-            Class ASLayoutCls = objc_getClass("ASLayout");
+            Class ASLayoutCls = ApolloClassASLayout;
             if (ASLayoutCls) {
                 id zero = ((id (*)(id, SEL, id, CGSize))objc_msgSend)(ASLayoutCls, @selector(layoutWithLayoutElement:size:), self, CGSizeMake(s.width, 0.0));
                 if (zero) return zero;
@@ -3657,16 +3645,15 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
 %end
 
 // A name typed into the jump bar: Return runs the in-place switch before this
-// returns. The bar's delegate is a Swift-only property, so find the feed that owns
-// it by its jumpBar ivar.
+// returns. Its Swift weak delegate is the feed controller to re-sync.
 %hook _TtC6Apollo7JumpBar
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     BOOL result = %orig;
     if (!sCommunityHighlights) return result;
-    id jumpBar = self;
-    ApolloHLForEachPostsVC(^(UIViewController *postsVC) {
-        if (ApolloHLTypedIvar(postsVC, @"jumpBar", [jumpBar class]) == jumpBar) ApolloHLSyncSwitchedFeed(postsVC);
-    });
+    UIViewController *postsVC = ApolloReadSwiftWeakObjectIvar(self, "delegate");
+    if ([postsVC isKindOfClass:ApolloClassPostsViewController]) {
+        ApolloHLSyncSwitchedFeed(postsVC);
+    }
     return result;
 }
 %end

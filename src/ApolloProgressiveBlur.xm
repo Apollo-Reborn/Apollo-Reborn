@@ -4,6 +4,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import "ApolloClasses.h"
 
 // MARK: - Header Style: Blur (progressive blur, Liquid Glass iOS 26+)
 //
@@ -42,8 +43,8 @@ static const CGFloat kApolloBlurMaxTopExtension = 80.0;
 static const CGFloat kApolloBlurRadius = 24.0;
 
 static id ApolloNewFilter(NSString *type) {
-    Class filterClass = objc_getClass("CAFilter");
-    SEL filterSelector = NSSelectorFromString(@"filterWithType:");
+    Class filterClass = ApolloClassCAFilter;
+    SEL filterSelector = @selector(filterWithType:);
     if (!filterClass || ![filterClass respondsToSelector:filterSelector]) return nil;
     return ((id (*)(id, SEL, id))objc_msgSend)(filterClass, filterSelector, type);
 }
@@ -152,7 +153,7 @@ BOOL ApolloProgressiveBlurAvailable(void) {
     // changes only their spatial detail as they approach the status bar.
     UIView *backdrop = nil;
     for (UIView *subview in self.subviews) {
-        if ([NSStringFromClass(subview.class) containsString:@"Backdrop"]) {
+        if (strstr(object_getClassName(subview), "Backdrop")) {
             backdrop = subview;
             if (subview.alpha != 1) subview.alpha = 1;
         } else {

@@ -1,7 +1,7 @@
 #import "ApolloCommon.h"
 #import "ApolloHiddenContentViewController.h"
 #import "ApolloAccountCredentials.h"
-#import <dlfcn.h>
+#import "ApolloSwiftRuntime.h"
 #import <objc/message.h>
 
 // Defined in ApolloUserAvatars.xm -- more reliable than reading "userInfo"
@@ -29,67 +29,30 @@ void ApolloHiddenContentPresentFromProfile(UIViewController *profileViewControll
 // Profile shortcuts are Texture nodes. Append the archive control to the
 // Saved or Comments node while preserving Apollo's section model.
 #import <objc/runtime.h>
-#import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 typedef struct { CGSize min; CGSize max; } ApolloHiddenSizeRange;
 @interface ASDisplayNode : NSObject
-- (instancetype)initWithViewBlock:(UIView *(^)(void))block;
-- (void)addSubnode:(id)node;
 - (void)onDidLoad:(void (^)(ASDisplayNode *node))body;
-- (id)style;
 @property (nonatomic, readonly) UIView *view;
-@property (nonatomic, readonly) CALayer *layer;
-- (void)displayImmediately;
 @property (nonatomic, strong) UIColor *backgroundColor;
 @property (nonatomic) BOOL automaticallyManagesSubnodes;
 @property (nonatomic, copy) id (^layoutSpecBlock)(id, ApolloHiddenSizeRange);
-@end
-@interface ASLayoutElementStyle : NSObject
-@property (nonatomic) CGSize preferredSize;
 @end
 @interface ASStackLayoutSpec : NSObject
 + (id)stackLayoutSpecWithDirection:(unsigned char)direction spacing:(CGFloat)spacing
                    justifyContent:(unsigned char)justify alignItems:(unsigned char)align children:(NSArray *)children;
 @end
-@interface ASInsetLayoutSpec : NSObject
-+ (id)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
-@end
 @interface ASImageNode : ASDisplayNode
 @property (nonatomic, strong) UIImage *image;
-@property (nonatomic, copy) id imageModificationBlock;
-@property (nonatomic, readonly) UIView *view;
-@property (nonatomic, strong) UIColor *tintColor;
-@property (nonatomic) CGFloat alpha;
 @end
 @interface ASTextNode : ASDisplayNode
 @property (nonatomic, copy) NSAttributedString *attributedText;
 @end
 
-static id ApolloHiddenObjectIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    return ivar ? object_getIvar(object, ivar) : nil;
-}
-
-static UIViewController *ApolloHiddenListAdapterController(id adapter) {
-    Ivar ivar = class_getInstanceVariable([adapter class], "viewController");
-    if (!ivar) return nil;
-    typedef void *(*ApolloHiddenWeakLoadStrongFunction)(void *slot);
-    static ApolloHiddenWeakLoadStrongFunction weakLoadStrong;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        weakLoadStrong = (ApolloHiddenWeakLoadStrongFunction)dlsym(
-            RTLD_DEFAULT, "swift_unknownObjectWeakLoadStrong");
-    });
-    if (!weakLoadStrong) return nil;
-    void *slot = (uint8_t *)(__bridge void *)adapter + ivar_getOffset(ivar);
-    void *value = weakLoadStrong(slot);
-    return value ? CFBridgingRelease(value) : nil;
-}
-
 static UIViewController *ApolloHiddenProfileControllerForAdapter(id adapter, ASDisplayNode *tableNode) {
-    Class profileClass = NSClassFromString(@"_TtC6Apollo21ProfileViewController");
-    UIViewController *owner = ApolloHiddenListAdapterController(adapter);
+    Class profileClass = ApolloClassProfileViewController;
+    UIViewController *owner = ApolloReadSwiftWeakObjectIvar(adapter, "viewController");
     if (owner) return [owner isKindOfClass:profileClass] ? owner : nil;
 
     // A missing weak owner is unusual, but an attached table's responder chain
@@ -166,7 +129,7 @@ static char ApolloHiddenIconKey;
 - (void)open:(UITapGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateRecognized) return;
     for (UIResponder *responder = gesture.view; responder; responder = responder.nextResponder) {
-        if ([responder isKindOfClass:NSClassFromString(@"_TtC6Apollo21ProfileViewController")]) {
+        if ([responder isKindOfClass:ApolloClassProfileViewController]) {
             ApolloHiddenContentPresentFromProfile((UIViewController *)responder);
             return;
         }
@@ -196,8 +159,8 @@ static char ApolloHiddenIconKey;
     }
     return [^id {
         ASDisplayNode *original = originalBlock();
-        if (![original isKindOfClass:NSClassFromString(@"_TtC6Apollo22ProfileFeatureCellNode")]) return original;
-        ASTextNode *title = ApolloHiddenObjectIvar(original, "titleNode");
+        if (![original isKindOfClass:ApolloClassProfileFeatureCellNode]) return original;
+        ASTextNode *title = ApolloReadObjectIvar(original, "titleNode");
         NSString *saved = [[NSBundle mainBundle] localizedStringForKey:@"Saved" value:@"Saved" table:nil];
         NSString *comments = [[NSBundle mainBundle] localizedStringForKey:@"Comments" value:@"Comments" table:nil];
         NSString *insertionTitle = ownProfile ? saved : comments;
@@ -207,12 +170,12 @@ static char ApolloHiddenIconKey;
         ASDisplayNode *shortcut = originalBlock();
         if (shortcut == original || ![shortcut isKindOfClass:[original class]]) return original;
         ASDisplayNode *separator = separatorBlock ? separatorBlock() : nil;
-        if (![separator isKindOfClass:NSClassFromString(@"_TtC6Apollo21ThinSeparatorCellNode")]) {
+        if (![separator isKindOfClass:ApolloClassThinSeparatorCellNode]) {
             ApolloLog(@"[HiddenShortcut] Expected native separator before profile row");
             return original;
         }
-        ASTextNode *shortcutTitle = ApolloHiddenObjectIvar(shortcut, "titleNode");
-        ASImageNode *shortcutIcon = ApolloHiddenObjectIvar(shortcut, "iconNode");
+        ASTextNode *shortcutTitle = ApolloReadObjectIvar(shortcut, "titleNode");
+        ASImageNode *shortcutIcon = ApolloReadObjectIvar(shortcut, "iconNode");
         objc_setAssociatedObject(shortcutTitle, &ApolloHiddenTitleKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(shortcutIcon, &ApolloHiddenIconKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         shortcutTitle.attributedText = shortcutTitle.attributedText;
@@ -224,11 +187,13 @@ static char ApolloHiddenIconKey;
             tap.cancelsTouchesInView = YES;
             [view addGestureRecognizer:tap];
         }];
-        ASDisplayNode *wrapper = [NSClassFromString(@"ASCellNode") new];
+        Class cellNodeClass = ApolloClassASCellNode;
+        if (!cellNodeClass) return original;
+        ASDisplayNode *wrapper = [cellNodeClass new];
         wrapper.backgroundColor = UIColor.clearColor;
         wrapper.automaticallyManagesSubnodes = YES;
         wrapper.layoutSpecBlock = ^id(id node, ApolloHiddenSizeRange range) {
-            return [NSClassFromString(@"ASStackLayoutSpec") stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
+            return [ApolloClassASStackLayoutSpec stackLayoutSpecWithDirection:0 spacing:0 justifyContent:0 alignItems:3 children:@[original, separator, shortcut]];
         };
         ApolloLog(@"[HiddenShortcut] Added profile archive shortcut after %@ (%@ profile)",
                   insertionTitle, ownProfile ? @"own" : @"other");

@@ -265,7 +265,7 @@ ApolloRedgifsLookupCompletion ApolloRedgifsCompletionFillingMissingDuration(NSUR
         NSString *cacheKey = videoURL.absoluteString;
         NSNumber *known = [ApolloRedgifsKnownLengths() objectForKey:cacheKey];
         if (known) {
-            ApolloLogDebug(@"[RedgifsDuration] Filled in %.3f s read earlier for this video", known.doubleValue);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [RedgifsDuration] Filled in %.3f s read earlier for this video", known.doubleValue);
             fillIn(known.doubleValue);
             return;
         }

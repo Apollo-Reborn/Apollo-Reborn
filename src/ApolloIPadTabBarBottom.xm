@@ -8,6 +8,7 @@
 #import "ApolloNavigationTitlePresentation.h"
 
 #import "ApolloThemeRuntime.h"
+#import "ApolloClasses.h"
 
 static char kIPadSearchReservation;
 static char kIPadBottomTabsKey;
@@ -18,16 +19,15 @@ static char kIPadButtonRowReservation;
 static char kIPadButtonNativeFrame;
 static char kIPadButtonApplyingFrame;
 
-
 // Search reserves a row on the navigation controller so UIKit measures its
 // search field before presentation. Only the native button platter should
 // counter that reservation: the title and search keep their separate rows.
 // Keep the original controls, menus, accessibility and back action intact.
 static void ApolloIPadAlignNavigationButtons(UINavigationController *nav) {
+    if (!IsLiquidGlass()) return;
     UINavigationBar *bar = nav.navigationBar;
     CGFloat reservation = [objc_getAssociatedObject(nav, &kIPadSearchReservation) doubleValue];
-    CGFloat wanted = IsLiquidGlass() && !sIPadTabBarBottom
-        ? -reservation : 0;
+    CGFloat wanted = sIPadTabBarBottom ? 0 : -reservation;
     NSMutableArray<UIView *> *hosts = [NSMutableArray array];
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:bar];
     for (NSUInteger index = 0; index < queue.count; index++) {
@@ -177,7 +177,7 @@ static void ApolloIPadPrepareSearchReservation(UINavigationController *nav, UIVi
     UITabBarController *tabs = nav.tabBarController;
     BOOL floating = IsLiquidGlass() && !sIPadTabBarBottom && tabs && nav.parentViewController == tabs &&
         nav.traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
-    BOOL nativeSearch = page.navigationItem.searchController != nil || [page isKindOfClass:NSClassFromString(@"_TtC6Apollo20SearchViewController")] ||
+    BOOL nativeSearch = page.navigationItem.searchController != nil || [page isKindOfClass:ApolloClassSearchViewController] ||
         ApolloNavigationTitleContainsNativeSearchSurface(page.navigationItem.titleView);
     // A native searchController already gets a separate row below the title
     // from UIKit. Reserving another row on its navigation controller doubles
@@ -275,7 +275,6 @@ static void ApolloIPadRefreshControllerTree(UIViewController *vc) {
 %end
 %end
 
-
 // Adjust UIKit's requested platter frame at its source, so later SwiftUI
 // layout passes cannot put the buttons back on the title row.
 @interface ApolloIPadButtonPlatter : UIView
@@ -296,7 +295,7 @@ static void ApolloIPadRefreshControllerTree(UIViewController *vc) {
 %ctor {
     if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad) return;
     %init(ApolloIPadPlacement);
-    Class platter = NSClassFromString(@"UIKit.NavigationBarPlatterContainer_v2");
+    Class platter = objc_getClass("UIKit.NavigationBarPlatterContainer_v2");
     if (platter) { %init(ApolloIPadButtonRow, ApolloIPadButtonPlatter = platter); }
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloIPadTabBarBottomChangedNotification
         object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {

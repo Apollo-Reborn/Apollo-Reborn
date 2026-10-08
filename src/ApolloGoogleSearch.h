@@ -112,7 +112,6 @@ FOUNDATION_EXPORT NSString *const ApolloGoogleSearchErrorDomain;
 @property (nonatomic, strong, nullable) NSDate *created;
 @property (nonatomic) BOOL over18;
 @property (nonatomic) BOOL spoiler;
-@property (nonatomic) BOOL removedOrDeleted;
 
 // The key used to drop duplicates (same post/comment reached through
 // www/old/np hosts, trailing slugs, query strings, ...).

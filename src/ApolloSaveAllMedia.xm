@@ -1,5 +1,6 @@
 #import "ApolloSaveAllMedia.h"
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloToast.h"
 #import "ApolloThemeRuntime.h"
@@ -26,7 +27,7 @@ static NSString *sApolloSaveAllPendingBannerTitle;
 static NSObject *sApolloSaveAllPendingBannerToken;
 
 static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
-    Class managerClass = NSClassFromString(@"Apollo.ShareMediaManager");
+    Class managerClass = objc_getClass("Apollo.ShareMediaManager");
     SEL completion = @selector(image:didFinishSavingWithError:contextInfo:);
     id manager = [[managerClass alloc] init];
     if (![manager respondsToSelector:completion]) {
@@ -54,8 +55,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 - (void)didMoveToSuperview {
     %orig;
     if (!sApolloSaveAllPendingBannerToken || !((UIView *)self).superview) return;
-    Ivar labelIvar = class_getInstanceVariable(object_getClass(self), "textLabel");
-    id value = labelIvar ? object_getIvar(self, labelIvar) : nil;
+    id value = ApolloObjectIvar(self, "textLabel");
     if (![value isKindOfClass:UILabel.class]) return;
     UILabel *label = value;
     if (![label.text isEqualToString:@"Saved!"]) return;
@@ -127,7 +127,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
     self.countLabel.accessibilityLabel = @"Media completed";
 
     UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor;
-    DACircularProgressView *circle = [[NSClassFromString(@"DACircularProgressView") alloc] init];
+    DACircularProgressView *circle = [[objc_getClass("DACircularProgressView") alloc] init];
     circle.trackTintColor = UIColor.tertiarySystemFillColor;
     circle.progressTintColor = accent;
     circle.thicknessRatio = 0.12;
@@ -282,7 +282,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     NSError *directoryError = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtURL:self.directoryURL
                                  withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
-        ApolloLog(@"[SaveAllMedia] temporary directory failed domain=%@ code=%ld",
+        ApolloLogError(@"[SaveAllMedia] temporary directory failed domain=%@ code=%ld",
                   directoryError.domain, (long)directoryError.code);
         self.finished = YES;
         if (sApolloSaveAllMediaJob == self) sApolloSaveAllMediaJob = nil;
@@ -386,14 +386,14 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
                     // Download locations expire at the end of this callback,
                     // so retain the file before returning to the main queue.
                     if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:fileURL error:&moveError]) {
-                        ApolloLog(@"[SaveAllMedia] image move failed domain=%@ code=%ld",
+                        ApolloLogError(@"[SaveAllMedia] image move failed domain=%@ code=%ld",
                                   moveError.domain, (long)moveError.code);
                         fileURL = nil;
                     }
                 }
             }
             if (!fileURL && error.code != NSURLErrorCancelled) {
-                ApolloLog(@"[SaveAllMedia] image download/validation failed HTTP=%ld domain=%@ code=%ld",
+                ApolloLogError(@"[SaveAllMedia] image download/validation failed HTTP=%ld domain=%@ code=%ld",
                           (long)httpStatus, error.domain ?: @"none", (long)error.code);
             }
             ApolloSaveAllMediaOnMain(^{
@@ -425,7 +425,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     } completionHandler:^(BOOL success, NSError *error) {
         ApolloSaveAllMediaRemoveFile(fileURL);
         if (!success) {
-            ApolloLog(@"[SaveAllMedia] Photos image write failed domain=%@ code=%ld",
+            ApolloLogError(@"[SaveAllMedia] Photos image write failed domain=%@ code=%ld",
                       error.domain, (long)error.code);
         }
         ApolloSaveAllMediaOnMain(^{ [self completedItem:success]; });

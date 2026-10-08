@@ -70,8 +70,8 @@ static const NSInteger ApolloLinkPreviewCacheSchemaVersion = 2;
         NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
         NSString *cacheDirectory = paths.firstObject ?: NSTemporaryDirectory();
         _cachePath = [cacheDirectory stringByAppendingPathComponent:@"com.apollo.linkpreviews.json"];
-        _entries = [[self loadEntriesFromDisk] mutableCopy] ?: [NSMutableDictionary dictionary];
-        _entriesSnapshot = [_entries copy] ?: @{};
+        _entries = [self loadEntriesFromDisk] ?: [NSMutableDictionary dictionary];
+        _entriesSnapshot = [_entries copy];
         ApolloLog(@"[LinkPreviews] cache init: %lu entries loaded", (unsigned long)_entries.count);
 
         __weak typeof(self) weakSelf = self;
@@ -107,7 +107,7 @@ static const NSInteger ApolloLinkPreviewCacheSchemaVersion = 2;
 - (void)flushDiskNowLocked {
     if (!self.diskDirty) return;
     self.diskDirty = NO;
-    NSDictionary *snapshot = [self.entries copy] ?: @{};
+    NSDictionary *snapshot = self.entriesSnapshot;
     NSString *path = self.cachePath;
     dispatch_async(self.ioQueue, ^{
         NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:nil];
@@ -115,7 +115,7 @@ static const NSInteger ApolloLinkPreviewCacheSchemaVersion = 2;
     });
 }
 
-- (NSDictionary *)loadEntriesFromDisk {
+- (NSMutableDictionary *)loadEntriesFromDisk {
     NSData *data = [NSData dataWithContentsOfFile:self.cachePath];
     if (!data) return nil;
     id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -354,7 +354,8 @@ static NSString *ApolloLinkPreviewRedditUsernameFromURL(NSURL *url) {
 - (void)flushCache {
     dispatch_sync(self.queue, ^{
         self.diskDirty = NO;
-        self.diskFlushScheduled = NO;
+        // An existing delayed flush still owns diskFlushScheduled. Let it
+        // service any subsequent stores instead of scheduling a second timer.
         NSUInteger removed = self.entries.count;
         [self.entries removeAllObjects];
         self.entriesSnapshot = @{};
@@ -373,9 +374,10 @@ static NSString *ApolloLinkPreviewRedditUsernameFromURL(NSURL *url) {
     if (!block) return;
 
     // Run arbitrary caller work over the already-published immutable snapshot.
-    NSArray<NSDictionary *> *snapshot = self.entriesSnapshot.allValues;
+    NSDictionary<NSString *, NSDictionary *> *snapshot = self.entriesSnapshot;
 
-    for (NSDictionary *entry in snapshot) {
+    for (NSString *key in snapshot) {
+        NSDictionary *entry = snapshot[key];
         NSString *urlString = [entry[@"url"] isKindOfClass:[NSString class]] ? entry[@"url"] : nil;
         if (urlString.length == 0) continue;
         NSURL *url = [NSURL URLWithString:urlString];

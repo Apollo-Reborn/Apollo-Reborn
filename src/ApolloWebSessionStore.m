@@ -93,10 +93,6 @@ static void ApolloWebSessionUpdateIndexNamed(NSString *indexKey, NSString *key, 
     [defaults setObject:set.allObjects forKey:indexKey];
 }
 
-static void ApolloWebSessionUpdateIndex(NSString *key, BOOL present) {
-    ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, present);
-}
-
 static BOOL ApolloWebSessionIndexContains(NSString *indexKey, NSString *key) {
     NSArray<NSString *> *raw = [[NSUserDefaults standardUserDefaults] arrayForKey:indexKey];
     return [raw isKindOfClass:[NSArray class]] && [raw containsObject:key];
@@ -148,8 +144,8 @@ void ApolloWebSessionSet(NSString *username, NSString *cookieHeader, NSString *m
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"modhash", key), modhash ?: @"");
     // Promote to primary: in the primary index, out of the poll-only one.
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionPollOnlyIndex, key, NO);
-    ApolloWebSessionUpdateIndex(key, YES);
-    ApolloLogDebug(@"[WebSessionStore] Stored web session for u/%@ (%lu cookie bytes, modhash %@)",
+    ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, YES);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebSessionStore] Stored web session for u/%{public}@ (%lu cookie bytes, modhash %{public}@)",
                    username, (unsigned long)cookieHeader.length, modhash.length > 0 ? @"present" : @"absent");
 }
 
@@ -166,9 +162,9 @@ void ApolloWebSessionSetPollOnly(NSString *username, NSString *cookieHeader, NSS
     }
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"cookie", key), cookieHeader);
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"modhash", key), modhash ?: @"");
-    ApolloWebSessionUpdateIndex(key, NO);
+    ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, NO);
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionPollOnlyIndex, key, YES);
-    ApolloLogDebug(@"[WebSessionStore] Stored poll-only web session for u/%@ (%lu cookie bytes, modhash %@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebSessionStore] Stored poll-only web session for u/%{public}@ (%lu cookie bytes, modhash %{public}@)",
                    username, (unsigned long)cookieHeader.length, modhash.length > 0 ? @"present" : @"absent");
 }
 
@@ -177,7 +173,7 @@ void ApolloWebSessionRemove(NSString *username) {
     if (key.length == 0) return;
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"cookie", key), nil);
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"modhash", key), nil);
-    ApolloWebSessionUpdateIndex(key, NO);
+    ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, NO);
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionPollOnlyIndex, key, NO);
     ApolloLog(@"[WebSessionStore] Removed web session for u/%@", username);
 }

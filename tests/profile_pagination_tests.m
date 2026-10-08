@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dispatch/dispatch.h>
+#import "ApolloSwiftRuntime.h"
 #define ApolloLog(...) do {} while (0)
 
 @class UINavigationController, UITabBarController;

@@ -10,7 +10,7 @@
 //
 //  The Swift-only FoundationModels API is reached through the
 //  `ApolloFoundationModels` @objc bridge (ApolloFoundationModels.swift). We
-//  resolve it via NSClassFromString so there is no link-time dependency on the
+//  resolve it via objc_getClass so there is no link-time dependency on the
 //  Swift-generated interop header.
 //
 //  The summaries are inserted into CommentsHeaderCellNode's layout. The post
@@ -24,6 +24,7 @@
 #import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloAISummary.h"
 #import "ApolloAICloudBridge.h"
 #import "ApolloWebTextDecoding.h"
@@ -32,11 +33,12 @@
 #import "ApolloTextureDecls.h"
 #import "ApolloDevvitPosts.h"
 #import "Tweak.h"
+#import "ApolloClasses.h"
 
 #pragma mark - FoundationModels bridge (declared, resolved at runtime)
 
 // Mirrors the @objc surface of ApolloFoundationModels.swift. We never reference
-// the class symbol directly (only via NSClassFromString), so this is a pure
+// the class symbol directly (only via objc_getClass), so this is a pure
 // type declaration for clean message sends.
 @interface ApolloFoundationModels : NSObject
 + (instancetype)shared;
@@ -60,7 +62,7 @@ static ApolloFoundationModels *ApolloAIBridge(void) {
     if (sAISummaryProvider.length > 0 && ![sAISummaryProvider isEqualToString:@"apple"]) {
         return (ApolloFoundationModels *)[ApolloAICloudBridge shared];
     }
-    Class cls = NSClassFromString(@"ApolloFoundationModels");
+    Class cls = ApolloClassApolloFoundationModels;
     if (!cls) return nil;
     return [cls shared];
 }
@@ -276,12 +278,44 @@ static NSMutableDictionary<NSString *, NSNumber *> *sPostSummaryMode;
 static NSMutableDictionary<NSString *, NSString *> *sArticleTextCache;
 static NSMutableDictionary<NSString *, NSNumber *> *sCommentSummarySourceCounts;
 static NSMutableDictionary<NSString *, NSString *> *sCommentSummarySignatures;
-// fullNames whose post / comment generation is currently running, so we don't
-// kick off duplicate concurrent requests for the same thread.
-static NSMutableSet<NSString *> *sPostInFlight;
-static NSMutableSet<NSString *> *sCommentInFlight;
-static NSMutableDictionary<NSString *, NSString *> *sPostRequestIDs;
-static NSMutableDictionary<NSString *, NSString *> *sCommentRequestIDs;
+// Bridge identifiers are reused for prepared sessions. Compare request objects
+// so an old callback/watchdog cannot touch a newer attempt. Main-thread confined.
+@interface ApolloAISummaryRequest : NSObject
+@property (nonatomic, copy, readonly) NSString *fullName;
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, readonly) BOOL isPost;
+@property (nonatomic) NSTimeInterval lastPartialUIUpdate;
+- (instancetype)initWithFullName:(NSString *)fullName isPost:(BOOL)isPost identifier:(NSString *)identifier;
+@end
+@implementation ApolloAISummaryRequest
+- (instancetype)initWithFullName:(NSString *)fullName isPost:(BOOL)isPost identifier:(NSString *)identifier {
+    if ((self = [super init])) {
+        _fullName = [fullName copy];
+        _identifier = [identifier copy];
+        _isPost = isPost;
+    }
+    return self;
+}
+@end
+
+static NSMutableDictionary<NSString *, ApolloAISummaryRequest *> *sPostRequests;
+static NSMutableDictionary<NSString *, ApolloAISummaryRequest *> *sCommentRequests;
+
+static ApolloAISummaryRequest *ApolloAIBeginRequest(NSString *fullName, BOOL isPost, NSString *identifier) {
+    ApolloAISummaryRequest *request = [[ApolloAISummaryRequest alloc] initWithFullName:fullName isPost:isPost identifier:identifier];
+    (isPost ? sPostRequests : sCommentRequests)[fullName] = request;
+    return request;
+}
+
+static BOOL ApolloAIRequestIsCurrent(ApolloAISummaryRequest *request) {
+    return request && (request.isPost ? sPostRequests : sCommentRequests)[request.fullName] == request;
+}
+
+static BOOL ApolloAIFinishRequest(ApolloAISummaryRequest *request) {
+    if (!ApolloAIRequestIsCurrent(request)) return NO;
+    [(request.isPost ? sPostRequests : sCommentRequests) removeObjectForKey:request.fullName];
+    return YES;
+}
 // Header nodes are weak: they are only retained by Apollo/Texture while their
 // rows exist. Generated text is applied to every live header for the same post.
 static NSHashTable *sHeaderNodes;
@@ -292,7 +326,6 @@ static NSMapTable<NSString *, UIViewController *> *sControllerByFullName;
 static NSMutableDictionary<NSString *, NSMutableArray *> *sCapturedComments;
 static NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *sCapturedCommentKeys;
 static __weak UIViewController *sVisibleCommentsController;
-static NSMutableDictionary<NSString *, NSNumber *> *sLastPartialUIUpdate;
 static NSMutableSet<NSString *> *sCommentGenerationScheduled;
 // fullNames whose post / comment generation hit a hard error this session. We
 // stop retrying them (the box shows the error) so the layout doesn't flicker
@@ -340,7 +373,6 @@ static NSMutableSet<NSString *> *sPostSuppressed;
 // card was never requested there.) Like sPostSuppressed it is per-view and
 // cleared in viewDidDisappear, so a reopen offers a fresh "Tap to summarize".
 static NSMutableSet<NSString *> *sPostEmpty;
-static NSMutableSet<NSString *> *sTimedOutRequests;
 // "post|fullName" / "comment|fullName" keys for boxes the user TAPPED to generate
 // while Tap-to-Summarize is on. The generation pass consumes the marker and
 // proceeds instead of showing the idle "Tap to summarize" prompt.
@@ -547,22 +579,18 @@ static void ApolloAIEnsureState(void) {
         sArticleTextCache = [NSMutableDictionary dictionary];
         sCommentSummarySourceCounts = [NSMutableDictionary dictionary];
         sCommentSummarySignatures = [NSMutableDictionary dictionary];
-        sPostInFlight = [NSMutableSet set];
-        sCommentInFlight = [NSMutableSet set];
-        sPostRequestIDs = [NSMutableDictionary dictionary];
-        sCommentRequestIDs = [NSMutableDictionary dictionary];
+        sPostRequests = [NSMutableDictionary dictionary];
+        sCommentRequests = [NSMutableDictionary dictionary];
         sHeaderNodes = [NSHashTable weakObjectsHashTable];
         sControllerByFullName = [NSMapTable strongToWeakObjectsMapTable];
         sCapturedComments = [NSMutableDictionary dictionary];
         sCapturedCommentKeys = [NSMutableDictionary dictionary];
-        sLastPartialUIUpdate = [NSMutableDictionary dictionary];
         sCommentGenerationScheduled = [NSMutableSet set];
         sPostFailed = [NSMutableSet set];
         sCommentFailed = [NSMutableSet set];
         sFailedErrorMessages = [NSMutableDictionary dictionary];
         sPostSuppressed = [NSMutableSet set];
         sPostEmpty = [NSMutableSet set];
-        sTimedOutRequests = [NSMutableSet set];
         sTapRequested = [NSMutableSet set];
         ApolloAILoadPersistedSummaries();
     });
@@ -573,11 +601,12 @@ NSUInteger ApolloAIClearSummaryCache(void) {
 
     NSUInteger removed = sPostSummaryCache.count + sCommentSummaryCache.count;
     ApolloFoundationModels *bridge = ApolloAIBridge();
-    for (NSString *requestID in sPostRequestIDs.allValues) {
-        [bridge cancelRequest:requestID];
-    }
-    for (NSString *requestID in sCommentRequestIDs.allValues) {
-        [bridge cancelRequest:requestID];
+    NSArray<ApolloAISummaryRequest *> *requests = [sPostRequests.allValues arrayByAddingObjectsFromArray:sCommentRequests.allValues];
+    [sPostRequests removeAllObjects];
+    [sCommentRequests removeAllObjects];
+    // Invalidate ownership before cancellation can deliver a completion.
+    for (ApolloAISummaryRequest *request in requests) {
+        [bridge cancelRequest:request.identifier];
     }
 
     [sPostSummaryCache removeAllObjects];
@@ -594,18 +623,12 @@ NSUInteger ApolloAIClearSummaryCache(void) {
     [sCommentSummarySignatures removeAllObjects];
     [sCapturedComments removeAllObjects];
     [sCapturedCommentKeys removeAllObjects];
-    [sPostInFlight removeAllObjects];
-    [sCommentInFlight removeAllObjects];
-    [sPostRequestIDs removeAllObjects];
-    [sCommentRequestIDs removeAllObjects];
-    [sLastPartialUIUpdate removeAllObjects];
     [sCommentGenerationScheduled removeAllObjects];
     [sPostFailed removeAllObjects];
     [sCommentFailed removeAllObjects];
     [sFailedErrorMessages removeAllObjects];
     [sPostSuppressed removeAllObjects];
     [sPostEmpty removeAllObjects];
-    [sTimedOutRequests removeAllObjects];
     [sTapRequested removeAllObjects];
     [sLinkSummaryPosts removeAllObjects];
     [sBothSummaryPosts removeAllObjects];
@@ -639,30 +662,14 @@ static void ApolloAIGenerateForController(UIViewController *vc);
 static void ApolloAIPrepareForController(UIViewController *vc);
 static void ApolloAIShowLoadingIfIdle(NSString *fullName, BOOL isPost);
 
-static id ApolloAIGetIvarObject(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 // Swift Optional<ObjCClass> ivars do not consistently report an '@' runtime
-// encoding. For known object ivars, object_getIvar is still the correct access
-// path and avoids rejecting CommentsViewController.link before reading it.
-static id ApolloAIKnownObjectIvar(id obj, const char *ivarName) {
-    if (!obj || !ivarName) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    if (!ivar) return nil;
-    @try {
-        return object_getIvar(obj, ivar);
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
+// encoding, so known object ivars are read with ApolloObjectIvar (no encoding
+// check — that would reject CommentsViewController.link).
 
 // Reddit fullName ("t3_xxxx") for the post; falls back to a stable key.
 static NSString *ApolloAILinkFullName(id link) {
     if (!link) return nil;
-    SEL sels[] = { @selector(fullName), NSSelectorFromString(@"name"), NSSelectorFromString(@"identifier") };
+    SEL sels[] = { @selector(fullName), @selector(name), @selector(identifier) };
     for (size_t i = 0; i < sizeof(sels) / sizeof(sels[0]); i++) {
         if ([link respondsToSelector:sels[i]]) {
             id v = ((id (*)(id, SEL))objc_msgSend)(link, sels[i]);
@@ -677,14 +684,14 @@ static NSString *ApolloAILinkFullName(id link) {
 // fixed name list misses.
 static id ApolloAIScanForLink(id obj) {
     if (!obj) return nil;
-    Class rdkLink = NSClassFromString(@"RDKLink");
+    Class rdkLink = ApolloClassRDKLink;
     if (!rdkLink) return nil;
 
     static const char *knownNames[] = {
         "link", "_link", "post", "_post", "currentLink", "currentPost", NULL
     };
     for (size_t i = 0; knownNames[i]; i++) {
-        id value = ApolloAIKnownObjectIvar(obj, knownNames[i]);
+        id value = ApolloObjectIvar(obj, knownNames[i]);
         if ([value isMemberOfClass:rdkLink]) return value;
     }
 
@@ -695,8 +702,7 @@ static id ApolloAIScanForLink(id obj) {
         for (unsigned int i = 0; i < count; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id v = nil;
-            @try { v = object_getIvar(obj, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id v = object_getIvar(obj, ivars[i]);
             if ([v isMemberOfClass:rdkLink]) { free(ivars); return v; }
         }
         free(ivars);
@@ -705,7 +711,7 @@ static id ApolloAIScanForLink(id obj) {
 }
 
 static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
-    id tableNode = ApolloAIGetIvarObject(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = ApolloAICommentsTableView(vc);
     NSMutableArray *nodes = [NSMutableArray array];
     NSMutableSet<NSValue *> *seen = [NSMutableSet set];
@@ -717,7 +723,7 @@ static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
     // main thread (the old code's biggest stall) and defeats lazy loading.
     // Comment bodies are captured from the cell lifecycle hooks instead, so the
     // already-loaded nodes here are only a supplementary source.
-    SEL nodeForRowSelector = NSSelectorFromString(@"nodeForRowAtIndexPath:");
+    SEL nodeForRowSelector = @selector(nodeForRowAtIndexPath:);
     if (tableNode && tableView && [tableNode respondsToSelector:nodeForRowSelector]) {
         NSInteger sectionCount = [tableView numberOfSections];
         for (NSInteger section = 0; section < sectionCount; section++) {
@@ -734,7 +740,7 @@ static NSArray *ApolloAIAvailableNodes(UIViewController *vc) {
         }
     }
 
-    SEL visibleNodesSelector = NSSelectorFromString(@"visibleNodes");
+    SEL visibleNodesSelector = @selector(visibleNodes);
     if (tableNode && [tableNode respondsToSelector:visibleNodesSelector]) {
         id visibleNodes = ((id (*)(id, SEL))objc_msgSend)(tableNode, visibleNodesSelector);
         if ([visibleNodes isKindOfClass:[NSArray class]]) {
@@ -801,7 +807,7 @@ static UITableView *ApolloAIFindTableViewInView(UIView *view) {
 }
 
 static UITableView *ApolloAICommentsTableView(UIViewController *vc) {
-    id tableNode = ApolloAIGetIvarObject(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     if (tableNode && [tableNode respondsToSelector:@selector(view)]) {
         UIView *v = ((id (*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
         if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
@@ -812,8 +818,8 @@ static UITableView *ApolloAICommentsTableView(UIViewController *vc) {
 // The RDKComment on a CommentCellNode (its `comment` ivar), or nil.
 static id ApolloAICommentFromCellNode(id cellNode) {
     if (!cellNode) return nil;
-    id comment = ApolloAIKnownObjectIvar(cellNode, "comment");
-    Class rdkComment = NSClassFromString(@"RDKComment");
+    id comment = ApolloObjectIvar(cellNode, "comment");
+    Class rdkComment = ApolloClassRDKComment;
     if (!rdkComment || ![comment isMemberOfClass:rdkComment]) return nil;
     return comment;
 }
@@ -849,12 +855,14 @@ static NSString *ApolloAICleanInputText(NSString *text, NSUInteger maxLength) {
     }
 
     NSString *clean = [keptLines componentsJoinedByString:@" "];
-    NSError *regexError = nil;
-    NSRegularExpression *urlRegex =
-        [NSRegularExpression regularExpressionWithPattern:@"https?://\\S+"
-                                                  options:NSRegularExpressionCaseInsensitive
-                                                    error:&regexError];
-    if (!regexError) {
+    static NSRegularExpression *urlRegex;
+    static dispatch_once_t urlRegexOnce;
+    dispatch_once(&urlRegexOnce, ^{
+        urlRegex = [NSRegularExpression regularExpressionWithPattern:@"https?://\\S+"
+                                                             options:NSRegularExpressionCaseInsensitive
+                                                               error:NULL];
+    });
+    if (urlRegex) {
         clean = [urlRegex stringByReplacingMatchesInString:clean
                                                    options:0
                                                      range:NSMakeRange(0, clean.length)
@@ -1000,7 +1008,7 @@ static id ApolloAIRDKCommentFromObject(id obj, Class rdkComment) {
 static void ApolloAICollectCommentsFromDataModel(UIViewController *vc,
                                                  NSMutableArray *comments,
                                                  NSMutableSet<NSString *> *candidateKeys) {
-    Class rdkComment = NSClassFromString(@"RDKComment");
+    Class rdkComment = ApolloClassRDKComment;
     if (!rdkComment || !vc || !comments || !candidateKeys) return;
 
     NSArray *bestArray = nil;
@@ -1012,8 +1020,7 @@ static void ApolloAICollectCommentsFromDataModel(UIViewController *vc,
         for (unsigned int i = 0; i < n; i++) {
             const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!type || type[0] != '@') continue;
-            id value = nil;
-            @try { value = object_getIvar(vc, ivars[i]); } @catch (__unused NSException *e) { continue; }
+            id value = object_getIvar(vc, ivars[i]);
             NSArray *arr = nil;
             if ([value isKindOfClass:[NSArray class]]) arr = value;
             else if ([value isKindOfClass:[NSOrderedSet class]]) arr = [(NSOrderedSet *)value array];
@@ -1369,7 +1376,11 @@ static NSString *ApolloAIDecodeHTMLEntities(NSString *s) {
     };
     for (NSString *k in named) s = [s stringByReplacingOccurrencesOfString:k withString:named[k]];
     // Numeric decimal entities (&#160; etc.).
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"&#(\\d{2,7});" options:0 error:nil];
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:@"&#(\\d{2,7});" options:0 error:nil];
+    });
     NSArray<NSTextCheckingResult *> *matches = [re matchesInString:s options:0 range:NSMakeRange(0, s.length)];
     if (matches.count > 0) {
         NSMutableString *out = [s mutableCopy];
@@ -1761,18 +1772,10 @@ static NSAttributedString *ApolloAISummaryAttributedText(NSString *title,
                                                          UIColor *accent) {
     if (state == ApolloAIBoxStateNone) return nil;
 
-    UIColor *secondary = nil;
-    UIColor *tertiary = nil;
-    if (@available(iOS 13.0, *)) {
-        secondary = UIColor.secondaryLabelColor;
-        tertiary = UIColor.tertiaryLabelColor;
-    } else {
-        secondary = UIColor.darkGrayColor;
-        tertiary = UIColor.grayColor;
-    }
+    UIColor *secondary = UIColor.secondaryLabelColor;
+    UIColor *tertiary = UIColor.tertiaryLabelColor;
     UIColor *errorColor = UIColor.systemOrangeColor;
 
-    accent = accent ?: UIColor.systemBlueColor;
     UIFont *titleFont = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     UIFont *chevronFont = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     UIFont *captionFont = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
@@ -1885,7 +1888,7 @@ static ASTextNode *ApolloAIEnsureSummaryNode(id headerNode, BOOL isPost) {
     ASTextNode *textNode = objc_getAssociatedObject(headerNode, key);
     if (textNode) return textNode;
 
-    Class textNodeClass = NSClassFromString(@"ASTextNode");
+    Class textNodeClass = ApolloClassASTextNode;
     if (!textNodeClass) return nil;
     textNode = [[textNodeClass alloc] init];
     textNode.maximumNumberOfLines = 0;
@@ -1900,8 +1903,8 @@ static ASTextNode *ApolloAIEnsureSummaryNode(id headerNode, BOOL isPost) {
         ASTextNode *strongTextNode = weakTextNode;
         id owner = weakHeaderNode;
         if (!owner || !strongTextNode.view) return;
-        SEL action = isPost ? NSSelectorFromString(@"apollo_togglePostSummary")
-                            : NSSelectorFromString(@"apollo_toggleDiscussionSummary");
+        SEL action = isPost ? @selector(apollo_togglePostSummary)
+                            : @selector(apollo_toggleDiscussionSummary);
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:owner action:action];
         [strongTextNode.view addGestureRecognizer:tap];
         strongTextNode.view.accessibilityTraits |= UIAccessibilityTraitButton;
@@ -1918,7 +1921,7 @@ static ASDisplayNode *ApolloAIEnsureBackgroundNode(id headerNode, BOOL isPost) {
     ASDisplayNode *background = objc_getAssociatedObject(headerNode, key);
     if (background) return background;
 
-    background = [[NSClassFromString(@"ASDisplayNode") alloc] init];
+    background = [[ApolloClassASDisplayNode alloc] init];
     UIColor *accent = ApolloAISummaryThemeAccent(headerNode);
     background.backgroundColor = [accent colorWithAlphaComponent:0.10];
     background.cornerRadius = 12.0;
@@ -2142,7 +2145,7 @@ static void ApolloAIApplyRestoredState(id headerNode, NSString *fullName) {
     } else if ([sPostFailed containsObject:fullName]) {
         if (ApolloAISetBoxState(headerNode, YES, ApolloAIBoxStateError,
                                 sFailedErrorMessages[ApolloAIFailedMessageKey(fullName, YES)])) changed = YES;
-    } else if ([sPostInFlight containsObject:fullName]) {
+    } else if (sPostRequests[fullName]) {
         if (ApolloAISetBoxState(headerNode, YES, ApolloAIBoxStateLoading, nil)) changed = YES;
     }
     if (ApolloAICommentCacheMatchesCurrentDetail(fullName)) {
@@ -2150,7 +2153,7 @@ static void ApolloAIApplyRestoredState(id headerNode, NSString *fullName) {
     } else if ([sCommentFailed containsObject:fullName]) {
         if (ApolloAISetBoxState(headerNode, NO, ApolloAIBoxStateError,
                                 sFailedErrorMessages[ApolloAIFailedMessageKey(fullName, NO)])) changed = YES;
-    } else if ([sCommentInFlight containsObject:fullName]) {
+    } else if (sCommentRequests[fullName]) {
         // A generation is genuinely running -> show the loading card.
         if (ApolloAISetBoxState(headerNode, NO, ApolloAIBoxStateLoading, nil)) changed = YES;
     } else if ([sCapturedComments[fullName] count] >= kApolloAIMinComments) {
@@ -2216,8 +2219,7 @@ static void ApolloAIRestoreStateForHeader(id headerNode, NSString *fullName) {
 // suppression is per-view — viewDidDisappear clears it, so a reopen re-attempts.
 static void ApolloAISuppressLinkSummary(NSString *fullName) {
     if (fullName.length == 0) return;
-    [sPostInFlight removeObject:fullName];
-    [sPostRequestIDs removeObjectForKey:fullName];
+    [sPostRequests removeObjectForKey:fullName];
     ApolloAIClearFailure(fullName, YES);        // NOT an error — don't show the triangle
     [sBothSummaryPosts removeObject:fullName];
     if (sEnableTapToSummarize) {
@@ -2403,21 +2405,20 @@ static BOOL ApolloAIAnyHeaderExpanded(NSString *fullName, BOOL isPost) {
 // growing text), keeping the relayout churn in check.
 static const BOOL kApolloAIStreamPartialsToUI = YES;
 
-static void ApolloAIApplyStreamingPartial(NSString *fullName, BOOL isPost, NSString *partial) {
+static void ApolloAIApplyStreamingPartial(ApolloAISummaryRequest *request, NSString *partial) {
     if (!kApolloAIStreamPartialsToUI) return;
-    if (fullName.length == 0 || partial.length < 40) return;
-    NSString *key = [NSString stringWithFormat:@"%@|%@", isPost ? @"post" : @"comment", fullName];
+    if (!ApolloAIRequestIsCurrent(request) || partial.length < 40) return;
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    NSTimeInterval last = sLastPartialUIUpdate[key].doubleValue;
+    NSTimeInterval last = request.lastPartialUIUpdate;
     if (last > 0 && now - last < 0.25) return;
-    sLastPartialUIUpdate[key] = @(now);
+    request.lastPartialUIUpdate = now;
 
     NSString *normalized = ApolloAINormalizeGeneratedSummary(partial);
     // Stream into the (already-visible) loading box. Only pay for a remeasure
     // when expanded, since the collapsed box height doesn't track the text.
-    ApolloAISetBoxStateOnMatchingHeaders(fullName, isPost, ApolloAIBoxStateLoading, normalized);
-    if (ApolloAIAnyHeaderExpanded(fullName, isPost)) {
-        ApolloAIForceHeaderRemeasure(fullName);
+    ApolloAISetBoxStateOnMatchingHeaders(request.fullName, request.isPost, ApolloAIBoxStateLoading, normalized);
+    if (ApolloAIAnyHeaderExpanded(request.fullName, request.isPost)) {
+        ApolloAIForceHeaderRemeasure(request.fullName);
     }
 }
 
@@ -2459,18 +2460,13 @@ static void ApolloAIScheduleCommentGeneration(UIViewController *vc) {
     });
 }
 
-static void ApolloAIScheduleGenerationTimeout(NSString *fullName, BOOL isPost, NSString *requestID) {
-    if (fullName.length == 0 || requestID.length == 0) return;
+static void ApolloAIScheduleGenerationTimeout(ApolloAISummaryRequest *request) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(ApolloAIGenerationTimeoutSeconds() * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        NSMutableSet *inFlight = isPost ? sPostInFlight : sCommentInFlight;
-        NSMutableDictionary *requestIDs = isPost ? sPostRequestIDs : sCommentRequestIDs;
-        if (![inFlight containsObject:fullName] ||
-            ![requestIDs[fullName] isEqualToString:requestID]) return;
-        [sTimedOutRequests addObject:requestID];
-        [inFlight removeObject:fullName];
-        [requestIDs removeObjectForKey:fullName];
-        [(ApolloFoundationModels *)ApolloAIBridge() cancelRequest:requestID];
+        if (!ApolloAIFinishRequest(request)) return;
+        NSString *fullName = request.fullName;
+        BOOL isPost = request.isPost;
+        [(ApolloFoundationModels *)ApolloAIBridge() cancelRequest:request.identifier];
         // A pure link/article post that times out has nothing to show but the
         // article it couldn't fetch/summarize — hide it rather than leave a
         // triangle, same as a no-prose result.
@@ -2514,8 +2510,8 @@ static void ApolloAIRegisterHeaderNode(id headerNode) {
 }
 
 static id ApolloAISummaryLayoutSpec(id textNode, id backgroundNode) {
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
-    Class backgroundClass = NSClassFromString(@"ASBackgroundLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
+    Class backgroundClass = ApolloClassASBackgroundLayoutSpec;
     if (!insetClass || !backgroundClass || !textNode || !backgroundNode) return nil;
     id inner = [insetClass insetLayoutSpecWithInsets:UIEdgeInsetsMake(12.0, 14.0, 12.0, 14.0)
                                                child:textNode];
@@ -2526,7 +2522,7 @@ static id ApolloAISummaryLayoutSpec(id textNode, id backgroundNode) {
 
 // Rebuild a stack spec with new children, preserving its layout attributes.
 static ASStackLayoutSpec *ApolloAIRebuildStack(ASStackLayoutSpec *stack, NSArray *children) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     ASStackLayoutSpec *s = [stackClass stackLayoutSpecWithDirection:stack.direction
                                                             spacing:stack.spacing
                                                      justifyContent:stack.justifyContent
@@ -2546,10 +2542,10 @@ static ASStackLayoutSpec *ApolloAIRebuildStack(ASStackLayoutSpec *stack, NSArray
 // descend to find the anchor rather than only scanning the top level. Returns a
 // rebuilt stack, or nil if no anchor was found anywhere.
 static ASStackLayoutSpec *ApolloAIInsertPostSummary(ASStackLayoutSpec *stack, id spec, NSUInteger depth) {
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (![stack isKindOfClass:stackClass] || depth > 4) return nil;
-    Class linkButtonClass = NSClassFromString(@"_TtC6Apollo14LinkButtonNode");
-    Class markdownClass = NSClassFromString(@"_TtC6Apollo12MarkdownNode");
+    Class linkButtonClass = ApolloClassLinkButtonNode;
+    Class markdownClass = ApolloClassMarkdownNode;
     NSArray *children = stack.children ?: @[];
 
     // 1) Directly below the inline link-preview card.
@@ -2624,14 +2620,14 @@ static id ApolloAIPlaceSummariesPreservingRoot(id rootSpec,
                                                id discussionSummarySpec) {
     if (!rootSpec || (!postSummarySpec && !discussionSummarySpec)) return nil;
 
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (stackClass && [rootSpec isKindOfClass:stackClass]) {
         return ApolloAICloneStackWithSummaries((ASStackLayoutSpec *)rootSpec,
                                                postSummarySpec,
                                                discussionSummarySpec);
     }
 
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     if (insetClass && [rootSpec isKindOfClass:insetClass]) {
         ASInsetLayoutSpec *originalInset = (ASInsetLayoutSpec *)rootSpec;
         id newChild = ApolloAIPlaceSummariesPreservingRoot(originalInset.child,
@@ -2657,12 +2653,12 @@ static void ApolloAILogLayoutChildrenOnce(id headerNode, id rootSpec) {
 
     id current = rootSpec;
     NSUInteger depth = 0;
-    Class insetClass = NSClassFromString(@"ASInsetLayoutSpec");
+    Class insetClass = ApolloClassASInsetLayoutSpec;
     while (insetClass && [current isKindOfClass:insetClass] && depth < 8) {
         current = ((ASInsetLayoutSpec *)current).child;
         depth++;
     }
-    Class stackClass = NSClassFromString(@"ASStackLayoutSpec");
+    Class stackClass = ApolloClassASStackLayoutSpec;
     if (![current isKindOfClass:stackClass]) {
         ApolloLog(@"[AISummary][layout] root=%@ unwrapped=%@",
                   NSStringFromClass([rootSpec class]), NSStringFromClass([current class]));
@@ -2750,11 +2746,13 @@ static void ApolloAIPrepareForController(UIViewController *vc) {
 // Used for the Link summary (article), the Both summary (post + article), and the
 // Post-summary fallback when an article can't be fetched. Factored out so a
 // transient-concurrency retry re-summarizes the cached text without re-fetching.
-static void ApolloAISummarizeArticleText(NSString *fullName, NSString *requestID, NSString *text,
+static void ApolloAISummarizeArticleText(ApolloAISummaryRequest *request, NSString *text,
                                          NSString *instructions, NSInteger responseTokens,
                                          ApolloAISummaryDetail detail) {
     ApolloFoundationModels *bridge = ApolloAIBridge();
-    if (!bridge || fullName.length == 0 || text.length == 0) return;
+    if (!bridge || !ApolloAIRequestIsCurrent(request) || text.length == 0) return;
+    NSString *fullName = request.fullName;
+    NSString *requestID = request.identifier;
     NSString *generationProfile = ApolloAICurrentGenerationProfile();
     ApolloLog(@"[AISummary] generating link/article summary for %@ (%lu chars)…", fullName, (unsigned long)text.length);
     [bridge prepareSession:requestID instructions:instructions];
@@ -2763,17 +2761,10 @@ static void ApolloAISummarizeArticleText(NSString *fullName, NSString *requestID
          instructions:instructions
 maximumResponseTokens:responseTokens
             onPartial:^(NSString *partial) {
-                ApolloAIApplyStreamingPartial(fullName, YES, partial);
+                ApolloAIApplyStreamingPartial(request, partial);
             }
            onComplete:^(NSString *final, NSError *error) {
-                [sPostInFlight removeObject:fullName];
-                if ([sPostRequestIDs[fullName] isEqualToString:requestID]) {
-                    [sPostRequestIDs removeObjectForKey:fullName];
-                }
-                if ([sTimedOutRequests containsObject:requestID]) {
-                    [sTimedOutRequests removeObject:requestID];
-                    return;
-                }
+                if (!ApolloAIFinishRequest(request)) return;
                 if (error.code == 6) return; // navigation cancellation
                 final = ApolloAINormalizeGeneratedSummary(final);
                 if (error || final.length == 0) {
@@ -2801,7 +2792,7 @@ maximumResponseTokens:responseTokens
                     }
                     NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                     ApolloAIRecordFailure(fullName, YES, msg);
-                    ApolloLog(@"[AISummary] link summary error: %@", error ? error.localizedDescription : @"(empty)");
+                    ApolloLogError(@"[AISummary] link summary error: %@", error ? error.localizedDescription : @"(empty)");
                     ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateError, msg);
                     if (ApolloAIAnyHeaderExpanded(fullName, YES)) {
                         ApolloAIForceHeaderRemeasure(fullName);
@@ -2834,13 +2825,11 @@ static void ApolloAIGenerateLinkSummaryForController(NSString *articleURL, NSStr
     ApolloFoundationModels *bridge = ApolloAIBridge();
     if (!bridge || fullName.length == 0 || articleURL.length == 0) return;
 
-    [sPostInFlight addObject:fullName];
+    ApolloAISummaryRequest *request = ApolloAIBeginRequest(fullName, YES, ApolloAIRequestIdentifier(fullName, YES));
     ApolloAIShowLoadingIfIdle(fullName, YES);   // box visible immediately ("Link"/"Post & link summary")
     ApolloAIForceHeaderRemeasure(fullName);
 
-    NSString *requestID = ApolloAIRequestIdentifier(fullName, YES);
-    sPostRequestIDs[fullName] = requestID;
-    ApolloAIScheduleGenerationTimeout(fullName, YES, requestID);   // covers fetch + generation
+    ApolloAIScheduleGenerationTimeout(request);   // covers fetch + generation
 
     // Summarize the fetched article — combined with the post body when there is
     // one ("Post & link" summary), otherwise the article alone ("Link" summary).
@@ -2848,11 +2837,11 @@ static void ApolloAIGenerateLinkSummaryForController(NSString *articleURL, NSStr
         if (postText.length > 0) {
             NSString *article = articleText.length > 2000 ? [articleText substringToIndex:2000] : articleText;
             NSString *combined = [NSString stringWithFormat:@"Post:\n%@\n\nLinked article:\n%@", postText, article];
-            ApolloAISummarizeArticleText(fullName, requestID, combined,
+            ApolloAISummarizeArticleText(request, combined,
                                          ApolloAIBothInstructionsForDetail(detail),
                                          ApolloAIBothResponseTokensForDetail(detail), detail);
         } else {
-            ApolloAISummarizeArticleText(fullName, requestID, articleText,
+            ApolloAISummarizeArticleText(request, articleText,
                                          ApolloAIArticleInstructionsForDetail(detail),
                                          ApolloAIArticleResponseTokensForDetail(detail), detail);
         }
@@ -2866,10 +2855,7 @@ static void ApolloAIGenerateLinkSummaryForController(NSString *articleURL, NSStr
     ApolloAIFetchArticleText(articleURL, ^(NSString *articleText, NSError *fetchError) {
         // Back on the main thread. Bail if this request was superseded (timed out
         // or the user navigated and a newer request took over).
-        if (![sPostInFlight containsObject:fullName] ||
-            ![sPostRequestIDs[fullName] isEqualToString:requestID]) {
-            return;
-        }
+        if (!ApolloAIRequestIsCurrent(request)) return;
         if (fetchError || articleText.length < 200) {
             if (postText.length > 0) {
                 // Couldn't read the article (clip page / SPA / paywall), but we DO
@@ -2879,7 +2865,7 @@ static void ApolloAIGenerateLinkSummaryForController(NSString *articleURL, NSStr
                 [sLinkSummaryPosts removeObject:fullName];
                 ApolloLog(@"[AISummary] article fetch failed for %@ — falling back to post summary (%@)", fullName,
                           fetchError ? fetchError.localizedDescription : @"too little text");
-                ApolloAISummarizeArticleText(fullName, requestID, postText,
+                ApolloAISummarizeArticleText(request, postText,
                                              ApolloAIPostInstructionsForDetail(detail),
                                              ApolloAIPostResponseTokensForDetail(detail), detail);
                 return;
@@ -2937,7 +2923,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
     // Bind the controller's authoritative link identity to the actual Texture
     // header node. Swift Optional ivar encodings can make a later header-only
     // link lookup fail even though this controller lookup succeeded.
-    Class headerClass = NSClassFromString(@"_TtC6Apollo22CommentsHeaderCellNode");
+    Class headerClass = ApolloClassCommentsHeaderCellNode;
     for (id node in ApolloAIAvailableNodes(vc)) {
         if (headerClass && [node isMemberOfClass:headerClass]) {
             ApolloAIRegisterHeaderNodeForFullName(node, fullName);
@@ -3008,13 +2994,13 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             ApolloAIForceHeaderRemeasure(fullName);
     } else if (sEnableTapToSummarize && (haveBody || haveArticle) &&
                ![sTapRequested containsObject:postTapKey] &&
-               ![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
+               !sPostRequests[fullName] && ![sPostFailed containsObject:fullName]) {
         // Tap-to-Summarize is on and the user hasn't tapped this card yet: show the
         // idle "Tap to summarize" prompt instead of generating automatically.
         if (ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateTapToSummarize, nil)) {
             ApolloAIForceHeaderRemeasure(fullName);
         }
-    } else if (![sPostInFlight containsObject:fullName] && ![sPostFailed containsObject:fullName]) {
+    } else if (!sPostRequests[fullName] && ![sPostFailed containsObject:fullName]) {
         // Do NOT consume the tap request here — see the matching note in the comment
         // branch below. A concurrency-deferred retry must still re-drive generation
         // rather than fall back to the idle "Tap to summarize" prompt; the cacheValid /
@@ -3039,32 +3025,24 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             }
             ApolloAIGenerateLinkSummaryForController(articleURL, fullName, haveBody ? postText : nil, postDetail);
         } else if (haveBody) {
-            [sPostInFlight addObject:fullName];
-            ApolloAIShowLoadingIfIdle(fullName, YES);   // box visible immediately
-            ApolloAIForceHeaderRemeasure(fullName);
-            ApolloLog(@"[AISummary] generating POST summary for %@ (%lu chars)…", fullName, (unsigned long)postText.length);
             NSString *requestID = objc_getAssociatedObject(vc, &kApolloAIProvisionalPostRequestKey);
             if (requestID.length == 0) requestID = ApolloAIRequestIdentifier(fullName, YES);
             objc_setAssociatedObject(vc, &kApolloAIProvisionalPostRequestKey, nil, OBJC_ASSOCIATION_ASSIGN);
+            ApolloAISummaryRequest *request = ApolloAIBeginRequest(fullName, YES, requestID);
+            ApolloAIShowLoadingIfIdle(fullName, YES);   // box visible immediately
+            ApolloAIForceHeaderRemeasure(fullName);
+            ApolloLog(@"[AISummary] generating POST summary for %@ (%lu chars)…", fullName, (unsigned long)postText.length);
             [bridge prepareSession:requestID instructions:ApolloAIPostInstructionsForDetail(postDetail)];
-            sPostRequestIDs[fullName] = requestID;
-            ApolloAIScheduleGenerationTimeout(fullName, YES, requestID);
+            ApolloAIScheduleGenerationTimeout(request);
             [bridge summarize:postText
                    identifier:requestID
                  instructions:ApolloAIPostInstructionsForDetail(postDetail)
        maximumResponseTokens:ApolloAIPostResponseTokensForDetail(postDetail)
                     onPartial:^(NSString *partial) {
-                        ApolloAIApplyStreamingPartial(fullName, YES, partial);
+                        ApolloAIApplyStreamingPartial(request, partial);
                     }
                    onComplete:^(NSString *final, NSError *error) {
-                        [sPostInFlight removeObject:fullName];
-                        if ([sPostRequestIDs[fullName] isEqualToString:requestID]) {
-                            [sPostRequestIDs removeObjectForKey:fullName];
-                        }
-                        if ([sTimedOutRequests containsObject:requestID]) {
-                            [sTimedOutRequests removeObject:requestID];
-                            return;
-                        }
+                        if (!ApolloAIFinishRequest(request)) return;
                         if (error.code == 6) return; // navigation cancellation
                         final = ApolloAINormalizeGeneratedSummary(final);
                         if (error || final.length == 0) {
@@ -3081,7 +3059,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                             }
                             NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                             ApolloAIRecordFailure(fullName, YES, msg);
-                            ApolloLog(@"[AISummary] post summary error: %@", error ? error.localizedDescription : @"(empty)");
+                            ApolloLogError(@"[AISummary] post summary error: %@", error ? error.localizedDescription : @"(empty)");
                             ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateError, msg);
                             if (ApolloAIAnyHeaderExpanded(fullName, YES)) {
                                 ApolloAIForceHeaderRemeasure(fullName);
@@ -3149,7 +3127,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
         // matching the post branch above. Closes the comment side of #526.
         if (ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateReady, cachedCommentSummary))
             ApolloAIForceHeaderRemeasure(fullName);
-    } else if (![sCommentInFlight containsObject:fullName] &&
+    } else if (!sCommentRequests[fullName] &&
                ![sCommentFailed containsObject:fullName]) {
         NSUInteger commentCount = 0;
         NSString *commentSignature = nil;
@@ -3168,44 +3146,36 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
             }
             } else {
             // Do NOT consume the tap request here. A transient-concurrency (code 9)
-            // deferral clears sCommentInFlight and re-enters this function ~0.75s later;
+            // deferral retires the request and re-enters this function ~0.75s later;
             // if the key were already gone we'd fall back into the idle branch above and
             // silently revert to "Tap to summarize" instead of finishing the summary the
             // user asked for (common on posts that also have a post/link summary racing
             // for the on-device model). The key is harmless once generation starts: the
             // cache-hit / in-flight / failed guards all short-circuit before this gate on
             // re-entry, and the whole set is cleared with the caches on reset.
+            NSString *requestID = objc_getAssociatedObject(vc, &kApolloAIProvisionalCommentRequestKey);
+            if (requestID.length == 0) requestID = ApolloAIRequestIdentifier(fullName, NO);
+            objc_setAssociatedObject(vc, &kApolloAIProvisionalCommentRequestKey, nil, OBJC_ASSOCIATION_ASSIGN);
+            ApolloAISummaryRequest *request = ApolloAIBeginRequest(fullName, NO, requestID);
             ApolloAIShowLoadingIfIdle(fullName, NO);
             ApolloAIForceHeaderRemeasure(fullName);
-            [sCommentInFlight addObject:fullName];
             // Ground the discussion summary in the post it is replying to.
             NSString *context = ApolloAIPostContextForComments(link);
             NSString *commentPrompt = context.length > 0
                 ? [NSString stringWithFormat:@"%@\nComments:\n%@", context, commentText]
                 : commentText;
             ApolloLog(@"[AISummary] generating COMMENT summary for %@…", fullName);
-            NSString *requestID = objc_getAssociatedObject(vc, &kApolloAIProvisionalCommentRequestKey);
-            if (requestID.length == 0) requestID = ApolloAIRequestIdentifier(fullName, NO);
-            objc_setAssociatedObject(vc, &kApolloAIProvisionalCommentRequestKey, nil, OBJC_ASSOCIATION_ASSIGN);
             [bridge prepareSession:requestID instructions:ApolloAICommentInstructionsForDetail(commentDetail)];
-            sCommentRequestIDs[fullName] = requestID;
-            ApolloAIScheduleGenerationTimeout(fullName, NO, requestID);
+            ApolloAIScheduleGenerationTimeout(request);
             [bridge summarize:commentPrompt
                    identifier:requestID
                  instructions:ApolloAICommentInstructionsForDetail(commentDetail)
        maximumResponseTokens:ApolloAICommentResponseTokensForDetail(commentDetail)
                     onPartial:^(NSString *partial) {
-                        ApolloAIApplyStreamingPartial(fullName, NO, partial);
+                        ApolloAIApplyStreamingPartial(request, partial);
                     }
                    onComplete:^(NSString *final, NSError *error) {
-                        [sCommentInFlight removeObject:fullName];
-                        if ([sCommentRequestIDs[fullName] isEqualToString:requestID]) {
-                            [sCommentRequestIDs removeObjectForKey:fullName];
-                        }
-                        if ([sTimedOutRequests containsObject:requestID]) {
-                            [sTimedOutRequests removeObject:requestID];
-                            return;
-                        }
+                        if (!ApolloAIFinishRequest(request)) return;
                         if (error.code == 6) return; // navigation cancellation
                         final = ApolloAINormalizeGeneratedSummary(final);
                         if (error || final.length == 0) {
@@ -3222,7 +3192,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                             }
                             NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                             ApolloAIRecordFailure(fullName, NO, msg);
-                            ApolloLog(@"[AISummary] comment summary error: %@", error ? error.localizedDescription : @"(empty)");
+                            ApolloLogError(@"[AISummary] comment summary error: %@", error ? error.localizedDescription : @"(empty)");
                             ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateError, msg);
                             if (ApolloAIAnyHeaderExpanded(fullName, NO)) {
                                 ApolloAIForceHeaderRemeasure(fullName);
@@ -3333,18 +3303,16 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     NSString *fullName = ApolloAIFullNameForController(vc);
     if (fullName.length > 0) {
         ApolloFoundationModels *bridge = ApolloAIBridge();
-        NSString *activePostID = sPostRequestIDs[fullName] ?: ApolloAIRequestIdentifier(fullName, YES);
-        NSString *activeCommentID = sCommentRequestIDs[fullName] ?: ApolloAIRequestIdentifier(fullName, NO);
+        NSString *activePostID = sPostRequests[fullName].identifier ?: ApolloAIRequestIdentifier(fullName, YES);
+        NSString *activeCommentID = sCommentRequests[fullName].identifier ?: ApolloAIRequestIdentifier(fullName, NO);
+        [sPostRequests removeObjectForKey:fullName];
+        [sCommentRequests removeObjectForKey:fullName];
         [bridge cancelRequest:activePostID];
         [bridge cancelRequest:activeCommentID];
         NSString *provisional = objc_getAssociatedObject(vc, &kApolloAIProvisionalPostRequestKey);
         if (provisional.length > 0) [bridge cancelRequest:provisional];
         NSString *provisionalComment = objc_getAssociatedObject(vc, &kApolloAIProvisionalCommentRequestKey);
         if (provisionalComment.length > 0) [bridge cancelRequest:provisionalComment];
-        [sPostInFlight removeObject:fullName];
-        [sCommentInFlight removeObject:fullName];
-        [sPostRequestIDs removeObjectForKey:fullName];
-        [sCommentRequestIDs removeObjectForKey:fullName];
         ApolloAIClearFailure(fullName, YES);
         ApolloAIClearFailure(fullName, NO);
         // Suppression is per-view, exactly like sPostFailed above: a link we hid
@@ -3399,8 +3367,7 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
         id sectionController = weakSelf;
         if (!sectionController) return;
         UIViewController *vc = sVisibleCommentsController;
-        Ivar commentIvar = class_getInstanceVariable(object_getClass(sectionController), "comment");
-        id comment = commentIvar ? object_getIvar(sectionController, commentIvar) : nil;
+        id comment = ApolloObjectIvar(sectionController, "comment");
         if (!vc || !ApolloAICommentIsEligible(comment)) return;
         if (ApolloAICaptureCommentForController(comment, vc)) {
             ApolloAIScheduleCommentGeneration(vc);
@@ -3410,20 +3377,15 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
 
 %end
 
-%hook _TtC6Apollo15CommentCellNode
-
-- (void)didLoad {
-    %orig;
-    if (!sEnableAISummaries) return;
-    // Weak capture: comment cells die during collapse/scroll churn before the main
-    // queue drains (#630 round-5 crash mechanism).
-    __weak __typeof__(self) weakSelf = self;
+// Weak capture: comment cells die during collapse/scroll churn before the main
+// queue drains (#630 round-5 crash mechanism).
+static void ApolloAICaptureCommentCellNodeLater(id node) {
+    __weak id weakNode = node;
     dispatch_async(dispatch_get_main_queue(), ^{
-        // __strong is load-bearing: in a hook, __typeof__(self) is __unsafe_unretained (owns nothing).
-        __strong __typeof__(self) cellNode = weakSelf;
+        id cellNode = weakNode;
         if (!cellNode) return;
         UIViewController *vc = sVisibleCommentsController;
-        id comment = ApolloAICommentFromCellNode((id)cellNode);
+        id comment = ApolloAICommentFromCellNode(cellNode);
         if (!vc || !comment) return;
         if (ApolloAICaptureCommentForController(comment, vc)) {
             ApolloAIScheduleCommentGeneration(vc);
@@ -3431,20 +3393,18 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     });
 }
 
+%hook _TtC6Apollo15CommentCellNode
+
+- (void)didLoad {
+    %orig;
+    if (!sEnableAISummaries) return;
+    ApolloAICaptureCommentCellNodeLater((id)self);
+}
+
 - (void)didEnterPreloadState {
     %orig;
     if (!sEnableAISummaries) return;
-    __weak __typeof__(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        __strong __typeof__(self) cellNode = weakSelf;
-        if (!cellNode) return;
-        UIViewController *vc = sVisibleCommentsController;
-        id comment = ApolloAICommentFromCellNode((id)cellNode);
-        if (!vc || !comment) return;
-        if (ApolloAICaptureCommentForController(comment, vc)) {
-            ApolloAIScheduleCommentGeneration(vc);
-        }
-    });
+    ApolloAICaptureCommentCellNodeLater((id)self);
 }
 
 %end
@@ -3536,8 +3496,10 @@ static void ApolloAILogTableStructure(UIViewController *vc) {
     ApolloAIBoxState postState = sEnableAIPostSummaries ? ApolloAIGetBoxState((id)self, YES) : ApolloAIBoxStateNone;
     ApolloAIBoxState commentState = sEnableAICommentSummaries ? ApolloAIGetBoxState((id)self, NO) : ApolloAIBoxStateNone;
     if (postState == ApolloAIBoxStateNone && commentState == ApolloAIBoxStateNone) return originalSpec;
-    ApolloLog(@"[AISummary][UI] composing header layout postState=%ld commentState=%ld",
-              (long)postState, (long)commentState);
+    // Every layout pass of the comments header: debug level, logged directly
+    // so the pass never builds an NSString.
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AISummary][UI] composing header layout postState=%ld commentState=%ld",
+                 (long)postState, (long)commentState);
 
     id postSummarySpec = nil;
     id discussionSummarySpec = nil;
@@ -3606,10 +3568,9 @@ static void ApolloAIDevvitSettingsChanged(void) {
         if (!link || !ApolloDevvitLinkShowsWidget(link)) continue;
         NSString *fullName = ApolloAILinkFullName(link);
         if (fullName.length == 0) continue;
-        NSString *requestID = sPostRequestIDs[fullName];
+        NSString *requestID = sPostRequests[fullName].identifier;
+        [sPostRequests removeObjectForKey:fullName];
         if (requestID.length) [ApolloAIBridge() cancelRequest:requestID];
-        [sPostInFlight removeObject:fullName];
-        [sPostRequestIDs removeObjectForKey:fullName];
         [sLinkSummaryPosts removeObject:fullName];
         [sBothSummaryPosts removeObject:fullName];
         [sPostEmpty removeObject:fullName];

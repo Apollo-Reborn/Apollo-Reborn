@@ -306,7 +306,7 @@ void ApolloPinnedPreviewClearSpacerCell(UITableViewCell *cell) {
 // public fallbacks: the table's layoutMargins for the inset, and the familiar
 // 10pt (26pt under Liquid Glass) for the corner radius.
 UIEdgeInsets ApolloPinnedPreviewSectionContentInset(UITableView *table) {
-    SEL sel = NSSelectorFromString(@"_sectionContentInset");
+    SEL sel = @selector(_sectionContentInset);
     if ([table respondsToSelector:sel]) {
         NSMethodSignature *sig = [table methodSignatureForSelector:sel];
         if (sig && strcmp(sig.methodReturnType, @encode(UIEdgeInsets)) == 0) {
@@ -318,7 +318,7 @@ UIEdgeInsets ApolloPinnedPreviewSectionContentInset(UITableView *table) {
 }
 
 CGFloat ApolloPinnedPreviewSectionCornerRadius(UITableView *table) {
-    SEL sel = NSSelectorFromString(@"_sectionCornerRadius");
+    SEL sel = @selector(_sectionCornerRadius);
     if ([table respondsToSelector:sel]) {
         NSMethodSignature *sig = [table methodSignatureForSelector:sel];
         if (sig && strcmp(sig.methodReturnType, @encode(double)) == 0) {
