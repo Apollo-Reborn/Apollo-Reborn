@@ -2,6 +2,8 @@
 
 #import "ApolloCommon.h"            // ApolloLog, ApolloAllWindows
 #import "ApolloState.h"
+#import "ApolloWebAuthPopupViewController.h"
+#import "ApolloWebAuthViewController.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloWebSessionStore.h"   // ApolloActiveWebSessionUsername, ApolloWebSessionUsernames
 #import "UIWindow+Apollo.h"
@@ -101,12 +103,15 @@ BOOL ApolloReduceRateLimitingOfferAtRateLimit(NSTimeInterval seconds) {
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.isKeyWindow && !window.hidden) { top = [window visibleViewController]; break; }
     }
-    // Never stack on another alert or the sign-in sheet, or present mid-transition
-    // (the first 429 can land while launch is still building the window). The
-    // toast covers this limit; the offer waits for the next one.
+    // Never stack on another alert or a sign-in sheet (either sign-in, or the
+    // Google/Apple popup above one), or present mid-transition (the first 429
+    // can land while launch is still building the window). The toast covers
+    // this limit; the offer waits for the next one.
     if (!top || !ApolloReduceRateLimitingCanPresentOn(top) ||
         [top isKindOfClass:[UIAlertController class]] ||
-        [top isKindOfClass:[ApolloWebSessionLoginViewController class]]) {
+        [top isKindOfClass:[ApolloWebSessionLoginViewController class]] ||
+        [top isKindOfClass:[ApolloWebAuthViewController class]] ||
+        [top isKindOfClass:[ApolloWebAuthPopupViewController class]]) {
         return NO;
     }
     NSString *wait = seconds < 60.0

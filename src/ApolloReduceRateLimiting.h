@@ -38,7 +38,9 @@ void ApolloReduceRateLimitingSetEnabled(BOOL enabled);
 
 // Sign-in offer. When it hasn't been made yet and the setting is off, presents
 // the one-time alert on `presenter` and calls `then` once it's answered;
-// otherwise calls `then` straight away. Main thread.
+// otherwise calls `then` straight away. A `presenter` that's already presenting
+// (a Google/Apple sign-in popup: close it first with ApolloWebAuthClosePopups)
+// counts as busy, and the offer waits for the first rate limit. Main thread.
 void ApolloReduceRateLimitingOfferAtSignIn(UIViewController *presenter, void (^then)(void));
 
 // Rate-limit offer for an API-key-free account that never saw the sign-in one:

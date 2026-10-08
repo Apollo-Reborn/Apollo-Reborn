@@ -671,8 +671,13 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     // reads, so it isn't asked.
     if (self.requiredUsername.length == 0) {
         __weak typeof(self) weakSelf = self;
-        ApolloReduceRateLimitingOfferAtSignIn(self, ^{
-            [weakSelf _completeFinishWithUser:username accountSynthesized:synthesized];
+        // The offer is an alert from this sheet, so a Google/Apple popup still
+        // open above it closes first, as it does before "Signed In" below;
+        // otherwise the sheet looks busy and the offer is skipped.
+        ApolloWebAuthClosePopups(self, ^{
+            ApolloReduceRateLimitingOfferAtSignIn(self, ^{
+                [weakSelf _completeFinishWithUser:username accountSynthesized:synthesized];
+            });
         });
         return;
     }
