@@ -129,6 +129,12 @@ BOOL ApolloIsJunkNumericTitle(NSString *title);
 // when no usable name can be derived (e.g. a raw IP host).
 NSString *ApolloWebsiteNameFromHost(NSString *host);
 
+// Real mobile Safari user agent for this OS version (the same string the
+// scrape web views send). WKWebView's default UA is missing the trailing
+// "Version/x ... Safari" token, which marks requests as coming from an
+// embedded web view; Google's sign-in can refuse those.
+NSString *ApolloMobileSafariUserAgent(void);
+
 // Returns the URL string a LinkButtonNode is presenting, by reading either
 // the obj-c .url getter (older iOS) or the urlTextNode's attributed text
 // (iOS 26+ where the Swift URL ivar is no longer ObjC-bridged). May return

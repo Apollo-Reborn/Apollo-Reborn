@@ -1,4 +1,5 @@
 #import "ApolloWebSessionLoginViewController.h"
+#import "ApolloWebAuthPopupViewController.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloAccountCredentials.h"
@@ -20,7 +21,7 @@
 // keeps them (Hydra's trick).
 static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 
-@interface ApolloWebSessionLoginViewController () <WKNavigationDelegate>
+@interface ApolloWebSessionLoginViewController () <WKNavigationDelegate, WKUIDelegate>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, copy) NSURL *loginURL;
@@ -213,6 +214,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
     self.webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:config];
     self.webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
     [self.view addSubview:self.webView];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -712,15 +714,19 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         BOOL hasSession = ApolloWebSessionFor(username).cookieHeader.length > 0;
         [self _dismissWithAuthenticationSuccess:hasSession];
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloWebAuthClosePopups(self, ^{
+        [self presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 - (void)_dismissWithAuthenticationSuccess:(BOOL)success {
     void (^completion)(BOOL) = self.authenticationCompletion;
     self.authenticationCompletion = nil;
-    [self.navigationController dismissViewControllerAnimated:YES completion:^{
-        if (completion) completion(success);
-    }];
+    ApolloWebAuthClosePopups(self, ^{
+        [self.navigationController dismissViewControllerAnimated:YES completion:^{
+            if (completion) completion(success);
+        }];
+    });
 }
 
 #pragma mark - Opportunistic feature-session harvest (from OAuth)
@@ -826,6 +832,20 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
             }
         });
     });
+}
+
+#pragma mark - WKUIDelegate
+
+// "Continue with Google" and "Continue with Apple" open their sign-in page in a
+// popup window (#1342); see ApolloWebAuthPopupViewController.
+- (WKWebView *)webView:(WKWebView *)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+               forNavigationAction:(WKNavigationAction *)navigationAction
+                    windowFeatures:(WKWindowFeatures *)windowFeatures {
+    if (self.finished) return nil;
+    return [ApolloWebAuthPopupViewController presentPopupFromViewController:self
+                                                              configuration:configuration
+                                                           navigationAction:navigationAction];
 }
 
 #pragma mark - WKNavigationDelegate

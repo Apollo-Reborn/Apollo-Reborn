@@ -883,6 +883,16 @@ BOOL ApolloIsJunkNumericTitle(NSString *title) {
     return NO;
 }
 
+NSString *ApolloMobileSafariUserAgent(void) {
+    NSArray<NSString *> *parts = [UIDevice.currentDevice.systemVersion componentsSeparatedByString:@"."];
+    NSString *major = parts.count > 0 ? parts[0] : @"18";
+    NSString *minor = parts.count > 1 ? parts[1] : @"0";
+    BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+    NSString *os = pad ? [NSString stringWithFormat:@"iPad; CPU OS %@_%@ like Mac OS X", major, minor]
+                       : [NSString stringWithFormat:@"iPhone; CPU iPhone OS %@_%@ like Mac OS X", major, minor];
+    return [NSString stringWithFormat:@"Mozilla/5.0 (%@) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/%@.%@ Mobile/15E148 Safari/604.1", os, major, minor];
+}
+
 NSString *ApolloWebsiteNameFromHost(NSString *host) {
     if (host.length == 0) return nil;
 
