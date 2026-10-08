@@ -43,9 +43,7 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
     [traits performAsCurrentTraitCollection:^{
         if ([@[@"reborn", @"buy-coffee", @"appearance", @"app-icon", @"gestures", @"filters", @"pixel-pals", @"general"] containsObject:identifier]) {
             UIImage *native = ApolloSettingsNativeShortcutImage(ApolloSettingsShortcutTitle(identifier));
-            if (native) image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)] imageWithActions:^(UIGraphicsImageRendererContext *context) {
-                [native drawInRect:CGRectMake(0, 0, size, size)];
-            }];
+            if (native) image = ApolloResizeSettingsIconImage(native, size, traits);
         } else if ([identifier isEqualToString:@"feature-requests"] || [identifier isEqualToString:@"bug-reports"]) {
             BOOL requests = [identifier isEqualToString:@"feature-requests"];
             image = ApolloEmojiSettingsIcon(requests ? @"💡" : @"🐛", requests ? UIColor.systemYellowColor : UIColor.systemRedColor, size);
@@ -70,12 +68,10 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
             else if ([identifier isEqualToString:@"accounts-api-keys"]) color = UIColor.systemGrayColor;
             else if ([identifier isEqualToString:@"tag-filters"] || [identifier isEqualToString:@"crash-reports"]) color = UIColor.systemOrangeColor;
             UIImage *tile = ApolloSettingsIconTileImage(symbols[identifier], color, traits);
-            image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)] imageWithActions:^(UIGraphicsImageRendererContext *context) {
-                [tile drawInRect:CGRectMake(0, 0, size, size)];
-            }];
+            image = ApolloResizeSettingsIconImage(tile, size, traits);
         }
     }];
-    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+    return image;
 }
 
 @interface ApolloSettingsShortcutsViewController ()

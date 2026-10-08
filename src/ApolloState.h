@@ -209,6 +209,12 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
 // bottom (classic) instead of the top-center pill. Opt-in; default OFF via
 // registerDefaults. Temporary stopgap for issue #387. See ApolloIPadTabBarBottom.xm.
 extern BOOL sIPadTabBarBottom;
+typedef NS_ENUM(NSInteger, ApolloSettingsIconAppearance) {
+    ApolloSettingsIconAppearanceSystem = 0,
+    ApolloSettingsIconAppearanceLight,
+    ApolloSettingsIconAppearanceDark,
+};
+extern ApolloSettingsIconAppearance sSettingsIconAppearance;
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
 extern BOOL sTabBarSwipeNavigation;

@@ -350,7 +350,7 @@ static UIImage *LGPreviewImage(NSString *iconID, NSString *variant) {
     UIImage *cached = [sDecodedCache objectForKey:name];
     if (cached) return cached;
 
-    UIImage *image = [UIImage imageNamed:name inBundle:NSBundle.mainBundle compatibleWithTraitCollection:nil];
+    UIImage *image = ApolloAppIconPreview(iconID, variant);
     if (!image) return nil;
 
     UIGraphicsImageRendererFormat *format = UIGraphicsImageRendererFormat.preferredFormat;

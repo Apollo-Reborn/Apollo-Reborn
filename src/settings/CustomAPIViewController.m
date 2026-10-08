@@ -3,6 +3,7 @@
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
+#import "ApolloAppIcon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloNotificationBackend.h"
@@ -153,8 +154,96 @@ static BOOL sLinkPreviewModeRefreshPending = NO;
 static NSString *sPendingLinkPreviewModeRefreshArea = nil;
 static NSInteger sPendingLinkPreviewModeRefreshMode = ApolloLinkPreviewModeFull;
 
-static NSString *const kApolloRebornSubredditName = @"ApolloReborn";
-static char kAboutSubredditIconTaskKey;
+static UIImage *ApolloAboutHeliosIcon(UITraitCollection *traits) {
+    static UIImage *lightArtwork;
+    static UIImage *darkArtwork;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lightArtwork = ApolloAppIconPreview(@"helios", @"default");
+        darkArtwork = ApolloAppIconPreview(@"helios", @"dark");
+    });
+    if (!lightArtwork || !darkArtwork) return nil;
+
+    traits = traits ?: UITraitCollection.currentTraitCollection;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = traits.displayScale ?: UIScreen.mainScreen.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+        initWithSize:CGSizeMake(29.0, 29.0) format:format];
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:2];
+    for (NSNumber *style in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
+        UIImage *artwork = style.integerValue == UIUserInterfaceStyleDark ? darkArtwork : lightArtwork;
+        UIImage *image = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+            [artwork drawInRect:CGRectMake(0, 0, 29.0, 29.0)];
+        }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+        [images addObject:image];
+    }
+    return ApolloSettingsIconImage(images[0], images[1], traits);
+}
+
+static UIImage *ApolloGitHubSettingsArtwork(UIImage *artwork, UIImage *darkArtwork,
+                                            UITraitCollection *traits) {
+    if (!artwork || !darkArtwork) return nil;
+    return ApolloSettingsTileImage(UIColor.whiteColor, 29.0, traits,
+                                  ^(BOOL dark, __unused UIColor *resolvedColor) {
+        CGContextRef context = UIGraphicsGetCurrentContext();
+        CGContextSaveGState(context);
+        if (dark) {
+            CGRect rect = CGRectMake(3.5, 3.5, 22.0, 22.0);
+            [darkArtwork drawInRect:rect];
+        } else {
+            CGRect rect = CGRectMake(0, 0, 29.0, 29.0);
+            CGContextClearRect(context, rect);
+            [[UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:6.5] addClip];
+            [artwork drawInRect:rect];
+        }
+        CGContextRestoreGState(context);
+    });
+}
+
+static UIImage *ApolloAboutGitHubMark(UIImage *artwork) {
+    static UIImage *mark;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGImageRef source = artwork.CGImage;
+        if (!source) return;
+        size_t width = CGImageGetWidth(source), height = CGImageGetHeight(source);
+        if (!width || !height || width > 512 || height > 512) return;
+        uint8_t *pixels = (uint8_t *)calloc(width * height, 4);
+        if (!pixels) return;
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width * 4, colorSpace,
+                                                     kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(colorSpace);
+        if (!context) { free(pixels); return; }
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
+        size_t minX = width, minY = height, maxX = 0, maxY = 0;
+        for (size_t y = 0; y < height; y++) {
+            for (size_t x = 0; x < width; x++) {
+                uint8_t *pixel = pixels + (y * width + x) * 4;
+                // Recover the black logo's coverage as an antialiased white mask.
+                unsigned luminance = (299 * pixel[0] + 587 * pixel[1] + 114 * pixel[2] + 500) / 1000;
+                uint8_t coverage = (uint8_t)(pixel[3] - MIN(luminance, pixel[3]));
+                pixel[0] = pixel[1] = pixel[2] = pixel[3] = coverage;
+                if (!coverage) continue;
+                minX = MIN(minX, x); minY = MIN(minY, y);
+                maxX = MAX(maxX, x); maxY = MAX(maxY, y);
+            }
+        }
+        if (minX != width) {
+            CGImageRef mask = CGBitmapContextCreateImage(context);
+            CGImageRef cropped = mask ? CGImageCreateWithImageInRect(mask,
+                CGRectMake(minX, minY, maxX - minX + 1, maxY - minY + 1)) : NULL;
+            if (cropped) {
+                mark = [UIImage imageWithCGImage:cropped scale:artwork.scale orientation:artwork.imageOrientation];
+                CGImageRelease(cropped);
+            }
+            if (mask) CGImageRelease(mask);
+        }
+        CGContextRelease(context);
+        free(pixels);
+    });
+    return mark;
+}
 
 @interface ApolloFeedShortcutsPreviewState : NSObject
 @property (nonatomic, copy) NSArray<NSNumber *> *visibleIndexes;
@@ -882,7 +971,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 #pragma mark - View Lifecycle
 
 // The hub and its group screens share this class family; hub-only behavior
-// (currently About icon prefetch) keys off this.
+// (including the API-key setup footer) keys off this.
 - (BOOL)apollo_isHub {
     return [self class] == [CustomAPIViewController class];
 }
@@ -900,10 +989,6 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (![self apollo_isHub]) return;
     // What the first table load renders; viewWillAppear compares against it.
     self.setupFooterShowsKeyNudge = sRedditClientId.length == 0;
-
-    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:kApolloRebornSubredditName completion:^(ApolloSubredditInfo *info) {
-        (void)info;
-    }];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -3200,9 +3285,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             [weakSelf presentURLInApolloBrowser:[NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn"]];
         }];
 
-    // Escape hatch: this cell owns an async subreddit-icon fetch whose
-    // in-flight task is cancelled/replaced via an associated object on the
-    // cell (see -configureAboutSubredditCell:subredditName:).
+    // Custom subtitle row with the bundled adaptive Helios icon.
     ApolloSettingsRow *subreddit =
         [ApolloSettingsRow customRowWithID:@"about.subreddit"
                                       cell:^UITableViewCell *(__unused UITableView *tableView, __unused ApolloSettingsRow *row) {
@@ -3212,7 +3295,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                                                 b64Image:nil];
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-            [weakSelf configureAboutSubredditCell:cell subredditName:kApolloRebornSubredditName];
+            cell.imageView.image = ApolloAboutHeliosIcon(tableView.traitCollection);
             return cell ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
         }
                                   onSelect:^{
@@ -3307,6 +3390,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                     title:@"Version"
                                    detail:^NSString * { return @TWEAK_VERSION; }
                                  onSelect:nil];
+    version.iconSystemName = @"number";
+    version.iconTileColor = [UIColor systemGrayColor];
 
     // Sideloaded builds can't replace themselves, so this reports the newest
     // release and hands off to the user's sideloader (ApolloUpdateChecker.m).
@@ -3317,6 +3402,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                  onSelect:^{
             ApolloUpdateCheckNow(^{ [weakSelf reloadRowWithID:@"about.updates"]; });
         }];
+    updates.iconSystemName = @"arrow.triangle.2.circlepath";
+    updates.iconTileColor = [UIColor systemBlueColor];
     updates.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"About"
@@ -3574,61 +3661,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return url.host.length > 0;
 }
 
-- (void)configureAboutSubredditCell:(UITableViewCell *)cell subredditName:(NSString *)subredditName {
-    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
-    if (existingTask) {
-        [existingTask cancel];
-        objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-
-    cell.imageView.image = ApolloEmojiSettingsIcon(@"👽", [UIColor systemOrangeColor], 29.0);
-
-    ApolloSubredditInfo *cached = [[ApolloSubredditInfoCache sharedCache] cachedInfoForSubreddit:subredditName];
-    if (cached.iconURL) {
-        [self loadAboutSubredditIconFromURL:cached.iconURL intoCell:cell];
-    }
-
-    __weak UITableViewCell *weakCell = cell;
-    __weak CustomAPIViewController *weakSelf = self;
-    [[ApolloSubredditInfoCache sharedCache] requestInfoForSubreddit:subredditName completion:^(ApolloSubredditInfo *info) {
-        __strong UITableViewCell *strongCell = weakCell;
-        CustomAPIViewController *strongSelf = weakSelf;
-        if (!strongCell || !strongSelf || !info.iconURL) return;
-        [strongSelf loadAboutSubredditIconFromURL:info.iconURL intoCell:strongCell];
-    }];
-}
-
-- (void)loadAboutSubredditIconFromURL:(NSURL *)iconURL intoCell:(UITableViewCell *)cell {
-    if (!iconURL || !cell) return;
-
-    NSURLSessionDataTask *existingTask = objc_getAssociatedObject(cell, &kAboutSubredditIconTaskKey);
-    if (existingTask) {
-        [existingTask cancel];
-    }
-
-    __weak UITableViewCell *weakCell = cell;
-    __weak typeof(self) weakSelf = self;
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:iconURL
-                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (error || data.length == 0) return;
-        UIImage *image = [UIImage imageWithData:data];
-        if (!image) return;
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UITableViewCell *strongCell = weakCell;
-            typeof(self) strongSelf = weakSelf;
-            if (!strongCell || !strongSelf) return;
-            // Keep remote subreddit artwork in the same Settings-style tile
-            // geometry as every other About icon. A circular replacement here
-            // made the row visibly jump shape after the async image arrived.
-            strongCell.imageView.image = [strongSelf roundedImage:image size:29 cornerRadius:6.5];
-            [strongCell setNeedsLayout];
-        });
-    }];
-    objc_setAssociatedObject(cell, &kAboutSubredditIconTaskKey, task, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [task resume];
-}
-
 - (UITableViewCell *)subtitleCellWithIdentifier:(NSString *)identifier
                                           title:(NSString *)title
                                        subtitle:(NSString *)subtitle
@@ -3644,7 +3676,11 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     [self apollo_applyPrimaryTextColorToCell:cell];
     if (b64Image.length > 0) {
-        cell.imageView.image = [self roundedImage:[self decodeBase64ToImage:b64Image] size:29 cornerRadius:6.5];
+        UIImage *artwork = [self decodeBase64ToImage:b64Image];
+        UIImage *githubIcon = [identifier isEqualToString:@"Cell_About_GitHub"]
+            ? ApolloGitHubSettingsArtwork(artwork, ApolloAboutGitHubMark(artwork), self.tableView.traitCollection)
+            : nil;
+        cell.imageView.image = githubIcon ?: [self roundedImage:artwork size:29 cornerRadius:6.5];
     } else if (!cell.imageView.image) {
         cell.imageView.image = nil;
     }

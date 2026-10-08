@@ -118,66 +118,72 @@ typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
 
 #pragma mark - Icon tiles
 
-// Settings-app-style icon tile: a white SF symbol centered on a colored 29pt
-// rounded square. Cached per symbol + resolved color; the color is resolved
-// against the presenting view's traits because system colors differ slightly
-// between light and dark. Unknown symbol names fail soft to a plain tile.
 UIColor *ApolloThemeManagerIconColor(void) {
     return UIColor.systemIndigoColor;
 }
 
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, UITraitCollection *traits) {
-    static NSCache<NSString *, UIImage *> *cache;
+    static NSCache<NSArray *, UIImageAsset *> *cache;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ cache = [NSCache new]; });
 
-    UIColor *resolved = [(tileColor ?: UIColor.systemGrayColor) resolvedColorWithTraitCollection:traits];
-    CGFloat r = 0, g = 0, b = 0, a = 1;
-    if (![resolved getRed:&r green:&g blue:&b alpha:&a]) {
-        CGFloat w = 0.5;
-        [resolved getWhite:&w alpha:&a];
-        r = g = b = w;
-    }
-    NSString *key = [NSString stringWithFormat:@"%@|%.3f|%.3f|%.3f|%.3f", symbolName, r, g, b, a];
-    UIImage *cached = [cache objectForKey:key];
-    if (cached) return cached;
+    UITraitCollection *baseTraits = traits ?: UITraitCollection.currentTraitCollection;
+    CGFloat displayScale = baseTraits.displayScale > 0 ? baseTraits.displayScale : UIScreen.mainScreen.scale;
+    UITraitCollection *renderTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        baseTraits,
+        [UITraitCollection traitCollectionWithDisplayScale:displayScale],
+    ]];
+    UIColor *color = tileColor ?: UIColor.systemGrayColor;
+    UITraitCollection *lightTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        renderTraits, [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight],
+    ]];
+    UITraitCollection *darkTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
+        renderTraits, [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark],
+    ]];
+    // Cache both color variants: matching light colors can have different dark colors.
+    NSArray *key = @[
+        symbolName ?: @"",
+        [color resolvedColorWithTraitCollection:lightTraits],
+        [color resolvedColorWithTraitCollection:darkTraits],
+        @(displayScale),
+    ];
+    UIImageAsset *cached = [cache objectForKey:key];
+    if (cached) return [cached imageWithTraitCollection:renderTraits];
 
     static const CGFloat side = 29.0;
-    UIImage *glyph = [[UIImage systemImageNamed:symbolName
-                              withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15
-                                                                                                weight:UIImageSymbolWeightMedium]]
-                      imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)];
-    UIImage *tile = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *ctx) {
-        [resolved setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, side, side) cornerRadius:6.5] fill];
+    UIImage *symbol = [UIImage systemImageNamed:symbolName
+                             withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15
+                                                                                               weight:UIImageSymbolWeightMedium]];
+    UIImage *tile = ApolloSettingsTileImage(color, side, renderTraits, ^(BOOL dark, UIColor *resolvedColor) {
+        UIColor *glyphColor = dark ? resolvedColor : UIColor.whiteColor;
         if ([symbolName isEqualToString:@"apollo.saved-categories"]) {
-            CGContextSaveGState(ctx.CGContext);
-            CGContextScaleCTM(ctx.CGContext, side / 36.0, side / 36.0);
-        // Two outlined bookmarks, matching the Saved Categories shortcut.
-        [UIColor.whiteColor setStroke];
-        UIBezierPath *rear = [UIBezierPath bezierPath];
-        [rear moveToPoint:CGPointMake(16, 9)];
-        [rear addLineToPoint:CGPointMake(16, 7)];
-        [rear addLineToPoint:CGPointMake(27, 7)];
-        [rear addLineToPoint:CGPointMake(27, 25)];
-        rear.lineWidth = 1.8;
-        rear.lineJoinStyle = kCGLineJoinRound;
-        rear.lineCapStyle = kCGLineCapRound;
-        [rear stroke];
-        UIBezierPath *front = [UIBezierPath bezierPath];
-        [front moveToPoint:CGPointMake(10, 11)];
-        [front addLineToPoint:CGPointMake(21, 11)];
-        [front addLineToPoint:CGPointMake(21, 29)];
-        [front addLineToPoint:CGPointMake(15.5, 24)];
-        [front addLineToPoint:CGPointMake(10, 29)];
-        [front closePath];
-        front.lineWidth = 1.8;
-        front.lineJoinStyle = kCGLineJoinRound;
-        [front stroke];
-            CGContextRestoreGState(ctx.CGContext);
+            CGContextRef context = UIGraphicsGetCurrentContext();
+            CGContextSaveGState(context);
+            CGContextScaleCTM(context, side / 36.0, side / 36.0);
+            [glyphColor setStroke];
+            UIBezierPath *rear = [UIBezierPath bezierPath];
+            [rear moveToPoint:CGPointMake(16, 9)];
+            [rear addLineToPoint:CGPointMake(16, 7)];
+            [rear addLineToPoint:CGPointMake(27, 7)];
+            [rear addLineToPoint:CGPointMake(27, 25)];
+            rear.lineWidth = 1.8;
+            rear.lineJoinStyle = kCGLineJoinRound;
+            rear.lineCapStyle = kCGLineCapRound;
+            [rear stroke];
+            UIBezierPath *front = [UIBezierPath bezierPath];
+            [front moveToPoint:CGPointMake(10, 11)];
+            [front addLineToPoint:CGPointMake(21, 11)];
+            [front addLineToPoint:CGPointMake(21, 29)];
+            [front addLineToPoint:CGPointMake(15.5, 24)];
+            [front addLineToPoint:CGPointMake(10, 29)];
+            [front closePath];
+            front.lineWidth = 1.8;
+            front.lineJoinStyle = kCGLineJoinRound;
+            [front stroke];
+            CGContextRestoreGState(context);
             return;
         }
+        UIImage *glyph = [symbol imageWithTintColor:glyphColor renderingMode:UIImageRenderingModeAlwaysOriginal];
         CGSize gs = glyph.size;
         if (gs.width > 0 && gs.height > 0) {
             // Symbols vary in aspect ratio; cap the longer side so wide glyphs
@@ -186,9 +192,8 @@ UIImage *ApolloSettingsIconTileImage(NSString *symbolName, UIColor *tileColor, U
             gs = CGSizeMake(gs.width * scale, gs.height * scale);
             [glyph drawInRect:CGRectMake((side - gs.width) / 2.0, (side - gs.height) / 2.0, gs.width, gs.height)];
         }
-    }];
-    tile = [tile imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    [cache setObject:tile forKey:key];
+    });
+    if (tile.imageAsset) [cache setObject:tile.imageAsset forKey:key];
     return tile;
 }
 
@@ -324,11 +329,9 @@ static const void *kApolloSFDisplayStyledKey = &kApolloSFDisplayStyledKey;
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     [super traitCollectionDidChange:previousTraitCollection];
-    // Icon tiles bake a trait-resolved fill color at render time (see
-    // ApolloSettingsIconTileImage). apollo_applyTheme restyles visible cells in
-    // place but does not re-run cellForRow, so on a light<->dark flip the tiles
-    // would keep the previous appearance's resolved color until reuse. Reload
-    // to re-render them for the new appearance.
+    // Reconfigure row content for the new appearance. Tile images also carry
+    // both light/dark variants, so UIKit can update their image views without
+    // waiting for the row configuration to run again.
     if (previousTraitCollection.userInterfaceStyle != self.traitCollection.userInterfaceStyle) {
         [self.tableView reloadData];
     }

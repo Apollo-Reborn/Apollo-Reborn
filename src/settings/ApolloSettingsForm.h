@@ -74,8 +74,9 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 // dim and stop accepting selection while disabled. nil == enabled.
 @property (nonatomic, copy, nullable) BOOL (^enabled)(void);
 
-// Settings-app-style leading icon tile: a white SF symbol on a colored 29pt
-// rounded square (like Settings.app's row icons). Set both or neither.
+// Settings-app-style leading 29pt icon tile: a white SF symbol on a colored
+// rounded square in light mode, or a colored symbol on a dark gray gradient
+// in dark mode. Set both or neither.
 // Built-in row kinds share reuse pools, so the form resets imageView.image to
 // nil on rows without one; custom rows own their imageView (e.g. About's
 // fetched avatars) unless they opt in by setting these.
@@ -188,9 +189,7 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
                                  NSInteger currentIndex,
                                  void (^apply)(NSInteger pickedIndex));
 
-// Settings-app-style icon tile: a white SF symbol on a colored 29pt rounded
-// square (cached). Shared with settings search so result rows can render the
-// same native-style icons. Unknown symbol names fail soft to a plain tile.
+// Cached 29pt adaptive icon. Nil traits uses current traits; unknown symbols draw a plain tile.
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName,
                                      UIColor *_Nullable tileColor,
                                      UITraitCollection *_Nullable traits);

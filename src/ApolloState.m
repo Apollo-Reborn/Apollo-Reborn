@@ -76,6 +76,7 @@ ApolloTabBarHideStyle sTabBarHideStyle = ApolloTabBarHideStyleLeft;
 BOOL sIPadTabBarBottom = NO;   // opt-in (default OFF via registerDefaults, UDKeyIPadTabBarBottom); iPad-gated in the module
 BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults, UDKeyTabBarSwipeNavigation); Liquid Glass only, see ApolloLiquidGlass.xm
 BOOL sKeepSearchBarInPlace = NO;
+ApolloSettingsIconAppearance sSettingsIconAppearance = ApolloSettingsIconAppearanceLight;
 BOOL sIconRowMagnifier = YES;   // effective default ON via registerDefaults (UDKeyIconRowMagnifier)
 BOOL sInfoRowTapUpvote = YES;      // effective default ON via registerDefaults (UDKeyInfoRowTapUpvote)
 BOOL sInfoRowTapComments = YES;    // effective default ON via registerDefaults (UDKeyInfoRowTapComments)

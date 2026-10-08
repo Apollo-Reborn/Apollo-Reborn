@@ -419,7 +419,8 @@ ApolloReborn_CFLAGS += \
 # the Swift module-interface build, where a C++ -std flag is a hard error.
 ApolloReborn_LIBRARIES += c++
 
-ApolloReborn_BUNDLE_RESOURCE_DIRS = Resources
+SETTINGS_ICON_RESOURCES = $(THEOS_PROJECT_DIR)/.theos/settings-icon-resources
+ApolloReborn_BUNDLE_RESOURCE_DIRS = Resources $(SETTINGS_ICON_RESOURCES)
 ApolloReborn_BUNDLE_RESOURCES = \
     assets/bark-icons/low-battery.png \
     assets/bark-icons/palette.png \
@@ -485,7 +486,14 @@ endif
 CONTROL_FILE = $(THEOS_PROJECT_DIR)/control
 
 # Generate Version.h and the checked-in catalogs/asset manifests.
-before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog generate_bark_icon_names
+before-all:: generate_version_h generate_theme_gallery_catalog generate_whats_new_catalog generate_bark_icon_names generate_settings_icon_resources
+
+# Reuse picker artwork in builds that don't bundle the extended app catalog.
+.PHONY: generate_settings_icon_resources
+generate_settings_icon_resources:
+	@mkdir -p "$(SETTINGS_ICON_RESOURCES)"
+	@cp "$(THEOS_PROJECT_DIR)/liquid-glass/icons/helios/default.png" "$(SETTINGS_ICON_RESOURCES)/lg-preview-helios-default.png"
+	@cp "$(THEOS_PROJECT_DIR)/liquid-glass/icons/helios/dark.png" "$(SETTINGS_ICON_RESOURCES)/lg-preview-helios-dark.png"
 
 generate_version_h:
 	@echo "Generating Version.h from control file"

@@ -10,6 +10,9 @@ __BEGIN_DECLS
 // catalog (the Liquid Glass builds' Icon Composer icons) has no file, so the system renders it.
 UIImage *_Nullable ApolloCurrentAppIcon(void);
 
+// Loads an explicit picker variant, independent of the current appearance.
+UIImage *_Nullable ApolloAppIconPreview(NSString *iconID, NSString *variant);
+
 // The Liquid Glass icon picker registers this: it knows the applied icon from its own record,
 // because UIApplication.alternateIconName is wrong on some sideloaded installs and would make
 // the sheets show the default icon. Return nil for "not one of mine" and the Info.plist

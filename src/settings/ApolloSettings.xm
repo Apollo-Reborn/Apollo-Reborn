@@ -90,51 +90,113 @@ static void ApolloRemoveLegacySettingsExportButton(UIViewController *vc) {
     }
 }
 
-static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *bgColor) {
-    CGSize size = CGSizeMake(29, 29);
-    UIGraphicsBeginImageContextWithOptions(size, NO, 0);
-    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, 29, 29) cornerRadius:6];
-    [bgColor setFill];
-    [path fill];
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
-    UIImage *symbol = [UIImage systemImageNamed:sfSymbolName withConfiguration:config];
-    UIImage *tinted = [symbol imageWithTintColor:[UIColor whiteColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
-    CGSize symSize = tinted.size;
-    [tinted drawInRect:CGRectMake((29 - symSize.width) / 2, (29 - symSize.height) / 2, symSize.width, symSize.height)];
-    UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return result;
+static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *color, UITraitCollection *traits) {
+    return ApolloSettingsTileImage(color, 29.0, traits, ^(BOOL dark, UIColor *resolvedColor) {
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightMedium];
+        UIImage *symbol = [UIImage systemImageNamed:sfSymbolName withConfiguration:config];
+        UIImage *tinted = [symbol imageWithTintColor:(dark ? resolvedColor : UIColor.whiteColor)
+                                     renderingMode:UIImageRenderingModeAlwaysOriginal];
+        CGSize size = tinted.size;
+        [tinted drawInRect:CGRectMake((29 - size.width) / 2, (29 - size.height) / 2, size.width, size.height)];
+    });
+}
+
+// Use the current pet's transparent sprite, without its baked-in yellow circle.
+static UIImage *ApolloPixelPalsSettingsIcon(UIImage *artwork, UITraitCollection *traits) {
+    static char sourceArtworkKey;
+    artwork = objc_getAssociatedObject(artwork.imageAsset, &sourceArtworkKey) ?: artwork;
+    if (!artwork.CGImage) return nil;
+    static NSCache<UIImage *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSCache new]; });
+    UIImage *pet = [cache objectForKey:artwork];
+    if (!pet) {
+        NSArray<NSString *> *animals = @[@"cat", @"dog", @"hedgehog", @"fox", @"otter", @"panda",
+                                        @"parrot", @"platypus", @"borzoi", @"axolotl", @"bat",
+                                        @"butterfly", @"raccoon", @"superAI", @"tiger", @"trex"];
+        NSData *sourceData = nil;
+        UIImage *sprite = nil;
+        for (NSString *animal in animals) {
+            UIImage *candidate = [UIImage imageNamed:[@"settings-" stringByAppendingString:animal]];
+            if (!candidate) continue;
+            BOOL matches = artwork == candidate || artwork.CGImage == candidate.CGImage;
+            if (!matches) {
+                // UIKit can return different UIImage wrappers for the same asset.
+                sourceData = sourceData ?: UIImagePNGRepresentation(artwork);
+                matches = [sourceData isEqualToData:UIImagePNGRepresentation(candidate)];
+            }
+            if (matches) {
+                sprite = [UIImage imageNamed:[animal stringByAppendingString:@"-sit"]];
+                break;
+            }
+        }
+        if (!sprite.CGImage) return nil;
+        CGImageRef source = sprite.CGImage;
+        size_t width = CGImageGetWidth(source), height = CGImageGetHeight(source);
+        // Crop the sprite's transparent margins before fitting it into the tile.
+        if (!width || !height || width > 512 || height > 512) return nil;
+        uint8_t *alpha = (uint8_t *)calloc(width * height, 1);
+        if (!alpha) return nil;
+        CGContextRef context = CGBitmapContextCreate(alpha, width, height, 8, width, NULL, kCGImageAlphaOnly);
+        if (!context) { free(alpha); return nil; }
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
+        size_t minX = width, minY = height, maxX = 0, maxY = 0;
+        for (size_t y = 0; y < height; y++) {
+            for (size_t x = 0; x < width; x++) {
+                if (!alpha[y * width + x]) continue;
+                minX = MIN(minX, x); minY = MIN(minY, y);
+                maxX = MAX(maxX, x); maxY = MAX(maxY, y);
+            }
+        }
+        CGContextRelease(context);
+        free(alpha);
+        if (minX == width) return nil;
+        CGImageRef cropped = CGImageCreateWithImageInRect(source, CGRectMake(minX, minY, maxX - minX + 1, maxY - minY + 1));
+        if (!cropped) return nil;
+        pet = [UIImage imageWithCGImage:cropped scale:1 orientation:UIImageOrientationUp];
+        CGImageRelease(cropped);
+        [cache setObject:pet forKey:artwork];
+    }
+    UIImage *tile = ApolloSettingsTileImage([UIColor colorWithRed:1 green:214.0 / 255 blue:150.0 / 255 alpha:1],
+                                          29.0, traits, ^(__unused BOOL dark, __unused UIColor *resolvedColor) {
+        CGFloat displayScale = traits.displayScale ?: UIScreen.mainScreen.scale;
+        // Whole screen pixels per sprite pixel keep the original pixel art crisp.
+        CGFloat factor = floor(24.0 * displayScale / MAX(pet.size.width, pet.size.height)) / displayScale;
+        CGSize size = CGSizeMake(pet.size.width * factor, pet.size.height * factor);
+        CGPoint origin = CGPointMake(round((29 - size.width) * displayScale / 2) / displayScale,
+                                     round((29 - size.height) * displayScale / 2) / displayScale);
+        CGContextSetInterpolationQuality(UIGraphicsGetCurrentContext(), kCGInterpolationNone);
+        [pet drawInRect:(CGRect){ origin, size }];
+    });
+    // Preserve the source when native cell reuse hands our tile back to us.
+    objc_setAssociatedObject(tile.imageAsset, &sourceArtworkKey, artwork, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return tile;
 }
 
 // Apollo's older root icons mix circular color fields with newer rounded-square
-// artwork. Keep branded artwork (App Icon, Pixel Pals) intact, but normalize
-// the system-style destinations to the 29pt continuous rounded-square geometry
-// used by modern Settings screens.
-static UIImage *ApolloRootSettingsIconForTitle(NSString *title) {
+// artwork. Normalize the standard destinations to 29pt rounded-square tiles;
+// Pixel Pals uses the same tile with its original pet artwork above.
+static UIImage *ApolloRootSettingsIconForTitle(NSString *title, UITraitCollection *traits) {
     if ([title isEqualToString:@"General"]) {
-        return createSettingsIcon(@"gearshape.fill", [UIColor systemGrayColor]);
+        return createSettingsIcon(@"gearshape.fill", [UIColor systemGrayColor], traits);
     }
     if ([title isEqualToString:@"Appearance"]) {
-        return createSettingsIcon(@"paintbrush.fill", [UIColor systemBlueColor]);
+        return createSettingsIcon(@"paintbrush.fill", [UIColor systemBlueColor], traits);
     }
     if ([title isEqualToString:@"Notifications"]) {
-        return createSettingsIcon(@"bell.fill", [UIColor systemRedColor]);
+        return createSettingsIcon(@"bell.fill", [UIColor systemRedColor], traits);
     }
     if ([title isEqualToString:@"Passcode"] || [title isEqualToString:@"Face ID & Passcode"]) {
-        return createSettingsIcon(@"lock.fill", [UIColor systemPinkColor]);
+        return createSettingsIcon(@"lock.fill", [UIColor systemPinkColor], traits);
     }
     if ([title isEqualToString:@"Filters & Blocks"]) {
-        return createSettingsIcon(@"nosign", [UIColor systemGreenColor]);
+        return createSettingsIcon(@"nosign", [UIColor systemGreenColor], traits);
     }
     if ([title isEqualToString:@"Gestures"]) {
-        return createSettingsIcon(@"hand.tap.fill", [UIColor systemIndigoColor]);
+        return createSettingsIcon(@"hand.tap.fill", [UIColor systemIndigoColor], traits);
     }
     if ([title isEqualToString:@"About"]) {
-        return createSettingsIcon(@"info.circle.fill", [UIColor systemGray2Color]);
-    }
-    if ([title isEqualToString:@"Apollo Ultra"]) {
-        // Not "sparkles" — that's the hub's Apollo AI tile; keep Ultra distinct.
-        return createSettingsIcon(@"star.circle.fill", [UIColor systemOrangeColor]);
+        return createSettingsIcon(@"info.circle.fill", [UIColor systemGray2Color], traits);
     }
     return nil;
 }
@@ -175,9 +237,8 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     ApolloSettingsSearchAttach((UIViewController *)self);
     ApolloRemoveLegacySettingsExportButton((UIViewController *)self);
 
-    // Apollo 1.15.11's two-row About group is rendered below as Wallpapers,
-    // About, and Apollo Ultra. The native destinations retain their original
-    // handlers while no Apollo-owned cell is remapped.
+    // The final group contains Wallpapers and About. Ultra remains available
+    // inside About; its duplicate root row and purchase-status footer are hidden.
     ApolloLog(@"[Settings] Wallpapers row installed in native About group");
 }
 
@@ -239,7 +300,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 2;
-    if (section == 2) return 3;
+    if (section == 2) return 2;
     return %orig;
 }
 
@@ -255,7 +316,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
         UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
-            ? (ApolloRebornOptionsSettingsIcon(29.0) ?: createSettingsIcon(@"key.fill", [UIColor systemTealColor]))
+            ? (ApolloRebornOptionsSettingsIcon(29.0) ?: createSettingsIcon(@"key.fill", [UIColor systemTealColor], tableView.traitCollection))
             : ApolloBuyMeACoffeeSettingsIcon(29.0);
         cell.accessoryView = nil;
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -265,7 +326,7 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
     }
 
     if (indexPath.section == 2) {
-        NSArray<NSString *> *titles = @[ @"Wallpapers", @"About", @"Apollo Ultra" ];
+        NSArray<NSString *> *titles = @[ @"Wallpapers", @"About" ];
         NSString *title = titles[indexPath.row];
         NSString *reuseID = [@"Cell_ApolloInfoRoot_" stringByAppendingString:title];
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
@@ -277,26 +338,10 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
         UIColor *primaryText = ApolloSettingsPrimaryTextColor();
         if (primaryText) cell.textLabel.textColor = primaryText;
         cell.imageView.image = indexPath.row == 0
-            ? createSettingsIcon(@"photo.on.rectangle.angled", UIColor.systemRedColor)
-            : ApolloRootSettingsIconForTitle(title);
-        if (indexPath.row == 0) {
-            UIImageSymbolConfiguration *accessoryConfig =
-                [UIImageSymbolConfiguration configurationWithPointSize:17.0 weight:UIImageSymbolWeightRegular];
-            UIView *accessoryContainer = [[UIView alloc] initWithFrame:CGRectMake(0.0, 0.0, 24.0, 24.0)];
-            accessoryContainer.clipsToBounds = NO;
-            accessoryContainer.accessibilityElementsHidden = YES;
-            UIImageView *downloadAccessory = [[UIImageView alloc]
-                initWithImage:[UIImage systemImageNamed:@"arrow.down.to.line" withConfiguration:accessoryConfig]];
-            downloadAccessory.tintColor = UIColor.tertiaryLabelColor;
-            downloadAccessory.contentMode = UIViewContentModeCenter;
-            downloadAccessory.frame = CGRectMake(8.0, 0.0, 24.0, 24.0);
-            [accessoryContainer addSubview:downloadAccessory];
-            cell.accessoryType = UITableViewCellAccessoryNone;
-            cell.accessoryView = accessoryContainer;
-        } else {
-            cell.accessoryView = nil;
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        }
+            ? createSettingsIcon(@"photo.on.rectangle.angled", UIColor.systemRedColor, tableView.traitCollection)
+            : ApolloRootSettingsIconForTitle(title, tableView.traitCollection);
+        cell.accessoryView = nil;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         ApolloApplyRootNativeSurface(cell, objc_getAssociatedObject(self, &kApolloRootNativeSurfaceKey));
         return cell;
@@ -327,9 +372,12 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
             }
         });
     }
-    UIImage *normalizedIcon = ApolloRootSettingsIconForTitle(cell.textLabel.text);
+    UIImage *normalizedIcon = ApolloRootSettingsIconForTitle(cell.textLabel.text, tableView.traitCollection);
     if (normalizedIcon) cell.imageView.image = normalizedIcon;
-    else if ([cell.textLabel.text isEqualToString:@"App Icon"] &&
+    else if ([cell.textLabel.text isEqualToString:@"Pixel Pals"]) {
+        UIImage *petIcon = ApolloPixelPalsSettingsIcon(cell.imageView.image, tableView.traitCollection);
+        if (petIcon) cell.imageView.image = petIcon;
+    } else if ([cell.textLabel.text isEqualToString:@"App Icon"] &&
              (cell.imageView.image.size.width > 29.5 || cell.imageView.image.size.height > 29.5)) {
         cell.imageView.image = ApolloRootSettingsArtworkAtStandardSize(cell.imageView.image);
     }
@@ -366,8 +414,8 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
         return;
     }
 
-    if (indexPath.section == 2 && indexPath.row > 0) {
-        NSIndexPath *nativePath = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:2];
+    if (indexPath.section == 2 && indexPath.row == 1) {
+        NSIndexPath *nativePath = [NSIndexPath indexPathForRow:0 inSection:2];
         %orig(tableView, nativePath);
         return;
     }
@@ -381,7 +429,18 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return nil;
+    if (section == 0 || section == 2) return nil;
+    return %orig;
+}
+
+// The purchase footer has its own view and height, independent of its title.
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    if (section == 2) return nil;
+    return %orig;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    if (section == 2) return CGFLOAT_MIN;
     return %orig;
 }
 

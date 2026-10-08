@@ -1,6 +1,7 @@
 #import "ApolloCommon.h"
 #import "ApolloExecutableSDK.h"
 #import "ApolloState.h"
+#import "UserDefaultConstants.h"
 #import "ApolloThemeRuntime.h"
 #import <QuartzCore/QuartzCore.h>
 #import <mach-o/dyld.h>
@@ -973,26 +974,170 @@ NSString *ApolloWebsiteNameFromHost(NSString *host) {
     return [first stringByAppendingString:[label substringFromIndex:1]];
 }
 
+// Register both appearances so visible image views follow trait changes.
+static NSMapTable<UIImageAsset *, NSArray<UIImage *> *> *ApolloSettingsIconAssets(void) {
+    static NSMapTable *assets;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ assets = [NSMapTable weakToStrongObjectsMapTable]; });
+    return assets;
+}
+
+static void ApolloRegisterSettingsIconVariants(UIImageAsset *asset, NSArray<UIImage *> *images) {
+    for (NSNumber *style in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
+        BOOL dark = sSettingsIconAppearance == ApolloSettingsIconAppearanceDark ||
+            (sSettingsIconAppearance == ApolloSettingsIconAppearanceSystem && style.integerValue == UIUserInterfaceStyleDark);
+        UIImage *source = images[dark ? 1 : 0];
+        // Keep the stored originals independent of UIKit's asset-owned wrappers.
+        UIImage *image = [[UIImage imageWithCGImage:source.CGImage scale:source.scale orientation:source.imageOrientation]
+                          imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+        [asset registerImage:image withTraitCollection:[UITraitCollection traitCollectionWithTraitsFromCollections:@[
+            [UITraitCollection traitCollectionWithUserInterfaceStyle:style.integerValue],
+            [UITraitCollection traitCollectionWithDisplayScale:source.scale]
+        ]]];
+    }
+}
+
+UIImage *ApolloSettingsIconImage(UIImage *lightImage, UIImage *darkImage, UITraitCollection *traits) {
+    if (!lightImage.CGImage || !darkImage.CGImage) return lightImage;
+    UIImageAsset *asset = [UIImageAsset new];
+    NSArray *images = @[lightImage, darkImage];
+    [ApolloSettingsIconAssets() setObject:images forKey:asset];
+    ApolloRegisterSettingsIconVariants(asset, images);
+    return [asset imageWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
+}
+
+UIImage *ApolloResolveSettingsIconImage(UIImage *image, UITraitCollection *traits) {
+    UIImageAsset *asset = image.imageAsset;
+    return asset && [ApolloSettingsIconAssets() objectForKey:asset]
+        ? [asset imageWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection] : image;
+}
+
+static void ApolloRefreshSettingsIconViews(UIView *view) {
+    if ([view isKindOfClass:UIImageView.class]) {
+        UIImageView *imageView = (UIImageView *)view;
+        UIImageAsset *asset = imageView.image.imageAsset;
+        if (asset && [ApolloSettingsIconAssets() objectForKey:asset]) {
+            imageView.image = [asset imageWithTraitCollection:imageView.traitCollection];
+        }
+    }
+    for (UIView *subview in view.subviews) ApolloRefreshSettingsIconViews(subview);
+}
+
+UIImage *ApolloResizeSettingsIconImage(UIImage *image, CGFloat size, UITraitCollection *traits) {
+    if (!image || size <= 0) return image;
+    traits = traits ?: UITraitCollection.currentTraitCollection;
+    NSArray<UIImage *> *variants = image.imageAsset ? [ApolloSettingsIconAssets() objectForKey:image.imageAsset] : nil;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = traits.displayScale ?: UIScreen.mainScreen.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    NSMutableArray<UIImage *> *resized = [NSMutableArray array];
+    for (UIImage *source in variants ?: @[image]) {
+        [resized addObject:[[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+            [source drawInRect:CGRectMake(0, 0, size, size)];
+        }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]];
+    }
+    return variants ? ApolloSettingsIconImage(resized[0], resized[1], traits) : resized[0];
+}
+
+static void ApolloRefreshSettingsIconControllers(UIViewController *controller) {
+    ApolloRefreshSettingsIconViews(controller.viewIfLoaded);
+    for (UIViewController *child in controller.childViewControllers) ApolloRefreshSettingsIconControllers(child);
+    if (controller.presentedViewController) ApolloRefreshSettingsIconControllers(controller.presentedViewController);
+}
+
+void ApolloSetSettingsIconAppearance(NSInteger appearance) {
+    if (appearance < ApolloSettingsIconAppearanceSystem || appearance > ApolloSettingsIconAppearanceDark) {
+        appearance = ApolloSettingsIconAppearanceLight;
+    }
+    if (sSettingsIconAppearance == appearance) return;
+    sSettingsIconAppearance = (ApolloSettingsIconAppearance)appearance;
+    [[NSUserDefaults standardUserDefaults] setInteger:appearance forKey:UDKeySettingsIconAppearance];
+    NSMapTable *assets = ApolloSettingsIconAssets();
+    for (UIImageAsset *asset in assets.keyEnumerator.allObjects) {
+        ApolloRegisterSettingsIconVariants(asset, [assets objectForKey:asset]);
+    }
+    // Include loaded screens behind Appearance so popping back needs no table reload.
+    for (UIWindow *window in ApolloAllWindows()) {
+        ApolloRefreshSettingsIconViews(window);
+        ApolloRefreshSettingsIconControllers(window.rootViewController);
+    }
+    ApolloLog(@"[Settings] icon appearance -> %ld", (long)appearance);
+}
+
+UIImage *ApolloSettingsTileImage(UIColor *color, CGFloat size, UITraitCollection *traits,
+                                       void (^drawContent)(BOOL dark, UIColor *resolvedColor)) {
+    if (size <= 0) size = 29.0;
+    traits = traits ?: UITraitCollection.currentTraitCollection;
+    color = color ?: UIColor.secondarySystemFillColor;
+    CGFloat cornerRadius = 6.0 * size / 29.0;
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:2];
+    for (NSNumber *styleValue in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
+        UIUserInterfaceStyle style = (UIUserInterfaceStyle)styleValue.integerValue;
+        UITraitCollection *appearance = [UITraitCollection traitCollectionWithUserInterfaceStyle:style];
+        UITraitCollection *variantTraits = [UITraitCollection traitCollectionWithTraitsFromCollections:@[traits, appearance]];
+        BOOL dark = style == UIUserInterfaceStyleDark;
+        UIColor *resolvedColor = [color resolvedColorWithTraitCollection:variantTraits];
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+        format.scale = traits.displayScale ?: UIScreen.mainScreen.scale;
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+        UIImage *image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+            UIBezierPath *tile = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size, size) cornerRadius:cornerRadius];
+            if (dark) {
+                CGContextRef cg = context.CGContext;
+                CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+                const CGFloat backgroundColors[] = {
+                    0.13, 0.13, 0.13, 1.0,
+                    0.055, 0.055, 0.055, 1.0
+                };
+                CGGradientRef background = CGGradientCreateWithColorComponents(colorSpace, backgroundColors, NULL, 2);
+                CGContextSaveGState(cg);
+                [tile addClip];
+                CGContextDrawLinearGradient(cg, background, CGPointMake(size / 2, 0), CGPointMake(size / 2, size), 0);
+                CGContextRestoreGState(cg);
+                CGGradientRelease(background);
+
+                CGFloat edgeWidth = 0.5 * size / 29.0;
+                UIBezierPath *edge = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(CGRectMake(0, 0, size, size), edgeWidth / 2, edgeWidth / 2)
+                                                              cornerRadius:cornerRadius - edgeWidth / 2];
+                const CGFloat rimColors[] = {
+                    0.24, 0.24, 0.24, 1.0,
+                    0.10, 0.10, 0.10, 1.0,
+                    0.16, 0.16, 0.16, 1.0
+                };
+                const CGFloat rimLocations[] = { 0.0, 0.55, 1.0 };
+                CGGradientRef rim = CGGradientCreateWithColorComponents(colorSpace, rimColors, rimLocations, 3);
+                CGContextSaveGState(cg);
+                CGContextAddPath(cg, edge.CGPath);
+                CGContextSetLineWidth(cg, edgeWidth);
+                CGContextReplacePathWithStrokedPath(cg);
+                CGContextClip(cg);
+                CGContextDrawLinearGradient(cg, rim, CGPointMake(size / 2, 0), CGPointMake(size / 2, size), 0);
+                CGContextRestoreGState(cg);
+                CGGradientRelease(rim);
+                CGColorSpaceRelease(colorSpace);
+            } else {
+                [resolvedColor setFill];
+                [tile fill];
+            }
+            drawContent(dark, resolvedColor);
+        }];
+        [images addObject:image];
+    }
+    return ApolloSettingsIconImage(images[0], images[1], traits);
+}
+
 UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size) {
     if (emoji.length == 0) return nil;
     if (size <= 0.0) size = 29.0;
 
-    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
-    format.opaque = NO;
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
-    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        CGRect bounds = CGRectMake(0, 0, size, size);
-        UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:6.0];
-        UIColor *fill = backgroundColor ?: [UIColor secondarySystemFillColor];
-        [fill setFill];
-        [path fill];
-
+    return ApolloSettingsTileImage(backgroundColor, size, nil,
+                                  ^(__unused BOOL dark, __unused UIColor *resolvedColor) {
         UIFont *font = [UIFont systemFontOfSize:size * 0.58];
         NSDictionary *attrs = @{NSFontAttributeName: font};
         CGSize textSize = [emoji sizeWithAttributes:attrs];
         CGPoint origin = CGPointMake((size - textSize.width) / 2.0, (size - textSize.height) / 2.0 - 0.5);
         [emoji drawAtPoint:origin withAttributes:attrs];
-    }];
+    });
 }
 
 NSAttributedString *ApolloSymbolAttachment(NSString *symbolName, UIFont *font, UIColor *tint) {
@@ -1183,10 +1328,89 @@ static UIImage *ApolloRoundedPNGSettingsIcon(UIImage *source, CGFloat size) {
     }];
 }
 
+// Separates the bundled coffee icon's three colors, preserving antialiased edges.
+static UIImage *ApolloBuyMeACoffeeDarkArtwork(UIImage *artwork) {
+    static UIImage *darkArtwork;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGImageRef source = artwork.CGImage;
+        if (!source) return;
+        size_t width = CGImageGetWidth(source), height = CGImageGetHeight(source);
+        if (width < 32 || height < 32 || width > 1024 || height > 1024) return;
+        uint8_t *pixels = (uint8_t *)calloc(width * height, 4);
+        if (!pixels) return;
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width * 4, colorSpace,
+                                                     kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        CGColorSpaceRelease(colorSpace);
+        if (!context) { free(pixels); return; }
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
+
+        // Sample the known asset's background, outline, and white fill.
+        size_t sampleRows[] = { height / 8, height / 5, height * 3 / 4 };
+        CGFloat colors[3][3];
+        for (size_t sample = 0; sample < 3; sample++) {
+            const uint8_t *pixel = pixels + (sampleRows[sample] * width + width / 2) * 4;
+            for (size_t channel = 0; channel < 3; channel++) colors[sample][channel] = pixel[channel];
+        }
+        CGFloat inkRed = colors[1][0] - colors[0][0];
+        CGFloat inkBlue = colors[1][2] - colors[0][2];
+        CGFloat fillRed = colors[2][0] - colors[0][0];
+        CGFloat fillBlue = colors[2][2] - colors[0][2];
+        CGFloat determinant = inkRed * fillBlue - inkBlue * fillRed;
+        if (fabs(determinant) < 1.0) {
+            CGContextRelease(context);
+            free(pixels);
+            return;
+        }
+        for (size_t index = 0; index < width * height; index++) {
+            uint8_t *pixel = pixels + index * 4;
+            // Exclude the source tile's rounded edge; the cup is inside this area.
+            size_t x = index % width, y = index / width;
+            if (x < width / 8 || x >= width - width / 8 ||
+                y < height / 8 || y >= height - height / 8) {
+                memset(pixel, 0, 4);
+                continue;
+            }
+            CGFloat sourceAlpha = pixel[3] / 255.0;
+            if (sourceAlpha == 0.0) continue;
+            CGFloat red = pixel[0] / sourceAlpha - colors[0][0];
+            CGFloat blue = pixel[2] / sourceAlpha - colors[0][2];
+            CGFloat ink = MAX(0.0, MIN(1.0, (red * fillBlue - blue * fillRed) / determinant));
+            CGFloat fill = MAX(0.0, MIN(1.0 - ink, (inkRed * blue - inkBlue * red) / determinant));
+            for (size_t channel = 0; channel < 3; channel++) {
+                pixel[channel] = (uint8_t)lround((ink * colors[0][channel] + fill * colors[2][channel]) * sourceAlpha);
+            }
+            pixel[3] = (uint8_t)lround((ink + fill) * sourceAlpha * 255.0);
+        }
+        CGImageRef cutout = CGBitmapContextCreateImage(context);
+        if (cutout) {
+            darkArtwork = [UIImage imageWithCGImage:cutout scale:artwork.scale orientation:artwork.imageOrientation];
+            CGImageRelease(cutout);
+        }
+        CGContextRelease(context);
+        free(pixels);
+    });
+    return darkArtwork;
+}
+
 UIImage *ApolloBuyMeACoffeeSettingsIcon(CGFloat size) {
-    UIImage *icon = ApolloRoundedPNGSettingsIcon(ApolloCachedBundledPNGNamed(@"buymeacoffee-icon"), size);
-    if (icon) return icon;
-    return ApolloEmojiSettingsIcon(@"☕️", [UIColor colorWithRed:0.98 green:0.74 blue:0.02 alpha:1.0], size > 0.0 ? size : 29.0);
+    if (size <= 0.0) size = 29.0;
+    UIImage *artwork = ApolloCachedBundledPNGNamed(@"buymeacoffee-icon");
+    UIImage *lightIcon = ApolloRoundedPNGSettingsIcon(artwork, size);
+    if (!lightIcon) return ApolloEmojiSettingsIcon(@"☕️", [UIColor colorWithRed:0.98 green:0.74 blue:0.02 alpha:1.0], size);
+    UIImage *darkArtwork = ApolloBuyMeACoffeeDarkArtwork(artwork);
+    if (!darkArtwork) return lightIcon;
+    return ApolloSettingsTileImage(UIColor.whiteColor, size, nil,
+                                  ^(BOOL dark, __unused UIColor *resolvedColor) {
+        CGRect bounds = CGRectMake(0, 0, size, size);
+        if (dark) {
+            [darkArtwork drawInRect:bounds];
+        } else {
+            CGContextClearRect(UIGraphicsGetCurrentContext(), bounds);
+            [lightIcon drawInRect:bounds];
+        }
+    });
 }
 
 UIImage *ApolloRebornOptionsSettingsIcon(CGFloat size) {

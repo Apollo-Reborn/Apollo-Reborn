@@ -341,6 +341,8 @@ static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
 // True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
+// Settings icons: 0 = System, 1 = Light (default), 2 = Dark.
+static NSString *const UDKeySettingsIconAppearance = @"SettingsIconAppearance";
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.

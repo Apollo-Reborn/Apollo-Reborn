@@ -52,3 +52,13 @@ UIImage *ApolloCurrentAppIcon(void) {
     NSString *iconName = iconFiles.lastObject;
     return iconName.length > 0 ? [UIImage imageNamed:iconName] : nil;
 }
+
+UIImage *ApolloAppIconPreview(NSString *iconID, NSString *variant) {
+    if (iconID.length == 0 || variant.length == 0) return nil;
+    NSString *name = [NSString stringWithFormat:@"lg-preview-%@-%@", iconID, variant];
+    UIImage *image = [UIImage imageNamed:name inBundle:NSBundle.mainBundle compatibleWithTraitCollection:nil];
+    if (image) return image;
+    // Standard builds lack the extended app catalog; selected previews ship with the tweak.
+    NSString *path = ApolloBundledResourcePath(name, @"png");
+    return path ? [UIImage imageWithContentsOfFile:path] : nil;
+}

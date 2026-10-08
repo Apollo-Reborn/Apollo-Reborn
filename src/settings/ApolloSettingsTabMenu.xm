@@ -329,7 +329,8 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
         NSMutableArray<UIMenu *> *groups = [NSMutableArray array];
         for (NSString *identifier in ApolloSettingsShortcutIDs()) {
             UIAction *action = [UIAction actionWithTitle:ApolloSettingsShortcutTitle(identifier)
-                image:images[identifier] identifier:nil handler:^(__unused UIAction *action) {
+                image:ApolloResolveSettingsIconImage(images[identifier], weakController.traitCollection)
+                identifier:nil handler:^(__unused UIAction *action) {
                     ApolloSettingsMenuHaptic();
                     weakSelf.pendingAction = ^{
                         if ([identifier isEqualToString:@"feature-requests"]) {
