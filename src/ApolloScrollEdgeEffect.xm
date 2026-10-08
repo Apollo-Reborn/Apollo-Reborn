@@ -507,12 +507,9 @@ static BOOL ApolloHeaderStyleHoldsScrollAwayLook(ApolloHeaderStyleHeldSearchBar 
     // No band behind the bar (a visible profile hero hides it): nothing to
     // match, and the backing would paint over the hero.
     UIScrollView *backdrop = state.backdropScrollView;
-    SEL topSelector = NSSelectorFromString(@"topEdgeEffect");
-    if ([backdrop respondsToSelector:topSelector]) {
-        id effect = ((id (*)(id, SEL))objc_msgSend)(backdrop, topSelector);
-        if ([effect respondsToSelector:@selector(isHidden)] &&
-            ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) return NO;
-    }
+    id effect = ApolloSendObject(backdrop, @selector(topEdgeEffect));
+    if ([effect respondsToSelector:@selector(isHidden)] &&
+        ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) return NO;
     return YES;
 }
 
@@ -760,7 +757,7 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     }
     Class searchProviderClass = objc_getClass("_UISearchBarVisualProviderIOS");
     if (IsLiquidGlass() && searchProviderClass &&
-        class_getInstanceMethod(searchProviderClass, NSSelectorFromString(@"updateIsPinnedInNavigationBar:")) &&
+        class_getInstanceMethod(searchProviderClass, @selector(updateIsPinnedInNavigationBar:)) &&
         class_getInstanceMethod(searchProviderClass, @selector(searchBar))) {
         %init(ApolloHeaderStyleHeldSearchBarHooks,
               ApolloRuntimeSearchBarVisualProvider = searchProviderClass);
