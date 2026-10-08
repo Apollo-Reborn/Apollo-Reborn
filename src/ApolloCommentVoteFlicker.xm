@@ -256,7 +256,7 @@ static NSArray *ApolloVFCellsForUpdatedModel(id note) {
 // contents up until it lands, so waiting on it would only cost main-thread
 // time.
 static void ApolloVFOptInBlankImageNodes(ASDisplayNode *root, NSMutableArray *optedIn) {
-    Class networkImageClass = objc_getClass("ASNetworkImageNode");
+    Class networkImageClass = ApolloClassASNetworkImageNode;
     if (!root || !networkImageClass ||
         ![networkImageClass instancesRespondToSelector:@selector(setShouldBypassEnsureDisplay:)]) return;
     NSMutableArray *pending = [NSMutableArray arrayWithObject:root];
