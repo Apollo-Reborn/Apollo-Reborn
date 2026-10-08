@@ -466,7 +466,9 @@ void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar) {
 // field takes on UIKit's material, as it does in every style (see the hook).
 // UIKit shrinks the band on its next layout pass rather than inside the setter
 // that releases the pin, so the backing fades out over a few frames instead of
-// leaving the row to the band for one.
+// leaving the row to the band for one. A release with animations off (a
+// cancelled swipe-back's completion runs in performWithoutAnimation) removes
+// it at once.
 //
 // An active search keeps UIKit's own pinned presentation (band behind the
 // field); UIKit re-reports the pinned state on every layout of the bar, which
@@ -505,10 +507,11 @@ static BOOL ApolloHeaderStyleHoldsScrollAwayLook(ApolloHeaderStyleHeldSearchBar 
     if (searchController.searchBar != searchBar || searchController.active) return NO;
     if (item.hidesSearchBarWhenScrolling) return NO;   // not held: UIKit's look already matches
     // No band behind the bar (a visible profile hero hides it): nothing to
-    // match, and the backing would paint over the hero.
+    // match, and the backing would paint over the hero. An edge effect that
+    // can't be read (the list is gone) counts the same: UIKit's look stays.
     UIScrollView *backdrop = state.backdropScrollView;
     id effect = ApolloSendObject(backdrop, @selector(topEdgeEffect));
-    if ([effect respondsToSelector:@selector(isHidden)] &&
+    if (![effect respondsToSelector:@selector(isHidden)] ||
         ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden))) return NO;
     return YES;
 }

@@ -981,7 +981,7 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
         }
     }
     // Hard header style: while the bar is pinned like this (here and in the
-    // holds below), UIKit draws it inside the band; keep the look it has once
+    // other holds), UIKit draws it inside the band; keep the look it has once
     // the scroll-away policy takes over (ApolloScrollEdgeEffect.xm, #1361).
     ApolloHeaderStyleRegisterScrollAwaySearchBar(sc.searchBar, navItem, table);
     ApolloLog(@"[NativeSearch] attached search controller to %s", object_getClassName(vc));
