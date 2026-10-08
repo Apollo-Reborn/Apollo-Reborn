@@ -35,8 +35,11 @@
 //
 // Scope: ONLY cells that actually receive a model-update notification while
 // visible (votes, live edits). Cells never get touched during scrolling, so
-// scroll perf is unaffected; the one-off synchronous draw of an already
-// visible cell is a sub-millisecond text render on a tap — imperceptible.
+// scroll perf is unaffected. The one-off synchronous draw of an already
+// visible cell is a sub-millisecond text render on a tap, plus (step 3) one
+// image draw for each network image the vote rebuilt that would otherwise
+// commit blank, such as a link card's hero (~10 ms for a 1280x720 thumbnail
+// in the sim).
 //
 // Covers both the comment rows (CommentSectionController) and the post header
 // in the comments view (CommentsHeaderSectionController) — both flicker the
@@ -250,15 +253,23 @@ static NSArray *ApolloVFCellsForUpdatedModel(id note) {
 // card comes back with a fresh hero image node: the flush drew the rebuilt
 // text in-frame, but the card image committed blank for ~2 frames until its
 // async draw landed. Opt in, for one flush, only the image nodes that would
-// commit blank (on screen, image set, no contents yet). Image nodes that
-// already show pixels keep bypassing. Texture replays a pending
-// setNeedsDisplay on them a turn later, and that redraw keeps the old
+// commit blank (in the layer tree, unhidden, non-empty, image set, no contents
+// yet). Image nodes that already show pixels keep bypassing. Texture replays a
+// pending setNeedsDisplay on them a turn later, and that redraw keeps the old
 // contents up until it lands, so waiting on it would only cost main-thread
 // time.
 static void ApolloVFOptInBlankImageNodes(ASDisplayNode *root, NSMutableArray *optedIn) {
+    if (!root) return;
     Class networkImageClass = ApolloClassASNetworkImageNode;
-    if (!root || !networkImageClass ||
-        ![networkImageClass instancesRespondToSelector:@selector(setShouldBypassEnsureDisplay:)]) return;
+    if (!networkImageClass ||
+        ![networkImageClass instancesRespondToSelector:@selector(setShouldBypassEnsureDisplay:)]) {
+        // Without the opt-in a rebuilt card image commits blank again on a vote.
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            ApolloLog(@"[VoteFlicker] blank-image opt-in NOT armed: ASNetworkImageNode or -setShouldBypassEnsureDisplay: missing");
+        });
+        return;
+    }
     NSMutableArray *pending = [NSMutableArray arrayWithObject:root];
     while (pending.count > 0) {
         ASDisplayNode *node = pending.lastObject;
@@ -268,7 +279,7 @@ static void ApolloVFOptInBlankImageNodes(ASDisplayNode *root, NSMutableArray *op
         if (![node isKindOfClass:networkImageClass] || !node.isNodeLoaded || !node.shouldBypassEnsureDisplay) continue;
         CALayer *layer = node.layer;
         if (layer.contents || !layer.superlayer || layer.hidden || CGRectIsEmpty(layer.bounds)) continue;
-        if (!((UIImage *(*)(id, SEL))objc_msgSend)(node, @selector(image))) continue;
+        if (!ApolloSendObject(node, @selector(image))) continue;
         node.shouldBypassEnsureDisplay = NO;
         [optedIn addObject:node];
     }
