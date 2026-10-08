@@ -5,6 +5,7 @@
 #import <string.h>
 
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import "ApolloRedgifsErrorCards.h"
 #import "ApolloRedgifsFailureReason.h"
 #import "ApolloTextureDecls.h"
@@ -34,8 +35,10 @@
 //     here; when minting fails, Apollo fails its queued lookups unsent;
 //   * the video failure's NSError is kept on the RichMediaNode.
 // Every creation site calls -[RichMediaNode setNeedsLayout] right after
-// installing the card, so that hook reads the errorLoadingNode ivar, picks the
-// reason for the post's gif id, and pins it as the card's title. The pin
+// installing the card, except node setup (0x100577228), which builds one before
+// the first layout; that card is titled at the node's next -setNeedsLayout. The
+// hook reads the errorLoadingNode ivar, picks the reason for the post's gif id,
+// and pins it as the card's title. The pin
 // isa-swizzles the title's ASTextNode onto a subclass whose setAttributedText:
 // keeps the incoming attributes but swaps in the reason, so Apollo's theme pass
 // restyles the text instead of reverting it (the technique ApolloThemeRuntime
@@ -90,6 +93,10 @@ static NSCache<NSString *, ApolloRedgifsFailureRecord *> *ApolloRedgifsLookupFai
     return cache;
 }
 
+// Set once the RichMediaNode hooks install. Without them nothing reads what the
+// recorders below would store, so they pass Apollo's completions through.
+static BOOL sApolloRedgifsCardsInstalled;
+
 static os_unfair_lock sTokenLock = OS_UNFAIR_LOCK_INIT;
 // The latest token mint's failure; kind None after a mint succeeds.
 static ApolloRedgifsFailure sTokenFailure;
@@ -97,7 +104,7 @@ static ApolloRedgifsFailure sTokenFailure;
 ApolloRedgifsLookupCompletion ApolloRedgifsCompletionRecordingLookupResult(NSURLSession *session,
                                                                           NSURLRequest *request,
                                                                           ApolloRedgifsLookupCompletion completion) {
-    if (!completion) return completion;
+    if (!completion || !sApolloRedgifsCardsInstalled) return completion;
     // ApolloHostedVideo (Share as Video, Share as Image, Gallery View) looks
     // gifs up on the shared session; those don't build Apollo's cards.
     if (session == [NSURLSession sharedSession]) return completion;
@@ -119,6 +126,7 @@ ApolloRedgifsLookupCompletion ApolloRedgifsCompletionRecordingLookupResult(NSURL
 }
 
 void ApolloRedgifsRecordTokenMintResult(NSData *data, NSURLResponse *response, NSError *error) {
+    if (!sApolloRedgifsCardsInstalled) return;
     ApolloRedgifsFailure failure = ApolloRedgifsFailureForAPIResult(data, response, error);
     // A cancelled mint says nothing about the network either.
     if (failure.kind == ApolloRedgifsFailureKindNone && failure.httpStatus == 0) return;
@@ -213,17 +221,19 @@ static void ApolloRedgifsPinCardTitle(ASTextNode *titleNode, NSString *title) {
 
 #pragma mark - Card update
 
-static void ApolloRedgifsLogCard(BOOL lookupCard, ApolloRedgifsFailure failure) {
-    // Apollo rebuilds a failing post's card every few seconds; log a reason
-    // once per change rather than once per card.
-    static os_unfair_lock logLock = OS_UNFAIR_LOCK_INIT;
-    static NSInteger lastKind = -1, lastStatus = -1, lastPath = -1;
-    os_unfair_lock_lock(&logLock);
-    BOOL changed = lastKind != failure.kind || lastStatus != failure.httpStatus || lastPath != lookupCard;
-    lastKind = failure.kind;
-    lastStatus = failure.httpStatus;
-    lastPath = lookupCard;
-    os_unfair_lock_unlock(&logLock);
+static void ApolloRedgifsLogCard(NSString *gifID, BOOL lookupCard, ApolloRedgifsFailure failure) {
+    // Apollo rebuilds a failing post's card every few seconds; log a post's
+    // reason once per change rather than once per card, so two failing posts
+    // on screen don't take turns logging. (The id stays out of the log.)
+    static NSCache<NSString *, NSNumber *> *lastLogged;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lastLogged = [NSCache new];
+        lastLogged.countLimit = 64;
+    });
+    NSNumber *packed = @(((long long)failure.kind << 32) | ((long long)(failure.httpStatus & 0x7fffffff) << 1) | (lookupCard ? 1 : 0));
+    BOOL changed = ![[lastLogged objectForKey:gifID] isEqualToNumber:packed];
+    if (changed) [lastLogged setObject:packed forKey:gifID];
     if (changed) {
         ApolloLog(@"[RedgifsCards] %@ card -> \"%@\" (HTTP %ld)", lookupCard ? @"Lookup" : @"Video",
                   ApolloRedgifsCardTitleForFailure(failure), (long)failure.httpStatus);
@@ -263,14 +273,15 @@ static void ApolloRedgifsUpdateErrorCard(id mediaNode) {
         return;
     }
     ApolloRedgifsPinCardTitle(titleNode, title);
-    ApolloRedgifsLogCard(lookupCard, failure);
+    ApolloRedgifsLogCard(gifID, lookupCard, failure);
 }
 
 #pragma mark - Hooks
 
 %hook RichMediaNode
 
-// Every site that installs an error card calls this right after the store.
+// Every site that installs an error card calls this right after the store
+// (node setup builds one before the first layout and is titled on the next).
 - (void)setNeedsLayout {
     %orig;
     if (object_getIvar(self, sErrorLoadingNodeIvar)) ApolloRedgifsUpdateErrorCard(self);
@@ -281,7 +292,12 @@ static void ApolloRedgifsUpdateErrorCard(id mediaNode) {
 - (void)videoNode:(id)videoNode didFailToLoadValueForKey:(NSString *)key asset:(id)asset error:(NSError *)error {
     NSString *gifID = ApolloRedgifsGifIDForMediaNode(self);
     if (gifID) {
-        ApolloRedgifsFailure failure = ApolloRedgifsFailureForMediaError(error);
+        // After a failed lookup Apollo plays the post's Reddit copy here; that
+        // file failing records no reason, so the card falls back to the lookup's.
+        ApolloRedgifsFailure failure = { ApolloRedgifsFailureKindNone, 0 };
+        if (!ApolloRedgifsMediaURLIsRedditCopy(ApolloSendObject(asset, @selector(URL)))) {
+            failure = ApolloRedgifsFailureForMediaError(error);
+        }
         objc_setAssociatedObject(self, kApolloRedgifsMediaFailureKey,
                                  [[ApolloRedgifsFailureRecord alloc] initWithFailure:failure gifID:gifID],
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -296,16 +312,17 @@ static void ApolloRedgifsUpdateErrorCard(id mediaNode) {
 // =============================================================================
 
 %ctor {
-    Class mediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
+    Class mediaNodeClass = ApolloClassRichMediaNode;
     sCardClass = objc_getClass("_TtC6Apollo25RichMediaErrorLoadingNode");
     sErrorLoadingNodeIvar = mediaNodeClass ? class_getInstanceVariable(mediaNodeClass, "errorLoadingNode") : NULL;
     sLinkIvar = mediaNodeClass ? class_getInstanceVariable(mediaNodeClass, "link") : NULL;
     sCardTitleIvar = sCardClass ? class_getInstanceVariable(sCardClass, "titleNode") : NULL;
     if (!sErrorLoadingNodeIvar || !sLinkIvar || !sCardTitleIvar) {
-        ApolloLog(@"[RedgifsCards] ctor: RichMediaNode/RichMediaErrorLoadingNode layout not found (%p %p %p); skipping hooks",
+        ApolloLog(@"[RedgifsCards] ctor: RichMediaNode/RichMediaErrorLoadingNode layout not found (%p %p %p); hooks NOT installed",
                   (void *)sErrorLoadingNodeIvar, (void *)sLinkIvar, (void *)sCardTitleIvar);
         return;
     }
     %init(RichMediaNode = mediaNodeClass);
+    sApolloRedgifsCardsInstalled = YES;
     ApolloLog(@"[RedgifsCards] ctor: hook installed (RichMediaNode setNeedsLayout + video load failure)");
 }

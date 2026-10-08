@@ -69,6 +69,12 @@ NSString *ApolloRedgifsIDFromPostURL(NSURL *url);
 // The lowercased gif id in an api.redgifs.com/v2/gifs/<id> lookup URL, or nil.
 NSString *ApolloRedgifsIDFromLookupURL(NSURL *url);
 
+// YES for a video file on Reddit's own media hosts (v.redd.it, preview.redd.it,
+// *.reddit.com, *.redditmedia.com). When a RedGIFs lookup fails Apollo plays
+// the post's Reddit copy in the same node, so that file failing says nothing
+// about RedGIFs.
+BOOL ApolloRedgifsMediaURLIsRedditCopy(NSURL *url);
+
 #ifdef __cplusplus
 }
 #endif

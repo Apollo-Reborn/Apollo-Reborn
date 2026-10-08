@@ -197,6 +197,15 @@ NSString *ApolloRedgifsIDFromPostURL(NSURL *url) {
     return length > 0 ? [segment substringToIndex:length].lowercaseString : nil;
 }
 
+BOOL ApolloRedgifsMediaURLIsRedditCopy(NSURL *url) {
+    NSString *host = url.host.lowercaseString;
+    if (host.length == 0) return NO;
+    for (NSString *domain in @[ @"redd.it", @"reddit.com", @"redditmedia.com" ]) {
+        if ([host isEqualToString:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]]) return YES;
+    }
+    return NO;
+}
+
 NSString *ApolloRedgifsIDFromLookupURL(NSURL *url) {
     if (![url.host.lowercaseString isEqualToString:@"api.redgifs.com"]) return nil;
     // "/", "v2", "gifs", "<id>": a single gif, not /v2/gifs/search.

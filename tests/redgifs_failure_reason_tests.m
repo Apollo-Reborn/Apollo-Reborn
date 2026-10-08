@@ -170,12 +170,35 @@ static void TestIDs(void) {
     }];
 }
 
+static void TestRedditCopies(void) {
+    NSDictionary<NSString *, NSNumber *> *urls = @{
+        @"https://v.redd.it/abc123/DASH_720.mp4": @YES,
+        @"https://preview.redd.it/abc.gif?format=mp4": @YES,
+        @"https://external-preview.redd.it/abc.gif?format=mp4": @YES,
+        @"https://i.redd.it/abc.gif": @YES,
+        @"https://www.reddit.com/video/abc": @YES,
+        @"https://reddit.com/x": @YES,
+        @"https://g.redditmedia.com/abc.gif": @YES,
+        @"https://media.redgifs.com/AliveGrotesqueMoa.mp4": @NO,
+        @"https://thumbs4.redgifs.com/AliveGrotesqueMoa-mobile.mp4": @NO,
+        @"http://127.0.0.1:18731/s/404/AliveGrotesqueMoa.mp4": @NO,
+        @"https://notredd.it/abc.mp4": @NO,
+        @"https://redd.it.example.com/abc.mp4": @NO,
+    };
+    [urls enumerateKeysAndObjectsUsingBlock:^(NSString *url, NSNumber *want, __unused BOOL *stop) {
+        BOOL got = ApolloRedgifsMediaURLIsRedditCopy([NSURL URLWithString:url]);
+        Expect(got == want.boolValue, [NSString stringWithFormat:@"Reddit copy for %@ (got %d)", url, got]);
+    }];
+    Expect(!ApolloRedgifsMediaURLIsRedditCopy(nil), @"Reddit copy for nil");
+}
+
 int main(void) {
     @autoreleasepool {
         TestAPIResults();
         TestMediaErrors();
         TestTitles();
         TestIDs();
+        TestRedditCopies();
     }
     if (sFailures) {
         fprintf(stderr, "%d RedGIFs failure-reason check(s) failed\n", sFailures);
