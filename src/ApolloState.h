@@ -304,6 +304,15 @@ void ApolloHeaderStyleRegisterSearchBar(UISearchBar *searchBar);
 // Called from ApolloThemeRuntime.xm's UISearchBar didMoveToWindow hook (the one
 // hook that class gets); applies the Hard-style insets to registered bars.
 void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
+// Registers a navigation-bar search bar that scrolls away with the list but
+// whose item pins it (hidesSearchBarWhenScrolling = NO) for moments like the
+// push that brings the screen in. Under Hard, UIKit draws a pinned bar inside
+// the band with a glass field; while held, the bar keeps the look it has once
+// released instead (#1361). backdropScrollView: the list whose background
+// shows behind the search row once the bar is released. No-op off Liquid
+// Glass. Defined in ApolloScrollEdgeEffect.xm.
+void ApolloHeaderStyleRegisterScrollAwaySearchBar(UISearchBar *searchBar, UINavigationItem *item,
+                                                  UIScrollView *backdropScrollView);
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its
