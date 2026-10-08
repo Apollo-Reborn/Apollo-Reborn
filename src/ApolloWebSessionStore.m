@@ -145,7 +145,7 @@ void ApolloWebSessionSet(NSString *username, NSString *cookieHeader, NSString *m
     // Promote to primary: in the primary index, out of the poll-only one.
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionPollOnlyIndex, key, NO);
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, YES);
-    ApolloLogDebug(@"[WebSessionStore] Stored web session for u/%@ (%lu cookie bytes, modhash %@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebSessionStore] Stored web session for u/%{public}@ (%lu cookie bytes, modhash %{public}@)",
                    username, (unsigned long)cookieHeader.length, modhash.length > 0 ? @"present" : @"absent");
 }
 
@@ -164,7 +164,7 @@ void ApolloWebSessionSetPollOnly(NSString *username, NSString *cookieHeader, NSS
     ApolloWebSessionKeychainWrite(ApolloWebSessionKeychainAccountName(@"modhash", key), modhash ?: @"");
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionUsernameIndex, key, NO);
     ApolloWebSessionUpdateIndexNamed(kUDKeyWebSessionPollOnlyIndex, key, YES);
-    ApolloLogDebug(@"[WebSessionStore] Stored poll-only web session for u/%@ (%lu cookie bytes, modhash %@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [WebSessionStore] Stored poll-only web session for u/%{public}@ (%lu cookie bytes, modhash %{public}@)",
                    username, (unsigned long)cookieHeader.length, modhash.length > 0 ? @"present" : @"absent");
 }
 

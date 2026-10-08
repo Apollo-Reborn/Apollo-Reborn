@@ -1165,7 +1165,7 @@ static BOOL sApolloGoogleSearchDebugStall;
     BOOL container = [page[@"container"] boolValue];
     BOOL complete = [page[@"ready"] isEqual:@"complete"];
 
-    if (page[@"error"]) ApolloLog(@"[GoogleSearch] extractor error: %@", page[@"error"]);
+    if (page[@"error"]) ApolloLogError(@"[GoogleSearch] extractor error: %@", page[@"error"]);
 
     if (challenge && rawResults.count == 0) {
         if (!_verifying) {
@@ -1521,7 +1521,7 @@ NSURLSessionDataTask *ApolloGoogleSearchFetchRedditInfo(NSArray<ApolloGoogleSear
     // Below iOS 17: keep what this search left in the jar (a sign-in, a
     // solved check) even where WebKit doesn't report cookie changes.
     ApolloGoogleJarSaveSoon();
-    if (error) ApolloLog(@"[GoogleSearch] failed: %@", error.localizedDescription);
+    if (error) ApolloLogError(@"[GoogleSearch] failed: %@", error.localizedDescription);
     if (completion) completion(results ?: @[], error ? NO : more, error);
 }
 
@@ -1563,7 +1563,7 @@ NSURLSessionDataTask *ApolloGoogleSearchFetchRedditInfo(NSArray<ApolloGoogleSear
     if (([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) ||
         ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102)) return;
     if (_verifying) return;   // let the user see and retry the page themselves
-    ApolloLog(@"[GoogleSearch] navigation failed: %@ (%@ %ld)", error.localizedDescription,
+    ApolloLogError(@"[GoogleSearch] navigation failed: %@ (%@ %ld)", error.localizedDescription,
               error.domain, (long)error.code);
     [self finishWithResults:nil mayHaveMore:NO
                       error:ApolloGoogleSearchError(ApolloGoogleSearchErrorNetwork,
@@ -1584,11 +1584,12 @@ NSURLSessionDataTask *ApolloGoogleSearchFetchRedditInfo(NSArray<ApolloGoogleSear
     NSUInteger index = 0;
     for (NSDictionary *item in raw) {
         ApolloLog(@"[GoogleSearch][debug] #%lu url=%@ go=%@ title=%@ lines=%@ anchorLines=%@ snippet=%@",
-                  (unsigned long)index++, item[@"url"], [item[@"go"] isKindOfClass:[NSString class]] ? [item[@"go"] substringToIndex:MIN((NSUInteger)60, [item[@"go"] length])] : @"-", item[@"title"],
+                  (unsigned long)index, item[@"url"], [item[@"go"] isKindOfClass:[NSString class]] ? [item[@"go"] substringToIndex:MIN((NSUInteger)60, [item[@"go"] length])] : @"-", item[@"title"],
                   [item[@"lines"] componentsJoinedByString:@" | "],
                   [item[@"anchorLines"] componentsJoinedByString:@" | "],
                   [[item[@"snippet"] stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%C", (unichar)1] withString:@"<b>"]
                    stringByReplacingOccurrencesOfString:[NSString stringWithFormat:@"%C", (unichar)2] withString:@"</b>"]);
+        index++;   // not inside the log arguments: a disabled level skips them
     }
     WKWebView *web = _web;
     [web evaluateJavaScript:@"document.documentElement.outerHTML" completionHandler:^(id html, NSError *error) {

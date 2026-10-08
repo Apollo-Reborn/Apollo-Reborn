@@ -2792,7 +2792,7 @@ maximumResponseTokens:responseTokens
                     }
                     NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                     ApolloAIRecordFailure(fullName, YES, msg);
-                    ApolloLog(@"[AISummary] link summary error: %@", error ? error.localizedDescription : @"(empty)");
+                    ApolloLogError(@"[AISummary] link summary error: %@", error ? error.localizedDescription : @"(empty)");
                     ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateError, msg);
                     if (ApolloAIAnyHeaderExpanded(fullName, YES)) {
                         ApolloAIForceHeaderRemeasure(fullName);
@@ -3059,7 +3059,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                             }
                             NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                             ApolloAIRecordFailure(fullName, YES, msg);
-                            ApolloLog(@"[AISummary] post summary error: %@", error ? error.localizedDescription : @"(empty)");
+                            ApolloLogError(@"[AISummary] post summary error: %@", error ? error.localizedDescription : @"(empty)");
                             ApolloAISetBoxStateOnMatchingHeaders(fullName, YES, ApolloAIBoxStateError, msg);
                             if (ApolloAIAnyHeaderExpanded(fullName, YES)) {
                                 ApolloAIForceHeaderRemeasure(fullName);
@@ -3192,7 +3192,7 @@ static void ApolloAIGenerateForController(UIViewController *vc) {
                             }
                             NSString *msg = error ? ApolloAIFriendlyError(error) : @"The model returned an empty summary.";
                             ApolloAIRecordFailure(fullName, NO, msg);
-                            ApolloLog(@"[AISummary] comment summary error: %@", error ? error.localizedDescription : @"(empty)");
+                            ApolloLogError(@"[AISummary] comment summary error: %@", error ? error.localizedDescription : @"(empty)");
                             ApolloAISetBoxStateOnMatchingHeaders(fullName, NO, ApolloAIBoxStateError, msg);
                             if (ApolloAIAnyHeaderExpanded(fullName, NO)) {
                                 ApolloAIForceHeaderRemeasure(fullName);
@@ -3496,8 +3496,10 @@ static void ApolloAICaptureCommentCellNodeLater(id node) {
     ApolloAIBoxState postState = sEnableAIPostSummaries ? ApolloAIGetBoxState((id)self, YES) : ApolloAIBoxStateNone;
     ApolloAIBoxState commentState = sEnableAICommentSummaries ? ApolloAIGetBoxState((id)self, NO) : ApolloAIBoxStateNone;
     if (postState == ApolloAIBoxStateNone && commentState == ApolloAIBoxStateNone) return originalSpec;
-    ApolloLog(@"[AISummary][UI] composing header layout postState=%ld commentState=%ld",
-              (long)postState, (long)commentState);
+    // Every layout pass of the comments header: debug level, logged directly
+    // so the pass never builds an NSString.
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AISummary][UI] composing header layout postState=%ld commentState=%ld",
+                 (long)postState, (long)commentState);
 
     id postSummarySpec = nil;
     id discussionSummarySpec = nil;

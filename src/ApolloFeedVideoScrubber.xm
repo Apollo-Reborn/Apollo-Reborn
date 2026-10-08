@@ -266,7 +266,7 @@ static NSTimeInterval ScrubbableDuration(AVPlayer *player) {
 @property (nonatomic, assign) CMTime pendingSeekTime;
 - (void)scrubTouchLanded;
 - (void)scrubGestureDidReset;
-- (void)wireFailureRequirements;
+- (void)wireFailureRequirementsForReason:(NSString *)reason;
 - (CGFloat)fractionForLocationX:(CGFloat)x;
 @end
 
@@ -363,15 +363,17 @@ static char kFeedScrubStripKey;
 // on the screen is untouched. (Without this, both recognizers classify the
 // same move event and whoever runs first wins — the pop gesture was beating
 // the strip to a slow drag and popping the screen instead of scrubbing.)
-- (void)wireFailureRequirements {
+- (void)wireFailureRequirementsForReason:(NSString *)reason {
     UIGestureRecognizer *gesture = self.scrubGesture;
     if (!gesture) return;
+    NSUInteger added = 0;
 
     UIGestureRecognizer *pop =
         ViewControllerForView(self).navigationController.interactivePopGestureRecognizer;
     if (pop && ![self.deferredPans containsObject:pop]) {
         [pop requireGestureRecognizerToFail:gesture];
         [self.deferredPans addObject:pop];
+        added++;
     }
 
     for (UIView *v = self.superview; v; v = v.superview) {
@@ -383,8 +385,11 @@ static char kFeedScrubStripKey;
             if ([self.deferredPans containsObject:g]) continue;
             [g requireGestureRecognizerToFail:gesture];
             [self.deferredPans addObject:g];
+            added++;
         }
     }
+    if (added) ApolloLog(@"[FeedScrubber] deferred %lu new nav pan(s) to strip %p (%@)",
+                         (unsigned long)added, (__bridge void *)self, reason);
 }
 
 - (void)dealloc {
@@ -421,6 +426,16 @@ static char kFeedScrubStripKey;
         ApolloLog(@"[FeedScrubber] refusing touch: player=%p duration=%.1f", player, duration);
         return NO;
     }
+
+    // Accepting the touch: make sure the pans of the hierarchy we live in
+    // RIGHT NOW wait on our gesture. Hit-testing runs before UIKit gathers the
+    // recognizers for this touch, so requirements added here already apply to
+    // it. The visibility-event wiring alone misses a comments preview that is
+    // committed while its header stays visible: the view is reparented into
+    // the real navigation controller (new interactive pop + swipe pans) with
+    // no fresh Visible event until the header scrolls out and back. Already-
+    // deferred pans are skipped, so this is a short ancestor walk per touch.
+    [self wireFailureRequirementsForReason:@"touch"];
     return YES;
 }
 
@@ -712,14 +727,16 @@ static void EnsureScrubStrip(id richMediaNode, BOOL becameVisible) {
         strip = [[ApolloFeedScrubStrip alloc] initWithFrame:CGRectZero];
         objc_setAssociatedObject(richMediaNode, &kFeedScrubStripKey, strip,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLog(@"[FeedScrubber] strip installed on %p", (void *)richMediaNode);
+        ApolloLog(@"[FeedScrubber] strip installed on %p", (__bridge void *)richMediaNode);
     }
     strip.richMediaNode = richMediaNode;
     strip.videoNode = videoNode;
 
+    // Wiring here covers the common case up front; -pointInside:withEvent:
+    // re-checks at touch-down for hierarchy changes these events don't see.
     BOOL needsAttach = strip.superview != host;
     if (needsAttach) [host addSubview:strip];
-    if (needsAttach || becameVisible) [strip wireFailureRequirements];
+    if (needsAttach || becameVisible) [strip wireFailureRequirementsForReason:@"visible"];
 
     // Never move the strip under the user's finger mid-scrub. (.tracking
     // covers the tap path; .scrubbing the gesture path — the gesture cancels

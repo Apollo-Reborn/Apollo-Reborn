@@ -416,7 +416,7 @@ static ApolloGalleryDecodedImage *ApolloGalleryDecodeFullTier(NSData *data) {
         }
         BOOL wasCancelled = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
         if (!decoded && error && !wasCancelled) {
-            ApolloLog(@"[Gallery] image load failed (%@): %@", url.host ?: @"?", error.localizedDescription);
+            ApolloLogError(@"[Gallery] image load failed (%@): %@", url.host ?: @"?", error.localizedDescription);
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{

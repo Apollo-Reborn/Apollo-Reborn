@@ -8,15 +8,43 @@
 
 // On iOS 26, NSLog redacts strings, so use os_log: https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-26-release-notes#NSLog
 // Uses a dedicated subsystem so OSLogStore can efficiently filter our entries.
-#define ApolloLogWithType(type, fmt, ...) do { \
-    NSString *logMessage = [NSString stringWithFormat:@"[ApolloFix] " fmt, ##__VA_ARGS__]; \
-    os_log_with_type(ApolloFixLog(), type, "%{public}s", [logMessage UTF8String]); \
-} while(0)
-#define ApolloLog(fmt, ...) ApolloLogWithType(OS_LOG_TYPE_DEFAULT, fmt, ##__VA_ARGS__)
-#define ApolloLogDebug(fmt, ...) ApolloLogWithType(OS_LOG_TYPE_DEBUG, fmt, ##__VA_ARGS__)
+//
+// These wrappers exist for the PERSISTED levels, the ones Export Debug Logs and
+// the bug-report flow read back from OSLogStore. They take an NSString format
+// and publish the whole message as one public string, so every %@ shows up in
+// a user's export without a per-argument %{public} annotation:
+//   ApolloLog       DEFAULT  The normal level for diagnostics.
+//   ApolloLogError  ERROR    A real failure in our process: an NSError from a
+//                            request/IO/parse, an exception caught in a hook.
+//   ApolloLogFault  FAULT    A broken invariant / should-never-happen state.
+//                            Use sparingly.
+// These levels are on unless the subsystem is deliberately switched off (log
+// config, a logging profile, OSLogPreferences), so there is no level check up
+// front: the line is always formatted, once, into a non-autoreleased string
+// inside its own autorelease pool (see ApolloLogEmit), and os_log_with_type
+// does its usual check after that.
+//
+// The in-memory levels have no wrapper: call os_log_info / os_log_debug
+// directly with ApolloFixLog() and a C-literal format that starts with
+// "[ApolloFix] [Tag] ". They never reach exports and belong to chatty call
+// sites and hot paths (per cell, per layout pass, per scroll tick, per touch).
+// Debug is off unless something asks for it (log stream --level debug, log
+// config, a profile), and Apple's macros check the level before touching the
+// arguments, so a disabled debug line costs one os_log_type_enabled call and
+// its arguments are not evaluated (no side effects in log arguments). An
+// enabled direct call is ~2.5-3x cheaper than the wrapper and never builds an
+// NSString, so a hot path that must stay in exports calls os_log /
+// os_log_error directly too. In every direct call each dynamic string or
+// object needs %{public}@ / %{public}s, or it is <private> in exports;
+// integers, floats, bools and %p are public by default.
+#define ApolloLog(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_DEFAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
+#define ApolloLogError(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_ERROR, @"[ApolloFix] " fmt, ##__VA_ARGS__)
+#define ApolloLogFault(fmt, ...) ApolloLogEmit(OS_LOG_TYPE_FAULT, @"[ApolloFix] " fmt, ##__VA_ARGS__)
 
 __BEGIN_DECLS
 os_log_t ApolloFixLog(void);
+// Formats and emits one log line. Call through the ApolloLog* macros.
+void ApolloLogEmit(os_log_type_t type, NSString *format, ...) NS_FORMAT_FUNCTION(2, 3);
 NSString *ApolloCollectLogs(void);
 
 // --- Row-measure re-entrancy guard (issues #831/#833/#838/#839/#841) ---

@@ -50,7 +50,7 @@
 %ctor {
     Class richMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
 
-    ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode=%p", (void *)richMediaNodeClass);
+    ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode=%p", (__bridge void *)richMediaNodeClass);
 
     if (!richMediaNodeClass) {
         ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode class not found — skipping hook");

@@ -2562,7 +2562,7 @@ static BOOL ApolloPrepareAvatarRewriteForTextNode(id textNode, NSAttributedStrin
 
     if (swapOut) *swapOut = updated;
     if (ApolloInlineAvatarShouldLog(&sApolloInlineAvatarRewriteLogCount)) {
-        ApolloLogDebug(@"[UserAvatars] Inline avatar preserved after text rewrite u/%@ node=%p", username, textNode);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar preserved after text rewrite u/%{public}@ node=%p", username, textNode);
     }
     return YES;
 }
@@ -2693,7 +2693,7 @@ static BOOL ApolloApplyInlineAvatarPlaceholderToCell(id cell, NSString *username
 
     BOOL applied = ApolloApplyAvatarRenderToCell(cell, username, nil, nil, nil);
     if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarPlaceholderLogCount)) {
-        ApolloLogDebug(@"[UserAvatars] Inline avatar placeholder applied u/%@ cell=%p", username, cell);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar placeholder applied u/%{public}@ cell=%p", username, cell);
     }
     return applied;
 }
@@ -2738,7 +2738,7 @@ static void ApolloScheduleInlineAvatarLateReapplyForCell(id cell, NSString *user
                 id currentTextNode = objc_getAssociatedObject(strongCell, kApolloAvatarTextNodeKey);
                 BOOL hasAvatar = ApolloTextLooksAvatarPrepended(ApolloAttributedTextForNode(currentTextNode));
                 if ((!hadAvatar || currentTextNode != previousTextNode) && hasAvatar && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarLateReapplyLogCount)) {
-                    ApolloLogDebug(@"[UserAvatars] Inline avatar late reapply u/%@ cell=%p", username, strongCell);
+                    os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar late reapply u/%{public}@ cell=%p", username, strongCell);
                 }
             }
 
@@ -2760,7 +2760,7 @@ static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, Apoll
     if (cachedImage) {
         BOOL applied = ApolloApplyAvatarRenderToCell(cell, username, info, cachedImage, cachedDecoratorImage);
         if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarAppliedLogCount)) {
-            ApolloLogDebug(@"[UserAvatars] Inline avatar applied from cache u/%@ cell=%p", username, cell);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar applied from cache u/%{public}@ cell=%p", username, cell);
         }
         if (applied) ApolloScheduleInlineAvatarLateReapplyForCell(cell, username);
         ApolloRequestDecoratorRefreshIfNeeded(cache, info);
@@ -2777,7 +2777,7 @@ static void ApolloApplyInlineAvatarInfoToCell(id cell, NSString *username, Apoll
         UIImage *loadedDecoratorImage = info.decoratorURL ? [cache cachedImageForURL:info.decoratorURL] : nil;
         BOOL applied = ApolloApplyAvatarRenderToCell(cellNow, username, info, loadedImage, loadedDecoratorImage);
         if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarAppliedLogCount)) {
-            ApolloLogDebug(@"[UserAvatars] Inline avatar applied after image load u/%@ cell=%p", username, cellNow);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar applied after image load u/%{public}@ cell=%p", username, cellNow);
         }
         if (applied) ApolloScheduleInlineAvatarLateReapplyForCell(cellNow, username);
         ApolloRequestDecoratorRefreshIfNeeded(cache, info);
@@ -2852,7 +2852,7 @@ static void ApolloScheduleInlineAvatarInfoFetchAttempt(id cell, NSString *userna
         }
         if (!ApolloBindInlineAvatarTextNodeForCell(strongCell, username)) {
             if (ApolloInlineAvatarShouldLog(&sApolloInlineAvatarNoTextLogCount)) {
-                ApolloLogDebug(@"[UserAvatars] Inline avatar waiting for author text u/%@ attempt=%lu cell=%p", username, (unsigned long)(attempt + 1), strongCell);
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar waiting for author text u/%{public}@ attempt=%lu cell=%p", username, (unsigned long)(attempt + 1), strongCell);
             }
             if (attempt + 1 < ApolloInlineAvatarMaxBindAttempts) {
                 ApolloScheduleInlineAvatarInfoFetchAttempt(strongCell, username, attempt + 1);
@@ -2886,7 +2886,7 @@ static void ApolloScheduleInlineAvatarInfoFetchAttempt(id cell, NSString *userna
         }
 
         if (ApolloInlineAvatarShouldLog(&sApolloInlineAvatarQueuedLogCount)) {
-            ApolloLogDebug(@"[UserAvatars] Inline avatar queued metadata fetch u/%@ cell=%p", username, strongCell);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar queued metadata fetch u/%{public}@ cell=%p", username, strongCell);
         }
         ApolloEnqueueInlineAvatarInfoRequest(strongCell, username);
     });
@@ -2996,7 +2996,7 @@ static void ApolloBindAvatarAtMeasureForCell(id cell, NSString *modelIvarName, C
         applied = ApolloApplyAvatarRenderToCell(cell, username, nil, nil, nil);
     }
     if (applied && ApolloInlineAvatarShouldLog(&sApolloInlineAvatarMeasureBindLogCount)) {
-        ApolloLogDebug(@"[UserAvatars] Inline avatar bound at measure u/%@ cell=%p image=%d", username, cell, image != nil);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar bound at measure u/%{public}@ cell=%p image=%d", username, cell, image != nil);
     }
 }
 
@@ -3795,7 +3795,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     NSString *className = NSStringFromClass([viewController class]);
     if (!tableView) {
         if (ApolloViewControllerLooksProfileRelated(viewController)) {
-            ApolloLogDebug(@"[UserAvatars] Profile header skipped class=%@ vc=%p reason=no-table", className, viewControllerObject);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Profile header skipped class=%{public}@ vc=%p reason=no-table", className, viewControllerObject);
         }
         ApolloProfileNavTitleView *titleView = ApolloProfileInstallNavTitleView(viewController);
         titleView.titleLabel.alpha = 1.0;
@@ -3826,7 +3826,7 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     NSString *username = ApolloUsernameFromProfileViewController(viewController);
     if (username.length == 0) {
         if (ApolloViewControllerLooksProfileRelated(viewController)) {
-            ApolloLogDebug(@"[UserAvatars] Profile header skipped class=%@ vc=%p table=%p reason=no-username title=%@", className, viewControllerObject, tableView, viewController.navigationItem.title ?: viewController.title ?: @"nil");
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Profile header skipped class=%{public}@ vc=%p table=%p reason=no-username title=%{public}@", className, viewControllerObject, tableView, viewController.navigationItem.title ?: viewController.title ?: @"nil");
         }
         ApolloProfileNavTitleView *titleView = ApolloProfileInstallNavTitleView(viewController);
         titleView.titleLabel.alpha = 1.0;

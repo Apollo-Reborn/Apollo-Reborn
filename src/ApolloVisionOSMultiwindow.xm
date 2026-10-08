@@ -100,7 +100,7 @@ static void ApolloOpenWindow(NSUserActivity *activity) {
                                                         userActivity:activity
                                                              options:nil
                                                         errorHandler:^(NSError *error) {
-        ApolloLog(@"[VisionOSMultiwindow] scene activation failed: %@", error);
+        ApolloLogError(@"[VisionOSMultiwindow] scene activation failed: %@", error);
     }];
 }
 

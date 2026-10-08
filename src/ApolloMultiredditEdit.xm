@@ -1013,10 +1013,10 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
                         ApolloLog(@"[MultiEdit] saved custom icon for %@ (%.0fx%.0f)", [multireddit path], scaled.size.width, scaled.size.height);
                         [(ApolloMultiEditTableView((UIViewController *)weakSelf) ?: sMultiEditListTable) reloadData];
                     } else {
-                        ApolloLog(@"[MultiEdit] icon save failed for %@: %@", [multireddit path], saveError);
+                        ApolloLogError(@"[MultiEdit] icon save failed for %@: %@", [multireddit path], saveError);
                     }
                 } else {
-                    ApolloLog(@"[MultiEdit] icon load failed: %@", error);
+                    ApolloLogError(@"[MultiEdit] icon load failed: %@", error);
                 }
                 reopenEditor();
             });
@@ -1053,7 +1053,7 @@ static id ApolloMultiEditIssue858InjectedResponse(id responseObject, NSString *m
     void (^completion)(NSHTTPURLResponse *, id, NSError *) = ^(NSHTTPURLResponse *response, id responseObject, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
-                ApolloLog(@"[MultiEdit] save failed for %@: %@", path, error);
+                ApolloLogError(@"[MultiEdit] save failed for %@: %@", path, error);
                 [(RedditListViewController *)weakSelf apolloMultiEditShowError:@"Reddit rejected the change. Please try again."];
                 return;
             }

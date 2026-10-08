@@ -86,6 +86,36 @@ os_log_t ApolloFixLog(void) {
     return log;
 }
 
+void ApolloLogEmit(os_log_type_t type, NSString *format, ...) {
+    // Drains the arguments' -description temporaries here instead of letting
+    // them collect in the caller's pool.
+    @autoreleasepool {
+        va_list args;
+        va_start(args, format);
+        // alloc/init rather than stringWithFormat: ARC releases it at the end
+        // of this scope instead of autoreleasing it.
+        NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+        va_end(args);
+
+        // %{public}s keeps the text unredacted (a dynamic %@ would be <private>
+        // in the data store, and so in exported logs). Avoid -UTF8String's
+        // autoreleased copy: borrow CF's internal UTF-8 pointer when it has one,
+        // else convert into a stack buffer; only an oversized message falls
+        // back to letting os_log encode the NSString itself.
+        CFStringRef cfMessage = (__bridge CFStringRef)message;
+        const char *utf8 = CFStringGetCStringPtr(cfMessage, kCFStringEncodingUTF8);
+        char stackBuffer[1024];
+        if (!utf8 && CFStringGetCString(cfMessage, stackBuffer, sizeof stackBuffer, kCFStringEncodingUTF8)) {
+            utf8 = stackBuffer;
+        }
+        if (utf8) {
+            os_log_with_type(ApolloFixLog(), type, "%{public}s", utf8);
+        } else {
+            os_log_with_type(ApolloFixLog(), type, "%{public}@", message);
+        }
+    }
+}
+
 #pragma mark - Row-measure re-entrancy guard
 
 // See ApolloCommon.h. Main-thread only: row-height queries are delivered on
@@ -642,7 +672,7 @@ static BOOL ApolloRouteURLThroughUIApplication(NSURL *url) {
         msgSend(appDelegate, @selector(application:openURL:options:), application, url, @{});
         return YES;
     } @catch (NSException *exception) {
-        ApolloLog(@"[ApolloRouteURL] application:openURL:options: threw: %@", exception);
+        ApolloLogError(@"[ApolloRouteURL] application:openURL:options: threw: %@", exception);
         return NO;
     }
 }
@@ -1276,7 +1306,7 @@ BOOL ApolloIsSystemShareComposeController(UIViewController *controller) {
     // Apollo composers crashes the GIF/composer machinery (issue #366).
     return [controller isKindOfClass:ApolloClassMFMessageComposeViewController] ||
            [controller isKindOfClass:ApolloClassMFMailComposeViewController] ||
-           [controller isKindOfClass:ApolloClassSLComposeViewController];
+           [controller isKindOfClass:ApolloSLComposeViewControllerClass()];
 }
 
 NSArray<UIWindow *> *ApolloAllWindows(void) {
@@ -1308,7 +1338,7 @@ static UIViewController *ApolloTabBarControllerIvarOn(id object) {
         id value = ivar ? object_getIvar(object, ivar) : nil;
         return [value isKindOfClass:[UIViewController class]] ? value : nil;
     } @catch (NSException *exception) {
-        ApolloLog(@"[Common] Failed reading tabBarController ivar on %@: %@", object, exception);
+        ApolloLogError(@"[Common] Failed reading tabBarController ivar on %@: %@", object, exception);
         return nil;
     }
 }

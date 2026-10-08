@@ -2255,7 +2255,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
         @try {
             [self.observedPlayer removeTimeObserver:self.timeObserverToken];
         } @catch (NSException *exception) {
-            ApolloLog(@"[PiP] removeTimeObserver exception: %@", exception);
+            ApolloLogError(@"[PiP] removeTimeObserver exception: %@", exception);
         }
         self.timeObserverToken = nil;
     }
@@ -2265,7 +2265,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
         [self.observedPlayer removeObserver:self forKeyPath:@"timeControlStatus" context:kPiPTimeControlContext];
         [self.playerView.playerLayer removeObserver:self forKeyPath:@"readyForDisplay" context:kPiPReadyContext];
     } @catch (NSException *exception) {
-        ApolloLog(@"[PiP] removeObserver exception: %@", exception);
+        ApolloLogError(@"[PiP] removeObserver exception: %@", exception);
     }
     self.observedPlayer = nil;
     self.observingPlayer = NO;
@@ -2540,7 +2540,7 @@ restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:(void (^)(BOOL)
 
 - (void)pictureInPictureController:(AVPictureInPictureController *)controller
     failedToStartPictureInPictureWithError:(NSError *)error {
-    ApolloLog(@"[PiP] Native PiP failed to start: %@", error);
+    ApolloLogError(@"[PiP] Native PiP failed to start: %@", error);
 }
 
 // =============================================================================
@@ -3801,10 +3801,10 @@ BOOL ApolloPiP_WillHandleFullscreenDismiss(void) {
     Class asVideoNodeClass = objc_getClass("ASVideoNode"); // loop kill-switch
 
     ApolloLog(@"[PiP] ctor: TouchHintVideoNode=%p RichMediaNode=%p LargePostCellNode=%p MediaViewerController=%p PostsVC=%p SavedPostsVC=%p ProfileVC=%p ASVideoNode=%p",
-              (void *)touchHintVideoNodeClass, (void *)richMediaNodeClass,
-              (void *)largePostCellClass, (void *)mediaViewerClass,
-              (void *)postsVCClass, (void *)savedPostsVCClass, (void *)profileVCClass,
-              (void *)asVideoNodeClass);
+              (__bridge void *)touchHintVideoNodeClass, (__bridge void *)richMediaNodeClass,
+              (__bridge void *)largePostCellClass, (__bridge void *)mediaViewerClass,
+              (__bridge void *)postsVCClass, (__bridge void *)savedPostsVCClass, (__bridge void *)profileVCClass,
+              (__bridge void *)asVideoNodeClass);
 
     if (!touchHintVideoNodeClass || !richMediaNodeClass || !largePostCellClass
         || !mediaViewerClass || !mediaPageVCClass || !postsVCClass || !asVideoNodeClass) {

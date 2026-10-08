@@ -127,7 +127,7 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 %ctor {
     Class linkButtonNodeClass = objc_getClass("_TtC6Apollo14LinkButtonNode");
 
-    ApolloLog(@"[LinkCardTitle] ctor: LinkButtonNode=%p", (void *)linkButtonNodeClass);
+    ApolloLog(@"[LinkCardTitle] ctor: LinkButtonNode=%p", (__bridge void *)linkButtonNodeClass);
 
     if (!linkButtonNodeClass) {
         ApolloLog(@"[LinkCardTitle] ctor: LinkButtonNode class not found — skipping hook");

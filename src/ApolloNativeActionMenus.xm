@@ -1036,7 +1036,7 @@ static NSArray<UIMenuElement *> *ApolloNativeActionMenuBuildModeratorReportSecti
             }
         }
     } @catch (__unused NSException *exception) {
-        ApolloLog(@"[NativeActionMenu] Failed to render moderator reports: %@", exception);
+        ApolloLogError(@"[NativeActionMenu] Failed to render moderator reports: %@", exception);
         return nil;
     }
 

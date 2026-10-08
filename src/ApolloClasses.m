@@ -6,6 +6,7 @@ Class ApolloClassASBackgroundLayoutSpec;
 Class ApolloClassASButtonNode;
 Class ApolloClassASCellNode;
 Class ApolloClassASCenterLayoutSpec;
+Class ApolloClassASCollectionView;
 Class ApolloClassASControlNode;
 Class ApolloClassASDisplayNode;
 Class ApolloClassASEditableTextNode;
@@ -90,7 +91,6 @@ Class ApolloClassRecreatedTableSectionHeaderView;
 Class ApolloClassRedditListTableViewCell;
 Class ApolloClassRedditListViewController;
 Class ApolloClassRichMediaNode;
-Class ApolloClassSLComposeViewController;
 Class ApolloClassSaveMediaActivity;
 Class ApolloClassSearchViewController;
 Class ApolloClassSettingsViewController;
@@ -117,11 +117,25 @@ Class ApolloClassUINavigationBarTitleControl;
 Class ApolloClassUIScrollEdgeEffectStyle;
 Class ApolloClassUserCommentsViewController;
 
+// Bumped once per image ObjC finishes mapping (and once per image already
+// loaded when the callback is registered). Lazy accessors for classes that may
+// never exist compare against it so they only retry after something new loads.
+static _Atomic(uint32_t) sLoadedImageGeneration;
+
+static void ApolloClassesImageLoaded(const struct mach_header *header) {
+    // Runs with ObjC's runtime lock held: no ObjC calls (objc_getClass would
+    // deadlock), just note that the set of loaded classes may have grown.
+    (void)header;
+    atomic_fetch_add_explicit(&sLoadedImageGeneration, 1, memory_order_release);
+}
+
 __attribute__((constructor)) static void ApolloClassesResolve(void) {
+    objc_addLoadImageFunc(ApolloClassesImageLoaded);
     ApolloClassASBackgroundLayoutSpec = objc_getClass("ASBackgroundLayoutSpec");
     ApolloClassASButtonNode = objc_getClass("ASButtonNode");
     ApolloClassASCellNode = objc_getClass("ASCellNode");
     ApolloClassASCenterLayoutSpec = objc_getClass("ASCenterLayoutSpec");
+    ApolloClassASCollectionView = objc_getClass("ASCollectionView");
     ApolloClassASControlNode = objc_getClass("ASControlNode");
     ApolloClassASDisplayNode = objc_getClass("ASDisplayNode");
     ApolloClassASEditableTextNode = objc_getClass("ASEditableTextNode");
@@ -206,7 +220,6 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassRedditListTableViewCell = objc_getClass("_TtC6Apollo23RedditListTableViewCell");
     ApolloClassRedditListViewController = objc_getClass("_TtC6Apollo24RedditListViewController");
     ApolloClassRichMediaNode = objc_getClass("_TtC6Apollo13RichMediaNode");
-    ApolloClassSLComposeViewController = objc_getClass("SLComposeViewController");
     ApolloClassSaveMediaActivity = objc_getClass("_TtC6Apollo17SaveMediaActivity");
     ApolloClassSearchViewController = objc_getClass("_TtC6Apollo20SearchViewController");
     ApolloClassSettingsViewController = objc_getClass("_TtC6Apollo22SettingsViewController");
@@ -241,5 +254,19 @@ Class ApolloTUIVariantSelectorViewClass(void) {
         p = (__bridge void *)objc_getClass("TUIVariantSelectorView");
         if (p) atomic_store_explicit(&cached, p, memory_order_release);
     }
+    return (__bridge Class)p;
+}
+
+Class ApolloSLComposeViewControllerClass(void) {
+    static _Atomic(void *) cached;
+    static _Atomic(uint32_t) missedAtGeneration;
+    void *p = atomic_load_explicit(&cached, memory_order_acquire);
+    if (p) return (__bridge Class)p;
+    // Nothing has loaded since the last miss, so the class still can't exist.
+    uint32_t generation = atomic_load_explicit(&sLoadedImageGeneration, memory_order_acquire);
+    if (generation == atomic_load_explicit(&missedAtGeneration, memory_order_relaxed)) return Nil;
+    p = (__bridge void *)objc_getClass("SLComposeViewController");
+    if (p) atomic_store_explicit(&cached, p, memory_order_release);
+    else atomic_store_explicit(&missedAtGeneration, generation, memory_order_relaxed);
     return (__bridge Class)p;
 }

@@ -75,7 +75,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
     if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
-        ApolloLog(@"[Gallery] audio session category failed: %@", error.localizedDescription);
+        ApolloLogError(@"[Gallery] audio session category failed: %@", error.localizedDescription);
         return;
     }
     [session setActive:YES error:NULL];
@@ -1048,7 +1048,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
         UIWindowSceneGeometryPreferencesIOS *preferences =
             [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
         [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-            ApolloLog(@"[Gallery] rotate request failed: %@", error.localizedDescription);
+            ApolloLogError(@"[Gallery] rotate request failed: %@", error.localizedDescription);
         }];
     }
 }
@@ -2171,7 +2171,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
                 if (success) {
                     [weakSelf apollo_showToast:@"Saved"];
                 } else {
-                    ApolloLog(@"[Gallery] save failed: %@", error.localizedDescription);
+                    ApolloLogError(@"[Gallery] save failed: %@", error.localizedDescription);
                     [weakSelf apollo_showToast:@"Save failed"];
                 }
             });

@@ -779,9 +779,9 @@ static void ApolloFeedReapplyCleanup(id node, BOOL triggerLayout) {
                         [(ASNetworkImageNode *)thumbNode addTarget:[ApolloFeedHeroTapHandler shared]
                                                             action:@selector(compactThumbTapped:)
                                                   forControlEvents:ApolloFeedControlEventTouchUpInside];
-                        ApolloLog(@"[FeedThumb] compact tap target wired (thumb=%@)", NSStringFromClass([thumbNode class]));
+                        os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedThumb] compact tap target wired (thumb=%{public}s)", object_getClassName(thumbNode));
                     } @catch (NSException *e) {
-                        ApolloLog(@"[FeedThumb] compact wiring failed: %@", e.reason);
+                        ApolloLogError(@"[FeedThumb] compact wiring failed: %@", e.reason);
                     }
                 });
             }

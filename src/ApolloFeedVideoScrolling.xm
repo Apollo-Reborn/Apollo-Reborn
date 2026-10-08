@@ -205,7 +205,7 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
             if (!strongNode) return;
             if (objc_getAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey) != asset) {
                 // A newer asset started its own build; this one is stale.
-                ApolloLogDebug(@"[FeedVideoScrolling] pre-warmed player dropped (superseded) node=%p", strongNode);
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] pre-warmed player dropped (superseded) node=%p", strongNode);
                 return;
             }
             objc_setAssociatedObject(strongNode, kApolloFeedVideoPrewarmAssetKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -215,7 +215,7 @@ static BOOL ApolloFeedVideoPrewarmPlayer(ASVideoNode *node, AVAsset *asset, NSAr
                 // The node moved on (left the preload range, got a different
                 // asset, or Texture attached a player another way): drop the
                 // warm one; the next preload builds again.
-                ApolloLogDebug(@"[FeedVideoScrolling] pre-warmed player dropped node=%p player=%p match=%d",
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] pre-warmed player dropped node=%p player=%p match=%d",
                                strongNode, player, assetMatches);
                 return;
             }
@@ -292,7 +292,7 @@ static BOOL ApolloFeedCellHasInlineVideo(id cell) {
         });
     } else if (timescale != wanted) {
         // Not Texture's default: the app chose a rate for this node — keep it.
-        ApolloLogDebug(@"[FeedVideoScrolling] leaving non-default timescale %d on %@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedVideoScrolling] leaving non-default timescale %d on %{public}@",
                        timescale, [self class]);
     }
     %orig;
@@ -576,7 +576,7 @@ static void ApolloLogRangeTuningOnce(void) {
         && [videoNodeClass instancesRespondToSelector:@selector(setPeriodicTimeObserverTimescale:)];
     if (!hasObserverHook) {
         ApolloLog(@"[FeedVideoScrolling] ctor: ASVideoNode=%p lacks addPlayerObservers:/periodicTimeObserverTimescale — module disabled",
-                  (void *)videoNodeClass);
+                  (__bridge void *)videoNodeClass);
         return;
     }
     sFeedVideoPrewarmAvailable =
@@ -597,7 +597,7 @@ static void ApolloLogRangeTuningOnce(void) {
         %init(FeedVideoCells, LargePostCellNode = cellClass);
         ApolloLog(@"[FeedVideoScrolling] hook installed: LargePostCellNode neverShowPlaceholders (video cells draw asynchronously while smoothing is on)");
     } else {
-        ApolloLog(@"[FeedVideoScrolling] ctor: LargePostCellNode=%p lacks neverShowPlaceholders — cells keep the stock display wait", (void *)cellClass);
+        ApolloLog(@"[FeedVideoScrolling] ctor: LargePostCellNode=%p lacks neverShowPlaceholders — cells keep the stock display wait", (__bridge void *)cellClass);
     }
 
 #if APOLLO_SIM_BUILD

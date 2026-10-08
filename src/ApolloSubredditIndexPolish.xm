@@ -1601,7 +1601,7 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
 
     self.suspendedRecognizers = suspended.count > 0 ? suspended : nil;
     if (suspended.count > 0) {
-        ApolloLogDebug(@"[SubredditIndex] scrub suspended %lu ancestor recogniser(s)",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SubredditIndex] scrub suspended %lu ancestor recogniser(s)",
                        (unsigned long)suspended.count);
     }
 }
@@ -1861,7 +1861,7 @@ static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, U
 
     if (![objc_getAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey) boolValue]) {
         objc_setAssociatedObject(cell, &kApolloSubredditStarProxyLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLogDebug(@"[SubredditIndex] star-proxy-installed subreddit=%@ frame=%@ native=%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SubredditIndex] star-proxy-installed subreddit=%{public}@ frame=%{public}@ native=%{public}@",
                        ApolloSubredditIndexCellTitle(cell) ?: @"(unknown)",
                        NSStringFromCGRect(proxy.frame),
                        NSStringFromClass([nativeControl class]));
@@ -1927,7 +1927,7 @@ static void ApolloSubredditIndexInstallOrUpdate(UITableView *tableView) {
 
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexLoggedKey) boolValue]) {
         objc_setAssociatedObject(tableView, &kApolloSubredditIndexLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLogDebug(@"[SubredditIndex] installed titles=%lu table=%@ vc=%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SubredditIndex] installed titles=%lu table=%{public}@ vc=%{public}@",
                        (unsigned long)titles.count,
                        tableView,
                        NSStringFromClass([ApolloSubredditIndexOwningViewController(tableView) class]));
@@ -1948,7 +1948,7 @@ static void ApolloSubredditIndexApplyNativeIndexAccent(UITableView *tableView) {
     if (!accent) return;
     if ([tableView.sectionIndexColor isEqual:accent]) return;
     tableView.sectionIndexColor = accent;
-    ApolloLogDebug(@"[SubredditIndex] native index tinted with theme accent table=%p", tableView);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [SubredditIndex] native index tinted with theme accent table=%p", tableView);
 }
 
 static BOOL ApolloSubredditIndexEnsureSubredditTable(UITableView *tableView) {
@@ -2454,7 +2454,7 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
 
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditHeaderLoggedKey) boolValue]) {
         objc_setAssociatedObject(tableView, &kApolloSubredditHeaderLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLogDebug(@"[SubredditIndex] styled-header class=%@ title=%@", NSStringFromClass([header class]), text);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [SubredditIndex] styled-header class=%{public}@ title=%{public}@", NSStringFromClass([header class]), text);
     }
 
     // Fill the gap a transparent modern header would otherwise leave by giving the header its

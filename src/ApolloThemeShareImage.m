@@ -573,7 +573,7 @@ static NSString *ATSReadQRVision(CIImage *ci) {
     VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ci options:@{}];
     NSError *error = nil;
     if (![handler performRequests:@[request] error:&error] || error) {
-        ApolloLog(@"ThemeShare: Vision QR request failed: %@", error);
+        ApolloLogError(@"ThemeShare: Vision QR request failed: %@", error);
         return nil;
     }
     for (VNBarcodeObservation *obs in request.results) {

@@ -16,6 +16,7 @@ extern Class ApolloClassASBackgroundLayoutSpec;
 extern Class ApolloClassASButtonNode;
 extern Class ApolloClassASCellNode;
 extern Class ApolloClassASCenterLayoutSpec;
+extern Class ApolloClassASCollectionView;
 extern Class ApolloClassASControlNode;
 extern Class ApolloClassASDisplayNode;
 extern Class ApolloClassASEditableTextNode;
@@ -100,7 +101,6 @@ extern Class ApolloClassRecreatedTableSectionHeaderView;
 extern Class ApolloClassRedditListTableViewCell;
 extern Class ApolloClassRedditListViewController;
 extern Class ApolloClassRichMediaNode;
-extern Class ApolloClassSLComposeViewController;
 extern Class ApolloClassSaveMediaActivity;
 extern Class ApolloClassSearchViewController;
 extern Class ApolloClassSettingsViewController;
@@ -130,5 +130,11 @@ extern Class ApolloClassUserCommentsViewController;
 // TextInputUI is soft-linked by UIKit and loads the first time the keyboard
 // needs it, so this retries until the class appears.
 Class ApolloTUIVariantSelectorViewClass(void);
+
+// Social.framework is not linked by Apollo or the tweak; it loads only if
+// something (e.g. a share flow) pulls it in, and may never load at all. The
+// lookup is retried only after a new image has been mapped, so a miss on a hot
+// path (every view controller's layout pass) is a single atomic load.
+Class ApolloSLComposeViewControllerClass(void);
 
 __END_DECLS

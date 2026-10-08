@@ -517,10 +517,10 @@ static void UnmuteRichMediaNode(id richMediaNode, id videoNode) {
                     mode:AVAudioSessionModeDefault
                  options:0
                    error:&error];
-    if (error) ApolloLog(@"[VideoUnmute] setCategory:Playback error: %@", error);
+    if (error) ApolloLogError(@"[VideoUnmute] setCategory:Playback error: %@", error);
     error = nil;
     [session setActive:YES withOptions:0 error:&error];
-    if (error) ApolloLog(@"[VideoUnmute] setActive:YES error: %@", error);
+    if (error) ApolloLogError(@"[VideoUnmute] setActive:YES error: %@", error);
 
     if (!alreadyUnmuted) {
         // Step 2: Unmute the AVPlayer directly. For shareable videos, the
@@ -2499,8 +2499,8 @@ static void ReclaimSearchResultsPlayerLayers(UIViewController *searchVC, NSStrin
     Class largePostCellClass = objc_getClass("_TtC6Apollo17LargePostCellNode");
 
     ApolloLog(@"[VideoUnmute] ctor: RichMediaHeaderCellNode=%p, CommentsHeaderCellNode=%p, RichMediaNode=%p, MediaPageVC=%p, MediaViewerAnimCtrl=%p",
-              (void *)richMediaHeaderCellClass, (void *)commentsHeaderCellClass, (void *)richMediaNodeClass,
-              (void *)mediaPageVCClass, (void *)mediaViewerAnimClass);
+              (__bridge void *)richMediaHeaderCellClass, (__bridge void *)commentsHeaderCellClass, (__bridge void *)richMediaNodeClass,
+              (__bridge void *)mediaPageVCClass, (__bridge void *)mediaViewerAnimClass);
 
     if (!richMediaHeaderCellClass || !commentsHeaderCellClass || !richMediaNodeClass
         || !mediaPageVCClass || !mediaViewerAnimClass) {

@@ -600,7 +600,7 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
                     message = serverMessage ?: @"Reddit did not authorize this poll. You may not be allowed to post polls in this subreddit.";
                 }
                 else if (status >= 500) message = @"Reddit is temporarily unavailable. Try again later.";
-                ApolloLog(@"[PollCompose] submit failed status=%ld code=%ld", (long)status, (long)error.code);
+                ApolloLogError(@"[PollCompose] submit failed status=%ld code=%ld", (long)status, (long)error.code);
                 [self showError:message ?: (status > 0 ? [NSString stringWithFormat:@"Reddit returned HTTP %ld.", (long)status] : @"Reddit could not be reached.")];
                 return;
             }

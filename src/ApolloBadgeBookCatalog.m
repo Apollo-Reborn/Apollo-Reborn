@@ -226,7 +226,7 @@ static NSString *ApolloBadgeBookURLBasename(NSString *urlString) {
     NSError *err = nil;
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
     if (![json isKindOfClass:[NSDictionary class]]) {
-        ApolloLog(@"[BadgeBook] catalogue json parse failed: %@", err.localizedDescription);
+        ApolloLogError(@"[BadgeBook] catalogue json parse failed: %@", err.localizedDescription);
         return;
     }
 

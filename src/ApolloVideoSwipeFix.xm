@@ -544,7 +544,7 @@ static void HeaderRetakeHandBackAfterReclaim(UIViewController *appearing) {
     Class profileVCClass = objc_getClass("_TtC6Apollo21ProfileViewController");
 
     ApolloLog(@"[VideoSwipeFix] ctor: PostsViewController=%p, SavedPostsCommentsVC=%p, ProfileVC=%p",
-              (void *)postsVCClass, (void *)savedPostsVCClass, (void *)profileVCClass);
+              (__bridge void *)postsVCClass, (__bridge void *)savedPostsVCClass, (__bridge void *)profileVCClass);
 
     if (!postsVCClass) {
         ApolloLog(@"[VideoSwipeFix] ctor: FATAL — PostsViewController class not found!");

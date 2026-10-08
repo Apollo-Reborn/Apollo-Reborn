@@ -1786,7 +1786,7 @@ static NSURL *ApolloDevvitNormalizedPermalink(NSURL *url) {
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)nav withError:(NSError *)error {
     if (error.code == NSURLErrorCancelled) return;
-    ApolloLog(@"[Devvit] provisional load failed: %@", error.localizedDescription);
+    ApolloLogError(@"[Devvit] provisional load failed: %@", error.localizedDescription);
     [self showFailure];
 }
 

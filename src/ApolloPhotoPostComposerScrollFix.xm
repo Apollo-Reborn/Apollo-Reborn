@@ -361,7 +361,7 @@ static void ApolloMediaComposerRemoveOwnedTempURL(NSURL *url, NSString *reason) 
     NSError *error = nil;
     if (![[NSFileManager defaultManager] removeItemAtURL:url error:&error] &&
         !([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileNoSuchFileError)) {
-        ApolloLog(@"[MediaComposer] failed to remove temp media file %@ reason=%@ error=%@",
+        ApolloLogError(@"[MediaComposer] failed to remove temp media file %@ reason=%@ error=%@",
             url.lastPathComponent ?: @"(missing)", reason ?: @"(unknown)", error.localizedDescription ?: @"unknown");
     }
 }
@@ -582,7 +582,7 @@ static NSURL *ApolloMediaComposerCopyVideoFileToStableTempURL(NSURL *sourceURL, 
     NSError *copyError = nil;
     [[NSFileManager defaultManager] removeItemAtURL:targetURL error:nil];
     if (![[NSFileManager defaultManager] copyItemAtURL:sourceURL toURL:targetURL error:&copyError]) {
-        ApolloLog(@"[MediaComposer] failed to copy selected video file: %@", copyError.localizedDescription ?: @"unknown error");
+        ApolloLogError(@"[MediaComposer] failed to copy selected video file: %@", copyError.localizedDescription ?: @"unknown error");
         return nil;
     }
     return targetURL;
@@ -600,7 +600,7 @@ static UIImage *ApolloMediaComposerPosterImageForVideoURL(NSURL *videoURL) {
         cgImage = [generator copyCGImageAtTime:kCMTimeZero actualTime:NULL error:&error];
     }
     if (!cgImage) {
-        ApolloLog(@"[MediaComposer] failed to generate selected-video poster: %@", error.localizedDescription ?: @"unknown error");
+        ApolloLogError(@"[MediaComposer] failed to generate selected-video poster: %@", error.localizedDescription ?: @"unknown error");
         return nil;
     }
     // TODO: Modernization - assumes the main screen's scale for the poster's point size. All
@@ -2832,19 +2832,16 @@ extern "C" void ApolloMediaComposerMarkBodyTextSubmitted(void) {
 // Returns the bearer-token NSString from a UIViewController's
 // `temporaryPostingAccount` ivar (an RDKClient) by walking
 // authorizationCredential -> accessToken -> accessToken. Returns nil if any
-// step is missing or the ivar doesn't hold an ObjC object.
+// step is missing.
 static NSString *ApolloMediaComposerBearerTokenFromController(UIViewController *controller) {
     if (![controller isKindOfClass:[UIViewController class]]) return nil;
 
-    Ivar tempIvar = class_getInstanceVariable(controller.class, "temporaryPostingAccount");
-    if (!tempIvar) return nil;
-    // Defensive: only follow this ivar if the ObjC runtime tells us it holds an
-    // ObjC object. Swift value-type ivars (e.g. `String`, `URL`) get registered
-    // under their property name too, and reading them via `object_getIvar`
-    // returns inline bytes that crash any subsequent ObjC retain/release.
-    const char *encoding = ivar_getTypeEncoding(tempIvar);
-    if (!encoding || encoding[0] != '@') return nil;
-    id account = object_getIvar(controller, tempIvar);
+    // `temporaryPostingAccount` is a Swift `RDKClient?` stored property, so its
+    // ObjC type encoding is empty (never "@") and can't be used as a gate.
+    // Both ComposePostViewController and ComposeViewController release it with
+    // objc_release in .cxx_destruct (Hopper), i.e. it is a plain strong object
+    // pointer and object_getIvar reads it safely. Missing ivar -> nil.
+    id account = ApolloObjectIvar(controller, "temporaryPostingAccount");
     if (!account) return nil;
 
     SEL credSel = @selector(authorizationCredential);
@@ -3649,7 +3646,7 @@ static BOOL ApolloComposeBodyEditorHasDoneItem(UIViewController *editor) {
     // the whole post. So only act while the editor is on screen with no transition running,
     // and swallow the press otherwise.
     if ((!mediaEditor && !formEditor) || !editor.viewIfLoaded.window || editor.transitionCoordinator) {
-        ApolloLogDebug(@"[ComposeBodyEditor] ignored Command-Return while the body editor is opening or closing");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [ComposeBodyEditor] ignored Command-Return while the body editor is opening or closing");
         return;
     }
     ApolloLog(@"[ComposeBodyEditor] Command-Return in the %@ body editor; doing what its Done checkmark does",

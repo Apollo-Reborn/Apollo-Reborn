@@ -247,7 +247,7 @@ NSDictionary<NSString *, NSNumber *> *ApolloLastReadCommentTotalsSnapshot(void) 
         NSError *error = nil;
         id decoded = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
         if (![decoded isKindOfClass:[NSArray class]] || [(NSArray *)decoded count] % 2 != 0) {
-            ApolloLog(@"[RecentlyRead] Native comment snapshots have an unsupported JSON shape (decode error: %ld)", (long)error.code);
+            ApolloLogError(@"[RecentlyRead] Native comment snapshots have an unsupported JSON shape (decode error: %ld)", (long)error.code);
             return cachedTotals;
         }
 
@@ -422,12 +422,15 @@ static UIColor *RecentlyReadMetaColor(void) {
 }
 
 static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
+    // Keyed on the resolved font, not just the size: systemFontOfSize: is
+    // themed by ApolloThemeRuntime, so a theme font change (or a light/dark
+    // switch between per-mode fonts) must re-render the badge.
     static UIImage *cachedBadge = nil;
-    static CGFloat cachedFontSize = 0.0;
-    if (cachedBadge && cachedFontSize == fontSize) return cachedBadge;
+    static UIFont *cachedBadgeFont = nil;
+    UIFont *badgeFont = [UIFont systemFontOfSize:fontSize * 0.9 weight:UIFontWeightMedium];
+    if (cachedBadge && [cachedBadgeFont isEqual:badgeFont]) return cachedBadge;
 
     NSString *text = @"NSFW";
-    UIFont *badgeFont = [UIFont systemFontOfSize:fontSize * 0.9 weight:UIFontWeightMedium];
     NSDictionary *attrs = @{NSFontAttributeName: badgeFont, NSForegroundColorAttributeName: [UIColor whiteColor]};
     CGSize textSize = [text sizeWithAttributes:attrs];
     CGFloat hPad = 4.25;
@@ -446,7 +449,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
         [path fill];
         [text drawAtPoint:CGPointMake(hPad, vPad) withAttributes:attrs];
     }];
-    cachedFontSize = fontSize;
+    cachedBadgeFont = badgeFont;
     return cachedBadge;
 }
 
@@ -670,7 +673,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
             if (generation != self.fetchGeneration) return; // superseded
             self.isFetchingPage = NO;
             if (fetchError || !things) {
-                ApolloLog(@"[RecentlyRead] Soft refresh fetch error: %@", fetchError);
+                ApolloLogError(@"[RecentlyRead] Soft refresh fetch error: %@", fetchError);
                 // Keep the old order/content rather than committing a new
                 // order with holes behind the pagination cursor - the next
                 // return retries because allPostFullNames still differs from
@@ -779,7 +782,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
             self.isFetchingPage = NO;
             [self setFooterLoading:NO];
             if (fetchError || !things) {
-                ApolloLog(@"[RecentlyRead] Fetch error: %@", fetchError);
+                ApolloLogError(@"[RecentlyRead] Fetch error: %@", fetchError);
                 // Keep whatever is on screen. A pending replace stays pending
                 // so the next fetch retries page 1 in the new order.
                 [self _updateBackgroundState];
@@ -929,6 +932,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
 }
 
 - (NSAttributedString *)statsAttributedStringForLink:(RDKLink *)link {
+    static UIColor *metaColor = nil;
     static NSDictionary *textAttrs = nil;
     static UIImage *upIcon = nil;
     static UIImage *commentIcon = nil;
@@ -937,9 +941,7 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
     CGFloat baselineOffset = -1.5;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        UIColor *metaColor = RecentlyReadMetaColor();
-        UIFont *metaFont = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        textAttrs = @{NSFontAttributeName: metaFont, NSForegroundColorAttributeName: metaColor};
+        metaColor = RecentlyReadMetaColor();
         UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:iconSize weight:UIImageSymbolWeightMedium];
         upIcon = [[UIImage systemImageNamed:@"arrow.up" withConfiguration:config]
             imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
@@ -950,6 +952,15 @@ static UIImage *RecentlyReadNSFWBadgeImage(CGFloat fontSize) {
             scale:clockIconBase.scale orientation:UIImageOrientationUpMirrored];
         clockIcon = [clockFlipped imageWithTintColor:metaColor renderingMode:UIImageRenderingModeAlwaysOriginal];
     });
+
+    // The font is NOT cached once: systemFontOfSize: is themed by
+    // ApolloThemeRuntime, so it changes with the active theme's font (and can
+    // differ between light and dark mode). UIFont caches the factory result,
+    // so asking again is cheap; rebuild the attributes only when it changed.
+    UIFont *metaFont = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    if (![textAttrs[NSFontAttributeName] isEqual:metaFont]) {
+        textAttrs = @{NSFontAttributeName: metaFont, NSForegroundColorAttributeName: metaColor};
+    }
 
     NSMutableAttributedString *result = [[NSMutableAttributedString alloc] init];
 

@@ -664,7 +664,7 @@ static NSString *ApolloGalleryBearerForClient(id client) {
         }
 
         if (error) {
-            ApolloLog(@"[Gallery] listing %@ failed: %@", strongSelf.sourceDescription, error.localizedDescription);
+            ApolloLogError(@"[Gallery] listing %@ failed: %@", strongSelf.sourceDescription, error.localizedDescription);
             completion(nil, error.localizedDescription ?: @"Network error.");
             return;
         }

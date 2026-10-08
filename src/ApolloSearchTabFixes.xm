@@ -446,7 +446,7 @@ static UIImage *ApolloThickenedTemplateIcon(UIImage *src) {
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
             if (error) {
-                ApolloLog(@"[SearchTabFixes] trending refresh failed: %@",
+                ApolloLogError(@"[SearchTabFixes] trending refresh failed: %@",
                           error.localizedDescription);
                 ApolloShowToastWithStyle(
                     @"Couldn't Refresh Trending Subreddits",

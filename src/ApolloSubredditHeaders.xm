@@ -950,7 +950,7 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
             strongSelf.subscriptionRequestInFlight = NO;
             BOOL finalState = succeeded ? desiredState : oldState;
             if (!succeeded) {
-                ApolloLog(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
+                ApolloLogError(@"[SubredditHeaders] subscription %@ u/%@ failed, rolling back error=%@",
                           desiredState ? @"subscribe" : @"unsubscribe", subredditName, error);
             }
             // Grace window: our own confirmed outcome (success or rollback)

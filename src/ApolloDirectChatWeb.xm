@@ -1863,7 +1863,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         NSString *script = ApolloDirectChatEnhancementScript(palette);
         [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
             if (error) {
-                ApolloLog(@"[DirectChatWeb] Theme injection failed: %@", error);
+                ApolloLogError(@"[DirectChatWeb] Theme injection failed: %@", error);
             } else if ([result isKindOfClass:[NSDictionary class]] && [result[@"giphyGrids"] integerValue] > 0) {
                 ApolloLog(@"[DirectChatWeb] Applied Apollo theme and compact GIPHY grid");
             }
@@ -4508,13 +4508,13 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
         [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
-    ApolloLog(@"[DirectChatWeb] Provisional navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[DirectChatWeb] Provisional navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
         [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
-    ApolloLog(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
+    ApolloLogError(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {

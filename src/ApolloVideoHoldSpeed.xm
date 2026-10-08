@@ -337,7 +337,8 @@ static void CollectContextMenuInteractions(UIView *view,
 
     [view addGestureRecognizer:gr];
     self.recognizer = gr;
-    ApolloLog(@"VideoHoldSpeed: installed on %@", NSStringFromClass([view class]));
+    // Once per video view: debug level.
+    os_log_debug(ApolloFixLog(), "[ApolloFix] VideoHoldSpeed: installed on %{public}s", object_getClassName(view));
 }
 
 #pragma mark Menu suppression

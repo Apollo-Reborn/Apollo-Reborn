@@ -92,7 +92,7 @@ static BOOL ApolloQuickActionsOpenHomeFeed(id tabBarController) {
         @try {
             ((void (*)(id, SEL))objc_msgSend)(tabBarController, @selector(goToHomeTab));
         } @catch (NSException *exception) {
-            ApolloLog(@"[QuickActions] goToHomeTab threw: %@", exception);
+            ApolloLogError(@"[QuickActions] goToHomeTab threw: %@", exception);
         }
     }
 
@@ -117,7 +117,7 @@ static BOOL ApolloQuickActionsOpenHomeFeed(id tabBarController) {
         @try {
             tableView = ((UITableView *(*)(id, SEL))objc_msgSend)(root, @selector(tableView));
         } @catch (NSException *exception) {
-            ApolloLog(@"[QuickActions] Home: failed reading tableView: %@", exception);
+            ApolloLogError(@"[QuickActions] Home: failed reading tableView: %@", exception);
         }
     }
 
@@ -132,7 +132,7 @@ static BOOL ApolloQuickActionsOpenHomeFeed(id tabBarController) {
         ApolloLog(@"[QuickActions] Opened Home front-page feed via RedditListViewController row 0");
         return YES;
     } @catch (NSException *exception) {
-        ApolloLog(@"[QuickActions] Home: failed selecting front-page row: %@", exception);
+        ApolloLogError(@"[QuickActions] Home: failed selecting front-page row: %@", exception);
         return NO;
     }
 }
@@ -174,7 +174,7 @@ static BOOL ApolloQuickActionsPerformNow(NSString *action) {
         ((void (*)(id, SEL))objc_msgSend)(tabBarController, selector);
         ApolloLog(@"[QuickActions] Performed %@", action);
     } @catch (NSException *exception) {
-        ApolloLog(@"[QuickActions] Failed performing %@: %@", action, exception);
+        ApolloLogError(@"[QuickActions] Failed performing %@: %@", action, exception);
         return NO;
     }
 
@@ -308,7 +308,7 @@ static BOOL ApolloQuickActionsHandleURL(NSURL *url) {
                 url = ((NSURL *(*)(id, SEL))objc_msgSend)(context, @selector(URL));
             }
         } @catch (NSException *exception) {
-            ApolloLog(@"[QuickActions] Failed reading URL context: %@", exception);
+            ApolloLogError(@"[QuickActions] Failed reading URL context: %@", exception);
         }
 
         if (ApolloQuickActionsHandleURL(url)) {

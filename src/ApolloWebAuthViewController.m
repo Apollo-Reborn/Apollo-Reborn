@@ -390,14 +390,14 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
     // fired when decidePolicyForNavigationAction cancels a navigation — expected.
     if (error.code == NSURLErrorCancelled) return;
     if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return;
-    ApolloLog(@"[WebAuth] Provisional navigation failed: %@", error);
+    ApolloLogError(@"[WebAuth] Provisional navigation failed: %@", error);
     [self _finishWithURL:nil error:error];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [self.spinner stopAnimating];
     if (error.code == NSURLErrorCancelled) return;
-    ApolloLog(@"[WebAuth] Navigation failed: %@", error);
+    ApolloLogError(@"[WebAuth] Navigation failed: %@", error);
     [self _finishWithURL:nil error:error];
 }
 

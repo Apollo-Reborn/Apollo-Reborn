@@ -32,7 +32,7 @@
 // Off by default; flip to 1 for verbose per-render snoomoji/image/tap tracing.
 #define APOLLO_CHAT_IMG_DEBUG 0
 #if APOLLO_CHAT_IMG_DEBUG
-  #define ChatImgLog(fmt, ...) ApolloLogDebug(@"[ChatImg] " fmt, ##__VA_ARGS__)
+  #define ChatImgLog(fmt, ...) os_log_debug(ApolloFixLog(), "[ApolloFix] [ChatImg] " fmt, ##__VA_ARGS__)
 #else
   #define ChatImgLog(fmt, ...) do {} while (0)
 #endif
@@ -784,7 +784,7 @@ static UIViewController *ApolloChatHostVC(UIView *view) {
         if (m && v.userInteractionEnabled) { media = m; break; }
         [q addObjectsFromArray:v.subviews];
     }
-    ChatImgLog(@"BUBBLE TAP fired media=%@", media ? @"y" : @"NIL");
+    ChatImgLog("BUBBLE TAP fired media=%{public}@", media ? @"y" : @"NIL");
     if (!media) return;
     ApolloChatImageViewerVC *viewer = [ApolloChatImageViewerVC new];
     viewer.media = media;
@@ -989,7 +989,7 @@ static void ApolloChatProcessCell(id vc, id collectionView, id cell, NSIndexPath
             }
         }
         if (imgURL) {
-            ChatImgLog(@"detected %@ %@ -> %@", sticker ? @"snoomoji" : @"image", ApolloChatIndexKey(indexPath), imgURL.absoluteString);
+            ChatImgLog("detected %{public}@ %{public}@ -> %{public}@", sticker ? @"snoomoji" : @"image", ApolloChatIndexKey(indexPath), imgURL.absoluteString);
             ApolloChatRenderImageInCell(vc, cell, imgURL, indexPath, collectionView, sticker);
         } else {
             if (cell && objc_getAssociatedObject(cell, &kApolloChatImgViewKey)) ApolloChatClearImageInCell(cell);
@@ -1256,7 +1256,7 @@ static void ApolloChatLoadSnoomoji(id collectionView) {
         // is only ever mutated on the same thread ApolloChatSnoomojiStickerURL reads it on.
         dispatch_async(dispatch_get_main_queue(), ^{
             sInFlight = NO;
-            ChatImgLog(@"snoomoji fetch: %lu entries (sample orly=%@)",
+            ChatImgLog("snoomoji fetch: %lu entries (sample orly=%{public}@)",
                        (unsigned long)parsed.count, parsed[@"orly"] ? @"y" : @"-");
             if (parsed.count == 0) return;   // transient failure: leave sLoaded NO so the next open retries
             [ApolloChatSnoomojiMap() addEntriesFromDictionary:parsed];
@@ -1386,7 +1386,7 @@ static CGFloat ApolloChatBubbleDrawnTextHeight(NSAttributedString *text, CGFloat
         [cache setObject:heights forKey:[text copy]];
     }
     heights[key] = @(height);
-    ApolloLogDebug(@"[ChatBubble] %lu-char message at %.0f pt: measured %.1f pt, drawn %.0f pt (avatars %d)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [ChatBubble] %lu-char message at %.0f pt: measured %.1f pt, drawn %.0f pt (avatars %d)",
                    (unsigned long)text.length, width, measuredHeight, height, avatarPrefix);
     return height;
 }

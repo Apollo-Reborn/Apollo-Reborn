@@ -96,7 +96,7 @@ BOOL ApolloApplyNativeInlineGIFAutoplayGate(id imageNode) {
             ((void (*)(id, SEL, BOOL))objc_msgSend)(imageNode, @selector(setAnimatedImagePaused:), !shouldPlay);
         }
     } @catch (NSException *exception) {
-        ApolloLog(@"[AutoplayGIF] native gate failed node=%p class=%@ reason=%@",
+        ApolloLogError(@"[AutoplayGIF] native gate failed node=%p class=%@ reason=%@",
                   imageNode, NSStringFromClass([imageNode class]), exception.reason);
         ApolloUnregisterInlineGIFNode(imageNode);
         return NO;
@@ -309,7 +309,7 @@ static void ApolloLogAutoplayDecision(NSString *mode, BOOL shouldPlay) {
     if (@available(iOS 9.0, *)) {
         lpm = [NSProcessInfo processInfo].isLowPowerModeEnabled;
     }
-    ApolloLogDebug(@"[AutoplayGIF] mode=%@ shouldPlay=%d lpm=%d wifi=%d cellular=%d",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] mode=%{public}@ shouldPlay=%d lpm=%d wifi=%d cellular=%d",
                    mode ?: @"unknown",
                    shouldPlay,
                    lpm,
@@ -506,7 +506,7 @@ NSURL *ApolloInlineGIFDisplayURLFromMetadata(NSURL *url, NSDictionary *mediaMeta
 void ApolloRegisterInlineGIFNode(id imageNode) {
     if (!ApolloInlineGIFNodeIsRegistryEligible(imageNode)) {
         if (imageNode) {
-            ApolloLogDebug(@"[AutoplayGIF] register skipped ineligible class=%@", NSStringFromClass([imageNode class]));
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] register skipped ineligible class=%{public}@", NSStringFromClass([imageNode class]));
         }
         return;
     }
@@ -549,7 +549,7 @@ void ApolloRefreshVisibleInlineGIFAutoplay(void) {
             previousShouldPlay == shouldPlay &&
             ((sAutoplayRefreshLastMode == mode) || [sAutoplayRefreshLastMode isEqualToString:mode]) &&
             ((previousMode == mode) || [previousMode isEqualToString:mode])) {
-            ApolloLogDebug(@"[AutoplayGIF] refresh skipped unchanged mode=%@ shouldPlay=%d", mode, shouldPlay);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] refresh skipped unchanged mode=%{public}@ shouldPlay=%d", mode, shouldPlay);
             return;
         }
         sAutoplayRefreshStateValid = YES;
@@ -593,7 +593,7 @@ void ApolloRefreshVisibleInlineGIFAutoplay(void) {
                 }
             }
         }
-        ApolloLogDebug(@"[AutoplayGIF] refresh mode=%@ nodes=%lu reload=%lu pause=%lu skip=%lu pruned=%lu shouldPlay=%d",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] refresh mode=%{public}@ nodes=%lu reload=%lu pause=%lu skip=%lu pruned=%lu shouldPlay=%d",
                        mode, (unsigned long)nodes.count, (unsigned long)reloadCount, (unsigned long)pauseCount, (unsigned long)skipCount, (unsigned long)prunedCount, shouldPlay);
     });
     sDeferredAutoplayRefreshBlock = block;

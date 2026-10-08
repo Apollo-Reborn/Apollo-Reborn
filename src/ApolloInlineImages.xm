@@ -550,7 +550,7 @@ static void ApolloFetchImgurEndpointAtIndex(NSArray<NSURL *> *endpoints, NSUInte
             ApolloFetchImgurEndpointAtIndex(endpoints, index + 1, cacheKey);
             return;
         }
-        ApolloLogDebug(@"[InlineImages] Imgur resolved key=%@ url=%@ size=%@x%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] Imgur resolved key=%{public}@ url=%{public}@ size=%{public}@x%{public}@",
                        cacheKey, result[@"url"], result[@"width"] ?: @"?", result[@"height"] ?: @"?");
         ApolloDeliverImgurResolution(cacheKey, result);
     }];
@@ -602,7 +602,7 @@ static void ApolloResolveImgurURL(NSURL *url, void (^completion)(NSDictionary *r
         return;
     }
     if (shouldStartFetch) {
-        ApolloLogDebug(@"[InlineImages] Imgur resolve START key=%@ endpoints=%lu", cacheKey, (unsigned long)endpoints.count);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] Imgur resolve START key=%{public}@ endpoints=%lu", cacheKey, (unsigned long)endpoints.count);
         ApolloFetchImgurEndpointAtIndex(endpoints, 0, cacheKey);
     }
 }
@@ -1522,7 +1522,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:&directoryError]) {
-        ApolloLog(@"[InlineImages] viewer temp directory failed: %@", directoryError.localizedDescription);
+        ApolloLogError(@"[InlineImages] viewer temp directory failed: %@", directoryError.localizedDescription);
     }
 
     self.scrollView = [[UIScrollView alloc] initWithFrame:self.view.bounds];
@@ -1890,7 +1890,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                     }
                     [owner.failedImageIndexes addObject:index];
                     if ([retry isKindOfClass:[UIButton class]]) retry.hidden = NO;
-                    ApolloLog(@"[InlineImages] viewer download failed page=%ld status=%ld err=%@",
+                    ApolloLogError(@"[InlineImages] viewer download failed page=%ld status=%ld err=%@",
                               (long)page + 1, (long)http.statusCode,
                               error.localizedDescription ?: @"unknown error");
                 }
@@ -2269,7 +2269,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                                 : [NSString stringWithFormat:@"Saved %lu images", (unsigned long)files.count]];
                         }
                     } else {
-                        ApolloLog(@"[InlineImages] album save failed: %@", error.localizedDescription);
+                        ApolloLogError(@"[InlineImages] album save failed: %@", error.localizedDescription);
                         [owner apollo_showToast:@"Save failed"];
                     }
                     if (owner.tearingDown) [owner apollo_removeViewerStorageIfPossible];
@@ -2927,7 +2927,7 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
 }
 
 - (void)imageNode:(id)imageNode didLoadImage:(UIImage *)image {
-    ApolloLogDebug(@"[InlineImages] DIDLOAD imageNode=%p hasImage=%d size=%@ url=%@",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] DIDLOAD imageNode=%p hasImage=%d size=%{public}@ url=%{public}@",
               imageNode, image != nil, image ? NSStringFromCGSize(image.size) : @"nil",
               [imageNode respondsToSelector:@selector(URL)] ? [(ASNetworkImageNode *)imageNode URL] : nil);
     if (!image || image.size.width <= 0 || image.size.height <= 0) return;
@@ -2950,7 +2950,7 @@ static BOOL ApolloPresentOrResolveImageChestAlbumURL(NSURL *url, UIView *sourceV
     NSNumber *cur = objc_getAssociatedObject(imageNode, &kApolloAspectRatioKey);
     if (cur && fabs(newRatio - [cur doubleValue]) < 0.01) return;
     objc_setAssociatedObject(imageNode, &kApolloAspectRatioKey, @(newRatio), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloLogDebug(@"[InlineImages] ratio set imageNode=%p ratio=%.3f size=%@",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] ratio set imageNode=%p ratio=%.3f size=%{public}@",
               imageNode, newRatio, NSStringFromCGSize(size));
 
     // Surface the new size. Prefer the debounced per-host scheduler (one
@@ -3006,7 +3006,7 @@ static void ApolloActivateNativeInlineGIFGate(ASDisplayNode *node) {
             ApolloApplyNativeInlineGIFAutoplayGate(strong);
         }];
     }
-    ApolloLogDebug(@"[AutoplayGIF] native inline GIF gated node=%p class=%@",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] native inline GIF gated node=%p class=%{public}@",
               node, NSStringFromClass([node class]));
 }
 
@@ -3127,7 +3127,7 @@ static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
         if (ready && [anim respondsToSelector:@selector(coverImage)]) {
             cover = [anim valueForKey:@"coverImage"];
         }
-        ApolloLogDebug(@"[InlineImages] _locked_setAnimatedImage imageNode=%p ready=%d coverSize=%@",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] _locked_setAnimatedImage imageNode=%p ready=%d coverSize=%{public}@",
                   strong, ready, cover ? NSStringFromCGSize(cover.size) : @"nil");
 
         if (cover && cover.size.width > 0 && cover.size.height > 0) {
@@ -3150,7 +3150,7 @@ static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
         if ([anim respondsToSelector:@selector(setCoverImageReadyCallback:)]) {
             id capturedAnim = retainedAnim;
             void (^cb)(UIImage *) = ^(UIImage *coverImage) {
-                ApolloLogDebug(@"[InlineImages] coverImageReadyCallback imageNode=%p coverSize=%@",
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] coverImageReadyCallback imageNode=%p coverSize=%{public}@",
                           weakSelf, coverImage ? NSStringFromCGSize(coverImage.size) : @"nil");
                 ASImageNode *s = weakSelf;
                 if (!s || !coverImage || coverImage.size.width <= 0 || !ApolloInlineGIFGenerationMatches(s, generation)) return;
@@ -3239,7 +3239,7 @@ static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
     objc_setAssociatedObject(self, &kApolloLastDisplayBoundsKey,
                              [NSValue valueWithCGSize:cur],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloLogDebug(@"[InlineImages] re-display: backing store was rendered at %@ but node is now %@ (node=%p)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] re-display: backing store was rendered at %{public}@ but node is now %{public}@ (node=%p)",
               NSStringFromCGSize(last), NSStringFromCGSize(cur), self);
     [(ASDisplayNode *)self setNeedsDisplay];
 }
@@ -3249,7 +3249,7 @@ static void ApolloGateNativeInlineAnimatedImageIfNeeded(ASDisplayNode *node) {
         ![objc_getAssociatedObject(self, &kApolloInlineGIFReloadInFlightKey) boolValue]) {
         NSURL *previous = [self respondsToSelector:@selector(URL)] ? [self URL] : nil;
         if ((previous && URL && ![previous isEqual:URL]) || (previous && !URL)) {
-            ApolloLogDebug(@"[AutoplayGIF] clearing GIF state on URL change node=%p", self);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] clearing GIF state on URL change node=%p", self);
             ApolloClearInlineGIFNodeState(self);
         }
     }
@@ -3744,22 +3744,22 @@ static void ApolloClearInlineGIFNodeState(ASNetworkImageNode *node) {
 static BOOL ApolloInlineGIFImageNodeIsLiveForRefresh(ASNetworkImageNode *node) {
     if (!ApolloInlineGIFNodeIsRegistryEligible(node)) {
         if (node) ApolloUnregisterInlineGIFNode(node);
-        ApolloLogDebug(@"[AutoplayGIF] live-check node=%p ineligible", node);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] live-check node=%p ineligible", node);
         return NO;
     }
     if (![objc_getAssociatedObject(node, &kApolloInlineAnimatedGIFKey) boolValue]) {
         ApolloUnregisterInlineGIFNode(node);
-        ApolloLogDebug(@"[AutoplayGIF] live-check node=%p no-anim-flag", node);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] live-check node=%p no-anim-flag", node);
         return NO;
     }
     @try {
         if (![node respondsToSelector:@selector(isNodeLoaded)] || ![node isNodeLoaded]) {
-            ApolloLogDebug(@"[AutoplayGIF] live-check node=%p not-loaded", node);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] live-check node=%p not-loaded", node);
             return NO;
         }
         if (!node.supernode) {
             ApolloUnregisterInlineGIFNode(node);
-            ApolloLogDebug(@"[AutoplayGIF] live-check node=%p no-supernode", node);
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] live-check node=%p no-supernode", node);
             return NO;
         }
         // Deliberately no node.URL requirement: the tweak's GIF pipeline loads
@@ -3767,7 +3767,7 @@ static BOOL ApolloInlineGIFImageNodeIsLiveForRefresh(ASNetworkImageNode *node) {
         // check disqualified every hosted GIF from settings-refresh handling.
         return YES;
     } @catch (NSException *exception) {
-        ApolloLog(@"[AutoplayGIF] live-check failed node=%p class=%@ reason=%@",
+        ApolloLogError(@"[AutoplayGIF] live-check failed node=%p class=%@ reason=%@",
                   node, NSStringFromClass([node class]), exception.reason);
         ApolloUnregisterInlineGIFNode(node);
         return NO;
@@ -3995,7 +3995,7 @@ BOOL ApolloPauseInlineGIFNodeForAutoplay(id imageNode) {
     @try {
         ApolloPauseInlineGIFNode(node, cover);
     } @catch (NSException *exception) {
-        ApolloLog(@"[AutoplayGIF] pause failed node=%p class=%@ reason=%@",
+        ApolloLogError(@"[AutoplayGIF] pause failed node=%p class=%@ reason=%@",
                   node, NSStringFromClass([node class]), exception.reason);
         ApolloUnregisterInlineGIFNode(node);
         return NO;
@@ -4013,7 +4013,7 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
 
     ApolloRemovePlayOverlayFromNode(node);
     if (ApolloResumeInlineGIFPlaybackIfPossible(node)) {
-        ApolloLogDebug(@"[AutoplayGIF] resume-only node=%p", node);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] resume-only node=%p", node);
         return NO;
     }
     // No live FLAnimatedImageView to resume (the pause's cover swap tears the
@@ -4025,11 +4025,11 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
         @try {
             [(id)node setAnimatedImage:storedAnim];
         } @catch (NSException *exception) {
-            ApolloLog(@"[AutoplayGIF] reload reinject failed node=%p reason=%@", node, exception.reason);
+            ApolloLogError(@"[AutoplayGIF] reload reinject failed node=%p reason=%@", node, exception.reason);
             ApolloUnregisterInlineGIFNode(node);
             return NO;
         }
-        ApolloLogDebug(@"[AutoplayGIF] reload reinject node=%p", node);
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] reload reinject node=%p", node);
         return YES;
     }
 
@@ -4057,7 +4057,7 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
         [node setURL:nil];
         [node setURL:url];
     } @catch (NSException *exception) {
-        ApolloLog(@"[AutoplayGIF] reload failed node=%p class=%@ reason=%@",
+        ApolloLogError(@"[AutoplayGIF] reload failed node=%p class=%@ reason=%@",
                   node, NSStringFromClass([node class]), exception.reason);
         reloadOK = NO;
     }
@@ -4066,7 +4066,7 @@ BOOL ApolloReloadInlineGIFImageNodeForAutoplay(id imageNode) {
         ApolloUnregisterInlineGIFNode(node);
         return NO;
     }
-    ApolloLogDebug(@"[AutoplayGIF] reload node=%p url=%@", node, url.host ?: url.absoluteString);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] reload node=%p url=%{public}@", node, url.host ?: url.absoluteString);
     return YES;
 }
 
@@ -4137,7 +4137,7 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
         if (shouldPlay) {
             ApolloUpdateInlineGIFOverlayForNode(strong);
             if (ApolloResumeInlineGIFPlaybackIfPossible(strong)) {
-                ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=1 forced=%d",
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=1 forced=%d",
                           strong, (unsigned long)retryIndex, forcedPlay);
                 return;
             }
@@ -4156,18 +4156,18 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
                 });
                 ApolloTrackInlineGIFPendingPolicyBlock(strong, retryBlock);
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), retryBlock);
-                ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 scheduling=%lu forced=%d",
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 scheduling=%lu forced=%d",
                           strong, (unsigned long)retryIndex, (unsigned long)(retryIndex + 1), forcedPlay);
                 return;
             }
-            ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 forced=%d",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu shouldPlay=1 resume=0 forced=%d",
                       strong, (unsigned long)retryIndex, forcedPlay);
             return;
         }
 
         if (cover) {
             ApolloPauseInlineGIFNode(strong, cover);
-            ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu staticCover=1 shouldPlay=0",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu staticCover=1 shouldPlay=0",
                       strong, (unsigned long)retryIndex);
             return;
         }
@@ -4187,13 +4187,13 @@ static void ApolloApplyInlineGIFPlaybackPolicyWithCover(ASNetworkImageNode *imag
             });
             ApolloTrackInlineGIFPendingPolicyBlock(strong, retryBlock);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), retryBlock);
-            ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu waitingForCover=%lu shouldPlay=0",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu waitingForCover=%lu shouldPlay=0",
                       strong, (unsigned long)retryIndex, (unsigned long)(retryIndex + 1));
             return;
         }
 
         ApolloPauseInlineGIFNode(strong, nil);
-        ApolloLogDebug(@"[AutoplayGIF] policy node=%p retry=%lu pausedNoCover=1 shouldPlay=0",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] policy node=%p retry=%lu pausedNoCover=1 shouldPlay=0",
                   strong, (unsigned long)retryIndex);
     });
     ApolloTrackInlineGIFPendingPolicyBlock(imageNode, block);
@@ -4233,7 +4233,7 @@ static BOOL ApolloResumeInlineGIFPlaybackIfPossible(ASNetworkImageNode *imageNod
     // Autoplay resume drops the overlay; a user-forced (tap-to-play) resume
     // swaps the play button for the corner pause badge.
     ApolloUpdateInlineGIFOverlayForNode(imageNode);
-    ApolloLogDebug(@"[AutoplayGIF] resume node=%p animView=%p forced=%d", imageNode, animView, forcedPlay);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AutoplayGIF] resume node=%p animView=%p forced=%d", imageNode, animView, forcedPlay);
     return YES;
 }
 
@@ -4265,7 +4265,7 @@ static void ApolloStartInlineGIFPlayback(ASNetworkImageNode *imageNode) {
                 ApolloLog(@"[AutoplayGIF] userPlay node=%p reinject=1", imageNode);
                 return;
             } @catch (NSException *exception) {
-                ApolloLog(@"[AutoplayGIF] userPlay reinject failed node=%p reason=%@", imageNode, exception.reason);
+                ApolloLogError(@"[AutoplayGIF] userPlay reinject failed node=%p reason=%@", imageNode, exception.reason);
             }
         }
 
@@ -4689,7 +4689,7 @@ static void ApolloRefreshInlineMediaLayout(void) {
             relaid++;
         } @catch (__unused NSException *exception) {}
     }
-    ApolloLogDebug(@"[InlineImages] media layout refresh nodes=%lu relaid=%lu",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] media layout refresh nodes=%lu relaid=%lu",
               (unsigned long)nodes.count, (unsigned long)relaid);
 }
 
@@ -4962,7 +4962,7 @@ static void ApolloScheduleInlineGIFMetadataRetry(ASDisplayNode *hostMarkdownNode
                 // so the /player URL is reclassified as a GIF on the next layout.
                 objc_setAssociatedObject(host, &kApolloCachedOrigChildrenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 ApolloRequestMarkdownRelayout(host);
-                ApolloLogDebug(@"[InlineImages] reddit GIF metadata arrived — rebuilding decomposition host=%p attempt=%lu",
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] reddit GIF metadata arrived — rebuilding decomposition host=%p attempt=%lu",
                                host, (unsigned long)attempt);
                 return;
             }
@@ -5419,7 +5419,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         objc_setAssociatedObject(self, &kApolloCachedOrigChildrenKey, origChildren, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         decomp = rekeyed.count > 0 ? rekeyed : nil;
         identityMatches = YES; // content is stable — skip the rebuild below
-        ApolloLogDebug(@"[InlineImages] vote-stable relayout: reused decomposition across pointer churn (md=%p leaves=%lu) — no rebuild, no flicker",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] vote-stable relayout: reused decomposition across pointer churn (md=%p leaves=%lu) — no rebuild, no flicker",
                   self, (unsigned long)rekeyed.count);
     }
 
@@ -5517,7 +5517,7 @@ static BOOL ApolloLinkButtonHasInlineHost(ASDisplayNode *linkButtonNode) {
         }
         for (id leaf in leaves) {
             if ([usedLeaves containsObject:leaf]) {
-                ApolloLogDebug(@"[InlineImages] skipping duplicate leaf instance %p in one layout pass (host=%p)", leaf, self);
+                os_log_debug(ApolloFixLog(), "[ApolloFix] [InlineImages] skipping duplicate leaf instance %p in one layout pass (host=%p)", leaf, self);
                 continue;
             }
             [usedLeaves addObject:leaf];

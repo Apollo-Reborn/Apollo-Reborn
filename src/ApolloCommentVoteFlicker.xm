@@ -251,8 +251,8 @@ static void ApolloVFEnsureSynchronousDisplay(NSArray *cells, const char *stage) 
         } @catch (__unused NSException *e) {}
     }
     if (cells.count > 0) {
-        ApolloLog(@"[VoteFlicker] ensured synchronous display for %lu cell(s) (%s)",
-                  (unsigned long)cells.count, stage);
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] ensured synchronous display for %lu cell(s) (%{public}s)",
+                    (unsigned long)cells.count, stage);
     }
 }
 
@@ -311,7 +311,8 @@ static void ApolloVFRealizeUpdatedCommentsInfo(id postInfo, const char *stage) {
         if ([postInfo respondsToSelector:@selector(recursivelyEnsureDisplaySynchronously:)]) {
             [postInfo recursivelyEnsureDisplaySynchronously:YES];
         }
-        ApolloLog(@"[VoteFlicker] read-comments update realized synchronously (%s)", stage);
+        // Confirmation only (helpful, not essential): info level.
+        os_log_info(ApolloFixLog(), "[ApolloFix] [VoteFlicker] read-comments update realized synchronously (%{public}s)", stage);
     } @catch (__unused NSException *e) {}
 }
 

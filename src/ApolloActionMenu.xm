@@ -492,7 +492,7 @@ static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(id controll
         @try {
             specMatches = spec.matches(controller, menuTitle);
         } @catch (NSException *exception) {
-            ApolloLog(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
+            ApolloLogError(@"[ActionMenu] spec '%@' matches: threw %@", spec.identifier, exception);
         }
         if (!specMatches) continue;
         NSString *specItemID = ApolloActionMenuItemIDForSpec(spec.identifier);
@@ -854,7 +854,7 @@ void ApolloActionMenuInjectMenuElements(NSMutableArray<UIMenuElement *> *childre
             }
             [children insertObject:element atIndex:MIN(index, children.count)];
         } @catch (NSException *exception) {
-            ApolloLog(@"[ActionMenu] spec '%@' build threw: %@", spec.identifier, exception);
+            ApolloLogError(@"[ActionMenu] spec '%@' build threw: %@", spec.identifier, exception);
         }
     }
 }
@@ -920,7 +920,7 @@ UIMenu *ApolloActionMenuApplyLayoutToContextMenu(UIMenu *menu, NSString *context
     @try {
         return ApolloActionMenuLayoutContextMenu(menu, context);
     } @catch (NSException *exception) {
-        ApolloLog(@"[ActionMenu] long-press %@ layout threw %@ — showing Apollo's menu", context, exception.name);
+        ApolloLogError(@"[ActionMenu] long-press %@ layout threw %@ — showing Apollo's menu", context, exception.name);
         return menu;
     }
 }

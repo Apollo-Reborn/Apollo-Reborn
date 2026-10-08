@@ -566,7 +566,7 @@ static NSDictionary<NSString *, NSString *> *ApolloPollCookiePairs(NSString *hea
     NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0
                                                      error:&serializationError];
     if (!data) {
-        ApolloLog(@"[PollVoting] vote request failed stage=serialization errorDomain=%@ code=%ld",
+        ApolloLogError(@"[PollVoting] vote request failed stage=serialization errorDomain=%@ code=%ld",
                   serializationError.domain, (long)serializationError.code);
         [self finish:NO message:@"Apollo could not prepare the poll vote."];
         return;

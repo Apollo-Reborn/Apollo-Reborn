@@ -648,7 +648,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
             context->manager, @selector(persistInformationToDisk));
         scheduled = YES;
     } @catch (NSException *exception) {
-        ApolloLog(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
+        ApolloLogError(@"[AccountSwitcher] Account reorder persistence failed: %@", exception);
     } @finally {
         sApolloAccountReorderMutationInProgress = previousMutationState;
     }
@@ -1291,7 +1291,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live switch call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live switch call failed: %@", ex);
         return;
     }
     id selectedAccount = ApolloActiveAccountClient();
@@ -1316,7 +1316,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live delete call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live delete call failed: %@", ex);
     }
 }
 
@@ -1340,7 +1340,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live move call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live move call failed: %@", ex);
         return NO;
     }
     return [objc_getAssociatedObject(self.liveManager, kApolloAccountReorderSucceededKey) boolValue];
@@ -1367,7 +1367,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     @try {
         [inv invokeWithTarget:self.liveManager];
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Live add-account call failed: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Live add-account call failed: %@", ex);
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self reloadRows];
@@ -1585,7 +1585,7 @@ static void ApolloInstallAccountSwitcherOverlay(UIViewController *host) {
         }
         ApolloLog(@"[AccountSwitcher] Overlay installed on live AccountManagerViewController");
     } @catch (NSException *ex) {
-        ApolloLog(@"[AccountSwitcher] Overlay install failed, leaving native UI visible: %@", ex);
+        ApolloLogError(@"[AccountSwitcher] Overlay install failed, leaving native UI visible: %@", ex);
     }
 }
 
@@ -1900,7 +1900,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
             %orig(tableView, fromPath, toPath);
             moved = YES;
         } @catch (NSException *exception) {
-            ApolloLog(@"[AccountSwitcher] Native reorder %ld -> %ld failed: %@",
+            ApolloLogError(@"[AccountSwitcher] Native reorder %ld -> %ld failed: %@",
                       (long)from, (long)to, exception);
         } @finally {
             sApolloAccountReorderMutationInProgress = previousMutationState;
@@ -1990,7 +1990,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
     }
     objc_setAssociatedObject(self, kApolloAccountReorderSucceededKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloLogDebug(@"[AccountSwitcher] Reordered row %ld -> %ld; active index %ld -> %ld",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [AccountSwitcher] Reordered row %ld -> %ld; active index %ld -> %ld",
                    (long)source, (long)destination,
                    (long)context.currentIndex, (long)context.movedIndex);
 }
@@ -2005,7 +2005,7 @@ static void ApolloQuarantineAccountSwitcher(UIViewController *controller) {
 
 - (void)redditAccountChangedWithNotification:(id)notification {
     if (sApolloAccountReorderMutationInProgress) {
-        ApolloLogDebug(@"[AccountSwitcher] Suppressed redundant subreddit refresh during reorder");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [AccountSwitcher] Suppressed redundant subreddit refresh during reorder");
         return;
     }
     %orig(notification);

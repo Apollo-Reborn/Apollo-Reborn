@@ -2641,7 +2641,7 @@ static void LGApplyAlternateIcon(UIView *hostView, NSString *iconID, void (^comp
     LGSetAlternateIconName(iconID, ^(NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
-                ApolloLog(@"[LGIconPicker] setAlternateIconName failed: %@", error);
+                ApolloLogError(@"[LGIconPicker] setAlternateIconName failed: %@", error);
                 UIAlertController *alert = [UIAlertController
                     alertControllerWithTitle:@"Couldn't Change Icon"
                                      message:error.localizedDescription ?: @"Unknown error."

@@ -605,7 +605,7 @@ static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
             ((void (*)(id, SEL, id, double, BOOL))objc_msgSend)(
                 provider, selector, interaction, (double)self.providerProgress, NO);
         } @catch (NSException *exception) {
-            ApolloLog(@"[AutoHideTabBarFix] Ending animated reveal tracking failed: %@",
+            ApolloLogError(@"[AutoHideTabBarFix] Ending animated reveal tracking failed: %@",
                       exception.name);
         }
     }
@@ -652,7 +652,7 @@ static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
             self.provider, selector, self.interaction, (double)providerProgress,
             fraction < 1.0);
     } @catch (NSException *exception) {
-        ApolloLog(@"[AutoHideTabBarFix] Animated reveal provider call failed: %@", exception.name);
+        ApolloLogError(@"[AutoHideTabBarFix] Animated reveal provider call failed: %@", exception.name);
         // Earlier frames used tracking=YES. Always attempt the matching final
         // tracking=NO callback before tearing the driver down.
         [self finishProviderTracking];
@@ -1051,7 +1051,7 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
             ApolloTopBarSetScrollHidden(tbc, hidden, NO, reason);
             return ApolloTabBarRevealResultStarted;
         } @catch (NSException *exception) {
-            ApolloLog(@"[AutoHideTabBarFix] Manual native morph failed: %@", exception.name);
+            ApolloLogError(@"[AutoHideTabBarFix] Manual native morph failed: %@", exception.name);
             return ApolloTabBarRevealResultUnsupported;
         }
     }

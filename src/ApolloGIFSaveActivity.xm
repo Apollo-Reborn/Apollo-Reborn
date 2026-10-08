@@ -50,7 +50,7 @@ static NSString *const kApolloGIFSaveIdentifier = @"app.apolloreborn.save-gif";
     NSError *error = nil;
     BOOL copied = [NSFileManager.defaultManager createDirectoryAtURL:self.directoryURL withIntermediateDirectories:YES attributes:nil error:&error] &&
         [NSFileManager.defaultManager copyItemAtURL:self.sourceURL toURL:self.fileURL error:&error];
-    if (!copied) ApolloLog(@"[GIFSaveActivity] file handoff failed domain=%@ code=%ld", error.domain, (long)error.code);
+    if (!copied) ApolloLogError(@"[GIFSaveActivity] file handoff failed domain=%@ code=%ld", error.domain, (long)error.code);
     return copied;
 }
 - (void)save {

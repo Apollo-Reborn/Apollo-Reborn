@@ -247,7 +247,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         ?: fromVC.navigationController.navigationBar;
 
     ApolloLog(@"[InterruptibleNav] built %s animator for ctx %p (interactive=%d, %@ -> %@)",
-              push ? "push" : "pop", (void *)ctx, interactive,
+              push ? "push" : "pop", (__bridge void *)ctx, interactive,
               NSStringFromClass(fromVC.class), NSStringFromClass(toVC.class));
     // Only an interactive transition holds the title capsules back: a finger-driven cross-fade
     // can sit at partial alpha indefinitely and then reverse, which is where a capsule on the
@@ -289,7 +289,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         }
         fromView.userInteractionEnabled = fromWasInteractive;
         ApolloLog(@"[InterruptibleNav] %s animator for ctx %p finished (cancelled=%d)",
-                  push ? "push" : "pop", (void *)ctx, cancelled);
+                  push ? "push" : "pop", (__bridge void *)ctx, cancelled);
         // No cache bookkeeping here: this may synchronously start the next transition (a push or
         // pop issued from didShowViewController:), whose animator must survive untouched. The
         // per-context lookup in interruptibleAnimatorForTransition: keeps the two apart.

@@ -378,7 +378,7 @@ static NSString *UCSBarePostID(NSString *identifier) {
                 // icon and menu describe the comments that are actually on screen.
                 id vc2 = weakVC;
                 if (vc2 && ApolloCommentsVCWriteCurrentSort(vc2, preRaw)) UCSRedrawSortButton(vc2, preRaw);
-                ApolloLog(@"[URLOpenSort] %@: refetch on %@ failed (%@); showing the %@ response",
+                ApolloLogError(@"[URLOpenSort] %@: refetch on %@ failed (%@); showing the %@ response",
                           postID, ApolloCommentSortName(desired), [error2 isKindOfClass:[NSError class]] ? ((NSError *)error2).localizedDescription : @"no link",
                           ApolloCommentSortName(preRaw));
                 original(result, error);

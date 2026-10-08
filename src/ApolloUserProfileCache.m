@@ -807,7 +807,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
                 retryOrGiveUp([NSString stringWithFormat:@"network error (%@)", error.localizedDescription]);
                 return;
             }
-            ApolloLog(@"[UserAvatars] Failed to fetch u/%@: %@", key, error.localizedDescription);
+            ApolloLogError(@"[UserAvatars] Failed to fetch u/%@: %@", key, error.localizedDescription);
             [self finishInfoRequestForKey:key info:nil];
             return;
         }
@@ -1013,7 +1013,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         BOOL ok = (!error && data.length > 0 && (!http || (http.statusCode >= 200 && http.statusCode < 300)));
         if (!ok) {
-            ApolloLog(@"[UserAvatars] Batch profile fetch failed (HTTP %ld, err %@) for %lu ids",
+            ApolloLogError(@"[UserAvatars] Batch profile fetch failed (HTTP %ld, err %@) for %lu ids",
                       (long)(http ? http.statusCode : -1), error.localizedDescription ?: @"none", (unsigned long)chunk.count);
             // Un-mark so a later thread open can retry; per-cell about.json still covers these users now.
             dispatch_async(self.queue, ^{ for (NSString *fn in chunk) [self.batchRequestedFullNames removeObject:fn]; });
@@ -1238,7 +1238,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
                     if (image) persistData = data;
                 }
                 if (!image && error) {
-                    ApolloLog(@"[UserAvatars] Failed to load image %@: %@", key, error.localizedDescription);
+                    ApolloLogError(@"[UserAvatars] Failed to load image %@: %@", key, error.localizedDescription);
                 }
                 if (!image) {
                     // Negative-cache only permanent failures — transient
@@ -1412,7 +1412,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
             return;
         }
         if (!image && error) {
-            ApolloLog(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
+            ApolloLogError(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
         }
         if (!image) {
             NSInteger statusCode = http ? http.statusCode : 0;

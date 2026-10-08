@@ -294,7 +294,7 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
         }
         if (!removed) {
             [self publishStoredKey:key present:YES];
-            ApolloLog(@"[SubredditHeaders] failed to remove custom icon subreddit=%@ error=%@",
+            ApolloLogError(@"[SubredditHeaders] failed to remove custom icon subreddit=%@ error=%@",
                 key, removeError.localizedDescription ?: @"unknown");
             // Always publish the final state. Startup inventory may have run
             // between the optimistic update and this queued mutation even when
@@ -331,7 +331,7 @@ static NSUInteger const ApolloSubredditCustomIconMaxBytes = 512000; // 500 KB
                 }
                 if (!removed) {
                     if (key.length > 0) [failedKeys addObject:key];
-                    ApolloLog(@"[SubredditHeaders] failed clearing custom icon file=%@ error=%@",
+                    ApolloLogError(@"[SubredditHeaders] failed clearing custom icon file=%@ error=%@",
                         file, removeError.localizedDescription ?: @"unknown");
                 }
             }

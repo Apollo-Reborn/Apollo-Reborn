@@ -434,7 +434,7 @@ static void ApolloOwnFlairPrefetch(NSString *username, NSString *subreddit) {
 
         [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, __unused NSURLResponse *response, NSError *error) {
         if (error || data.length == 0) {
-            ApolloLog(@"[OwnFlair] Prefetch for r/%@ failed: %@", subreddit, error.localizedDescription ?: @"empty response");
+            ApolloLogError(@"[OwnFlair] Prefetch for r/%@ failed: %@", subreddit, error.localizedDescription ?: @"empty response");
             done();
             return;
         }

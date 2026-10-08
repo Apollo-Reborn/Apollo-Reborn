@@ -603,7 +603,7 @@ static void ApolloTitlePresentationDetachCustom(UIView *source) {
     if (changed) {
         [bar setNeedsLayout];
         ApolloNavigationTitlesRefreshBar(bar);
-        ApolloLogDebug(@"[NavigationTitlePresentation] %@ native title ready=%d custom=%d sources=%lu",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitlePresentation] %{public}@ native title ready=%d custom=%d sources=%lu",
             NSStringFromClass(top.class), self.ready, self.customView != nil, (unsigned long)self.sources.count);
     }
 }

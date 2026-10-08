@@ -1071,7 +1071,7 @@ static NSArray<ApolloHLItem *> *ApolloHLDropFeedOwned(NSString *sub, NSArray<Apo
             if (ss.sawChallenge && ss.bestItems.count == 0)
                 ApolloLog(@"[Highlights][web] r/%@ blocked by Reddit's bot challenge after %.1fs — will retry later", ss.sub, now);
             else
-                ApolloLog(@"[Highlights][web] r/%@ timed out after %.1fs (%d probes, last error=%@)", ss.sub, now, ss.polls, e.localizedDescription ?: @"nil");
+                ApolloLogError(@"[Highlights][web] r/%@ timed out after %.1fs (%d probes, last error=%@)", ss.sub, now, ss.polls, e.localizedDescription ?: @"nil");
             [ss finish:ss.bestItems ?: @[]];
         } else {
             [ss pollAfter:kApolloHLWebPollInterval];

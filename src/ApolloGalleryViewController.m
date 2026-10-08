@@ -493,7 +493,7 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
         typeof(self) strongSelf = weakSelf;
         // Reused or stopped meanwhile: the failure belongs to an old item.
         if (!strongSelf || strongSelf.observedPlayerItem != playerItem) return;
-        ApolloLog(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
+        ApolloLogError(@"[Gallery] tile stream failed to load (%@ %ld); keeping the poster",
                   error.domain, (long)error.code);
         [strongSelf stopPlayback];
     });
@@ -1628,7 +1628,7 @@ static void ApolloGalleryDebugRotate(CFNotificationCenterRef center, void *obser
                     initWithInterfaceOrientations:(portrait ? UIInterfaceOrientationMaskLandscapeRight
                                                             : UIInterfaceOrientationMaskPortrait)];
             [scene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
-                ApolloLog(@"[GalleryDebug] rotate failed: %@", error);
+                ApolloLogError(@"[GalleryDebug] rotate failed: %@", error);
             }];
             ApolloLog(@"[GalleryDebug] rotate -> %@", portrait ? @"landscape" : @"portrait");
         }

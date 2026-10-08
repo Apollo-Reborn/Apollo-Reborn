@@ -1991,7 +1991,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         controller.appliedTranslationX = previous + parentDelta;
         controller.appliedTranslationY = previousY + parentDeltaY;
         controller.lastAppliedTransform = desired;
-        ApolloLogDebug(@"[NavigationTitleLayout] %@ centered edges=%.1f/%.1f content=%.1f max=%.1f shift=%.1f",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [NavigationTitleLayout] %{public}@ centered edges=%.1f/%.1f content=%.1f max=%.1f shift=%.1f",
                        NSStringFromClass(topVC.class), leftLimit, rightLimit,
                        CGRectGetWidth(contentFrame), maximumWidth, delta);
     }

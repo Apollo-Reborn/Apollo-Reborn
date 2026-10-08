@@ -303,7 +303,7 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
         }
         if (!removed) {
             [self publishStoredKey:key present:YES];
-            ApolloLog(@"[SubredditHeaders] failed to remove custom banner subreddit=%@ error=%@",
+            ApolloLogError(@"[SubredditHeaders] failed to remove custom banner subreddit=%@ error=%@",
                 key, removeError.localizedDescription ?: @"unknown");
             // Always publish the final state. Startup inventory may have run
             // between the optimistic update and this queued mutation even when
@@ -340,7 +340,7 @@ static NSUInteger const ApolloSubredditCustomBannerMaxBytes = 1572864; // 1.5 MB
                 }
                 if (!removed) {
                     if (key.length > 0) [failedKeys addObject:key];
-                    ApolloLog(@"[SubredditHeaders] failed clearing custom banner file=%@ error=%@",
+                    ApolloLogError(@"[SubredditHeaders] failed clearing custom banner file=%@ error=%@",
                         file, removeError.localizedDescription ?: @"unknown");
                 }
             }

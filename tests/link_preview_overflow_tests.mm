@@ -31,6 +31,7 @@ static double TestTime(void) {
 }
 #define CACurrentMediaTime() TestTime()
 #define ApolloLog(...) ((void)0)
+#define ApolloLogError(...) ((void)0)
 @interface Layer : NSObject
 @property NSArray *animationKeys;
 @end

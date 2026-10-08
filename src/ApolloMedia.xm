@@ -68,7 +68,7 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
     object_setClass(wrapper, ApolloMediaTransparentWrapperView.class);
     wrapper.opaque = NO;
     wrapper.backgroundColor = UIColor.clearColor;
-    ApolloLogDebug(@"[MediaBackdrop] transparent media wrapper installed");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaBackdrop] transparent media wrapper installed");
 }
 
 %hook _TtC6Apollo33MediaViewerPresentationController
@@ -133,7 +133,7 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
         dim.alpha = 0.0;
         snapshot.alpha = 0.0;
     } completion:nil];
-    ApolloLogDebug(@"[MediaBackdrop] finishing dismissal fade from %.3f snapshot=%d",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [MediaBackdrop] finishing dismissal fade from %.3f snapshot=%d",
                    visibleAlpha, snapshot != nil);
 }
 

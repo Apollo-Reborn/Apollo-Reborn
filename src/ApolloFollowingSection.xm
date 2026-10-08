@@ -1444,8 +1444,9 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
     NSIndexPath *visible = ApolloFollowingVisiblePathForNative(map, indexPath);
     if (!visible) return %orig;
     if (visible.section != indexPath.section || visible.row != indexPath.row) {
-        ApolloLog(@"[FollowingSection] cell lookup native %ld/%ld -> visible %ld/%ld (caller %p)",
-                  (long)indexPath.section, (long)indexPath.row, (long)visible.section, (long)visible.row, caller);
+        // Every remapped lookup Apollo makes: debug level.
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [FollowingSection] cell lookup native %ld/%ld -> visible %ld/%ld (caller %p)",
+                     (long)indexPath.section, (long)indexPath.row, (long)visible.section, (long)visible.row, caller);
     }
     return %orig(visible);
 }

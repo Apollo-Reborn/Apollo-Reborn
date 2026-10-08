@@ -292,7 +292,7 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
             NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
             BOOL failed = error || !data.length || (http && (http.statusCode < 200 || http.statusCode >= 300));
             if (failed) {
-                ApolloLog(@"[HiddenContent] /api/info chunk of %lu id(s) failed (status=%ld error=%@) -- excluding those item(s) from results this pass",
+                ApolloLogError(@"[HiddenContent] /api/info chunk of %lu id(s) failed (status=%ld error=%@) -- excluding those item(s) from results this pass",
                           (unsigned long)chunk.count, (long)(http ? http.statusCode : 0), error.localizedDescription ?: @"none");
                 @synchronized (lock) {
                     [unresolvable addObjectsFromArray:chunk];

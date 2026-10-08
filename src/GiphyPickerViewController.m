@@ -505,7 +505,7 @@ static UIColor *ApolloGiphyBackgroundColorFromController(UIViewController *contr
 
         if (error) {
             if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return;
-            ApolloLog(@"[MarkdownGif] giphy fetch failed: %@", error.localizedDescription);
+            ApolloLogError(@"[MarkdownGif] giphy fetch failed: %@", error.localizedDescription);
             if (!append) {
                 strongSelf.gifs = @[];
                 strongSelf.statusLabel.hidden = NO;

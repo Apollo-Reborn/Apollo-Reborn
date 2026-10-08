@@ -286,7 +286,7 @@ void ApolloRedditCaptureBearerTokenFromAuthorization(NSString *authorization, NS
     if (ApolloWebJSONBearerIsSynthetic(token)) return;
 
     sLatestRedditBearerToken = [token copy];
-    ApolloLogDebug(@"[RedditUpload] Captured Reddit bearer token from %@", source ?: @"unknown source");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [RedditUpload] Captured Reddit bearer token from %{public}@", source ?: @"unknown source");
 }
 
 void ApolloRedditCaptureBearerTokenFromAuthorizationForURL(NSString *authorization, NSURL *url, NSString *source) {
@@ -2049,7 +2049,7 @@ static void ApolloRedditResolveSubmittedLinkIDViaWebsocket(NSString *webSocketUR
         [task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
 
         if (error || messageString.length == 0) {
-            ApolloLog(@"[RedditUpload] Websocket linkID resolve failed: %@", error.localizedDescription ?: @"empty message");
+            ApolloLogError(@"[RedditUpload] Websocket linkID resolve failed: %@", error.localizedDescription ?: @"empty message");
             completion(nil, nil);
             return;
         }
@@ -2142,7 +2142,7 @@ static void ApolloRedditVerifySubmittedVideoPost(NSDictionary *context, NSString
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
         if (error || status < 200 || status >= 300 || data.length == 0) {
-            ApolloLog(@"[RedditUpload] Video post verification fetch failed source=%@ status=%ld error=%@", source ?: @"(unknown)", (long)status, error.localizedDescription ?: @"(none)");
+            ApolloLogError(@"[RedditUpload] Video post verification fetch failed source=%@ status=%ld error=%@", source ?: @"(unknown)", (long)status, error.localizedDescription ?: @"(none)");
             return;
         }
 
@@ -3131,7 +3131,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
         // Cookie uploads (image_upload_s3.json) never return an asset_id — the S3
         // <Location> URL is the whole payload — so only require it off the cookie path.
         if (error || !mediaURL || (!usedCookieLease && assetID.length == 0)) {
-            ApolloLog(@"[RedditUpload] Upload failed: %@", error.localizedDescription);
+            ApolloLogError(@"[RedditUpload] Upload failed: %@", error.localizedDescription);
             if (videoContext) ApolloMediaComposerCompleteVideoUploadContext(videoContext, YES, @"media-upload-error");
             completionHandler(nil, nil, error ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:50
                 userInfo:@{NSLocalizedDescriptionKey: @"Reddit media upload did not return a URL and asset ID"}]);
@@ -3173,7 +3173,7 @@ static void ApolloCompleteRedditNativeMediaUpload(NSData *mediaData, NSURL *medi
             attempt.posterOperation = ApolloUploadMediaDataToRedditCancellable(videoPosterData, posterFilename, @"image/jpeg", resolvedUploadBearer, userAgent, nil, ^(NSURL *posterURL, NSString *posterAssetID, NSString *posterWebSocketURL, NSError *posterError) {
                 if (ApolloRedditNativeUploadAttemptIsCancelled(attempt, @"poster-upload-completion")) return;
                 if (posterError || !posterURL) {
-                    ApolloLog(@"[RedditUpload] Video poster upload failed for assetID=%@: %@", assetID, posterError.localizedDescription ?: @"missing poster URL");
+                    ApolloLogError(@"[RedditUpload] Video poster upload failed for assetID=%@: %@", assetID, posterError.localizedDescription ?: @"missing poster URL");
                     if (videoContext) ApolloMediaComposerCompleteVideoUploadContext(videoContext, YES, @"poster-upload-error");
                     completionHandler(nil, nil, posterError ?: [NSError errorWithDomain:@"ApolloRedditMediaUpload" code:53
                         userInfo:@{NSLocalizedDescriptionKey: @"Reddit video poster upload did not return a URL"}]);
@@ -3785,7 +3785,7 @@ static void ApolloUploadsApplyThumb(UITableViewCell *cell, NSString *key, UIImag
         thumbView.contentMode = UIViewContentModeScaleAspectFill;
         thumbView.clipsToBounds = YES;
         thumbView.image = image;
-        ApolloLogDebug(@"[ImgChestUpload] uploads thumbnail set (view=%@ frame=%@)",
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [ImgChestUpload] uploads thumbnail set (view=%{public}@ frame=%{public}@)",
                   NSStringFromClass([thumbView class]), NSStringFromCGRect(thumbView.frame));
     });
 }
@@ -3916,7 +3916,7 @@ static void ApolloUploadsApplyDetail(UITableViewCell *cell, NSString *key, NSStr
             UIImage *full = data.length > 0 ? [UIImage imageWithData:data] : nil;
             if (!full) {
                 NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-                ApolloLog(@"[ImgChestUpload] uploads thumbnail load failed status=%ld err=%@ url=%@",
+                ApolloLogError(@"[ImgChestUpload] uploads thumbnail load failed status=%ld err=%@ url=%@",
                           (long)http.statusCode, error.localizedDescription ?: @"nil", key);
                 return;
             }
@@ -3992,7 +3992,7 @@ static bool hooked_CGImageDestinationAddImage(CGImageDestinationRef destination,
     CFDictionaryRef newProperties = ApolloCopyOptionsWithReplacement(properties, kCGImageDestinationLossyCompressionQuality, fullRef);
     CFRelease(fullRef);
 
-    ApolloLogDebug(@"[ImageUploadHost] Bumping Apollo's image-prep JPEG quality from 0.75 to 1.0 for full-fidelity upload");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [ImageUploadHost] Bumping Apollo's image-prep JPEG quality from 0.75 to 1.0 for full-fidelity upload");
     bool result = orig_CGImageDestinationAddImage(destination, image, newProperties);
     if (newProperties) CFRelease(newProperties);
     return result;

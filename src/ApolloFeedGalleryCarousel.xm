@@ -402,8 +402,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
             preferredOver++;
         }
     }
-    ApolloLog(@"[FeedGallery] carousel attached; preferred over %lu ancestor pans",
-              (unsigned long)preferredOver);
+    // Once per gallery cell shown: debug level.
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] carousel attached; preferred over %lu ancestor pans",
+                 (unsigned long)preferredOver);
 }
 
 @end
@@ -897,7 +898,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 // here leaves the dots' own gestures, which never depended on forwarding,
 // working as before.
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    ApolloLogDebug(@"[FeedGallery] kept a carousel touch from the feed row (%@)",
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] kept a carousel touch from the feed row (%{public}@)",
                    NSStringFromClass(touches.anyObject.view.class));
 }
 
@@ -1103,8 +1104,8 @@ static void ApolloFeedGallerySettingChanged(void) {
     BOOL nsfw = ApolloFeedGalleryBoolIvar(self, "isNSFW");
     BOOL spoiler = ApolloFeedGalleryBoolIvar(self, "isSpoiler");
     if (!existingHost) {
-        ApolloLog(@"[FeedGallery] installing carousel count=%lu obscured=%d",
-                  (unsigned long)items.count, (int)(nsfw || spoiler));
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] installing carousel count=%lu obscured=%d",
+                     (unsigned long)items.count, (int)(nsfw || spoiler));
     }
     ApolloFeedGalleryScheduleApply(host, self, items, YES, nsfw, spoiler);
 
@@ -1152,7 +1153,7 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     if (carousel && index >= (NSInteger)carousel.items.count) return;
     objc_setAssociatedObject(link, &kApolloFeedGalleryRememberedIndexKey, @(index), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [carousel apollo_restoreViewedIndex:index];
-    ApolloLogDebug(@"[FeedGallery] restored viewed album page=%ld", (long)index);
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] restored viewed album page=%ld", (long)index);
 }
 
 %hook _TtC6Apollo23MediaPageViewController
@@ -1175,7 +1176,7 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     if (sApolloFeedGalleryOpeningCarousel) {
         objc_setAssociatedObject(self, &kApolloFeedGalleryReturnCarouselKey,
                                  sApolloFeedGalleryOpeningCarousel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloLogDebug(@"[FeedGallery] bound fullscreen return carousel");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] bound fullscreen return carousel");
     }
     RDKLink *link = ApolloObjectIvar(self, "link");
     ApolloFeedGalleryPendingSelection *selection = objc_getAssociatedObject(

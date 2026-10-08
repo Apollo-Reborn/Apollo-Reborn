@@ -282,7 +282,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     NSError *directoryError = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtURL:self.directoryURL
                                  withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
-        ApolloLog(@"[SaveAllMedia] temporary directory failed domain=%@ code=%ld",
+        ApolloLogError(@"[SaveAllMedia] temporary directory failed domain=%@ code=%ld",
                   directoryError.domain, (long)directoryError.code);
         self.finished = YES;
         if (sApolloSaveAllMediaJob == self) sApolloSaveAllMediaJob = nil;
@@ -386,14 +386,14 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
                     // Download locations expire at the end of this callback,
                     // so retain the file before returning to the main queue.
                     if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:fileURL error:&moveError]) {
-                        ApolloLog(@"[SaveAllMedia] image move failed domain=%@ code=%ld",
+                        ApolloLogError(@"[SaveAllMedia] image move failed domain=%@ code=%ld",
                                   moveError.domain, (long)moveError.code);
                         fileURL = nil;
                     }
                 }
             }
             if (!fileURL && error.code != NSURLErrorCancelled) {
-                ApolloLog(@"[SaveAllMedia] image download/validation failed HTTP=%ld domain=%@ code=%ld",
+                ApolloLogError(@"[SaveAllMedia] image download/validation failed HTTP=%ld domain=%@ code=%ld",
                           (long)httpStatus, error.domain ?: @"none", (long)error.code);
             }
             ApolloSaveAllMediaOnMain(^{
@@ -425,7 +425,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     } completionHandler:^(BOOL success, NSError *error) {
         ApolloSaveAllMediaRemoveFile(fileURL);
         if (!success) {
-            ApolloLog(@"[SaveAllMedia] Photos image write failed domain=%@ code=%ld",
+            ApolloLogError(@"[SaveAllMedia] Photos image write failed domain=%@ code=%ld",
                       error.domain, (long)error.code);
         }
         ApolloSaveAllMediaOnMain(^{ [self completedItem:success]; });

@@ -38,7 +38,7 @@
 #endif
 
 #if APOLLO_TRANSLATION_VERBOSE_LOGS
-#define ApolloTranslationVerboseLog(fmt, ...) ApolloLogDebug(fmt, ##__VA_ARGS__)
+#define ApolloTranslationVerboseLog(fmt, ...) os_log_debug(ApolloFixLog(), "[ApolloFix] " fmt, ##__VA_ARGS__)
 #else
 #define ApolloTranslationVerboseLog(fmt, ...) do {} while (0)
 #endif
@@ -2713,7 +2713,7 @@ static void ApolloApplyTranslationToCellNode(id commentCellNode, RDKComment *com
     // string is character-identical to what the node already shows, there is
     // nothing to do.
     if ([current.string isEqualToString:displayAttr.string]) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] apply: display identical — exact no-op cell=%p", commentCellNode);
+        ApolloTranslationVerboseLog("[Translation/vote] apply: display identical — exact no-op cell=%p", commentCellNode);
         NSDictionary *snapshot = objc_getAssociatedObject(commentCellNode, kApolloVoteBodySnapshotKey);
         NSString *snapshotFullName = [snapshot objectForKey:@"fullName"];
         NSString *commentFullName = ApolloCommentFullName(comment);
@@ -3189,8 +3189,8 @@ static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewC
             NSUInteger before = candidates.count;
             ApolloCollectAttributedTextNodesBounded(viewController.view, 14, visited, candidates, 1024);
             if (candidates.count == before) break; // nothing new to score
-            ApolloTranslationVerboseLog(@"[Translation] body-scan: no eligible body from cells/header, "
-                                        @"widening to the controller view (+%lu nodes)",
+            ApolloTranslationVerboseLog("[Translation] body-scan: no eligible body from cells/header, "
+                                        "widening to the controller view (+%lu nodes)",
                                         (unsigned long)(candidates.count - before));
         }
         NSArray *pending = [candidates subarrayWithRange:NSMakeRange(scoredUpTo, candidates.count - scoredUpTo)];
@@ -3237,7 +3237,7 @@ static id ApolloBestVisiblePostBodyTextNodeForController(UIViewController *viewC
             }
         }
     }
-    ApolloTranslationVerboseLog(@"[Translation] body-scan candidates=%lu titleOwned=%lu metadata=%lu noView=%lu belowComments=%lu firstCommentTop=%.0f best=%@ bestLen=%lu",
+    ApolloTranslationVerboseLog("[Translation] body-scan candidates=%lu titleOwned=%lu metadata=%lu noView=%lu belowComments=%lu firstCommentTop=%.0f best=%{public}@ bestLen=%lu",
                                 (unsigned long)candidates.count, (unsigned long)dbgTitleOwned, (unsigned long)dbgMetadata,
                                 (unsigned long)dbgNoView, (unsigned long)dbgBelowComments, firstCommentTop,
                                 best ? NSStringFromClass([best class]) : @"(nil)",
@@ -3402,7 +3402,7 @@ static void ApolloApplyTranslationToHeaderCellNode(id headerCellNode, RDKLink *l
     // node already shows exactly this text, writing it again only buys a
     // full header re-measure and a content-offset jump.
     if ([current.string isEqualToString:translatedAttr.string]) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] headerApply: display identical — exact no-op header=%p", headerCellNode);
+        ApolloTranslationVerboseLog("[Translation/vote] headerApply: display identical — exact no-op header=%p", headerCellNode);
         objc_setAssociatedObject(headerCellNode, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -5056,7 +5056,7 @@ static void ApolloRequestTranslation(NSString *cacheKey,
     BOOL onlyDetectedNames = protectedNames.count > 0 &&
         ApolloProtectedTextIsOnlyProtectedTokens(requestText, protectedNames, protectedLinks);
     if (properNounTitle || onlyDetectedNames) {
-        ApolloTranslationVerboseLog(@"[Translation] Skipping proper-noun text (titleHeuristic=%d nerOnly=%d): \"%@\"",
+        ApolloTranslationVerboseLog("[Translation] Skipping proper-noun text (titleHeuristic=%d nerOnly=%d): \"%{public}@\"",
                                     properNounTitle, onlyDetectedNames, sourceText);
         deliverTranslationInternal(sourceText, nil, NO);
         return;
@@ -5142,7 +5142,7 @@ NSString *ApolloRichPreviewTranslatedTextIfAvailable(NSURL *url, NSString *field
         }
 
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
-            if (error) ApolloLog(@"[Translation] Rich preview translate failed field=%@ url=%@: %@",
+            if (error) ApolloLogError(@"[Translation] Rich preview translate failed field=%@ url=%@: %@",
                                  field ?: @"text",
                                  url.absoluteString ?: @"(no-url)",
                                  error.localizedDescription ?: @"unknown");
@@ -5240,7 +5240,7 @@ static void ApolloMaybeTranslateCommentCellNode(id commentCellNode, BOOL forceTr
                 }
             }
             if (shouldLog) {
-                ApolloTranslationVerboseLog(@"[Translation] Skipping comment fullName=%@ — detected language matches target (%@)",
+                ApolloTranslationVerboseLog("[Translation] Skipping comment fullName=%{public}@ — detected language matches target (%{public}@)",
                                             logKey ?: @"(none)", targetLanguage);
             }
             return;
@@ -5271,7 +5271,7 @@ static void ApolloMaybeTranslateCommentCellNode(id commentCellNode, BOOL forceTr
             // error handed to every rebuilt cell for the next 15s) are noise
             // that floods the log inside cell-rebuild storms.
             if (error && ![error.userInfo[kApolloTranslationCooldownReplayKey] boolValue]) {
-                ApolloLog(@"[Translation] Failed to translate comment: %@", error.localizedDescription ?: @"unknown error");
+                ApolloLogError(@"[Translation] Failed to translate comment: %@", error.localizedDescription ?: @"unknown error");
             }
             return;
         }
@@ -5299,20 +5299,20 @@ static BOOL ApolloReapplyCachedTranslationForCellNode(id commentCellNode) {
     if (!commentCellNode) return NO;
     RDKComment *comment = ApolloCommentFromCellNode(commentCellNode);
     if (!comment) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: no RDKComment on cellNode=%p", commentCellNode);
+        ApolloTranslationVerboseLog("[Translation/vote] commentReapply: no RDKComment on cellNode=%p", commentCellNode);
         return NO;
     }
     NSString *fullName = ApolloCommentFullName(comment);
     if (fullName.length == 0) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: empty fullName cellNode=%p", commentCellNode);
+        ApolloTranslationVerboseLog("[Translation/vote] commentReapply: empty fullName cellNode=%p", commentCellNode);
         return NO;
     }
     NSString *cached = ApolloCachedCommentTranslationForFullName(fullName);
     if (cached.length == 0) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: cache MISS fullName=%@", fullName);
+        ApolloTranslationVerboseLog("[Translation/vote] commentReapply: cache MISS fullName=%{public}@", fullName);
         return NO;
     }
-    ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: cache HIT fullName=%@ → applying (len=%lu)", fullName, (unsigned long)cached.length);
+    ApolloTranslationVerboseLog("[Translation/vote] commentReapply: cache HIT fullName=%{public}@ → applying (len=%lu)", fullName, (unsigned long)cached.length);
     ApolloApplyTranslationToCellNode(commentCellNode, comment, cached);
     return YES;
 }
@@ -5353,12 +5353,12 @@ static void ApolloScheduleCachedTranslationReapplyForCellNode(id commentCellNode
     if ([objc_getAssociatedObject(commentCellNode, kApolloRecentlyAppliedKey) boolValue] &&
         ApolloCellNodeStillShowsCachedTranslation(commentCellNode)) return;
     objc_setAssociatedObject(commentCellNode, kApolloReapplyScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: SCHEDULED cellNode=%p", commentCellNode);
+    ApolloTranslationVerboseLog("[Translation/vote] commentReapply: SCHEDULED cellNode=%p", commentCellNode);
     __weak id weakNode = commentCellNode;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         id strong = weakNode;
         if (!strong) {
-            ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: FIRED but cellNode dealloc'd");
+            ApolloTranslationVerboseLog("[Translation/vote] commentReapply: FIRED but cellNode dealloc'd");
             return;
         }
         objc_setAssociatedObject(strong, kApolloReapplyScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -5368,7 +5368,7 @@ static void ApolloScheduleCachedTranslationReapplyForCellNode(id commentCellNode
         // creates the overlapping/jumping copy reported in #676. Vote rebuilds
         // are attached to the real visible table cell before this block fires.
         if (!ApolloCommentCellNodeIsBackedByActiveCommentsTable(strong, sVisibleCommentsViewController)) {
-            ApolloTranslationVerboseLog(@"[Translation/vote] commentReapply: skipping non-table cellNode=%p", strong);
+            ApolloTranslationVerboseLog("[Translation/vote] commentReapply: skipping non-table cellNode=%p", strong);
             return;
         }
         ApolloReapplyCachedTranslationForCellNode(strong);
@@ -5406,7 +5406,7 @@ static BOOL ApolloReapplyCachedTranslationForHeaderCellNode(id headerCellNode) {
 
     NSString *targetLanguage = ApolloResolvedTargetLanguageCode();
     if (targetLanguage.length == 0) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: empty targetLanguage");
+        ApolloTranslationVerboseLog("[Translation/vote] headerReapply: empty targetLanguage");
         return NO;
     }
 
@@ -5432,7 +5432,7 @@ static BOOL ApolloReapplyCachedTranslationForHeaderCellNode(id headerCellNode) {
             trimmed = [stashBody stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             cached = stashTranslated;
             if (!link) link = vcStash[@"link"];
-            ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: using per-VC stash (linkResolved=%d, len=%lu)", link != nil, (unsigned long)cached.length);
+            ApolloTranslationVerboseLog("[Translation/vote] headerReapply: using per-VC stash (linkResolved=%d, len=%lu)", link != nil, (unsigned long)cached.length);
         }
     }
 
@@ -5442,11 +5442,11 @@ static BOOL ApolloReapplyCachedTranslationForHeaderCellNode(id headerCellNode) {
         // replaces the PostInfoNode under the compact marker. Re-drive the
         // marker from the translated title so it survives the rebuild.
         if (trimmed.length == 0) ApolloInstallHeaderMarkerFromTranslatedTitle(headerCellNode);
-        ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: cache MISS (link=%@ body=%lu)", link.fullName ?: @"<nil>", (unsigned long)trimmed.length);
+        ApolloTranslationVerboseLog("[Translation/vote] headerReapply: cache MISS (link=%{public}@ body=%lu)", link.fullName ?: @"<nil>", (unsigned long)trimmed.length);
         return NO;
     }
 
-    ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: cache HIT fullName=%@ → applying (len=%lu)", link.fullName ?: @"<from-stash>", (unsigned long)cached.length);
+    ApolloTranslationVerboseLog("[Translation/vote] headerReapply: cache HIT fullName=%{public}@ → applying (len=%lu)", link.fullName ?: @"<from-stash>", (unsigned long)cached.length);
     ApolloApplyTranslationToHeaderCellNode(headerCellNode, link, trimmed, cached);
     return YES;
 }
@@ -5457,12 +5457,12 @@ static void ApolloScheduleCachedTranslationReapplyForHeaderCellNode(id headerCel
     if ([objc_getAssociatedObject(headerCellNode, kApolloHeaderReapplyScheduledKey) boolValue]) return;
     if ([objc_getAssociatedObject(headerCellNode, kApolloRecentlyAppliedKey) boolValue]) return;
     objc_setAssociatedObject(headerCellNode, kApolloHeaderReapplyScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: SCHEDULED header=%p", headerCellNode);
+    ApolloTranslationVerboseLog("[Translation/vote] headerReapply: SCHEDULED header=%p", headerCellNode);
     __weak id weakNode = headerCellNode;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         id strong = weakNode;
         if (!strong) {
-            ApolloTranslationVerboseLog(@"[Translation/vote] headerReapply: FIRED but header dealloc'd");
+            ApolloTranslationVerboseLog("[Translation/vote] headerReapply: FIRED but header dealloc'd");
             return;
         }
         objc_setAssociatedObject(strong, kApolloHeaderReapplyScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -5504,7 +5504,7 @@ id ApolloTranslationInstallVoteBodyCover(id commentCellNode) {
             }
         }
     } @catch (NSException *e) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] body cover setup failed cell=%p exception=%@", commentCellNode, e.name);
+        ApolloTranslationVerboseLog("[Translation/vote] body cover setup failed cell=%p exception=%{public}@", commentCellNode, e.name);
     }
     if (!comment || fullName.length == 0 || translated.length == 0 ||
         !cellView || !window || !coverContainer) return nil;
@@ -5629,11 +5629,11 @@ id ApolloTranslationInstallVoteBodyCover(id commentCellNode) {
             }
         }
     } @catch (NSException *e) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] live body capture failed cell=%p exception=%@", commentCellNode, e.name);
+        ApolloTranslationVerboseLog("[Translation/vote] live body capture failed cell=%p exception=%{public}@", commentCellNode, e.name);
     }
 
     if (!frozenImage || CGRectIsEmpty(bodyFrameInCell) || CGRectIsNull(bodyFrameInCell)) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] body cover skipped: no live or cached snapshot cell=%p", commentCellNode);
+        ApolloTranslationVerboseLog("[Translation/vote] body cover skipped: no live or cached snapshot cell=%p", commentCellNode);
         return nil;
     }
     UIImageView *cover = objc_getAssociatedObject(commentCellNode, kApolloVoteBodyCoverViewKey);
@@ -5674,14 +5674,14 @@ id ApolloTranslationInstallVoteBodyCover(id commentCellNode) {
             if (!strongCover || [objc_getAssociatedObject(strongCover, kApolloVoteBodyCoverActiveCountKey) unsignedIntegerValue] > 0) return;
             [UIView performWithoutAnimation:^{ strongCover.alpha = 0.0; }];
         });
-        ApolloTranslationVerboseLog(@"[Translation/vote] primed translated body snapshot cell=%p frame=%@",
+        ApolloTranslationVerboseLog("[Translation/vote] primed translated body snapshot cell=%p frame=%{public}@",
                                     commentCellNode, NSStringFromCGRect(bodyFrameInCell));
         return nil;
     }
     NSUInteger activeCount = [objc_getAssociatedObject(cover, kApolloVoteBodyCoverActiveCountKey) unsignedIntegerValue];
     objc_setAssociatedObject(cover, kApolloVoteBodyCoverActiveCountKey,
                              @(activeCount + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloTranslationVerboseLog(@"[Translation/vote] installed %@ translated body cover cell=%p node=%p frame=%@",
+    ApolloTranslationVerboseLog("[Translation/vote] installed %{public}@ translated body cover cell=%p node=%p frame=%{public}@",
                                 usedCachedSnapshot ? @"cached" : @"live", commentCellNode, textNode,
                                 NSStringFromCGRect(cover.frame));
     return cover;
@@ -5797,7 +5797,7 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
         // marker from the translated TITLE instead. This pass re-runs on
         // visibility/reapply events, which also heals cold-open ordering (title
         // translated before the controller link was readable).
-        ApolloTranslationVerboseLog(@"[Translation] header-body EMPTY cell=%@ link=%d visibleNode=%d visibleLen=%lu",
+        ApolloTranslationVerboseLog("[Translation] header-body EMPTY cell=%{public}@ link=%d visibleNode=%d visibleLen=%lu",
                                     NSStringFromClass([headerCellNode class]), link != nil, visibleBodyNode != nil,
                                     (unsigned long)visibleBody.length);
         ApolloInstallHeaderMarkerFromTranslatedTitle(headerCellNode);
@@ -5901,7 +5901,7 @@ static void ApolloMaybeTranslatePostHeaderCellNode(id headerCellNode, RDKLink *f
     ApolloRequestTranslation(cacheKey, trimmed, targetLanguage, ^(NSString *translated, NSError *error) {
         id strongHeader = weakHeader;
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
-            if (error) ApolloLog(@"[Translation] Failed to translate post body: %@", error.localizedDescription ?: @"unknown");
+            if (error) ApolloLogError(@"[Translation] Failed to translate post body: %@", error.localizedDescription ?: @"unknown");
             return;
         }
         if (cacheStoreKey.length > 0) {
@@ -5926,7 +5926,7 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
     RDKLink *link = ApolloLinkFromController(viewController);
     id textNode = ApolloBestVisiblePostBodyTextNodeForController(viewController, tableView, link);
     NSString *sourceText = ApolloVisibleTextFromNode(textNode);
-    ApolloTranslationVerboseLog(@"[Translation] visible-body vc=%@ link=%d node=%@ textLen=%lu",
+    ApolloTranslationVerboseLog("[Translation] visible-body vc=%{public}@ link=%d node=%{public}@ textLen=%lu",
                                 NSStringFromClass([viewController class]), link != nil,
                                 textNode ? NSStringFromClass([textNode class]) : @"(nil)",
                                 (unsigned long)sourceText.length);
@@ -5935,7 +5935,7 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         // Companion to the header-cell skip just above — same rule adapted to
         // rendered text; no per-fullName log here (header-cell path already
         // logged once when it had a readable link).
-        ApolloTranslationVerboseLog(@"[Translation] visible-body SKIP structured/code: mdCodeSelf=%d htmlCode=%d mdCodeRendered=%d structSelf=%d structVis=%d structHTML=%d",
+        ApolloTranslationVerboseLog("[Translation] visible-body SKIP structured/code: mdCodeSelf=%d htmlCode=%d mdCodeRendered=%d structSelf=%d structVis=%d structHTML=%d",
                                     ApolloTextContainsMarkdownCode(link.selfText), ApolloHTMLContainsCode(link.selfTextHTML),
                                     ApolloRenderedTextContainsMarkdownCode(sourceText),
                                     ApolloTextLooksLikeStructuredPostBody(link.selfText),
@@ -5960,7 +5960,7 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         // Strip links so URLs don't pollute language detection.
         NSString *detectionText = ApolloProtectTranslationLinks(sourceText, NULL);
         NSString *detected = ApolloDetectDominantLanguage(detectionText);
-        ApolloTranslationVerboseLog(@"[Translation] visible-body detected=%@ target=%@", detected ?: @"(nil)", targetLanguage);
+        ApolloTranslationVerboseLog("[Translation] visible-body detected=%{public}@ target=%{public}@", detected ?: @"(nil)", targetLanguage);
         // TAP-TO-TRANSLATE: hold + marker on detection (this path covers the
         // post-body layouts the header-cell walk misses) — don't wait for the
         // prefetch below.
@@ -5991,7 +5991,7 @@ static void ApolloMaybeTranslateVisiblePostBodyForController(UIViewController *v
         UIViewController *strongVC = weakVC;
         id strongTextNode = weakTextNode;
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
-            if (error) ApolloLog(@"[Translation] Failed to translate visible post body: %@", error.localizedDescription ?: @"unknown");
+            if (error) ApolloLogError(@"[Translation] Failed to translate visible post body: %@", error.localizedDescription ?: @"unknown");
             return;
         }
         if (!strongVC || !strongTextNode) return;
@@ -6043,7 +6043,7 @@ static void ApolloSchedulePostBodyReapplyForController(UIViewController *viewCon
     if ([objc_getAssociatedObject(viewController, kApolloPostBodyReapplyScheduledKey) boolValue]) return;
 
     objc_setAssociatedObject(viewController, kApolloPostBodyReapplyScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloTranslationVerboseLog(@"[Translation/vote] postBodyReapply: SCHEDULED vc=%p (30ms safety net)", viewController);
+    ApolloTranslationVerboseLog("[Translation/vote] postBodyReapply: SCHEDULED vc=%p (30ms safety net)", viewController);
     __weak UIViewController *weakVC = viewController;
     // Reduced from 220ms to 30ms: the per-cell `setNeedsLayout` /
     // `setNeedsDisplay` hook on the post header cell node now covers the
@@ -6236,7 +6236,7 @@ static void ApolloDeferTableRelayoutUntilScrollIdle(UIViewController *viewContro
             if (remainingRetries > 0) {
                 ApolloDeferTableRelayoutUntilScrollIdle(strongVC, remainingRetries - 1);
             } else {
-                ApolloTranslationVerboseLog(@"[Translation] Relayout deferred — gave up after retry budget exhausted");
+                ApolloTranslationVerboseLog("[Translation] Relayout deferred — gave up after retry budget exhausted");
             }
             return;
         }
@@ -6270,7 +6270,7 @@ static void ApolloForceVisibleCommentsTableRelayoutForController(UIViewControlle
             // Table-level begin/endUpdates is what wedges the pan gesture
             // when the table is mid-bounce. Defer it until the scroll settles.
             if (tableIsScrolling) {
-                ApolloTranslationVerboseLog(@"[Translation] Relayout deferred — table is scrolling (tracking=%d dragging=%d decelerating=%d)",
+                ApolloTranslationVerboseLog("[Translation] Relayout deferred — table is scrolling (tracking=%d dragging=%d decelerating=%d)",
                                             tableView.isTracking, tableView.isDragging, tableView.isDecelerating);
                 return;
             }
@@ -8546,7 +8546,7 @@ static BOOL ApolloPrepareTranslatedSwapForTextNode(id textNode,
     if (![originalBody isKindOfClass:[NSString class]] || originalBody.length == 0 ||
         ![translatedText isKindOfClass:[NSString class]] || translatedText.length == 0 ||
         ![incomingAttributedText isKindOfClass:[NSAttributedString class]]) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: missing markers (orig=%lu trans=%lu) on node=%p",
+        ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: missing markers (orig=%lu trans=%lu) on node=%p",
                                     (unsigned long)originalBody.length, (unsigned long)translatedText.length, textNode);
         return NO;
     }
@@ -8572,18 +8572,18 @@ static BOOL ApolloPrepareTranslatedSwapForTextNode(id textNode,
             if ([withMarker isKindOfClass:[NSAttributedString class]] &&
                 withMarker != incomingAttributedText &&
                 ![withMarker.string isEqualToString:incomingText]) {
-                ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: incoming==translated but marker-less → appending marker node=%p", textNode);
+                ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: incoming==translated but marker-less → appending marker node=%p", textNode);
                 ApolloEnsureMarkerTappableOnNode(textNode);
                 *swapOut = withMarker;
                 return YES;
             }
         }
-        ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: incoming==translated, no-op node=%p", textNode);
+        ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: incoming==translated, no-op node=%p", textNode);
         return NO;
     }
 
     if (ApolloTextMatchesSourceOrVisualDisplay(incomingText, originalBody)) {
-        ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: incoming==original → SWAPPING to translated node=%p (incomingLen=%lu)",
+        ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: incoming==original → SWAPPING to translated node=%p (incomingLen=%lu)",
                                     textNode, (unsigned long)incomingText.length);
         if (swapOut) {
             NSAttributedString *rebuilt = ApolloRebuildTranslatedAttrPreservingAttrs(textNode, incomingAttributedText, translatedText);
@@ -8624,7 +8624,7 @@ static BOOL ApolloPrepareTranslatedSwapForTextNode(id textNode,
                   textNode, incomingPreview, origPreview);
         ApolloClearTranslationOwnershipForTextNode(textNode);
     } else {
-        ApolloTranslationVerboseLog(@"[Translation/vote] prepareSwap: NO MATCH (non-substantive, keeping ownership) node=%p incoming='%@' orig='%@'",
+        ApolloTranslationVerboseLog("[Translation/vote] prepareSwap: NO MATCH (non-substantive, keeping ownership) node=%p incoming='%{public}@' orig='%{public}@'",
                                     textNode, incomingPreview, origPreview);
     }
     return NO;
@@ -8742,7 +8742,7 @@ static BOOL ApolloPreemptUnownedCommentTextNode(id textNode, NSAttributedString 
     }
     ApolloRegisterOwnedTextNode(textNode);
     if (swapOut) *swapOut = rebuilt;
-    ApolloTranslationVerboseLog(@"[Translation/vote] preempt(comment): unowned node=%p matched body index (%@) → SYNC swap", textNode, fullName);
+    ApolloTranslationVerboseLog("[Translation/vote] preempt(comment): unowned node=%p matched body index (%{public}@) → SYNC swap", textNode, fullName);
     return YES;
 }
 
@@ -8786,7 +8786,7 @@ static void ApolloScheduleDeferredCommentPreempt(id textNode, NSAttributedString
             ![current.string isEqualToString:incomingText]) return; // text moved on
         id cellNode = ApolloCommentCellNodeForTextNode(node);
         if (!ApolloCommentCellNodeIsBackedByActiveCommentsTable(cellNode, vc)) {
-            ApolloTranslationVerboseLog(@"[Translation/vote] deferred preempt: skipping non-table comment clone node=%p", node);
+            ApolloTranslationVerboseLog("[Translation/vote] deferred preempt: skipping non-table comment clone node=%p", node);
             return;
         }
         NSAttributedString *swap = nil;
@@ -8796,7 +8796,7 @@ static void ApolloScheduleDeferredCommentPreempt(id textNode, NSAttributedString
         @catch (__unused NSException *e) {}
         objc_setAssociatedObject(node, kApolloOwnedNodeReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (cellNode) ApolloTranslationHealCellDisplaySync(cellNode);
-        ApolloTranslationVerboseLog(@"[Translation/vote] deferred preempt: rebuilt node=%p swapped after attach", node);
+        ApolloTranslationVerboseLog("[Translation/vote] deferred preempt: rebuilt node=%p swapped after attach", node);
     });
 }
 
@@ -8860,7 +8860,7 @@ static BOOL ApolloPreemptUnownedTextNodeFromVCStash(id textNode, NSAttributedStr
         objc_setAssociatedObject(vcView, kApolloHeaderTranslatedTextNodeKey, textNode, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     if (swapOut) *swapOut = swap;
-    ApolloTranslationVerboseLog(@"[Translation/vote] preempt: unowned node=%p matched VC stash → SYNC swap (len=%lu)", textNode, (unsigned long)translated.length);
+    ApolloTranslationVerboseLog("[Translation/vote] preempt: unowned node=%p matched VC stash → SYNC swap (len=%lu)", textNode, (unsigned long)translated.length);
     return YES;
 }
 
@@ -9725,7 +9725,7 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
     __weak id weakTextNode = textNode;
     ApolloRequestTranslation(cacheKey, titleText, targetLanguage, ^(NSString *translated, NSError *error) {
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
-            if (error) ApolloLog(@"[Translation] Title translate failed: %@", error.localizedDescription ?: @"unknown");
+            if (error) ApolloLogError(@"[Translation] Title translate failed: %@", error.localizedDescription ?: @"unknown");
             return;
         }
         if (!sEnableBulkTranslation || !sTranslatePostTitles) return;
@@ -9860,7 +9860,7 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
     __weak id weakTextNode = textNode;
     ApolloRequestTranslation(cacheKey, previewText, targetLanguage, ^(NSString *translated, NSError *error) {
         if (![translated isKindOfClass:[NSString class]] || translated.length == 0) {
-            if (error) ApolloLog(@"[Translation] Feed body translate failed: %@", error.localizedDescription ?: @"unknown");
+            if (error) ApolloLogError(@"[Translation] Feed body translate failed: %@", error.localizedDescription ?: @"unknown");
             return;
         }
         if (!sEnableBulkTranslation || !sTranslatePostTitles) return;
@@ -10546,11 +10546,11 @@ static void ApolloPersistTranslationCachesToDisk(void) {
     NSError *err = nil;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:root format:NSPropertyListBinaryFormat_v1_0 options:0 error:&err];
     if (!data) {
-        ApolloLog(@"[translation/persist] serialize failed: %@", err);
+        ApolloLogError(@"[translation/persist] serialize failed: %@", err);
         return;
     }
     if (![data writeToURL:url options:NSDataWritingAtomic error:&err]) {
-        ApolloLog(@"[translation/persist] write failed: %@", err);
+        ApolloLogError(@"[translation/persist] write failed: %@", err);
         return;
     }
     ApolloLog(@"[translation/persist] wrote %lu comment + %lu link entries", (unsigned long)commentEntries.count, (unsigned long)linkEntries.count);
@@ -11257,14 +11257,14 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
             @"Tjen def. Fernandez", @"I love Dua Lipa's new album",
             @"Roger Federer wins again", @"Bonjour tout le monde",
             @"voy a casa", @"Che bella giornata", @"Bonjour" ];
-        ApolloLogDebug(@"[Translation][NameTest] provider=%@ — proper-noun protection self-test", sTranslationProvider ?: @"(nil)");
+        os_log_debug(ApolloFixLog(), "[ApolloFix] [Translation][NameTest] provider=%{public}@ — proper-noun protection self-test", sTranslationProvider ?: @"(nil)");
         for (NSString *title in titles) {
             NSDictionary<NSString *, NSString *> *names = nil;
             NSString *protectedText = ApolloProtectTranslationNames(title, &names);
             BOOL onlyNames = names.count > 0 && ApolloProtectedTextIsOnlyProtectedTokens(protectedText, names, @{});
             BOOL titleHeuristic = ApolloTitleLooksLikeProperNouns(title);
             BOOL willSkip = onlyNames || titleHeuristic;
-            ApolloLogDebug(@"[Translation][NameTest] \"%@\" -> ner=[%@] titleHeuristic=%d => %@",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [Translation][NameTest] \"%{public}@\" -> ner=[%{public}@] titleHeuristic=%d => %{public}@",
                            title,
                            names.count ? [names.allValues componentsJoinedByString:@", "] : @"none",
                            titleHeuristic,
@@ -11272,7 +11272,7 @@ static void ApolloDbgPurgeNSCaches(CFNotificationCenterRef c, void *o, CFStringR
         }
         NSString *probe = @"Dua Lipa";
         ApolloRequestTranslation(ApolloTranslationCacheKey(probe, @"en"), probe, @"en", ^(NSString *translated, NSError *error) {
-            ApolloLogDebug(@"[Translation][NameTest] end-to-end \"%@\" => \"%@\" (err=%@) — %@",
+            os_log_debug(ApolloFixLog(), "[ApolloFix] [Translation][NameTest] end-to-end \"%{public}@\" => \"%{public}@\" (err=%{public}@) — %{public}@",
                            probe, translated ?: @"(nil)", error ? @(error.code) : @"none",
                            [translated isEqualToString:probe] ? @"PASS name preserved" : @"CHECK");
         });

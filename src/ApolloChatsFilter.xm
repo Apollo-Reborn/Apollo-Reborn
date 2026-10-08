@@ -31,7 +31,7 @@
 #import <objc/message.h>
 #import "ApolloClasses.h"
 
-#define ChatsFilterLog(fmt, ...) ApolloLogDebug(@"[ChatsFilter] " fmt, ##__VA_ARGS__)
+#define ChatsFilterLog(fmt, ...) os_log_debug(ApolloFixLog(), "[ApolloFix] [ChatsFilter] " fmt, ##__VA_ARGS__)
 
 // Row discovery must be scoped to each InboxListViewController. Apollo can keep
 // more than one Boxes controller alive while accounts/tabs change; global row
@@ -171,7 +171,7 @@ static void ApolloEnsureInboxTabBarItemCaptured(void) {
                 objc_setAssociatedObject(item, &kApolloInboxBadgeInitializedKey,
                                          @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             }
-            ChatsFilterLog(@"captured Inbox tab bar item by title fallback");
+            ChatsFilterLog("captured Inbox tab bar item by title fallback");
             return;
         }
     }
@@ -250,11 +250,11 @@ static void ApolloRememberSpecialBoxesCell(ApolloBoxesRowState *state,
     if ([text isEqualToString:@"Moderator Mail"] || [text isEqualToString:@"Mod Mail"]) {
         state.moderatorMailSection = indexPath.section;
         state.moderatorMailRow = indexPath.row;
-        ChatsFilterLog(@"Moderator Mail at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
+        ChatsFilterLog("Moderator Mail at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
     } else if ([text isEqualToString:@"Direct Chat"]) {
         state.nativeDirectChatSection = indexPath.section;
         state.nativeDirectChatRow = indexPath.row;
-        ChatsFilterLog(@"native Direct Chat at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
+        ChatsFilterLog("native Direct Chat at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
     }
 }
 
@@ -296,7 +296,7 @@ static void ApolloBoxesResetRowStateAndReload(id controller, NSString *reason) {
         objc_setAssociatedObject(controller, &kApolloBoxesRowStateKey,
                                  [ApolloBoxesRowState new], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [tableView reloadData];
-        ChatsFilterLog(@"reset Boxes row state + reloaded (%@)", reason ?: @"unknown");
+        ChatsFilterLog("reset Boxes row state + reloaded (%{public}@)", reason ?: @"unknown");
     });
 }
 
@@ -306,7 +306,7 @@ static void ApolloRefreshBoxesForModeratorState(NSString *reason) {
         UITableView *tableView = ApolloBoxesTableView(controller);
         if (!tableView) return;
         [tableView reloadData];
-        ChatsFilterLog(@"reloaded Boxes after moderator state update (%@)", reason ?: @"unknown");
+        ChatsFilterLog("reloaded Boxes after moderator state update (%{public}@)", reason ?: @"unknown");
     });
 }
 
@@ -935,7 +935,7 @@ static NSHashTable *sInboxModePanWired;
 
 - (void)apollo_modeChanged:(ApolloInboxModeSwitcherView *)sender {
     if (sender.selectedMode != ApolloInboxModeNotifications) return;
-    ChatsFilterLog(@"Chat hub returning to Notifications");
+    ChatsFilterLog("Chat hub returning to Notifications");
     if (self.inboxHostController) {
         ApolloSetInboxChatHubVisible(self.inboxHostController, NO, YES);
     } else {
@@ -952,7 +952,7 @@ static NSHashTable *sInboxModePanWired;
     ApolloModernChatControllerShowInboxSection(self.chatController, section);
     NSString *name = section == ApolloModernChatInboxSectionRequests ? @"Requests" :
         (section == ApolloModernChatInboxSectionThreads ? @"Threads" : @"Messages");
-    ChatsFilterLog(@"Chat hub selected %@", name);
+    ChatsFilterLog("Chat hub selected %{public}@", name);
 }
 
 - (void)apollo_alignModeSwitcherWithHostSwitcher:(ApolloInboxModeSwitcherView *)hostSwitcher {
@@ -970,7 +970,7 @@ static NSHashTable *sInboxModePanWired;
     self.modeSwitcherTopConstraint.constant = targetConstant;
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
-    ChatsFilterLog(@"aligned Chat switcher to scrolled Notifications header at %.1fpt",
+    ChatsFilterLog("aligned Chat switcher to scrolled Notifications header at %.1fpt",
                    CGRectGetMinY(hostFrame));
 }
 
@@ -1031,7 +1031,7 @@ static NSHashTable *sInboxModePanWired;
     ApolloModernChatControllerApplyMessagesFilter(hub.chatController, filter);
     // UIMenu is immutable: rebuild it so the check mark follows the choice.
     self.menuItem.menu = [self menu];
-    ChatsFilterLog(@"Chat hub Messages filter set to %lu", (unsigned long)filter);
+    ChatsFilterLog("Chat hub Messages filter set to %lu", (unsigned long)filter);
 }
 
 - (UIMenu *)filterMenu {
@@ -1080,7 +1080,7 @@ static NSHashTable *sInboxModePanWired;
     [hub.sectionSwitcher apollo_setSelectedSection:ApolloModernChatInboxSectionMessages animated:NO];
     ApolloModernChatControllerSetMessagesUnreadOnly(hub.chatController, unreadOnly);
     self.menuItem.menu = [self menu];
-    ChatsFilterLog(@"Chat hub Messages unread-only %@", unreadOnly ? @"on" : @"off");
+    ChatsFilterLog("Chat hub Messages unread-only %{public}@", unreadOnly ? @"on" : @"off");
 }
 
 - (UIMenu *)menu {
@@ -1141,7 +1141,7 @@ BOOL ApolloModernChatOpenInInbox(NSString *destinationPath) {
         @try {
             ((void (*)(id, SEL))objc_msgSend)(tabBarController, @selector(goToInboxTab));
         } @catch (NSException *exception) {
-            ChatsFilterLog(@"could not select the Inbox tab for a Chat destination: %@", exception);
+            ChatsFilterLog("could not select the Inbox tab for a Chat destination: %{public}@", exception);
             return NO;
         }
     }
@@ -1184,7 +1184,7 @@ static ApolloInboxChatHubViewController *ApolloEnsureInboxChatHub(UIViewControll
     [host.view addSubview:hub.view];
     [hub didMoveToParentViewController:host];
     objc_setAssociatedObject(host, &kInboxAllChatHubKey, hub, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ChatsFilterLog(@"created and quietly preloaded persistent in-place Chat hub");
+    ChatsFilterLog("created and quietly preloaded persistent in-place Chat hub");
     return hub;
 }
 
@@ -1351,7 +1351,7 @@ static void ApolloDismantleInboxChatHub(UIViewController *host, NSString *reason
     // clear the stash so a later re-enable captures a fresh copy.
     objc_setAssociatedObject(host, &kInboxAllOriginalRightItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(host, &kInboxAllChatBarActionsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ChatsFilterLog(@"dismantled Inbox chat hub (%@)", reason ?: @"unknown");
+    ChatsFilterLog("dismantled Inbox chat hub (%{public}@)", reason ?: @"unknown");
 }
 
 static BOOL ApolloInboxControllerIsAll(id controller) {
@@ -1835,7 +1835,7 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         // the native pull-to-refresh is revealed in the band it covers.
         objc_setAssociatedObject(tableView, &kInboxAllSwitcherTableKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(tableView, &kInboxAllSwitcherRefKey, switcher, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ChatsFilterLog(@"installed sticky Notifications / Chat switcher in Inbox (All)");
+        ChatsFilterLog("installed sticky Notifications / Chat switcher in Inbox (All)");
     }
     // Swipe between the two modes like adjacent pages: a leftward drag on
     // Notifications reveals Chat, a rightward drag on Chat returns to
@@ -2013,12 +2013,12 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
         UITableViewCell *cell = %orig;
         NSString *text = ApolloCellText(cell);
         ApolloRememberSpecialBoxesCell(state, cell, indexPath);
-        ChatsFilterLog(@"probe s=%ld r=%ld text=%@ cls=%@", (long)indexPath.section, (long)indexPath.row, text, NSStringFromClass([cell class]));
+        ChatsFilterLog("probe s=%ld r=%ld text=%{public}@ cls=%{public}@", (long)indexPath.section, (long)indexPath.row, text, NSStringFromClass([cell class]));
         if ([text isEqualToString:@"Messages"]) {
             state.messagesSection = indexPath.section;
             state.messagesRow = indexPath.row;
             BOOL native = ApolloBoxesHasNativeDirectChat(state);
-            ChatsFilterLog(@"Messages at s=%ld r=%ld; %@ Direct Chat row + reloading",
+            ChatsFilterLog("Messages at s=%ld r=%ld; %{public}@ Direct Chat row + reloading",
                            (long)state.messagesSection, (long)state.messagesRow,
                            native ? @"reusing native" : @"inserting");
             UITableView *tv = tableView;
@@ -2037,14 +2037,14 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
             // our inserted Direct Chat row: borrow the Messages cell and restyle it
             NSIndexPath *real = [NSIndexPath indexPathForRow:state.messagesRow inSection:state.messagesSection];
             UITableViewCell *cell = %orig(tableView, real);
-            ChatsFilterLog(@"cellFor displayed=%ld -> DirectChat (borrow r%ld, was '%@')", (long)indexPath.row, (long)state.messagesRow, ApolloCellText(cell));
+            ChatsFilterLog("cellFor displayed=%ld -> DirectChat (borrow r%ld, was '%{public}@')", (long)indexPath.row, (long)state.messagesRow, ApolloCellText(cell));
             ApolloRestyleAsDirectChat(cell);
             return cell;
         }
         // every other row maps to its real Apollo row (Messages, and anything after it)
         NSIndexPath *real = [NSIndexPath indexPathForRow:realRow inSection:state.messagesSection];
         UITableViewCell *cell = %orig(tableView, real);
-        ChatsFilterLog(@"cellFor displayed=%ld -> real r%ld text='%@'", (long)indexPath.row, (long)realRow, ApolloCellText(cell));
+        ChatsFilterLog("cellFor displayed=%ld -> real r%ld text='%{public}@'", (long)indexPath.row, (long)realRow, ApolloCellText(cell));
         return cell;
     }
     UITableViewCell *cell = %orig;
@@ -2056,7 +2056,7 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
     ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
     if (ApolloModernModmailShouldOpen() &&
         indexPath.section == state.moderatorMailSection && indexPath.row == state.moderatorMailRow) {
-        ChatsFilterLog(@"Moderator Mail tapped -> opening modern authenticated web Modmail");
+        ChatsFilterLog("Moderator Mail tapped -> opening modern authenticated web Modmail");
         UIViewController *controller = ApolloCreateModernModmailViewController();
         [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -2069,7 +2069,7 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
         NSInteger realRow = ApolloRealMessagesRow(state, indexPath.row);
         if (nativeChatRow || realRow < 0) {
             if (ApolloModernChatShouldOpen()) {
-                ChatsFilterLog(@"Direct Chat tapped -> opening modern Reddit Chat");
+                ChatsFilterLog("Direct Chat tapped -> opening modern Reddit Chat");
                 UIViewController *controller = ApolloCreateStandaloneInboxChatHub(nil);
                 [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -2080,11 +2080,11 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
                 return;
             }
             if (nativeChatRow) {
-                ChatsFilterLog(@"Direct Chat tapped -> preserving Apollo legacy Chat");
+                ChatsFilterLog("Direct Chat tapped -> preserving Apollo legacy Chat");
                 %orig;
                 return;
             }
-            ChatsFilterLog(@"Direct Chat tapped -> opening filtered messages list");
+            ChatsFilterLog("Direct Chat tapped -> opening filtered messages list");
             sNextInboxIsChatFilter = YES;   // one-shot: the next InboxViewController filters to chats
             realRow = state.messagesRow;          // open the real Messages list (which we then filter)
         }
@@ -2145,7 +2145,7 @@ static NSArray *ApolloChatFilterToChats(NSArray *messages) {
     for (id msg in messages) {
         if (ApolloMessageIsChatRoomMirror(msg)) [out addObject:msg];
     }
-    ChatsFilterLog(@"filtered messages %lu -> %lu chats", (unsigned long)messages.count, (unsigned long)out.count);
+    ChatsFilterLog("filtered messages %lu -> %lu chats", (unsigned long)messages.count, (unsigned long)out.count);
     return out;
 }
 
@@ -2172,7 +2172,7 @@ static BOOL sChatFilterActive = NO;
         sNextInboxIsChatFilter = NO;
         objc_setAssociatedObject(self, &kChatFilterKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         sChatFilterActive = YES;
-        ChatsFilterLog(@"InboxViewController marked chat-filtered");
+        ChatsFilterLog("InboxViewController marked chat-filtered");
     }
     %orig;
     ApolloCaptureInboxTabBarItem((UIViewController *)self);
@@ -2195,7 +2195,7 @@ static BOOL sChatFilterActive = NO;
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *inbox = weakInbox;
             if (!inbox) {
-                ChatsFilterLog(@"Inbox (All) freed before its switcher install ran; skipped");
+                ChatsFilterLog("Inbox (All) freed before its switcher install ran; skipped");
                 return;
             }
             ApolloInstallInboxModeSwitcher(inbox);
@@ -2204,7 +2204,7 @@ static BOOL sChatFilterActive = NO;
                        dispatch_get_main_queue(), ^{
             UIViewController *inbox = weakInbox;
             if (!inbox) {
-                ChatsFilterLog(@"Inbox (All) freed before its Chat hub preload ran; skipped");
+                ChatsFilterLog("Inbox (All) freed before its Chat hub preload ran; skipped");
                 return;
             }
             if (ApolloInboxControllerIsAll(inbox) && ApolloModernChatShouldOpen()) {
@@ -2231,7 +2231,7 @@ static BOOL sChatFilterActive = NO;
                        dispatch_get_main_queue(), ^{
             UIViewController *inbox = weakInbox;
             if (!inbox) {
-                ChatsFilterLog(@"Inbox (All) freed before its appearance Chat hub preload ran; skipped");
+                ChatsFilterLog("Inbox (All) freed before its appearance Chat hub preload ran; skipped");
                 return;
             }
             ApolloEnsureInboxChatHub(inbox);
@@ -2272,7 +2272,7 @@ static BOOL sChatFilterActive = NO;
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *inbox = weakInbox;
         if (!inbox) {
-            ChatsFilterLog(@"Inbox (All) freed before its account-change reinstall ran; skipped");
+            ChatsFilterLog("Inbox (All) freed before its account-change reinstall ran; skipped");
             return;
         }
         ApolloInstallInboxModeSwitcher(inbox);
@@ -2307,12 +2307,12 @@ static BOOL sChatFilterActive = NO;
     if (sender.selectedMode == ApolloInboxModeNotifications) {
         BOOL chatVisible = [objc_getAssociatedObject(self, &kInboxAllChatHubVisibleKey) boolValue];
         if (!chatVisible) return;
-        ChatsFilterLog(@"Inbox (All) switching in place from Chat hub back to Notifications");
+        ChatsFilterLog("Inbox (All) switching in place from Chat hub back to Notifications");
         ApolloSetInboxChatHubVisible((UIViewController *)self, NO, YES);
         return;
     }
     if (sender.selectedMode != ApolloInboxModeChat || !ApolloModernChatShouldOpen()) return;
-    ChatsFilterLog(@"Inbox (All) switching in place from Notifications to Chat hub");
+    ChatsFilterLog("Inbox (All) switching in place from Notifications to Chat hub");
     ApolloSetInboxChatHubVisible((UIViewController *)self, YES, YES);
 }
 
@@ -2378,7 +2378,7 @@ static BOOL sChatFilterActive = NO;
             // vertical list scroll from flipping tabs on release.
             BOOL commit = ApolloModernChatBackSwipeCommits(pan.state, progress, commitVelocity, translation);
             if (kind == ApolloInboxSwipeKindConversationBack) {
-                if (commit) ChatsFilterLog(@"Inbox (All) swipe: Chat conversation -> chat list");
+                if (commit) ChatsFilterLog("Inbox (All) swipe: Chat conversation -> chat list");
                 if (interactive) {
                     ApolloModernChatControllerFinishInteractiveBack(hub.chatController,
                                                                     commit, commitVelocity);
@@ -2388,7 +2388,7 @@ static BOOL sChatFilterActive = NO;
                 break;
             }
             if (commit) {
-                ChatsFilterLog(@"Inbox (All) swipe: %@", chatVisible ? @"Chat hub -> Notifications"
+                ChatsFilterLog("Inbox (All) swipe: %{public}@", chatVisible ? @"Chat hub -> Notifications"
                                                                      : @"Notifications -> Chat hub");
             }
             if (interactive) {
@@ -2432,7 +2432,7 @@ static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse accoun
 // NOTE: `category` is an enum (NSInteger), NOT an object — declaring it `id` makes ARC retain
 // the integer value as a pointer (EXC_BAD_ACCESS at 0x2). It MUST be a scalar type.
 - (id)messagesInCategory:(long long)category pagination:(id)pagination markRead:(BOOL)markRead completion:(id)completion {
-    ChatsFilterLog(@"messagesInCategory cat=%lld active=%d nested=%d",
+    ChatsFilterLog("messagesInCategory cat=%lld active=%d nested=%d",
                    category, sChatFilterActive, sChatPagingInProgress);
     if (!completion) return %orig;
 
@@ -2477,13 +2477,13 @@ static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse accoun
         BOOL morePages = ([after isKindOfClass:[NSString class]] && after.length > 0);
         id ss = weakSelf;
         if (acc.count == 0 && morePages && !error && ss && pages < kMaxChatFilterPages) {
-            ChatsFilterLog(@"page %ld had 0 chats; pulling next (after=%@)", (long)pages, after);
+            ChatsFilterLog("page %ld had 0 chats; pulling next (after=%{public}@)", (long)pages, after);
             sChatPagingInProgress = YES;
             ((id (*)(id, SEL, long long, id, BOOL, id))objc_msgSend)(
                 ss, @selector(messagesInCategory:pagination:markRead:completion:), category, page, (BOOL)NO, step);
             sChatPagingInProgress = NO;
         } else {
-            ChatsFilterLog(@"delivering %lu chat(s) after %ld page(s)", (unsigned long)acc.count, (long)pages);
+            ChatsFilterLog("delivering %lu chat(s) after %ld page(s)", (unsigned long)acc.count, (long)pages);
             deliver(page, error);
             step = nil;   // break the recursive block's self-reference so it deallocs
         }
@@ -2678,7 +2678,7 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
         objc_setAssociatedObject(av, &kInboxAvatarIdentityKey, idKey, OBJC_ASSOCIATION_COPY_NONATOMIC);
         av.image = nil;
 #if APOLLO_INBOX_AVATAR_DEBUG
-        ChatsFilterLog(@"inbox icon -> %@", idKey);
+        ChatsFilterLog("inbox icon -> %{public}@", idKey);
 #endif
     }
 
@@ -2761,7 +2761,7 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
     objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSString *combinedValue = ApolloCombinedInboxBadgeValue(badgeValue);
-    ChatsFilterLog(@"Inbox badge native=%@ chat=%ld combined=%@",
+    ChatsFilterLog("Inbox badge native=%{public}@ chat=%ld combined=%{public}@",
                    badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
                    combinedValue ?: @"none");
     %orig(combinedValue);
@@ -2868,7 +2868,7 @@ static void ApolloInboxMarkMessageRead(id message, id cellNode, id tableNode, NS
         // ApolloSubredditHeaders.xm; read_message takes the same path).
         void (^completion)(NSError *) = ^(NSError *error) {
             if (error) {
-                ApolloLog(@"[ChatsFilter] chat mirror %@ read mark failed on Reddit: %@",
+                ApolloLogError(@"[ChatsFilter] chat mirror %@ read mark failed on Reddit: %@",
                           fullName ?: @"(no fullname)", error.localizedDescription ?: error);
             } else {
                 ApolloLog(@"[ChatsFilter] chat mirror %@ marked read on Reddit", fullName ?: @"(no fullname)");
@@ -2892,7 +2892,7 @@ static void ApolloInboxMarkMessageRead(id message, id cellNode, id tableNode, NS
         ((void (*)(id, SEL, id, NSInteger))objc_msgSend)(tableNode, @selector(reloadRowsAtIndexPaths:withRowAnimation:),
                                                         @[indexPath], (NSInteger)UITableViewRowAnimationNone);
     }
-    ChatsFilterLog(@"marked the tapped chat mirror read (row %@)", swapped ? @"rebuilt" : @"left to the list's next reload");
+    ChatsFilterLog("marked the tapped chat mirror read (row %{public}@)", swapped ? @"rebuilt" : @"left to the list's next reload");
 }
 
 static void ApolloInboxOpenChatPath(UIViewController *host, NSString *chatPath) {
@@ -2906,19 +2906,19 @@ static void ApolloInboxOpenChatPath(UIViewController *host, NSString *chatPath) 
         ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
         if (hub && requests) {
             [hub apollo_showSection:ApolloModernChatInboxSectionRequests animated:NO];
-            ChatsFilterLog(@"opened the Chat hub's Requests for a pending-request mirror");
+            ChatsFilterLog("opened the Chat hub's Requests for a pending-request mirror");
             return;
         }
         if (hub) {
             [hub.sectionSwitcher apollo_setSelectedSection:ApolloModernChatInboxSectionMessages animated:NO];
             ApolloModernChatControllerOpenConversationPath(hub.chatController, chatPath);
-            ChatsFilterLog(@"opened a chat mirror's room in the Inbox Chat hub");
+            ChatsFilterLog("opened a chat mirror's room in the Inbox Chat hub");
             return;
         }
     }
     UIViewController *controller = ApolloCreateStandaloneInboxChatHub(chatPath);
     [host.navigationController pushViewController:controller animated:YES];
-    ChatsFilterLog(@"opened a chat mirror's %@ in a pushed Chat hub",
+    ChatsFilterLog("opened a chat mirror's %{public}@ in a pushed Chat hub",
                    requests ? @"pending request list" : @"room");
 }
 
@@ -2959,7 +2959,7 @@ static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIn
     NSDate *created = [message respondsToSelector:@selector(createdUTC)]
         ? ((id (*)(id, SEL))objc_msgSend)(message, @selector(createdUTC)) : nil;
     NSTimeInterval timestamp = [created isKindOfClass:[NSDate class]] ? created.timeIntervalSince1970 : 0;
-    ChatsFilterLog(@"chat mirror tapped (%@, partner %@); resolving its modern Chat room",
+    ChatsFilterLog("chat mirror tapped (%{public}@, partner %{public}@); resolving its modern Chat room",
                    ApolloChatSubjectIsRoomMarker(subject) ? @"unnamed room" : @"titled room",
                    partner.length ? @"known" : @"unknown");
 
@@ -2985,10 +2985,10 @@ static BOOL ApolloInboxOpenChatMirrorIfNeeded(id listAdapter, id tableNode, NSIn
             id adapter = weakAdapter;
             if (!adapter || !table) return;
             if (!rowUnchanged) {
-                ChatsFilterLog(@"no modern Chat room matched the tapped mirror, and its row moved meanwhile; dropping the tap");
+                ChatsFilterLog("no modern Chat room matched the tapped mirror, and its row moved meanwhile; dropping the tap");
                 return;
             }
-            ChatsFilterLog(@"no modern Chat room matched the tapped mirror; opening Apollo's legacy thread");
+            ChatsFilterLog("no modern Chat room matched the tapped mirror; opening Apollo's legacy thread");
             sInboxChatMirrorBypass = YES;
             ((void (*)(id, SEL, id, id))objc_msgSend)(adapter, @selector(tableNode:didSelectRowAtIndexPath:),
                                                       table, indexPath);
@@ -3060,5 +3060,5 @@ static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
                 usingBlock:^(__unused NSNotification *notification) {
         ApolloApplyCombinedInboxBadge();
     }];
-    ChatsFilterLog(@"module loaded");
+    ChatsFilterLog("module loaded");
 }
