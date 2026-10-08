@@ -1945,6 +1945,10 @@ static CGFloat ApolloMediaComposerTitleHeightWithEmbeddedBody(UITableView *table
 // returns a concrete height, so nothing re-queries it as the title wraps - the second half
 // of issue #791. Schedule a coalesced height-only update pass whenever the title text
 // mutates so the row keeps tracking the caret.
+// Main thread only: whether the current stretch of stale-table skips has been
+// logged at the persisted level yet (one skip per keystroke otherwise).
+static BOOL sApolloMediaComposerLoggedStaleSkip;
+
 static void ApolloMediaComposerScheduleTitleRowRemeasure(UIViewController *controller) {
     controller = ApolloMediaComposerCanonicalBodyController(controller) ?: controller;
     if (!controller) return;
@@ -1966,9 +1970,15 @@ static void ApolloMediaComposerScheduleTitleRowRemeasure(UIViewController *contr
         // re-measure on a table in that state: the reload that brings it up to date asks for
         // the row heights again, and its title cell schedules a fresh pass from cellForRow.
         if (ApolloTableSnapshotIsStale(tableView)) {
-            ApolloLog(@"[MediaPostBody] skipped title row height pass: composer rows changed since the table's last reload");
+            if (!sApolloMediaComposerLoggedStaleSkip) {
+                sApolloMediaComposerLoggedStaleSkip = YES;
+                ApolloLog(@"[MediaPostBody] skipped title row height pass: composer rows changed since the table's last reload");
+            } else {
+                os_log_info(ApolloFixLog(), "[ApolloFix] [MediaPostBody] skipped title row height pass again: table still out of date");
+            }
             return;
         }
+        sApolloMediaComposerLoggedStaleSkip = NO;
         // Height-only pass: re-queries heightForRowAtIndexPath (our measured title height)
         // without reloading cells, so the keyboard and first responder stay untouched.
         [tableView beginUpdates];

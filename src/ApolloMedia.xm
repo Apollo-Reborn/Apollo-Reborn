@@ -198,6 +198,7 @@ static UIViewController *ApolloMediaPagerOwner(UIView *view) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         hasLookup = [UIViewController respondsToSelector:@selector(viewControllerForView:)];
+        if (!hasLookup) ApolloLog(@"[MediaPagerGuard] +viewControllerForView: missing; using nextResponder to find page owners");
     });
     id owner = hasLookup
         ? ((id (*)(id, SEL, id))objc_msgSend)(UIViewController.class, @selector(viewControllerForView:), view)
@@ -224,6 +225,7 @@ static Ivar ApolloMediaPagerTransitionIvar(void) {
     dispatch_once(&once, ^{
         ivar = class_getInstanceVariable(UIPageViewController.class,
                                          "_incomingAndOutgoingViewControllersForManualTransition");
+        if (!ivar) ApolloLog(@"[MediaPagerGuard] manual transition record missing; bounced-back swipes go straight to UIKit");
     });
     return ivar;
 }
@@ -288,12 +290,17 @@ static void ApolloMediaPagerRestoreLivePage(UIPageViewController *pager, UIScrol
     UIViewController *showing = ApolloMediaPagerShowingPage(pager, queuingScrollView);
     ApolloLog(@"[MediaPagerGuard] bounced-back swipe lost the page it started from; %@",
               showing ? @"finishing it on the page that is showing" : @"no live page, skipping UIKit's update");
-    if (!showing) return;
-    NSMutableDictionary *repaired = [transition isKindOfClass:NSDictionary.class]
-        ? [(NSDictionary *)transition mutableCopy] : [NSMutableDictionary dictionary];
-    repaired[kApolloMediaPagerOutgoingKey] = showing;
-    ApolloMediaPagerStoreTransition(pager, ivar, repaired);
-    %orig;
+    if (showing) {
+        NSMutableDictionary *repaired = [transition isKindOfClass:NSDictionary.class]
+            ? [(NSDictionary *)transition mutableCopy] : [NSMutableDictionary dictionary];
+        repaired[kApolloMediaPagerOutgoingKey] = showing;
+        ApolloMediaPagerStoreTransition(pager, ivar, repaired);
+        %orig;
+    }
+    // As after a finished swipe: a page left on screen without a controller
+    // gets the pager's current page back once scrolling stops (a no-op when
+    // the page on screen has one).
+    ApolloMediaPagerRestoreLivePage(pager, queuingScrollView);
 }
 
 %end
