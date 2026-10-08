@@ -8939,7 +8939,7 @@ static BOOL ApolloInsertTranslationModeActive(UIViewController *commentsControll
 }
 
 static NSArray<RDKComment *> *ApolloInsertCommentsFromThings(NSArray *things) {
-    Class commentClass = NSClassFromString(@"RDKComment");
+    Class commentClass = ApolloClassRDKComment;
     if (!commentClass || ![things isKindOfClass:[NSArray class]]) return @[];
     NSMutableArray<RDKComment *> *comments = [NSMutableArray array];
     for (id thing in things) {
@@ -9049,7 +9049,7 @@ void ApolloTranslationDisarmInsertedComments(id token) {
 // measured or drawn yet) and the main-thread-only bookkeeping (deferred).
 static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTextNodes,
                                                 NSDictionary<NSString *, NSString *> *translations) {
-    Class commentCellClass = objc_getClass("_TtC6Apollo15CommentCellNode");
+    Class commentCellClass = ApolloClassCommentCellNode;
     if (!cellNode || !commentCellClass || ![cellNode isKindOfClass:commentCellClass]) return;
     RDKComment *comment = ApolloCommentFromCellNode(cellNode);
     NSString *fullName = comment ? ApolloCommentFullName(comment) : nil;
@@ -9059,7 +9059,7 @@ static void ApolloTranslateFreshCommentCellNode(id cellNode, NSArray *capturedTe
     // Pick the body node exactly like ApolloBestCommentTextNode does (score,
     // MarkdownTextNode wins ties), but among the nodes Apollo just filled: the
     // cell's subnodes aren't attached until its first layout.
-    Class markdownTextNode = objc_getClass("_TtC6Apollo16MarkdownTextNode");
+    Class markdownTextNode = ApolloClassMarkdownTextNode;
     id textNode = nil;
     NSAttributedString *current = nil;
     NSInteger bestScore = NSIntegerMin;

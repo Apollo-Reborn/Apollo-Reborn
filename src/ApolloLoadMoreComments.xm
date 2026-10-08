@@ -25,7 +25,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloCommon.h"
+#import "ApolloClasses.h"
 #import "ApolloCommentsBatchAnimation.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloTranslation.h"
 
 // RedditKit completions: the parsed comments/more objects (or the user data) and an error.
@@ -53,29 +55,8 @@ static const NSTimeInterval kApolloLoadMoreTranslationBudget = 1.2;
 // issues from inside it can be paired with the request. Main-thread only.
 static ApolloLoadMoreRequest *sApolloLoadMoreRespondingRequest = nil;
 
-static Class ApolloLoadMoreCommentsControllerClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo22CommentsViewController"); });
-    return cls;
-}
-
-static Class ApolloLoadMoreCellNodeClass(void) {
-    static Class cls = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo20MoreCommentsCellNode"); });
-    return cls;
-}
-
-static id ApolloLoadMoreIvar(id object, const char *name) {
-    if (!object) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(object), name);
-    if (!ivar) return nil;
-    @try { return object_getIvar(object, ivar); } @catch (__unused NSException *e) { return nil; }
-}
-
 static UIViewController *ApolloLoadMoreCommentsControllerForView(UIView *view) {
-    Class commentsClass = ApolloLoadMoreCommentsControllerClass();
+    Class commentsClass = ApolloClassCommentsViewController;
     if (!commentsClass) return nil;
     for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:commentsClass]) return (UIViewController *)responder;
@@ -86,7 +67,7 @@ static UIViewController *ApolloLoadMoreCommentsControllerForView(UIView *view) {
 // The on-screen MoreCommentsCellNode for `moreComments` (Apollo's tap handler has just put it in
 // its loading state). Matched by identity: the cell keeps the RDKMoreComments it was built with.
 static id ApolloLoadMoreVisibleCellNode(id moreComments, UIViewController **controllerOut) {
-    Class cellNodeClass = ApolloLoadMoreCellNodeClass();
+    Class cellNodeClass = objc_getClass("_TtC6Apollo20MoreCommentsCellNode"); // once per tap
     if (!moreComments || !cellNodeClass) return nil;
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.hidden) continue;
@@ -99,7 +80,7 @@ static id ApolloLoadMoreVisibleCellNode(id moreComments, UIViewController **cont
                     if (![cell respondsToSelector:@selector(node)]) continue;
                     id node = ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node));
                     if (![node isKindOfClass:cellNodeClass]) continue;
-                    if (ApolloLoadMoreIvar(node, "moreComments") != moreComments) continue;
+                    if (ApolloObjectIvar(node, "moreComments") != moreComments) continue;
                     UIViewController *controller = ApolloLoadMoreCommentsControllerForView(view);
                     if (!controller) continue;
                     if (controllerOut) *controllerOut = controller;
@@ -124,7 +105,7 @@ static void ApolloLoadMoreSetRowLoading(id cellNode, BOOL loading) {
             ((void (*)(id, SEL, CGFloat))objc_msgSend)(subnode, @selector(setAlpha:), loading ? 0.0 : 1.0);
         }
     }
-    UIView *spinner = ApolloLoadMoreIvar(cellNode, "activityIndicator");
+    UIView *spinner = ApolloObjectIvar(cellNode, "activityIndicator");
     if ([spinner isKindOfClass:[UIView class]]) spinner.alpha = loading ? 1.0 : 0.0;
 }
 
