@@ -22,21 +22,35 @@ static NSInteger const ApolloUserProfileCacheSchemaVersion = 2;
 // screen side in pixels (covers rotation and the immersive backdrop's needs).
 // Warmed from -init on the main thread so off-queue callers never touch
 // UIScreen themselves.
+// TODO: Modernization - process-wide, dispatch_once-cached main-screen size
+// and scale. It bounds banners decoded into the shared, URL-keyed bannerCache
+// (and their disk re-encodes), which serve every window/screen, so no single
+// caller's traits/bounds are the right input. A real fix sizes the decode per
+// requesting display (scale + longest side in the cache key) or lets callers
+// pass the maximum they need; until then this assumes one display = main screen.
 static CGFloat ApolloBannerMaxPixelDimension(void) {
     static CGFloat dimension = 0.0;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // TODO: Modernization - see above; no trait/bounds source here.
         CGSize bounds = UIScreen.mainScreen.bounds.size;
-        CGFloat scale = UIScreen.mainScreen.scale > 0.0 ? UIScreen.mainScreen.scale : 2.0;
+        CGFloat scale = UIScreen.mainScreen.scale;
         dimension = MAX(bounds.width, bounds.height) * scale;
     });
     return dimension;
 }
 
+// TODO: Modernization - force-decode for the shared URL-keyed image caches;
+// decoded images are served to every window, so the display scale belongs to
+// the consumer's render step (which draws into explicit point rects), not to
+// this cache. The main-screen fallback below (and the decode scale at the
+// requestImageForURL: call sites) stays until the cache decodes
+// scale-independently, which changes image.size for every consumer.
 static UIImage *ApolloDecodedAvatarImage(UIImage *image) {
     if (!image || image.images.count > 0 || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
 
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    // TODO: Modernization - no trait source; see above.
     format.scale = image.scale > 0.0 ? image.scale : [UIScreen mainScreen].scale;
     format.opaque = NO;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:image.size format:format];
@@ -158,6 +172,7 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
         _bannerCache.countLimit = 4;
         _bannerCache.totalCostLimit = 32 * 1024 * 1024;
         ApolloMemoryRegisterPurgableCache(@"profile-banners", _bannerCache);
+        // TODO: Modernization - warms the cached main-screen size; see ApolloBannerMaxPixelDimension.
         (void)ApolloBannerMaxPixelDimension(); // warm the UIScreen read on main
 
         _diskInfo = [NSMutableDictionary dictionary];
@@ -584,7 +599,7 @@ static NSTimeInterval const ApolloUserProfileImageNotFoundTTL = 15.0 * 60.0;
             if (info.decoratorURL) [self requestImageForURL:info.decoratorURL completion:nil];
         }
 
-        NSArray<void (^)(ApolloUserProfileInfo *)> *callbacks = [self.infoCompletions[key] copy];
+        NSArray<void (^)(ApolloUserProfileInfo *)> *callbacks = self.infoCompletions[key];
         [self.infoCompletions removeObjectForKey:key];
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -792,7 +807,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
                 retryOrGiveUp([NSString stringWithFormat:@"network error (%@)", error.localizedDescription]);
                 return;
             }
-            ApolloLog(@"[UserAvatars] Failed to fetch u/%@: %@", key, error.localizedDescription);
+            ApolloLogError(@"[UserAvatars] Failed to fetch u/%@: %@", key, error.localizedDescription);
             [self finishInfoRequestForKey:key info:nil];
             return;
         }
@@ -998,7 +1013,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         BOOL ok = (!error && data.length > 0 && (!http || (http.statusCode >= 200 && http.statusCode < 300)));
         if (!ok) {
-            ApolloLog(@"[UserAvatars] Batch profile fetch failed (HTTP %ld, err %@) for %lu ids",
+            ApolloLogError(@"[UserAvatars] Batch profile fetch failed (HTTP %ld, err %@) for %lu ids",
                       (long)(http ? http.statusCode : -1), error.localizedDescription ?: @"none", (unsigned long)chunk.count);
             // Un-mark so a later thread open can retry; per-cell about.json still covers these users now.
             dispatch_async(self.queue, ^{ for (NSString *fn in chunk) [self.batchRequestedFullNames removeObject:fn]; });
@@ -1095,7 +1110,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
             [self.imageCache setObject:image forKey:key cost:cost];
         }
 
-        NSArray<void (^)(UIImage *)> *callbacks = [self.imageCompletions[key] copy];
+        NSArray<void (^)(UIImage *)> *callbacks = self.imageCompletions[key];
         [self.imageCompletions removeObjectForKey:key];
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^callback)(UIImage *) in callbacks) {
@@ -1199,6 +1214,8 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
             if (diskData.length > 0) {
                 UIImage *diskImage = nil;
                 @autoreleasepool {
+                    // TODO: Modernization - shared URL-keyed cache decode with no caller
+                    // trait source; see ApolloDecodedAvatarImage. Must match the network decode below.
                     diskImage = ApolloDecodedAvatarImage([UIImage imageWithData:diskData scale:[UIScreen mainScreen].scale]);
                 }
                 if (diskImage) {
@@ -1214,12 +1231,14 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
                 NSData *persistData = nil;
                 if (!error && data.length > 0) {
                     @autoreleasepool {
+                        // TODO: Modernization - shared URL-keyed cache decode with no caller
+                        // trait source; see ApolloDecodedAvatarImage. Must match the disk decode above.
                         image = ApolloDecodedAvatarImage([UIImage imageWithData:data scale:[UIScreen mainScreen].scale]);
                     }
                     if (image) persistData = data;
                 }
                 if (!image && error) {
-                    ApolloLog(@"[UserAvatars] Failed to load image %@: %@", key, error.localizedDescription);
+                    ApolloLogError(@"[UserAvatars] Failed to load image %@: %@", key, error.localizedDescription);
                 }
                 if (!image) {
                     // Negative-cache only permanent failures — transient
@@ -1249,6 +1268,7 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
 // normal decode.
 static UIImage *ApolloDownscaledBannerImage(UIImage *image) {
     if (!image || image.size.width <= 0.0 || image.size.height <= 0.0) return image;
+    // TODO: Modernization - cached main-screen bound; see ApolloBannerMaxPixelDimension.
     CGFloat maxDimension = ApolloBannerMaxPixelDimension();
     CGFloat pixelWidth = image.size.width * image.scale;
     CGFloat pixelHeight = image.size.height * image.scale;
@@ -1303,7 +1323,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
             [self.bannerCache setObject:image forKey:key cost:cost];
         }
 
-        NSArray<void (^)(UIImage *)> *callbacks = [self.imageCompletions[key] copy];
+        NSArray<void (^)(UIImage *)> *callbacks = self.imageCompletions[key];
         [self.imageCompletions removeObjectForKey:key];
         dispatch_async(dispatch_get_main_queue(), ^{
             for (void (^callback)(UIImage *) in callbacks) {
@@ -1392,7 +1412,7 @@ static BOOL ApolloImageHasAlphaChannel(UIImage *image) {
             return;
         }
         if (!image && error) {
-            ApolloLog(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
+            ApolloLogError(@"[UserAvatars] Failed to load banner (error %ld)", (long)error.code);
         }
         if (!image) {
             NSInteger statusCode = http ? http.statusCode : 0;

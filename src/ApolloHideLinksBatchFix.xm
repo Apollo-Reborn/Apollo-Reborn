@@ -100,40 +100,39 @@ static NSArray<NSArray *> *ApolloHideBatchSplit(id fullnames) {
     return chunks;
 }
 
+// Runs each chunk through the original implementation (`callOrig`), handing the
+// caller's real completion to only the last chunk; returns the last chunk's task.
+static id ApolloHideBatchRun(NSString *verb, NSArray<NSArray *> *chunks, NSUInteger total, id completion,
+                             id (^callOrig)(NSArray *chunk, id chunkCompletion)) {
+    ApolloLog(@"[HideBatchFix] %@ %lu ids -> %lu batch(es) of <=50 (native drops 50 here)",
+              verb, (unsigned long)total, (unsigned long)chunks.count);
+
+    id noop = ^{}; // ABI-safe do-nothing completion for the non-final chunks.
+    id lastTask = nil;
+    NSUInteger n = chunks.count;
+    for (NSUInteger i = 0; i < n; i++) {
+        BOOL isLast = (i == n - 1);
+        lastTask = callOrig(chunks[i], isLast ? completion : noop);
+    }
+    return lastTask;
+}
+
 %hook RDKClient
 
 - (id)hideLinksWithFullnames:(id)fullnames completion:(id)completion {
     NSArray<NSArray *> *chunks = ApolloHideBatchSplit(fullnames);
     if (!chunks) return %orig; // <=50 ids (or non-array): native path is correct.
-
-    ApolloLog(@"[HideBatchFix] hide %lu ids -> %lu batch(es) of <=50 (native drops 50 here)",
-              (unsigned long)[(NSArray *)fullnames count], (unsigned long)chunks.count);
-
-    id noop = ^{}; // ABI-safe do-nothing completion for the non-final chunks.
-    id lastTask = nil;
-    NSUInteger n = chunks.count;
-    for (NSUInteger i = 0; i < n; i++) {
-        BOOL isLast = (i == n - 1);
-        lastTask = %orig(chunks[i], isLast ? completion : noop);
-    }
-    return lastTask;
+    return ApolloHideBatchRun(@"hide", chunks, [(NSArray *)fullnames count], completion, ^id(NSArray *chunk, id chunkCompletion) {
+        return %orig(chunk, chunkCompletion);
+    });
 }
 
 - (id)unhideLinksWithFullnames:(id)fullnames completion:(id)completion {
     NSArray<NSArray *> *chunks = ApolloHideBatchSplit(fullnames);
     if (!chunks) return %orig; // <=50 ids (or non-array): native path is correct.
-
-    ApolloLog(@"[HideBatchFix] unhide %lu ids -> %lu batch(es) of <=50 (native drops 50 here)",
-              (unsigned long)[(NSArray *)fullnames count], (unsigned long)chunks.count);
-
-    id noop = ^{}; // ABI-safe do-nothing completion for the non-final chunks.
-    id lastTask = nil;
-    NSUInteger n = chunks.count;
-    for (NSUInteger i = 0; i < n; i++) {
-        BOOL isLast = (i == n - 1);
-        lastTask = %orig(chunks[i], isLast ? completion : noop);
-    }
-    return lastTask;
+    return ApolloHideBatchRun(@"unhide", chunks, [(NSArray *)fullnames count], completion, ^id(NSArray *chunk, id chunkCompletion) {
+        return %orig(chunk, chunkCompletion);
+    });
 }
 
 %end

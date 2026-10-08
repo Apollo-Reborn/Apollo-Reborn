@@ -568,19 +568,17 @@ static NSString *ATSPreferTagged(NSString *best, NSString *candidate) {
 // Vision path — more tolerant of the blur/resample a recompressed image picks up.
 static NSString *ATSReadQRVision(CIImage *ci) {
     NSString *best = nil;
-    if (@available(iOS 11.0, *)) {
-        VNDetectBarcodesRequest *request = [[VNDetectBarcodesRequest alloc] init];
-        request.symbologies = @[VNBarcodeSymbologyQR];
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ci options:@{}];
-        NSError *error = nil;
-        if (![handler performRequests:@[request] error:&error] || error) {
-            ApolloLog(@"ThemeShare: Vision QR request failed: %@", error);
-            return nil;
-        }
-        for (VNBarcodeObservation *obs in request.results) {
-            best = ATSPreferTagged(best, obs.payloadStringValue);
-            if ([best hasPrefix:kThemeQRTag]) break;
-        }
+    VNDetectBarcodesRequest *request = [[VNDetectBarcodesRequest alloc] init];
+    request.symbologies = @[VNBarcodeSymbologyQR];
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCIImage:ci options:@{}];
+    NSError *error = nil;
+    if (![handler performRequests:@[request] error:&error] || error) {
+        ApolloLogError(@"ThemeShare: Vision QR request failed: %@", error);
+        return nil;
+    }
+    for (VNBarcodeObservation *obs in request.results) {
+        best = ATSPreferTagged(best, obs.payloadStringValue);
+        if ([best hasPrefix:kThemeQRTag]) break;
     }
     return best;
 }

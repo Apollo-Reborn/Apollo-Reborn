@@ -123,7 +123,7 @@
     BOOL installed = [[KSCrash sharedInstance] installWithConfiguration:configuration error:&error];
     _installed = installed;
     if (!installed) {
-        ApolloLog(@"[CrashCapture] KSCrash installation failed: %@",
+        ApolloLogFault(@"[CrashCapture] KSCrash installation failed: %@",
                   error.localizedDescription ?: @"unknown error");
         return;
     }

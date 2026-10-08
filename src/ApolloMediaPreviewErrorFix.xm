@@ -1,9 +1,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 // =============================================================================
 // MARK: - Overview
@@ -25,19 +25,12 @@
 //
 // =============================================================================
 
-// Read an ObjC object ivar by name (walks the superclass chain).
-static id PreviewErrorGetIvarObject(id obj, const char *ivarName) {
-    if (!obj) return nil;
-    Ivar ivar = class_getInstanceVariable([obj class], ivarName);
-    return ivar ? object_getIvar(obj, ivar) : nil;
-}
-
 %hook RichMediaNode
 
 - (void)imageNode:(id)imageNode didFailWithError:(NSError *)error {
     // Node has a video: the failed image is just the poster, so suppress the
     // overlay and let the video play.
-    id videoNode = PreviewErrorGetIvarObject(self, "videoNode");
+    id videoNode = ApolloObjectIvar(self, "videoNode");
     if (videoNode) {
         ApolloLog(@"[PreviewErrorFix] Suppressing media preview error overlay — node has a "
                   @"playable video (failed image: %@, error: %@)",
@@ -57,7 +50,7 @@ static id PreviewErrorGetIvarObject(id obj, const char *ivarName) {
 %ctor {
     Class richMediaNodeClass = objc_getClass("_TtC6Apollo13RichMediaNode");
 
-    ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode=%p", (void *)richMediaNodeClass);
+    ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode=%p", (__bridge void *)richMediaNodeClass);
 
     if (!richMediaNodeClass) {
         ApolloLog(@"[PreviewErrorFix] ctor: RichMediaNode class not found — skipping hook");

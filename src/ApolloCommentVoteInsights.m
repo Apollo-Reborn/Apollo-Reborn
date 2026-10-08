@@ -565,7 +565,7 @@ void ApolloFetchCommentVoteInsight(NSString *fullName, NSString *author,
                       commentID, elapsed, (long)data.length / 1024,
                       insight.upvotePercent, insight.reportedUpvotes);
         } else {
-            ApolloLog(@"[CommentInsights] %@ failed %.2fs http=%ld err=%ld %ldKB shell=%d engagement=%d verify=%d",
+            ApolloLogError(@"[CommentInsights] %@ failed %.2fs http=%ld err=%ld %ldKB shell=%d engagement=%d verify=%d",
                       commentID, elapsed, (long)status, (long)error.code,
                       (long)data.length / 1024, appShell, engagement, verification);
 #if APOLLO_SIM_BUILD

@@ -751,7 +751,7 @@ static void ApolloImgChestCreatePost(NSArray<NSDictionary *> *imageParts,
         NSDictionary *post = [json[@"data"] isKindOfClass:[NSDictionary class]] ? json[@"data"] : nil;
         if (error || http.statusCode < 200 || http.statusCode >= 300 || !post) {
             NSString *message = [json[@"message"] isKindOfClass:[NSString class]] ? json[@"message"] : nil;
-            ApolloLog(@"[ImgChestUpload] create post failed status=%ld err=%@ msg=%@ bytes=%lu",
+            ApolloLogError(@"[ImgChestUpload] create post failed status=%ld err=%@ msg=%@ bytes=%lu",
                       (long)http.statusCode, error.localizedDescription ?: @"nil", message ?: @"nil", (unsigned long)data.length);
             if ([operation finishOnce]) completion(nil, error ?: ApolloImgChestError(message ?: @"Image Chest upload failed"));
             return;
@@ -781,7 +781,7 @@ static void ApolloImgChestDeletePost(NSString *postID, void (^_Nullable completi
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         BOOL success = !error && http.statusCode >= 200 && http.statusCode < 300;
         if (!success) {
-            ApolloLog(@"[ImgChestUpload] delete post %@ failed status=%ld err=%@", postID, (long)http.statusCode, error.localizedDescription ?: @"nil");
+            ApolloLogError(@"[ImgChestUpload] delete post %@ failed status=%ld err=%@", postID, (long)http.statusCode, error.localizedDescription ?: @"nil");
         }
         if (completion) completion(success);
     }] resume];

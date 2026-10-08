@@ -230,8 +230,8 @@ static void ApolloLoadMoreHandleResponse(ApolloLoadMoreRequest *request, id resu
     UIViewController *controller = nil;
     request.cellNode = ApolloLoadMoreVisibleCellNode(moreComments, &controller);
     request.commentsController = controller;
-    ApolloLogDebug(@"[LoadMore] request (row %@, thread %@)", request.cellNode ? @"on screen" : @"not on screen",
-                   controller ? @"found" : @"not found");
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [LoadMore] request (row %{public}s, thread %{public}s)",
+                 request.cellNode ? "on screen" : "not on screen", controller ? "found" : "not found");
     ApolloLoadMoreCompletion wrapped = ^(id results, NSError *error) {
         ApolloLoadMoreHandleResponse(request, results, error, completion);
     };

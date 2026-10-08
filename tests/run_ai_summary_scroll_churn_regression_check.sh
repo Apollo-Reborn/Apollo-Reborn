@@ -36,8 +36,10 @@ require_source 'if ([keys containsObject:key] && !objc_getAssociatedObject(vc, &
     'the first duplicate callback on a controller schedules its recovery pass'
 require_source 'if ([keys containsObject:key]) return NO;' \
     'later duplicate callbacks remain suppressed'
-require_count 'if (ApolloAICaptureCommentForController(comment, vc)) {' 3 \
-    'all three lifecycle capture paths gate scheduling on capture policy'
+require_count 'if (ApolloAICaptureCommentForController(comment, vc)) {' 2 \
+    'controller and cell-node capture paths gate scheduling on capture policy'
+require_count 'ApolloAICaptureCommentCellNodeLater((id)self);' 2 \
+    'both cell-node lifecycle hooks share the gated capture path'
 require_count 'BOOL controllerHadPass = objc_getAssociatedObject(vc, &kApolloAIControllerPassScheduledKey) != nil;' 1 \
     'the scheduler distinguishes a controller first pass from later passes'
 require_count 'if (sEnableTapToSummarize && controllerHadPass) {' 1 \

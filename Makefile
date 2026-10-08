@@ -44,6 +44,7 @@ KSCRASH_FILES := \
 # ApolloFavoriteConfirm.xm must stay after ApolloSubredditIndexPolish.xm and
 # ApolloFollowingSection.xm so its favoriteSubredditButtonTapped: hook is outermost.
 ApolloReborn_FILES = \
+    $(SRC_DIR)/ApolloClasses.m \
     $(SRC_DIR)/ApolloFoundationModels.swift \
     $(SRC_DIR)/ApolloAISummary.xm \
     $(SRC_DIR)/ApolloAICloudBridge.m \
@@ -62,6 +63,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsForm.m \
     $(SRC_DIR)/settings/ApolloSettingsShortcutsViewController.m \
     $(SRC_DIR)/settings/ApolloSettingsPinnedPreview.m \
+    $(SRC_DIR)/settings/ApolloProfilePicturesPreview.m \
     $(SRC_DIR)/settings/ApolloContributors.m \
     $(SRC_DIR)/settings/ApolloBackupRestore.m \
     $(SRC_DIR)/settings/ApolloBackupDocument.m \
@@ -81,6 +83,10 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloNotificationBackend.m \
     $(SRC_DIR)/ApolloBarkIconResolver.m \
     $(SRC_DIR)/ApolloUsageHeartbeat.m \
+    $(SRC_DIR)/ApolloAppIcon.m \
+    $(SRC_DIR)/ApolloUpdateManifest.m \
+    $(SRC_DIR)/ApolloUpdatePromptViewController.m \
+    $(SRC_DIR)/ApolloUpdateChecker.m \
     $(SRC_DIR)/ApolloPushNotifications.m \
     $(SRC_DIR)/ApolloLiquidGlassIconIDs.m \
     $(SRC_DIR)/ApolloBarkNotifications.m \
@@ -172,6 +178,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloTrueBlackKeyboard.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
+    $(SRC_DIR)/ApolloCompactTabBarView.m \
     $(SRC_DIR)/ApolloListBottomInsetGuard.xm \
     $(SRC_DIR)/ApolloTabBarHideStyle.xm \
     $(SRC_DIR)/ApolloIPadTabBarBottom.xm \
@@ -181,6 +188,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsTabMenu.xm \
     $(SRC_DIR)/settings/ApolloShortcutListEditing.xm \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
+    $(SRC_DIR)/ApolloIntelligenceBridge.xm \
+    $(SRC_DIR)/settings/ApolloSiriSettingsViewController.m \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
     $(SRC_DIR)/ApolloSaveAllMediaItems.m \
     $(SRC_DIR)/ApolloSaveAllMedia.xm \

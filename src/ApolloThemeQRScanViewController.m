@@ -125,7 +125,7 @@
     AVCaptureSession *session = [[AVCaptureSession alloc] init];
     AVCaptureMetadataOutput *output = [[AVCaptureMetadataOutput alloc] init];
     if (!input || ![session canAddInput:input] || ![session canAddOutput:output]) {
-        ApolloLog(@"ThemeScan: camera session setup failed: %@", error);
+        ApolloLogError(@"ThemeScan: camera session setup failed: %@", error);
         [self failWithTitle:@"Camera Unavailable"
                     message:@"The camera could not be started. Use “From Photo…” instead."];
         return;

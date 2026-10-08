@@ -40,6 +40,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloSwiftRuntime.h"
 
 @interface _TtC6Apollo22CommentsViewController : UIViewController
 @end
@@ -67,30 +68,6 @@ static long gICSGen = 0;
 
 // MARK: - runtime helpers
 
-static id ICSObjectIvar(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) return object_getIvar(obj, iv);
-        cls = class_getSuperclass(cls);
-    }
-    return nil;
-}
-
-// Read a Swift.Bool / BOOL ivar (one byte, stored inline) by walking the superclass chain.
-static BOOL ICSReadBool(id obj, const char *name) {
-    Class cls = obj ? object_getClass(obj) : Nil;
-    while (cls) {
-        Ivar iv = class_getInstanceVariable(cls, name);
-        if (iv) {
-            ptrdiff_t off = ivar_getOffset(iv);
-            return *(((uint8_t *)(__bridge void *)obj) + off) != 0;
-        }
-        cls = class_getSuperclass(cls);
-    }
-    return NO;
-}
-
 static UITableView *ICSFindTable(UIView *v) {
     if (!v) return nil;
     if ([v isKindOfClass:[UITableView class]]) return (UITableView *)v;
@@ -103,7 +80,7 @@ static UITableView *ICSFindTable(UIView *v) {
 
 static UITableView *ICSTableView(UIViewController *vc, id tableNode) {
     if (tableNode) {
-        SEL viewSel = NSSelectorFromString(@"view");
+        SEL viewSel = @selector(view);
         if ([tableNode respondsToSelector:viewSel]) {
             UIView *tv = ((id (*)(id, SEL))objc_msgSend)(tableNode, viewSel);
             if ([tv isKindOfClass:[UITableView class]]) return (UITableView *)tv;
@@ -115,9 +92,8 @@ static UITableView *ICSTableView(UIViewController *vc, id tableNode) {
 // Isolated single-comment-thread: has the "View All Comments" footer node, or is a
 // continued-thread view. Either way the linked comment lives near the bottom.
 static BOOL ICSIsIsolatedThread(UIViewController *vc) {
-    if (ICSObjectIvar(vc, "viewFullPostNode") != nil) return YES;
-    if (ICSReadBool(vc, "continuingThread")) return YES;
-    return NO;
+    return ApolloObjectIvar(vc, "viewFullPostNode") != nil ||
+           ApolloReadBoolIvar(vc, "continuingThread", NO);
 }
 
 static NSNumber *ICSNum(id vc, const void *key) { return objc_getAssociatedObject(vc, key); }
@@ -128,20 +104,16 @@ static void ICSSet(id vc, const void *key, id val) {
 // Find the linked comment's index path. AsyncDisplayKit holds a node object for every row —
 // even ones far below the fold — so this resolves the linked comment without scrolling first.
 static NSIndexPath *ICSLinkedIndexPath(id tableNode, UITableView *tableView) {
-    NSIndexPath *linked = nil;
-    NSInteger sections = [tableView numberOfSections];
-    SEL nodeSel = NSSelectorFromString(@"nodeForRowAtIndexPath:");
-    BOOL canNode = tableNode && [tableNode respondsToSelector:nodeSel];
-    if (!canNode) return nil;
-    for (NSInteger s = 0; s < sections; s++) {
-        NSInteger rows = [tableView numberOfRowsInSection:s];
-        for (NSInteger r = 0; r < rows; r++) {
+    SEL nodeSel = @selector(nodeForRowAtIndexPath:);
+    if (![tableNode respondsToSelector:nodeSel]) return nil;
+    for (NSInteger s = [tableView numberOfSections] - 1; s >= 0; s--) {
+        for (NSInteger r = [tableView numberOfRowsInSection:s] - 1; r >= 0; r--) {
             NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
             id node = ((id (*)(id, SEL, id))objc_msgSend)(tableNode, nodeSel, ip);
-            if (node && ICSReadBool(node, "isLinkedToComment")) linked = ip;
+            if (node && ApolloReadBoolIvar(node, "isLinkedToComment", NO)) return ip;
         }
     }
-    return linked;
+    return nil;
 }
 
 // Offset that puts a row's top just under the nav bar, clamped to the scrollable range.
@@ -157,7 +129,7 @@ static CGFloat ICSDesiredOffsetForRow(UITableView *tableView, NSIndexPath *ip) {
 // Pin the linked comment to the top (instant). Returns: -1 not ready, 0 corrected (was off),
 // 1 already on target. Safe to call from both the poll and viewDidLayoutSubviews.
 static int ICSPinLinked(UIViewController *vc) {
-    id tableNode = ICSObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tv = ICSTableView(vc, tableNode);
     if (!tv) return -1;
 
@@ -217,7 +189,7 @@ static void ICSTick(__weak UIViewController *weakVC, long gen, NSDate *deadline,
     }
     if (!everIso) ICSSet(vc, kEverIsoKey, @YES);
 
-    id tableNode = ICSObjectIvar(vc, "tableNode");
+    id tableNode = ApolloObjectIvar(vc, "tableNode");
     UITableView *tableView = ICSTableView(vc, tableNode);
     if (!tableView) {
         if (!pastDeadline) ICSScheduleTick(weakVC, gen, deadline, armDate);

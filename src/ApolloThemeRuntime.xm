@@ -5,6 +5,7 @@
 #import "ApolloClassicBarTheme.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import <CoreText/CoreText.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -13,6 +14,7 @@
 #import <objc/runtime.h>
 
 #include <atomic>
+#import "ApolloClasses.h"
 
 @class ASDisplayNode;
 
@@ -271,8 +273,7 @@ static void ApolloThemePinSeparatorNode(ASDisplayNode *node) {
 
 static void ApplyThemeThinSeparatorNode(_TtC6Apollo21ThinSeparatorCellNode *cellNode) {
     if (!ApolloThemeCurrentSnapshot()->enabled || !cellNode) return;
-    Ivar separatorIvar = class_getInstanceVariable(object_getClass(cellNode), "separatorNode");
-    ASDisplayNode *separatorNode = separatorIvar ? object_getIvar(cellNode, separatorIvar) : nil;
+    ASDisplayNode *separatorNode = ApolloObjectIvar(cellNode, "separatorNode");
     UIColor *separator = ApolloThemeRuntimeColor(ApolloThemeTokenSeparator);
     if (separatorNode && separator) {
         ApolloThemePinSeparatorNode(separatorNode);
@@ -280,19 +281,13 @@ static void ApplyThemeThinSeparatorNode(_TtC6Apollo21ThinSeparatorCellNode *cell
     }
 }
 
-static ASDisplayNode *ApolloThemeObjectIvar(id owner, const char *name) {
-    if (!owner || !name) return nil;
-    Ivar ivar = class_getInstanceVariable(object_getClass(owner), name);
-    return ivar ? object_getIvar(owner, ivar) : nil;
-}
-
 static void ApplyThemeCommentsHeaderSeparators(_TtC6Apollo22CommentsHeaderCellNode *headerNode) {
     if (!ApolloThemeCurrentSnapshot()->enabled || !headerNode) return;
     UIColor *separator = ApolloThemeRuntimeColor(ApolloThemeTokenSeparator);
     if (!separator) return;
 
-    ASDisplayNode *quickBarSeparator = ApolloThemeObjectIvar(headerNode, "quickBarSeparatorNode");
-    ASDisplayNode *commentsSeparator = ApolloThemeObjectIvar(headerNode, "commentsSeparatorNode");
+    ASDisplayNode *quickBarSeparator = ApolloObjectIvar(headerNode, "quickBarSeparatorNode");
+    ASDisplayNode *commentsSeparator = ApolloObjectIvar(headerNode, "commentsSeparatorNode");
     if (quickBarSeparator) {
         ApolloThemePinSeparatorNode(quickBarSeparator);
         quickBarSeparator.backgroundColor = separator;
@@ -435,9 +430,9 @@ static BOOL FontPinned(id view) {
 // which also keeps the wide SF Mono design out of fixed-width system chrome.
 static UIFont *ThemedFont(UIFont *font, uintptr_t caller) {
     const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
+    if (!snapshot->enabled || !font || sFontBypass) return font;
     ApolloThemeFont choice = snapshot->fontChoices[CurrentRuntimeMode()];
-    if (!snapshot->enabled || choice == ApolloThemeFontSystem || !font) return font;
-    if (sFontBypass) return font;
+    if (choice == ApolloThemeFontSystem) return font;
     if (!CallerMayUseThemeRuntime(caller)) return font;
     sFontBypass++;
     UIFont *themed = ApolloThemeFontApply(choice, font);
@@ -681,8 +676,7 @@ static BOOL TextPaletteTokenForColor(UIColor *color, ApolloThemeToken *outToken,
 
 static BOOL ClassNameLooksApolloOwned(const char *name) {
     if (!name) return NO;
-    return strncmp(name, "_TtC6Apollo", 11) == 0 ||
-           strncmp(name, "Apollo", 6) == 0 ||
+    return strncmp(name, "Apollo", 6) == 0 ||
            strstr(name, ".Apollo") != NULL;
 }
 
@@ -802,7 +796,7 @@ static UIView *NavigationTitleControlForDescendant(UIView *view) {
 static BOOL NavigationTitleOwnsButtonLabel(UIView *view) {
     // Asking UIButton for titleLabel from a label setter re-enters its lazy
     // title update. Identify the existing generated label without that getter.
-    Class buttonLabelClass = objc_getClass("UIButtonLabel");
+    Class buttonLabelClass = ApolloClassUIButtonLabel;
     if (!buttonLabelClass || ![view isKindOfClass:buttonLabelClass]) return NO;
     for (UIView *ancestor = view.superview; ancestor; ancestor = ancestor.superview) {
         if ([ancestor isKindOfClass:UIButton.class]) {
@@ -872,6 +866,7 @@ static void ApplyThemeToNavigationTitleControl(UIView *titleControl);
 static char kApolloNeutralNavigationTitleKey;
 
 static BOOL ApolloNeutralNavigationTitle(UIView *view) {
+    if (!IsLiquidGlass()) return NO;
     for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
         if (objc_getAssociatedObject(ancestor, &kApolloNeutralNavigationTitleKey)) return YES;
     }
@@ -879,9 +874,9 @@ static BOOL ApolloNeutralNavigationTitle(UIView *view) {
 }
 
 static CGSize ApolloNavigationTitleFittingSize(UIButton *button, CGSize size) {
-    if (!IsLiquidGlass() || (!ApolloNeutralNavigationTitle(button) &&
-        ![NSStringFromClass(button.class) isEqualToString:@"Apollo.DualLabelTitleButton"])) return size;
-    if (!isfinite(size.height) || size.height <= 44.0 || !isfinite(size.width) || size.width <= 0) return size;
+    if (!IsLiquidGlass() || !isfinite(size.height) || size.height <= 44.0 || !isfinite(size.width) || size.width <= 0) return size;
+    if (!ApolloNeutralNavigationTitle(button) &&
+        ![NSStringFromClass(button.class) isEqualToString:@"Apollo.DualLabelTitleButton"]) return size;
     NSAttributedString *title = button.currentAttributedTitle;
     if (!title.length) return size;
     CGFloat textHeight = ceil([title boundingRectWithSize:CGSizeMake(size.width, CGFLOAT_MAX)
@@ -1598,6 +1593,9 @@ UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSetting
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).
+// Keep the plain subreddit list independent of the grouped settings-card
+// palette. Both Pure Black tiers retain #1A1A1A section bands and use the
+// page's black (or smearing-reduced black) for rows.
 static UIColor *ApolloThemeSubredditListColor(NSUInteger role) {
     ApolloThemeToken token = role == 0 ? ApolloThemeTokenSecondaryBackground
         : role == 1 ? ApolloThemeTokenBackground
@@ -1810,18 +1808,6 @@ void ApolloThemeRuntimeInvalidate(void) {
             return %orig(R, G, B, a);
         }
     }
-    return %orig;
-}
-
-// colorWithWhite:/initWithWhite: — our token colours are RGB and can't be passed
-// through %orig (which is white-only). Apollo's greys are also reachable via the
-// donor RGB constructors and the semantic accessors, so leave the white path on
-// %orig rather than build-and-return a substitute (which over-releases).
-+ (UIColor *)colorWithWhite:(CGFloat)w alpha:(CGFloat)a {
-    return %orig;
-}
-
-- (UIColor *)initWithWhite:(CGFloat)w alpha:(CGFloat)a {
     return %orig;
 }
 
@@ -2191,12 +2177,6 @@ void ApolloThemeRuntimeInvalidate(void) {
 // helper itself. Scoped to DualStateButtonNode's iconNode via supernode,
 // since ASImageNode.setImageModificationBlock: is otherwise used for
 // arbitrary icon tinting app-wide.
-static Class DualStateButtonNodeClass(void) {
-    static Class cls;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cls = objc_getClass("_TtC6Apollo19DualStateButtonNode"); });
-    return cls;
-}
 
 // AsyncDisplayKit is loaded into the host process by Apollo itself, but the
 // tweak dylib doesn't link against it — resolve this public C entry point at
@@ -2217,7 +2197,7 @@ static ASImageNodeTintColorModificationBlockFn ASImageNodeTintColorModificationB
 - (void)setImageModificationBlock:(id)block {
     const ApolloThemeRuntimeSnapshot *snapshot = ApolloThemeCurrentSnapshot();
     if (snapshot->enabled && snapshot->voteArrowsAccent[CurrentRuntimeMode()]) {
-        Class dualStateCls = DualStateButtonNodeClass();
+        Class dualStateCls = ApolloClassDualStateButtonNode;
         id supernode = dualStateCls ? [(ASDisplayNode *)self supernode] : nil;
         // isActive==YES is Apollo's own "this is the cast vote" state (white
         // icon over its green/blue-violet backgroundNode pill) — leave that
@@ -2448,8 +2428,7 @@ static const void *kApolloThemePillRestoredKey = &kApolloThemePillRestoredKey;
 
 static void ApolloThemeRestoreOverlayPillText(id node) {
     if (!node || !ApolloThemeCurrentSnapshot()->enabled) return;
-    Ivar ivar = class_getInstanceVariable(object_getClass(node), "textNode");
-    id textNode = ivar ? object_getIvar(node, ivar) : nil;
+    id textNode = ApolloObjectIvar(node, "textNode");
     if (![textNode respondsToSelector:@selector(attributedText)]) return;
 
     NSAttributedString *text = [textNode attributedText];
@@ -2593,7 +2572,7 @@ static char kApolloNavigationDualTitleTintPinnedKey;
         FindRuntimeImages();
         BuildByteFilter();
         %init(ApolloThemeRuntimeHooks);
-        Class dualTitleButton = NSClassFromString(@"Apollo.DualLabelTitleButton");
+        Class dualTitleButton = objc_getClass("Apollo.DualLabelTitleButton");
         if (dualTitleButton) {
             %init(ApolloNavigationDualTitleChrome, ApolloDualLabelTitleButton = dualTitleButton);
         }

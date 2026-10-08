@@ -10,7 +10,7 @@ static NSString *ApolloLowercaseString(NSString *string) {
 
 static BOOL ApolloURLHostIsRedditPreview(NSString *urlString) {
     NSString *lower = ApolloLowercaseString(urlString);
-    return [lower containsString:@"preview.redd.it"] || [lower containsString:@"external-preview.redd.it"];
+    return [lower containsString:@"preview.redd.it"];
 }
 
 static BOOL ApolloURLIsRedditStaticPreview(NSString *urlString) {
@@ -79,8 +79,6 @@ NSDictionary *ApolloFixRedditHostedGifMetadata(NSDictionary *orig, NSUInteger *o
     NSUInteger fixedCount = 0;
 
     for (NSString *key in orig) {
-        if (!ApolloStringIsNonEmpty(key) || [key hasPrefix:@"giphy|"]) continue;
-
         NSDictionary *entry = orig[key];
         if (!ApolloMetadataEntryIsRedditHostedGIF(key, entry)) continue;
         // Only repair entries Reddit returned incomplete. Skipping healthy
@@ -90,8 +88,6 @@ NSDictionary *ApolloFixRedditHostedGifMetadata(NSDictionary *orig, NSUInteger *o
         if (!ApolloRedditHostedGifEntryNeedsNormalization(entry)) continue;
 
         NSString *gifURL = ApolloRedditHostedGIFDisplayURL(key);
-        if (!gifURL) continue;
-
         if (!fixed) fixed = [orig mutableCopy];
 
         NSDictionary *existingSource = [entry[@"s"] isKindOfClass:[NSDictionary class]] ? entry[@"s"] : nil;

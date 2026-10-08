@@ -36,6 +36,8 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryViewController.h"
 #import "ApolloNativeActionMenus.h"
+#import "ApolloSwiftRuntime.h"
+#import "ApolloClasses.h"
 
 // Defined in ApolloSubredditHeaders.xm — resolves the slug for a genuine
 // single-subreddit feed, and nil for anything else (multireddit, Popular/All,
@@ -50,10 +52,8 @@ extern NSString *ApolloSpecialFeedSlugFromViewController(UIViewController *viewC
 // nil while it can't be determined yet.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
 
-
 static NSString *const kApolloGalleryMenuTitle = @"Gallery View";
 static NSString *const kApolloGalleryMenuSymbol = @"square.grid.2x2";
-
 
 // How long after the "..." tap an ActionController may still claim the arm.
 static const CFTimeInterval kApolloGalleryMenuArmGraceSeconds = 1.5;
@@ -100,12 +100,7 @@ static UIViewController *ApolloGalleryMenuOwnerForController(id actionController
 // slugs and "/user/x/m/y" multireddit paths in the shared plumbing below, and
 // presentGalleryForSubreddit: routes it to the username presenter.
 static NSString *ApolloGalleryMenuProfileIdentifierForOwner(UIViewController *owner) {
-    static Class profileClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        profileClass = objc_getClass("_TtC6Apollo21ProfileViewController");
-    });
-    if (!profileClass || ![owner isKindOfClass:profileClass]) return nil;
+    if (![owner isKindOfClass:ApolloClassProfileViewController]) return nil;
     NSString *username = ApolloUsernameFromProfileViewController(owner);
     return username.length > 0 ? [@"u/" stringByAppendingString:username] : nil;
 }
@@ -115,9 +110,7 @@ static NSString *ApolloGalleryMenuProfileIdentifierForOwner(UIViewController *ow
 // a sentinel instead of joining the pseudo-subreddits above. It can't collide
 // with a real slug: "~" is invalid in subreddit names.
 static NSString *ApolloGalleryMenuHomeIdentifierForOwner(UIViewController *owner) {
-    static Class postsClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ postsClass = objc_getClass("_TtC6Apollo19PostsViewController"); });
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass || ![owner isKindOfClass:postsClass]) return nil;
     // Home's tag measured at 6 (2026-08-14 sim probe; subreddit=0,
     // multireddit=1, random=5 per ApolloSubredditHeaders). The nav title is a
@@ -169,18 +162,8 @@ static NSString *ApolloGalleryMenuSourceDescription(NSString *listingIdentifier)
 // +8. Same Optional layout ApolloPerPostCommentSort reads on the comments
 // screen; reads are defensive so a layout surprise just means "nothing to
 // inherit".
-static ptrdiff_t ApolloGalleryMenuIvarOffset(id object, const char *name) {
-    Class cls = object ? object_getClass(object) : Nil;
-    while (cls) {
-        Ivar ivar = class_getInstanceVariable(cls, name);
-        if (ivar) return ivar_getOffset(ivar);
-        cls = class_getSuperclass(cls);
-    }
-    return -1;
-}
-
 static BOOL ApolloGalleryMenuReadOptionalEnumIvar(id object, const char *name, int64_t *outRaw) {
-    ptrdiff_t offset = ApolloGalleryMenuIvarOffset(object, name);
+    ptrdiff_t offset = ApolloIvarOffset(object_getClass(object), name);
     if (offset < 0) return NO;
     if ((size_t)(offset + 9) > class_getInstanceSize(object_getClass(object))) return NO;
     const uint8_t *base = (const uint8_t *)(__bridge const void *)object;
@@ -233,11 +216,7 @@ static void ApolloGalleryMenuResolveInheritedSort(UIViewController *owner,
                                                   NSNumber **outWindow) {
     if (outSort) *outSort = nil;
     if (outWindow) *outWindow = nil;
-    static Class postsClass = Nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        postsClass = objc_getClass("_TtC6Apollo19PostsViewController");
-    });
+    Class postsClass = ApolloClassPostsViewController;
     if (!postsClass || ![owner isKindOfClass:postsClass]) return;
 
     int64_t sortRaw = 0;
@@ -293,9 +272,7 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     // Only arm for feeds a gallery makes sense for; that keeps every other
     // sheet (and every other feed type) completely untouched.
-    UIViewController *viewController = (UIViewController *)self;
-    NSString *listingIdentifier = ApolloGalleryMenuIdentifierForOwner(viewController);
-    if (listingIdentifier.length > 0) {
+    if (ApolloGalleryMenuIdentifierForOwner((UIViewController *)self).length > 0) {
         sApolloGalleryArmedVC = (UIViewController *)self;
         sApolloGalleryArmedAt = CACurrentMediaTime();
     } else {
@@ -390,17 +367,14 @@ static NSUInteger ApolloGalleryMenuInsertionIndex(NSArray<UIMenuElement *> *chil
                                                     handler:^(__unused __kindof UIAction *sender) {
             ApolloGalleryMenuOpenForController(weakController);
         }];
-        NSMutableArray<UIMenuElement *> *sectionChildren = [NSMutableArray arrayWithObject:galleryAction];
-
         UIMenu *section = [UIMenu menuWithTitle:@""
                                           image:nil
                                      identifier:nil
                                         options:UIMenuOptionsDisplayInline
-                                       children:sectionChildren];
+                                       children:@[galleryAction]];
         NSUInteger index = ApolloGalleryMenuInsertionIndex(children);
-        [children insertObject:section atIndex:MIN(index, (NSUInteger)children.count)];
-        ApolloLog(@"[GalleryMenu] Injected %lu row(s) for %@ at index %lu (glass menu)",
-                  (unsigned long)sectionChildren.count,
+        [children insertObject:section atIndex:index];
+        ApolloLog(@"[GalleryMenu] Injected row for %@ at index %lu (glass menu)",
                   ApolloGalleryMenuSourceDescription(listingIdentifier),
                   (unsigned long)index);
     };
