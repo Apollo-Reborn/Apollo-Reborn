@@ -27,8 +27,9 @@
 //     (sub_1007ad54c, a solid theme-color square the image modification block
 //     rounds) + -addObserver:self selector:subredditIconAvailableWithNotification:
 //     name:SubredditIconAvailable object:link
-//   LargePostCellNode's top icon (sub_100306194) does the same with `link`, and
-//   CrosspostNode with `crosspostParent`.
+//   LargePostCellNode's top icon (sub_100306194) and CompactPostCellNode's
+//   (sub_1007e19a4, Show Subreddit at Top in the Compact layout) do the same
+//   with `link`, and CrosspostNode with `crosspostParent`.
 //
 // The feed fetches missing icons in one batch per page
 // (PostsViewController sub_1005c2010 -> -[RDKClient thingsByFullNames:completion:]
@@ -64,22 +65,28 @@
 //    later delivery would blank it. The handler now returns early for a row
 //    that already has a URL or the letter placeholder.
 
-// The three Apollo node classes that wait on SubredditIconAvailable, with the
+// The four Apollo node classes that wait on SubredditIconAvailable, with the
 // ivars their handlers read (names from the class metadata, verified in Hopper):
 // the icon node and the link whose `subreddit` picks the tracker entry. All
-// three also carry the Swift Bool `isUsingPlaceholderSubredditIcon`, set when
-// the tracker said "no icon" and the letter placeholder was applied.
+// four also carry the Swift Bool `isUsingPlaceholderSubredditIcon`, set when
+// the tracker said "no icon" and the letter placeholder was applied. The
+// classes come from the shared class table (ApolloClasses.h), which is filled
+// before any %ctor runs.
 typedef struct {
+    __unsafe_unretained Class *cls;   // a shared class-table global
     const char *className;
     const char *iconNodeIvar;
     const char *linkIvar;
 } ApolloFeedSubredditIconSpec;
 
 static const ApolloFeedSubredditIconSpec kApolloFeedSubredditIconSpecs[] = {
-    { "_TtC6Apollo12PostInfoNode",      "subredditIconNode",      "link" },
-    { "_TtC6Apollo17LargePostCellNode", "upperSubredditIconNode", "link" },
-    { "_TtC6Apollo13CrosspostNode",     "subredditIconNode",      "crosspostParent" },
+    { &ApolloClassPostInfoNode,        "PostInfoNode",        "subredditIconNode",      "link" },
+    { &ApolloClassLargePostCellNode,   "LargePostCellNode",   "upperSubredditIconNode", "link" },
+    { &ApolloClassCompactPostCellNode, "CompactPostCellNode", "upperSubredditIconNode", "link" },
+    { &ApolloClassCrosspostNode,       "CrosspostNode",       "subredditIconNode",      "crosspostParent" },
 };
+static const size_t kApolloFeedSubredditIconSpecCount =
+    sizeof(kApolloFeedSubredditIconSpecs) / sizeof(kApolloFeedSubredditIconSpecs[0]);
 
 typedef NS_ENUM(NSInteger, ApolloFeedSubredditIconState) {
     ApolloFeedSubredditIconStateUnknown,   // ivars unreadable: behave natively
@@ -98,24 +105,18 @@ static SEL sApolloSubredditIconAvailableSelector;
 static NSHashTable *sApolloFeedSubredditIconWaiters;
 static os_unfair_lock sApolloFeedSubredditIconWaitersLock = OS_UNFAIR_LOCK_INIT;
 
-// Runs for every row Apollo builds (on Texture's threads), so the classes come
-// from the shared class table, in the same order as kApolloFeedSubredditIconSpecs.
+// Runs for every row that registers for the icon (on Texture's threads) and on
+// each delivery, so it only reads the class table.
 static const ApolloFeedSubredditIconSpec *ApolloFeedSubredditIconSpecForObject(id object) {
-    __unsafe_unretained Class classes[] = {
-        ApolloClassPostInfoNode, ApolloClassLargePostCellNode, ApolloClassCrosspostNode,
-    };
-    static_assert(sizeof(classes) / sizeof(classes[0]) ==
-                  sizeof(kApolloFeedSubredditIconSpecs) / sizeof(kApolloFeedSubredditIconSpecs[0]),
-                  "one class per spec, in the same order");
-    for (size_t i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
-        if (classes[i] && [object isKindOfClass:classes[i]]) return &kApolloFeedSubredditIconSpecs[i];
+    for (size_t i = 0; i < kApolloFeedSubredditIconSpecCount; i++) {
+        __unsafe_unretained Class cls = *kApolloFeedSubredditIconSpecs[i].cls;
+        if (cls && [object isKindOfClass:cls]) return &kApolloFeedSubredditIconSpecs[i];
     }
     return NULL;
 }
 
 static NSString *ApolloFeedSubredditIconSubredditOfLink(id link) {
-    if (![link respondsToSelector:@selector(subreddit)]) return nil;
-    id subreddit = ((id (*)(id, SEL))objc_msgSend)(link, @selector(subreddit));
+    id subreddit = ApolloSendObject(link, @selector(subreddit));
     return [subreddit isKindOfClass:[NSString class]] ? subreddit : nil;
 }
 
@@ -135,7 +136,7 @@ static ApolloFeedSubredditIconState ApolloFeedSubredditIconStateOf(id node, cons
         : ApolloFeedSubredditIconStatePending;
 }
 
-// Shared body of the three handler hooks: YES = let the native handler run.
+// Shared body of the four handler hooks: YES = let the native handler run.
 static BOOL ApolloFeedSubredditIconShouldRunHandler(id node) {
     const ApolloFeedSubredditIconSpec *spec = ApolloFeedSubredditIconSpecForObject(node);
     if (ApolloFeedSubredditIconStateOf(node, spec) != ApolloFeedSubredditIconStateResolved) return YES;
@@ -218,6 +219,12 @@ static void ApolloFeedSubredditIconDeliverToWaiters(id postedLink, NSString *sub
 }
 %end
 
+%hook _TtC6Apollo19CompactPostCellNode
+- (void)subredditIconAvailableWithNotification:(id)notification {
+    if (ApolloFeedSubredditIconShouldRunHandler(self)) %orig;
+}
+%end
+
 %hook _TtC6Apollo13CrosspostNode
 - (void)subredditIconAvailableWithNotification:(id)notification {
     if (ApolloFeedSubredditIconShouldRunHandler(self)) %orig;
@@ -231,14 +238,22 @@ static void ApolloFeedSubredditIconDeliverToWaiters(id postedLink, NSString *sub
     sApolloFeedSubredditIconWaiters = [[NSHashTable alloc]
         initWithOptions:NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality capacity:0];
 
-    // All three classes own the handler (class-dump + Hopper); without it the
+    // All four classes own the handler (class-dump + Hopper); without it the
     // Logos hook below would add a method Apollo never calls, so bail instead.
-    for (size_t i = 0; i < sizeof(kApolloFeedSubredditIconSpecs) / sizeof(kApolloFeedSubredditIconSpecs[0]); i++) {
-        Class cls = objc_getClass(kApolloFeedSubredditIconSpecs[i].className);
+    for (size_t i = 0; i < kApolloFeedSubredditIconSpecCount; i++) {
+        const ApolloFeedSubredditIconSpec *spec = &kApolloFeedSubredditIconSpecs[i];
+        Class cls = *spec->cls;
         if (!cls || !class_getInstanceMethod(cls, sApolloSubredditIconAvailableSelector)) {
             ApolloLog(@"[FeedSubredditIcons] %s missing or has no subredditIconAvailableWithNotification: — not installing",
-                      kApolloFeedSubredditIconSpecs[i].className);
+                      spec->className);
             return;
+        }
+        // A renamed ivar makes every row of that class read as unknown, so the
+        // fix would quietly leave it to Apollo's own delivery. Say so once.
+        if (!class_getInstanceVariable(cls, spec->iconNodeIvar) || !class_getInstanceVariable(cls, spec->linkIvar) ||
+            !class_getInstanceVariable(cls, "isUsingPlaceholderSubredditIcon")) {
+            ApolloLog(@"[FeedSubredditIcons] %s lacks %s, %s or isUsingPlaceholderSubredditIcon — its rows keep Apollo's own delivery",
+                      spec->className, spec->iconNodeIvar, spec->linkIvar);
         }
     }
 
