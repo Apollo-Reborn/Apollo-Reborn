@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "version": "3.9.0",
+  "headline": "What's New in Apollo Reborn",
+  "items": [
+    { "icon": "dock.rectangle", "title": "Liquid Glass, Your Way", "subtitle": "Switch to the classic look under Interface → Appearance, or shrink the tab bar into a small pill as you scroll." },
+    { "icon": "speedometer", "title": "Fewer Rate Limits", "subtitle": "API-Key-Free accounts send fewer Reddit requests, and the new Reduce Rate Limiting setting cuts them further." },
+    { "icon": "arrow.left.arrow.right.circle.fill", "title": "Subreddit Switcher", "subtitle": "Tap a feed's title for a native sheet with search, your favorites, and live results." },
+    { "icon": "keyboard", "title": "True Black Keyboard", "subtitle": "Make the keyboard pure black on OLED screens, in dark mode, light mode, or always." },
+    { "icon": "arrow.down.app.fill", "title": "Update Alerts", "subtitle": "Apollo Reborn now lets you know when an update is out and hands it to your sideloader." },
+    { "icon": "link.circle.fill", "title": "X Links on Nitter", "subtitle": "Open X and Twitter links on a Nitter instance you choose, no X account needed." },
+    { "icon": "magnifyingglass.circle.fill", "title": "Search With Kagi", "subtitle": "Kagi subscribers can search Reddit through Kagi from the Search tab's magnifier." },
+    { "icon": "person.crop.circle.fill", "title": "Profiles", "subtitle": "Edit your Reddit profile right in Apollo, and find profile settings on a new User Profiles page." },
+    { "icon": "checkmark.shield.fill", "title": "Fixes Across the App", "subtitle": "Crash fixes, Google and Apple sign-in, moderator tools without an API key, and no forced YouTube captions on iOS 27." }
+  ]
+}
