@@ -720,57 +720,44 @@ BOOL ApolloLiquidGlassCanToggle(void) {
 // the AppDelegate's ivar is nil. The AppDelegate's application:openURL:options:
 // handler (sub_100161d08) reads AppDelegate.tabBarController for navigation,
 // so we ensure it has a reference before calling.
-static BOOL ApolloRouteURLThroughUIApplication(NSURL *url) {
-    if (![url isKindOfClass:[NSURL class]]) {
-        return NO;
-    }
-
-    UIApplication *application = [UIApplication sharedApplication];
-    id<UIApplicationDelegate> appDelegate = [application delegate];
-
-    if (![appDelegate respondsToSelector:@selector(application:openURL:options:)]) {
-        return NO;
-    }
-
-    // Ensure AppDelegate.tabBarController is populated
+extern void *ApolloSwiftExchangePaneTabs(void *storage, const void *object);
+BOOL ApolloRouteURLThroughAppInScene(NSURL *url, UIWindowScene *scene) {
+    if (![url isKindOfClass:NSURL.class] || !NSThread.isMainThread) return NO;
+    UIApplication *application = UIApplication.sharedApplication;
+    id appDelegate = application.delegate;
+    SEL selector = @selector(application:openURL:options:);
+    if (![appDelegate respondsToSelector:selector]) return NO;
+    // Apollo's AppDelegate router uses a legacy tab ivar. Scope that bridge to
+    // this synchronous callback and restore it even if native routing throws.
+    // Never persist one scene's tab controller into a process-global delegate.
+    UITabBarController *tabs = (id)ApolloMainTabBarControllerForScene(scene);
+    if (![tabs isKindOfClass:UITabBarController.class]) return NO;
+    if (scene && tabs.viewIfLoaded.window.windowScene != scene) return NO;
+    Ivar ivar = class_getInstanceVariable([appDelegate class], "tabBarController");
+    Ivar next = class_getInstanceVariable([appDelegate class], "apolloProProducts");
+    // Verified in AppDelegate's native destructor at 0x10016cb10: ldr +
+    // objc_release, followed by apolloProProducts eight bytes later. Swift's
+    // mangled Optional encoding is deliberately not interpreted as ObjC @.
+    if (![appDelegate isMemberOfClass:objc_getClass("_TtC6Apollo11AppDelegate")] || !ivar || !next ||
+        ivar_getOffset(next) - ivar_getOffset(ivar) != sizeof(void *)) return NO;
+    void *storage = (uint8_t *)(__bridge void *)appDelegate + ivar_getOffset(ivar);
+    id previous = (__bridge_transfer id)ApolloSwiftExchangePaneTabs(storage, (__bridge const void *)tabs);
     @try {
-        Ivar appTabBarIvar = class_getInstanceVariable([appDelegate class], "tabBarController");
-        if (appTabBarIvar && !object_getIvar(appDelegate, appTabBarIvar)) {
-            for (UIScene *scene in application.connectedScenes) {
-                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-                id sceneDelegate = [(UIWindowScene *)scene delegate];
-                if (!sceneDelegate) continue;
-                Ivar sceneTabBarIvar = class_getInstanceVariable([sceneDelegate class], "tabBarController");
-                if (!sceneTabBarIvar) continue;
-                id sceneTabBar = object_getIvar(sceneDelegate, sceneTabBarIvar);
-                if (sceneTabBar) {
-                    ApolloLog(@"[ApolloRouteURL] Copying SceneDelegate tabBarController to AppDelegate");
-                    object_setIvar(appDelegate, appTabBarIvar, sceneTabBar);
-                    break;
-                }
-            }
-        }
-    } @catch (NSException *e) {
-        ApolloLog(@"[ApolloRouteURL] Failed to copy tabBarController: %@", e);
-    }
-
-    // Call the app delegate's URL handler directly — stays in-process,
-    // never hits iOS's URL scheme dispatch.
-    @try {
-        BOOL (*msgSend)(id, SEL, id, id, id) = (BOOL (*)(id, SEL, id, id, id))objc_msgSend;
-        msgSend(appDelegate, @selector(application:openURL:options:), application, url, @{});
-        return YES;
-    } @catch (NSException *exception) {
-        ApolloLogError(@"[ApolloRouteURL] application:openURL:options: threw: %@", exception);
+        return ((BOOL (*)(id, SEL, id, id, id))objc_msgSend)(appDelegate, selector, application, url, @{});
+    } @catch (__unused NSException *exception) {
+        ApolloLogError(@"[ApolloRouteURL] native route failed");
         return NO;
+    } @finally {
+        __unused id replaced = (__bridge_transfer id)ApolloSwiftExchangePaneTabs(storage, (__bridge const void *)previous);
     }
 }
 
-// Public wrapper: route a reddit URL through Apollo's own handler so posts,
-// comments, subreddits and users open the native views. Returns NO when the
-// handler is unavailable, so callers can fall back to a web view.
+static BOOL ApolloRouteURLThroughUIApplication(NSURL *url) {
+    return ApolloRouteURLThroughAppInScene(url, nil);
+}
+
 BOOL ApolloRouteURLThroughApp(NSURL *url) {
-    return ApolloRouteURLThroughUIApplication(url);
+    return ApolloRouteURLThroughAppInScene(url, nil);
 }
 
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url) {
@@ -1665,23 +1652,201 @@ static UIViewController *ApolloTabBarControllerIvarOn(id object) {
     }
 }
 
-UIViewController *ApolloMainTabBarController(void) {
+static UIViewController *ApolloTabBarControllerForWindowScene(UIWindowScene *scene) {
+    if (![scene isKindOfClass:UIWindowScene.class]) return nil;
+
+    UIViewController *fromDelegate = ApolloTabBarControllerIvarOn(scene.delegate);
+    if (fromDelegate) return fromDelegate;
+
+    // Prefer the key window, then visible normal-level windows. A scene may
+    // also own transient keyboard/alert windows whose roots are unrelated to
+    // Apollo's tab hierarchy.
+    NSMutableArray<UIWindow *> *ordered = [NSMutableArray array];
+    for (UIWindow *window in scene.windows) if (window.isKeyWindow) [ordered addObject:window];
+    for (UIWindow *window in scene.windows) {
+        if (![ordered containsObject:window] && !window.hidden &&
+            window.windowLevel == UIWindowLevelNormal) [ordered addObject:window];
+    }
+    for (UIWindow *window in scene.windows) {
+        if (![ordered containsObject:window]) [ordered addObject:window];
+    }
+    for (UIWindow *window in ordered) {
+        UIViewController *root = window.rootViewController;
+        if ([root isKindOfClass:UITabBarController.class]) return root;
+        if ([root.presentedViewController isKindOfClass:UITabBarController.class]) {
+            return root.presentedViewController;
+        }
+    }
+    return nil;
+}
+
+UIViewController *ApolloMainTabBarControllerForScene(UIWindowScene *originatingScene) {
+    UIViewController *originating = ApolloTabBarControllerForWindowScene(originatingScene);
+    if (originating) return originating;
+
     UIApplication *application = UIApplication.sharedApplication;
+    NSArray<UIScene *> *scenes = application.connectedScenes.allObjects;
 
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+    // Prefer a foreground-active scene with a key window. Enumerating the
+    // connectedScenes set directly is unordered and can send an action into a
+    // background or external-display window when more than one scene exists.
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class] ||
+            candidate.activationState != UISceneActivationStateForegroundActive) continue;
+        UIWindowScene *windowScene = (UIWindowScene *)candidate;
+        BOOL hasKeyWindow = NO;
+        for (UIWindow *window in windowScene.windows) {
+            if (window.isKeyWindow) { hasKeyWindow = YES; break; }
+        }
+        if (!hasKeyWindow) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene(windowScene);
+        if (controller) return controller;
+    }
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class] ||
+            candidate.activationState != UISceneActivationStateForegroundActive) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene((UIWindowScene *)candidate);
+        if (controller) return controller;
+    }
+    for (UIScene *candidate in scenes) {
+        if (![candidate isKindOfClass:UIWindowScene.class]) continue;
+        UIViewController *controller = ApolloTabBarControllerForWindowScene((UIWindowScene *)candidate);
+        if (controller) return controller;
+    }
+    return ApolloTabBarControllerIvarOn(application.delegate);
+}
 
-        UIViewController *fromDelegate = ApolloTabBarControllerIvarOn([(UIWindowScene *)scene delegate]);
-        if (fromDelegate) return fromDelegate;
+UIViewController *ApolloMainTabBarController(void) {
+    return ApolloMainTabBarControllerForScene(nil);
+}
 
-        for (UIWindow *window in [(UIWindowScene *)scene windows]) {
-            UIViewController *root = window.rootViewController;
-            if ([root isKindOfClass:UITabBarController.class]) return root;
-            if ([root.presentedViewController isKindOfClass:UITabBarController.class]) return root.presentedViewController;
+// ApolloCommon is included by nearly every file, so it must not import the pane
+// module. The pane nevertheless has to be the authority for its real navigation
+// controllers: UIKit wraps our plain secondary host in another navigation
+// controller, and `viewControllerForColumn:` can therefore return either that
+// wrapper or the host rather than Apollo's navigation controller nested inside
+// it. Ask for the pane's public column accessor dynamically first, then retain a
+// plain-UIKit fallback for split controllers that do not belong to this feature.
+static UINavigationController *ApolloNavigationControllerForSplitColumn(UISplitViewController *split,
+                                                                        UISplitViewControllerColumn column) {
+    SEL paneAccessor = NSSelectorFromString(@"apollo_navigationControllerForColumn:");
+    if ([split respondsToSelector:paneAccessor]) {
+        @try {
+            // ApolloPaneColumn intentionally uses the same 0/1/2 values as
+            // UISplitViewControllerColumn for primary/supplementary/secondary.
+            // Keep the call scalar so this common module needs no ipad/ import.
+            id result = ((id (*)(id, SEL, NSInteger))objc_msgSend)(split, paneAccessor, (NSInteger)column);
+            if ([result isKindOfClass:[UINavigationController class]]) {
+                return (UINavigationController *)result;
+            }
+            ApolloLog(@"[Common] pane column %ld returned non-navigation controller %@",
+                      (long)column, result ? NSStringFromClass([result class]) : @"nil");
+        } @catch (NSException *exception) {
+            ApolloLog(@"[Common] pane navigation accessor threw on %@ column %ld: %@",
+                      split, (long)column, exception);
         }
     }
 
-    return ApolloTabBarControllerIvarOn(application.delegate);
+    UIViewController *columnController = nil;
+    if ([split respondsToSelector:@selector(viewControllerForColumn:)]) {
+        @try {
+            columnController = [split viewControllerForColumn:column];
+        } @catch (NSException *exception) {
+            ApolloLog(@"[Common] viewControllerForColumn: threw on %@: %@", split, exception);
+        }
+    }
+    // A split controller built with the legacy `viewControllers` API answers nil
+    // for every column. Fall back to positional lookup so such a controller
+    // still resolves instead of silently returning nothing.
+    if (!columnController) {
+        NSArray<UIViewController *> *children = split.viewControllers;
+        NSUInteger index = (column == UISplitViewControllerColumnSecondary) ? 1 : 0;
+        if (index < children.count) columnController = children[index];
+    }
+    return [columnController isKindOfClass:[UINavigationController class]]
+        ? (UINavigationController *)columnController
+        : nil;
+}
+
+BOOL ApolloViewControllerContains(UIViewController *ancestor, UIViewController *descendant) {
+    if (!ancestor || !descendant) return NO;
+    for (UIViewController *node = descendant; node != nil; node = node.parentViewController) {
+        if (node == ancestor) return YES;
+    }
+    return NO;
+}
+
+BOOL ApolloSelectTabContainingViewController(UITabBarController *tabBarController,
+                                             UIViewController *descendant) {
+    if (![tabBarController isKindOfClass:[UITabBarController class]] || !descendant) return NO;
+
+    // Climb to whichever ancestor is the tab bar controller's own child: that is
+    // the navigation controller itself in the stock layout, and the enclosing
+    // split view controller under the pane layout.
+    for (UIViewController *node = descendant; node != nil; node = node.parentViewController) {
+        if (node.parentViewController == tabBarController) {
+            tabBarController.selectedViewController = node;
+            return YES;
+        }
+    }
+    ApolloLog(@"[Common] %@ is not inside any tab of %@; selection unchanged",
+              NSStringFromClass([descendant class]), NSStringFromClass([tabBarController class]));
+    return NO;
+}
+
+UIViewController *ApolloContentColumnForSplitViewController(UISplitViewController *split) {
+    if (![split isKindOfClass:[UISplitViewController class]]) return split;
+
+    SEL preferred = NSSelectorFromString(@"apollo_preferredContentColumnController");
+    if ([split respondsToSelector:preferred]) {
+        @try {
+            UIViewController *column = ((UIViewController *(*)(id, SEL))objc_msgSend)(split, preferred);
+            if (column) return column;
+        } @catch (NSException *exception) {
+            ApolloLog(@"[Common] preferred content column threw on %@: %@", split, exception);
+        }
+    }
+
+    // Any other split view controller: the trailing column is the detail one.
+    UIViewController *fallback = split.viewControllers.lastObject ?: split.viewControllers.firstObject;
+    return fallback ?: split;
+}
+
+UINavigationController *ApolloNavigationControllerForTabChild(UIViewController *child) {
+    if (!child) return nil;
+    if ([child isKindOfClass:[UINavigationController class]]) return (UINavigationController *)child;
+    if ([child isKindOfClass:[UISplitViewController class]]) {
+        return ApolloNavigationControllerForSplitColumn((UISplitViewController *)child,
+                                                        UISplitViewControllerColumnPrimary);
+    }
+    // Not a container we recognize — fall back to the controller's own
+    // navigation controller, which covers a plain view controller hosted
+    // directly in a tab.
+    return child.navigationController;
+}
+
+NSArray<UINavigationController *> *ApolloAllNavigationControllersForTabChild(UIViewController *child) {
+    if (!child) return @[];
+
+    if ([child isKindOfClass:[UISplitViewController class]]) {
+        UISplitViewController *split = (UISplitViewController *)child;
+        NSMutableArray<UINavigationController *> *navs = [NSMutableArray arrayWithCapacity:3];
+        const UISplitViewControllerColumn columns[] = {
+            UISplitViewControllerColumnPrimary,
+            UISplitViewControllerColumnSupplementary,
+            UISplitViewControllerColumnSecondary,
+        };
+        for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+            UINavigationController *nav = ApolloNavigationControllerForSplitColumn(split, columns[i]);
+            // A two-column install answers the same controller for more than one
+            // column; de-duplicate so walkers do not visit a stack twice.
+            if (nav && ![navs containsObject:nav]) [navs addObject:nav];
+        }
+        return navs;
+    }
+
+    UINavigationController *nav = ApolloNavigationControllerForTabChild(child);
+    return nav ? @[ nav ] : @[];
 }
 
 #pragma mark - Color Helpers

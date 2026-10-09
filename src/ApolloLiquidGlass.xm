@@ -1,3 +1,4 @@
+#import "ipad/ApolloPaneChrome.h"
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -283,8 +284,9 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
     UIViewController *profileVC = nil;
     if (tabBarController) {
         for (UIViewController *vc in tabBarController.viewControllers) {
-            if ([vc isKindOfClass:[UINavigationController class]]) {
-                UINavigationController *navController = (UINavigationController *)vc;
+            // Every column: with the iPad pane layout the profile screen can sit
+            // in either the primary or the detail stack.
+            for (UINavigationController *navController in ApolloAllNavigationControllersForTabChild(vc)) {
                 // Search through the entire navigation stack, not just topViewController
                 for (UIViewController *stackVC in navController.viewControllers) {
                     if ([stackVC isMemberOfClass:profileVCClass]) {
@@ -293,7 +295,9 @@ static void OpenAccountManager(UIWindow *sourceWindow) {
                     }
                 }
                 if (profileVC) break;
-            } else if ([vc isMemberOfClass:profileVCClass]) {
+            }
+            if (profileVC) break;
+            if ([vc isMemberOfClass:profileVCClass]) {
                 profileVC = vc;
                 break;
             }
@@ -1286,7 +1290,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         CGFloat targetAlpha = profileTitleLabel ? profileTitleLabel.alpha : 1.0;
         self.glassView.alpha = targetAlpha;
         [hostView insertSubview:self.glassView atIndex:0];
-        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle;
+        BOOL fadeInstall = self.fadeNextInstall && !ownsTitle && !UIAccessibilityIsReduceMotionEnabled();
         self.fadeNextInstall = NO;
         if (fadeInstall) {
             UIVisualEffectView *installed = self.glassView;
@@ -1430,6 +1434,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
         return;
     }
     UIView *jumpBar = ApolloFindJumpBar(self.titleControl);
+    BOOL plainPaneTitle = !jumpBar && ApolloPaneUsesUnifiedChrome(self.titleControl);
     UIView *hostView = jumpBar ?: self.titleControl;
 
     if (ApolloNavigationTitleContainsNativeSearchSurface(self.titleControl)) {
@@ -1466,7 +1471,14 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
     // observations only after recentering succeeds, so skipped work retries.
     BOOL recenterSettled = ApolloRecenterTitleControl(self);
     if (recenterSettled && jumpBar) ApolloLayoutJumpBarSearchContent(jumpBar);
-    [self updateGlassForHostView:hostView candidateViews:[self titleContentViews]];
+    if (plainPaneTitle) {
+        // A plain pane title still needs safe-area fitting; suppress only its
+        // decorative capsule, not the geometry work that keeps it visible.
+        [self.glassView removeFromSuperview];
+        self.glassView = nil;
+    } else {
+        [self updateGlassForHostView:hostView candidateViews:[self titleContentViews]];
+    }
     if (animateSearch && oldGlass && self.glassView == oldGlass &&
         !CGRectEqualToRect(oldBounds, oldGlass.bounds)) {
         // The host already keeps the capsule centered. Animate only its size;
@@ -1522,7 +1534,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
 
 - (void)scheduleTargetRefreshIfNeeded {
     UIView *titleControl = self.titleControl;
-    if (!titleControl) return;
+    if (!titleControl || self.refreshScheduled) return;
     if (ApolloNavigationTitlePresentationSuppressesControl(titleControl)) {
         if (self.fittedWidthConstraint || self.glassView) [self scheduleTargetRefresh];
         return;
@@ -1801,6 +1813,15 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     // treat controls / labels / image views / visual-effect bubbles as edges.
     CGFloat leftLimit = CGRectGetMinX(bar.bounds) + bar.safeAreaInsets.left;
     CGFloat rightLimit = CGRectGetMaxX(bar.bounds) - bar.safeAreaInsets.right;
+    // A pane's primary navigation bar can extend underneath UIKit's sidebar.
+    // Its physical midpoint is then inside the occluded region, not the middle
+    // of the visible feed. Fit/center in the usable header, including RTL's
+    // trailing sidebar. iPhone keeps its existing whole-bar centering policy.
+    CGRect titleBounds = bar.bounds;
+    if (ApolloPaneUsesUnifiedChrome(bar)) {
+        titleBounds.origin.x = leftLimit;
+        titleBounds.size.width = MAX(0, rightLimit - leftLimit);
+    }
     UIView *jumpBar = ApolloFindJumpBar(titleControl);
     BOOL searching = jumpBar && ApolloJumpBarIsSearching(jumpBar);
     BOOL searchActions = NO;
@@ -1829,7 +1850,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
     }
     CGRect collapsedActions = ApolloNavigationActionsCollapsedFrame(bar);
     if (!searchActions && !CGRectIsNull(collapsedActions)) {
-        if (CGRectGetMidX(collapsedActions) >= CGRectGetMidX(bar.bounds)) {
+        if (CGRectGetMidX(collapsedActions) >= CGRectGetMidX(titleBounds)) {
             rightLimit = MIN(rightLimit, CGRectGetMinX(collapsedActions));
         } else {
             leftLimit = MAX(leftLimit, CGRectGetMaxX(collapsedActions));
@@ -1873,7 +1894,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
             if (CGRectGetMaxY(sibInBar) <= CGRectGetMinY(titleBand) ||
                 CGRectGetMinY(sibInBar) >= CGRectGetMaxY(titleBand) ||
                 CGRectGetWidth(sibInBar) >= CGRectGetWidth(bar.bounds) - 1.0) continue;
-            if (CGRectGetMidX(sibInBar) < CGRectGetMidX(bar.bounds)) {
+            if (CGRectGetMidX(sibInBar) < CGRectGetMidX(titleBounds)) {
                 leftLimit = MAX(leftLimit, CGRectGetMaxX(sibInBar));
             } else {
                 if (!searchActions) rightLimit = MIN(rightLimit, CGRectGetMinX(sibInBar));
@@ -1883,7 +1904,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
 
     const CGFloat kEdgePadding = kApolloTitleButtonSpacing;
 
-    CGFloat capsulePadding = !searching &&
+    CGFloat capsulePadding = !searching && (jumpBar || !ApolloPaneUsesUnifiedChrome(bar)) &&
         ApolloResolvedScrollEdgeEffectStyle() != ApolloScrollEdgeEffectStyleHard
         ? kApolloTitleCapsuleHorizontalPadding : 0.0;
     CGRect floatingTabs = ApolloIPadFloatingTabsFrame(bar, topVC);
@@ -1902,7 +1923,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         ApolloLog(@"[IPadTitleRow] content reservation %.0fpt", contentInset);
     }
     ApolloNavigationTitleGeometry geometry = ApolloNavigationTitleCenteredGeometry(
-        bar.bounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
+        titleBounds, leftLimit, rightLimit, capsulePadding, kEdgePadding);
 
     CGRect actions = ApolloNavigationActionsExpandedFrame(bar);
     // The preference centers between actual controls, never an empty edge.
@@ -1964,7 +1985,7 @@ static BOOL ApolloRecenterTitleControl(ApolloNavigationTitleGlassController *con
         CGRect centered = CGRectOffset(contentFrame,
             geometry.center - CGRectGetMidX(contentFrame), 0);
         centered = CGRectInset(centered, -capsulePadding, 0);
-        targetCenter += ApolloNavigationTitleExpandedActionsOffset(bar.bounds,
+        targetCenter += ApolloNavigationTitleExpandedActionsOffset(titleBounds,
             centered, leftLimit, CGRectGetMinX(expandedActions), kEdgePadding);
     }
     CGFloat delta = targetCenter - CGRectGetMidX(contentFrame);

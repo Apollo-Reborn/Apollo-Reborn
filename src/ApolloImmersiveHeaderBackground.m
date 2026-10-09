@@ -1,3 +1,4 @@
+#import "ipad/ApolloPaneChrome.h"
 #import "ApolloImmersiveHeaderBackground.h"
 
 #import <CoreImage/CoreImage.h>
@@ -329,6 +330,7 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 @property(nonatomic, strong) UIView *contentContainer;
 @property(nonatomic, strong) UIImageView *backdropView;
 @property(nonatomic, strong) CAGradientLayer *veilLayer;
+@property(nonatomic, strong) UIView *paneChromeCover;
 @property(nonatomic, strong) UIView *sharpClip;
 @property(nonatomic, strong) UIImageView *sharpView;
 @property(nonatomic, strong) CAGradientLayer *sharpFeatherMask;
@@ -400,6 +402,10 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     // theme's chrome text color in both light and dark.
     _chromeScrimLayer = [CAGradientLayer layer];
     [_contentContainer.layer addSublayer:_chromeScrimLayer];
+    _paneChromeCover = [UIView new];
+    _paneChromeCover.userInteractionEnabled = NO;
+    _paneChromeCover.hidden = YES;
+    [self addSubview:_paneChromeCover];
     return self;
 }
 
@@ -469,8 +475,19 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     [self setNeedsLayout];
 }
 
+- (void)setArtworkInsets:(UIEdgeInsets)artworkInsets {
+    if (UIEdgeInsetsEqualToEdgeInsets(_artworkInsets, artworkInsets)) return;
+    _artworkInsets = artworkInsets;
+    [self setNeedsLayout];
+}
+
 - (CGFloat)sharpArtworkHeight {
     CGFloat regionHeight = MIN(self.regionHeight, MAX(1.0, self.bounds.size.height));
+    if (self.usesProfileHero && self.topInset > 0 && ApolloPaneContextBottomInView(self) > 0) {
+        CGFloat bannerTop = MIN(regionHeight, self.topInset);
+        CGFloat width = MAX(1.0, self.bounds.size.width - self.artworkInsets.left - self.artworkInsets.right);
+        return bannerTop + MIN(regionHeight - bannerTop, width * 0.64);
+    }
     return self.usesProfileHero
         ? MIN(regionHeight, MAX(1.0, self.bounds.size.width * 0.64))
         : regionHeight;
@@ -478,17 +495,24 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    CGFloat width = self.bounds.size.width;
+    CGFloat fullWidth = self.bounds.size.width;
+    CGFloat width = MAX(1.0, fullWidth - self.artworkInsets.left - self.artworkInsets.right);
     CGFloat totalHeight = MAX(1.0, self.bounds.size.height);
     CGFloat regionHeight = MIN(self.regionHeight, totalHeight);
     CGFloat extendedHeight = MIN(self.extendedHeight, totalHeight);
     UIColor *pageColor = [self.pageColor resolvedColorWithTraitCollection:self.traitCollection];
     BOOL lightPage = ApolloColorIsLight(pageColor);
     self.backgroundColor = pageColor;
+    CGFloat boundary = ApolloPaneContextBottomInView(self);
+    BOOL hideCover = boundary <= 0.0;
+    if (self.paneChromeCover.hidden != hideCover) self.paneChromeCover.hidden = hideCover;
+    if (![self.paneChromeCover.backgroundColor isEqual:pageColor]) self.paneChromeCover.backgroundColor = pageColor;
+    CGRect coverFrame = CGRectMake(0, 0, fullWidth, MIN(totalHeight, boundary));
+    if (!CGRectEqualToRect(self.paneChromeCover.frame, coverFrame)) self.paneChromeCover.frame = coverFrame;
 
     CGAffineTransform transform = self.contentContainer.transform;
     self.contentContainer.transform = CGAffineTransformIdentity;
-    self.contentContainer.frame = self.bounds;
+    self.contentContainer.frame = CGRectMake(self.artworkInsets.left, 0, width, totalHeight);
     self.contentContainer.transform = transform;
 
     // Keep ambient artwork when Banner is off: regionHeight == topInset hides
@@ -521,6 +545,12 @@ static void ApolloImmersiveRequestBackdrop(UIImage *banner, void (^completion)(U
     self.backdropView.hidden = (hasSharpBanner && !lightPage) || !hasArtwork;
     self.sharpClip.frame = CGRectMake(0.0, 0.0, width, sharpHeight);
     self.sharpView.frame = CGRectMake(0.0, 0.0, width, canvasHeight);
+    if (self.usesProfileHero && self.topInset > 0 && boundary > 0) {
+        // The iPad identity plane is opaque. Frame the profile's hero inside
+        // the visible banner below it; a canvas starting at zero puts the
+        // subject's head behind the toolbar after the sidebar narrows it.
+        self.sharpClip.frame = CGRectMake(0, bannerTop, width, MAX(1, sharpHeight - bannerTop));
+    }
     // Anchor the fade to the image, so moving the identity content does not
     // change where features in the artwork darken.
     if (!self.usesProfileHero) {

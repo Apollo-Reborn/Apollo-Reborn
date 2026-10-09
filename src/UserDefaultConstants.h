@@ -346,6 +346,17 @@ static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.
 static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
+// iPad only. When ON, replaces each tab's single navigation stack with a
+// multi-column UISplitViewController: sidebar (the tab's own root list) →
+// content → detail. Opt-in; default OFF via registerDefaults. Installation
+// happens at scene connect, so a change needs a relaunch to apply — the
+// settings row confirms and restarts rather than pretending it is live.
+// Supersedes UDKeyIPadTabBarBottom while active (the floating pill is hidden).
+// See src/ipad/ and docs/ipad-pane-layout-plan.md.
+static NSString *const UDKeyIPadPaneLayout = @"IPadPaneLayout";
+// Consumed after the one-time iPad Layout invitation is actually presented.
+// Independent of the layout toggle: declining never enables or re-prompts.
+static NSString *const UDKeyIPadLayoutWelcomeSeen = @"IPadLayoutWelcomeSeen";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

@@ -6,6 +6,7 @@
 #import "ApolloNativeActionMetadata.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
+#import "ipad/ApolloPaneChrome.h"
 
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -1856,6 +1857,7 @@ static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, voi
     // Capture even on the legacy path: UIKit may defer its table/geometry
     // callbacks until after the originating tap has returned.
     ApolloActionMenuCaptureContextForController(actionController);
+    ApolloPaneCaptureMenuOwner(actionController);
     if (!ApolloNativeActionMenusEnabled()) return NO;
     if (![actionController isKindOfClass:ApolloClassActionController]) return NO;
     if (ApolloReadBoolIvar(actionController, "showKeyboardOnAppearanceForTextEntryView", NO)) return NO;
@@ -2087,10 +2089,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo19PostsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
+    UIViewController *previousPaneOwner = ApolloPaneSetMenuOwner((UIViewController *)self);
     ApolloActionMenuArmContext(ApolloActionMenuContextFeed);
     @try {
         %orig;
     } @finally {
+        ApolloPaneSetMenuOwner(previousPaneOwner);
         ApolloActionMenuDisarmContext();
         ApolloNativeActionMenuEndCapture();
     }
@@ -2117,10 +2121,12 @@ static BOOL ApolloNativeActionMenuCanFallbackPresent(id presenter, id actionCont
 %hook _TtC6Apollo22CommentsViewController
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     ApolloNativeActionMenuBeginCapture(sender, self);
+    UIViewController *previousPaneOwner = ApolloPaneSetMenuOwner((UIViewController *)self);
     ApolloActionMenuArmContext(ApolloActionMenuContextPostDetail);
     @try {
         %orig;
     } @finally {
+        ApolloPaneSetMenuOwner(previousPaneOwner);
         ApolloActionMenuDisarmContext();
         ApolloNativeActionMenuEndCapture();
     }

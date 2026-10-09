@@ -218,6 +218,12 @@ extern ApolloSettingsIconAppearance sSettingsIconAppearance;
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
 extern BOOL sTabBarSwipeNavigation;
+// iPad only. When ON, each tab's navigation stack is hosted inside a
+// multi-column UISplitViewController (sidebar → content → detail) instead of a
+// single full-width stack. Opt-in; default OFF via registerDefaults
+// (UDKeyIPadPaneLayout). Read once at %ctor — installation happens at scene
+// connect, so changing it needs a relaunch. See src/ipad/ApolloPaneLayout.h.
+extern BOOL sIPadPaneLayout;
 #ifdef __cplusplus
 extern "C" {
 #endif
