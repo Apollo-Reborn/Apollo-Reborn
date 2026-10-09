@@ -101,7 +101,6 @@ extern Class ApolloClassRDKSubreddit;
 extern Class ApolloClassRecreatedTableSectionHeaderView;
 extern Class ApolloClassRedditListTableViewCell;
 extern Class ApolloClassRedditListViewController;
-extern Class ApolloClassRichMediaHeaderCellNode;
 extern Class ApolloClassRichMediaNode;
 extern Class ApolloClassSaveMediaActivity;
 extern Class ApolloClassSearchViewController;

@@ -91,7 +91,6 @@ Class ApolloClassRDKSubreddit;
 Class ApolloClassRecreatedTableSectionHeaderView;
 Class ApolloClassRedditListTableViewCell;
 Class ApolloClassRedditListViewController;
-Class ApolloClassRichMediaHeaderCellNode;
 Class ApolloClassRichMediaNode;
 Class ApolloClassSaveMediaActivity;
 Class ApolloClassSearchViewController;
@@ -222,7 +221,6 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassRecreatedTableSectionHeaderView = objc_getClass("_TtC6Apollo31RecreatedTableSectionHeaderView");
     ApolloClassRedditListTableViewCell = objc_getClass("_TtC6Apollo23RedditListTableViewCell");
     ApolloClassRedditListViewController = objc_getClass("_TtC6Apollo24RedditListViewController");
-    ApolloClassRichMediaHeaderCellNode = objc_getClass("_TtC6Apollo23RichMediaHeaderCellNode");
     ApolloClassRichMediaNode = objc_getClass("_TtC6Apollo13RichMediaNode");
     ApolloClassSaveMediaActivity = objc_getClass("_TtC6Apollo17SaveMediaActivity");
     ApolloClassSearchViewController = objc_getClass("_TtC6Apollo20SearchViewController");

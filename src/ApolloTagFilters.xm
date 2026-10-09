@@ -872,12 +872,12 @@ static void ApolloTagPresentConfirmAlertForOverlay(id cell, UIVisualEffectView *
 // the previous frame instead of just appearing (issue #919). Reloading a table
 // that cannot contain a post cell was never doing anything for this feature.
 //
-// Being an ASTableView is not enough either: a cell whose look depends on the
-// NSFW blur preference has to be on screen. That is a post cell (this file's
-// hooks, plus Apollo's own obscuring) or a comment thread's header. Apollo
-// obscures CommentsHeaderCellNode and RichMediaHeaderCellNode itself from the
-// account's noProfanity, and CommentsViewController has no account-change
-// handler, so on a thread this walk is what redraws them.
+// Being an ASTableView is not enough either. A table needs this refresh when
+// it shows a post cell (this file's hooks, plus Apollo's own obscuring), or
+// when it is a comment thread: Apollo obscures a thread's header itself
+// (CommentsHeaderCellNode / RichMediaHeaderCellNode read the account's
+// noProfanity) and CommentsViewController has no account-change handler, so
+// this walk is what redraws the header, wherever the thread is scrolled.
 //
 // Every other Texture list has to be left alone. Apollo's ListAdapter lists
 // keep their own record of the rows their table shows and update it by
@@ -888,15 +888,16 @@ static void ApolloTagPresentConfirmAlertForOverlay(id cell, UIVisualEffectView *
 // as a load-more page still in flight for the previous account) deleted rows
 // the table no longer had. UIKit threw "attempt to delete row 24 from section 0
 // which only contains 0 rows before the update" (#1374; #865 was the same
-// crash). The Inbox shows none of these cells, so there is nothing to redraw.
-static BOOL ApolloTagNodeShowsBlurrableMedia(id node) {
-    return (ApolloClassLargePostCellNode && [node isKindOfClass:ApolloClassLargePostCellNode]) ||
-           (ApolloClassCompactPostCellNode && [node isKindOfClass:ApolloClassCompactPostCellNode]) ||
-           (ApolloClassCommentsHeaderCellNode && [node isKindOfClass:ApolloClassCommentsHeaderCellNode]) ||
-           (ApolloClassRichMediaHeaderCellNode && [node isKindOfClass:ApolloClassRichMediaHeaderCellNode]);
+// crash). The Inbox shows no post cell, so there is nothing to redraw there.
+static UIViewController *ApolloTagTableOwner(UIView *tableView) {
+    for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:[UIViewController class]]) return (UIViewController *)responder;
+    }
+    return nil;
 }
 
-static BOOL ApolloTagTableShowsBlurrableMedia(UITableView *tableView) {
+static BOOL ApolloTagTableNeedsRefresh(UITableView *tableView, UIViewController *owner) {
+    if (ApolloClassCommentsViewController && [owner isKindOfClass:ApolloClassCommentsViewController]) return YES;
     id tableNode = ApolloSendObject(tableView, @selector(tableNode));
     // A Texture without these calls can't be checked, so refresh as before.
     if (![tableNode respondsToSelector:@selector(visibleNodes)]) return YES;
@@ -904,16 +905,12 @@ static BOOL ApolloTagTableShowsBlurrableMedia(UITableView *tableView) {
     // reading it doesn't make UIKit lay out cells.
     NSArray *nodes = ApolloSendObject(tableNode, @selector(visibleNodes));
     for (id node in nodes) {
-        if (ApolloTagNodeShowsBlurrableMedia(node)) return YES;
+        if ((ApolloClassLargePostCellNode && [node isKindOfClass:ApolloClassLargePostCellNode]) ||
+            (ApolloClassCompactPostCellNode && [node isKindOfClass:ApolloClassCompactPostCellNode])) {
+            return YES;
+        }
     }
     return NO;
-}
-
-static NSString *ApolloTagTableOwnerName(UIView *tableView) {
-    for (UIResponder *responder = tableView.nextResponder; responder; responder = responder.nextResponder) {
-        if ([responder isKindOfClass:[UIViewController class]]) return NSStringFromClass([responder class]);
-    }
-    return NSStringFromClass([tableView class]);
 }
 
 static void ApolloTagRefreshAllVisibleCells(void) {
@@ -928,9 +925,10 @@ static void ApolloTagRefreshAllVisibleCells(void) {
                                                  : [root isKindOfClass:[UITableView class]];
             if (hostsPostCells) {
                 UITableView *tv = (UITableView *)root;
-                if (!ApolloTagTableShowsBlurrableMedia(tv)) {
-                    ApolloLog(@"[TagFilters] Refresh left %@ alone: no post cell or thread header on screen",
-                              ApolloTagTableOwnerName(tv));
+                UIViewController *owner = ApolloTagTableOwner(tv);
+                if (!ApolloTagTableNeedsRefresh(tv, owner)) {
+                    ApolloLog(@"[TagFilters] Refresh left %@ alone: no post cell on screen, not a comment thread",
+                              NSStringFromClass(owner ? [owner class] : [tv class]));
                 } else {
                     @try { [tv reloadData]; } @catch (__unused id e) {}
                 }
