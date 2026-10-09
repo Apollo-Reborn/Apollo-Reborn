@@ -19,6 +19,11 @@ Other native screens have their own single owners: the Settings root and About i
 4. **Row** — add an `ApolloSettingsRow` to the right screen's `-buildForm`. For a plain toggle that's 5 lines (see any converted screen). Conditional row? Set `.visible` and call `[self visibilityDidChange]` from whatever toggle drives it — never compute indices.
 5. **Consume** — read the `s*` global from your feature module.
 
+**Launch-time exception:** `UDKeyLiquidGlassEnabled` is registered and latched in
+`ApolloCommon.m`’s `+load`, before UIKit selects its design and before Logos
+constructors install appearance-specific hooks. Its switch saves only the next
+launch’s preference; never reload `sLiquidGlassEnabled` during a running session.
+
 Do **not** add the setting to `ApolloBackupRestore.m`'s statics re-sync block: settings ride `standardUserDefaults`, so they're in Backup/Restore for free, and restore always force-exits (`exit(0)`) so `%ctor` re-reads everything on relaunch. The re-sync list is intentionally partial.
 
 ## ApolloSettingsForm quick reference

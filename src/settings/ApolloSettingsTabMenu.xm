@@ -280,6 +280,14 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return YES;
 }
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
+    // Apollo's classic hold selects a tab at 0.35s, before our menu's 0.5s
+    // threshold. Let it proceed only if this Settings-only hold fails, so
+    // holding Settings opens the menu without switching or popping its stack.
+    return !IsLiquidGlass()
+        && other.view == self.controller.tabBar
+        && [other isKindOfClass:objc_getClass("_TtC6Apollo32ApolloLongPressGestureRecognizer")];
+}
 - (void)held:(UILongPressGestureRecognizer *)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController) return;
     UIView *tab = ApolloSettingsTabView(self.controller);

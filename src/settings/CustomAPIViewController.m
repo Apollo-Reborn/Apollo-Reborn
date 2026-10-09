@@ -2033,8 +2033,27 @@ typedef NS_ENUM(NSInteger, Tag) {
                                               rows:@[ floatingTabs, magnet, preview ]];
 }
 
-// Interface group screen (ApolloInterfaceSettingsViewController) — compact
-// tab-bar controls followed by global display/navigation options.
+// Interface group screen (ApolloInterfaceSettingsViewController) — appearance,
+// tab-bar controls, and global display/navigation options.
+- (ApolloSettingsSection *)buildInterfaceLiquidGlassSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *liquidGlass =
+        [ApolloSettingsRow switchRowWithID:@"interface.liquidGlassEnabled"
+                                     title:@"Liquid Glass"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyLiquidGlassEnabled]; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf liquidGlassSwitchToggled:sender]; }];
+
+    ApolloSettingsSection *section =
+        [ApolloSettingsSection sectionWithTitle:@"Appearance"
+                                         footer:@"Turn off for the classic appearance. Requires a restart."
+                                           rows:@[ liquidGlass ]];
+    // This is a build capability, not the active appearance: keep the switch
+    // available after a relaunch into classic mode so glass can be re-enabled.
+    section.visible = ^BOOL { return ApolloLiquidGlassCanToggle(); };
+    return section;
+}
+
 - (ApolloSettingsSection *)buildInterfaceTabBarSection {
     __weak typeof(self) weakSelf = self;
 
@@ -2110,8 +2129,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
-    // Both behavior choices include idle re-expansion. A single picker keeps
-    // the gesture models mutually exclusive and explicit.
+    // A single picker keeps the gesture models mutually exclusive and explicit.
     ApolloSettingsRow *tabBarScrollBehavior =
         [ApolloSettingsRow customRowWithID:@"interface.tabBarScrollBehavior"
                                       cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
@@ -2161,12 +2179,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
     tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
 
-    NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
-        : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
-    if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
-    }
+    NSString *footer = IsLiquidGlass()
+        ? @"Swipe across the tab bar to navigate between screens."
+        : nil;
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
@@ -2189,7 +2204,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     return [ApolloSettingsSection
         sectionWithTitle:@"Menus"
-        footer:@"Reorder and hide actions in the ••• menus on feeds, posts and comments, and in the moderator menus. Touching and holding a post or comment opens the same menu."
+        footer:@"Reorder or hide items in feed, post, comment, and moderator menus."
         rows:@[ actionMenus ]];
 }
 
@@ -2340,8 +2355,12 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
 
+    NSString *footer = @"Return Button restores your scroll position after a status bar tap.";
+    if (IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
+    }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. True Black Keyboard paints the keyboard background pure black in the chosen appearance (takes effect the next time the keyboard appears). Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
+                                            footer:footer
                                               rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
@@ -4647,14 +4666,9 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     if (!ApolloSupportsNativeTabBarScrollBehavior() ||
         ![self apollo_nativeHideBarsOnScrollEnabled]) return;
 
-    // Idle re-expansion is shared by both selectable modes. Keep the legacy
-    // boolean enabled for existing preferences/backups; the classic flag now
-    // selects the gesture model presented by the single row.
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL behaviorChanged = ![defaults boolForKey:UDKeyAutoHideTabBarShowOnIdle] ||
-        sClassicTabBarScrollBehavior != classic;
+    BOOL behaviorChanged = sClassicTabBarScrollBehavior != classic;
     sClassicTabBarScrollBehavior = classic;
-    [defaults setBool:YES forKey:UDKeyAutoHideTabBarShowOnIdle];
     [defaults setBool:classic forKey:UDKeyClassicTabBarScrollBehavior];
     if (behaviorChanged) {
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
@@ -4662,20 +4676,40 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
 }
 
-// Takes effect on next relaunch — see ApolloLiquidGlass.xm.
-- (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
-    sTabBarSwipeNavigation = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sTabBarSwipeNavigation forKey:UDKeyTabBarSwipeNavigation];
-
+- (void)apollo_presentRestartRequiredAlertAllowingLater:(BOOL)allowLater {
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Restart Required"
                          message:@"Quit and reopen Apollo for this change to take effect."
                   preferredStyle:UIAlertControllerStyleAlert];
+    // A Liquid Glass change must be followed by a relaunch. With no cancel
+    // action, UIKit also keeps this alert up for outside taps or escape gestures.
+    alert.modalInPresentation = !allowLater;
     [alert addAction:[UIAlertAction actionWithTitle:@"Quit & Reopen"
                                               style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a) { exit(0); }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+                                            handler:^(UIAlertAction *a) {
+        // exit(0) bypasses the normal lifecycle; flush the pending setting
+        // before quitting so the next launch reads the selected appearance.
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        exit(0);
+    }]];
+    if (allowLater) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+    }
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)liquidGlassSwitchToggled:(UISwitch *)sender {
+    // The current launch keeps its original appearance and hook selection.
+    // Only startup consumes this preference; do not refresh row visibility.
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyLiquidGlassEnabled];
+    [self apollo_presentRestartRequiredAlertAllowingLater:NO];
+}
+
+// Takes effect on next relaunch — see ApolloLiquidGlass.xm.
+- (void)tabBarSwipeNavigationSwitchToggled:(UISwitch *)sender {
+    sTabBarSwipeNavigation = sender.isOn;
+    [[NSUserDefaults standardUserDefaults] setBool:sTabBarSwipeNavigation forKey:UDKeyTabBarSwipeNavigation];
+    [self apollo_presentRestartRequiredAlertAllowingLater:YES];
 }
 
 - (void)proxyImgurDDGSwitchToggled:(UISwitch *)sender {
@@ -5443,6 +5477,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
               [self buildInterfaceDisplayNavigationSection],
+              [self buildInterfaceLiquidGlassSection],
               [self buildInterfaceMenusSection] ];
 }
 @end

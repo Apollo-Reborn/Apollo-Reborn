@@ -93,7 +93,10 @@ NSURLSessionDataTask *ApolloStartBoundedDataRequest(
     dispatch_queue_t completionQueue,
     ApolloBoundedDataCompletion completion);
 
+// Active appearance, fixed until the process restarts.
 BOOL IsLiquidGlass(void);
+// Build/runtime capability, independent of the selected appearance.
+BOOL ApolloLiquidGlassCanToggle(void);
 
 NSURL *ApolloURLByConvertingResolvedURLToApolloScheme(NSURL *url);
 BOOL ApolloRouteResolvedURLViaApolloScheme(NSURL *resolvedURL);

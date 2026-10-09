@@ -218,6 +218,15 @@ extern ApolloSettingsIconAppearance sSettingsIconAppearance;
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
 extern BOOL sTabBarSwipeNavigation;
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Launch-only choice, read by ApolloCommon +load before any Logos constructor.
+// Settings write UDKeyLiquidGlassEnabled only; never change this live.
+extern BOOL sLiquidGlassEnabled;
+#ifdef __cplusplus
+}
+#endif
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.

@@ -307,10 +307,6 @@ static NSString *const UDKeySubredditLayoutPreviewPinned = @"SubredditLayoutPrev
 // master NO = Off.
 static NSString *const UDKeyCommunityHighlights = @"CommunityHighlights";
 static NSString *const UDKeyCommunityHighlightsWeb = @"CommunityHighlightsWeb";
-// Internal idle-re-expansion component shared by both selectable Scroll
-// Behavior modes. Always YES where native tab-bar behavior is supported; the
-// old key remains for preferences/backup compatibility.
-static NSString *const UDKeyAutoHideTabBarShowOnIdle = @"AutoHideTabBarShowOnIdle";
 // Liquid Glass only. Selects Classic rather than Two-Gesture behavior. Classic
 // restores Apollo's bidirectional feel: scrolling down minimizes the tab bar,
 // and reversing toward the top expands it immediately. Default NO.
@@ -343,6 +339,9 @@ static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadT
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
 // Settings icons: 0 = System, 1 = Light (default), 2 = Dark.
 static NSString *const UDKeySettingsIconAppearance = @"SettingsIconAppearance";
+// Glass builds only. Default ON. Applied once before UIKit/Logos startup;
+// changing it requires relaunch and never mutates the active appearance.
+static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // dragging to switch tabs (an either/or; needs a relaunch to apply). Opt-in;
 // default OFF via registerDefaults. See ApolloLiquidGlass.xm.
