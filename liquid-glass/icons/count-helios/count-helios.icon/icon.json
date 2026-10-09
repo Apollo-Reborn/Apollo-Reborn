@@ -74,6 +74,7 @@
           }
         },
         {
+          "blend-mode" : "hard-light",
           "glass" : false,
           "image-name" : "fangs.svg",
           "name" : "fangs",
@@ -129,6 +130,42 @@
             "translation-in-points" : [
               0.22561604584541328,
               124.92348377656322
+            ]
+          }
+        },
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.06172,0.05705,0.06958,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "automatic"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "vampire-cape-black 2.svg",
+          "name" : "vampire-cape-black 2",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 0.88,
+            "translation-in-points" : [
+              -0.05855465901436219,
+              65
             ]
           }
         }
@@ -235,6 +272,7 @@
           }
         }
       ],
+      "name" : "Group",
       "shadow" : {
         "kind" : "neutral",
         "opacity" : 0.6
