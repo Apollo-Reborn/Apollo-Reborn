@@ -124,7 +124,7 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 
 @end
 
-@interface ApolloSettingsFormViewController : ApolloSettingsTableViewController
+@interface ApolloSettingsFormViewController : ApolloSettingsTableViewController <UIGestureRecognizerDelegate>
 
 // Override: return the full model (including conditionally-visible rows).
 // Called once from viewDidLoad; call -rebuildForm to rebuild from scratch.
