@@ -111,7 +111,10 @@ static BOOL ApolloGalleryURLLooksLikeImage(NSURL *url) {
 
 - (BOOL)canResolveHostedVideoForGrid {
     if (!self.needsHostedVideoResolution || self.hostedVideoGridLookupFailed) return NO;
-    return ApolloHostedVideoKindForURL(self.hostedVideoPageURL) != ApolloHostedVideoRedgifs;
+    // Re-read per call: switching Sports Clip Links Play Inline off turns
+    // these back into plain links (kind None), and then nothing is looked up.
+    ApolloHostedVideoKind kind = ApolloHostedVideoKindForURL(self.hostedVideoPageURL);
+    return kind == ApolloHostedVideoSportsClip || kind == ApolloHostedVideoStreamable;
 }
 
 - (void)resolveHostedVideoWithCompletion:(void (^)(BOOL resolvedOriginal))completion {
