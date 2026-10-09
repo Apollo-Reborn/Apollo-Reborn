@@ -1,0 +1,80 @@
+{
+  "source_commit": "5999c308c62564f893853e95ba38622876b3cbce",
+  "capture_date": "2026-10-09",
+  "runtime": "iOS 27.0 simulator",
+  "devices": {
+    "13": "iPad Pro 13-inch M5 (12 GB)",
+    "11": "iPad Pro 11-inch M5 (12 GB)",
+    "mini": "iPad mini A17 Pro"
+  },
+  "screenshots": [
+    {
+      "path": "13/01-expanded-subreddit-sidebar.png",
+      "caption": "Expanded subreddit header and favourites sidebar"
+    },
+    {
+      "path": "13/02-feed-and-comments.png",
+      "caption": "Posts and comments side by side"
+    },
+    {
+      "path": "13/03-collapsed-header-top-tabs.png",
+      "caption": "Collapsed subreddit header and top tabs"
+    },
+    {
+      "path": "13/04-full-width-gallery.png",
+      "caption": "Full-width Gallery and bounded tile size controls"
+    },
+    {
+      "path": "13/05-portrait-feed.png",
+      "caption": "Portrait feed layout"
+    },
+    {
+      "path": "13/06-ipad-layout-beta-welcome.png",
+      "caption": "iPad Layout beta invitation"
+    },
+    {
+      "path": "11/01-landscape-expanded-header.png",
+      "caption": "Expanded header and sidebar"
+    },
+    {
+      "path": "11/02-landscape-post-comments.png",
+      "caption": "Post and comment reader"
+    },
+    {
+      "path": "11/03-landscape-tabs-collapsed-header.png",
+      "caption": "Top tabs and collapsed identity header"
+    },
+    {
+      "path": "11/04-portrait-feed-comments.png",
+      "caption": "Portrait feed and reader columns"
+    },
+    {
+      "path": "11/05-portrait-welcome.png",
+      "caption": "Portrait beta invitation"
+    },
+    {
+      "path": "mini/01-landscape-expanded-sidebar.png",
+      "caption": "Expanded header and sidebar"
+    },
+    {
+      "path": "mini/02b-selected-post-comments.png",
+      "caption": "Post and comments with sidebar"
+    },
+    {
+      "path": "mini/03-collapsed-header-tabs.png",
+      "caption": "Collapsed identity header and top tabs"
+    },
+    {
+      "path": "mini/05-portrait-feed.png",
+      "caption": "Portrait feed: current title and top-tabs overlap"
+    },
+    {
+      "path": "mini/06-welcome-portrait.png",
+      "caption": "Portrait beta invitation"
+    },
+    {
+      "path": "mini/06b-welcome-landscape.png",
+      "caption": "Landscape beta invitation"
+    }
+  ]
+}
