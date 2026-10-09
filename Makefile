@@ -146,6 +146,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSafariDarkLoading.xm \
     $(SRC_DIR)/ApolloMedia.xm \
     $(SRC_DIR)/ApolloAsyncDisplayGuard.xm \
+    $(SRC_DIR)/ApolloTiledText.m \
     $(SRC_DIR)/ApolloFeedGalleryCarousel.xm \
     $(SRC_DIR)/ApolloSwipeUpComments.xm \
     $(SRC_DIR)/ApolloMediaMetadata.m \

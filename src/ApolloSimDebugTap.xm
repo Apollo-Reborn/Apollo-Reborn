@@ -17,6 +17,7 @@
 
 #import "ApolloAccountCredentials.h"
 #import "ApolloAsyncDisplayGuard.h"
+#import "ApolloTiledText.h"
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloCommentVoteInsights.h"
 #import <AVFoundation/AVFoundation.h>
@@ -1005,9 +1006,14 @@ static void ApolloSimDebugBitmapAssert(void) {
 // "displayguard W H [capMP]" command: synchronously display a throwaway
 // ASTextNode with W x H pt bounds through the same
 // _displayBlockWithAsynchronous: path the display queue uses, optionally
-// lowering ApolloAsyncDisplayGuard's pixel budget to capMP megapixels first
-// (restored afterwards), and log whether the guard skipped the display, caught
-// UIKit's assert, or the node rendered.
+// setting ApolloAsyncDisplayGuard's pixel budget to capMP megapixels first
+// (restored afterwards), and log whether the node rendered, went to tiles
+// (ApolloTiledText takes text over the budget) or rendered nothing (skipped,
+// or its bitmap failed). A node that rendered nothing is displayed once more
+// a moment later, with the same budget: after a failed bitmap it comes back
+// in tiles.
+static ASTextNode *sApolloSimDebugDisplayGuardNode;
+
 static void ApolloSimDebugDisplayGuardTest(NSString *payload) {
     NSMutableArray<NSString *> *numbers = [NSMutableArray array];
     for (NSString *part in [payload componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]) {
@@ -1028,11 +1034,30 @@ static void ApolloSimDebugDisplayGuardTest(NSString *payload) {
               width, height, ApolloAsyncDisplayGuardMaxPixels() / 1e6);
     @try {
         [node displayImmediately];
-        ApolloLog(@"[SimDebugTap] displayguard: returned, contents %@", layer.contents ? @"set" : @"nil");
+        ApolloLog(@"[SimDebugTap] displayguard: returned, contents %@, tiled %@",
+                  layer.contents ? @"set" : @"nil", ApolloTiledTextNodeIsTiled(node) ? @"YES" : @"no");
     } @catch (NSException *exception) {
         ApolloLog(@"[SimDebugTap] displayguard: exception ESCAPED the guard, %@: %@", exception.name, exception.reason);
     }
-    ApolloAsyncDisplayGuardSetMaxPixelsForTesting(0);
+    if (layer.contents || ApolloTiledTextNodeIsTiled(node)) {
+        ApolloAsyncDisplayGuardSetMaxPixelsForTesting(0);
+        return;
+    }
+    // Rendered nothing: if the bitmap failed, the guard has queued the switch
+    // to tiles on the main queue. Display again after it, under the same budget.
+    sApolloSimDebugDisplayGuardNode = node;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ASTextNode *retried = sApolloSimDebugDisplayGuardNode;
+        sApolloSimDebugDisplayGuardNode = nil;
+        @try {
+            [retried displayImmediately];
+            ApolloLog(@"[SimDebugTap] displayguard: second display, contents %@, tiled %@",
+                      [retried layer].contents ? @"set" : @"nil", ApolloTiledTextNodeIsTiled(retried) ? @"YES" : @"no");
+        } @catch (NSException *exception) {
+            ApolloLog(@"[SimDebugTap] displayguard: exception ESCAPED the guard on the second display, %@: %@", exception.name, exception.reason);
+        }
+        ApolloAsyncDisplayGuardSetMaxPixelsForTesting(0);
+    });
 }
 
 static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *observer,
