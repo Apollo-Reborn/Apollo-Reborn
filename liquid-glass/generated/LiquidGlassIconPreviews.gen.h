@@ -94,7 +94,7 @@ static const LGIconRowEntry kLGGroupEntries_helios[] = {
     { "helios-ultra-halo", "Ultra Halo", "IllIIllIllIllII", -1 },
     { "helios-pixel", "Pixels", "IllIIllIllIllII", -1 },
     { "witching-hour", "Witching Hour", "IllIIllIllIllII", -1 },
-    { "count-helios", "Count Helios", "IllIIllIllIllII", -1 },
+    { "helios-count", "Count Helios", "IllIIllIllIllII", -1 },
 };
 
 static const LGIconRowEntry kLGGroupEntries_concepts[] = {
@@ -126,7 +126,7 @@ static const char *const kLGGroupCover_classics[] = {
 static const char *const kLGGroupCover_helios[] = {
     "witching-hour",
     "helios",
-    "count-helios",
+    "helios-count",
 };
 
 static const char *const kLGGroupCover_concepts[] = {

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Helios vampire red gradient background</title>
+  <desc>Editable edge-to-edge crimson glow fading into dark oxblood, recreated from the vampire icon. No corner mask.</desc>
+  <defs>
+    <radialGradient id="vampire-red-glow" cx="512" cy="515" r="590" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 515) scale(.98 1.04) translate(-512 -515)">
+      <stop offset="0" stop-color="#D30035"/>
+      <stop offset=".29" stop-color="#BB002D"/>
+      <stop offset=".48" stop-color="#A20023"/>
+      <stop offset=".64" stop-color="#740018"/>
+      <stop offset=".82" stop-color="#41000D"/>
+      <stop offset="1" stop-color="#290209"/>
+    </radialGradient>
+    <linearGradient id="vampire-bottom-shade" x1="0" y1="640" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#130008" stop-opacity="0"/>
+      <stop offset="1" stop-color="#130008" stop-opacity=".18"/>
+    </linearGradient>
+  </defs>
+  <rect id="red-background" width="1024" height="1024" fill="url(#vampire-red-glow)"/>
+  <rect id="lower-vignette" width="1024" height="1024" fill="url(#vampire-bottom-shade)"/>
+</svg>

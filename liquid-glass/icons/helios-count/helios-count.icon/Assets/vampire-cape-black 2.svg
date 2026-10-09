@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>Helios vampire cape — visible black fabric only</title>
+  <desc>Visible black fabric only: all fabric hidden beneath the red lining has been removed from the native paths. Original gradients, mirrored alignment, position, and transparent 1024 by 1024 canvas preserved. The red layer and black fabric share the original seam.</desc>
+  <defs>
+    <linearGradient id="cape-leather" x1="38" y1="484" x2="247" y2="690" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343236" />
+      <stop offset=".12" stop-color="#141318" />
+      <stop offset=".4" stop-color="#030306" />
+      <stop offset=".68" stop-color="#0B090E" />
+      <stop offset="1" stop-color="#020205" />
+    </linearGradient>
+  </defs>
+  <g id="black-fabric" inkscape:groupmode="layer" inkscape:label="Black fabric">
+    <g id="black-fabric-left">
+      <path d="M32 444 C66 466 96 485 114 520 C133 558 137 615 169 676 C204 743 262 804 328 867 C253 816 174 791 122 740 C78 697 76 642 63 583 C52 532 43 482 32 444Z" fill="url(#cape-leather)" id="black-fabric-left-path-0" />
+      <path d="M35 452 C57 537 69 633 89 684 C124 761 205 790 280 835" stroke="#D1BECF" stroke-opacity=".09" stroke-width="1.4" id="black-fabric-left-path-6" />
+    </g>
+    <g id="black-fabric-right" transform="translate(1024 0) scale(-1 1)">
+      <path d="M32 444 C66 466 96 485 114 520 C133 558 137 615 169 676 C204 743 262 804 328 867 C253 816 174 791 122 740 C78 697 76 642 63 583 C52 532 43 482 32 444Z" fill="url(#cape-leather)" id="black-fabric-right-path-0" />
+      <path d="M35 452 C57 537 69 633 89 684 C124 761 205 790 280 835" stroke="#D1BECF" stroke-opacity=".09" stroke-width="1.4" id="black-fabric-right-path-6" />
+    </g>
+  </g>
+</svg>

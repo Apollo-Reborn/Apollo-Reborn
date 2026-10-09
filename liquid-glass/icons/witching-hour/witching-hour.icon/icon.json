@@ -21,12 +21,13 @@
         },
         {
           "hidden" : false,
-          "image-name" : "witch-hat.svg",
-          "name" : "witch-hat",
+          "image-name" : "witches-hat.svg",
+          "name" : "witches-hat",
+          "opacity" : 1,
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
-              -15.041275058925635,
+              -15,
               0
             ]
           }
