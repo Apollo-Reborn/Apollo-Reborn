@@ -218,6 +218,15 @@ extern ApolloSettingsIconAppearance sSettingsIconAppearance;
 // Liquid Glass only. When ON, tab-bar swipe navigates back/forward instead of
 // switching tabs; needs a relaunch to apply. See ApolloLiquidGlass.xm.
 extern BOOL sTabBarSwipeNavigation;
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Launch-only choice, read by ApolloCommon +load before any Logos constructor.
+// Settings write UDKeyLiquidGlassEnabled only; never change this live.
+extern BOOL sLiquidGlassEnabled;
+#ifdef __cplusplus
+}
+#endif
 // When ON, neutralizes Apollo's feed/subreddit search takeover (nav-hide + fade + toolbar
 // dock/grow); the field stays put and results populate the feed in place. Liquid Glass only;
 // mutually exclusive with the default nav-hide mode. See ApolloSearchInPlace.xm.
@@ -617,6 +626,10 @@ static inline BOOL IsAppleTranslationSupported(void) {
 // authenticated with a WKWebView-harvested session cookie instead of a bearer
 // token. Dormant escape hatch for Reddit API-key revocation waves. Default NO.
 extern BOOL sWebJSONEnabled;
+// Reduce Rate Limiting (UDKeyReduceRateLimiting). Only takes effect while the
+// active account is API-key-free; read it through
+// ApolloReduceRateLimitingActive() (ApolloReduceRateLimiting.h). Default NO.
+extern BOOL sReduceRateLimiting;
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm): master gate for
 // the experimental poll voting + creation feature. Default NO. Cached here (not
 // re-read from NSUserDefaults per call) because the poll node's layoutSubviews

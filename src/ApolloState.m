@@ -73,6 +73,7 @@ NSString *const ApolloTabBarScrollBehaviorChangedNotification = @"ApolloTabBarSc
 BOOL sClassicTabBarScrollBehavior = NO;
 BOOL sHideTopBarOnScroll = NO;
 ApolloTabBarHideStyle sTabBarHideStyle = ApolloTabBarHideStyleLeft;
+BOOL sLiquidGlassEnabled = YES; // set once by ApolloCommon +load, before Logos constructors
 BOOL sIPadTabBarBottom = NO;   // opt-in (default OFF via registerDefaults, UDKeyIPadTabBarBottom); iPad-gated in the module
 BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults, UDKeyTabBarSwipeNavigation); Liquid Glass only, see ApolloLiquidGlass.xm
 BOOL sKeepSearchBarInPlace = NO;
@@ -172,6 +173,7 @@ NSArray<NSString *> *sTranslationSkipLanguages = nil;
 BOOL sAppleTranslateSheet = NO;
 
 BOOL sWebJSONEnabled = NO;
+BOOL sReduceRateLimiting = NO;
 BOOL sPollsFeatureEnabled = NO;
 NSInteger sPollOptionAlignment = ApolloPollOptionAlignmentCenter;
 NSString *sWebSessionCookieHeader = nil;

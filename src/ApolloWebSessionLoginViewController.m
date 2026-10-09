@@ -6,6 +6,7 @@
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "UIWindow+Apollo.h"
+#import "ApolloReduceRateLimiting.h"
 #import "UserDefaultConstants.h"
 
 #import <WebKit/WebKit.h>
@@ -661,7 +662,29 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     [self _dismissWithAuthenticationSuccess:NO];
 }
 
-// Called after a successful harvest. When an account was synthesized, Apollo must
+// Called after a successful harvest. A primary (API-Key-Free) sign-in first
+// gets the one-time Reduce Rate Limiting offer, then finishes as below.
+- (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
+    // Reddit's smaller request budget starts to apply with an API-Key-Free
+    // sign-in. A targeted feature sign-in (requiredUsername: Chat/Modmail/Polls
+    // for an account that keeps its API key) doesn't change how that account
+    // reads, so it isn't asked.
+    if (self.requiredUsername.length == 0) {
+        __weak typeof(self) weakSelf = self;
+        // The offer is an alert from this sheet, so a Google/Apple popup still
+        // open above it closes first, as it does before "Signed In" below;
+        // otherwise the sheet looks busy and the offer is skipped.
+        ApolloWebAuthClosePopups(self, ^{
+            ApolloReduceRateLimitingOfferAtSignIn(self, ^{
+                [weakSelf _completeFinishWithUser:username accountSynthesized:synthesized];
+            });
+        });
+        return;
+    }
+    [self _completeFinishWithUser:username accountSynthesized:synthesized];
+}
+
+// The rest of a successful harvest. When an account was synthesized, Apollo must
 // relaunch for AccountManager to load it (it reads accounts once per launch), so
 // we prompt to quit & reopen — mirroring the settings-restore flow's exit(0).
 // iOS can't relaunch the app for us, so the copy says "quit & reopen", not
@@ -669,7 +692,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 // Session Login settings row shows a "restart to activate" reminder rather than
 // leaving them with a silently-blank account tab. Otherwise (account already
 // present / synthesis skipped) just dismiss with no prompt.
-- (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
+- (void)_completeFinishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
     if (!synthesized) {
         ApolloWebSessionEntry *entry = self.requiredUsername.length > 0
             ? ApolloWebSessionPollFor(username)

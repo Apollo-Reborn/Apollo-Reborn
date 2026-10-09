@@ -21,6 +21,7 @@
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloDirectChatWeb.h"
 #import "ApolloWebSessionStore.h"
+#import "ApolloReduceRateLimiting.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
 #import "ApolloSwiftRuntime.h"
@@ -2885,6 +2886,13 @@ static void ApolloScheduleInlineAvatarInfoFetchAttempt(id cell, NSString *userna
             return;
         }
 
+        // Reduce Rate Limiting: avatars come from the batched lookups only, so an
+        // author none of them covered keeps the placeholder rather than costing
+        // a request of its own (see ApolloReduceRateLimiting.h).
+        if (ApolloReduceRateLimitingActive()) {
+            ApolloClearPendingInlineAvatarFetch(strongCell, username);
+            return;
+        }
         if (ApolloInlineAvatarShouldLog(&sApolloInlineAvatarQueuedLogCount)) {
             os_log_debug(ApolloFixLog(), "[ApolloFix] [UserAvatars] Inline avatar queued metadata fetch u/%{public}@ cell=%p", username, strongCell);
         }
@@ -4665,6 +4673,20 @@ static void ApolloInlineAvatarBatchEnqueueFromCommentCell(id cell) {
     if (ApolloInlineAvatarEnqueueFullNameForBatch(fullName)) ApolloInlineAvatarNoteQueuedForBatch(username);
 }
 
+// Reduce Rate Limiting only: queue a feed post's author for the same batch,
+// using the t2_ fullname noted from the feed listing (Apollo's RDKLink has no
+// author fullname of its own). Without the setting, feed avatars keep their
+// own lookups and the collectible frames that come with them.
+static void ApolloInlineAvatarBatchEnqueueFromPostCell(id cell) {
+    if (!cell || !ApolloReduceRateLimitingActive()) return;
+    NSString *username = ApolloUsernameFromCell(cell, @"link");
+    if (username.length == 0) return;
+    ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+    if ([cache cachedInfoForUsername:username].iconURL) return;
+    NSString *fullName = [cache authorFullNameForUsername:username];
+    if (ApolloInlineAvatarEnqueueFullNameForBatch(fullName)) ApolloInlineAvatarNoteQueuedForBatch(username);
+}
+
 // ASSizeRange { CGSize min; CGSize max; } — same -layoutSpecThatFits: ABI
 // name the rest of the repo uses (see ApolloShareAsImageGallery.xm).
 struct CDStruct_90e057aa { CGSize min; CGSize max; };
@@ -4698,6 +4720,14 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 
 %hook _TtC6Apollo17LargePostCellNode
 
+// Like CommentCellNode's above: ahead of display, so the batch (Reduce Rate
+// Limiting only) usually lands before the cell is on screen.
+- (void)didEnterPreloadState {
+    %orig;
+    if (!sShowUserAvatars) return;
+    ApolloInlineAvatarBatchEnqueueFromPostCell(self);
+}
+
 - (void)didLoad {
     %orig;
     if (!sShowUserAvatars) return;
@@ -4717,6 +4747,12 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
 %end
 
 %hook _TtC6Apollo19CompactPostCellNode
+
+- (void)didEnterPreloadState {
+    %orig;
+    if (!sShowUserAvatars) return;
+    ApolloInlineAvatarBatchEnqueueFromPostCell(self);
+}
 
 - (void)didLoad {
     %orig;

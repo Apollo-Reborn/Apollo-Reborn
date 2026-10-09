@@ -588,42 +588,130 @@ static const char *ApolloNativeExecutableImageName(void) {
 // Read the guest image's actual load command. LiveContainer's optional SDK
 // spoofing hooks dyld's program-SDK APIs, not this header; the glass patch's
 // intentional SDK bump therefore still works in both hosted and normal apps.
-static uint32_t GetLinkedSDKVersion(void) {
+static const struct mach_header *ApolloNativeImageHeader(void) {
     const char *executableName = ApolloNativeExecutableImageName();
-    if (!executableName) return 0;
+    if (!executableName) return NULL;
     for (uint32_t i = 0; i < _dyld_image_count(); i++) {
         const char *imageName = _dyld_get_image_name(i);
-        if (!imageName || strcmp(imageName, executableName) != 0) continue;
-        const struct mach_header *header = _dyld_get_image_header(i);
-        if (!header || header->magic != MH_MAGIC_64 ||
-            header->sizeofcmds > ApolloMaximumMachOLoadCommandBytes) return 0;
-        // dyld has already validated/mapped this loaded image. The reader
-        // additionally bounds every command within its declared header area.
-        size_t length = sizeof(struct mach_header_64) + header->sizeofcmds;
-        return ApolloSDKVersionFromMachO(header, length);
+        if (imageName && strcmp(imageName, executableName) == 0) {
+            return _dyld_get_image_header(i);
+        }
     }
-    return 0;
+    return NULL;
+}
+
+static uint32_t GetLinkedSDKVersion(void) {
+    const struct mach_header *header = ApolloNativeImageHeader();
+    if (!header || header->magic != MH_MAGIC_64 ||
+        header->sizeofcmds > ApolloMaximumMachOLoadCommandBytes) return 0;
+    // dyld has already validated/mapped this loaded image. The reader
+    // additionally bounds every command within its declared header area.
+    size_t length = sizeof(struct mach_header_64) + header->sizeofcmds;
+    return ApolloSDKVersionFromMachO(header, length);
 }
 
 // Both the selected Apollo variant and the running OS must support glass.
-BOOL IsLiquidGlass(void) {
-    static BOOL checked = NO;
-    static BOOL available = NO;
+// Keep eligibility separate from the launch choice: the settings switch must
+// remain reachable after selecting classic mode, and every glass-specific
+// hook must see one immutable choice for the entire process lifetime.
+static BOOL sLiquidGlassBuildAvailable;
+static BOOL sLiquidGlassCanToggle;
+static NSBundle *sLiquidGlassAppBundle;
+static NSDictionary *(*sLiquidGlassOriginalInfoDictionary)(id, SEL);
+static id (*sLiquidGlassOriginalInfoValue)(id, SEL, NSString *);
+static NSString *const kApolloDesignCompatibilityKey = @"UIDesignRequiresCompatibility";
 
-    if (!checked) {
-        checked = YES;
+static NSDictionary *ApolloLiquidGlassInfoDictionary(NSBundle *bundle, SEL selector) {
+    NSDictionary *original = sLiquidGlassOriginalInfoDictionary(bundle, selector);
+    if (bundle != sLiquidGlassAppBundle) return original;
+
+    // Never edit the signed Info.plist or the shared Foundation dictionary.
+    // Preserve every other key (including icon metadata and the build variant).
+    NSMutableDictionary *info = [original mutableCopy];
+    info[kApolloDesignCompatibilityKey] = @(!sLiquidGlassEnabled);
+    return info;
+}
+
+static id ApolloLiquidGlassInfoValue(NSBundle *bundle, SEL selector, NSString *key) {
+    if (bundle == sLiquidGlassAppBundle && [key isEqualToString:kApolloDesignCompatibilityKey]) {
+        return @(!sLiquidGlassEnabled);
+    }
+    return sLiquidGlassOriginalInfoValue(bundle, selector, key);
+}
+
+static void ApolloInitializeLiquidGlassMode(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
         BOOL glassRuntime = NO;
         if (@available(iOS 26.0, *)) {
             glassRuntime = objc_lookUpClass("UIGlassEffect") != Nil;
         }
         uint32_t sdkVersion = GetLinkedSDKVersion();
-        available = ApolloSDKEnablesLiquidGlass(sdkVersion, glassRuntime);
+        sLiquidGlassBuildAvailable = ApolloSDKEnablesLiquidGlass(sdkVersion, glassRuntime);
 
-        ApolloLog(@"[IsLiquidGlass] Apollo SDK: 0x%08X, glass runtime: %@, enabled: %@",
-                  sdkVersion, glassRuntime ? @"YES" : @"NO", available ? @"YES" : @"NO");
+        // This setting is exceptional: read it before Logos constructors, not
+        // in Tweak.xm's later defaults load. Several constructors gate their
+        // hook installation on IsLiquidGlass(). Register the default here as
+        // well so fresh installs and backups predating the key keep glass on.
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        [defaults registerDefaults:@{ UDKeyLiquidGlassEnabled: @YES }];
+        BOOL requestedGlass = [defaults boolForKey:UDKeyLiquidGlassEnabled];
+
+        // Scope the override to Apollo's main bundle. A host such as
+        // LiveContainer can expose its own main bundle or initialize UIKit
+        // before loading the guest. A guest can even substitute mainBundle, so
+        // also require a standalone executable. Leave hosted apps unchanged.
+        NSBundle *mainBundle = NSBundle.mainBundle;
+        const char *imageName = ApolloNativeExecutableImageName();
+        NSString *nativePath = imageName ? [NSString stringWithUTF8String:imageName] : nil;
+        BOOL mainBundleIsApollo = nativePath.length &&
+            [mainBundle.executablePath.stringByResolvingSymlinksInPath
+                isEqualToString:nativePath.stringByResolvingSymlinksInPath];
+        Method infoMethod = class_getInstanceMethod(NSBundle.class, @selector(infoDictionary));
+        Method valueMethod = class_getInstanceMethod(NSBundle.class, @selector(objectForInfoDictionaryKey:));
+        const struct mach_header *nativeHeader = ApolloNativeImageHeader();
+        BOOL standalone = nativeHeader && nativeHeader->filetype == MH_EXECUTE;
+        sLiquidGlassCanToggle = ApolloSDKSupportsLiquidGlassCompatibility(sdkVersion, glassRuntime) &&
+            standalone && mainBundleIsApollo && infoMethod && valueMethod;
+        sLiquidGlassEnabled = !sLiquidGlassCanToggle || requestedGlass;
+
+        if (sLiquidGlassCanToggle) {
+            // Cache the bundle BEFORE swizzling: asking for mainBundle inside
+            // the hooks can recurse through Foundation's metadata lookup.
+            sLiquidGlassAppBundle = mainBundle;
+            sLiquidGlassOriginalInfoDictionary = (void *)method_getImplementation(infoMethod);
+            sLiquidGlassOriginalInfoValue = (void *)method_getImplementation(valueMethod);
+            method_setImplementation(infoMethod, (IMP)ApolloLiquidGlassInfoDictionary);
+            method_setImplementation(valueMethod, (IMP)ApolloLiquidGlassInfoValue);
+        }
+        ApolloLog(@"[LiquidGlassMode] SDK=0x%08X runtime=%d switchAvailable=%d requested=%d active=%d",
+                  sdkVersion, glassRuntime, sLiquidGlassCanToggle, requestedGlass,
+                  sLiquidGlassBuildAvailable && sLiquidGlassEnabled);
+    });
+}
+
+// ObjC +load runs before this dylib's C/C++ constructors, including every
+// Logos %ctor. UIKit also caches its design choice, so waiting for application
+// launch or settings initialization would leave a mixture of old/new chrome.
+@interface ApolloLiquidGlassModeBootstrap : NSObject
+@end
+
+@implementation ApolloLiquidGlassModeBootstrap
++ (void)load {
+    @autoreleasepool {
+        ApolloInitializeLiquidGlassMode();
     }
+}
+@end
 
-    return available;
+BOOL IsLiquidGlass(void) {
+    ApolloInitializeLiquidGlassMode();
+    return sLiquidGlassBuildAvailable && sLiquidGlassEnabled;
+}
+
+BOOL ApolloLiquidGlassCanToggle(void) {
+    ApolloInitializeLiquidGlassMode();
+    return sLiquidGlassCanToggle;
 }
 
 // Route a URL through Apollo's own URL handler, bypassing iOS URL dispatch.

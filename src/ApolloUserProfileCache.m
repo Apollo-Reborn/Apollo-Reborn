@@ -1098,6 +1098,43 @@ static NSString *ApolloUserProfileChargedWebSessionUsername(void) {
     });
 }
 
+// Lowercased username -> t2_ fullname, from feed listings (see the header).
+// Guarded by its own lock rather than self.queue: it's read on the main thread
+// as feed cells enter the preload range, where waiting on the queue's network
+// work would stall scrolling.
+static NSMutableDictionary<NSString *, NSString *> *sApolloAuthorFullNames;
+
+- (void)noteAuthorFullNamesFromListing:(NSDictionary *)listing {
+    if (![listing isKindOfClass:[NSDictionary class]]) return;
+    NSDictionary *data = [listing[@"data"] isKindOfClass:[NSDictionary class]] ? listing[@"data"] : nil;
+    NSArray *children = [data[@"children"] isKindOfClass:[NSArray class]] ? data[@"children"] : nil;
+    if (children.count == 0) return;
+    NSMutableDictionary<NSString *, NSString *> *found = [NSMutableDictionary dictionary];
+    for (id child in children) {
+        if (![child isKindOfClass:[NSDictionary class]] || ![child[@"kind"] isEqual:@"t3"]) continue;
+        NSDictionary *post = [child[@"data"] isKindOfClass:[NSDictionary class]] ? child[@"data"] : nil;
+        NSString *author = [post[@"author"] isKindOfClass:[NSString class]] ? post[@"author"] : nil;
+        NSString *fullName = [post[@"author_fullname"] isKindOfClass:[NSString class]] ? post[@"author_fullname"] : nil;
+        NSString *key = [self normalizedUsername:author];
+        if (key && [fullName hasPrefix:@"t2_"]) found[key] = [fullName copy];
+    }
+    if (found.count == 0) return;
+    @synchronized ([ApolloUserProfileCache class]) {
+        if (!sApolloAuthorFullNames || sApolloAuthorFullNames.count + found.count > 4096) {
+            sApolloAuthorFullNames = [NSMutableDictionary dictionary];
+        }
+        [sApolloAuthorFullNames addEntriesFromDictionary:found];
+    }
+}
+
+- (NSString *)authorFullNameForUsername:(NSString *)username {
+    NSString *key = [self normalizedUsername:username];
+    if (!key) return nil;
+    @synchronized ([ApolloUserProfileCache class]) {
+        return sApolloAuthorFullNames[key];
+    }
+}
+
 - (UIImage *)cachedImageForURL:(NSURL *)url {
     if (![url isKindOfClass:[NSURL class]]) return nil;
     return [self.imageCache objectForKey:url.absoluteString];
